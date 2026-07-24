@@ -20,7 +20,7 @@ import {
   mintInstallationToken,
 } from "@agentrail/github-app";
 import { db } from "../db.js";
-import { workspaces } from "../schema/index.js";
+import { workspaces, accounts } from "../schema/index.js";
 
 const INSTALL_STATE_BYTES = 24;
 const INSTALL_STATE_TTL_MS = 30 * 60 * 1000;
@@ -110,4 +110,35 @@ export async function consumeGithubInstallState(
     .returning({ id: workspaces.id });
   const row = rows[0];
   return row ? { workspaceId: row.id } : null;
+}
+
+/**
+ * The signed-in user's stored GitHub App **user access token**
+ * (`accounts.access_token` where `provider = 'github'` and
+ * `user_id = userId`) — the token minted at LOGIN time by the App's OAuth
+ * flow (see cd2c0c92 "console login via the Jace GitHub App's OAuth").
+ *
+ * Used ONLY by the install callback's ownership gate, to call
+ * `GET /user/installations` and confirm a caller-supplied `installation_id`
+ * actually belongs to this user before binding it to a workspace (the
+ * anti-IDOR check — see install-callback/route.ts). It is NOT a repo
+ * credential: per spec §4, all repo access rides installation tokens
+ * (`getInstallationToken`) exclusively, never this one. Returns null when
+ * the user never linked GitHub or no token is stored. Never logged or
+ * returned to the client.
+ *
+ * Deliberately a distinct, separately-named function from
+ * `getUserGithubAccessToken` in `queries/index.ts` (a different, #1294-era
+ * workspace-owner-based helper being retired later in this stack) — do not
+ * merge the two.
+ */
+export async function getUserGithubAccessTokenById(
+  userId: string
+): Promise<string | null> {
+  const rows = await db
+    .select({ accessToken: accounts.access_token })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")))
+    .limit(1);
+  return rows[0]?.accessToken ?? null;
 }

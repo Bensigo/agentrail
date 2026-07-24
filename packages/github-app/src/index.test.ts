@@ -6,6 +6,7 @@ import {
   mintInstallationToken,
   getInstallationAccount,
   botCommitIdentity,
+  listUserInstallationIds,
 } from "./index.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
@@ -136,5 +137,101 @@ describe("botCommitIdentity", () => {
       name: "jace[bot]",
       email: "98765+jace[bot]@users.noreply.github.com",
     });
+  });
+});
+
+describe("listUserInstallationIds", () => {
+  it("GETs /user/installations as the user token and collects ids from the wrapper shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        total_count: 2,
+        installations: [{ id: 111 }, { id: 222 }],
+      }),
+    });
+    const res = await listUserInstallationIds(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: true, ids: ["111", "222"] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.github.com/user/installations?per_page=100&page=1");
+    expect(init.headers.Authorization).toBe("Bearer gho_user_token");
+    expect(init.headers.Accept).toBe("application/vnd.github+json");
+  });
+
+  it("paginates per_page=100, stopping on the first short page", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({ id: i + 1 }));
+    const shortPage = [{ id: 9999 }];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ total_count: 101, installations: fullPage }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ total_count: 101, installations: shortPage }),
+      });
+    const res = await listUserInstallationIds(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.ids).toHaveLength(101);
+      expect(res.ids[100]).toBe("9999");
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://api.github.com/user/installations?per_page=100&page=2"
+    );
+  });
+
+  it("classifies 401 as unauthorized (distinct from other rejections)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+    const res = await listUserInstallationIds(
+      "expired_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+  });
+
+  it("classifies a network throw as github_unreachable", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const res = await listUserInstallationIds(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_unreachable" });
+  });
+
+  it("classifies a forged-shape body (installations not an array) as github_rejected", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ total_count: 1, installations: "not-an-array" }),
+    });
+    const res = await listUserInstallationIds(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
+  });
+
+  it("classifies other non-2xx as github_rejected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const res = await listUserInstallationIds(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
   });
 });

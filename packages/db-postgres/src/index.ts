@@ -21,4 +21,5 @@ export {
   bindWorkspaceGithubInstallation,
   mintGithubInstallState,
   consumeGithubInstallState,
+  getUserGithubAccessTokenById,
 } from "./queries/github-app-token.js";

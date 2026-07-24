@@ -165,6 +165,89 @@ export async function getInstallationAccount(
   return { ok: true, login, type };
 }
 
+export type ListUserInstallationsFailure = {
+  ok: false;
+  // "unauthorized" is distinct from github_rejected: the install callback
+  // needs to tell "the user's stored login token expired/was revoked"
+  // (→ ask them to sign out/in) apart from any other GitHub-side rejection.
+  reason: "unauthorized" | "github_unreachable" | "github_rejected";
+};
+
+// Bound mirrors the backlog sweep's per-repo page cap (route.ts's
+// MAX_PAGES_PER_REPO): a pathological account with thousands of
+// installations must never hang the ownership check.
+const MAX_INSTALLATION_PAGES = 10;
+const INSTALLATIONS_PER_PAGE = 100;
+
+/**
+ * Lists the installation ids a GitHub App **user access token** can see, via
+ * `GET /user/installations` (GitHub's documented endpoint for this token
+ * type — distinct from the App-JWT-authenticated `appFetch` calls above,
+ * which act on ANY installation of the App and carry no ownership
+ * information). This is the anti-IDOR primitive: the install callback calls
+ * it with the CALLER's own stored token to confirm a caller-supplied
+ * `installation_id` is actually one of theirs before binding it to a
+ * workspace.
+ *
+ * Response is a wrapper (`{ total_count, installations: [...] }`), not a
+ * bare array; paginated `per_page=100` with the same short-page-stop idiom
+ * as the backlog sweep (`sweepRepo` in
+ * app/api/v1/runner/backlog/route.ts) — stop as soon as a page returns
+ * fewer than `per_page` entries, bounded by MAX_INSTALLATION_PAGES.
+ *
+ * Never throws; never logs the token. 401 → `unauthorized`; network
+ * failure → `github_unreachable`; any other non-2xx or malformed body →
+ * `github_rejected`.
+ */
+export async function listUserInstallationIds(
+  userToken: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<{ ok: true; ids: string[] } | ListUserInstallationsFailure> {
+  const ids: string[] = [];
+  let page = 1;
+  while (page <= MAX_INSTALLATION_PAGES) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
+    let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+    try {
+      res = await fetchImpl(
+        `https://api.github.com/user/installations?per_page=${INSTALLATIONS_PER_PAGE}&page=${page}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${userToken}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "agentrail-console",
+          },
+          signal: controller.signal,
+        } as RequestInit
+      );
+    } catch {
+      return { ok: false, reason: "github_unreachable" };
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      if (res.status === 401) return { ok: false, reason: "unauthorized" };
+      return { ok: false, reason: "github_rejected" };
+    }
+    const body = (await res.json().catch(() => null)) as
+      | { installations?: unknown }
+      | null;
+    const installations = body?.installations;
+    if (!Array.isArray(installations)) {
+      return { ok: false, reason: "github_rejected" };
+    }
+    for (const entry of installations) {
+      const id = (entry as { id?: unknown } | null)?.id;
+      if (id !== undefined && id !== null) ids.push(String(id));
+    }
+    if (installations.length < INSTALLATIONS_PER_PAGE) break;
+    page += 1;
+  }
+  return { ok: true, ids };
+}
+
 /**
  * The git commit identity that attributes pushed commits to the App's bot
  * user. NOTE: the numeric id is the BOT USER's database id (GET /users/<slug>[bot]),

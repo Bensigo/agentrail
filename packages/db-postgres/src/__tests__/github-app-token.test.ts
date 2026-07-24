@@ -16,6 +16,7 @@ import {
 import {
   getInstallationToken,
   consumeGithubInstallState,
+  getUserGithubAccessTokenById,
 } from "../queries/github-app-token.js";
 
 const mockDb = vi.mocked(db);
@@ -103,5 +104,29 @@ describe("consumeGithubInstallState", () => {
   it("returns null for unknown/expired/reused state", async () => {
     mockDb.update.mockReturnValue(updateChain([]) as never);
     expect(await consumeGithubInstallState("deadbeef")).toBeNull();
+  });
+});
+
+describe("getUserGithubAccessTokenById", () => {
+  it("returns the stored access_token for (userId, provider='github')", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ accessToken: "gho_login_token" }]) as never
+    );
+    expect(await getUserGithubAccessTokenById("user-1")).toBe(
+      "gho_login_token"
+    );
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when the user has no linked GitHub account", async () => {
+    mockDb.select.mockReturnValue(selectChain([]) as never);
+    expect(await getUserGithubAccessTokenById("user-2")).toBeNull();
+  });
+
+  it("returns null when the stored access_token is null", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ accessToken: null }]) as never
+    );
+    expect(await getUserGithubAccessTokenById("user-3")).toBeNull();
   });
 });

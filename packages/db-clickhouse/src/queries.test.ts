@@ -10,6 +10,7 @@ import {
   listCostAnomalies,
   deriveWikiCompileEventId,
   insertWikiCompileEvents,
+  getLatestWikiCompileEvent,
   type WikiCompileEventInput,
 } from "./queries";
 
@@ -219,6 +220,57 @@ describe("insertWikiCompileEvents", () => {
     expect(result).toBe(1);
     expect(fake.inserts[0]!.values).toHaveLength(1);
     expect(fake.inserts[0]!.values[0]).toMatchObject({ duration_ms: 6000 });
+  });
+});
+
+describe("getLatestWikiCompileEvent", () => {
+  it("returns the most recent compile event, ordered DESC and capped to 1", async () => {
+    const { client, calls } = fakeQueryClient([
+      [
+        {
+          workspace_id: "ws-1",
+          repository_id: "repo-1",
+          commit_sha: "abc123",
+          pages_written: "3",
+          pages_reused: "21",
+          cost_usd: "0.04",
+          model: "claude-haiku-4-5",
+          duration_ms: "5200",
+          created_at: "2026-07-24 00:00:00.000",
+          event_id: "deadbeef",
+        },
+      ],
+    ]);
+
+    const row = await getLatestWikiCompileEvent("ws-1", "repo-1", client);
+
+    expect(row).toEqual({
+      workspace_id: "ws-1",
+      repository_id: "repo-1",
+      commit_sha: "abc123",
+      pages_written: 3,
+      pages_reused: 21,
+      cost_usd: 0.04,
+      model: "claude-haiku-4-5",
+      duration_ms: 5200,
+      // Normalized from the naive ClickHouse "YYYY-MM-DD HH:MM:SS.mmm" (UTC)
+      // to a real ISO string — see `timestampForApi`.
+      created_at: "2026-07-24T00:00:00.000Z",
+      event_id: "deadbeef",
+    });
+    expect(calls[0]?.query).toContain("FROM wiki_compile_events");
+    expect(calls[0]?.query).toContain("ORDER BY created_at DESC");
+    expect(calls[0]?.query).toContain("LIMIT 1");
+    expect(calls[0]?.query_params).toEqual({
+      workspaceId: "ws-1",
+      repositoryId: "repo-1",
+    });
+  });
+
+  it("returns null when the repo has never had a compile event", async () => {
+    const { client } = fakeQueryClient([[]]);
+    const row = await getLatestWikiCompileEvent("ws-1", "repo-with-no-wiki", client);
+    expect(row).toBeNull();
   });
 });
 

@@ -51,6 +51,7 @@ export {
   deriveSnapshotEventId,
   insertWikiCompileEvents,
   deriveWikiCompileEventId,
+  getLatestWikiCompileEvent,
   insertFailureEvents,
   deriveFailureEventId,
   insertCostEvents,

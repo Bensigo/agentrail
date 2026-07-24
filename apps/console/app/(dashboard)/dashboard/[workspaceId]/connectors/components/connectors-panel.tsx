@@ -23,6 +23,7 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   CONNECTOR_TYPE_META,
+  linkedIdentitiesLine,
   validateConnectorCredential,
   type ConnectorKind,
   type ConnectorType,
@@ -359,25 +360,6 @@ function SecretManage({
 // chip — never a fake affordance.
 // --------------------------------------------------------------------------- //
 
-/**
- * One line summarizing a channel's linked identities. Simplest honest form:
- * a linked identity can have a null displayName (chat_identities row with no
- * profile name), so when NONE of them have a name there's nothing to list —
- * just the count. Otherwise list the names we do have and fold the nameless
- * ones into a trailing "+N" rather than pad the list with placeholders.
- */
-function linkedIdentitiesLine(
-  identities: ConnectorView["linkedIdentities"]
-): string {
-  const names = identities
-    .map((i) => i.displayName)
-    .filter((name): name is string => name !== null);
-  if (names.length === 0) return `${identities.length} linked`;
-  const unnamed = identities.length - names.length;
-  const joined = names.join(", ");
-  return unnamed > 0 ? `Linked: ${joined} +${unnamed}` : `Linked: ${joined}`;
-}
-
 function ChannelManage({ connector }: { connector: ConnectorView }) {
   // Discord/Slack: no adapter yet, so no credential to collect and no
   // affordance to dangle — the card's status chip already reads "Coming".
@@ -392,7 +374,9 @@ function ChannelManage({ connector }: { connector: ConnectorView }) {
       <div className="flex flex-col gap-1.5">
         <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
           <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          {linkedIdentitiesLine(connector.linkedIdentities)}
+          {linkedIdentitiesLine(
+            connector.linkedIdentities.map((i) => i.displayName)
+          )}
         </p>
         {hostedBotUsername && (
           <a

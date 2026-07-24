@@ -10,6 +10,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspace: vi.fn(),
   hasActiveSelfHostedRunner: vi.fn(),
   hasAnyJaceReply: vi.fn(),
+  listChatIdentitiesForWorkspace: vi.fn(),
   listInvites: vi.fn(),
   listWorkspaceMembers: vi.fn(),
 }));
@@ -21,6 +22,7 @@ import {
   getConnector,
   getWorkspace,
   hasActiveSelfHostedRunner,
+  listChatIdentitiesForWorkspace,
   listInvites,
   listWorkspaceMembers,
 } from "@agentrail/db-postgres";
@@ -48,6 +50,7 @@ beforeEach(() => {
     hostedExecution: false,
   } as never);
   vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
+  vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([]);
   vi.mocked(listInvites).mockResolvedValue([]);
   vi.mocked(listWorkspaceMembers).mockResolvedValue([
     { userId: "owner-1", name: "Owner", email: "o@x.com", role: "owner", joinedAt: new Date() },
@@ -156,5 +159,128 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     vi.mocked(getWorkspace).mockRejectedValue(new Error("db down"));
     const res = await GET(req(), params());
     expect(res.status).toBe(500);
+  });
+
+  // -- connect-channel signal (connectors-channels cutover, T5) -------------
+  // `channel.connected` flips from a stored telegram secret to a spine-backed
+  // signal: ≥1 linked chat identity for platform "telegram"
+  // (`listChatIdentitiesForWorkspace`). `channel.chatId` is gone — the client
+  // gets display names only (`linkedNames`), never `platformUserId`.
+  describe("connect-channel (spine-backed signal)", () => {
+    it("connected is true once the workspace has ≥1 linked telegram chat identity, with its display name surfaced", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "telegram", platformUserId: "tg-1", displayName: "Ben" },
+      ] as never);
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.channel).toEqual({
+        connected: true,
+        skipped: false,
+        linkedNames: ["Ben"],
+      });
+      expect(body.steps).toContainEqual({
+        id: "connect-channel",
+        status: "complete",
+      });
+    });
+
+    it("connected stays false for identities on OTHER platforms only — never derives from a stored telegram secret (hasSecret) any more", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "discord", platformUserId: "d-1", displayName: "Team" },
+      ] as never);
+      // The OLD signal: a stored telegram credential. Proves it no longer
+      // drives `connected` post-cutover.
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "telegram"
+          ? ({
+              provider: "telegram",
+              enabled: true,
+              config: {},
+              hasSecret: true,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.channel).toEqual({
+        connected: false,
+        skipped: false,
+        linkedNames: [],
+      });
+    });
+
+    it("linkedNames carries only telegram identities' display names (filters out other platforms), preserving a null display name, and never leaks platformUserId", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "telegram", platformUserId: "tg-1", displayName: "Ada" },
+        { platform: "telegram", platformUserId: "tg-2", displayName: null },
+        { platform: "discord", platformUserId: "d-1", displayName: "Ignored" },
+      ] as never);
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.channel.linkedNames).toEqual(["Ada", null]);
+      const raw = JSON.stringify(body);
+      expect(raw).not.toContain("tg-1");
+      expect(raw).not.toContain("tg-2");
+      expect(raw).not.toContain("platformUserId");
+    });
+
+    it("skipped still reads from the telegram connector row's channelSkippedAt — that mechanism is unchanged", async () => {
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "telegram"
+          ? ({
+              provider: "telegram",
+              enabled: true,
+              config: { channelSkippedAt: new Date().toISOString() },
+              hasSecret: false,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.channel).toEqual({
+        connected: false,
+        skipped: true,
+        linkedNames: [],
+      });
+      expect(body.steps).toContainEqual({
+        id: "connect-channel",
+        status: "skipped",
+      });
+    });
+
+    it("connected outranks a stale skip flag — linked AND previously-skipped reads complete, not skipped", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "telegram", platformUserId: "tg-1", displayName: null },
+      ] as never);
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "telegram"
+          ? ({
+              provider: "telegram",
+              enabled: true,
+              config: { channelSkippedAt: new Date().toISOString() },
+              hasSecret: false,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.channel).toEqual({
+        connected: true,
+        skipped: true,
+        linkedNames: [null],
+      });
+      expect(body.steps).toContainEqual({
+        id: "connect-channel",
+        status: "complete",
+      });
+    });
   });
 });

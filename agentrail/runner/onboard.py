@@ -25,9 +25,10 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from agentrail.run.proc import sanitized_env
 from agentrail.sandbox.clone_auth import authenticated_clone_url, redact_token
@@ -62,11 +63,19 @@ except (TypeError, ValueError):
 # Cheap classification-tier model for the onboarding brief, overridable via env.
 _DEFAULT_MODEL = os.environ.get("AGENTRAIL_ONBOARD_MODEL", "claude-haiku-4-5-20251001")
 
-# Files we sample into the digest, in priority order. Human-authored context
-# docs (CLAUDE.md / AGENTS.md / CONTRIBUTING.md) come FIRST — they are far
-# higher-signal than an LLM's guesses — then the README and per-ecosystem
-# manifests. The whole digest is char-capped downstream so this stays bounded.
+# Files we sample into the digest, in priority order. Repo Wiki spec §4.6:
+# the compiled/human context docs (.agentrail/context.md, CONTEXT.md,
+# TASTE.md) come FIRST — the onboarder previously sampled only generic
+# contributor docs and skipped these highest-signal ones entirely. Then the
+# other human-authored context docs (CLAUDE.md / AGENTS.md / CONTRIBUTING.md)
+# — still far higher-signal than an LLM's guesses — then the README and
+# per-ecosystem manifests. The whole digest is char-capped downstream so this
+# stays bounded. Independent of AGENTRAIL_ONBOARD_WIKI: this sampling change
+# applies regardless of whether the wiki compile itself is on.
 _DIGEST_FILES = (
+    ".agentrail/context.md",
+    "CONTEXT.md",
+    "TASTE.md",
     "CLAUDE.md",
     "AGENTS.md",
     "CONTRIBUTING.md",
@@ -79,8 +88,10 @@ _DIGEST_FILES = (
 )
 
 # Agent-context docs get a larger head-line budget so more of them lands in the
-# digest; the overall _DIGEST_MAX_CHARS cap still bounds the prompt.
-_AGENT_DOC_FILES = frozenset({"CLAUDE.md", "AGENTS.md"})
+# digest; the overall _DIGEST_MAX_CHARS cap still bounds the prompt. Only the
+# compiled/human context docs (.agentrail/context.md, CONTEXT.md) join the
+# existing CLAUDE.md/AGENTS.md tier — TASTE.md stays at the standard budget.
+_AGENT_DOC_FILES = frozenset({".agentrail/context.md", "CONTEXT.md", "CLAUDE.md", "AGENTS.md"})
 _DIGEST_HEAD_LINES = 40
 _DIGEST_AGENT_DOC_HEAD_LINES = 120
 _DIGEST_FILE_MAX_BYTES = 200 * 1024
@@ -585,6 +596,137 @@ def check_onboard_freshness(
 
 
 # ---------------------------------------------------------------------------
+# Repo Wiki (spec §4.6 transition — docs/superpowers/specs/2026-07-23-repo-
+# wiki-compiled-repo-knowledge-design.md), behind AGENTRAIL_ONBOARD_WIKI,
+# default OFF: prod stays byte-identical to today until this is explicitly
+# flipped. Everything here is best-effort/non-fatal — the memory-item flow
+# above/below is the onboarder's actual job (dual-write per the spec: memory
+# seeding is untouched by this flag either way) and must never be perturbed
+# by a wiki hydrate/compile/push failure.
+# ---------------------------------------------------------------------------
+
+_ONBOARD_WIKI_ENV = "AGENTRAIL_ONBOARD_WIKI"
+
+
+def onboard_wiki_enabled() -> bool:
+    """Is the onboarder's Repo Wiki compile+push ON for this process? DEFAULT
+    OFF. Mirrors ``agentrail.context.wiki.repo_wiki_enabled``'s exact
+    convention: only the literal ``"1"`` turns it on — absent, blank, "0", or
+    any other value keeps ``run_onboard`` byte-identical to before this flag
+    existed.
+    """
+    return (os.environ.get(_ONBOARD_WIKI_ENV) or "").strip() == "1"
+
+
+@contextmanager
+def _temp_env(**pairs: str):
+    """Set each of ``pairs`` for the duration of the block, restoring
+    whatever was there before (including "was unset") on exit — even on an
+    exception."""
+    prev = {key: os.environ.get(key) for key in pairs}
+    for key, value in pairs.items():
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, value in prev.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@contextmanager
+def _wiki_onboard_env(item, base_url: str, api_key: str):
+    """Temp env vars satisfying, for one onboard compile+push: (a) wiki.py's
+    rollout-flag gate (``REPO_WIKI_ENV``), and (b) ``wiki_push``'s /
+    ``wiki_fetch``'s ``load_link`` fallback (``AGENTRAIL_SERVER_*``) — the
+    SAME ephemeral-worktree fallback AFK's pipeline already relies on (see
+    ``agentrail.context.snapshot_push.load_link``'s docstring): this
+    disposable clone never carries a ``.agentrail/server.json`` of its own,
+    but ``base_url``/``api_key``/``item.repository_id`` are already exactly
+    what this handler was called with.
+    """
+    from agentrail.context.wiki import REPO_WIKI_ENV  # lazy: keeps the flag-OFF path wiki.py-import-free
+
+    with _temp_env(**{
+        REPO_WIKI_ENV: "1",
+        "AGENTRAIL_SERVER_BASE_URL": base_url,
+        "AGENTRAIL_SERVER_API_KEY": api_key,
+        "AGENTRAIL_SERVER_REPOSITORY_ID": str(item.repository_id),
+    }):
+        yield
+
+
+def _ensure_wiki_summary_config(repo_dir: Path) -> None:
+    """Least-invasive way to satisfy wiki.py's OTHER gate (``context.summary
+    .mode != "disabled"``) for this one onboard invocation: a temp
+    ``.agentrail/config.json`` override, local to the disposable clone
+    (wiped along with ``work_dir`` in ``run_onboard``'s ``finally``, never
+    persisted or pushed anywhere). Preserves any config.json the repo
+    already ships — only the ``context.summary`` key is touched, and only
+    when the repo hasn't already configured a working (non-disabled) one
+    itself. Best-effort: a write failure here just means the compile stays
+    gated off for this run, never a hard failure.
+    """
+    config_path = repo_dir / ".agentrail" / "config.json"
+    try:
+        existing: Any = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+        if not isinstance(existing, dict):
+            existing = {}
+        context_cfg = existing.get("context")
+        if not isinstance(context_cfg, dict):
+            context_cfg = {}
+        summary_cfg = context_cfg.get("summary")
+        if not isinstance(summary_cfg, dict) or summary_cfg.get("mode") in (None, "", "disabled"):
+            context_cfg["summary"] = {"mode": "claude-cli", "model": _DEFAULT_MODEL}
+        existing["context"] = context_cfg
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(existing), encoding="utf-8")
+    except OSError as exc:
+        _log.warning("onboard: could not write temp wiki summary config: %s", exc)
+
+
+def _fetch_wiki(repo_dir: Path, repo_full_name: str, fetch_wiki_fn: Optional[Callable[..., bool]]) -> None:
+    """Hydrate the local wiki cache from the server BEFORE the compile runs
+    (spec §4.2: "a fresh ephemeral clone starts from the server copy, never
+    from zero") — best-effort, mirrors ``fetch_wiki_snapshot``'s own
+    non-fatal contract (this wrapper only exists to swallow anything that
+    slips past it, e.g. an injected test double misbehaving).
+    """
+    fetch = fetch_wiki_fn
+    if fetch is None:
+        from agentrail.context.wiki_fetch import fetch_wiki_snapshot as fetch  # lazy
+    try:
+        fetch(repo_dir, repo_full_name)
+    except Exception as exc:  # noqa: BLE001 - hydration is best-effort
+        _log.warning("onboard: wiki hydration failed for %s: %s", repo_full_name, exc)
+
+
+def _push_wiki(
+    repo_dir: Path,
+    repo_full_name: str,
+    assemble_wiki_fn: Optional[Callable[[Path], tuple]],
+    push_wiki_fn: Optional[Callable[..., bool]],
+) -> None:
+    """Assemble + push whatever this run's compile produced — best-effort,
+    mirrors ``push_wiki_pages``'s own non-fatal contract (same reasoning as
+    :func:`_fetch_wiki`).
+    """
+    assemble = assemble_wiki_fn
+    if assemble is None:
+        from agentrail.context.wiki import assemble_wiki_pages as assemble  # lazy
+    push = push_wiki_fn
+    if push is None:
+        from agentrail.context.wiki_push import push_wiki_pages as push  # lazy
+    try:
+        pages, compile_event = assemble(repo_dir)
+        push(repo_dir, repo_full_name, pages, compile_event)
+    except Exception as exc:  # noqa: BLE001 - wiki push is best-effort
+        _log.warning("onboard: wiki push failed for %s: %s", repo_full_name, exc)
+
+
+# ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
 
@@ -599,6 +741,9 @@ def run_onboard(
     push_fn: Callable[..., tuple] = push_onboard_items,
     freshness_fn: Callable[..., Optional[datetime]] = check_onboard_freshness,
     work_dir_factory: Optional[Callable[[], str]] = None,
+    fetch_wiki_fn: Optional[Callable[..., bool]] = None,
+    assemble_wiki_fn: Optional[Callable[[Path], tuple]] = None,
+    push_wiki_fn: Optional[Callable[..., bool]] = None,
 ) -> RunResult:
     """Onboard a freshly connected repo into workspace memory (best-effort).
 
@@ -608,6 +753,14 @@ def run_onboard(
     is ``red`` (documents the PR3 enqueue dependency), a clone failure is
     ``error``, and a failed push is ``red`` — nothing raises out of here. The temp
     dir is always torn down.
+
+    Behind :func:`onboard_wiki_enabled` (``AGENTRAIL_ONBOARD_WIKI``, default
+    OFF), this ALSO hydrates + compiles + pushes the Repo Wiki for the same
+    clone (``fetch_wiki_fn``/``assemble_wiki_fn``/``push_wiki_fn`` seams,
+    defaulting to the real ``fetch_wiki_snapshot``/``assemble_wiki_pages``/
+    ``push_wiki_pages``) — entirely independent of, and never able to
+    perturb, the memory-item flow this docstring's first paragraph describes
+    (spec §4.6 transition: dual-write while the flag is on).
     """
     if not item.repository_id:
         return RunResult(
@@ -669,16 +822,33 @@ def run_onboard(
 
         # Build the context index for a repo digest (best-effort — a repo whose
         # summary mode isn't "disabled" raises, and we simply skip the stats).
+        #
+        # Repo Wiki (AGENTRAIL_ONBOARD_WIKI, default OFF — see the section
+        # above): when ON, this block ALSO hydrates from the server before
+        # the compile, forces the compile on for this ONE invocation via a
+        # temp config override local to the disposable clone, and pushes
+        # whatever the compile produced afterward. When OFF, `nullcontext()`
+        # makes this identical to the try/except that has always lived here.
         index_summary: Optional[dict] = None
-        try:
-            if index_fn is not None:
-                index_summary = index_fn(repo_dir)
-            else:
-                from agentrail.context.index import build_index  # lazy: heavy import
+        wiki_on = onboard_wiki_enabled()
+        repo_full_name = _repo_full_name(item) if wiki_on else ""
 
-                index_summary = build_index(repo_dir)
-        except Exception as exc:  # noqa: BLE001 - index is best-effort
-            _log.warning("onboard: index build failed for %s: %s", item.repo_url, exc)
+        with _wiki_onboard_env(item, base_url, api_key) if wiki_on else nullcontext():
+            if wiki_on:
+                _ensure_wiki_summary_config(repo_dir)
+                if repo_full_name:
+                    _fetch_wiki(repo_dir, repo_full_name, fetch_wiki_fn)
+            try:
+                if index_fn is not None:
+                    index_summary = index_fn(repo_dir)
+                else:
+                    from agentrail.context.index import build_index  # lazy: heavy import
+
+                    index_summary = build_index(repo_dir)
+            except Exception as exc:  # noqa: BLE001 - index is best-effort
+                _log.warning("onboard: index build failed for %s: %s", item.repo_url, exc)
+            if wiki_on and repo_full_name and isinstance(index_summary, dict) and index_summary.get("wikiReport") is not None:
+                _push_wiki(repo_dir, repo_full_name, assemble_wiki_fn, push_wiki_fn)
 
         digest = _repo_digest(repo_dir, index_summary)
         items = brief_fn(digest, model=_DEFAULT_MODEL)

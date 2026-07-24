@@ -527,6 +527,30 @@ def _unit_dependency_names(unit_id: str, id_to_name: Dict[str, str], unit_depend
     return depends_on, depended_by
 
 
+def _unit_dependency_slugs(unit_id: str, units_by_id: Dict[str, Dict[str, Any]], unit_depends_on_edges: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    """Directed unit_depends_on neighbors as PAGE SLUGS -- sibling of
+    :func:`_unit_dependency_names` (which renders human-readable NAMES into
+    the body's "Structure" section): same edges, slug-shaped instead of
+    name-shaped, for the structured ``skeleton``/``links`` fields spec S4.4
+    promises the server ("the [[slug]] graph + unit_depends_on rollup so
+    navigation needs no markdown parsing"). A neighbor id absent from
+    ``units_by_id`` is skipped rather than guessed at (should not happen --
+    ``units_by_id`` covers every unit the graph knows about, included or
+    capped-out).
+    """
+    depends_on = sorted({
+        unit_slug(units_by_id[str(edge.get("toUnitId"))])
+        for edge in unit_depends_on_edges
+        if edge.get("fromUnitId") == unit_id and str(edge.get("toUnitId")) in units_by_id
+    })
+    depended_by = sorted({
+        unit_slug(units_by_id[str(edge.get("fromUnitId"))])
+        for edge in unit_depends_on_edges
+        if edge.get("toUnitId") == unit_id and str(edge.get("fromUnitId")) in units_by_id
+    })
+    return depends_on, depended_by
+
+
 def _unit_related_slugs(unit_id: str, units_by_id: Dict[str, Dict[str, Any]], unit_depends_on_edges: List[Dict[str, Any]]) -> List[str]:
     neighbor_ids: set = set()
     for edge in unit_depends_on_edges:
@@ -700,9 +724,13 @@ def _render_page_body(*, commit_sha: str, responsibility: str, structure_lines: 
     return "\n".join(parts).rstrip() + "\n"
 
 
+def _unit_title(unit: Dict[str, Any]) -> str:
+    return f"{unit['path']} — {unit.get('name') or unit['path']}"
+
+
 def render_unit_page(*, unit: Dict[str, Any], node: Dict[str, Any], commit_sha: str, generated_at: str, model: str, inputs_hash: str, roster: List[SourceRecord], structure_lines: List[str], prose: Dict[str, Any], related_slugs: List[str]) -> Tuple[str, int]:
     slug = unit_slug(unit)
-    title = f"{unit['path']} — {unit.get('name') or unit['path']}"
+    title = _unit_title(unit)
     roster_paths = {record.path for record in roster}
     responsibility = prose.get("responsibility") or _PROSE_UNAVAILABLE
     relationships_raw = prose.get("relationships") or _PROSE_UNAVAILABLE
@@ -751,6 +779,60 @@ def render_overview_page(*, root_name: str, commit_sha: str, generated_at: str, 
 
 
 # ---------------------------------------------------------------------------
+# Skeleton bundle (spec S4.2/S4.4: "the same data the skeleton renderer
+# already computes" -- computed ONCE per unit regardless of page reuse, so
+# both the prose prompt/rendered body AND manifest.json's structured
+# skeleton/links fields are grounded in exactly the same numbers)
+# ---------------------------------------------------------------------------
+
+
+def _build_unit_skeleton(
+    unit: Dict[str, Any],
+    node: Dict[str, Any],
+    unit_files: List[SourceRecord],
+    symbol_table: Dict[str, List[Dict[str, Any]]],
+    units_by_id: Dict[str, Dict[str, Any]],
+    id_to_name: Dict[str, str],
+    unit_depends_on_edges: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """All-deterministic per-unit inputs: file roster, exported symbols,
+    unit_depends_on in/out, unit path. Independent of whether the page text
+    ends up reused or regenerated this run (see :func:`compile_wiki`'s
+    per-unit loop) -- a page reuse must never leave manifest.json's
+    ``skeleton``/``links`` stale, so this is computed unconditionally.
+    """
+    symbol_defs = _unit_symbol_defs(unit, symbol_table)
+    file_counts = _file_symbol_counts(symbol_defs)
+    roster = _select_roster(unit_files, file_counts)
+    exports = _key_exports(symbol_defs)
+    depends_on_names, depended_by_names = _unit_dependency_names(unit["id"], id_to_name, unit_depends_on_edges)
+    depends_on_slugs, depended_by_slugs = _unit_dependency_slugs(unit["id"], units_by_id, unit_depends_on_edges)
+    structure_lines = _unit_structure_lines(node, exports, depends_on_names, depended_by_names)
+    related_slugs = _unit_related_slugs(unit["id"], units_by_id, unit_depends_on_edges)
+    return {
+        "roster": roster,
+        "exports": exports,
+        "structure_lines": structure_lines,
+        "related_slugs": related_slugs,
+        # Serialized verbatim into manifest.json (spec: "serialized instead
+        # of only rendered into markdown") -- wiki-tree.ts reads
+        # skeleton.path/skeleton.files by these exact keys.
+        "manifest_skeleton": {
+            "path": unit["path"],
+            "files": [record.path for record in roster],
+            "exports": list(exports),
+            "dependsOn": depends_on_slugs,
+            "dependedOnBy": depended_by_slugs,
+        },
+        "manifest_links": {
+            "related": related_slugs,
+            "dependsOn": depends_on_slugs,
+            "dependedOnBy": depended_by_slugs,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Per-page compile (skeleton + prose, ALWAYS regenerates — caller decides reuse)
 # ---------------------------------------------------------------------------
 
@@ -762,23 +844,15 @@ def _compile_unit_page_text(
     model: str,
     unit: Dict[str, Any],
     node: Dict[str, Any],
-    unit_files: List[SourceRecord],
-    symbol_table: Dict[str, List[Dict[str, Any]]],
-    units_by_id: Dict[str, Dict[str, Any]],
-    id_to_name: Dict[str, str],
-    unit_depends_on_edges: List[Dict[str, Any]],
+    skeleton: Dict[str, Any],
     commit_sha: str,
     inputs_hash: str,
     tracker: _CostTracker,
 ) -> Tuple[str, int]:
     generated_at = now_iso()
-    symbol_defs = _unit_symbol_defs(unit, symbol_table)
-    file_counts = _file_symbol_counts(symbol_defs)
-    roster = _select_roster(unit_files, file_counts)
-    exports = _key_exports(symbol_defs)
-    depends_on, depended_by = _unit_dependency_names(unit["id"], id_to_name, unit_depends_on_edges)
-    structure_lines = _unit_structure_lines(node, exports, depends_on, depended_by)
-    related = _unit_related_slugs(unit["id"], units_by_id, unit_depends_on_edges)
+    roster = skeleton["roster"]
+    structure_lines = skeleton["structure_lines"]
+    related = skeleton["related_slugs"]
 
     provider_available = mode in {"claude-cli", "custom-command"}
     prose: Dict[str, Any] = {}
@@ -965,6 +1039,10 @@ def compile_wiki(
         unit_hashes.append(inputs_hash)
         slug = unit_slug(unit)
         page_path = wiki_dir / slug_to_filename(slug)
+        # Deterministic skeleton bundle -- computed regardless of reuse (see
+        # _build_unit_skeleton's docstring) so manifest.json's skeleton/links
+        # are never stale even when the page .md itself is reused untouched.
+        skeleton = _build_unit_skeleton(unit, node, unit_files, symbol_table, units_by_id, id_to_name, unit_depends_on_edges)
 
         existing_hash = None if force else _existing_page_hash(page_path)
         if existing_hash == inputs_hash and page_path.is_file():
@@ -972,8 +1050,7 @@ def compile_wiki(
             pages_reused += 1
         else:
             full_text, removed = _compile_unit_page_text(
-                root, cfg, mode, model, unit, node, unit_files, symbol_table,
-                units_by_id, id_to_name, unit_depends_on_edges, commit_sha, inputs_hash, tracker,
+                root, cfg, mode, model, unit, node, skeleton, commit_sha, inputs_hash, tracker,
             )
             citations_removed += removed
             page_path.parent.mkdir(parents=True, exist_ok=True)
@@ -983,10 +1060,31 @@ def compile_wiki(
         record, chunks = _mint_wiki_source(root, page_path, full_text)
         new_records.append(record)
         new_chunks.extend(chunks)
-        manifest_pages.append({"slug": slug, "file": to_posix(page_path.relative_to(root)), "inputsHash": inputs_hash, "stale": False})
+        manifest_pages.append({
+            "slug": slug,
+            "title": _unit_title(unit),
+            "file": to_posix(page_path.relative_to(root)),
+            "inputsHash": inputs_hash,
+            "stale": False,
+            "skeleton": skeleton["manifest_skeleton"],
+            "links": skeleton["manifest_links"],
+        })
 
     overview_hash = overview_inputs_hash(unit_hashes)
     overview_path = wiki_dir / "overview.md"
+    # Overview has no single unit "path" of its own -- its skeleton/links
+    # shape is the unit roster + the neighbor slugs, not the per-unit
+    # {path, files, dependsOn/dependedOnBy edges} shape (it isn't a node in
+    # the unit_depends_on graph).
+    overview_related = sorted(unit_slug(unit) for unit in included)
+    overview_skeleton = {
+        "units": [unit["path"] for unit in included],
+        "unitCount": len(included),
+        "droppedCount": len(dropped),
+        "dependsOn": [],
+        "dependedOnBy": [],
+    }
+    overview_links = {"related": overview_related, "dependsOn": [], "dependedOnBy": []}
     existing_overview_hash = None if force else _existing_page_hash(overview_path)
     if existing_overview_hash == overview_hash and overview_path.is_file():
         overview_text = overview_path.read_text(encoding="utf-8")
@@ -1004,7 +1102,15 @@ def compile_wiki(
     record, chunks = _mint_wiki_source(root, overview_path, overview_text)
     new_records.append(record)
     new_chunks.extend(chunks)
-    manifest_pages.insert(0, {"slug": OVERVIEW_SLUG, "file": to_posix(overview_path.relative_to(root)), "inputsHash": overview_hash, "stale": False})
+    manifest_pages.insert(0, {
+        "slug": OVERVIEW_SLUG,
+        "title": f"{root.name or 'repository'} — repo overview",
+        "file": to_posix(overview_path.relative_to(root)),
+        "inputsHash": overview_hash,
+        "stale": False,
+        "skeleton": overview_skeleton,
+        "links": overview_links,
+    })
 
     manifest = {"compiledAt": built_at, "commitSha": commit_sha, "pages": manifest_pages}
     write_json(wiki_dir / "manifest.json", manifest)
@@ -1038,6 +1144,120 @@ def compile_wiki(
     })
 
     return {"records": new_records, "chunks": new_chunks, "report": report}
+
+
+# ---------------------------------------------------------------------------
+# Push assembly (spec S4.4 contract 1: POST /api/v1/ingest/wiki-pages,
+# apps/console/app/api/v1/ingest/wiki-pages/route.ts) -- read-only; never
+# triggers a compile, never touches the network itself.
+# ---------------------------------------------------------------------------
+
+# The `writtenBy` tag pushed pages carry -- mirrors onboard.py's memory items
+# tagging `written_by="onboarder"`; forwarded through unchanged by the ingest
+# route (route.test.ts: "forwards optional fields ... through unchanged").
+WIKI_WRITTEN_BY = "wiki-compiler"
+
+
+def assemble_wiki_pages(root: Path) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Read manifest.json + page files + compile-report.json under
+    ``.agentrail/context/wiki/`` and shape them into the EXACT
+    ``POST /api/v1/ingest/wiki-pages`` wire contract: ``pages``, each
+    ``{slug, title, kind, bodyMd, skeleton, links, citations, commitSha,
+    inputsHash, model, writtenBy, generatedAt}``, plus an optional
+    ``compile_event`` (``{commitSha, pagesWritten, pagesReused, costUsd,
+    model, durationMs}``) read straight off ``compile-report.json``.
+
+    Pure and read-only: this function itself never compiles anything and
+    never touches the network -- it is the thin translation layer the push
+    wiring (onboard.py / ``agentrail context index``) calls AFTER a compile,
+    to build :func:`agentrail.context.wiki_push.push_wiki_pages`'s ``pages``
+    / ``compile_event`` arguments. Returns ``([], None)`` when nothing has
+    been compiled yet (no manifest.json, or it is unreadable) -- the caller
+    can pass that straight to ``push_wiki_pages``, which already treats an
+    empty ``pages`` + ``None`` ``compile_event`` as "nothing to send".
+    """
+    root = Path(root).resolve()
+    wiki_dir = wiki_dir_for(root)
+
+    try:
+        manifest = json.loads((wiki_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], None
+    manifest_pages = manifest.get("pages") if isinstance(manifest, dict) else None
+    manifest_commit_sha = str(manifest.get("commitSha") or "") if isinstance(manifest, dict) else ""
+
+    pages: List[Dict[str, Any]] = []
+    for entry in manifest_pages if isinstance(manifest_pages, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        file_rel = entry.get("file")
+        if not isinstance(slug, str) or not slug or not isinstance(file_rel, str) or not file_rel:
+            continue
+        try:
+            text = (root / file_rel).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fields, body = parse_page(text)
+
+        kind = fields.get("kind")
+        if kind not in ("overview", "unit"):
+            kind = "overview" if slug == OVERVIEW_SLUG else "unit"
+        title = fields.get("title")
+        if not isinstance(title, str) or not title:
+            title = entry.get("title") if isinstance(entry.get("title"), str) else ""
+        citations = fields.get("citations")
+        citations = [str(c) for c in citations] if isinstance(citations, list) else []
+        commit_sha = fields.get("commitSha")
+        commit_sha = commit_sha if isinstance(commit_sha, str) and commit_sha else manifest_commit_sha
+        inputs_hash = entry.get("inputsHash")
+        if not isinstance(inputs_hash, str) or not inputs_hash:
+            raw_hash = fields.get("inputsHash")
+            inputs_hash = raw_hash if isinstance(raw_hash, str) else ""
+        model = fields.get("model")
+        model = model if isinstance(model, str) and model else None
+        generated_at = fields.get("generatedAt")
+        generated_at = generated_at if isinstance(generated_at, str) else ""
+        skeleton = entry.get("skeleton")
+        skeleton = skeleton if isinstance(skeleton, dict) else {}
+        links = entry.get("links")
+        if not isinstance(links, dict):
+            links = {"related": [], "dependsOn": [], "dependedOnBy": []}
+
+        pages.append({
+            "slug": slug,
+            "title": title,
+            "kind": kind,
+            "bodyMd": body,
+            "skeleton": skeleton,
+            "links": links,
+            "citations": citations,
+            "commitSha": commit_sha,
+            "inputsHash": inputs_hash,
+            "model": model,
+            "writtenBy": WIKI_WRITTEN_BY,
+            "generatedAt": generated_at,
+        })
+
+    compile_event: Optional[Dict[str, Any]] = None
+    try:
+        report = json.loads((wiki_dir / "compile-report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = None
+    if isinstance(report, dict):
+        try:
+            compile_event = {
+                "commitSha": str(report.get("commitSha") or ""),
+                "pagesWritten": int(report.get("pagesWritten") or 0),
+                "pagesReused": int(report.get("pagesReused") or 0),
+                "costUsd": float(report.get("costUsd") or 0.0),
+                "model": str(report.get("model") or ""),
+                "durationMs": int(report.get("durationMs") or 0),
+            }
+        except (TypeError, ValueError):
+            compile_event = None
+
+    return pages, compile_event
 
 
 # ---------------------------------------------------------------------------

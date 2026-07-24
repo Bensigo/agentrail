@@ -159,7 +159,12 @@ describe("PUT /connectors", () => {
 // GET — the github card's "connected" signal (install-flow fix).
 // -----------------------------------------------------------------------
 interface GetJson {
-  connectors: Array<{ kind: string; status: string; target: string | null }>;
+  connectors: Array<{
+    kind: string;
+    status: string;
+    target: string | null;
+    appInstalled?: boolean;
+  }>;
 }
 
 function githubRow(json: GetJson) {
@@ -201,5 +206,34 @@ describe("GET /connectors — github connected signal", () => {
     const json = (await res.json()) as GetJson;
     expect(githubRow(json).status).toBe("connected");
     expect(githubRow(json).target).toBe("acme/repo-a");
+  });
+
+  // appInstalled — the granular signal (install-affordance fix): distinct
+  // from `connected`, which stays true via repos alone even with no App
+  // installation row. Both cases below hold `connected` true via repos.
+  it("appInstalled is true once the App installation row exists", async () => {
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([
+      { name: "acme/repo-a" },
+    ] as never);
+    vi.mocked(getGithubInstallation).mockResolvedValue({
+      installationId: "777",
+      accountLogin: "acme",
+      accountType: "Organization",
+    });
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(githubRow(json).status).toBe("connected");
+    expect(githubRow(json).appInstalled).toBe(true);
+  });
+
+  it("appInstalled is false for a pre-App workspace connected only via linked repos — the bug this fixes", async () => {
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([
+      { name: "acme/repo-a" },
+    ] as never);
+    // No installation row (default mock from beforeEach: null).
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(githubRow(json).status).toBe("connected");
+    expect(githubRow(json).appInstalled).toBe(false);
   });
 });

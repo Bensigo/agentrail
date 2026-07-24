@@ -90,6 +90,11 @@ export async function GET(
       {
         kind: "github",
         connected: githubConnected,
+        // Distinct from `githubConnected`: the App may not actually be
+        // installed for a pre-App workspace connected only via linked repos
+        // (see the module doc-comment). Lets the card still offer the
+        // install affordance in that case instead of dead-ending on prose.
+        appInstalled: githubInstallation !== null,
         // The label the GitHub adapter ingests by (afk/github.list_queue_issues).
         ingestLabel: githubRow?.config.triggerLabel ?? "ready-for-agent",
         // Prefer the repo count/name once any are linked; an installed-but-

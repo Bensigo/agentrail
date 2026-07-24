@@ -486,6 +486,33 @@ def unit_contains_path(unit_path: str, record_path: str) -> bool:
     return normalized == "." or record_path == normalized or record_path.startswith(f"{normalized}/")
 
 
+def _unit_id_for_path(codebase_units: List[Dict[str, Any]], path: str) -> Optional[str]:
+    """Return the single owning codebase-unit id for PATH, or None.
+
+    Uses the exact same containment predicate ``contains_file`` edges use
+    (``unit_contains_path``). Real unit detection (workspace/manifest/
+    fallback, see ``detect_codebase_units``) never produces overlapping unit
+    paths, so at most one unit matches in practice. Hand-authored
+    ``cfg.codebaseUnits`` *can* overlap (e.g. a root "." unit configured
+    alongside a nested "packages/a" unit) -- for that case the most specific
+    (longest) matching path wins, tie-broken by unit id, so aggregation
+    below (``_unit_depends_on_edges``) always assigns a file to exactly one
+    unit and stays deterministic.
+    """
+    best: Optional[Tuple[int, str]] = None
+    for unit in codebase_units:
+        unit_path = str(unit["path"])
+        if not unit_contains_path(unit_path, path):
+            continue
+        normalized = normalized_unit_path(unit_path)
+        specificity = 0 if normalized == "." else len(normalized)
+        unit_id = str(unit["id"])
+        candidate = (specificity, unit_id)
+        if best is None or candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] < best[1]):
+            best = candidate
+    return best[1] if best else None
+
+
 def codebase_unit(unit_id: str, name: str, path: str, detection: str, *, manifest_path: Optional[str] = None) -> Dict[str, Any]:
     unit_path = normalized_unit_path(path)
     return {
@@ -1305,6 +1332,96 @@ def resolve_test_source_by_name(test_path: str, record_paths: set[str]) -> Tuple
     return (unique[0], unique) if len(unique) == 1 else (None, unique)
 
 
+# Node kinds that roll up into per-unit stats, keyed to the stat field they feed.
+_UNIT_STAT_FIELD_BY_NODE_KIND: Dict[str, str] = {"file": "fileCount", "symbol": "symbolCount", "test": "testCount"}
+
+
+def _codebase_unit_stats(nodes: List[Dict[str, Any]], codebase_units: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """Deterministic per-unit counts (Repo Wiki spec S4.1 skeleton: "31 files, 4,102 symbols").
+
+    Counts ``file``/``symbol``/``test`` nodes already built earlier in
+    ``build_code_graph`` whose path is contained by each unit, using the same
+    predicate ``contains_file`` edges use (``unit_contains_path``). Multi-
+    membership safe: a node counts toward every unit that contains its path
+    (matching ``contains_file``, which likewise emits one edge per containing
+    unit) -- unlike ``_unit_depends_on_edges``, which needs single ownership
+    to avoid ambiguous cross-unit pairing and does its own resolution.
+    """
+    stats: Dict[str, Dict[str, int]] = {
+        graph_codebase_unit_node_id(str(unit["id"])): {"fileCount": 0, "symbolCount": 0, "testCount": 0}
+        for unit in codebase_units
+    }
+    for node in nodes:
+        stat_field = _UNIT_STAT_FIELD_BY_NODE_KIND.get(str(node.get("kind")))
+        node_path = node.get("path")
+        if not stat_field or not node_path:
+            continue
+        for unit in codebase_units:
+            if unit_contains_path(str(unit["path"]), str(node_path)):
+                stats[graph_codebase_unit_node_id(str(unit["id"]))][stat_field] += 1
+    return stats
+
+
+def _unit_depends_on_edges(
+    records: List[SourceRecord], edges: List[Dict[str, Any]], codebase_units: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Deterministic unit-grain dependency rollup (Repo Wiki spec S3/S4.2, PR 1 of 7).
+
+    Aggregates already-built ``imports_file`` edges (resolved imports only --
+    ``unresolved_import`` is a distinct kind and is never counted) up to the
+    codebase-unit grain, mapping each file to its single containing unit via
+    ``_unit_id_for_path`` (the same membership predicate ``contains_file``
+    edges use). Same-unit import pairs are skipped -- that is not a
+    dependency, it is internal structure. One edge per distinct
+    ``(fromUnit, toUnit)`` pair, built in ``(from, to)`` order so output is
+    reproducible independent of records/edges iteration order.
+
+    ``deterministic: True`` / ``authority: "deterministic"`` -- this is a
+    rollup of deterministic evidence, not Graph Enrichment
+    (``graph["enrichment"]["status"]`` stays ``"not_used"``). It must NEVER
+    be traversed at query time -- see the explicit exclusion of this kind in
+    retrieval.py's ``_graph_neighbors`` and ``_graph_distance_by_path``.
+    """
+    if len(codebase_units) < 2:
+        return []
+    path_to_unit_id: Dict[str, Optional[str]] = {
+        record.path: _unit_id_for_path(codebase_units, record.path) for record in records
+    }
+    pair_counts: Dict[Tuple[str, str], int] = {}
+    for edge in edges:
+        if edge.get("kind") != "imports_file":
+            continue
+        target_path = edge.get("targetPath")
+        if not target_path:
+            continue
+        from_unit_id = path_to_unit_id.get(str(edge.get("path") or ""))
+        to_unit_id = path_to_unit_id.get(str(target_path))
+        if not from_unit_id or not to_unit_id or from_unit_id == to_unit_id:
+            continue
+        key = (from_unit_id, to_unit_id)
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    rollup_edges: List[Dict[str, Any]] = []
+    for from_unit_id, to_unit_id in sorted(pair_counts):
+        from_node_id = graph_codebase_unit_node_id(from_unit_id)
+        to_node_id = graph_codebase_unit_node_id(to_unit_id)
+        rollup_edges.append(
+            {
+                "id": f"graph:edge:{sha256_text(f'{from_node_id}:unit_depends_on:{to_node_id}')[7:23]}",
+                "kind": "unit_depends_on",
+                "from": from_node_id,
+                "to": to_node_id,
+                "fromUnitId": from_unit_id,
+                "toUnitId": to_unit_id,
+                "importCount": pair_counts[(from_unit_id, to_unit_id)],
+                "evidence": "deterministic_unit_rollup",
+                "authority": "deterministic",
+                "deterministic": True,
+            }
+        )
+    return rollup_edges
+
+
 def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], codebase_units: List[Dict[str, Any]], built_at: str) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -1700,6 +1817,17 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
                 }
             )
 
+    # Deterministic per-unit stats + unit_depends_on rollup (Repo Wiki spec, PR 1
+    # of 7; see _codebase_unit_stats / _unit_depends_on_edges docstrings). Both
+    # run after every node/edge above is built, and the rollup edges are
+    # computed from `edges` before being appended to it, so neither reads its
+    # own output.
+    unit_stats = _codebase_unit_stats(nodes, codebase_units)
+    for node in nodes:
+        if node.get("kind") == "codebase_unit":
+            node.update(unit_stats.get(str(node["id"]), {"fileCount": 0, "symbolCount": 0, "testCount": 0}))
+    edges.extend(_unit_depends_on_edges(records, edges, codebase_units))
+
     nodes.sort(key=lambda node: (str(node["kind"]), str(node.get("path") or ""), str(node["id"])))
     edges.sort(key=lambda edge: (str(edge["kind"]), str(edge.get("path") or ""), str(edge["id"])))
     return {
@@ -1744,6 +1872,7 @@ def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[st
         "redactionCount": redaction_count,
         "graphNodeCount": len(graph["nodes"]),
         "graphEdgeCount": len(graph["edges"]),
+        "graphUnitDependencyEdgeCount": sum(1 for edge in graph["edges"] if edge.get("kind") == "unit_depends_on"),
         "parserVersions": _parser_versions(),
     }
     return {

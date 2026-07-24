@@ -57,6 +57,10 @@ def _graph_distance_by_path(index: Dict[str, Any], anchors: List[Dict[str, str]]
     seed is just a keyword echo, so seed-distance would reward keyword-noise
     rather than graph-proximity to the task's real anchor.  Deterministic only:
     BFS depth over the deterministic Code Graph, never Graph Enrichment edges.
+
+    ``_QUERY_TIME_EXCLUDED_EDGE_KINDS`` (e.g. ``unit_depends_on``, the Repo
+    Wiki rollup) is never traversed here — see the module note above
+    ``_graph_neighbors`` for why this is checked twice.
     """
     anchor_start_nodes, _started_from = _anchor_start_nodes(index, anchors)
     if not anchor_start_nodes:
@@ -75,6 +79,12 @@ def _graph_distance_by_path(index: Dict[str, Any], anchors: List[Dict[str, str]]
         if depth >= max_hops:
             continue
         for edge in neighbors.get(node_id, []):
+            # Redundant, explicit guard (defense-in-depth): _graph_neighbors
+            # already strips these edges, but distance feeds ranking, so this
+            # is checked again here rather than trusted solely to the shared
+            # builder — see _QUERY_TIME_EXCLUDED_EDGE_KINDS.
+            if edge.get("kind") in _QUERY_TIME_EXCLUDED_EDGE_KINDS:
+                continue
             nxt = str(edge.get("to") or "")
             if not nxt:
                 continue
@@ -831,10 +841,25 @@ def _anchor_path(value: str) -> str:
     return value.split("::", 1)[0].strip()
 
 
+# Edge kinds that must NEVER be traversed at query time. Currently just
+# unit_depends_on: the Repo Wiki spec's deterministic unit-grain dependency
+# rollup (aggregated from imports_file edges -- see _unit_depends_on_edges in
+# index.py). It exists for wiki-skeleton rendering ("Depends on: X. Depended
+# on by: Y"), not for BFS expansion or ranking -- traversing it would let a
+# single cross-unit import fan a query out to every file in a dependent unit.
+# Excluded here (the shared adjacency builder both graph_expansion_for_query
+# and _graph_distance_by_path call) AND, redundantly, inside
+# _graph_distance_by_path's own BFS loop, so a future refactor that stops
+# routing through this builder cannot silently reintroduce it into ranking.
+_QUERY_TIME_EXCLUDED_EDGE_KINDS: frozenset[str] = frozenset({"unit_depends_on"})
+
+
 def _graph_neighbors(graph: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     neighbors: Dict[str, List[Dict[str, Any]]] = {}
     for edge in graph.get("edges", []):
         if not isinstance(edge, dict):
+            continue
+        if edge.get("kind") in _QUERY_TIME_EXCLUDED_EDGE_KINDS:
             continue
         left = edge.get("from")
         right = edge.get("to")
@@ -964,6 +989,11 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
     (callers, callees, calls, depends, impact).  This prevents call-graph fan-out
     on non-relational queries while keeping ``calls`` edges available for BFS
     seeding on targeted relationship queries (AC5).
+
+    ``_QUERY_TIME_EXCLUDED_EDGE_KINDS`` (``unit_depends_on``, the Repo Wiki
+    rollup) is never traversed regardless of query content -- unlike
+    ``calls``, there is no query shape where unit-grain rollup edges should
+    reach retrieval ranking or candidate expansion.
     """
     anchors = extract_anchors(query, root=root)
     anchor_start_nodes, started_from = _anchor_start_nodes(index, anchors)
@@ -985,6 +1015,11 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
         for edge in neighbors.get(node_id, []):
             # Gate calls edges: only traverse them on relational queries (AC5).
             if edge.get("kind") == "calls" and not relational:
+                continue
+            # Redundant, explicit guard (defense-in-depth): _graph_neighbors
+            # already strips _QUERY_TIME_EXCLUDED_EDGE_KINDS (unit_depends_on),
+            # checked again here so this traversal can never regress silently.
+            if edge.get("kind") in _QUERY_TIME_EXCLUDED_EDGE_KINDS:
                 continue
             next_node = str(edge.get("to") or "")
             if not next_node:

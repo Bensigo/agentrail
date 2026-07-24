@@ -29,10 +29,12 @@ from agentrail.runner.onboard import (
     _ONBOARD_WIKI_ENV,
     MEMORY_TYPES,
     ONBOARD_CATEGORIES,
+    ONBOARD_FORCE_BODY,
     _CATEGORY_TYPE,
     _clone,
     _default_items,
     _ensure_wiki_summary_config,
+    _is_forced_onboard,
     _postprocess_items,
     _repo_digest,
     _repo_full_name,
@@ -423,6 +425,90 @@ def test_run_onboard_stale_onboarding_proceeds_to_clone():
     assert result.status == "green"
     assert "reused" not in result.gate_reason
     assert clone_calls, "a stale onboarding must clone and re-onboard"
+
+
+# ---------------------------------------------------------------------------
+# run_onboard: forced manual recompile (console "Recompile" button, Repo
+# Wiki spec §4.5) — ONBOARD_FORCE_BODY bypasses the freshness-reuse gate
+# above. Cross-language pinned constant: packages/db-postgres/src/queries/
+# github_intake.ts's `ONBOARD_FORCE_BODY` must stay byte-identical to this
+# module's own — see both constants' doc-comments.
+# ---------------------------------------------------------------------------
+
+def test_is_forced_onboard_matches_the_exact_marker():
+    assert _is_forced_onboard(_work_item(body=ONBOARD_FORCE_BODY)) is True
+
+
+def test_is_forced_onboard_strips_incidental_whitespace():
+    assert _is_forced_onboard(_work_item(body=f"  {ONBOARD_FORCE_BODY}\n")) is True
+
+
+def test_is_forced_onboard_false_for_the_ordinary_empty_body():
+    """A real onboard-kind row's body is "" unless a forced recompile
+    stamped it — the everyday case must never accidentally match."""
+    assert _is_forced_onboard(_work_item(body="")) is False
+
+
+def test_is_forced_onboard_false_for_an_unrelated_body():
+    assert _is_forced_onboard(_work_item(body="some other text")) is False
+
+
+def test_is_forced_onboard_case_sensitive():
+    assert _is_forced_onboard(_work_item(body=ONBOARD_FORCE_BODY.upper())) is False
+
+
+def test_run_onboard_force_marker_skips_the_freshness_gate_entirely():
+    """Ground truth: a FRESH freshness_fn result would normally short-circuit
+    to a reused green — the force marker must skip that check altogether, not
+    just tolerate a stale result. clone_fn must still run."""
+    clone_calls: List[tuple] = []
+    freshness_calls: List[tuple] = []
+    fresh = datetime.now(timezone.utc) - timedelta(days=1)
+
+    def freshness_fn(*a, **k):
+        freshness_calls.append((a, k))
+        return fresh  # would normally trigger "reused" below the 30d window
+
+    result = run_onboard(
+        _work_item(body=ONBOARD_FORCE_BODY),
+        base_url="https://app.agentrail.dev",
+        api_key="rt_secret",
+        clone_fn=lambda repo_url, ref, dest, **_kw: clone_calls.append((repo_url, ref, dest)),
+        index_fn=lambda p: {"indexed": 1, "graphNodes": 0, "commitSha": "x"},
+        brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+        push_fn=lambda *a, **k: (True, "ok"),
+        freshness_fn=freshness_fn,
+        work_dir_factory=lambda: _mkdtemp(),
+    )
+
+    assert result.status == "green"
+    assert "reused" not in result.gate_reason
+    assert clone_calls, "a forced recompile must clone and re-onboard"
+    assert freshness_calls == [], "a forced recompile must not even call freshness_fn"
+
+
+def test_run_onboard_without_the_force_marker_still_respects_freshness():
+    """Regression guard for the bypass above: an ordinary (non-forced) claim
+    — real onboard rows carry body="" — must keep reusing fresh notes exactly
+    as before; the force check must never accidentally widen to match it."""
+    clone_calls: List[tuple] = []
+    fresh = datetime.now(timezone.utc) - timedelta(days=1)
+
+    result = run_onboard(
+        _work_item(body=""),
+        base_url="https://app.agentrail.dev",
+        api_key="rt_secret",
+        clone_fn=lambda *a, **k: clone_calls.append(a),
+        index_fn=lambda p: {},
+        brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+        push_fn=lambda *a, **k: (True, "ok"),
+        freshness_fn=lambda *a, **k: fresh,
+        work_dir_factory=lambda: _mkdtemp(),
+    )
+
+    assert result.status == "green"
+    assert "reused" in result.gate_reason
+    assert clone_calls == [], "an ordinary claim must still reuse fresh onboarding"
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,9 @@ interface WikiPageViewProps {
   latestCompile: LatestCompileDTO | null;
   pagesBySlug: Map<string, WikiPageDTO>;
   onSelectSlug: (slug: string) => void;
+  workspaceId: string;
+  repoFullName: string;
+  canManage: boolean;
 }
 
 /** Small yellow "Stale" pill — TASTE.md Severity & Health Mapping: stale = yellow. */
@@ -271,6 +274,9 @@ export function WikiPageView({
   latestCompile,
   pagesBySlug,
   onSelectSlug,
+  workspaceId,
+  repoFullName,
+  canManage,
 }: WikiPageViewProps) {
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
   const { dependsOn, dependedOnBy, related } = page.links;
@@ -290,7 +296,12 @@ export function WikiPageView({
           <div className="flex shrink-0 items-center gap-3">
             <ViewModeToggle mode={viewMode} onChange={setViewMode} />
             <DownloadMarkdownButton page={page} />
-            <RecompileButton variant="link" />
+            <RecompileButton
+              variant="link"
+              workspaceId={workspaceId}
+              repoFullName={repoFullName}
+              canManage={canManage}
+            />
           </div>
         </div>
       </div>

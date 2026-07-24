@@ -23,7 +23,6 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   CONNECTOR_TYPE_META,
-  linkedIdentitiesLine,
   validateConnectorCredential,
   type ConnectorKind,
   type ConnectorType,
@@ -36,6 +35,7 @@ import {
   resolveHostedBotUsername,
   telegramDeepLink,
 } from "../../../../../../lib/telegram-bot";
+import { linkedIdentitiesLine } from "../../../../../../lib/linked-identities";
 import { SELF_HOST_TELEGRAM_DOCS_URL } from "../../../../setup/components/channel-step-helpers";
 
 /** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */

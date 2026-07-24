@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle2 } from "lucide-react";
-import { linkedIdentitiesLine } from "@/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { linkedIdentitiesLine } from "../../../../lib/linked-identities";
 import {
   resolveHostedBotUsername,
   telegramDeepLink,

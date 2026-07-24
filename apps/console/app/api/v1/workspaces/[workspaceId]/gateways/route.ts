@@ -29,10 +29,13 @@ import {
  * (`listChatIdentitiesForWorkspace`) — a platform counts as connected once
  * the workspace has ≥1 linked chat identity for it, recorded when someone
  * DMs the shared Jace bot. `gateway-helpers.ts`'s `projectGateways` is pure
- * and never reads `process.env` itself, so this route reads the three
- * `NEXT_PUBLIC_*` bot/app-id vars (static member access, not a dynamically
- * keyed lookup, so Next can inline each one at build time) and passes them
- * in as a `GatewayEnv` bag.
+ * and never reads `process.env` itself, so this route reads the five
+ * `NEXT_PUBLIC_*` vars the contract now spans — telegram's bot username,
+ * plus discord/slack's `*_INVITE_URL`/`*_INSTALL_URL` + `*_CHANNEL_LIVE`
+ * pairs, the SAME pairs the landing page's "also available on" cards read
+ * (`app/(marketing)/_channel-cards.ts`) — via static member access (not a
+ * dynamically keyed lookup, so Next can inline each one at build time), and
+ * passes them in as a `GatewayEnv` bag.
  */
 export async function GET(
   _request: NextRequest,
@@ -54,8 +57,10 @@ export async function GET(
 
     const env: GatewayEnv = {
       telegramBotUsername: process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME,
-      discordClientId: process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID,
-      slackClientId: process.env.NEXT_PUBLIC_SLACK_CLIENT_ID,
+      discordInviteUrl: process.env.NEXT_PUBLIC_DISCORD_INVITE_URL,
+      discordChannelLive: process.env.NEXT_PUBLIC_DISCORD_CHANNEL_LIVE,
+      slackInstallUrl: process.env.NEXT_PUBLIC_SLACK_INSTALL_URL,
+      slackChannelLive: process.env.NEXT_PUBLIC_SLACK_CHANNEL_LIVE,
     };
 
     return NextResponse.json({

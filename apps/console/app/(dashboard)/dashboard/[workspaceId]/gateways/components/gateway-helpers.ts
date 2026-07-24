@@ -11,29 +11,42 @@
  *
  * Like `connector-helpers.ts`'s `projectConnectors`, this is the pure
  * projection the page reads (no I/O, unit-testable): the catalog, the
- * env-derived `configured` axis, the per-platform install-URL builders, and
- * how a gateway's *connected* state derives from the workspace's linked chat
- * identities. This module never reads `process.env` itself — the caller
- * (a Server Component / API route) reads it and passes the values in, the
- * same caller-reads-env split `resolveHostedBotUsername` uses in
- * `apps/console/lib/telegram-bot.ts`.
+ * env-derived `configured` axis, and how a gateway's *connected* state
+ * derives from the workspace's linked chat identities. This module never
+ * reads `process.env` itself — the caller (a Server Component / API route)
+ * reads it and passes the values in, the same caller-reads-env split
+ * `resolveHostedBotUsername` uses in `apps/console/lib/telegram-bot.ts`.
  *
- * SLACK SINGLE-TOKEN LIMITATION: `slackInstallUrl`'s button sends a workspace
- * admin through Slack's own OAuth consent screen and *installs* the Jace app
- * into their workspace, but the send path (`lib/slack-bot.ts`) reads ONE
- * shared `SLACK_BOT_TOKEN` from env — so only the single workspace whose
- * token happens to be in env can actually be replied to. A real public,
- * multi-tenant Slack integration needs an OAuth callback route that exchanges
- * the consent for a token and stores it per `team_id`, then looks that token
- * up per workspace at send time; that callback + storage is deliberately not
- * built here. Discord has no such problem: one bot token/application serves
- * every guild it's invited into, so `discordInviteUrl` has no equivalent
- * caveat.
+ * ENV CONTRACT (whole-branch review fix 4): discord/slack reuse the EXACT
+ * same env pair the landing page's "also available on" cards already read
+ * (`app/(marketing)/_channel-cards.ts`) — an owner-pasted invite/install URL
+ * plus an explicit `*_CHANNEL_LIVE` honesty gate — rather than inventing a
+ * third encoding of "is this channel set up". An earlier version of this
+ * file gated on a bespoke client-id var alone, which let the console claim a
+ * channel was live on weaker evidence than the landing page requires; see
+ * `_channel-cards.ts`'s HONESTY GATE doc-comment for the rule both surfaces
+ * now share. `isTrue` below is a deliberate byte-for-byte duplicate of that
+ * file's helper, not an import — this module doesn't reach into the
+ * marketing route group, same call as `GatewayIdentity`'s doc-comment below
+ * makes re: `connector-helpers.ts`.
+ *
+ * SLACK SINGLE-TOKEN LIMITATION: the Slack action button (its `actionUrl` is
+ * the owner-pasted `NEXT_PUBLIC_SLACK_INSTALL_URL`, verbatim — see
+ * `GatewayEnv` below) sends a workspace admin through Slack's own OAuth
+ * consent screen and *installs* the Jace app into their workspace, but the
+ * send path (`lib/slack-bot.ts`) reads ONE shared `SLACK_BOT_TOKEN` from env
+ * — so only the single workspace whose token happens to be in env can
+ * actually be replied to. A real public, multi-tenant Slack integration
+ * needs an OAuth callback route that exchanges the consent for a token and
+ * stores it per `team_id`, then looks that token up per workspace at send
+ * time; that callback + storage is deliberately not built here (explicitly
+ * out of scope). Discord has no such problem: one bot token/application
+ * serves every guild it's invited into.
  */
 // Relative (not @/…) because lib/ lives outside app/ or src/, the only roots
 // the @/* alias covers — mirrors connectors-panel.tsx's identical import of
 // this same module.
-import { telegramDeepLink } from "../../../../../../lib/telegram-bot";
+import { resolveHostedBotUsername, telegramDeepLink } from "../../../../../../lib/telegram-bot";
 
 /** The five chat surfaces a human can reach Jace through. */
 export type GatewayKind =
@@ -101,31 +114,71 @@ export const GATEWAY_CATALOG: GatewayCatalogEntry[] = [
  * `process.env` (Server Component / API route) and passes this bag in — this
  * module never reads env itself, mirroring `telegram-bot.ts`'s
  * `resolveHostedBotUsername(raw)` split, just bundled into one object since
- * `projectGateways` needs three values instead of one.
+ * `projectGateways` needs several values instead of one.
+ *
+ * Discord/slack each get a PAIR, reused verbatim from the landing page's
+ * contract (`app/(marketing)/_channel-cards.ts`) rather than a bespoke
+ * client-id var — see the module doc-comment's ENV CONTRACT note.
  */
 export interface GatewayEnv {
   /** `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` — non-blank ⟺ telegram configured. */
   telegramBotUsername: string | undefined;
-  /** `NEXT_PUBLIC_DISCORD_CLIENT_ID` — non-blank ⟺ discord configured. */
-  discordClientId: string | undefined;
-  /** `NEXT_PUBLIC_SLACK_CLIENT_ID` — non-blank ⟺ slack configured. */
-  slackClientId: string | undefined;
+  /**
+   * `NEXT_PUBLIC_DISCORD_INVITE_URL` — the whole invite URL, owner-pasted,
+   * same var and same shape the landing page's Discord card reads. On its
+   * own this is NOT enough for `configured` — see `discordChannelLive`.
+   */
+  discordInviteUrl: string | undefined;
+  /**
+   * `NEXT_PUBLIC_DISCORD_CHANNEL_LIVE` — the landing page's explicit "a real
+   * prod conversation has been verified on PROD" gate, reused so the console
+   * can never claim Discord is live on weaker evidence than the landing page
+   * requires. Must be the literal string `"true"` (`isTrue` below, trimmed +
+   * case-insensitive) — anything else, including just having an invite URL,
+   * keeps discord unconfigured.
+   */
+  discordChannelLive: string | undefined;
+  /** `NEXT_PUBLIC_SLACK_INSTALL_URL` — see `discordInviteUrl`'s twin above. */
+  slackInstallUrl: string | undefined;
+  /** `NEXT_PUBLIC_SLACK_CHANNEL_LIVE` — see `discordChannelLive`'s twin above. */
+  slackChannelLive: string | undefined;
 }
 
 /**
- * The single env value each gateway's `configured`/`actionUrl` derive from,
- * trimmed — or `null` if blank/unset/not applicable. One resolver so
+ * Trim + lowercase `"true"` compare. Byte-for-byte the same rule as the
+ * landing page's `_channel-cards.ts` `isTrue` (see that file's HONESTY GATE
+ * doc-comment) — duplicated rather than imported so this module doesn't
+ * reach across into the marketing route group; keep the two in sync by hand
+ * if the rule ever changes.
+ */
+function isTrue(value: string | undefined): boolean {
+  return (value ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * The single env-derived value each gateway's `configured`/`actionUrl`
+ * derive from — or `null` if not configured. One resolver so
  * `isGatewayConfigured` (below) and `buildActionUrl` (further down) can never
  * disagree about what counts as "configured": both just ask this.
+ *
+ * Telegram: non-blank bot username, no live-gate — Telegram was already
+ * prod-verified when its own CTA shipped (`_cta.ts`'s
+ * `resolveMessageJaceCta` sets this precedent: username-presence alone is
+ * enough, #1262/#1263). Discord/Slack: the invite/install URL AND the
+ * matching `*ChannelLive` flag must BOTH be set — code-complete is not the
+ * same as verified (see the module doc-comment's ENV CONTRACT note), so the
+ * URL alone is never enough.
  */
 function resolvedGatewayEnvValue(kind: GatewayKind, env: GatewayEnv): string | null {
   switch (kind) {
     case "telegram":
-      return env.telegramBotUsername?.trim() || null;
+      return resolveHostedBotUsername(env.telegramBotUsername);
     case "discord":
-      return env.discordClientId?.trim() || null;
+      if (!isTrue(env.discordChannelLive)) return null;
+      return env.discordInviteUrl?.trim() || null;
     case "slack":
-      return env.slackClientId?.trim() || null;
+      if (!isTrue(env.slackChannelLive)) return null;
+      return env.slackInstallUrl?.trim() || null;
     case "imessage":
     case "whatsapp":
       // Never configured — they're `planned`, no env var backs them yet.
@@ -136,8 +189,9 @@ function resolvedGatewayEnvValue(kind: GatewayKind, env: GatewayEnv): string | n
 /**
  * Whether a gateway's hosted bot/app is set up in this deploy. iMessage and
  * WhatsApp are never configured — they're `planned`, no env var backs them
- * yet. Telegram/Discord/Slack are each gated on their own single env var
- * being non-blank; no other signal (there's no per-workspace credential to
+ * yet. Telegram is gated on its own env var being non-blank; Discord/Slack
+ * are gated on their invite/install URL AND their live-verification flag
+ * both being set — no other signal (there's no per-workspace credential to
  * check — see the module doc-comment).
  */
 export function isGatewayConfigured(kind: GatewayKind, env: GatewayEnv): boolean {
@@ -145,87 +199,46 @@ export function isGatewayConfigured(kind: GatewayKind, env: GatewayEnv): boolean
 }
 
 // --------------------------------------------------------------------------- //
-// Install-URL builders — pure, one per platform, taking the already-resolved
-// id. `telegramDeepLink` (the Telegram equivalent) already exists in
-// `lib/telegram-bot.ts` and is reused as-is by `projectGateways` below rather
-// than duplicated here.
+// Action-URL resolution. Telegram's is still built (the deep link, from
+// `lib/telegram-bot.ts`'s `telegramDeepLink`, reused as-is rather than
+// duplicated); Discord/Slack's is the env URL VERBATIM — the owner pastes
+// the whole link (same contract as the landing page), so there is nothing
+// left to build in code. The `discordInviteUrl()`/`slackInstallUrl()`
+// builder functions that used to live here are deleted along with their
+// tests (whole-branch review fix 4) — see the module doc-comment's ENV
+// CONTRACT note.
 // --------------------------------------------------------------------------- //
 
-/**
- * Discord permission bitfield this invite grants: SEND_MESSAGES only
- * (`1 << 11` = decimal 2048 / hex 0x800) — the minimum the hosted bot needs
- * to post Jace's async reply (`lib/discord-bot.ts`'s
- * `sendDiscordChannelMessage` posts via `POST /channels/{id}/messages`).
- * Confirmed against Discord's permissions bitwise-flags table,
- * https://discord.com/developers/docs/topics/permissions (canonical
- * docs.discord.com/developers/topics/permissions since Discord's doc-site
- * migration), checked 2026-07-25: SEND_MESSAGES is listed at bit `1 << 11`.
- */
-/**
- * Discord's install URL for the Jace app — DELIBERATELY the bare
- * `?client_id=` form, with NO `scope=` / `permissions=` query parameters.
- *
- * This is the "Discord Provided Link" the Developer Portal's Installation tab
- * shows verbatim, and it is not merely a shorter equivalent of a hand-built
- * invite URL. The two behave differently:
- *
- *  - Bare link  → Discord's modern Add-App flow, which reads the app's
- *    **Default Install Settings** and offers BOTH install contexts: user
- *    install ("Try it now" — Jace lives on the user's account and is usable
- *    in any DM, no server required) and guild install ("Add to Server").
- *  - `scope=`/`permissions=` link → the legacy guild-only bot-invite flow.
- *    It pins the request to those literal params and drops the user-install
- *    path entirely, so anyone without their own server has no way in.
- *
- * Since the whole point of a gateway is "click it and start talking", losing
- * user install would be a real regression — hence the bare form. Scopes and
- * permissions are therefore owned by the PORTAL, not by this code: the Jace
- * app is configured (verified in-portal 2026-07-25) with guild install =
- * `applications.commands` + `bot` + Send Messages, and user install =
- * `applications.commands`. The `bot` scope + Send Messages matter because
- * Jace's real answer is posted separately through the Bot API
- * (`sendDiscordChannelMessage` → `POST /channels/{id}/messages`); without
- * them the interaction ack still appears and the actual reply never lands.
- *
- * Keep this in sync with the portal, not with a constant here: changing the
- * granted scopes is a portal edit, and this URL needs no code change for it.
- */
-export function discordInviteUrl(clientId: string): string {
-  return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(
-    clientId
-  )}`;
+function buildActionUrl(kind: GatewayKind, env: GatewayEnv): string | null {
+  const value = resolvedGatewayEnvValue(kind, env);
+  if (!value) return null;
+  switch (kind) {
+    case "telegram":
+      return telegramDeepLink(value);
+    case "discord":
+    case "slack":
+      return value;
+    case "imessage":
+    case "whatsapp":
+      // Unreachable: resolvedGatewayEnvValue is always null for these, so
+      // `value` above would already have returned — kept for exhaustiveness.
+      return null;
+  }
 }
 
 /**
- * The bot scopes the shared Slack app's Events API door needs: `chat:write`
- * to post Jace's reply (`lib/slack-bot.ts`'s `sendSlackChannelMessage`),
- * `im:history`/`im:read`/`im:write` to read and open the DM conversation the
- * events webhook resolves (`app/api/v1/connectors/slack/events/route.ts`).
+ * Where a CONNECTED gateway's "Open {label}" link should point — distinct
+ * from `actionUrl` (whole-branch review fix 1). `actionUrl` is what starts
+ * the CONNECT flow: for Telegram that IS a conversation deep link, but for
+ * Discord/Slack it's an install/invite URL that reopens the Add-App consent
+ * screen, not the conversation — reusing it for "Open Discord" on an
+ * already-connected workspace was the bug. Telegram is the only kind with a
+ * genuine "reopen this conversation" URL today, so every other kind
+ * resolves to `null` here. Do NOT invent an open-link for discord/slack.
  */
-const SLACK_BOT_SCOPES = ["chat:write", "im:history", "im:read", "im:write"];
-
-/**
- * Slack's OAuth v2 "Add to Slack" URL that installs the shared app into a
- * workspace. See the module doc-comment's SLACK SINGLE-TOKEN LIMITATION: this
- * only starts Slack's own consent screen — no callback route captures the
- * resulting per-workspace token here, so completing it doesn't make a new
- * workspace actually reachable yet.
- *
- * Shape confirmed against Slack's OAuth v2 docs,
- * https://docs.slack.dev/authentication/installing-with-oauth (api.slack.com/
- * authentication/oauth-v2 redirects here), checked 2026-07-25: base
- * `https://slack.com/oauth/v2/authorize`, bot scopes in `scope` as a
- * comma-separated list (the docs' own example: `scope=incoming-webhook,
- * commands`). `:` and `,` are left unescaped — both are valid unencoded in a
- * URI query component (RFC 3986 pchar / sub-delims) and match the docs'
- * literal example shape. No `redirect_uri` is passed: this build never
- * exchanges the resulting code (see the limitation above), so there is
- * nothing for a redirect to hand off to.
- */
-export function slackInstallUrl(clientId: string): string {
-  return `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(
-    clientId
-  )}&scope=${SLACK_BOT_SCOPES.join(",")}`;
+function buildOpenUrl(kind: GatewayKind, env: GatewayEnv): string | null {
+  if (kind !== "telegram") return null;
+  return buildActionUrl(kind, env);
 }
 
 // --------------------------------------------------------------------------- //
@@ -262,26 +275,16 @@ export interface GatewayView {
    * send anyone to).
    */
   actionUrl: string | null;
+  /**
+   * Where a CONNECTED gateway's "Open {label}" link should point — `null`
+   * unless this kind has a genuine reopen-the-conversation URL (see
+   * `buildOpenUrl`). Telegram only, today. Never fall back to `actionUrl`
+   * for this on discord/slack: it's an install link, not a way back into
+   * the chat (whole-branch review fix 1).
+   */
+  openUrl: string | null;
   /** That platform's linked identities (`[]` otherwise) — populated regardless of availability, mirroring `projectConnectors`. */
   linkedIdentities: { displayName: string | null }[];
-}
-
-function buildActionUrl(kind: GatewayKind, env: GatewayEnv): string | null {
-  const value = resolvedGatewayEnvValue(kind, env);
-  if (!value) return null;
-  switch (kind) {
-    case "telegram":
-      return telegramDeepLink(value);
-    case "discord":
-      return discordInviteUrl(value);
-    case "slack":
-      return slackInstallUrl(value);
-    case "imessage":
-    case "whatsapp":
-      // Unreachable: resolvedGatewayEnvValue is always null for these, so
-      // `value` above would already have returned — kept for exhaustiveness.
-      return null;
-  }
 }
 
 /**
@@ -310,10 +313,9 @@ export function projectGateways(
       entry.availability === "available" && kindIdentities.length > 0
         ? "connected"
         : "disconnected";
-    const actionUrl =
-      entry.availability === "available" && configured
-        ? buildActionUrl(entry.kind, env)
-        : null;
+    const canAct = entry.availability === "available" && configured;
+    const actionUrl = canAct ? buildActionUrl(entry.kind, env) : null;
+    const openUrl = canAct ? buildOpenUrl(entry.kind, env) : null;
 
     return {
       kind: entry.kind,
@@ -323,6 +325,7 @@ export function projectGateways(
       status,
       configured,
       actionUrl,
+      openUrl,
       linkedIdentities: kindIdentities.map((identity) => ({
         displayName: identity.displayName,
       })),

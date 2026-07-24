@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { linkedIdentitiesLine } from "./linked-identities";
 
-describe("linkedIdentitiesLine (lifted from connectors-panel.tsx, connectors-channels cutover T5 — shared with the setup wizard's channel step)", () => {
+describe("linkedIdentitiesLine (shared by the Gateways page and the setup wizard's channel step — see linked-identities.ts's module doc-comment for lineage)", () => {
   it("lists comma-joined display names when every identity has one", () => {
     expect(linkedIdentitiesLine(["Ben", "Ada"])).toBe("Linked: Ben, Ada");
   });

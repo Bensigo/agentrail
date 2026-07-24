@@ -12,6 +12,11 @@ import type { GatewayKind, GatewayView } from "./gateway-helpers";
 // the @/* alias covers — mirrors gateway-helpers.ts's identical import of
 // lib/telegram-bot and connectors-panel.tsx's import of this same module.
 import { linkedIdentitiesLine } from "../../../../../../lib/linked-identities";
+// Same self-host docs link the setup wizard's channel step renders
+// (`channel-step.tsx`, via `channel-step-helpers.ts`'s re-export) — canonical
+// home is `lib/telegram-bot.ts`, imported directly here rather than reaching
+// into the setup wizard's private helpers module.
+import { SELF_HOST_TELEGRAM_DOCS_URL } from "../../../../../../lib/telegram-bot";
 
 /**
  * The Gateways settings panel (gateways-page T3).
@@ -70,15 +75,21 @@ function connectCtaLabel(kind: GatewayKind): string {
   }
 }
 
-/** What's missing, in plain words, for an available-but-unconfigured gateway. */
+/**
+ * What's missing, in plain words, for an available-but-unconfigured gateway.
+ * Names the DEPLOYMENT, not the workspace (whole-branch review fix 2): these
+ * are deploy-wide `NEXT_PUBLIC_*` env vars, not a per-workspace setting, and
+ * there is no per-workspace configuration path — on this page or anywhere
+ * else — to send anyone to instead.
+ */
 function notConfiguredSentence(kind: GatewayKind): string {
   switch (kind) {
     case "telegram":
-      return "This workspace's Telegram bot isn't configured.";
+      return "The hosted Telegram bot isn't set up on this deployment.";
     case "discord":
-      return "This workspace's Discord app isn't configured.";
+      return "The hosted Discord app isn't set up on this deployment.";
     case "slack":
-      return "This workspace's Slack app isn't configured.";
+      return "The hosted Slack app isn't set up on this deployment.";
     case "imessage":
     case "whatsapp":
       // Unreachable — see connectCtaLabel's identical comment above.
@@ -92,13 +103,18 @@ function notConfiguredSentence(kind: GatewayKind): string {
 // entirely by `GatewayView` (brief §5):
 //   1. planned        — imessage/whatsapp: nothing is checked past this.
 //   2. connected       — status === "connected": may or may not still have an
-//                        actionUrl (e.g. env unset after the identity linked).
+//                        openUrl (discord/slack never do; telegram won't if
+//                        its env got unset after the identity linked — see
+//                        `GatewayView.openUrl`'s doc-comment). NEVER
+//                        `actionUrl` here — that's an INSTALL url for
+//                        discord/slack, not a way back into the conversation
+//                        (whole-branch review fix 1).
 //   3. available        — not connected, but actionUrl is set: the primary CTA.
 //   4. not-configured  — not connected, no actionUrl: env isn't set up.
 // --------------------------------------------------------------------------- //
 type GatewayCardState =
   | { kind: "planned" }
-  | { kind: "connected"; actionUrl: string | null }
+  | { kind: "connected"; openUrl: string | null }
   | { kind: "available"; actionUrl: string }
   | { kind: "not-configured" };
 
@@ -111,7 +127,7 @@ function resolveCardState(gateway: GatewayView): GatewayCardState {
   // `gateway-helpers.ts`, re-check this chain.
   if (gateway.availability === "planned") return { kind: "planned" };
   if (gateway.status === "connected") {
-    return { kind: "connected", actionUrl: gateway.actionUrl };
+    return { kind: "connected", openUrl: gateway.openUrl };
   }
   if (gateway.actionUrl) {
     return { kind: "available", actionUrl: gateway.actionUrl };
@@ -164,9 +180,9 @@ function GatewayCard({ gateway }: { gateway: GatewayView }) {
               gateway.linkedIdentities.map((i) => i.displayName)
             )}
           </p>
-          {state.actionUrl && (
+          {state.openUrl && (
             <a
-              href={state.actionUrl}
+              href={state.openUrl}
               target="_blank"
               rel="noreferrer"
               className="self-start text-xs text-[var(--blue-11-alt)] hover:underline"
@@ -194,6 +210,20 @@ function GatewayCard({ gateway }: { gateway: GatewayView }) {
           <p className="text-xs leading-relaxed text-[var(--gray-09)]">
             {notConfiguredSentence(gateway.kind)}
           </p>
+          {/* Telegram only: the self-host bring-your-own-bot escape hatch
+              (whole-branch review fix 2) — Discord/Slack have no self-host
+              path, only the hosted shared app, so there's no equivalent link
+              for them. */}
+          {gateway.kind === "telegram" && (
+            <a
+              href={SELF_HOST_TELEGRAM_DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="self-start text-xs text-[var(--blue-11)] hover:underline"
+            >
+              Bring your own bot
+            </a>
+          )}
         </div>
       )}
     </div>

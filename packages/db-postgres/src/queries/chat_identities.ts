@@ -453,10 +453,13 @@ export async function listWorkspacesForChatIdentity(
 /**
  * List every chat identity bound to a workspace (`workspace_id` match),
  * ordered by `created_at` ascending for a deterministic list. This is the
- * read the connectors page's Channels section and the onboarding wizard's
- * channel-step completion signal both use: a platform is "connected" iff
- * this returns ≥1 row for it (see
- * docs/superpowers/specs/2026-07-24-connectors-channels-section-design.md).
+ * read the Gateways page and the onboarding wizard's channel-step completion
+ * signal both use: a platform is "connected" iff this returns ≥1 row for it
+ * (originally added for the connectors page's since-retired Channels
+ * section, see
+ * docs/superpowers/specs/2026-07-24-connectors-channels-section-design.md;
+ * the Gateways page took over as the read surface per
+ * docs/superpowers/specs/2026-07-25-gateways-page-design.md).
  * Read-only; returns `[]` for a workspace with none — never throws on that
  * (normal, e.g. brand-new workspace) case.
  */

@@ -47,31 +47,43 @@ shape — update it.
 **`available` means the code path exists**, not that it is switched on. Whether
 the action renders is a SECOND, env-derived axis (`configured`):
 
-- telegram → `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` (already set in prod)
-- discord → `NEXT_PUBLIC_DISCORD_CLIENT_ID` (new; the application id — public,
-  not a secret)
-- slack → `NEXT_PUBLIC_SLACK_CLIENT_ID` (new; public)
+- telegram → `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` (already set in prod; no
+  live-gate — Telegram was already prod-verified when its own CTA shipped,
+  `_cta.ts` #1262/#1263)
+- discord → the SAME pair the landing page's "also available on" card already
+  reads (`app/(marketing)/_channel-cards.ts`): `NEXT_PUBLIC_DISCORD_INVITE_URL`
+  (owner-pasted, the whole URL) AND `NEXT_PUBLIC_DISCORD_CHANNEL_LIVE=true`
+  (the explicit "a real prod conversation has been verified" gate — the URL
+  alone is not enough)
+- slack → the same pair, `NEXT_PUBLIC_SLACK_INSTALL_URL` +
+  `NEXT_PUBLIC_SLACK_CHANNEL_LIVE=true`
+
+(Revised from this spec's original client-id-var sketch by the whole-branch
+review's fix 4: a bespoke client-id var was a THIRD encoding of "is this
+channel set up", and gated the console's CTA on weaker evidence — mere
+presence — than the landing page's honesty gate requires. Reusing the exact
+same env pair means the console and the landing page can never disagree about
+whether a channel is claimable.)
 
 An `available` gateway whose env is unset renders an honest **"Not set up yet"**
 line naming what is missing (one short sentence — no setup instructions on this
-page; the README owns those). This is what makes ruling 3 work: the owner creates
-the app, the client id gets set, the button goes live with no deploy of new code.
+page; the README owns those). This is what makes ruling 3 work: the owner
+pastes the invite/install URL and, once a real conversation is verified on
+prod, flips the one `_CHANNEL_LIVE` var — the button goes live with no deploy
+of new code.
 
 `planned` gateways render a **"Coming"** chip and one line of description. No
 buttons, no forms, ever.
 
 ### Install URL shapes
 
-Built by pure helpers so they are unit-testable, and **verified against the
-providers' own current docs by the implementer** (do not trust these sketches
-blindly — confirm scopes/params before shipping):
-
-- Discord: `https://discord.com/oauth2/authorize?client_id=<id>&scope=bot+applications.commands&permissions=<n>`
-  — the bot must be able to post its async reply, so the permission set must
-  include Send Messages. Pin the integer as a named constant with a comment.
-- Slack: `https://slack.com/oauth/v2/authorize?client_id=<id>&scope=<bot scopes>`
-  — bot scopes matching what the events door needs (`chat:write`, `im:history`,
-  `im:read`, `im:write`).
+Revised by the whole-branch review's fix 4: NOT built in code. Discord/Slack's
+`actionUrl` is the `NEXT_PUBLIC_DISCORD_INVITE_URL` / `NEXT_PUBLIC_SLACK_INSTALL_URL`
+env value VERBATIM — the owner pastes the whole URL (same contract the landing
+page's cards use, `_channel-cards.ts`), so there is no URL shape left for this
+module to build or unit-test. Pure `discordInviteUrl()`/`slackInstallUrl()`
+builder functions existed briefly during development (client-id-in, URL-out)
+and were deleted once the branch adopted this contract.
 
 **Known limitation to state in the module doc (not to solve here):** Slack issues
 a distinct bot token per installing workspace, while the send path reads one
@@ -86,8 +98,13 @@ separate piece of work, deliberately out of scope. Discord has no such problem
 Same spine as #1449: a gateway is connected iff the workspace has ≥1
 `chat_identities` row on that platform, surfaced as display names via the
 existing `listChatIdentitiesForWorkspace` query and the `linkedIdentitiesLine`
-formatter (lifted to a shared module in T1). A connected gateway keeps a quiet
-"Open <platform>" link alongside its linked names.
+formatter (lifted to a shared module in T1). A connected gateway always shows
+its linked names; it ALSO keeps a quiet "Open <platform>" link, but only when
+the kind has a genuine reopen-the-conversation URL (`GatewayView.openUrl`,
+whole-branch review fix 1) — Telegram only, today. Discord/Slack's env value
+is an install/invite URL, not a way back into an existing conversation, so
+reusing it as an "Open" link would silently reopen the Add-App consent screen
+instead; no open-link renders for them until a real one exists.
 
 ## Task breakdown
 
@@ -107,8 +124,10 @@ formatter (lifted to a shared module in T1). A connected gateway keeps a quiet
 
 ## Out of scope (follow-ups)
 
-- Creating the Discord/Slack apps (owner, in the provider portals) and setting the
-  two client ids.
+- Creating the Discord/Slack apps (owner, in the provider portals), pasting
+  the invite/install URL, and flipping `NEXT_PUBLIC_*_CHANNEL_LIVE=true` once
+  a real conversation is verified on prod (mirrors the landing page's honesty
+  gate, `_channel-cards.ts`).
 - Slack multi-tenant OAuth install + per-workspace token storage.
 - WhatsApp (needs a Meta Business number, a channel, and an inbound door) and
   iMessage go-live (needs a paid LoopMessage account).

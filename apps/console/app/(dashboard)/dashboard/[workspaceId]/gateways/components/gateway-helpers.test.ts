@@ -2,19 +2,23 @@ import { describe, expect, it } from "vitest";
 import { telegramDeepLink } from "../../../../../../lib/telegram-bot";
 import {
   GATEWAY_CATALOG,
-  discordInviteUrl,
   isGatewayConfigured,
   projectGateways,
-  slackInstallUrl,
   type GatewayEnv,
   type GatewayIdentity,
 } from "./gateway-helpers";
 
 const NO_ENV: GatewayEnv = {
   telegramBotUsername: undefined,
-  discordClientId: undefined,
-  slackClientId: undefined,
+  discordInviteUrl: undefined,
+  discordChannelLive: undefined,
+  slackInstallUrl: undefined,
+  slackChannelLive: undefined,
 };
+
+const DISCORD_URL = "https://discord.com/oauth2/authorize?client_id=999";
+const SLACK_URL =
+  "https://slack.com/oauth/v2/authorize?client_id=abc&scope=chat:write";
 
 describe("GATEWAY_CATALOG", () => {
   it("orders telegram, discord, slack (available) then imessage, whatsapp (planned) — render order", () => {
@@ -65,7 +69,7 @@ describe("GATEWAY_CATALOG", () => {
 });
 
 describe("isGatewayConfigured", () => {
-  it("telegram is configured iff NEXT_PUBLIC_TELEGRAM_BOT_USERNAME is non-blank", () => {
+  it("telegram is configured iff NEXT_PUBLIC_TELEGRAM_BOT_USERNAME is non-blank — no live-gate (already prod-verified)", () => {
     expect(isGatewayConfigured("telegram", NO_ENV)).toBe(false);
     expect(
       isGatewayConfigured("telegram", { ...NO_ENV, telegramBotUsername: "" })
@@ -81,65 +85,87 @@ describe("isGatewayConfigured", () => {
     ).toBe(true);
   });
 
-  it("discord is configured iff NEXT_PUBLIC_DISCORD_CLIENT_ID is non-blank", () => {
-    expect(isGatewayConfigured("discord", NO_ENV)).toBe(false);
+  it("discord: the invite URL alone is not enough — CHANNEL_LIVE must also be set", () => {
     expect(
-      isGatewayConfigured("discord", { ...NO_ENV, discordClientId: "   " })
+      isGatewayConfigured("discord", { ...NO_ENV, discordInviteUrl: DISCORD_URL })
     ).toBe(false);
+  });
+
+  it("discord: CHANNEL_LIVE alone (no URL) is not enough either", () => {
     expect(
-      isGatewayConfigured("discord", { ...NO_ENV, discordClientId: "123" })
+      isGatewayConfigured("discord", { ...NO_ENV, discordChannelLive: "true" })
+    ).toBe(false);
+  });
+
+  it("discord is configured once BOTH the invite URL is non-blank and CHANNEL_LIVE is exactly \"true\"", () => {
+    expect(
+      isGatewayConfigured("discord", {
+        ...NO_ENV,
+        discordInviteUrl: DISCORD_URL,
+        discordChannelLive: "true",
+      })
     ).toBe(true);
   });
 
-  it("slack is configured iff NEXT_PUBLIC_SLACK_CLIENT_ID is non-blank", () => {
-    expect(isGatewayConfigured("slack", NO_ENV)).toBe(false);
+  it("discord's CHANNEL_LIVE compare is trim + lowercase, matching _channel-cards.ts's isTrue", () => {
     expect(
-      isGatewayConfigured("slack", { ...NO_ENV, slackClientId: "   " })
+      isGatewayConfigured("discord", {
+        ...NO_ENV,
+        discordInviteUrl: DISCORD_URL,
+        discordChannelLive: "  TRUE  ",
+      })
+    ).toBe(true);
+    expect(
+      isGatewayConfigured("discord", {
+        ...NO_ENV,
+        discordInviteUrl: DISCORD_URL,
+        discordChannelLive: "yes",
+      })
     ).toBe(false);
+  });
+
+  it("discord's invite URL is trimmed; whitespace-only counts as blank", () => {
     expect(
-      isGatewayConfigured("slack", { ...NO_ENV, slackClientId: "abc.123" })
+      isGatewayConfigured("discord", {
+        ...NO_ENV,
+        discordInviteUrl: "   ",
+        discordChannelLive: "true",
+      })
+    ).toBe(false);
+  });
+
+  it("slack: the install URL alone is not enough — CHANNEL_LIVE must also be set", () => {
+    expect(
+      isGatewayConfigured("slack", { ...NO_ENV, slackInstallUrl: SLACK_URL })
+    ).toBe(false);
+  });
+
+  it("slack: CHANNEL_LIVE alone (no URL) is not enough either", () => {
+    expect(
+      isGatewayConfigured("slack", { ...NO_ENV, slackChannelLive: "true" })
+    ).toBe(false);
+  });
+
+  it("slack is configured once BOTH the install URL is non-blank and CHANNEL_LIVE is exactly \"true\"", () => {
+    expect(
+      isGatewayConfigured("slack", {
+        ...NO_ENV,
+        slackInstallUrl: SLACK_URL,
+        slackChannelLive: "true",
+      })
     ).toBe(true);
   });
 
   it("imessage and whatsapp are never configured, regardless of env", () => {
     const fullEnv: GatewayEnv = {
       telegramBotUsername: "jace_bot",
-      discordClientId: "123",
-      slackClientId: "abc",
+      discordInviteUrl: DISCORD_URL,
+      discordChannelLive: "true",
+      slackInstallUrl: SLACK_URL,
+      slackChannelLive: "true",
     };
     expect(isGatewayConfigured("imessage", fullEnv)).toBe(false);
     expect(isGatewayConfigured("whatsapp", fullEnv)).toBe(false);
-  });
-});
-
-describe("discordInviteUrl", () => {
-  it("builds Discord's provided install link — bare client_id, no query params", () => {
-    const url = discordInviteUrl("123456789012345678");
-    expect(url).toBe(
-      "https://discord.com/oauth2/authorize?client_id=123456789012345678"
-    );
-  });
-
-  // Regression guard for the behavior difference documented on the builder:
-  // a `scope=`/`permissions=` URL selects Discord's LEGACY guild-only invite
-  // flow, which drops the user-install path (no server, no way in). Scopes
-  // live in the portal's Default Install Settings, never here.
-  it("emits no scope or permissions params, so the Add-App flow offers user install too", () => {
-    const url = discordInviteUrl("123456789012345678");
-    expect(url).not.toContain("scope=");
-    expect(url).not.toContain("permissions=");
-  });
-});
-
-describe("slackInstallUrl", () => {
-  it("builds the OAuth v2 authorize URL with the events door's bot scopes, comma-separated", () => {
-    // ":" and "," are left unescaped — both are valid unencoded in a URI
-    // query component (RFC 3986 pchar / sub-delims) and this is exactly the
-    // shape Slack's own docs show (e.g. "scope=incoming-webhook,commands").
-    const url = slackInstallUrl("33336676.569200954261");
-    expect(url).toBe(
-      "https://slack.com/oauth/v2/authorize?client_id=33336676.569200954261&scope=chat:write,im:history,im:read,im:write"
-    );
   });
 });
 
@@ -238,18 +264,40 @@ describe("projectGateways", () => {
     expect(telegram.actionUrl).toBe(telegramDeepLink("jace_bot"));
   });
 
-  it("actionUrl is the discord invite URL when available+configured", () => {
-    const env: GatewayEnv = { ...NO_ENV, discordClientId: "999" };
+  it("actionUrl is the discord invite URL VERBATIM (not built in code) when available+configured", () => {
+    const env: GatewayEnv = {
+      ...NO_ENV,
+      discordInviteUrl: DISCORD_URL,
+      discordChannelLive: "true",
+    };
     const discord = projectGateways([], env).find((r) => r.kind === "discord")!;
     expect(discord.configured).toBe(true);
-    expect(discord.actionUrl).toBe(discordInviteUrl("999"));
+    expect(discord.actionUrl).toBe(DISCORD_URL);
   });
 
-  it("actionUrl is the slack install URL when available+configured", () => {
-    const env: GatewayEnv = { ...NO_ENV, slackClientId: "abc" };
+  it("actionUrl stays null for discord when the URL is set but not live-verified", () => {
+    const env: GatewayEnv = { ...NO_ENV, discordInviteUrl: DISCORD_URL };
+    const discord = projectGateways([], env).find((r) => r.kind === "discord")!;
+    expect(discord.configured).toBe(false);
+    expect(discord.actionUrl).toBeNull();
+  });
+
+  it("actionUrl is the slack install URL VERBATIM (not built in code) when available+configured", () => {
+    const env: GatewayEnv = {
+      ...NO_ENV,
+      slackInstallUrl: SLACK_URL,
+      slackChannelLive: "true",
+    };
     const slack = projectGateways([], env).find((r) => r.kind === "slack")!;
     expect(slack.configured).toBe(true);
-    expect(slack.actionUrl).toBe(slackInstallUrl("abc"));
+    expect(slack.actionUrl).toBe(SLACK_URL);
+  });
+
+  it("actionUrl stays null for slack when the URL is set but not live-verified", () => {
+    const env: GatewayEnv = { ...NO_ENV, slackInstallUrl: SLACK_URL };
+    const slack = projectGateways([], env).find((r) => r.kind === "slack")!;
+    expect(slack.configured).toBe(false);
+    expect(slack.actionUrl).toBeNull();
   });
 
   it("actionUrl stays null for a planned gateway no matter what — imessage/whatsapp are never configured", () => {
@@ -265,5 +313,55 @@ describe("projectGateways", () => {
     expect(telegram.label).toBe("Telegram");
     expect(telegram.description).toBe("Chat with Jace in a Telegram DM.");
     expect(telegram.availability).toBe("available");
+  });
+
+  describe("openUrl (whole-branch review fix 1 — distinct from actionUrl)", () => {
+    it("is the t.me deep link for telegram when configured, matching actionUrl", () => {
+      const env: GatewayEnv = { ...NO_ENV, telegramBotUsername: "jace_bot" };
+      const telegram = projectGateways([], env).find(
+        (r) => r.kind === "telegram"
+      )!;
+      expect(telegram.openUrl).toBe(telegramDeepLink("jace_bot"));
+      expect(telegram.openUrl).toBe(telegram.actionUrl);
+    });
+
+    it("is null for telegram when not configured", () => {
+      const telegram = projectGateways([], NO_ENV).find(
+        (r) => r.kind === "telegram"
+      )!;
+      expect(telegram.openUrl).toBeNull();
+    });
+
+    it("is null for discord even when fully configured — the env URL is an install link, not a conversation link", () => {
+      const env: GatewayEnv = {
+        ...NO_ENV,
+        discordInviteUrl: DISCORD_URL,
+        discordChannelLive: "true",
+      };
+      const discord = projectGateways([], env).find(
+        (r) => r.kind === "discord"
+      )!;
+      expect(discord.configured).toBe(true);
+      expect(discord.actionUrl).not.toBeNull();
+      expect(discord.openUrl).toBeNull();
+    });
+
+    it("is null for slack even when fully configured — the env URL is an install link, not a conversation link", () => {
+      const env: GatewayEnv = {
+        ...NO_ENV,
+        slackInstallUrl: SLACK_URL,
+        slackChannelLive: "true",
+      };
+      const slack = projectGateways([], env).find((r) => r.kind === "slack")!;
+      expect(slack.configured).toBe(true);
+      expect(slack.actionUrl).not.toBeNull();
+      expect(slack.openUrl).toBeNull();
+    });
+
+    it("is null for planned gateways regardless of env", () => {
+      const rows = projectGateways([], NO_ENV);
+      expect(rows.find((r) => r.kind === "imessage")!.openUrl).toBeNull();
+      expect(rows.find((r) => r.kind === "whatsapp")!.openUrl).toBeNull();
+    });
   });
 });

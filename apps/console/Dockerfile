@@ -106,16 +106,19 @@ RUN pnpm --filter @agentrail/db-postgres build
 # the console's own "predev" belt-and-suspenders re-run rather than trusting
 # postinstall's ordering during a workspace-wide `pnpm install`.
 RUN pnpm --filter @agentrail/console exec fumadocs-mdx
-# One NEXT_PUBLIC_* var exists in apps/console today: NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
-# (the hosted setup wizard's shared-bot deep link — see
-# app/(dashboard)/setup/components/channel-step.tsx). Inlining it into the
-# browser bundle requires the var to be present at BUILD time, not just at
-# container start. Railway sets build-time env vars automatically, so its
-# build of this image picks it up with no changes here; this compose
-# Dockerfile has no build-arg plumbing for it, which is fine for self-host,
-# where the var is expected to stay unset (see
-# deploy/telegram-shared-bot-cutover.md) and the bring-your-own-bot form
-# renders instead.
+# apps/console reads several NEXT_PUBLIC_* vars today (grep the app/ tree for
+# `process.env.NEXT_PUBLIC_` for the current list — e.g.
+# NEXT_PUBLIC_TELEGRAM_BOT_USERNAME, the hosted setup wizard's shared-bot deep
+# link, app/(dashboard)/setup/components/channel-step.tsx). Every one of them
+# needs the SAME treatment: inlining into the browser bundle requires the var
+# to be present at BUILD time, not just at container start. Railway sets
+# build-time env vars automatically, so its build of this image picks them up
+# with no changes here; this compose Dockerfile has no build-arg plumbing for
+# any of them, which is fine for self-host, where an unset NEXT_PUBLIC_* var
+# just means that var's feature falls back to its honest un-configured path
+# (e.g. NEXT_PUBLIC_TELEGRAM_BOT_USERNAME unset — see
+# deploy/telegram-shared-bot-cutover.md — renders the bring-your-own-bot form
+# instead).
 RUN pnpm --filter @agentrail/console build
 # Self-contained migrator (#owner rule 2026-07-19: migrations ALWAYS run on
 # deploy). Hand-assembled with plain npm (NOT `pnpm deploy`, which mis-splits

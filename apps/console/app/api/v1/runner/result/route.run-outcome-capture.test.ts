@@ -19,7 +19,7 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     touchApiKeyLastUsed: vi.fn(),
     latestTelegramSessionForWorkspace: vi.fn(),
     getMergePermission: vi.fn(),
-    getGithubToken: vi.fn(),
+    getInstallationToken: vi.fn(),
     recordRunOutcome: vi.fn(),
     // Real+pure (a 3-way switch) — assertions below check the ACTUAL mapped
     // outcome string, not a meaningless mock return.
@@ -56,7 +56,7 @@ import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   getMergePermission,
-  getGithubToken,
+  getInstallationToken,
   recordRunOutcome,
   type RecordRunnerResult,
 } from "@agentrail/db-postgres";
@@ -119,7 +119,7 @@ beforeEach(() => {
   vi.mocked(requireBearer).mockResolvedValue({ workspaceId: WS, apiKeyId: "key-1" } as never);
   vi.mocked(touchApiKeyLastUsed).mockResolvedValue(undefined as never);
   vi.mocked(getMergePermission).mockResolvedValue(false);
-  vi.mocked(getGithubToken).mockResolvedValue(null);
+  vi.mocked(getInstallationToken).mockResolvedValue(null);
   vi.mocked(recordRunLifecycleEvent).mockResolvedValue(undefined as never);
   vi.mocked(reconcileAlignmentBriefs).mockResolvedValue([] as never);
   mockGetRunCosts.mockResolvedValue([]);

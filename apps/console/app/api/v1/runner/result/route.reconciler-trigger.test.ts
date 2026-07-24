@@ -16,7 +16,7 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     touchApiKeyLastUsed: vi.fn(),
     latestTelegramSessionForWorkspace: vi.fn(),
     getMergePermission: vi.fn(),
-    getGithubToken: vi.fn(),
+    getInstallationToken: vi.fn(),
     // #1338 PR① — see route.test.ts's own mock for the full rationale.
     recordRunOutcome: vi.fn(),
     mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
@@ -51,7 +51,7 @@ import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   getMergePermission,
-  getGithubToken,
+  getInstallationToken,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -76,7 +76,7 @@ beforeEach(() => {
   vi.mocked(requireBearer).mockResolvedValue({ workspaceId: WS, apiKeyId: "key-1" } as never);
   vi.mocked(touchApiKeyLastUsed).mockResolvedValue(undefined as never);
   vi.mocked(getMergePermission).mockResolvedValue(false);
-  vi.mocked(getGithubToken).mockResolvedValue(null);
+  vi.mocked(getInstallationToken).mockResolvedValue(null);
   mockRecordRunnerResult.mockResolvedValue({
     updated: true,
     terminalState: null,

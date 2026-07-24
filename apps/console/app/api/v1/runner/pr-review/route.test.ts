@@ -4,19 +4,19 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   getChatIdentityById: vi.fn(),
-  getGithubToken: vi.fn(),
+  getInstallationToken: vi.fn(),
   getRepositoryByName: vi.fn(),
 }));
 import { GET, POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   getRepositoryByName,
 } from "@agentrail/db-postgres";
 
 const NOW = new Date("2026-07-23T00:00:00.000Z");
-const MOCK_TOKEN = "gho_mock_token_abc123";
+const MOCK_TOKEN = "ghs_mock_token_abc123";
 
 // Central-secret auth — same idiom as runner/repos/route.test.ts.
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
@@ -118,7 +118,7 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(PINNED_SESSION as never);
   vi.mocked(getChatIdentityById).mockResolvedValue(BOUND_IDENTITY as never);
-  vi.mocked(getGithubToken).mockResolvedValue(MOCK_TOKEN);
+  vi.mocked(getInstallationToken).mockResolvedValue(MOCK_TOKEN);
   vi.mocked(getRepositoryByName).mockResolvedValue(CONNECTED_REPO as never);
 });
 
@@ -234,11 +234,11 @@ describe("GET /api/v1/runner/pr-review", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "repo not connected to this workspace" });
     expect(getRepositoryByName).toHaveBeenCalledWith("ws-1", "someone/else");
-    expect(getGithubToken).not.toHaveBeenCalled();
+    expect(getInstallationToken).not.toHaveBeenCalled();
   });
 
   it("409 when the workspace has no stored GitHub token", async () => {
-    vi.mocked(getGithubToken).mockResolvedValue(null);
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
@@ -364,12 +364,15 @@ describe("GET /api/v1/runner/pr-review", () => {
     expect(await res.json()).toEqual({ error: "PR not found" });
   });
 
-  it("409 'GitHub rejected the stored credentials' on a 401/403 (non-rate-limit)", async () => {
+  it("409 'GitHub rejected the workspace's App installation credentials' on a 401/403 (non-rate-limit)", async () => {
     for (const status of [401, 403]) {
       mockFetchSequence(githubJsonResponse(status, { message: "Bad credentials" }));
       const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
       expect(res.status).toBe(409);
-      expect(await res.json()).toEqual({ error: "GitHub rejected the stored credentials" });
+      expect(await res.json()).toEqual({
+        error:
+          "GitHub rejected the workspace's App installation credentials — reconnect GitHub from the console",
+      });
     }
   });
 
@@ -540,7 +543,7 @@ describe("POST /api/v1/runner/pr-review", () => {
   });
 
   it("409 when the workspace has no stored GitHub token", async () => {
-    vi.mocked(getGithubToken).mockResolvedValue(null);
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
     const res = await POST(postReq(VALID_BODY));
     expect(res.status).toBe(409);
   });
@@ -650,7 +653,7 @@ describe("POST /api/v1/runner/pr-review", () => {
     expect(await res.json()).toEqual({ error: "PR not found" });
   });
 
-  it("409 'GitHub rejected the stored credentials' on 401/403", async () => {
+  it("409 'GitHub rejected the workspace's App installation credentials' on 401/403", async () => {
     for (const status of [401, 403]) {
       mockFetchSequence(githubJsonResponse(status, { message: "Bad credentials" }));
       const res = await POST(postReq(VALID_BODY));

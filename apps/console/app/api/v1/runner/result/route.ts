@@ -3,7 +3,7 @@ import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   getMergePermission,
-  getGithubToken,
+  getInstallationToken,
   recordRunOutcome,
   mapTerminalStateToRunOutcome,
   isBillingEnabled,
@@ -174,8 +174,8 @@ export async function POST(request: NextRequest) {
   // path (an onboard row never carries a real pr_url); scoped by the SAME
   // onboardRepoFullName detection the notify branch below uses.
   //
-  // Permission OFF is the byte-identical-to-before path: getGithubToken and
-  // mergePullRequestSquash are only ever called inside the `permitted`
+  // Permission OFF is the byte-identical-to-before path: getInstallationToken
+  // and mergePullRequestSquash are only ever called inside the `permitted`
   // branch, so an OFF workspace makes ZERO GitHub calls here, exactly as
   // before this feature existed.
   //
@@ -214,7 +214,7 @@ export async function POST(request: NextRequest) {
           );
           mergeOutcome = "merge_failed";
         } else {
-          const token = await getGithubToken(workspace_id);
+          const token = await getInstallationToken(workspace_id);
           if (!token) {
             console.error(
               `[runner/result] merge SKIPPED — workspace ${workspace_id} has no GitHub token`

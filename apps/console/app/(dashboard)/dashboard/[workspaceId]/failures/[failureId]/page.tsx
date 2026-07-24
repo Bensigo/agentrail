@@ -4,7 +4,7 @@ import { getFailureById } from "@agentrail/db-clickhouse";
 import {
   getFailureResolution,
   getRepository,
-  getGithubToken,
+  getGithubInstallation,
   getConnector,
 } from "@agentrail/db-postgres";
 import {
@@ -209,7 +209,10 @@ export default async function FailureDetailPage({
 
   let initialStatus: "open" | "fixed" = "open";
   // Which trackers this failure can be filed to. GitHub when the repo resolves
-  // to a github slug and a token exists; Linear when its connector is on.
+  // to a github slug and the workspace has a bound App installation; Linear
+  // when its connector is on. A cheap DB read (getGithubInstallation), not a
+  // live token mint — minting a token is a GitHub round-trip and has no
+  // business happening on a page render.
   const issueTargets: ("github" | "linear")[] = [];
   // Default the repo display to a short hash of the raw id — never the full
   // id as visible text — but prefer the human repo name when we can resolve
@@ -218,19 +221,19 @@ export default async function FailureDetailPage({
     ? nameOrShortId(null, failure.repository_id)
     : { text: "—" };
   try {
-    const [resolution, repo, token, linear] = await Promise.all([
+    const [resolution, repo, installation, linear] = await Promise.all([
       getFailureResolution(workspaceId, failureKey),
       failure.repository_id
         ? getRepository(workspaceId, failure.repository_id)
         : Promise.resolve(null),
-      getGithubToken(workspaceId),
+      getGithubInstallation(workspaceId),
       getConnector(workspaceId, "linear"),
     ]);
     if (resolution?.status === "fixed") initialStatus = "fixed";
     if (repo?.name && failure.repository_id) {
       repoDisplay = nameOrShortId(repo.name, failure.repository_id);
     }
-    if (token && repo && parseGithubSlug(repo.url)) issueTargets.push("github");
+    if (installation && repo && parseGithubSlug(repo.url)) issueTargets.push("github");
     if (linear?.enabled && linear.hasSecret) issueTargets.push("linear");
   } catch {
     // leave defaults; actions degrade gracefully

@@ -18,7 +18,7 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     touchApiKeyLastUsed: vi.fn(),
     latestTelegramSessionForWorkspace: vi.fn(),
     getMergePermission: vi.fn(),
-    getGithubToken: vi.fn(),
+    getInstallationToken: vi.fn(),
     recordRunOutcome: vi.fn(),
     mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
     isBillingEnabled: vi.fn(),
@@ -51,7 +51,7 @@ import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   getMergePermission,
-  getGithubToken,
+  getInstallationToken,
   recordRunOutcome,
   isBillingEnabled,
   chargeCompletedTask,
@@ -117,7 +117,7 @@ beforeEach(() => {
   vi.mocked(requireBearer).mockResolvedValue({ workspaceId: WS, apiKeyId: "key-1" } as never);
   vi.mocked(touchApiKeyLastUsed).mockResolvedValue(undefined as never);
   vi.mocked(getMergePermission).mockResolvedValue(false);
-  vi.mocked(getGithubToken).mockResolvedValue(null);
+  vi.mocked(getInstallationToken).mockResolvedValue(null);
   vi.mocked(recordRunLifecycleEvent).mockResolvedValue(undefined as never);
   vi.mocked(reconcileAlignmentBriefs).mockResolvedValue([] as never);
   mockGetRunCosts.mockResolvedValue([]);

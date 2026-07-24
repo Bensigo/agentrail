@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   getChatIdentityById: vi.fn(),
-  getGithubToken: vi.fn(),
+  getInstallationToken: vi.fn(),
   listWorkspaceRepositories: vi.fn(),
 }));
 
@@ -12,13 +12,13 @@ import { GET } from "./route";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   listWorkspaceRepositories,
 } from "@agentrail/db-postgres";
 
 const WS = "ws-1";
 const EVE = "eve-session-1";
-const MOCK_TOKEN = "gho_mock_token";
+const MOCK_TOKEN = "ghs_mock_token";
 
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-shared-secret-abc123";
@@ -61,7 +61,7 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({ workspaceId: WS, chatIdentityId: "ci-1" } as never);
   vi.mocked(getChatIdentityById).mockResolvedValue({ id: "ci-1", workspaceId: WS } as never);
-  vi.mocked(getGithubToken).mockResolvedValue(MOCK_TOKEN);
+  vi.mocked(getInstallationToken).mockResolvedValue(MOCK_TOKEN);
   vi.mocked(listWorkspaceRepositories).mockResolvedValue([{ name: "o/r" }] as never);
 });
 
@@ -119,13 +119,13 @@ describe("GET /api/v1/runner/backlog", () => {
       mockFetchSequence(githubJson(200, []));
       await GET(req({ eveSessionId: EVE, token: SECRET }));
       expect(getJaceSessionByEveSessionId).toHaveBeenCalledWith(EVE);
-      expect(getGithubToken).toHaveBeenCalledWith(WS);
+      expect(getInstallationToken).toHaveBeenCalledWith(WS);
       expect(listWorkspaceRepositories).toHaveBeenCalledWith(WS);
     });
   });
 
   it("409 when the workspace has no connected GitHub token", async () => {
-    vi.mocked(getGithubToken).mockResolvedValue(null);
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
     const res = await GET(req({ eveSessionId: EVE, token: SECRET }));
     expect(res.status).toBe(409);
   });

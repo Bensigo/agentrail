@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   listWorkspaceRepositories,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
@@ -49,9 +49,9 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  * entry carrying a `pull_request` field is dropped. Each repo's failure is
  * isolated: one repo the token can't read (renamed, access revoked) is
  * recorded in `warnings` and skipped, never failing the whole sweep. The
- * GitHub token is the workspace owner's stored OAuth `access_token`
- * (`getGithubToken`), read fresh at the point of use and never returned to the
- * caller or logged.
+ * GitHub token is a short-lived App installation token minted fresh at the
+ * point of use (`getInstallationToken`) and never returned to the caller or
+ * logged.
  *
  * 400 — missing `eveSessionId`. 401 — bad/missing secret. 404 — no session,
  * or a session with no resolvable workspace yet. 409 — the workspace has no
@@ -218,7 +218,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return NextResponse.json(
       { error: "no GitHub account with repo access is connected for this workspace yet" },

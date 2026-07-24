@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   getRepositoryByName,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
@@ -243,7 +243,7 @@ async function resolveWorkspaceRepoToken(
     };
   }
 
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return {
       ok: false,

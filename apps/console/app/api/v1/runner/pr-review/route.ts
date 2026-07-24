@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   getRepositoryByName,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
@@ -57,9 +57,9 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  * exists on GitHub at all, only that it isn't reachable from here.
  *
  * GITHUB ERROR CLASSIFICATION: GitHub's own status codes are never passed
- * through raw. 404 (PR not found), 401/403 (the stored OAuth token is
- * stale/revoked/under-scoped) and rate-limiting (403 with a rate-limit
- * message, or 429) are each classified into a clean, honest 4xx
+ * through raw. 404 (PR not found), 401/403 (the workspace's App installation
+ * credentials are stale/revoked/missing) and rate-limiting (403 with a
+ * rate-limit message, or 429) are each classified into a clean, honest 4xx
  * (`classifyGithubError`); anything else collapses to a 502 (upstream
  * failure), mirroring `runner/repos`'s posture for its own GitHub call.
  *
@@ -160,7 +160,11 @@ function classifyGithubError(status: number, body: unknown): { status: number; e
     if (/rate limit/i.test(message)) {
       return { status: 429, error: "GitHub rate limit exceeded — try again later" };
     }
-    return { status: 409, error: "GitHub rejected the stored credentials" };
+    return {
+      status: 409,
+      error:
+        "GitHub rejected the workspace's App installation credentials — reconnect GitHub from the console",
+    };
   }
   return { status: 502, error: `GitHub rejected the request (HTTP ${status}).` };
 }
@@ -212,7 +216,7 @@ async function resolveWorkspaceRepoToken(
     };
   }
 
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return {
       ok: false,

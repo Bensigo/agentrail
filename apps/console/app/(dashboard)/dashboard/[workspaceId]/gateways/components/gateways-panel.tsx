@@ -103,6 +103,12 @@ type GatewayCardState =
   | { kind: "not-configured" };
 
 function resolveCardState(gateway: GatewayView): GatewayCardState {
+  // `planned` is tested FIRST, and that ordering leans on an invariant that
+  // lives in another file: `projectGateways` only ever sets
+  // `status: "connected"` for an `available` kind, so a planned gateway with a
+  // stray chat identity can't reach the connected branch. `GatewayView`'s type
+  // doesn't encode that, so if you change the projection in
+  // `gateway-helpers.ts`, re-check this chain.
   if (gateway.availability === "planned") return { kind: "planned" };
   if (gateway.status === "connected") {
     return { kind: "connected", actionUrl: gateway.actionUrl };

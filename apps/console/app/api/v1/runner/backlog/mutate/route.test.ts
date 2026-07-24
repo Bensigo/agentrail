@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   getChatIdentityById: vi.fn(),
-  getGithubToken: vi.fn(),
+  getInstallationToken: vi.fn(),
   getRepositoryByName: vi.fn(),
 }));
 
@@ -12,14 +12,14 @@ import { POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getInstallationToken,
   getRepositoryByName,
 } from "@agentrail/db-postgres";
 
 const WS = "ws-1";
 const EVE = "eve-session-1";
 const REPO = "o/r";
-const MOCK_TOKEN = "gho_mock_token";
+const MOCK_TOKEN = "ghs_mock_token";
 
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-shared-secret-abc123";
@@ -47,7 +47,7 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({ workspaceId: WS, chatIdentityId: "ci-1" } as never);
   vi.mocked(getChatIdentityById).mockResolvedValue({ id: "ci-1", workspaceId: WS } as never);
-  vi.mocked(getGithubToken).mockResolvedValue(MOCK_TOKEN);
+  vi.mocked(getInstallationToken).mockResolvedValue(MOCK_TOKEN);
   vi.mocked(getRepositoryByName).mockResolvedValue({ id: "repo-1", name: REPO } as never);
 });
 
@@ -131,7 +131,7 @@ describe("POST /api/v1/runner/backlog/mutate", () => {
       expect(await res.json()).toEqual({ error: "repo not connected to this workspace" });
     });
     it("409 when there is no GitHub token", async () => {
-      vi.mocked(getGithubToken).mockResolvedValue(null);
+      vi.mocked(getInstallationToken).mockResolvedValue(null);
       const res = await POST(postReq(CLOSE_BODY));
       expect(res.status).toBe(409);
     });

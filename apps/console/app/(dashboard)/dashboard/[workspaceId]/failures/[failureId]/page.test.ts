@@ -7,7 +7,7 @@ vi.mock("@agentrail/db-clickhouse", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getFailureResolution: vi.fn(),
   getRepository: vi.fn(),
-  getGithubToken: vi.fn(),
+  getGithubInstallation: vi.fn(),
   getConnector: vi.fn(),
 }));
 
@@ -34,7 +34,7 @@ import { getFailureById } from "@agentrail/db-clickhouse";
 import {
   getFailureResolution,
   getRepository,
-  getGithubToken,
+  getGithubInstallation,
   getConnector,
 } from "@agentrail/db-postgres";
 import FailureDetailPage from "./page";
@@ -112,8 +112,8 @@ describe("FailureDetailPage (#1283 names over ids)", () => {
     vi.mocked(getFailureResolution).mockResolvedValue(
       null as Awaited<ReturnType<typeof getFailureResolution>>
     );
-    vi.mocked(getGithubToken).mockResolvedValue(
-      null as Awaited<ReturnType<typeof getGithubToken>>
+    vi.mocked(getGithubInstallation).mockResolvedValue(
+      null as Awaited<ReturnType<typeof getGithubInstallation>>
     );
     vi.mocked(getConnector).mockResolvedValue(
       null as Awaited<ReturnType<typeof getConnector>>

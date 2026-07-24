@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// The db module is mocked so importing the query graph is side-effect free. The
-// pure mapping never touches it; the wired reconciler resolves getGithubToken via
-// a chainable mock (mirrors github-token-query.test.ts).
-vi.mock("../db.js", () => ({
-  db: { select: vi.fn() },
+// getInstallationToken is mocked as a unit — its own mint/mint-failure paths are
+// covered by github-app-token.test.ts. This file only exercises
+// reconcileRunsCiStatus's own throttle/best-effort logic against a token that's
+// either present or null.
+vi.mock("../queries/github-app-token.js", () => ({
+  getInstallationToken: vi.fn(),
 }));
 
-import { db } from "../db.js";
+import { getInstallationToken } from "../queries/github-app-token.js";
 import {
   parsePrUrl,
   reconcileRunDisplayStatus,
@@ -16,19 +17,6 @@ import {
   reconcileRunsCiStatus,
   type CiConclusion,
 } from "../queries/ci-reconcile.js";
-
-const mockDb = vi.mocked(db);
-
-/** Chainable drizzle-like mock whose terminal `limit` resolves a value. Mirrors
- * the getGithubToken query shape (select→from→innerJoin→where→limit). */
-function makeTokenChain(finalValue: unknown) {
-  const chain: Record<string, unknown> = {};
-  for (const m of ["select", "from", "innerJoin", "where", "limit"]) {
-    chain[m] = vi.fn(() => chain);
-  }
-  chain.limit = vi.fn(() => Promise.resolve(finalValue));
-  return chain;
-}
 
 /** A fake `fetch` returning the given JSON for a 200, keyed by URL substring. */
 function fakeFetch(
@@ -246,13 +234,11 @@ describe("fetchPrCiConclusion (faked fetch)", () => {
 // ---------------------------------------------------------------------------
 describe("reconcileRunsCiStatus (wiring)", () => {
   function withToken(token: string | null) {
-    mockDb.select.mockReturnValue(
-      makeTokenChain(token ? [{ accessToken: token }] : []) as never
-    );
+    vi.mocked(getInstallationToken).mockResolvedValue(token);
   }
 
   it("overrides only the failed-with-PR run whose CI is green; leaves others", async () => {
-    withToken("gho_tok");
+    withToken("ghs_tok");
     const f = fakeFetch([
       { match: "/pulls/7", json: { head: { sha: "s7" } } },
       {
@@ -277,7 +263,7 @@ describe("reconcileRunsCiStatus (wiring)", () => {
   });
 
   it("makes ZERO github calls when no run needs reconciling", async () => {
-    withToken("gho_tok");
+    withToken("ghs_tok");
     const f = vi.fn() as unknown as typeof fetch;
     const result = await reconcileRunsCiStatus(
       "ws-1",
@@ -304,7 +290,7 @@ describe("reconcileRunsCiStatus (wiring)", () => {
   });
 
   it("throttles fetched runs to maxFetches", async () => {
-    withToken("gho_tok");
+    withToken("ghs_tok");
     let pullCalls = 0;
     const f = vi.fn(async (url: string) => {
       if (url.includes("/pulls/")) pullCalls++;
@@ -324,7 +310,7 @@ describe("reconcileRunsCiStatus (wiring)", () => {
   });
 
   it("red CI keeps the run failed (no override emitted)", async () => {
-    withToken("gho_tok");
+    withToken("ghs_tok");
     const f = fakeFetch([
       { match: "/pulls/1", json: { head: { sha: "s" } } },
       {
@@ -342,7 +328,7 @@ describe("reconcileRunsCiStatus (wiring)", () => {
   });
 
   it("pending CI overrides failed → running (AC4) via the wired path", async () => {
-    withToken("gho_tok");
+    withToken("ghs_tok");
     const f = fakeFetch([
       { match: "/pulls/1", json: { head: { sha: "s" } } },
       {

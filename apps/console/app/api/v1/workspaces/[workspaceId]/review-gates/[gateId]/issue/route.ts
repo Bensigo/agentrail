@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
-  getGithubToken,
+  getInstallationToken,
   getRepository,
   getConnector,
   getConnectorSecret,
@@ -105,12 +105,12 @@ async function createGithubIssue(
       { status: 422 }
     );
   }
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return NextResponse.json(
       {
         error:
-          "No GitHub access token for this workspace. Link GitHub (with repo scope) first.",
+          "GitHub is not connected for this workspace. Install the Jace GitHub App first.",
       },
       { status: 422 }
     );
@@ -139,7 +139,7 @@ async function createGithubIssue(
     return NextResponse.json(
       {
         error: reLink
-          ? "GitHub denied the request — re-link GitHub with `repo` scope and retry."
+          ? "GitHub denied the request — the Jace GitHub App is not installed on this repository (or the installation was removed). Reconnect from Connectors and retry."
           : `GitHub rejected the issue (HTTP ${res.status}).`,
         detail: detail.slice(0, 500),
       },

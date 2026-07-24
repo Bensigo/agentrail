@@ -16,7 +16,7 @@
 // `reconcileRunDisplayStatus` so the AC verification is a unit test with a faked
 // CI fetch; the GitHub fetch + throttle are the impure shell around it.
 
-import { getGithubToken } from "./index.js";
+import { getInstallationToken } from "./github-app-token.js";
 
 /** The persisted run status enum (see schema/runs.ts). */
 export type RunDisplayStatus = "queued" | "running" | "success" | "failed";
@@ -246,7 +246,7 @@ export async function reconcileRunsCiStatus(
 
   let token: string | null = null;
   try {
-    token = await getGithubToken(workspaceId);
+    token = await getInstallationToken(workspaceId);
   } catch {
     // Best-effort — no token, no reconciliation.
     return out;

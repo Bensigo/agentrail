@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getConnector,
-  getGithubToken,
+  getInstallationToken,
   getWorkspaceMembership,
   upsertConnector,
 } from "@agentrail/db-postgres";
@@ -73,7 +73,7 @@ async function createHookForRepo(
       repo,
       ok: false,
       error: reLink
-        ? "GitHub denied the request — re-link GitHub with the repo scope, or add the webhook manually below."
+        ? "GitHub denied the request — make sure the Jace GitHub App is installed on this repository, or add the webhook manually below."
         : `GitHub rejected the webhook (HTTP ${res.status})${detail ? `: ${detail.slice(0, 200)}` : ""}.`,
     };
   }
@@ -113,7 +113,7 @@ export async function POST(
 
   const secret = randomBytes(24).toString("hex");
   const targetUrl = webhookTargetUrl(request);
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
 
   const results: RepoResult[] = token
     ? await Promise.all(
@@ -123,7 +123,7 @@ export async function POST(
         repo,
         ok: false,
         error:
-          "No GitHub token for this workspace — the owner must sign in with GitHub (repo scope) first.",
+          "GitHub is not connected for this workspace — install the Jace GitHub App from Connectors first.",
       }));
 
   // Persist the secret regardless of outcome (see module doc): the manual

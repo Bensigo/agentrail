@@ -7,7 +7,7 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   getConnector: vi.fn(),
-  getGithubToken: vi.fn(),
+  getInstallationToken: vi.fn(),
   upsertConnector: vi.fn(),
 }));
 
@@ -16,7 +16,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   getConnector,
-  getGithubToken,
+  getInstallationToken,
   upsertConnector,
 } from "@agentrail/db-postgres";
 
@@ -98,7 +98,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       hasSecret: false,
       updatedAt: null,
     } as never);
-    vi.mocked(getGithubToken).mockResolvedValue("gho_token");
+    vi.mocked(getInstallationToken).mockResolvedValue("ghs_token");
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -122,7 +122,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       "https://api.github.com/repos/acme/repo-a/hooks",
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ Authorization: "Bearer gho_token" }),
+        headers: expect.objectContaining({ Authorization: "Bearer ghs_token" }),
       })
     );
 
@@ -144,7 +144,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       hasSecret: false,
       updatedAt: null,
     } as never);
-    vi.mocked(getGithubToken).mockResolvedValue("gho_token");
+    vi.mocked(getInstallationToken).mockResolvedValue("ghs_token");
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
@@ -164,7 +164,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       {
         repo: "acme/repo-a",
         ok: false,
-        error: expect.stringContaining("re-link GitHub"),
+        error: expect.stringContaining("Jace GitHub App is installed"),
       },
     ]);
     expect(body.secret).toBeTruthy();
@@ -181,7 +181,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
     });
   });
 
-  it("falls back to manual instructions (no GitHub call) when there is no stored GitHub token", async () => {
+  it("falls back to manual instructions (no GitHub call) when there is no bound App installation", async () => {
     vi.mocked(getConnector).mockResolvedValue({
       provider: "github",
       enabled: true,
@@ -193,7 +193,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       hasSecret: false,
       updatedAt: null,
     } as never);
-    vi.mocked(getGithubToken).mockResolvedValue(null);
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
 
     const fetchMock = vi.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
@@ -204,7 +204,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(body.ok).toBe(false);
-    expect(body.results[0].error).toMatch(/no github token/i);
+    expect(body.results[0].error).toMatch(/install the jace github app/i);
     expect(upsertConnector).toHaveBeenCalledWith(WS, "github", {
       config: { webhookSecret: body.secret },
     });

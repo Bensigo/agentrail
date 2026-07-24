@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
-  getGithubToken,
+  getInstallationToken,
   getRepository,
 } from "@agentrail/db-postgres";
 import { getFailureById, type FailureEventRecord } from "@agentrail/db-clickhouse";
@@ -66,12 +66,12 @@ async function createGithubIssue(
     );
   }
 
-  const token = await getGithubToken(workspaceId);
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return NextResponse.json(
       {
         error:
-          "No GitHub access token for this workspace. The owner must link GitHub (with repo scope) first.",
+          "GitHub is not connected for this workspace. Install the Jace GitHub App first.",
       },
       { status: 422 }
     );
@@ -103,15 +103,16 @@ async function createGithubIssue(
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    // 401 = the OAuth token is invalid/expired or was issued before `repo`
-    // scope was granted; 403/404 = present but lacking repo access. Both are
-    // fixed by re-linking GitHub, so say so plainly instead of "HTTP 401".
+    // 401 = the App installation credentials are invalid/expired; 403/404 =
+    // the App is not installed on this repo, or the installation was
+    // removed. Both are fixed by reconnecting from Connectors, so say so
+    // plainly instead of "HTTP 401".
     const reLink =
       res.status === 401 || res.status === 403 || res.status === 404;
     return NextResponse.json(
       {
         error: reLink
-          ? "GitHub denied the request — your GitHub authorization is missing repository access (the `repo` scope). Sign out and sign in again with GitHub to grant it, then retry."
+          ? "GitHub denied the request — the Jace GitHub App is not installed on this repository (or the installation was removed). Reconnect from Connectors and retry."
           : `GitHub rejected the issue (HTTP ${res.status}).`,
         detail: detail.slice(0, 500),
       },

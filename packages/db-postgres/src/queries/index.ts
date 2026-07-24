@@ -1930,8 +1930,9 @@ export {
 // CI reconciliation (#891b) — reconcile a run's DISPLAYED status against the
 // PR's real CI so a green-CI PR is not shown as `failed` from the local gate
 // verdict. Pure mapping + a best-effort GitHub fetch + a throttled read-path
-// enricher. `getGithubToken` is resolved lazily at call time, so the
-// index<->ci-reconcile import cycle is load-order-safe.
+// enricher. ci-reconcile.ts imports `getInstallationToken` directly from
+// `./github-app-token.js` (not from this index), so there is no import cycle
+// to worry about.
 export {
   parsePrUrl,
   reconcileRunDisplayStatus,

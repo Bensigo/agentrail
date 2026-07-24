@@ -275,11 +275,34 @@ one that survives regeneration: edit `.agentrail/context.md` (human doc,
 reads it first — propagates the correction into the prose. Humans steer the
 compiler; they never patch its output.
 
+**Owner ruling (2026-07-23): the wiki view IS the per-repo surface.** The
+Settings-zone "Repos & Health" page is redundant with it and is retired: its
+nav entry is removed, `/repos` becomes a redirect stub to `/wiki` (the
+`queue→work` / `teams→members` precedent, so deep links keep working), and
+the wiki view absorbs its duties — the repo picker becomes a repo list with
+each repo's index health (the `repo-health.ts` healthy/stale/critical chip,
+last-indexed age, short commit, source count; index freshness and wiki
+freshness are different facts and are labeled distinctly), and the one
+management affordance that page had — the owner/admin-gated "Add repo"
+dialog — moves into the wiki view's repo list. Everything else stays
+read-only.
+
 The view:
 
-- **Nav tree** from `links` jsonb: overview on top, unit pages beneath,
-  `unit_depends_on` in/out shown per page — the same navigation index
-  `fetch_repo_wiki list` serves Jace.
+- **Nav tree in file-structure format**: pages are organized hierarchically
+  by the unit's repo path (overview at root; `apps/ → console, jace`,
+  `packages/ → …` as expandable groups mirroring the codebase layout),
+  derived from structural data (`links`/`skeleton`/unit path — never parsed
+  from prose). `unit_depends_on` in/out shown per page — the same navigation
+  index `fetch_repo_wiki list` serves Jace.
+- **Per-page file tree**: the unit's file roster from `skeleton` jsonb
+  renders as a collapsible file tree — the Structure section's data shown as
+  actual structure.
+- **Rendered | Source toggle + download**: Source shows `body_md` verbatim
+  in monospace — the artifact exactly as the LLM consumes it (the
+  what-you-see-is-what-the-LLM-sees rule made literal) — and a "Download
+  .md" button saves the page (client-side, filename from the slug). No new
+  server surface.
 - **Provenance bar** on every page: compiled from `<short-sha>` ·
   `generated_at` · model · last compile cost (from `wiki_compile_events`).
   Stale pages carry a visible stale badge (current `inputs_hash` mismatch),
@@ -288,9 +311,11 @@ The view:
 - **Citations deep-link** to the repo host at the pinned `commit_sha` (blob
   URL), so every prose claim is one click from the source that grounds it —
   names over IDs everywhere, per house rule.
-- **Recompile** is the only affordance: a button that enqueues the existing
-  `onboard`-kind entry (the repos-table "Re-index" precedent) — audited,
-  queue-driven, no direct console-to-LLM path.
+- **Recompile** is the only content affordance: a button surfacing the
+  existing re-index mechanism (the repos-table "Re-index" precedent) —
+  audited, queue-driven, no direct console-to-LLM path. (Add-repo, above, is
+  connection management riding along from the retired page — not a content
+  write path.)
 - Empty state (flag OFF or never compiled): "No wiki compiled yet", with
   the re-index affordance — never a fake page.
 
@@ -387,7 +412,7 @@ from this spec after review):
 | 3 | Pack `repoOverview` (stable prefix) + `wiki_doc` retrieval + authority tier `generated` + orientation-probe fixtures | Flag-OFF pack bytes identical to today; probes runnable via `agentrail context evaluate`; wiki never satisfies a code-file required-source |
 | 4 | Server: `wiki_pages` migration + `wiki_compile_events` (ClickHouse) + ingest route + push from onboard/index + **hydration fetch client** + custody switch | Secret-scan on ingest; replace-by-slug idempotent; hydration test: a fresh clone with server creds regenerates **zero** unchanged pages; migration follows house journal rules; onboarder dual-writes behind flag. (Until this PR, PR 2's compiler is local-only — fine for persistent self-host/dev checkouts, not the fleet) |
 | 5 | Jace `fetch_repo_wiki` + instructions routing | Read-only, untrusted-framed, stale-marked; workspace resolved server-side from session (per the subagent session-id rule); no second write path |
-| 6 | Console Engine-room Wiki view (§4.5) — can land parallel to 5 | Renders `body_md` verbatim from `wiki_pages`; nav from `links`; provenance bar + stale badge + last-compile cost from `wiki_compile_events`; citations deep-link at pinned `commit_sha`; only write affordance = audited re-index enqueue; empty state honest; **browser-verified via minted DB session (CI skips console tests)** |
+| 6 | Console Engine-room Wiki view (§4.5) — can land parallel to 5 | Renders `body_md` verbatim from `wiki_pages`; file-structure nav + per-page roster tree from structural data; Rendered/Source toggle + .md download; absorbs "Repos & Health" (nav entry retired, `/repos` redirect stub, index-health chips in the repo list, Add-repo dialog relocated); provenance bar + stale badge + last-compile cost from `wiki_compile_events`; citations deep-link at pinned `commit_sha`; empty state honest; **browser-verified via minted DB session (CI skips console tests)** |
 | 7 | Eval arm + corpus high-scatter tasks + A/B report → graduation decision | `full-plus-repo_wiki` runnable; ≥3 new tasks (≥1 held-out); two-set verdict recorded; graduation or shelving PR includes the report |
 
 ## 8. Open questions

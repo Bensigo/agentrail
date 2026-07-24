@@ -176,3 +176,80 @@ def test_push_proceeds_by_default_when_no_config_file_exists(tmp_path, monkeypat
     _link(tmp_path)  # no config.json written at all
     monkeypatch.setattr(wiki_push.urllib.request, "urlopen", lambda req, timeout: FakeResp(200))
     assert wiki_push.push_wiki_pages(tmp_path, "acme/widgets", [PAGE]) is True
+
+
+# ---------------------------------------------------------------------------
+# Push chunking (module-grain pages can push a compile's page count well
+# past the server's 40-page cap -- module docstring / push_wiki_pages
+# docstring for the exact contract).
+# ---------------------------------------------------------------------------
+
+
+def _page(slug: str) -> dict:
+    return {**PAGE, "slug": slug}
+
+
+def test_batches_helper_splits_at_the_cap_size():
+    pages = [_page(f"wiki/unit/pkg/m{i}") for i in range(45)]
+    batches = wiki_push._batches(pages, wiki_push.WIKI_PUSH_BATCH_SIZE)
+    assert [len(b) for b in batches] == [40, 5]
+
+
+def test_batches_helper_empty_pages_yields_one_empty_batch():
+    assert wiki_push._batches([], wiki_push.WIKI_PUSH_BATCH_SIZE) == [[]]
+
+
+def test_batches_helper_under_cap_yields_a_single_batch():
+    pages = [_page(f"wiki/unit/pkg/m{i}") for i in range(5)]
+    assert wiki_push._batches(pages, wiki_push.WIKI_PUSH_BATCH_SIZE) == [pages]
+
+
+def test_push_chunks_into_multiple_sequential_batches_when_over_the_cap(tmp_path, monkeypatch):
+    _link(tmp_path)
+    pages = [_page(f"wiki/unit/pkg/m{i}") for i in range(45)]
+    captured_bodies = []
+
+    def fake_urlopen(req, timeout):
+        captured_bodies.append(json.loads(req.data.decode("utf-8")))
+        return FakeResp(200)
+
+    monkeypatch.setattr(wiki_push.urllib.request, "urlopen", fake_urlopen)
+    result = wiki_push.push_wiki_pages(tmp_path, "acme/widgets", pages, compile_event=COMPILE_EVENT)
+
+    assert result is True
+    assert len(captured_bodies) == 2, "45 pages over a 40-page cap must post in 2 sequential batches"
+    assert [len(body["pages"]) for body in captured_bodies] == [40, 5]
+    assert sum((body["pages"] for body in captured_bodies), []) == pages, "no page dropped or duplicated across batches"
+    # The compile event is aggregated into exactly ONE request (the last
+    # batch) -- never duplicated, never dropped.
+    assert "compileEvent" not in captured_bodies[0]
+    assert captured_bodies[1]["compileEvent"] == COMPILE_EVENT
+
+
+def test_push_attempts_every_batch_even_if_an_earlier_one_fails(tmp_path, monkeypatch):
+    _link(tmp_path)
+    pages = [_page(f"wiki/unit/pkg/m{i}") for i in range(45)]
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        body = json.loads(req.data.decode("utf-8"))
+        calls.append(body)
+        # First batch (40 pages) fails; second (5 pages) succeeds.
+        return FakeResp(500 if len(body["pages"]) == 40 else 200)
+
+    monkeypatch.setattr(wiki_push.urllib.request, "urlopen", fake_urlopen)
+    result = wiki_push.push_wiki_pages(tmp_path, "acme/widgets", pages, compile_event=COMPILE_EVENT)
+
+    assert len(calls) == 2, "the second batch must still be attempted after the first fails (best-effort)"
+    assert result is False, "the overall result is False when ANY batch did not land"
+
+
+def test_push_at_or_under_cap_still_sends_exactly_one_request(tmp_path, monkeypatch):
+    """Backward-compat guarantee: chunking must not change behavior for the
+    common case (a compile's page count at or under the cap)."""
+    _link(tmp_path)
+    calls = []
+    monkeypatch.setattr(wiki_push.urllib.request, "urlopen", lambda req, timeout: (calls.append(1), FakeResp(200))[1])
+    result = wiki_push.push_wiki_pages(tmp_path, "acme/widgets", [PAGE], compile_event=COMPILE_EVENT)
+    assert result is True
+    assert len(calls) == 1

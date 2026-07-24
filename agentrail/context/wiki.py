@@ -41,10 +41,18 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from agentrail.context.config import ContextConfig, ProviderConfig
-from agentrail.context.index import append_audit, chunks_for_source, now_iso, unit_contains_path
+from agentrail.context.index import (
+    append_audit,
+    chunks_for_source,
+    is_test_path,
+    normalized_unit_path,
+    now_iso,
+    slugify,
+    unit_contains_path,
+)
 from agentrail.context.models import ChunkRecord, Freshness, SourceRecord
 from agentrail.context.pricing import cost_for
 from agentrail.context.redaction import redact_text
@@ -115,6 +123,38 @@ _UNIT_ID_PREFIX = "codebase-unit:"
 # by fileCount; the cap is logged, never silent (see compile_wiki's audit call).
 MAX_UNIT_PAGES = 24
 
+# Module grain (owner ruling 2026-07-24: "there is no depth -- it's app level
+# instead of module level"; docs/superpowers/specs/2026-07-23-repo-wiki-
+# compiled-repo-knowledge-design.md S3/S4.1, amended this PR). A unit (or a
+# module, recursively) whose file count exceeds this splits by immediate
+# subdirectory into MODULE pages -- see _build_module_tree. Env-overridable
+# so an operator can tune it per-repo without a code change, same convention
+# as WIKI_MAX_COST_ENV.
+MODULE_SPLIT_FILES_ENV = "AGENTRAIL_WIKI_MODULE_SPLIT_FILES"
+DEFAULT_MODULE_SPLIT_FILES = 40
+
+# How many levels BELOW the unit root a split may recurse. depth 0 is the
+# unit's own root; depth 1..MODULE_SPLIT_DEPTH_CAP are module pages. A node
+# that still exceeds the split threshold at the depth cap is forced to stay a
+# (possibly large) leaf rather than recursing further -- bounds compile time
+# and page count on pathological directory trees.
+MODULE_SPLIT_DEPTH_CAP = 3
+
+# A candidate child directory with fewer than this many files is not worth a
+# page of its own -- its files fold up into the PARENT node's own direct
+# files instead (spec: "Directories under a minimum substance floor ...
+# fold into the parent's 'direct files'").
+MODULE_SUBSTANCE_FLOOR = 3
+
+# Total page budget across the WHOLE compile (overview + every unit/module
+# page combined) -- distinct from MAX_UNIT_PAGES, which only bounds how many
+# TOP-LEVEL units get a tree at all. Every included unit's OWN root page
+# (hub or leaf) is always kept; this cap only bounds module-page proliferation
+# underneath, size-ranked (biggest subtree first), dropped pages logged (spec:
+# "no silent caps").
+WIKI_MAX_PAGES_ENV = "AGENTRAIL_WIKI_MAX_PAGES"
+DEFAULT_WIKI_MAX_PAGES = 64
+
 # Prompt bounding (spec build step 3): per-unit roster + file-head sampling.
 UNIT_ROSTER_CAP = 15
 FILE_HEAD_LINES = 40
@@ -160,6 +200,37 @@ def _env_force_enabled() -> bool:
     return (os.environ.get(WIKI_FORCE_ENV) or "").strip() == "1"
 
 
+def module_split_files() -> int:
+    """The file-count threshold that triggers an adaptive module split,
+    overridable via :data:`MODULE_SPLIT_FILES_ENV`. Mirrors
+    :func:`wiki_max_cost_usd`'s exact fallback convention: unset, blank, or
+    unparseable falls back to the default; a non-positive override also
+    falls back (a zero/negative threshold would split every unit down to
+    single files, which is never useful)."""
+    raw = os.environ.get(MODULE_SPLIT_FILES_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_MODULE_SPLIT_FILES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MODULE_SPLIT_FILES
+    return value if value > 0 else DEFAULT_MODULE_SPLIT_FILES
+
+
+def wiki_max_pages() -> int:
+    """The total page budget (overview + every unit/module page), overridable
+    via :data:`WIKI_MAX_PAGES_ENV`. Same fallback convention as
+    :func:`module_split_files`."""
+    raw = os.environ.get(WIKI_MAX_PAGES_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_WIKI_MAX_PAGES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_WIKI_MAX_PAGES
+    return value if value > 0 else DEFAULT_WIKI_MAX_PAGES
+
+
 def wiki_dir_for(root: Path) -> Path:
     return root / ".agentrail" / "context" / "wiki"
 
@@ -180,12 +251,50 @@ def unit_slug(unit: Dict[str, Any]) -> str:
     return f"{_UNIT_SLUG_PREFIX}{_unit_local_id(unit)}"
 
 
+def _module_relpath_slug(unit_path: str, module_path: str) -> str:
+    """The slug component for a module PATH relative to its unit's root:
+    every directory segment between the unit root and the module,
+    individually slugified, then dash-joined into ONE flat component --
+    e.g. unit path ``apps/console`` + module path ``apps/console/app/api/v1``
+    -> ``app-api-v1``. Deliberately flat (not `/`-nested) regardless of how
+    many split levels the module sits at: the slug always has exactly two
+    segments after ``wiki/unit/`` (see :func:`module_slug`) -- console/Jace
+    navigation nesting comes from ``skeleton.path`` (the REAL directory
+    path), not from the slug shape.
+
+    Caveat (accepted, same class of risk the existing unit slug already has
+    via ``index.slugify`` stripping ``/`` entirely): a literal directory
+    named e.g. ``app-api`` and two nested directories ``app/api`` both
+    slugify+join to ``app-api`` -- a theoretical collision, never observed
+    in practice, not worth a heavier scheme for.
+    """
+    normalized_unit = normalized_unit_path(unit_path)
+    normalized_module = normalized_unit_path(module_path)
+    prefix = "" if normalized_unit == "." else f"{normalized_unit}/"
+    rest = normalized_module[len(prefix):] if prefix and normalized_module.startswith(prefix) else normalized_module
+    segments = [segment for segment in rest.split("/") if segment]
+    return "-".join(slugify(segment) for segment in segments) or "module"
+
+
+def module_slug(unit: Dict[str, Any], module_path: str) -> str:
+    """Stable module slug: ``<unit-slug>/<relpath-slug>`` under
+    ``wiki/unit/...`` -- e.g. ``wiki/unit/appsconsole/app-api-v1``. Depends
+    only on the unit's identity and the module's real directory path, so it
+    is stable across recompiles regardless of split-tree shuffling elsewhere
+    in the same unit (spec AC: "slug stability across recompiles")."""
+    return f"{unit_slug(unit)}/{_module_relpath_slug(unit['path'], module_path)}"
+
+
 def slug_to_filename(slug: str) -> str:
-    """slug "wiki/overview" -> overview.md; "wiki/unit/<id>" -> unit__<id>.md."""
+    """slug "wiki/overview" -> overview.md; "wiki/unit/<id>" -> unit__<id>.md;
+    "wiki/unit/<id>/<relpath-slug>" -> unit__<id>__<relpath-slug>.md (the same
+    "__" convention extended one level -- a module slug's single "/" after
+    the unit id becomes another "__")."""
     if slug == OVERVIEW_SLUG:
         return "overview.md"
     if slug.startswith(_UNIT_SLUG_PREFIX):
-        return f"unit__{slug[len(_UNIT_SLUG_PREFIX):]}.md"
+        rest = slug[len(_UNIT_SLUG_PREFIX):]
+        return f"unit__{rest.replace('/', '__')}.md"
     raise ValueError(f"unrecognized wiki slug: {slug!r}")
 
 
@@ -263,6 +372,23 @@ def unit_inputs_hash(unit_files: List[SourceRecord]) -> str:
 def overview_inputs_hash(unit_hashes: List[str]) -> str:
     """sha256 over all unit inputsHashes, sorted."""
     return sha256_text(json.dumps(sorted(unit_hashes), separators=(",", ":")))
+
+
+def hub_inputs_hash(direct_files: List[SourceRecord], child_slugs: List[str]) -> str:
+    """sha256 over a HUB page's own inputs: its direct files' (path,
+    contentHash) pairs, sorted, PLUS its child slug list, sorted -- never
+    over the child pages' own content. This is the stability guarantee
+    (spec S4.2 amendment): editing a file inside a child module recompiles
+    that child alone; a hub only recompiles when its OWN direct files change
+    or the child SET changes (a directory is added/removed/re-bucketed by
+    the split). Used for BOTH a unit that split (the unit's own root page)
+    and a nested module that itself split -- "unit hub follows the same
+    rule" (spec)."""
+    payload = {
+        "directFiles": sorted((record.path, record.contentHash) for record in direct_files),
+        "children": sorted(child_slugs),
+    }
+    return sha256_text(json.dumps(payload, separators=(",", ":")))
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +943,7 @@ def build_overview_prompt(roster_paths: List[str], structure_lines: List[str], d
 # ---------------------------------------------------------------------------
 
 
-def _render_page_body(*, commit_sha: str, responsibility: str, structure_lines: List[str], roster_lines: List[str], relationships: str, related_slugs: List[str]) -> str:
+def _render_page_body(*, commit_sha: str, responsibility: str, structure_lines: List[str], roster_lines: List[str], relationships: str, related_slugs: List[str], child_lines: Optional[List[str]] = None) -> str:
     parts = [
         f"> Compiled from source at {commit_sha}. Verify claims against the cited files; the source is authoritative.",
         "",
@@ -829,6 +955,12 @@ def _render_page_body(*, commit_sha: str, responsibility: str, structure_lines: 
         "",
         "## Key files",
         "\n".join(roster_lines) if roster_lines else "_(no files detected)_",
+    ]
+    if child_lines is not None:
+        # HUB pages only (a split node's page) -- additive section, never
+        # emitted for unit/overview pages, so their body shape is untouched.
+        parts += ["", "## Child modules", "\n".join(child_lines) if child_lines else "_(no child modules)_"]
+    parts += [
         "",
         "## Relationships & invariants",
         relationships.strip(),
@@ -948,6 +1080,388 @@ def _build_unit_skeleton(
 
 
 # ---------------------------------------------------------------------------
+# Module split (owner ruling 2026-07-24: "there is no depth -- it's app
+# level instead of module level; apps/console/auth should get its own
+# compiled knowledge"). Pure, deterministic, computed entirely from the
+# records/graph this module already receives -- the code graph itself is
+# NEVER touched (index.py's detect_codebase_units/build_code_graph are
+# unmodified by this PR).
+#
+# A unit whose file count exceeds module_split_files() splits by IMMEDIATE
+# subdirectory into module pages, recursing up to MODULE_SPLIT_DEPTH_CAP
+# levels below the unit root. A split node's own page becomes a HUB (prose:
+# what it is + one line per child; skeleton: path/directFiles/children/
+# exports-of-its-own-files/counts). A node that does not need to split (or
+# has hit the depth cap, or has no directory left worth splitting into after
+# the substance floor folds small ones up) is a LEAF (full roster + exports
+# + tests + intra-unit module dependency list, module-scope prose cited only
+# against its own files).
+#
+# A unit that never crosses the threshold takes the EXACT pre-existing code
+# path (_build_unit_skeleton / _compile_unit_page_text / render_unit_page,
+# all untouched) -- this section only ever engages for a unit/module that
+# actually splits, so every existing fixture (small test repos, this
+# module's own existing test suite) is byte-for-byte unaffected.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(eq=False)  # identity equality/hash: nodes are unique tree positions,
+                       # not value objects -- lets Phase 2's cap keep a `set` of
+                       # kept node instances (see compile_wiki).
+class _ModuleNode:
+    path: str  # real repo-relative directory path (the unit's own path at depth 0)
+    depth: int  # 0 = the unit root itself; >=1 = a module
+    direct_files: List[SourceRecord]  # files attributed to THIS level (own dir + folded sub-floor dirs)
+    children: List["_ModuleNode"]  # child module nodes, sorted by path; empty => this node is a LEAF
+    all_files: List[SourceRecord]  # every file in this node's full subtree (hub or leaf), sorted by path
+
+    @property
+    def is_hub(self) -> bool:
+        return bool(self.children)
+
+
+def _group_by_immediate_subdir(base_path: str, files: List[SourceRecord]) -> Dict[str, List[SourceRecord]]:
+    """Group FILES (already known to be contained by base_path) by their
+    immediate subdirectory relative to base_path. A file that lives directly
+    in base_path (no further subdirectory) is grouped under the empty-string
+    key. Order within each group is preserved from the input (stable)."""
+    normalized_base = normalized_unit_path(base_path)
+    prefix = "" if normalized_base == "." else f"{normalized_base}/"
+    groups: Dict[str, List[SourceRecord]] = {}
+    for record in files:
+        rest = record.path[len(prefix):] if prefix and record.path.startswith(prefix) else record.path
+        subdir = rest.split("/", 1)[0] if "/" in rest else ""
+        groups.setdefault(subdir, []).append(record)
+    return groups
+
+
+def _build_module_tree(
+    path: str,
+    depth: int,
+    files: List[SourceRecord],
+    split_threshold: int,
+    depth_cap: int,
+    substance_floor: int,
+) -> _ModuleNode:
+    """Recursive, deterministic split plan for one directory's files (spec
+    "adaptive split"). Sorted at every level so two builds over identical
+    inputs produce an identical tree (the split-determinism AC)."""
+    sorted_files = sorted(files, key=lambda record: record.path)
+    if len(sorted_files) <= split_threshold or depth >= depth_cap:
+        return _ModuleNode(path=path, depth=depth, direct_files=sorted_files, children=[], all_files=sorted_files)
+
+    groups = _group_by_immediate_subdir(path, sorted_files)
+    direct = list(groups.pop("", []))
+    normalized_path = normalized_unit_path(path)
+    children: List[_ModuleNode] = []
+    for subdir in sorted(groups):
+        subfiles = groups[subdir]
+        if len(subfiles) < substance_floor:
+            direct.extend(subfiles)  # too small to earn its own page -- folds up
+            continue
+        child_path = subdir if normalized_path == "." else f"{normalized_path}/{subdir}"
+        children.append(_build_module_tree(child_path, depth + 1, subfiles, split_threshold, depth_cap, substance_floor))
+
+    if not children:
+        # Nothing eligible to split into (every immediate subdir was under
+        # the substance floor) -- collapse to a leaf rather than a hub with
+        # zero children.
+        return _ModuleNode(path=path, depth=depth, direct_files=sorted_files, children=[], all_files=sorted_files)
+
+    children.sort(key=lambda node: node.path)
+    return _ModuleNode(
+        path=path,
+        depth=depth,
+        direct_files=sorted(direct, key=lambda record: record.path),
+        children=children,
+        all_files=sorted_files,
+    )
+
+
+def _iter_tree(unit: Dict[str, Any], node: _ModuleNode, parent_slug: Optional[str] = None) -> Iterator[Tuple[_ModuleNode, Optional[str]]]:
+    """Pre-order walk of a unit's split tree: yields (node, parent_slug).
+    ``parent_slug`` is None only for the unit root itself; every descendant's
+    parent_slug is its immediate enclosing node's page slug (the unit's own
+    slug for a depth-1 child, a nested hub's module slug for anything
+    deeper). Children are visited in the tree's already-sorted order, so
+    this walk is itself deterministic."""
+    yield node, parent_slug
+    my_slug = unit_slug(unit) if node.depth == 0 else module_slug(unit, node.path)
+    for child in node.children:
+        yield from _iter_tree(unit, child, my_slug)
+
+
+def _leaf_nodes(node: _ModuleNode) -> List[_ModuleNode]:
+    if not node.children:
+        return [node]
+    leaves: List[_ModuleNode] = []
+    for child in node.children:
+        leaves.extend(_leaf_nodes(child))
+    return leaves
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped counts / exports (mirrors index._codebase_unit_stats and
+# wiki._key_exports's own unit-scoped callers, but computed directly from
+# records/symbol_table -- a module path has no codebase_unit graph node of
+# its own, so this does NOT read graph["nodes"] at all).
+# ---------------------------------------------------------------------------
+
+
+def _symbol_defs_for_paths(paths: set, symbol_table: Dict[str, List[Dict[str, Any]]]) -> List[Tuple[str, Dict[str, Any]]]:
+    """[(name, def), ...] for every symbolTable definition whose file path is
+    IN ``paths`` exactly (set membership, not prefix containment) -- the
+    module-grain sibling of :func:`_unit_symbol_defs`, which uses prefix
+    containment because a unit has no fixed file set to check membership
+    against ahead of time. Reused for both a hub's "own scope" exports
+    (paths = its direct files only) and a leaf's exports (paths = its whole,
+    already-bounded subtree)."""
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    for name, defs in symbol_table.items():
+        for definition in defs:
+            if str(definition.get("path") or "") in paths:
+                out.append((name, definition))
+    return out
+
+
+def _path_symbol_count(paths: set, symbol_table: Dict[str, List[Dict[str, Any]]]) -> int:
+    return sum(1 for defs in symbol_table.values() for definition in defs if str(definition.get("path") or "") in paths)
+
+
+def _module_counts(files: List[SourceRecord], symbol_table: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
+    """{"files", "symbols", "tests"} over FILES -- the same three counts
+    index._codebase_unit_stats computes for a codebase_unit graph node,
+    computed here directly from records/symbol_table (no graph node exists
+    for an arbitrary module path)."""
+    paths = {record.path for record in files}
+    return {
+        "files": len(files),
+        "symbols": _path_symbol_count(paths, symbol_table),
+        "tests": sum(1 for record in files if record.content and is_test_path(record.path)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Module-grain dependency rollup (mirrors index._unit_depends_on_edges
+# exactly, at LEAF-module grain instead of unit grain, scoped to ONE unit's
+# split tree -- computed here from already-built imports_file edges; the
+# graph itself is never touched).
+# ---------------------------------------------------------------------------
+
+
+def _module_depends_on_edges(tree_root: _ModuleNode, edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    leaves = _leaf_nodes(tree_root)
+    if len(leaves) < 2:
+        return []
+    path_to_module: Dict[str, str] = {}
+    for leaf in leaves:
+        for record in leaf.all_files:
+            path_to_module[record.path] = leaf.path
+
+    pair_counts: Dict[Tuple[str, str], int] = {}
+    for edge in edges:
+        if edge.get("kind") != "imports_file":
+            continue
+        target_path = edge.get("targetPath")
+        if not target_path:
+            continue
+        from_module = path_to_module.get(str(edge.get("path") or ""))
+        to_module = path_to_module.get(str(target_path))
+        if not from_module or not to_module or from_module == to_module:
+            continue
+        key = (from_module, to_module)
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    return [
+        {"fromModulePath": from_module, "toModulePath": to_module, "importCount": pair_counts[(from_module, to_module)]}
+        for from_module, to_module in sorted(pair_counts)
+    ]
+
+
+def _module_dependency_paths(module_path: str, module_edges: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    depends_on = sorted({edge["toModulePath"] for edge in module_edges if edge["fromModulePath"] == module_path})
+    depended_by = sorted({edge["fromModulePath"] for edge in module_edges if edge["toModulePath"] == module_path})
+    return depends_on, depended_by
+
+
+def _module_structure_lines(counts: Dict[str, int], exports: List[str], depends_on_paths: List[str], depended_by_paths: List[str]) -> List[str]:
+    exports_text = ", ".join(exports) if exports else "(none detected)"
+    lines = [f"- {_pluralize(counts['files'], 'file')}, {_pluralize(counts['symbols'], 'symbol')}; key exports: {exports_text}"]
+    dep_parts = []
+    if depends_on_paths:
+        dep_parts.append("Depends on (same unit): " + ", ".join(f"`{path}`" for path in depends_on_paths) + ".")
+    if depended_by_paths:
+        dep_parts.append("Depended on by (same unit): " + ", ".join(f"`{path}`" for path in depended_by_paths) + ".")
+    lines.append("- " + " ".join(dep_parts) if dep_parts else "- No intra-unit module dependencies detected.")
+    lines.append(f"- Tests: {_pluralize(counts['tests'], 'test file')} in this module.")
+    return lines
+
+
+def _hub_structure_lines(counts: Dict[str, int], child_count: int, direct_file_count: int) -> List[str]:
+    return [
+        f"- {_pluralize(counts['files'], 'file')} total in this subtree, {_pluralize(counts['symbols'], 'symbol')}.",
+        f"- Split into {_pluralize(child_count, 'child module')}; {_pluralize(direct_file_count, 'file')} directly at this level.",
+        f"- Tests: {_pluralize(counts['tests'], 'test file')} in this subtree.",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Module / hub prompts (grounded ONLY in the skeleton + bounded file heads --
+# same contract every prose call uses: {"responsibility", "fileNotes",
+# "relationships"} JSON, so _parse_prose_json needs no changes).
+# ---------------------------------------------------------------------------
+
+_MODULE_PROMPT_INSTRUCTIONS = """You are writing one page of a compiled repository wiki for AI coding agents.
+You are given a DETERMINISTIC skeleton (file roster, exported symbols,
+module-level dependency edges, test counts) for one MODULE -- a directory
+inside a larger codebase unit that was split out because the unit had too
+many files for a single page. You are also given bounded excerpts of its
+highest-signal files. Do not invent files, structure, or relationships that
+are not shown below -- describe only what the skeleton and excerpts support.
+Every path you cite MUST be wrapped in backticks and MUST be copied verbatim
+from the file roster below; never cite a path that is not in the roster.
+
+Reply with ONLY a JSON object with exactly these keys:
+  "responsibility": 3-6 sentences on what this module is responsible for.
+  "fileNotes": an object mapping EVERY roster path to a single-sentence role
+    description.
+  "relationships": 2-5 sentences on how this module relates to its
+    dependencies/dependents (within the same unit) and any invariants a
+    caller must respect -- every claim citing a roster path in backticks.
+No prose outside the JSON object, no markdown fences."""
+
+_HUB_PROMPT_INSTRUCTIONS = """You are writing one page of a compiled repository wiki for AI coding agents.
+This page describes a directory that had too many files for one page and was
+split into child modules, each with its own page. You are given a
+DETERMINISTIC skeleton (child module paths, this page's own direct files,
+counts) plus bounded excerpts of its direct files. Do not invent children,
+files, or relationships not shown below. Every path you cite MUST be wrapped
+in backticks and copied verbatim from the child-module or direct-file lists
+below.
+
+Reply with ONLY a JSON object with exactly these keys:
+  "responsibility": 2-5 sentences on what this directory is responsible for
+    overall (its children roll up into this).
+  "fileNotes": an object mapping EVERY child module path AND EVERY direct
+    file path listed below to a single-sentence description.
+  "relationships": 1-4 sentences on how the child modules relate to each
+    other and to this page's own direct files -- every claim citing a path
+    in backticks.
+No prose outside the JSON object, no markdown fences."""
+
+
+def build_module_prompt(unit_name: str, module_path: str, roster_paths: List[str], structure_lines: List[str], file_heads: List[Tuple[str, str]]) -> str:
+    lines = [
+        _MODULE_PROMPT_INSTRUCTIONS,
+        "",
+        f"Module: `{module_path}` (part of codebase unit {unit_name})",
+        "",
+        "Deterministic structure:",
+        *structure_lines,
+        "",
+        "File roster (cite ONLY these paths):",
+        *[f"- {path}" for path in roster_paths],
+        "",
+        "File excerpts:",
+    ]
+    for path, head in file_heads:
+        lines.append(f"--- {path} ---")
+        lines.append(head)
+    return "\n".join(lines)
+
+
+def build_hub_prompt(hub_path: str, child_paths: List[str], direct_roster_paths: List[str], structure_lines: List[str], file_heads: List[Tuple[str, str]]) -> str:
+    lines = [
+        _HUB_PROMPT_INSTRUCTIONS,
+        "",
+        f"Directory: `{hub_path}`",
+        "",
+        "Deterministic structure:",
+        *structure_lines,
+        "",
+        "Child modules (cite ONLY these paths, one fileNotes entry each):",
+        *([f"- {path}" for path in child_paths] if child_paths else ["(none)"]),
+        "",
+        "Direct files at this level (cite ONLY these paths, one fileNotes entry each):",
+        *([f"- {path}" for path in direct_roster_paths] if direct_roster_paths else ["(none)"]),
+    ]
+    if file_heads:
+        lines.append("")
+        lines.append("File excerpts (direct files only):")
+        for path, head in file_heads:
+            lines.append(f"--- {path} ---")
+            lines.append(head)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Module / hub page assembly (reuses _render_page_body -- the frozen body
+# layout -- via its optional child_lines section; see below).
+# ---------------------------------------------------------------------------
+
+
+def _module_title(unit: Dict[str, Any], module_path: str) -> str:
+    return f"{module_path} — module of {unit.get('name') or unit['path']}"
+
+
+def render_module_page(*, unit: Dict[str, Any], module_path: str, commit_sha: str, generated_at: str, model: str, inputs_hash: str, roster: List[SourceRecord], structure_lines: List[str], prose: Dict[str, Any], related_slugs: List[str]) -> Tuple[str, int]:
+    slug = module_slug(unit, module_path)
+    title = _module_title(unit, module_path)
+    roster_paths = {record.path for record in roster}
+    responsibility = prose.get("responsibility") or _PROSE_UNAVAILABLE
+    relationships_raw = prose.get("relationships") or _PROSE_UNAVAILABLE
+    file_notes = prose.get("fileNotes") or {}
+    relationships, removed = validate_citations(relationships_raw, roster_paths)
+    roster_lines = [f"- {record.path} — {file_notes.get(record.path, '_(prose unavailable)_')}" for record in roster]
+    body = _render_page_body(commit_sha=commit_sha, responsibility=responsibility, structure_lines=structure_lines, roster_lines=roster_lines, relationships=relationships, related_slugs=related_slugs)
+    frontmatter = _render_frontmatter({
+        "slug": slug,
+        "title": title,
+        "kind": "module",
+        "commitSha": commit_sha,
+        "inputsHash": inputs_hash,
+        "generatedAt": generated_at,
+        "model": model,
+        "citations": sorted(roster_paths),
+    })
+    return frontmatter + "\n\n" + body, removed
+
+
+def render_hub_page(*, unit: Dict[str, Any], hub_path: str, is_root: bool, commit_sha: str, generated_at: str, model: str, inputs_hash: str, direct_files: List[SourceRecord], children: List[Tuple[str, str]], structure_lines: List[str], prose: Dict[str, Any], related_slugs: List[str]) -> Tuple[str, int]:
+    """``children``: [(child real path, child slug), ...], already sorted."""
+    slug = unit_slug(unit) if is_root else module_slug(unit, hub_path)
+    title = _unit_title(unit) if is_root else _module_title(unit, hub_path)
+    kind = "unit" if is_root else "module"
+    roster_paths = {record.path for record in direct_files} | {path for path, _slug in children}
+    responsibility = prose.get("responsibility") or _PROSE_UNAVAILABLE
+    relationships_raw = prose.get("relationships") or _PROSE_UNAVAILABLE
+    notes = prose.get("fileNotes") or {}
+    relationships, removed = validate_citations(relationships_raw, roster_paths)
+    roster_lines = [f"- {record.path} — {notes.get(record.path, '_(prose unavailable)_')}" for record in direct_files]
+    child_lines = [f"- `{path}` — [[{child_slug}]] — {notes.get(path, '_(prose unavailable)_')}" for path, child_slug in children]
+    body = _render_page_body(
+        commit_sha=commit_sha,
+        responsibility=responsibility,
+        structure_lines=structure_lines,
+        roster_lines=roster_lines,
+        relationships=relationships,
+        related_slugs=related_slugs,
+        child_lines=child_lines,
+    )
+    frontmatter = _render_frontmatter({
+        "slug": slug,
+        "title": title,
+        "kind": kind,
+        "commitSha": commit_sha,
+        "inputsHash": inputs_hash,
+        "generatedAt": generated_at,
+        "model": model,
+        "citations": sorted(roster_paths),
+    })
+    return frontmatter + "\n\n" + body, removed
+
+
+# ---------------------------------------------------------------------------
 # Per-page compile (skeleton + prose, ALWAYS regenerates — caller decides reuse)
 # ---------------------------------------------------------------------------
 
@@ -1038,6 +1552,102 @@ def _compile_overview_page_text(
         dependency_lines=dependency_lines,
         prose=prose,
         related_slugs=related,
+    )
+
+
+def _compile_module_page_text(
+    root: Path,
+    cfg: ContextConfig,
+    mode: str,
+    model: str,
+    *,
+    unit: Dict[str, Any],
+    node: _ModuleNode,
+    structure_lines: List[str],
+    commit_sha: str,
+    inputs_hash: str,
+    related_slugs: List[str],
+    tracker: _CostTracker,
+) -> Tuple[str, int]:
+    """LEAF module page (a nested split-tree node with no children of its
+    own). Roster is the module's FULL subtree -- never UNIT_ROSTER_CAP-
+    truncated, since a leaf is already bounded to at most module_split_files()
+    files by construction (spec: "Leaf modules: full roster")."""
+    generated_at = now_iso()
+    roster = node.all_files
+    provider_available = mode in {"claude-cli", "custom-command", "openai-compatible"}
+    prose: Dict[str, Any] = {}
+    used_model = "skeleton-only"
+    if roster and provider_available:
+        heads = _build_file_heads(roster)
+        prompt = build_module_prompt(str(unit.get("name") or unit["path"]), node.path, [record.path for record in roster], structure_lines, heads)
+        parsed, status = _generate_prose(root, cfg.summary, mode, model, prompt, tracker)
+        if status == "ok" and parsed is not None:
+            responsibility, file_notes, relationships = _truncate_prose(parsed["responsibility"], parsed["fileNotes"], parsed["relationships"])
+            prose = {"responsibility": responsibility, "fileNotes": file_notes, "relationships": relationships}
+            used_model = model
+
+    return render_module_page(
+        unit=unit,
+        module_path=node.path,
+        commit_sha=commit_sha,
+        generated_at=generated_at,
+        model=used_model,
+        inputs_hash=inputs_hash,
+        roster=roster,
+        structure_lines=structure_lines,
+        prose=prose,
+        related_slugs=related_slugs,
+    )
+
+
+def _compile_hub_page_text(
+    root: Path,
+    cfg: ContextConfig,
+    mode: str,
+    model: str,
+    *,
+    unit: Dict[str, Any],
+    node: _ModuleNode,
+    is_root: bool,
+    child_entries: List[Tuple[str, str]],
+    structure_lines: List[str],
+    commit_sha: str,
+    inputs_hash: str,
+    related_slugs: List[str],
+    tracker: _CostTracker,
+) -> Tuple[str, int]:
+    """HUB page -- either a unit's own root page (when the unit itself split)
+    or a nested module that itself split further. Prompted over its OWN
+    direct files plus the child roster (paths only, no excerpts -- children
+    get their own bounded prompt on their own page)."""
+    generated_at = now_iso()
+    direct_files = node.direct_files
+    provider_available = mode in {"claude-cli", "custom-command", "openai-compatible"}
+    prose: Dict[str, Any] = {}
+    used_model = "skeleton-only"
+    if (direct_files or child_entries) and provider_available:
+        heads = _build_file_heads(direct_files)
+        prompt = build_hub_prompt(node.path, [path for path, _slug in child_entries], [record.path for record in direct_files], structure_lines, heads)
+        parsed, status = _generate_prose(root, cfg.summary, mode, model, prompt, tracker)
+        if status == "ok" and parsed is not None:
+            responsibility, notes, relationships = _truncate_prose(parsed["responsibility"], parsed["fileNotes"], parsed["relationships"])
+            prose = {"responsibility": responsibility, "fileNotes": notes, "relationships": relationships}
+            used_model = model
+
+    return render_hub_page(
+        unit=unit,
+        hub_path=node.path,
+        is_root=is_root,
+        commit_sha=commit_sha,
+        generated_at=generated_at,
+        model=used_model,
+        inputs_hash=inputs_hash,
+        direct_files=direct_files,
+        children=child_entries,
+        structure_lines=structure_lines,
+        prose=prose,
+        related_slugs=related_slugs,
     )
 
 
@@ -1147,43 +1757,217 @@ def compile_wiki(
 
     non_wiki_records = [record for record in records if record.sourceType != SOURCE_TYPE]
 
+    # --- Module split: Phase 1 -- pure, cheap split-plan for every included
+    # unit (no compilation, no I/O yet). Independent of the total-page cap
+    # below: a hub's inputsHash depends on its FULL planned child set, never
+    # on which pages the cap happened to keep this particular run.
+    split_threshold = module_split_files()
+    max_pages = wiki_max_pages()
+    unit_plans: List[Tuple[Dict[str, Any], _ModuleNode, List[Dict[str, Any]]]] = []
     for unit in included:
-        node = nodes_by_unit_id.get(unit["id"], {})
         unit_files = sorted((record for record in non_wiki_records if unit_contains_path(str(unit["path"]), record.path)), key=lambda record: record.path)
-        inputs_hash = unit_inputs_hash(unit_files)
-        unit_hashes.append(inputs_hash)
-        slug = unit_slug(unit)
-        page_path = wiki_dir / slug_to_filename(slug)
-        # Deterministic skeleton bundle -- computed regardless of reuse (see
-        # _build_unit_skeleton's docstring) so manifest.json's skeleton/links
-        # are never stale even when the page .md itself is reused untouched.
-        skeleton = _build_unit_skeleton(unit, node, unit_files, symbol_table, units_by_id, id_to_name, unit_depends_on_edges)
+        tree = _build_module_tree(str(unit["path"]), 0, unit_files, split_threshold, MODULE_SPLIT_DEPTH_CAP, MODULE_SUBSTANCE_FLOOR)
+        module_edges = _module_depends_on_edges(tree, graph.get("edges", []))
+        unit_plans.append((unit, tree, module_edges))
 
-        existing_hash = None if force else _existing_page_hash(page_path)
-        if existing_hash == inputs_hash and page_path.is_file():
-            full_text = page_path.read_text(encoding="utf-8")
-            pages_reused += 1
-        else:
-            full_text, removed = _compile_unit_page_text(
-                root, cfg, mode, model, unit, node, skeleton, commit_sha, inputs_hash, tracker,
-            )
-            citations_removed += removed
-            page_path.parent.mkdir(parents=True, exist_ok=True)
-            page_path.write_text(full_text, encoding="utf-8")
-            pages_written += 1
-
-        record, chunks = _mint_wiki_source(root, page_path, full_text)
-        new_records.append(record)
-        new_chunks.extend(chunks)
-        manifest_pages.append({
-            "slug": slug,
-            "title": _unit_title(unit),
-            "file": to_posix(page_path.relative_to(root)),
-            "inputsHash": inputs_hash,
-            "stale": False,
-            "skeleton": skeleton["manifest_skeleton"],
-            "links": skeleton["manifest_links"],
+    # --- Phase 2: total-page cap (spec: "size-ranked keep, dropped pages
+    # logged, never silent"). Every included unit's OWN root page (hub or
+    # leaf) is always kept -- MAX_UNIT_PAGES above already decided unit
+    # inclusion; this cap only bounds MODULE proliferation underneath,
+    # size-ranked by subtree file count (same heuristic MAX_UNIT_PAGES
+    # already uses for units), tie-broken by unit id then path so the choice
+    # is deterministic.
+    non_root_candidates: List[Tuple[Dict[str, Any], _ModuleNode]] = []
+    for unit, tree, _module_edges in unit_plans:
+        for node, _parent_slug in _iter_tree(unit, tree):
+            if node.depth > 0:
+                non_root_candidates.append((unit, node))
+    # Cascade-safe by construction, no explicit cascade logic needed: an
+    # ancestor's all_files is always a SUPERSET of any descendant's (so its
+    # file count is always >= the descendant's), and on a tie its path is
+    # always a strict string-prefix of the descendant's (so it sorts first).
+    # A node can therefore never rank worse than one of its own descendants
+    # -- it is impossible for a child to be kept while its parent hub is
+    # dropped, so a kept hub's "children" list never dangles.
+    non_root_candidates.sort(key=lambda pair: (-len(pair[1].all_files), str(pair[0]["id"]), pair[1].path))
+    remaining_budget = max(0, max_pages - 1 - len(included))  # -1 overview; roots always kept
+    kept_nodes = {node for _unit, node in non_root_candidates[:remaining_budget]}
+    dropped_pairs = non_root_candidates[remaining_budget:]
+    module_pages_dropped = sorted(module_slug(unit, node.path) for unit, node in dropped_pairs)
+    if module_pages_dropped:
+        append_audit(root, {
+            "event": "wiki_compile",
+            "action": "module_pages_capped",
+            "cap": max_pages,
+            "dropped": module_pages_dropped,
         })
+
+    # --- Phase 3: compile (hash-diff reuse or regenerate) every kept node,
+    # unit by unit, in the tree's own deterministic pre-order.
+    for unit, tree, module_edges in unit_plans:
+        node = nodes_by_unit_id.get(unit["id"], {})
+
+        if not tree.children:
+            # UNCHANGED existing behavior: a unit that never needed to split
+            # renders EXACTLY as before this PR (byte-identical) -- the
+            # common case for every unit under module_split_files() files.
+            unit_files = tree.all_files
+            inputs_hash = unit_inputs_hash(unit_files)
+            unit_hashes.append(inputs_hash)
+            slug = unit_slug(unit)
+            page_path = wiki_dir / slug_to_filename(slug)
+            skeleton = _build_unit_skeleton(unit, node, unit_files, symbol_table, units_by_id, id_to_name, unit_depends_on_edges)
+
+            existing_hash = None if force else _existing_page_hash(page_path)
+            if existing_hash == inputs_hash and page_path.is_file():
+                full_text = page_path.read_text(encoding="utf-8")
+                pages_reused += 1
+            else:
+                full_text, removed = _compile_unit_page_text(
+                    root, cfg, mode, model, unit, node, skeleton, commit_sha, inputs_hash, tracker,
+                )
+                citations_removed += removed
+                page_path.parent.mkdir(parents=True, exist_ok=True)
+                page_path.write_text(full_text, encoding="utf-8")
+                pages_written += 1
+
+            record, chunks = _mint_wiki_source(root, page_path, full_text)
+            new_records.append(record)
+            new_chunks.extend(chunks)
+            manifest_pages.append({
+                "slug": slug,
+                "title": _unit_title(unit),
+                "file": to_posix(page_path.relative_to(root)),
+                "inputsHash": inputs_hash,
+                "stale": False,
+                "skeleton": skeleton["manifest_skeleton"],
+                "links": skeleton["manifest_links"],
+            })
+            continue
+
+        # The unit split: its own root page is a HUB, plus every kept node
+        # in its tree (hub or leaf, depth >= 1) gets a MODULE page.
+        for split_node, parent_slug in _iter_tree(unit, tree):
+            is_root = split_node.depth == 0
+            if not is_root and split_node not in kept_nodes:
+                continue
+
+            if split_node.children:
+                # HUB (the unit's own root, or a nested module that itself split).
+                child_entries = [(child.path, module_slug(unit, child.path)) for child in split_node.children]
+                child_slugs = [slug for _path, slug in child_entries]
+                counts = _module_counts(split_node.all_files, symbol_table)
+                exports = _key_exports(_symbol_defs_for_paths({record.path for record in split_node.direct_files}, symbol_table))
+                inputs_hash = hub_inputs_hash(split_node.direct_files, child_slugs)
+                structure_lines = _hub_structure_lines(counts, len(split_node.children), len(split_node.direct_files))
+
+                if is_root:
+                    slug = unit_slug(unit)
+                    depends_on_slugs, depended_by_slugs = _unit_dependency_slugs(unit["id"], units_by_id, unit_depends_on_edges)
+                    related = sorted(set(child_slugs) | set(_unit_related_slugs(unit["id"], units_by_id, unit_depends_on_edges)))
+                    unit_hashes.append(inputs_hash)
+                else:
+                    slug = module_slug(unit, split_node.path)
+                    depends_on_slugs, depended_by_slugs = [], []
+                    related = sorted(set(child_slugs) | ({parent_slug} if parent_slug else set()) | {OVERVIEW_SLUG})
+
+                page_path = wiki_dir / slug_to_filename(slug)
+                existing_hash = None if force else _existing_page_hash(page_path)
+                if existing_hash == inputs_hash and page_path.is_file():
+                    full_text = page_path.read_text(encoding="utf-8")
+                    pages_reused += 1
+                else:
+                    full_text, removed = _compile_hub_page_text(
+                        root, cfg, mode, model,
+                        unit=unit, node=split_node, is_root=is_root, child_entries=child_entries,
+                        structure_lines=structure_lines, commit_sha=commit_sha, inputs_hash=inputs_hash,
+                        related_slugs=related, tracker=tracker,
+                    )
+                    citations_removed += removed
+                    page_path.parent.mkdir(parents=True, exist_ok=True)
+                    page_path.write_text(full_text, encoding="utf-8")
+                    pages_written += 1
+
+                record, chunks = _mint_wiki_source(root, page_path, full_text)
+                new_records.append(record)
+                new_chunks.extend(chunks)
+                direct_paths = [record.path for record in split_node.direct_files]
+                manifest_pages.append({
+                    "slug": slug,
+                    "title": _unit_title(unit) if is_root else _module_title(unit, split_node.path),
+                    "file": to_posix(page_path.relative_to(root)),
+                    "inputsHash": inputs_hash,
+                    "stale": False,
+                    "skeleton": {
+                        "path": split_node.path,
+                        "pageKind": "hub",
+                        "unitSlug": unit_slug(unit),
+                        "directFiles": direct_paths,
+                        # "files" duplicates directFiles under the SAME key
+                        # existing unit-page skeletons already use for their
+                        # roster -- console's deriveFileRoster (wiki-tree.ts)
+                        # reads skeleton.files generically for ANY page kind,
+                        # so a hub's per-page file-roster panel keeps working
+                        # unmodified once a unit crosses the split threshold.
+                        "files": direct_paths,
+                        "children": child_slugs,
+                        "exports": list(exports),
+                        "counts": counts,
+                        "dependsOn": depends_on_slugs,
+                        "dependedOnBy": depended_by_slugs,
+                    },
+                    "links": {"related": related, "dependsOn": depends_on_slugs, "dependedOnBy": depended_by_slugs},
+                })
+                continue
+
+            # LEAF module (a nested split-tree node with no children).
+            slug = module_slug(unit, split_node.path)
+            counts = _module_counts(split_node.all_files, symbol_table)
+            exports = _key_exports(_symbol_defs_for_paths({record.path for record in split_node.all_files}, symbol_table))
+            depends_on_paths, depended_by_paths = _module_dependency_paths(split_node.path, module_edges)
+            depends_on_slugs = [module_slug(unit, path) for path in depends_on_paths]
+            depended_by_slugs = [module_slug(unit, path) for path in depended_by_paths]
+            structure_lines = _module_structure_lines(counts, exports, depends_on_paths, depended_by_paths)
+            inputs_hash = unit_inputs_hash(split_node.all_files)
+            related = sorted(set(depends_on_slugs) | set(depended_by_slugs) | ({parent_slug} if parent_slug else set()) | {OVERVIEW_SLUG})
+
+            page_path = wiki_dir / slug_to_filename(slug)
+            existing_hash = None if force else _existing_page_hash(page_path)
+            if existing_hash == inputs_hash and page_path.is_file():
+                full_text = page_path.read_text(encoding="utf-8")
+                pages_reused += 1
+            else:
+                full_text, removed = _compile_module_page_text(
+                    root, cfg, mode, model,
+                    unit=unit, node=split_node, structure_lines=structure_lines,
+                    commit_sha=commit_sha, inputs_hash=inputs_hash, related_slugs=related, tracker=tracker,
+                )
+                citations_removed += removed
+                page_path.parent.mkdir(parents=True, exist_ok=True)
+                page_path.write_text(full_text, encoding="utf-8")
+                pages_written += 1
+
+            record, chunks = _mint_wiki_source(root, page_path, full_text)
+            new_records.append(record)
+            new_chunks.extend(chunks)
+            manifest_pages.append({
+                "slug": slug,
+                "title": _module_title(unit, split_node.path),
+                "file": to_posix(page_path.relative_to(root)),
+                "inputsHash": inputs_hash,
+                "stale": False,
+                "skeleton": {
+                    "path": split_node.path,
+                    "pageKind": "leaf",
+                    "unitSlug": unit_slug(unit),
+                    "files": [record.path for record in split_node.all_files],
+                    "exports": list(exports),
+                    "counts": counts,
+                    "dependsOn": depends_on_slugs,
+                    "dependedOnBy": depended_by_slugs,
+                },
+                "links": {"related": related, "dependsOn": depends_on_slugs, "dependedOnBy": depended_by_slugs},
+            })
 
     overview_hash = overview_inputs_hash(unit_hashes)
     overview_path = wiki_dir / "overview.md"
@@ -1248,6 +2032,10 @@ def compile_wiki(
         "costCeilingUsd": tracker.ceiling,
         "costCeilingExceeded": tracker.exceeded,
         "unpricedModel": tracker.unpriced_model,
+        "totalPages": len(manifest_pages),  # manifest_pages already includes the overview (inserted above)
+        "pagesTotalCap": max_pages,
+        "moduleSplitThreshold": split_threshold,
+        "modulePagesDropped": module_pages_dropped,
     }
     write_json(wiki_dir / "compile-report.json", report)
     append_audit(root, {
@@ -1438,9 +2226,25 @@ def _age_seconds(generated_at: Any, now: datetime) -> Optional[float]:
 
 
 def _current_unit_hashes(root: Path) -> Dict[str, str]:
-    """Recompute every unit's CURRENT inputsHash from the on-disk index (the
-    same index ``agentrail context index`` last wrote — this does not rebuild
-    it), for ``wiki_status``'s live staleness comparison."""
+    """Recompute every page's (unit, hub, AND module grain) CURRENT
+    inputsHash from the on-disk index (the same index ``agentrail context
+    index`` last wrote — this does not rebuild it), for ``wiki_status``'s
+    live staleness comparison.
+
+    Mirrors :func:`compile_wiki`'s Phase 1/3 hash rules exactly -- a leaf
+    (unit root that never split, or a nested module) hashes via
+    :func:`unit_inputs_hash` over its own subtree; a hub (unit root that
+    split, or a nested module that itself split) hashes via
+    :func:`hub_inputs_hash` over its own direct files + child slug set. This
+    match matters: reusing the OLD flat-subtree hash for every unit
+    regardless of split state would make ``wiki status`` report a split
+    unit's own page as permanently stale (comparing two different hash
+    formulas), and skipping module paths entirely (they have no
+    codebase_unit graph node) would silently miss real staleness for every
+    module page. The total-page cap is deliberately NOT replicated here --
+    a page absent from the manifest (dropped by the cap) has no entry to
+    compare against regardless of what this function computes for its slug.
+    """
     from agentrail.context.index import _source_record_from_json, load_index  # deferred: read-only path
 
     try:
@@ -1454,13 +2258,26 @@ def _current_unit_hashes(root: Path) -> Dict[str, str]:
         if isinstance(raw, dict) and raw.get("sourceType") != SOURCE_TYPE
     ]
     unit_nodes = [node for node in graph.get("nodes", []) if node.get("kind") == "codebase_unit"]
+    split_threshold = module_split_files()
     hashes: Dict[str, str] = {}
+    unit_root_hashes: List[str] = []
     for node in unit_nodes:
         unit = {"id": str(node["unitId"]), "name": node.get("name"), "path": node.get("path")}
         unit_files = [record for record in records if unit_contains_path(str(unit["path"]), record.path)]
-        hashes[unit_slug(unit)] = unit_inputs_hash(unit_files)
-    if hashes:
-        hashes[OVERVIEW_SLUG] = overview_inputs_hash(sorted(hashes.values()))
+        tree = _build_module_tree(str(unit["path"]), 0, unit_files, split_threshold, MODULE_SPLIT_DEPTH_CAP, MODULE_SUBSTANCE_FLOOR)
+        for split_node, _parent_slug in _iter_tree(unit, tree):
+            is_root = split_node.depth == 0
+            if split_node.children:
+                child_slugs = [module_slug(unit, child.path) for child in split_node.children]
+                page_hash = hub_inputs_hash(split_node.direct_files, child_slugs)
+            else:
+                page_hash = unit_inputs_hash(split_node.all_files)
+            slug = unit_slug(unit) if is_root else module_slug(unit, split_node.path)
+            hashes[slug] = page_hash
+            if is_root:
+                unit_root_hashes.append(page_hash)
+    if unit_root_hashes:
+        hashes[OVERVIEW_SLUG] = overview_inputs_hash(unit_root_hashes)
     return hashes
 
 

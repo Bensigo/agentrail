@@ -98,7 +98,7 @@ orientation).
 | Decision | Choice |
 |---|---|
 | Artifact name | **Repo Wiki**; pages are `sourceType="wiki_doc"` index records; local files under `.agentrail/context/wiki/` are a **disposable per-clone materialization** (generated cache) — never committed or PR'd into the user's repo |
-| Page grain | One **repo overview** page + one page per **Codebase Unit** (existing detection, `index.py detect_codebase_units`; 8 units on this repo). Explicitly NOT per-file or per-symbol in v1 — symbol node IDs are path+name+line-keyed and rename-fragile; unit IDs are the only stable grain |
+| Page grain | **Three levels** (amended 2026-07-24, owner ruling: *"there is no depth — it's app level instead of module level; apps/console/auth should get its own compiled knowledge"*): one **repo overview** page, one page per **Codebase Unit** (existing detection, `index.py detect_codebase_units`), and — new — **module** pages: a unit (or, recursively, a module) whose file count exceeds `AGENTRAIL_WIKI_MODULE_SPLIT_FILES` (env, default 40) adaptively splits by immediate subdirectory, up to 3 levels below the unit root; a directory under a 3-file substance floor folds into its parent's own "direct files" instead of earning a page. A split node's own page becomes a **hub** (prose: what it is + one line per child; skeleton: `path`/`directFiles`/`children` slugs/exports-of-its-own-files/counts); a node that never needed to split (the common case) is a **leaf**, unchanged from the original per-unit page shape, now also used for a module (full roster + exports + tests + an intra-unit module dependency list rolled up from `imports_file` at module grain). Still explicitly NOT per-file or per-symbol — symbol node IDs are path+name+line-keyed and rename-fragile; unit and module directory paths are the stable grains. Total page budget `AGENTRAIL_WIKI_MAX_PAGES` (default 64) across the whole compile, size-ranked keep (a unit's own root page is never dropped by this cap — only module pages underneath it are), logged never silent — see `context/wiki.py`'s module-split section |
 | Structure vs prose | Skeleton is 100% deterministic (unit file roster, exported symbols from `symbolTable`, unit→unit dependency edges, test coverage counts, manifests). The LLM writes only the prose (responsibilities, relationships, invariants) grounded in the skeleton — it organizes, it does not invent structure |
 | New graph data | `unit_depends_on` edges: deterministic aggregation of existing `imports_file` edges through `contains_file` membership. `deterministic: true` — this is rollup, not Graph Enrichment; the `enrichment` stub stays `not_used` |
 | Compile trigger | Inside `build_index` when `ContextConfig.summary.mode != "disabled"` — **filling the existing empty slot**, not adding a parallel config. Onboard (`run_onboard`) enables it; incremental thereafter |
@@ -124,7 +124,7 @@ A wiki page is markdown with YAML frontmatter:
 ---
 slug: wiki/unit/agentrail-context        # stable identity: unit id
 title: agentrail/context — Context Compiler
-kind: unit                                # overview | unit
+kind: unit                                # overview | unit | module
 commitSha: 129103aa
 inputsHash: sha256:…                      # over sorted (path, contentHash) of unit files
 generatedAt: 2026-07-23T14:00:00Z
@@ -157,6 +157,51 @@ The **overview page** is the same shape at repo grain: what the product is
 unit dependency diagram as a text edge list. Page budget: ≤ 1,200 output
 tokens per page, ≤ 24 unit pages per repo (larger repos get the biggest 24
 units by file count; the cap is `log()`-ged, never silent).
+
+**Module pages (amended 2026-07-24).** A 557-file app is one Codebase Unit —
+and one page for it can only be vague. When a unit's file count exceeds
+`AGENTRAIL_WIKI_MODULE_SPLIT_FILES` (default 40), the compiler adaptively
+splits it by immediate subdirectory into module pages, recursing up to 3
+levels below the unit root; a candidate subdirectory under a 3-file
+substance floor folds into its parent's own "direct files" rather than
+earning a page (deterministic: sorted, thresholds explicit, every number
+read off the index/graph the compiler already built — never invented). A
+split node's own page becomes a **hub**: prose is "what it is + one line per
+child"; skeleton is `{path, directFiles, children: [slugs], exports (its own
+direct files only — a child's exports live on the child's page), counts:
+{files, symbols, tests}}`. A node that never needed to split — the unit root,
+in the common case, or a module once recursion bottoms out — is a **leaf**:
+the pre-existing per-unit shape (full roster + exports + tests), now also
+carrying an intra-unit module dependency list (`imports_file` edges rolled up
+to module grain by path prefix, computed in `wiki.py` — the code graph itself
+is never touched), and prose cited ONLY against that module's own files.
+Module slugs are `<unit-slug>/<relpath-slug>` under `wiki/unit/...` (e.g.
+`wiki/unit/appsconsole/app-api-v1` for `apps/console/app/api/v1`) — flat,
+one segment regardless of split depth, stable across recompiles; the
+`wiki/unit/<id>__<relpath-slug>.md` filename extends the pre-existing `__`
+convention one level. `inputsHash` differs by kind: a leaf hashes its
+subtree's `(path, contentHash)` pairs (unchanged rule); a hub hashes its OWN
+direct files plus its child SLUG LIST — never a child's content — so editing
+a file inside one module recompiles that module alone, and a hub (unit-root
+or nested) only recompiles when its own direct files change or the child SET
+changes. A SEPARATE total-page cap (`AGENTRAIL_WIKI_MAX_PAGES`, default 64,
+size-ranked keep, logged never silent) bounds module-page proliferation
+underneath an included unit; a unit's own root page, once selected by the
+existing 24-unit cap, is never itself dropped by this second cap.
+
+Wire/DB compatibility: the server's `wiki_pages.kind` enum and the ingest
+route's validator (PR 4/7, already shipped) know only `overview`/`unit`.
+Rather than a migration in this PR, a module page's WIRE `kind` collapses to
+`unit` at the push-assembly boundary (`assemble_wiki_pages`'s pre-existing
+"anything not overview/unit falls back to unit" branch — already there,
+unmodified) while its LOCAL frontmatter keeps the real `module` value for
+`agentrail context wiki status/show` and hub/leaf skeleton distinction stays
+in `skeleton.pageKind` (opaque JSON, PR 2's own territory per the `wiki_pages`
+schema comment). Console nav needs no change either: `wiki-tree.ts` already
+groups purely by `skeleton.path` segments, so a deeper module path nests
+under its unit with zero console-side changes. A follow-up PR can extend the
+Postgres enum + route validator to a real third `module` value once wanted;
+until then this is additive, not a breaking change to unwind.
 
 The `[[slug]]` links plus `unit_depends_on` edges make pages *navigable*:
 identify concept → open page → follow explicit relationships → Read cited

@@ -5,6 +5,7 @@ import type {
   TelemetryEventRecord,
   FailureEventRecord,
   IndexSnapshotRecord,
+  WikiCompileEventRecord,
 } from "./schema";
 
 export type CostGroupBy = "team" | "repo" | "api_key" | "run";
@@ -694,6 +695,68 @@ export async function insertWikiCompileEvents(
   });
 
   return toInsert.length;
+}
+
+/**
+ * Most recent compile event for a repo — backs the console Engine-room Wiki
+ * view's provenance bar (Repo Wiki spec §4.5 "last compile cost", delivery
+ * plan §7 row 6). Postgres `wiki_pages` carries per-PAGE provenance
+ * (commit_sha/generated_at/model); this is the one field the page row does
+ * NOT carry — what the whole-repo compile run that produced it actually
+ * cost — so the console reads it from here, mirroring the
+ * Postgres-current/ClickHouse-history split `getLatestIndexSnapshotsForWorkspace`
+ * already established for `index_snapshots`. `ch` DI seam mirrors
+ * `getRunnerCostStats`; null when the repo has never had a compile event
+ * (flag OFF, or a page pushed before this table existed) — the console must
+ * omit the cost gracefully, never fabricate one.
+ */
+export async function getLatestWikiCompileEvent(
+  workspaceId: string,
+  repositoryId: string,
+  ch: QueryClient = client
+): Promise<WikiCompileEventRecord | null> {
+  const result = await ch.query({
+    query: `
+      SELECT
+        workspace_id,
+        repository_id,
+        commit_sha,
+        pages_written,
+        pages_reused,
+        cost_usd,
+        model,
+        duration_ms,
+        created_at,
+        event_id
+      FROM wiki_compile_events
+      WHERE workspace_id = {workspaceId: String}
+        AND repository_id = {repositoryId: String}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    query_params: { workspaceId, repositoryId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  const r = rows[0];
+  if (!r) return null;
+
+  return {
+    workspace_id: String(r.workspace_id ?? ""),
+    repository_id: String(r.repository_id ?? ""),
+    commit_sha: String(r.commit_sha ?? ""),
+    pages_written: Number(r.pages_written ?? 0),
+    pages_reused: Number(r.pages_reused ?? 0),
+    cost_usd: Number(r.cost_usd ?? 0),
+    model: String(r.model ?? ""),
+    duration_ms: Number(r.duration_ms ?? 0),
+    // ClickHouse returns a naive "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no offset) —
+    // normalize to a real ISO string the same way every other timestamp field
+    // in this file does (see `getAfkRunEvents`'s `ts` mapping).
+    created_at: timestampForApi(r.created_at) ?? String(r.created_at ?? ""),
+    event_id: String(r.event_id ?? ""),
+  };
 }
 
 // ---------------------------------------------------------------------------

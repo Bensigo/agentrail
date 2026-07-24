@@ -10,6 +10,7 @@ import {
   Wallet,
   Database,
   Brain,
+  BookOpen,
   Users,
   Plug,
   GitMerge,
@@ -96,6 +97,14 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // category as Costs/Budget (spend/model economics), so it lands here.
     { label: "Model selection", href: "model-selection", icon: Cpu },
     { label: "Memory", href: "memory", icon: Brain },
+    // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
+    // are compiled/advisory knowledge stores read-only from the console, the
+    // Wiki about the codebase, Memory about interaction history (CONTEXT.md's
+    // "Context Memory" vs "Repo Wiki" boundary). Never flag-gated in the nav
+    // itself — a workspace with the compiler flag OFF (or not yet compiled)
+    // still gets the page, showing the honest "no wiki compiled yet" empty
+    // state rather than disappearing (spec §4.5 empty state).
+    { label: "Wiki", href: "wiki", icon: BookOpen },
     { label: "Failures", href: "failures", icon: AlertTriangle },
   ],
 };

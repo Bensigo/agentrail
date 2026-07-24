@@ -247,6 +247,32 @@ describe("listWikiPages", () => {
     expect(page!.links).toEqual({ related: [], dependsOn: [], dependedOnBy: [] });
     expect(page!.citations).toEqual([]);
   });
+
+  // Regression: raw `db.execute(sql\`…\`)` bypasses drizzle's column-type
+  // mapper, so `postgres-js` hands back timestamptz columns as plain
+  // "YYYY-MM-DD HH:MM:SS.ssssss+00" strings, not Date instances (confirmed
+  // against a live Postgres — the previous `as Date` cast let this compile
+  // but threw `generatedAt.toISOString is not a function` at runtime the
+  // first time a real row flowed through the console's wiki API route). This
+  // fixture uses a raw string, unlike every other test above (which mock
+  // Date instances) — it exists specifically to catch a regression back to
+  // `as Date`, which passes those Date-instance fixtures right through.
+  it("converts a raw timestamptz STRING (real postgres-js raw-execute shape) into a genuine Date, not just a same-shaped object", async () => {
+    mockState.listRows = [
+      row({
+        generated_at: "2026-07-24 03:14:59.986318+00",
+        created_at: "2026-07-24 03:14:59.986318+00",
+        updated_at: "2026-07-24 03:14:59.986318+00",
+      }),
+    ];
+    const [page] = await listWikiPages("ws-1", "repo-1");
+    expect(page!.generatedAt).toBeInstanceOf(Date);
+    expect(page!.createdAt).toBeInstanceOf(Date);
+    expect(page!.updatedAt).toBeInstanceOf(Date);
+    // Proves it's a real Date, not a string wearing a type assertion: this
+    // throws "generatedAt.toISOString is not a function" on the old code.
+    expect(page!.generatedAt.toISOString()).toBe("2026-07-24T03:14:59.986Z");
+  });
 });
 
 describe("getWikiPage", () => {

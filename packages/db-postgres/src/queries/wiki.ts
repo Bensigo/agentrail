@@ -21,7 +21,21 @@ import type {
  * express portably (same reasoning `fetchFtsCandidates` documents).
  */
 
-/** Map a raw (snake_case) `db.execute` row back to the typed `WikiPage` shape. */
+/**
+ * Map a raw (snake_case) `db.execute` row back to the typed `WikiPage` shape.
+ *
+ * `generated_at`/`created_at`/`updated_at` go through `new Date(...)`, not an
+ * `as Date` cast: raw `db.execute(sql\`…\`)` bypasses drizzle's column-type
+ * mapper (that only runs for the query builder, e.g. `db.select()`), so
+ * `postgres-js` hands back a plain "YYYY-MM-DD HH:MM:SS.ssssss+00" STRING for
+ * a `timestamp with time zone` column here — confirmed against a live
+ * Postgres (`.toISOString()` on the un-cast value throws `TypeError: ...
+ * .toISOString is not a function`, since a string has no such method; the
+ * `as Date` cast made TypeScript trust a shape the runtime value never had).
+ * `new Date(x)` is the fix either way: it parses a string, and passes a real
+ * `Date` through unchanged, so this stays correct however a future caller's
+ * driver/mock happens to shape the row.
+ */
 function mapWikiPageExecRow(r: Record<string, unknown>): WikiPage {
   return {
     id: String(r.id),
@@ -38,10 +52,10 @@ function mapWikiPageExecRow(r: Record<string, unknown>): WikiPage {
     inputsHash: String(r.inputs_hash),
     model: (r.model as string | null) ?? null,
     writtenBy: String(r.written_by),
-    generatedAt: r.generated_at as Date,
+    generatedAt: new Date(r.generated_at as string | number | Date),
     stale: Boolean(r.stale),
-    createdAt: r.created_at as Date,
-    updatedAt: r.updated_at as Date,
+    createdAt: new Date(r.created_at as string | number | Date),
+    updatedAt: new Date(r.updated_at as string | number | Date),
   };
 }
 

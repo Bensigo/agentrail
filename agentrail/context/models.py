@@ -18,6 +18,11 @@ SourceType = Literal[
     "run_artifact",
     "skill",
     "external_descriptor",
+    # Repo Wiki (spec 2026-07-23, PR 2 of 7): compiled overview/unit pages
+    # minted by context/wiki.py, authority="generated" — see that module's
+    # docstring. Never produced by the normal file walk (the materialization
+    # dir .agentrail/context/wiki/ is excluded from it).
+    "wiki_doc",
 ]
 
 

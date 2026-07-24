@@ -2099,10 +2099,37 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     root = target_dir.resolve()
     index_path = root / ".agentrail" / "context" / "index" / "index.json"
     cfg = config or read_context_config(root)
+
+    # Repo Wiki spec (docs/superpowers/specs/2026-07-23-repo-wiki-compiled-repo-knowledge-design.md),
+    # PR 2 of 7: this used to unconditionally raise RuntimeError("... is not
+    # implemented") for any non-"disabled" summary.mode -- context/wiki.py now
+    # fills that slot (compile_wiki, called below once records/graph/
+    # symbolTable exist). The raise is retired; the compile itself stays
+    # gated behind BOTH summary.mode != "disabled" AND the
+    # AGENTRAIL_CONTEXT_REPO_WIKI rollout flag (default OFF) -- with either
+    # condition unmet this is a silent skip (see the "contextual_summary"
+    # audit event below), never a hard failure. When summary_mode IS
+    # "disabled" (the default), wiki.py is never even imported, so
+    # build_index's output stays byte-identical to before this module existed.
+    # Computed here (before the content-based cache check below) because it
+    # ALSO gates that shortcut -- see the comment there.
+    wiki_enabled = False
+    if cfg.summary.mode != "disabled":
+        from agentrail.context.wiki import repo_wiki_enabled  # deferred: keeps mode=="disabled" wiki.py-import-free
+
+        wiki_enabled = repo_wiki_enabled()
+
     # Content-based cache: return cached result when nothing changed, regardless of age.
     # _BUILD_INDEX_STALENESS_SECONDS is kept as a constant for callers that may read it,
     # but the cache decision is driven entirely by _cached_index_is_fresh.
-    if _cached_index_is_fresh(root, cfg, index_path):
+    # wiki_enabled additionally gates this shortcut OFF: when the wiki
+    # compiler is active, build_index must always reach the compile step
+    # below (still cheap -- compile_wiki does its own per-page inputsHash
+    # reuse) so a page can regenerate even when the SOURCE tree itself is
+    # unchanged -- e.g. the flag was just flipped on, or a page file was
+    # deleted by hand. With wiki_enabled False (the default) this is exactly
+    # the pre-existing condition.
+    if not wiki_enabled and _cached_index_is_fresh(root, cfg, index_path):
         try:
             index_data = load_index(root)
             snap = index_data.get("snapshot") or {}
@@ -2131,11 +2158,6 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
             pass  # Index disappeared between check and read — fall through to rebuild
     provider_mode = cfg.embedding.mode
     summary_mode = cfg.summary.mode
-    if summary_mode != "disabled" and not cfg.summary.provider:
-        raise RuntimeError(f"context summary mode '{summary_mode}' requires context.summary.provider")
-    if summary_mode != "disabled":
-        raise RuntimeError(f"context summary mode '{summary_mode}' is not implemented; use 'disabled' for local-only indexing")
-
     index_dir = root / ".agentrail" / "context" / "index"
     index_dir.mkdir(parents=True, exist_ok=True)
     embedding_payload_path = index_dir / "embedding-payloads.jsonl"
@@ -2254,6 +2276,46 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     graph = build_code_graph(records, chunks, codebase_units, built_at)
     snapshot = build_index_snapshot(root, records, graph, built_at, skipped, redaction_count)
     symbol_table = build_symbol_table(records)
+
+    # Repo Wiki compile (spec PR 2 of 7): runs only when wiki_enabled (both
+    # summary_mode != "disabled" and AGENTRAIL_CONTEXT_REPO_WIKI are set — see
+    # the flag computation above). compile_wiki is already fail-open
+    # internally for PROVIDER errors (ships skeleton-only pages on any prose
+    # failure), but this call is wrapped defensively too: a bug anywhere else
+    # in the compile pipeline must never break the index build itself. On
+    # success the new wiki_doc records/chunks are folded into records/chunks
+    # BEFORE they are serialized below, so they land in index.json/postings
+    # exactly like any other source (spec S4.2).
+    wiki_report: Optional[Dict[str, Any]] = None
+    if wiki_enabled:
+        from agentrail.context.wiki import compile_wiki  # deferred: see the flag-OFF import-free note above
+
+        try:
+            wiki_result = compile_wiki(
+                root,
+                cfg,
+                records=records,
+                graph=graph,
+                symbol_table=symbol_table,
+                commit_sha=snapshot.get("commitSha", ""),
+                built_at=built_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - the compile pipeline must never break indexing
+            append_audit(root, {"event": "wiki_compile", "action": "failed", "error": str(exc)})
+        else:
+            records = records + wiki_result["records"]
+            chunks = chunks + wiki_result["chunks"]
+            wiki_report = wiki_result["report"]
+
+    if summary_mode == "disabled":
+        contextual_summary_action = "skipped_local_only"
+    elif wiki_report is not None:
+        contextual_summary_action = "compiled"
+    elif wiki_enabled:
+        contextual_summary_action = "compile_failed"
+    else:
+        contextual_summary_action = "skipped"
+
     index = {
         "schemaVersion": 2,
         "version": "context-index-v1",
@@ -2275,11 +2337,11 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": _indexable_fingerprint(root, cfg), "builtAt": built_at})
     write_json(index_dir / "sources.json", [record.to_json(include_content=False) for record in records])
     append_audit(root, {"event": "external_provider_call", "mode": provider_mode, "provider": cfg.embedding.provider, "model": cfg.embedding.model, "action": "skipped_local_only" if provider_mode == "disabled" else "deferred_to_context_embed", "payloadCount": 0 if provider_mode == "disabled" else len(chunks)})
-    append_audit(root, {"event": "contextual_summary", "mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model, "action": "skipped_local_only" if summary_mode == "disabled" else "not_implemented", "payloadCount": 0 if summary_mode == "disabled" else len(chunks)})
+    append_audit(root, {"event": "contextual_summary", "mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model, "action": contextual_summary_action, "payloadCount": 0 if summary_mode == "disabled" else len(chunks)})
     with embedding_payload_path.open("a", encoding="utf-8") as file:
         for chunk in chunks:
             file.write(f"{json_line({'mode': provider_mode, 'path': chunk.path, 'chunkId': chunk.id, 'citation': chunk.citation, 'textHash': chunk.textHash, 'sent': False, 'reason': 'local_only' if provider_mode == 'disabled' else 'deferred_to_context_embed'})}\n")
-    return {
+    result = {
         "indexPath": ".agentrail/context/index/index.json",
         "auditPath": ".agentrail/context/audit/events.jsonl",
         "embeddingPayloadPath": ".agentrail/context/index/embedding-payloads.jsonl",
@@ -2297,6 +2359,12 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "reusedSources": reused_sources,
         "rebuiltSources": rebuilt_sources,
     }
+    # Only present when the wiki actually compiled this run (flag-OFF/mode-
+    # disabled/compile-failed paths never add this key, so the return shape
+    # stays byte-identical to before this PR in every non-wiki case).
+    if wiki_report is not None:
+        result["wikiReport"] = wiki_report
+    return result
 
 
 _index_cache: Dict[str, tuple] = {}

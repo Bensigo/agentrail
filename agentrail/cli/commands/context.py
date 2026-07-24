@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import List, Tuple
 
 from agentrail.context.pricing import cost_for as _cost_for
+from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embed_context, setup_embeddings
 from agentrail.context.ast_search import ast_query
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
@@ -18,6 +20,7 @@ from agentrail.context.packs import build_context_pack, explain_context_pack, sh
 from agentrail.context.snapshot_push import load_link
 from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
+from agentrail.context.wiki import REPO_WIKI_ENV, WIKI_FORCE_ENV, WikiPageNotFoundError, repo_wiki_enabled, wiki_show, wiki_status
 from agentrail.context import daemon as _daemon_mod
 from agentrail.context.client import _resolve_context_client
 
@@ -93,6 +96,9 @@ def _usage() -> str:
   agentrail context daemon start [--target DIR]
   agentrail context daemon stop [--target DIR]
   agentrail context daemon status [--target DIR] [--json]
+  agentrail context wiki build [--force] [--target DIR] [--json]
+  agentrail context wiki status [--target DIR] [--json]
+  agentrail context wiki show SLUG [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -222,6 +228,116 @@ def _run_daemon(args: List[str]) -> int:
         print(f"last indexed: {last_indexed}")
         print(f"socket:       {status.get('socketPath', socket_path)}")
         print(f"state:        {state}")
+    return 0
+
+
+def _run_wiki(args: List[str]) -> int:
+    """Dispatch ``agentrail context wiki build|status|show`` (Repo Wiki spec,
+    PR 2 of 7 — see ``agentrail.context.wiki``'s module docstring).
+
+    ``build``/``status`` are always available; ``show`` additionally takes a
+    positional slug. Unlike the automatic ``build_index`` wiring (which stays
+    silent when either the rollout flag or ``context.summary.mode`` is off),
+    an EXPLICIT ``wiki build`` invocation still respects both — it is a
+    deliberate opt-in action, not automatic indexing, so it fails loudly with
+    a clear fix instead of silently doing nothing.
+    """
+    action = args[0] if args else ""
+    rest = args[1:] if args else []
+
+    if action not in {"build", "status", "show"}:
+        raise SystemExit(
+            f"Unknown context wiki action: {action!r}. Use build, status, or show."
+            if action
+            else "context wiki requires an action: build, status, or show"
+        )
+
+    slug: str | None = None
+    if action == "show":
+        if not rest or rest[0].startswith("--"):
+            raise SystemExit("context wiki show requires a slug")
+        slug = rest[0]
+        rest = rest[1:]
+
+    target_str: str | None = None
+    json_output = False
+    force = False
+    index = 0
+    while index < len(rest):
+        arg = rest[index]
+        if arg == "--target":
+            if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                raise SystemExit("--target requires a directory")
+            target_str = rest[index + 1]
+            index += 2
+        elif arg == "--json":
+            json_output = True
+            index += 1
+        elif arg == "--force":
+            if action != "build":
+                raise SystemExit("--force is only valid for context wiki build")
+            force = True
+            index += 1
+        else:
+            raise SystemExit(f"Unknown context wiki {action} option: {arg}")
+
+    target = _resolve_target(target_str)
+
+    if action == "build":
+        cfg = read_context_config(target)
+        if cfg.summary.mode == "disabled":
+            raise SystemExit(
+                "context.summary.mode is 'disabled' in .agentrail/config.json; "
+                'set context.summary (e.g. {"mode": "claude-cli"}) before running wiki build'
+            )
+        if not repo_wiki_enabled():
+            raise SystemExit(f"{REPO_WIKI_ENV} is not set to '1'; export it to enable the repo wiki compiler")
+        prev_force = os.environ.get(WIKI_FORCE_ENV)
+        if force:
+            os.environ[WIKI_FORCE_ENV] = "1"
+        try:
+            build_index(target, config=cfg)
+        finally:
+            if force:
+                if prev_force is None:
+                    os.environ.pop(WIKI_FORCE_ENV, None)
+                else:
+                    os.environ[WIKI_FORCE_ENV] = prev_force
+        status = wiki_status(target)
+        if json_output:
+            _print_json(status)
+        else:
+            print(f"compiled={status['compiled']} commitSha={status.get('commitSha')} compiledAt={status.get('compiledAt')}")
+            for page in status["pages"]:
+                print(f"{page['slug']}  stale={page['stale']}  model={page.get('model')}")
+        return 0
+
+    if action == "status":
+        status = wiki_status(target)
+        if json_output:
+            _print_json(status)
+        else:
+            if not status["compiled"]:
+                print("No wiki compiled yet. Run `agentrail context wiki build` to compile one.")
+                return 0
+            print(f"commitSha={status.get('commitSha')} compiledAt={status.get('compiledAt')}")
+            for page in status["pages"]:
+                age = page.get("ageSeconds")
+                age_text = f"{int(age)}s" if isinstance(age, (int, float)) else "?"
+                print(f"{page['slug']}  hash={str(page.get('inputsHash'))[:15]}…  stale={page['stale']}  age={age_text}  model={page.get('model')}")
+        return 0
+
+    # action == "show"
+    assert slug is not None  # guaranteed by the parse above
+    try:
+        page = wiki_show(target, slug)
+    except (WikiPageNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    if json_output:
+        _print_json(page)
+    else:
+        text = page["text"]
+        print(text, end="" if text.endswith("\n") else "\n")
     return 0
 
 
@@ -961,6 +1077,8 @@ def run_context(args: List[str]) -> int:
             return 0
         if kind == "daemon":
             return _run_daemon(rest)
+        if kind == "wiki":
+            return _run_wiki(rest)
         if kind in {"", "-h", "--help"}:
             print(_usage())
             return 0

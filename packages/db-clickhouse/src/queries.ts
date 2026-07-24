@@ -579,6 +579,124 @@ export async function insertIndexSnapshots(
 }
 
 // ---------------------------------------------------------------------------
+// Repo Wiki compile-event ingestion (Repo Wiki spec §4.4, delivery plan §7
+// row 4)
+// ---------------------------------------------------------------------------
+
+export interface WikiCompileEventInput {
+  /** Set server-side from bearer key — never from request body. */
+  workspace_id: string;
+  repository_id: string;
+  commit_sha: string;
+  pages_written: number;
+  pages_reused: number;
+  cost_usd: number;
+  model: string;
+  duration_ms: number;
+  /**
+   * ISO 8601, stamped by the ingest route at request time. The wire contract
+   * (`compileEvent` in `POST /api/v1/ingest/wiki-pages`) carries no
+   * client-supplied timestamp, so the caller fills this in — mirrors
+   * `IndexSnapshotInput.indexed_at` being caller-supplied.
+   */
+  created_at: string;
+}
+
+/**
+ * sha1 over the compile event's CONTENT fields only — deliberately excluding
+ * `created_at`. It is stamped fresh by the route on every request, so
+ * including it would make a retried POST (same JSON body, new timestamp)
+ * dedupe-fail every time. A genuine retry resends byte-identical content and
+ * hashes identically; a genuinely new compile almost always has a different
+ * `duration_ms` (and usually `pages_written`/`cost_usd`), so it is never
+ * mistaken for a duplicate of a prior one.
+ */
+export function deriveWikiCompileEventId(
+  workspaceId: string,
+  repositoryId: string,
+  commitSha: string,
+  pagesWritten: number,
+  pagesReused: number,
+  costUsd: number,
+  model: string,
+  durationMs: number
+): string {
+  return createHash("sha1")
+    .update(
+      `${workspaceId}:${repositoryId}:${commitSha}:${pagesWritten}:${pagesReused}:${costUsd}:${model}:${durationMs}`
+    )
+    .digest("hex");
+}
+
+/**
+ * Insert wiki compile events into ClickHouse, deduplicating on `event_id`
+ * via a pre-existence check — mirrors `insertIndexSnapshots`'s shape exactly
+ * (candidate → hash → SELECT existing → filter → INSERT). The optional `ch`
+ * parameter (default the real singleton) mirrors
+ * `insertFlightRecorderEvents`'s DI seam so the dedupe logic is unit
+ * testable without a live ClickHouse. Returns the number of rows actually
+ * inserted.
+ */
+export async function insertWikiCompileEvents(
+  events: WikiCompileEventInput[],
+  ch: InsertClient = client
+): Promise<number> {
+  if (events.length === 0) return 0;
+
+  const candidates = events.map((e) => ({
+    e,
+    event_id: deriveWikiCompileEventId(
+      e.workspace_id,
+      e.repository_id,
+      e.commit_sha,
+      e.pages_written,
+      e.pages_reused,
+      e.cost_usd,
+      e.model,
+      e.duration_ms
+    ),
+  }));
+
+  const eventIds = candidates.map((c) => c.event_id);
+  const checkResult = await ch.query({
+    query: `
+      SELECT event_id
+      FROM wiki_compile_events
+      WHERE event_id IN ({eventIds: Array(String)})
+    `,
+    query_params: { eventIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ event_id: string }>()).map((r) => r.event_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.event_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ e, event_id }) => ({
+    workspace_id: e.workspace_id,
+    repository_id: e.repository_id,
+    commit_sha: e.commit_sha,
+    pages_written: e.pages_written,
+    pages_reused: e.pages_reused,
+    cost_usd: e.cost_usd,
+    model: e.model,
+    duration_ms: e.duration_ms,
+    created_at: new Date(e.created_at).toISOString().replace("T", " ").replace("Z", ""),
+    event_id,
+  }));
+
+  await ch.insert({
+    table: "wiki_compile_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+// ---------------------------------------------------------------------------
 // Failure event ingestion
 // ---------------------------------------------------------------------------
 

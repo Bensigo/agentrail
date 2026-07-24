@@ -347,3 +347,42 @@ export interface AfkRunEventRecord {
   payload_json: string;
   digest: string;
 }
+
+// Repo Wiki compile-event history (Repo Wiki spec §4.4, delivery plan §7 row
+// 4). Postgres (`wiki_pages`) serves the CURRENT wiki; this table keeps the
+// append-only compile history the console's provenance/cost display (PR 6)
+// reads from — mirrors `index_snapshots`' Postgres-current /
+// ClickHouse-history split exactly. One row per compile push
+// (POST /api/v1/ingest/wiki-pages' optional `compileEvent`), deduplicated on
+// `event_id` (see `deriveWikiCompileEventId`) so a retried request never
+// double-counts a compile.
+export const CREATE_WIKI_COMPILE_EVENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS wiki_compile_events (
+  workspace_id   String,
+  repository_id  String,
+  commit_sha     String,
+  pages_written  UInt32,
+  pages_reused   UInt32,
+  cost_usd       Float64,
+  model          String,
+  duration_ms    UInt32,
+  created_at     DateTime64(3, 'UTC'),
+  event_id       String
+)
+ENGINE = MergeTree()
+PARTITION BY (workspace_id, toYYYYMM(created_at))
+ORDER BY (workspace_id, repository_id, created_at)
+`;
+
+export interface WikiCompileEventRecord {
+  workspace_id: string;
+  repository_id: string;
+  commit_sha: string;
+  pages_written: number;
+  pages_reused: number;
+  cost_usd: number;
+  model: string;
+  duration_ms: number;
+  created_at: Date | string;
+  event_id: string;
+}

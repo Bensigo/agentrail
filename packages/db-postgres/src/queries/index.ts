@@ -2318,3 +2318,21 @@ export {
   type ChargeCompletedTaskInput,
   type ChargeCompletedTaskResult,
 } from "./wallet.js";
+
+// Repo Wiki (Repo Wiki spec, delivery plan §7 row 4): `wiki_pages` system of
+// record queries — see `queries/wiki.ts` for the full design (upsert-by-slug
+// ingest, hydration list/get, FTS search mirroring `retrieveMemory`).
+// `upsertWikiPages` backs `POST /api/v1/ingest/wiki-pages`; `listWikiPages`
+// backs both the hydration GET (full pages) and the runner `list` mode (the
+// route projects out what that mode omits); `getWikiPage`/`searchWikiPages`
+// back the runner `get`/`search` modes.
+export {
+  upsertWikiPages,
+  listWikiPages,
+  getWikiPage,
+  searchWikiPages,
+  WIKI_SEARCH_DEFAULT_LIMIT,
+  WIKI_SEARCH_MAX_LIMIT,
+  type UpsertWikiPageInput,
+  type UpsertWikiPagesResult,
+} from "./wiki.js";

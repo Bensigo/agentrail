@@ -337,6 +337,13 @@
       "when": 1785000000000,
       "tag": "0046_github_app_installation",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1785100000000,
+      "tag": "0047_wiki_pages",
+      "breakpoints": true
     }
   ]
 }

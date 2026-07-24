@@ -29,6 +29,7 @@ import {
   ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS,
   ALTER_COST_EVENTS_ADD_PRICE_SOURCE,
   CREATE_AFK_RUN_EVENTS_TABLE,
+  CREATE_WIKI_COMPILE_EVENTS_TABLE,
 } from "./schema";
 
 async function main() {
@@ -76,6 +77,8 @@ async function main() {
   console.log("Applied cost_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_AFK_RUN_EVENTS_TABLE });
   console.log("Created afk_run_events table.");
+  await client.command({ query: CREATE_WIKI_COMPILE_EVENTS_TABLE });
+  console.log("Created wiki_compile_events table.");
   await client.close();
   console.log("ClickHouse migration complete.");
 }

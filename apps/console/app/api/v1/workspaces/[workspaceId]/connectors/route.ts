@@ -5,6 +5,7 @@ import {
   listWorkspaceRepositories,
   getDiscordWebhookUrl,
   getConnectors,
+  getGithubInstallation,
   upsertConnector,
   validateConnectorUpdate,
   isConnectorProvider,
@@ -26,9 +27,15 @@ import {
  * the workspace's connection state + stored connector rows (any member); PUT
  * writes a connector's trigger config (owner/admin only).
  *
- * Connection signal: GitHub counts as connected when ≥1 repo is linked; Discord
- * when a webhook is set; Linear once a key is stored (not yet). The stored
- * connector row overlays the enabled/label/interval config the daemon reads.
+ * Connection signal: GitHub counts as connected once the Jace GitHub App is
+ * installed on the workspace's account (spec 2026-07-24-jace-github-app-
+ * identity §5) OR ≥1 repo is linked — the OR keeps a workspace that connected
+ * before the App migration (repo-linked, no installation row) reading as
+ * connected, and a freshly-installed workspace with zero repos yet reading as
+ * connected too, instead of dead-ending on "not installed" copy until it
+ * happens to link a repo. Discord counts as connected when a webhook is set;
+ * Linear once a key is stored (not yet). The stored connector row overlays the
+ * enabled/label/interval config the daemon reads.
  */
 export async function GET(
   _request: NextRequest,
@@ -46,16 +53,20 @@ export async function GET(
   }
 
   try {
-    const [repos, discordWebhookUrl, storedConnectors] = await Promise.all([
-      listWorkspaceRepositories(workspaceId),
-      getDiscordWebhookUrl(workspaceId),
-      getConnectors(workspaceId),
-    ]);
+    const [repos, discordWebhookUrl, storedConnectors, githubInstallation] =
+      await Promise.all([
+        listWorkspaceRepositories(workspaceId),
+        getDiscordWebhookUrl(workspaceId),
+        getConnectors(workspaceId),
+        getGithubInstallation(workspaceId),
+      ]);
     const byProvider = new Map(storedConnectors.map((c) => [c.provider, c]));
     const githubRow = byProvider.get("github");
     const discordRow = byProvider.get("discord");
 
-    const githubConnected = repos.length > 0;
+    // Connected once the App is installed OR a repo is linked — see the
+    // module doc-comment above for why this is an OR, not a replacement.
+    const githubConnected = githubInstallation !== null || repos.length > 0;
 
     // Project a credential (mcp / slack / telegram) connector from its stored
     // row: connected iff a credential is stored (`hasSecret`), with the folded-in
@@ -81,11 +92,15 @@ export async function GET(
         connected: githubConnected,
         // The label the GitHub adapter ingests by (afk/github.list_queue_issues).
         ingestLabel: githubRow?.config.triggerLabel ?? "ready-for-agent",
-        target: githubConnected
-          ? repos.length === 1
-            ? repos[0].name
-            : `${repos.length} repositories`
-          : null,
+        // Prefer the repo count/name once any are linked; an installed-but-
+        // no-repos-yet workspace shows the installed account instead of a
+        // misleading "0 repositories".
+        target:
+          repos.length > 0
+            ? repos.length === 1
+              ? repos[0].name
+              : `${repos.length} repositories`
+            : (githubInstallation?.accountLogin ?? null),
         // Heartbeat trigger config folded in from the connector row (#816).
         enabled: githubRow?.enabled,
         triggerLabel: githubRow?.config.triggerLabel,

@@ -7,6 +7,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   listWorkspaceRepositories: vi.fn(),
   getDiscordWebhookUrl: vi.fn(),
   getConnectors: vi.fn(),
+  getGithubInstallation: vi.fn(),
   upsertConnector: vi.fn(),
   // Re-export the pure validators/guards from the real package — the route
   // depends on their actual behavior, not a mock.
@@ -18,9 +19,13 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
+  listWorkspaceRepositories,
+  getDiscordWebhookUrl,
+  getConnectors,
+  getGithubInstallation,
   upsertConnector,
 } from "@agentrail/db-postgres";
-import { PUT } from "./route";
+import { GET, PUT } from "./route";
 
 // Minimal real implementations mirrored from db-postgres/queries/connectors.ts
 // so the route's validation is genuinely exercised in this hermetic test.
@@ -65,6 +70,9 @@ function putReq(body: unknown): NextRequest {
     body: JSON.stringify(body),
   });
 }
+function getReq(): NextRequest {
+  return new NextRequest(`http://localhost/api/v1/workspaces/${WS}/connectors`);
+}
 
 beforeEach(() => {
   vi.mocked(auth).mockReset();
@@ -76,6 +84,14 @@ beforeEach(() => {
     config: { repos: [], triggerLabel: "afk", pollIntervalSeconds: 120 },
     updatedAt: "2026-06-16T00:00:00.000Z",
   } as never);
+  vi.mocked(listWorkspaceRepositories).mockReset();
+  vi.mocked(listWorkspaceRepositories).mockResolvedValue([] as never);
+  vi.mocked(getDiscordWebhookUrl).mockReset();
+  vi.mocked(getDiscordWebhookUrl).mockResolvedValue(null as never);
+  vi.mocked(getConnectors).mockReset();
+  vi.mocked(getConnectors).mockResolvedValue([] as never);
+  vi.mocked(getGithubInstallation).mockReset();
+  vi.mocked(getGithubInstallation).mockResolvedValue(null);
 });
 
 describe("PUT /connectors", () => {
@@ -136,5 +152,54 @@ describe("PUT /connectors", () => {
     });
     const json = (await res.json()) as { connector: { enabled: boolean } };
     expect(json.connector.enabled).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------
+// GET — the github card's "connected" signal (install-flow fix).
+// -----------------------------------------------------------------------
+interface GetJson {
+  connectors: Array<{ kind: string; status: string; target: string | null }>;
+}
+
+function githubRow(json: GetJson) {
+  return json.connectors.find((c) => c.kind === "github")!;
+}
+
+describe("GET /connectors — github connected signal", () => {
+  beforeEach(() => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+  });
+
+  it("disconnected when there is no installation and no linked repo", async () => {
+    const res = await GET(getReq(), { params: params() });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as GetJson;
+    expect(githubRow(json).status).toBe("disconnected");
+    expect(githubRow(json).target).toBeNull();
+  });
+
+  it("connected once the App is installed, even with zero repos linked yet (no visual dead-end)", async () => {
+    vi.mocked(getGithubInstallation).mockResolvedValue({
+      installationId: "777",
+      accountLogin: "acme",
+      accountType: "Organization",
+    });
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(githubRow(json).status).toBe("connected");
+    // Shows the installed account, never a misleading "0 repositories".
+    expect(githubRow(json).target).toBe("acme");
+  });
+
+  it("stays connected via linked repos alone, for a pre-App-migration workspace with no installation row", async () => {
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([
+      { name: "acme/repo-a" },
+    ] as never);
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(githubRow(json).status).toBe("connected");
+    expect(githubRow(json).target).toBe("acme/repo-a");
   });
 });

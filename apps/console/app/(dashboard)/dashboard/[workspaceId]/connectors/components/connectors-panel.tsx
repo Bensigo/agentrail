@@ -464,13 +464,41 @@ function DiscordManage({
 }
 
 // --------------------------------------------------------------------------- //
-// GitHub (OAuth) — connects at login by linking a repo; nothing to paste here.
+// GitHub — a GitHub App installation, not a pasted credential: the button
+// round-trips to mint a single-use install link, then sends the browser to
+// GitHub's own install screen. (spec 2026-07-24-jace-github-app-identity §5)
 // --------------------------------------------------------------------------- //
-function GithubManage({ connector }: { connector: ConnectorView }) {
+function GithubManage({
+  connector,
+  workspaceId,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/v1/workspaces/${workspaceId}/connectors/github/install-link`,
+        { method: "POST" }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Could not start the install");
+      window.location.href = body.url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the install");
+      setBusy(false);
+    }
+  }
+
   if (connector.status === "connected") {
     return (
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Connected at login. Issues labeled{" "}
+        Jace is installed on your GitHub. Issues labeled{" "}
         <code className="font-mono text-[var(--gray-11)]">
           {connector.ingestLabel}
         </code>{" "}
@@ -479,10 +507,21 @@ function GithubManage({ connector }: { connector: ConnectorView }) {
     );
   }
   return (
-    <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-      Not connected. Sign in with GitHub, then add a repository from Repos
-      &amp; Health to ingest its labeled issues into the Issue Queue.
-    </p>
+    <div className="flex flex-col gap-2">
+      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+        Install the Jace GitHub App to let Jace review, push, and open PRs on
+        the repos you pick — every action shows as Jace, not you.
+      </p>
+      <button
+        type="button"
+        onClick={connect}
+        disabled={busy}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {busy ? "Connecting…" : "Connect GitHub"}
+      </button>
+      {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
+    </div>
   );
 }
 
@@ -558,7 +597,7 @@ function ConnectorCard({
           </p>
 
           {connector.connectMethod === "oauth" ? (
-            <GithubManage connector={connector} />
+            <GithubManage connector={connector} workspaceId={workspaceId} />
           ) : connector.kind === "discord" ? (
             <DiscordManage
               connector={connector}

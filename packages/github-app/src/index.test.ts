@@ -6,6 +6,8 @@ import {
   mintInstallationToken,
   getInstallationAccount,
   botCommitIdentity,
+  listUserInstallations,
+  getUserOrgRole,
 } from "./index.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
@@ -136,5 +138,214 @@ describe("botCommitIdentity", () => {
       name: "jace[bot]",
       email: "98765+jace[bot]@users.noreply.github.com",
     });
+  });
+});
+
+describe("listUserInstallations", () => {
+  it("GETs /user/installations as the user token and maps id + account identity from the wrapper shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        total_count: 2,
+        installations: [
+          { id: 111, account: { id: 555, login: "alice", type: "User" } },
+          { id: 222, account: { id: 666, login: "acme-org", type: "Organization" } },
+        ],
+      }),
+    });
+    const res = await listUserInstallations(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({
+      ok: true,
+      installations: [
+        { id: "111", accountId: "555", accountLogin: "alice", accountType: "User" },
+        { id: "222", accountId: "666", accountLogin: "acme-org", accountType: "Organization" },
+      ],
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.github.com/user/installations?per_page=100&page=1");
+    expect(init.headers.Authorization).toBe("Bearer gho_user_token");
+    expect(init.headers.Accept).toBe("application/vnd.github+json");
+  });
+
+  it("paginates per_page=100, stopping on the first short page", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      account: { id: i + 1000, login: `user${i}`, type: "User" },
+    }));
+    const shortPage = [
+      { id: 9999, account: { id: 8888, login: "last-user", type: "User" } },
+    ];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ total_count: 101, installations: fullPage }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ total_count: 101, installations: shortPage }),
+      });
+    const res = await listUserInstallations(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.installations).toHaveLength(101);
+      expect(res.installations[100]).toEqual({
+        id: "9999",
+        accountId: "8888",
+        accountLogin: "last-user",
+        accountType: "User",
+      });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://api.github.com/user/installations?per_page=100&page=2"
+    );
+  });
+
+  it("classifies 401 as unauthorized (distinct from other rejections)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+    const res = await listUserInstallations(
+      "expired_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+  });
+
+  it("classifies a network throw as github_unreachable", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const res = await listUserInstallations(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_unreachable" });
+  });
+
+  it("classifies a forged-shape body (installations not an array) as github_rejected", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ total_count: 1, installations: "not-an-array" }),
+    });
+    const res = await listUserInstallations(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
+  });
+
+  it("classifies other non-2xx as github_rejected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const res = await listUserInstallations(
+      "gho_user_token",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
+  });
+});
+
+describe("getUserOrgRole", () => {
+  it("GETs /user/memberships/orgs/{org} as the user token and parses role=admin", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: "active", role: "admin" }),
+    });
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: true, role: "admin" });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.github.com/user/memberships/orgs/acme-org");
+    expect(init.headers.Authorization).toBe("Bearer gho_user_token");
+    expect(init.headers.Accept).toBe("application/vnd.github+json");
+  });
+
+  it("parses role=member as member", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: "active", role: "member" }),
+    });
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: true, role: "member" });
+  });
+
+  it("treats billing_manager (or any other role) as member, never admin", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: "active", role: "billing_manager" }),
+    });
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: true, role: "member" });
+  });
+
+  it("classifies 404 as not_a_member (caller isn't in the org at all)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "not_a_member" });
+  });
+
+  it("classifies 401 as unauthorized", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+    const res = await getUserOrgRole(
+      "expired_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+  });
+
+  it("classifies a network throw as github_unreachable", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_unreachable" });
+  });
+
+  it("classifies other non-2xx as github_rejected", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    const res = await getUserOrgRole(
+      "gho_user_token",
+      "acme-org",
+      fetchMock as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
   });
 });

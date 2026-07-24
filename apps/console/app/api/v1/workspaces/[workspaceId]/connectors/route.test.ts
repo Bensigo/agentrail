@@ -5,7 +5,7 @@ vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   listWorkspaceRepositories: vi.fn(),
-  getDiscordWebhookUrl: vi.fn(),
+  listChatIdentitiesForWorkspace: vi.fn(),
   getConnectors: vi.fn(),
   getGithubInstallation: vi.fn(),
   upsertConnector: vi.fn(),
@@ -20,7 +20,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listWorkspaceRepositories,
-  getDiscordWebhookUrl,
+  listChatIdentitiesForWorkspace,
   getConnectors,
   getGithubInstallation,
   upsertConnector,
@@ -86,8 +86,8 @@ beforeEach(() => {
   } as never);
   vi.mocked(listWorkspaceRepositories).mockReset();
   vi.mocked(listWorkspaceRepositories).mockResolvedValue([] as never);
-  vi.mocked(getDiscordWebhookUrl).mockReset();
-  vi.mocked(getDiscordWebhookUrl).mockResolvedValue(null as never);
+  vi.mocked(listChatIdentitiesForWorkspace).mockReset();
+  vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([] as never);
   vi.mocked(getConnectors).mockReset();
   vi.mocked(getConnectors).mockResolvedValue([] as never);
   vi.mocked(getGithubInstallation).mockReset();
@@ -235,5 +235,62 @@ describe("GET /connectors — github connected signal", () => {
     const json = (await res.json()) as GetJson;
     expect(githubRow(json).status).toBe("connected");
     expect(githubRow(json).appInstalled).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------
+// GET — channel identities (Gateway → Channels cutover). A channel kind
+// (telegram/discord/slack) is connected once the workspace has ≥1 linked
+// chat identity for its platform (`listChatIdentitiesForWorkspace`), never
+// from a stored secret/webhook. The response must expose a display name
+// only — never the raw platformUserId.
+// -----------------------------------------------------------------------
+interface ChannelGetJson {
+  connectors: Array<{
+    kind: string;
+    status: string;
+    linkedIdentities: Array<{ displayName: string | null }>;
+  }>;
+}
+
+function channelRow(json: ChannelGetJson, kind: string) {
+  return json.connectors.find((c) => c.kind === kind)!;
+}
+
+describe("GET /connectors — channel identities (Channels cutover)", () => {
+  beforeEach(() => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+  });
+
+  it("projects a linked telegram identity as connected, exposing only its display name", async () => {
+    vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+      { platform: "telegram", platformUserId: "999888777", displayName: "Ben" },
+    ] as never);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as ChannelGetJson;
+    const telegram = channelRow(json, "telegram");
+    expect(telegram.status).toBe("connected");
+    expect(telegram.linkedIdentities).toEqual([{ displayName: "Ben" }]);
+  });
+
+  it("never leaks platformUserId into the response", async () => {
+    vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+      { platform: "telegram", platformUserId: "999888777", displayName: "Ben" },
+    ] as never);
+
+    const res = await GET(getReq(), { params: params() });
+    const text = JSON.stringify(await res.json());
+    expect(text).not.toContain("999888777");
+    expect(text).not.toContain("platformUserId");
+  });
+
+  it("stays disconnected, with empty linkedIdentities, when there is no linked identity", async () => {
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as ChannelGetJson;
+    const telegram = channelRow(json, "telegram");
+    expect(telegram.status).toBe("disconnected");
+    expect(telegram.linkedIdentities).toEqual([]);
   });
 });

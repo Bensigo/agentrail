@@ -9,10 +9,13 @@ import type { ConnectorKind } from "../../../../../../../app/(dashboard)/dashboa
  * wrong) is reported back to the user; a transient network failure is also
  * rejected (we never store an unverified credential) with a retry hint.
  *
- * Verified live: Linear (GraphQL `viewer`), Figma (`/v1/me`), Telegram (`getMe`
- * + `getChat`). Context7 / Slack stay format-only here — Context7 has no
- * stable side-effect-free check and a Slack webhook can't be probed without
- * posting to the channel; their format gate already rejects malformed values.
+ * Verified live: Linear (GraphQL `viewer`), Figma (`/v1/me`). Context7 stays
+ * format-only here — it has no stable side-effect-free check; its format gate
+ * already rejects malformed values. Discord/Slack/Telegram are no longer
+ * credential-based (Gateway → Channels cutover): `secret/route.ts`'s allowlist
+ * rejects them before a call ever reaches this module. The `default` case
+ * below still answers `{ok:true}` for them so this function stays total over
+ * every `ConnectorKind`, but that path is unreachable through the route today.
  */
 
 export type VerifyResult = { ok: true } | { ok: false; error: string };
@@ -75,67 +78,27 @@ async function verifyFigma(token: string): Promise<VerifyResult> {
   }
 }
 
-/** Telegram: the token must resolve `getMe`, and the bot must see the chat. */
-async function verifyTelegram(token: string, chatId?: string): Promise<VerifyResult> {
-  try {
-    const me = await fetchWithTimeout(
-      `https://api.telegram.org/bot${encodeURIComponent(token)}/getMe`,
-      { method: "GET" }
-    );
-    const meBody = (await me.json().catch(() => ({}))) as { ok?: boolean };
-    if (!meBody?.ok) {
-      return { ok: false, error: "Telegram rejected this bot token." };
-    }
-    if (chatId) {
-      const chat = await fetchWithTimeout(
-        `https://api.telegram.org/bot${encodeURIComponent(
-          token
-        )}/getChat?chat_id=${encodeURIComponent(chatId)}`,
-        { method: "GET" }
-      );
-      const chatBody = (await chat.json().catch(() => ({}))) as {
-        ok?: boolean;
-        description?: string;
-      };
-      if (!chatBody?.ok) {
-        return {
-          ok: false,
-          error:
-            "The bot can't see that chat — add the bot to the chat/channel, then retry.",
-        };
-      }
-    }
-    return { ok: true };
-  } catch {
-    return {
-      ok: false,
-      error: "Couldn't reach Telegram to verify the bot — try again.",
-    };
-  }
-}
-
 /**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
- * provider accepts it. Providers without a safe live check (context7, slack)
- * return `{ok:true}` here — their format gate is the guarantee.
+ * provider accepts it. Context7 has no safe live check, so it returns
+ * `{ok:true}` here — its format gate is the guarantee.
  */
 export async function verifyConnectorCredential(
   kind: ConnectorKind,
-  secret: string,
-  chatId?: string
+  secret: string
 ): Promise<VerifyResult> {
   switch (kind) {
     case "linear":
       return verifyLinear(secret.trim());
     case "figma":
       return verifyFigma(secret.trim());
-    case "telegram":
-      return verifyTelegram(secret.trim(), chatId?.trim());
     case "context7":
-    case "slack":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };
     default:
+      // github (oauth) and the channel kinds (discord/slack/telegram — no
+      // longer credential-based) never legitimately reach this function
+      // through the route's allowlist; total and harmless if they ever do.
       return { ok: true };
   }
 }

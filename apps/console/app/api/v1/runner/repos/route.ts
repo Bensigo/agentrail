@@ -390,7 +390,7 @@ export async function POST(request: NextRequest) {
     // status Jace can't act on.
     if (ghRes.status === 401 || ghRes.status === 403) {
       return NextResponse.json(
-        { error: "GitHub rejected the stored credentials" },
+        { error: "GitHub rejected the workspace's App installation credentials — reconnect GitHub from the console" },
         { status: 409 }
       );
     }

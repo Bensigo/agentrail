@@ -7,6 +7,13 @@ license-files = ["LICENSE"]
 dependencies = [
     "tree-sitter>=0.23,<0.24",
     "tree-sitter-language-pack>=0.9,<0.10",
+    # agentrail/github_app.py: RS256-signs the GitHub App JWT
+    # (jwt.encode(..., algorithm="RS256")). PyJWT's RS256 backend needs
+    # `cryptography` importable; it is not in PyJWT's own base dependency
+    # set, so it must be listed here directly rather than assumed present
+    # transitively.
+    "PyJWT>=2.8,<3",
+    "cryptography>=41,<51",
 ]
 
 [tool.setuptools.packages.find]

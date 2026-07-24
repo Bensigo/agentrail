@@ -230,9 +230,11 @@ def _resolve_workspace_connection(
     in production) the Heartbeat daemon already uses, so there is one DB edge,
     not two:
 
-      - token: the workspace owner's stored GitHub OAuth ``access_token``
-        (``agentrail.heartbeat.token_provider.get_github_token`` — the Python
-        twin of the TS ``getGithubToken``).
+      - token: a freshly minted GitHub App installation token for the
+        workspace's bound installation (``agentrail.heartbeat.token_provider.
+        get_github_token`` — the Python twin of the TS
+        ``getInstallationToken``). No longer a stored user OAuth
+        ``access_token`` — that accounts-table read is gone.
       - repo: the first repo in the workspace's enabled ``github`` connector
         (``agentrail.afk.connectors_store.get_active_connector``), which is
         exactly what "connect a repo" on the console writes (the repos route

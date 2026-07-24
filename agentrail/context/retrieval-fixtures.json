@@ -84,8 +84,8 @@
     },
     {
       "name": "context-pack-build-hard",
-      "_comment": "NON-SATURATED (recall@5<1.0) fixture for #1088 AC3. build_context_pack (packs.py) genuinely imports compute_pack_quality from pack_quality.py (packs.py:16), but a task phrased around pack assembly does not name that symbol, so the symbol-literal retriever misses pack_quality.py entirely (a real recall weakness #1043 targets). packs.py stays retrievable (required). Do not add pack_quality.py to requiredSources.",
-      "task": "build_context_pack assemble sections included excluded budget candidates write pack",
+      "_comment": "NON-SATURATED (recall@5<1.0) fixture for #1088 AC3. build_context_pack (packs.py) genuinely imports compute_pack_quality from pack_quality.py (packs.py:16), but a task phrased around pack assembly does not name that symbol, so the symbol-literal retriever misses pack_quality.py entirely (a real recall weakness #1043 targets); #1104's definition-aware promotion tier recovers it via symbolTable identity, certified by test_symbol_candidates.py::HardFixtureRecallCertification. Recalibrated 2026-07-23 (Repo Wiki spec, PR 3 of 7): packs.py now imports from one more module (repoOverview section support) and packs.py/test_packs.py both legitimately grew, which shifted corpus-wide BM25 statistics enough that pack_quality.py's definition-site chunk fell just outside the wide-candidate cutoff -- a same-shape dilution to the 'context-pack-build' fixture's own 2026-07-23 recalibration above, not a #1104 regression. 'included' -> 'selected' swaps in the ONE word that didn't match compute_pack_quality's real signature (selected, excluded, selected_context_tokens) for the one that does -- a more honest task string, not a keyword-bag workaround; the symbol still is not named, so the definition tier is still what recovers it. packs.py stays retrievable (required). Do not add pack_quality.py to requiredSources.",
+      "task": "build_context_pack assemble sections selected excluded budget candidates write pack",
       "requiredSources": ["agentrail/context/packs.py"],
       "limit": 10,
       "minPrecisionAtBudget": 0.0,

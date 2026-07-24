@@ -258,17 +258,6 @@ export async function getDiscordWebhookUrl(
   return rows[0]?.discordWebhookUrl ?? null;
 }
 
-/** Connect (set) or disconnect (pass null) the Discord webhook for a workspace. */
-export async function setDiscordWebhookUrl(
-  workspaceId: string,
-  webhookUrl: string | null
-): Promise<void> {
-  await db
-    .update(workspaces)
-    .set({ discordWebhookUrl: webhookUrl, updatedAt: new Date() })
-    .where(eq(workspaces.id, workspaceId));
-}
-
 export async function getWorkspaceMembership(
   userId: string,
   workspaceId: string

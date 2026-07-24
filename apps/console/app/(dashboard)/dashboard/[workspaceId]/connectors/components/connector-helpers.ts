@@ -85,7 +85,7 @@ export interface ConnectorCapabilities {
 
 /** Per-provider connect metadata the card renders (label, placeholder, how-to). */
 export interface ConnectorConnectMeta {
-  /** Field label for the credential input (e.g. "API key", "Webhook URL"). */
+  /** Field label for the credential input (e.g. "Linear API key", "Figma access token"). */
   credentialLabel: string;
   /** Placeholder hinting the expected shape (e.g. `lin_api_…`). */
   credentialPlaceholder: string;
@@ -373,6 +373,10 @@ export function projectConnectors(
 
   return CONNECTOR_CATALOG.map((entry) => {
     const cfg = byKind.get(entry.kind);
+    // NOTE: a `planned` channel kind's `linkedIdentities` can be non-empty
+    // even while `status` stays `disconnected` below — consumers must keep
+    // gating affordances on `status`/`availability`, not identity presence,
+    // once Discord/Slack graduate from planned.
     const kindIdentities =
       entry.type === "channel" ? identitiesByPlatform.get(entry.kind) ?? [] : [];
 

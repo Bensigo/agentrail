@@ -83,7 +83,15 @@ async function appFetch(
   cfg: { appId: string; privateKey: string },
   fetchImpl: typeof fetch
 ): Promise<{ ok: true; body: unknown } | GithubAppFailure> {
-  const jwt = signAppJwt(cfg.appId, cfg.privateKey);
+  let jwt: string;
+  try {
+    jwt = signAppJwt(cfg.appId, cfg.privateKey);
+  } catch {
+    // createSign(...).sign() throws synchronously on a malformed/truncated
+    // PEM (a plausible env-var misconfiguration). Never lets this reach
+    // fetchImpl, and keeps the closed-union contract: no bare rejection.
+    return { ok: false, reason: "github_rejected" };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
   let res: { ok: boolean; status: number; json: () => Promise<unknown> };

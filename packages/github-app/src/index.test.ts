@@ -104,6 +104,17 @@ describe("mintInstallationToken", () => {
       reason: "github_rejected",
     });
   });
+
+  it("classifies a malformed private key (JWT signing throws) as github_rejected, without ever calling fetch", async () => {
+    const fetchShouldNotBeCalled = vi.fn();
+    const res = await mintInstallationToken(
+      "777",
+      { appId: "12345", privateKey: "not-a-pem" },
+      fetchShouldNotBeCalled as unknown as typeof fetch
+    );
+    expect(res).toEqual({ ok: false, reason: "github_rejected" });
+    expect(fetchShouldNotBeCalled).not.toHaveBeenCalled();
+  });
 });
 
 describe("getInstallationAccount", () => {

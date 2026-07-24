@@ -1806,6 +1806,34 @@ export async function enqueueLinearIssue(data: {
 export const ONBOARD_EXTERNAL_ID_PREFIX = "onboard:";
 
 /**
+ * Cross-language pinned constant — `agentrail/runner/onboard.py`'s
+ * `ONBOARD_FORCE_BODY` mirrors this EXACT string. Python cannot import a TS
+ * constant (different runtime), so the two sides are pinned by doc-comment +
+ * a value-equality test on each side — the same idiom
+ * {@link ONBOARD_EXTERNAL_ID_PREFIX} already established for the
+ * `onboard:<repo>` prefix.
+ *
+ * Stamped into `queue_entries.body` (otherwise always `""` for an
+ * onboard-kind row) ONLY by a forced recompile
+ * (`enqueueOnboard({ ..., force: true })` — the console's manual
+ * `POST .../wiki/recompile` route, Repo Wiki spec §4.5). `run_onboard`'s
+ * freshness-reuse gate reads this off the claimed item's `body` and skips
+ * the 30-day reuse check when it matches — the ONLY behavior a forced
+ * recompile changes downstream; clone/index/wiki-compile/memory-seed/push
+ * are all otherwise unchanged.
+ */
+export const ONBOARD_FORCE_BODY = "force-recompile";
+
+/**
+ * The `enqueued: false` reason a forced recompile reports when the repo's
+ * onboard row is ALREADY active (state 'queued' or 'running') — i.e.
+ * nothing new was admitted because a run is already in flight. An exact,
+ * stable literal (not prose) so the console route can discriminate this
+ * case from the plain non-force dedupe reason without substring-sniffing.
+ */
+export const ONBOARD_ALREADY_PENDING_REASON = "already_pending";
+
+/**
  * Admit a one-shot `onboard` job into the durable queue for a freshly connected
  * repo. Unlike an issue, this carries no AC gate, no blockers, and no v2 screen —
  * it is workspace-owned indexing work, not user-authored content. The runner
@@ -1817,16 +1845,39 @@ export const ONBOARD_EXTERNAL_ID_PREFIX = "onboard:";
  * / double click) maps to the SAME row and `ON CONFLICT DO NOTHING` makes the
  * second call a no-op. Exactly one onboard per repo, forever — the caller can fire
  * it on every connect without guarding.
+ *
+ * `force` (console "Recompile" button, spec §4.5 — owner ruling: "I expect it
+ * to happen on its own") is the one deliberate exception to "forever": a
+ * manual recompile must actually RE-RUN even though the repo's onboard row
+ * already exists and is terminal (`green`/`escalated-to-human`) — the plain
+ * dedupe above would otherwise make Recompile a permanent no-op after the
+ * first onboard, since the row id is fixed by (workspaceId, source,
+ * externalId) and a second INSERT can never create a second row for the same
+ * repo. When `force` is set AND the INSERT above conflicted (a row already
+ * exists), this re-arms that row to `queued` — but ONLY when it is not
+ * already active (queued/running): an in-flight attempt must never be
+ * clobbered mid-run (that would silently reset real progress/budget). The
+ * conditional `UPDATE ... WHERE state NOT IN (...)` enforces this
+ * atomically, no separate read-then-write race window — same "the guarded
+ * WHERE is the actual enforcement" posture {@link requeueParkedQueueEntry}
+ * and {@link confirmAlignmentBrief} already take elsewhere in this file.
+ * `remainingBudget`/`tier` are reset to the same fresh-onboard defaults the
+ * INSERT seeds, so a forced re-run gets a full retry budget rather than
+ * whatever was left over (often 0) from its prior attempts. `false`/omitted
+ * preserves the original one-shot behavior byte-for-byte — the
+ * auto-onboard-on-connect caller never sets it.
  */
 export async function enqueueOnboard(data: {
   workspaceId: string;
   repoFullName: string;
+  force?: boolean;
 }): Promise<EnqueueResult> {
   // The onboard externalId is repo-scoped (not issue-scoped) so there is one
   // durable onboard row per repo. `deriveRepoSlug` (claim side) reads the repo
   // slug back off this same `onboard:<owner/name>` shape.
   const externalId = `${ONBOARD_EXTERNAL_ID_PREFIX}${data.repoFullName}`;
   const id = entryId(data.workspaceId, "github", externalId);
+  const body = data.force ? ONBOARD_FORCE_BODY : "";
 
   const inserted = await db
     .insert(queueEntries)
@@ -1837,7 +1888,7 @@ export async function enqueueOnboard(data: {
       kind: "onboard",
       externalId,
       title: `Onboard ${data.repoFullName}`,
-      body: "",
+      body,
       tier: 0,
       // Onboarding is best-effort — cap at 3 attempts. Unlike an issue run, a
       // bigger model/tier can't fix a clone/index failure, so extra retries only
@@ -1849,10 +1900,37 @@ export async function enqueueOnboard(data: {
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });
 
-  if (inserted.length === 0) {
+  if (inserted.length > 0) {
+    return { enqueued: true, id, state: "queued", blockedBy: [] };
+  }
+
+  if (!data.force) {
     return { enqueued: false, reason: "already onboarded (deduped)" };
   }
-  return { enqueued: true, id, state: "queued", blockedBy: [] };
+
+  const rearmed = Array.from(
+    await db.execute(sql`
+      UPDATE queue_entries
+      SET state = 'queued',
+          body = ${ONBOARD_FORCE_BODY},
+          remaining_budget = 3,
+          tier = 0,
+          park_reason = NULL,
+          updated_at = now()
+      WHERE id = ${id}
+        AND state NOT IN ('queued', 'running')
+      RETURNING id
+    `)
+  ) as Array<{ id: string }>;
+
+  if (rearmed.length > 0) {
+    return { enqueued: true, id, state: "queued", blockedBy: [] };
+  }
+
+  // The row exists but is ALREADY active — nothing was (re-)inserted. Report
+  // this honestly rather than fabricating "queued" for a write that never
+  // happened.
+  return { enqueued: false, reason: ONBOARD_ALREADY_PENDING_REASON };
 }
 
 // --- reconciler seam (#1274 PR③) ----------------------------------------------

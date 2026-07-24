@@ -2,11 +2,19 @@ import { createHash } from "crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The db module is mocked so importing the query module is side-effect free and
-// `enqueueOnboard` never touches a real Postgres. It makes exactly one db call:
+// `enqueueOnboard` never touches a real Postgres. The plain (non-force) path makes
+// exactly one db call:
 //   insert → db.insert().values(v).onConflictDoNothing().returning() → rows
 // `.values()` captures its argument for assertions, and `.returning()` resolves to
 // a configurable array so a suite can drive both the "row inserted" (first connect)
 // and the "no row → deduped" (reconnect) branches.
+//
+// A FORCED call that hits the dedupe makes a SECOND db call — the conditional
+// re-arm `db.execute(sql\`UPDATE ... RETURNING id\`)` — so the mock also stubs
+// `execute`, resolving to a configurable `executeResult` and capturing the query
+// for param assertions via `extractSqlParams` (the same drizzle-SQL-introspection
+// idiom `github-intake-park-reason.test.ts` / `github-intake-alignment-gate.test.ts`
+// already established elsewhere in this package).
 //
 // vi.mock is hoisted above the file body, so the factory may not close over a
 // top-level `let`. `vi.hoisted` gives us a mutable holder that IS hoisted with the
@@ -18,6 +26,10 @@ const mockState = vi.hoisted(() => ({
   returning: [] as Array<{ id: string }>,
   // The object passed to `.values()` — captured for field assertions.
   capturedValues: undefined as Record<string, unknown> | undefined,
+  // The array `db.execute(...)` resolves to (the force re-arm UPDATE's RETURNING).
+  executeResult: [] as Array<{ id: string }>,
+  // Every query passed to `db.execute(...)`, in call order.
+  executeCalls: [] as unknown[],
 }));
 
 vi.mock("../db.js", () => ({
@@ -32,13 +44,30 @@ vi.mock("../db.js", () => ({
         };
       },
     }),
+    execute: async (query: unknown) => {
+      mockState.executeCalls.push(query);
+      return mockState.executeResult;
+    },
   },
 }));
 
 import {
   enqueueOnboard,
   ONBOARD_EXTERNAL_ID_PREFIX,
+  ONBOARD_FORCE_BODY,
+  ONBOARD_ALREADY_PENDING_REASON,
 } from "../queries/github_intake.js";
+
+/** Extracts the bound (non-literal-array) template values off a drizzle `sql`
+ * query, in template order — mirrors `github-intake-park-reason.test.ts`'s
+ * identically-named helper (each test file in this package keeps its own
+ * copy rather than sharing one across files). */
+function extractSqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] })?.queryChunks ?? [];
+  return chunks.filter(
+    (c) => !(c && typeof c === "object" && Array.isArray((c as { value?: unknown[] }).value))
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Independent oracle for the deterministic row id. `entryId` / `uuid5Url` are
@@ -72,6 +101,8 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
   beforeEach(() => {
     mockState.returning = [];
     mockState.capturedValues = undefined;
+    mockState.executeResult = [];
+    mockState.executeCalls = [];
   });
 
   it("enqueues onboard entry on first connect", async () => {
@@ -103,6 +134,10 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
     });
     // And the row id equals the deterministic id it returns.
     expect(mockState.capturedValues?.id).toBe(id);
+    // Non-force: body stays "" (byte-identical to pre-force behavior).
+    expect(mockState.capturedValues?.body).toBe("");
+    // And no force re-arm round trip ever happens on the plain insert path.
+    expect(mockState.executeCalls).toHaveLength(0);
   });
 
   it("dedups on reconnect", async () => {
@@ -117,6 +152,8 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
       enqueued: false,
       reason: "already onboarded (deduped)",
     });
+    // Non-force dedupe never attempts the force re-arm round trip.
+    expect(mockState.executeCalls).toHaveLength(0);
   });
 
   it("id is deterministic and unique per repo", async () => {
@@ -145,5 +182,86 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
       // A different repoFullName → a different id (unique per repo).
       expect(c.id).not.toBe(a.id);
     }
+  });
+});
+
+describe("enqueueOnboard — force re-arm (console 'Recompile' button, spec §4.5)", () => {
+  beforeEach(() => {
+    mockState.returning = [];
+    mockState.capturedValues = undefined;
+    mockState.executeResult = [];
+    mockState.executeCalls = [];
+  });
+
+  it("force + no prior row: takes the plain insert path, stamps the force marker, never touches execute", async () => {
+    mockState.returning = [{ id: "row-id" }]; // a genuinely fresh insert
+
+    const result = await enqueueOnboard({
+      workspaceId: "ws-1",
+      repoFullName: "acme/widgets",
+      force: true,
+    });
+
+    const id = expectedOnboardId("ws-1", "acme/widgets");
+    expect(result).toEqual({ enqueued: true, id, state: "queued", blockedBy: [] });
+    // Even on a fresh insert, force stamps the marker (harmless — a fresh
+    // repo has no prior freshness record for it to bypass anyway; keeping
+    // the stamp unconditional on `force` is simpler than conditioning on
+    // insert-vs-rearm).
+    expect(mockState.capturedValues?.body).toBe(ONBOARD_FORCE_BODY);
+    expect(mockState.executeCalls).toHaveLength(0);
+  });
+
+  it("force + an existing TERMINAL row: re-arms it to queued via the conditional UPDATE", async () => {
+    mockState.returning = []; // INSERT conflicts — a row already exists
+    mockState.executeResult = [{ id: "row-id" }]; // UPDATE matched (row was terminal)
+
+    const result = await enqueueOnboard({
+      workspaceId: "ws-1",
+      repoFullName: "acme/widgets",
+      force: true,
+    });
+
+    const id = expectedOnboardId("ws-1", "acme/widgets");
+    expect(result).toEqual({ enqueued: true, id, state: "queued", blockedBy: [] });
+    expect(mockState.executeCalls).toHaveLength(1);
+
+    // The UPDATE's bound params, in template order: body marker, then id.
+    const params = extractSqlParams(mockState.executeCalls[0]);
+    expect(params).toContain(ONBOARD_FORCE_BODY);
+    expect(params).toContain(id);
+  });
+
+  it("force + an existing ACTIVE (queued/running) row: reports already_pending, never fabricates queued", async () => {
+    mockState.returning = []; // INSERT conflicts — a row already exists
+    mockState.executeResult = []; // UPDATE matched NOTHING (state IN queued/running)
+
+    const result = await enqueueOnboard({
+      workspaceId: "ws-1",
+      repoFullName: "acme/widgets",
+      force: true,
+    });
+
+    expect(result).toEqual({
+      enqueued: false,
+      reason: ONBOARD_ALREADY_PENDING_REASON,
+    });
+  });
+
+  it("non-force dedupe never attempts the force re-arm, even though force-rearm mock data is primed", async () => {
+    mockState.returning = []; // INSERT conflicts
+    mockState.executeResult = [{ id: "row-id" }]; // would succeed IF called — must not be
+
+    const result = await enqueueOnboard({
+      workspaceId: "ws-1",
+      repoFullName: "acme/widgets",
+      // force omitted
+    });
+
+    expect(result).toEqual({
+      enqueued: false,
+      reason: "already onboarded (deduped)",
+    });
+    expect(mockState.executeCalls).toHaveLength(0);
   });
 });

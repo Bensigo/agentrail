@@ -60,6 +60,22 @@ try:
 except (TypeError, ValueError):
     _FRESH_DAYS = 30
 
+# Cross-language pinned constant — packages/db-postgres/src/queries/
+# github_intake.ts's `ONBOARD_FORCE_BODY` mirrors this EXACT string. The
+# console's manual "Recompile" route (POST .../wiki/recompile, Repo Wiki
+# spec §4.5 — owner ruling: "I expect it to happen on its own") force-
+# requeues an already-terminal onboard entry by stamping this marker into
+# `queue_entries.body` (otherwise always "" for an onboard-kind row);
+# `_is_forced_onboard` below reads it off the claimed item and
+# `run_onboard` skips the freshness-reuse gate when it matches — the ONLY
+# behavior a forced recompile changes; everything else about onboard
+# (clone, index, wiki compile, memory seed, push) is unchanged. TS cannot
+# import a Python constant (different runtime), so the two sides are pinned
+# by this doc-comment plus a value-equality test on each side — the same
+# idiom the `onboard:<repo>` external-id prefix already established
+# (`ONBOARD_EXTERNAL_ID_PREFIX` on the TS side, `_repo_full_name` here).
+ONBOARD_FORCE_BODY = "force-recompile"
+
 # Cheap classification-tier model for the onboarding brief, overridable via env.
 _DEFAULT_MODEL = os.environ.get("AGENTRAIL_ONBOARD_MODEL", "claude-haiku-4-5-20251001")
 
@@ -517,6 +533,20 @@ def _repo_full_name(item) -> str:
     return url.strip("/")
 
 
+def _is_forced_onboard(item) -> bool:
+    """True when this claim's body carries the manual-recompile force marker
+    (:data:`ONBOARD_FORCE_BODY`) — stamped by the console's forced
+    ``enqueueOnboard`` call (``POST .../wiki/recompile``). Compares the
+    STRIPPED body so incidental whitespace never breaks the match; tolerant
+    of a missing/non-string ``body`` (defensive, same `getattr`-based
+    posture :func:`_repo_full_name` already takes on this same field).
+    Case-sensitive, matching every other exact-string marker in this
+    codebase (e.g. ``ALIGNMENT_PARK_REASON``) — there is no case-insensitive
+    variant to accidentally collide with.
+    """
+    return (getattr(item, "body", "") or "").strip() == ONBOARD_FORCE_BODY
+
+
 def check_onboard_freshness(
     base_url: str,
     api_key: str,
@@ -772,15 +802,22 @@ def run_onboard(
     # Freshness reuse gate: if this repo was onboarded recently, reuse those
     # notes instead of re-cloning/indexing/LLM-ing. Fail-open — a None (any
     # error or no prior onboarding) means proceed, so we never wrongly skip.
-    onboarded_at = freshness_fn(base_url, api_key, _repo_full_name(item))
-    if onboarded_at is not None:
-        age = _utcnow() - onboarded_at
-        if age < timedelta(days=_FRESH_DAYS):
-            return RunResult(
-                status="green",
-                gate_reason=f"reused existing onboarding ({age.days}d old)",
-                branch=item.ref,
-            )
+    #
+    # A forced manual recompile (ONBOARD_FORCE_BODY, see _is_forced_onboard)
+    # skips this check entirely — the whole point of clicking "Recompile" is
+    # to re-run NOW regardless of how fresh the existing notes are. Every
+    # other onboard behavior (clone, index, wiki compile, memory seed, push)
+    # is untouched by this flag.
+    if not _is_forced_onboard(item):
+        onboarded_at = freshness_fn(base_url, api_key, _repo_full_name(item))
+        if onboarded_at is not None:
+            age = _utcnow() - onboarded_at
+            if age < timedelta(days=_FRESH_DAYS):
+                return RunResult(
+                    status="green",
+                    gate_reason=f"reused existing onboarding ({age.days}d old)",
+                    branch=item.ref,
+                )
 
     work_dir = (work_dir_factory or tempfile.mkdtemp)()
     repo_dir = Path(work_dir) / "repo"

@@ -146,7 +146,14 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
       ) : pages === null || pages.length === 0 ? (
         <EmptyState
           message="No wiki compiled yet for this repository."
-          action={<RecompileButton variant="button" />}
+          action={
+            <RecompileButton
+              variant="button"
+              workspaceId={workspaceId}
+              repoFullName={selectedRepo?.name ?? ""}
+              canManage={canManage}
+            />
+          }
         />
       ) : (
         <>
@@ -169,6 +176,9 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
                   latestCompile={latestCompile}
                   pagesBySlug={pagesBySlug}
                   onSelectSlug={setSelectedSlug}
+                  workspaceId={workspaceId}
+                  repoFullName={selectedRepo?.name ?? ""}
+                  canManage={canManage}
                 />
               )}
             </div>

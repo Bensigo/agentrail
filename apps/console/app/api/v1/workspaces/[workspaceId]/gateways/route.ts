@@ -18,8 +18,9 @@ import {
  * used to be filed as the connector catalog's `channel` group; the owner
  * ruled them onto their own Settings page instead (see
  * `gateways/components/gateway-helpers.ts`'s module doc-comment for the full
- * history, the availability-vs-configured split, and the per-platform
- * install-URL builders this route's projection relies on).
+ * history, the availability-vs-configured split, and the env contract — the
+ * invite/install URL plus `*_CHANNEL_LIVE` honesty-gate pair — this route's
+ * projection relies on).
  *
  * This route is the read side only — any workspace member may call it,
  * mirroring the connectors route's GET (`app/api/v1/workspaces/[workspaceId]/

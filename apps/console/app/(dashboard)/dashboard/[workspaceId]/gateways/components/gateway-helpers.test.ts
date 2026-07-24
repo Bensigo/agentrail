@@ -134,6 +134,36 @@ describe("isGatewayConfigured", () => {
     ).toBe(false);
   });
 
+  // Slack's twins of the two discord edge cases above. Both channels share
+  // one `isTrue`/`resolvedGatewayEnvValue` path, so these are symmetry pins:
+  // they'd catch a future per-channel special-case that skipped the gate.
+  it("slack's CHANNEL_LIVE compare is trim + lowercase, matching _channel-cards.ts's isTrue", () => {
+    expect(
+      isGatewayConfigured("slack", {
+        ...NO_ENV,
+        slackInstallUrl: SLACK_URL,
+        slackChannelLive: "  TRUE  ",
+      })
+    ).toBe(true);
+    expect(
+      isGatewayConfigured("slack", {
+        ...NO_ENV,
+        slackInstallUrl: SLACK_URL,
+        slackChannelLive: "yes",
+      })
+    ).toBe(false);
+  });
+
+  it("slack's install URL is trimmed; whitespace-only counts as blank", () => {
+    expect(
+      isGatewayConfigured("slack", {
+        ...NO_ENV,
+        slackInstallUrl: "   ",
+        slackChannelLive: "true",
+      })
+    ).toBe(false);
+  });
+
   it("slack: the install URL alone is not enough — CHANNEL_LIVE must also be set", () => {
     expect(
       isGatewayConfigured("slack", { ...NO_ENV, slackInstallUrl: SLACK_URL })

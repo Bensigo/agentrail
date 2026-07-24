@@ -174,6 +174,57 @@ test("runCreateRepo forwards an explicit `private: false` in the request body �
   assert.equal(parsed.private, false);
 });
 
+// ---------------------------------------------------------------------------
+// runCreateRepo — the personal-account guided variant (Task 6 delta): the
+// route returns 200 { guided: true, createUrl, installUrl, name } instead of
+// calling GitHub at all — see apps/console/app/api/v1/runner/repos/route.ts.
+// ---------------------------------------------------------------------------
+
+test("on 200 { guided: true }, returns { guided: true, message } with both URLs relayed verbatim", async () => {
+  const transport = fakeTransport(() => ({
+    status: 200,
+    json: async () => ({
+      guided: true,
+      createUrl: "https://github.com/new",
+      installUrl: "https://github.com/apps/jace/installations/new",
+      name: "widgets",
+    }),
+  }));
+
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result.guided, true);
+  assert.match(result.message, /https:\/\/github\.com\/new/);
+  assert.match(
+    result.message,
+    /https:\/\/github\.com\/apps\/jace\/installations\/new/
+  );
+  assert.match(result.message, /widgets/);
+});
+
+test("guided response falls back to a generic name/createUrl when the body's fields are missing or non-string", async () => {
+  const transport = fakeTransport(() => ({
+    status: 200,
+    json: async () => ({ guided: true }),
+  }));
+
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result.guided, true);
+  assert.match(result.message, /the repo/);
+  assert.match(result.message, /https:\/\/github\.com\/new/);
+});
+
 test("runCreateRepo success is honest when the webhook could not be created — returns webhookCreated: false rather than hiding it", async () => {
   const transport = fakeTransport(() => ({
     status: 201,

@@ -1,24 +1,43 @@
 /**
- * GitHub REST helpers for the connect-repo picker (#1293).
+ * GitHub REST helpers for the connect-repo picker (#1293, migrated off
+ * per-user OAuth by the GitHub App identity design — spec §5/§6, Task 6
+ * delta of the drift addendum).
  *
- * Two operations, both driven by the CONNECTING user's own stored OAuth
- * `access_token` (never a PAT, never the `gh` CLI, never returned to the
- * client):
- *   - `listUserRepos`  — powers the searchable picker (AC1).
- *   - `checkRepoAccess` — validates a picked/typed repo exists AND is pushable
- *                         before a `repositories` row is created (AC2).
+ * Two operations, BOTH driven by the WORKSPACE's App installation token
+ * (`getInstallationToken(workspaceId)`, never a per-user OAuth token, a PAT,
+ * or the `gh` CLI):
+ *   - `listInstallationRepos` — powers the searchable picker (AC1): every
+ *     repo the App installation was actually granted, straight from
+ *     `GET /installation/repositories` — there is no broader "repos this
+ *     user can see" universe to enumerate once repo access comes from the
+ *     installation grant rather than the signed-in user's own OAuth scope.
+ *   - `checkRepoAccess` — validates a picked/typed repo is a MEMBER of that
+ *     same installation grant before a `repositories` row is created (AC2).
+ *     A repo the installation was granted always carries Contents:write
+ *     under the App's permission set (spec §3), so membership alone answers
+ *     the old per-repo `GET /repos/{owner}/{repo}` "can I push?" probe —
+ *     there is no partial-access state left to distinguish, so that probe
+ *     (and its `no_push` outcome) is gone.
  *
  * Both return discriminated results the route layer translates into HTTP, so
- * the "reconnect GitHub" / "rate limited" / "not found" distinctions stay
- * testable without a live token. The fetch idiom (8s AbortController timeout +
- * `githubHeaders`) mirrors the existing GitHub calls in
- * app/api/v1/runner/repos/route.ts.
+ * the "reconnect" / "rate limited" / "not found" distinctions stay testable
+ * without a live token. `"reconnect"` now means "the installation is
+ * missing, revoked, or the App token was rejected — send the user through
+ * the install-link flow (Task 3's mint endpoint)", not the old OAuth
+ * re-consent. The fetch idiom (8s AbortController timeout + `githubHeaders`)
+ * mirrors the existing GitHub calls in app/api/v1/runner/repos/route.ts.
  */
 
 const GITHUB_API = "https://api.github.com";
 
 // Same bound + idiom as the other connector-verify fetches in this app (8s).
 const GITHUB_FETCH_TIMEOUT_MS = 8000;
+
+// GitHub App installations are grant-scoped (typically well under a few
+// hundred repos), but this bounds pagination defensively against a
+// pathological installation or a misbehaving API rather than looping
+// forever: 50 pages * 100 = 5,000 repos is far beyond any real installation.
+const MAX_PAGES = 50;
 
 export interface PickerRepo {
   full_name: string;
@@ -29,7 +48,8 @@ export interface PickerRepo {
 
 /** Why a list attempt failed, in terms the UI can act on. */
 export type ListReposFailure =
-  // Token missing/expired/revoked or under-scoped → "Reconnect GitHub".
+  // Installation token missing/rejected/revoked → send the user through the
+  // install-link (re)install flow.
   | { ok: false; kind: "reconnect"; status: number; message: string }
   // Secondary/primary rate limit hit → "try again shortly".
   | { ok: false; kind: "rate_limited"; status: number; message: string }
@@ -39,12 +59,15 @@ export type ListReposFailure =
 export type ListReposResult = { ok: true; repos: PickerRepo[] } | ListReposFailure;
 
 export type RepoAccessResult =
-  // 200 + push/admin/maintain — safe to connect.
+  // Repo is a member of the installation's granted repository list.
   | { ok: true }
-  // 404, or 200 without any write permission → definitively reject.
+  // Not in the installation's granted list — doesn't exist, or the
+  // installation simply wasn't granted it (GitHub's API can't distinguish
+  // the two from an App's point of view, and the remediation is the same
+  // either way: add it at the installation, or pick a different repo).
   | { ok: false; kind: "not_found" }
-  | { ok: false; kind: "no_push" }
-  // Token/rate/network hiccup — caller cannot conclude, so should NOT block.
+  // The installation list call itself failed (token/rate/network hiccup) —
+  // caller cannot conclude, so should NOT block.
   | { ok: false; kind: "indeterminate" };
 
 function githubHeaders(token: string): HeadersInit {
@@ -67,7 +90,7 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 /** A 403 with `x-ratelimit-remaining: 0` is a rate limit; any other 403 is a
- * credential/scope problem the user fixes by reconnecting. */
+ * credential/installation problem the user fixes by reconnecting. */
 function is403RateLimit(res: Response): boolean {
   return res.headers.get("x-ratelimit-remaining") === "0";
 }
@@ -89,26 +112,14 @@ function coerceRepo(raw: unknown): PickerRepo | null {
   };
 }
 
-/**
- * List repos the token's user can see, most-recently-updated first, across
- * personal + collaborator + org-member affiliations. `q` filters client-side
- * over the fetched page by substring of `full_name` (case-insensitive) — the
- * picker is a convenience over a user's own repos, not a global code search, so
- * a single 100-item page keyed on `sort=updated` covers the overwhelmingly
- * common case without a second round-trip; `page` is honoured for the rare
- * user who needs to reach further.
- */
-export async function listUserRepos(
+/** One page of `GET /installation/repositories`, translated to a
+ * `ListReposFailure` on any non-2xx/network outcome, or the page's raw
+ * `repositories` array on success. */
+async function fetchInstallationRepoPage(
   token: string,
-  opts: { q?: string; page?: number } = {}
-): Promise<ListReposResult> {
-  const page =
-    typeof opts.page === "number" && Number.isFinite(opts.page) && opts.page > 0
-      ? Math.floor(opts.page)
-      : 1;
-  const url =
-    `${GITHUB_API}/user/repos?per_page=100&sort=updated` +
-    `&affiliation=owner,collaborator,organization_member&page=${page}`;
+  page: number
+): Promise<{ ok: true; repositories: unknown[] } | ListReposFailure> {
+  const url = `${GITHUB_API}/installation/repositories?per_page=100&page=${page}`;
 
   let res: Response;
   try {
@@ -122,7 +133,7 @@ export async function listUserRepos(
       ok: false,
       kind: "reconnect",
       status: 401,
-      message: "GitHub rejected the stored credentials — reconnect GitHub to refresh access.",
+      message: "GitHub rejected the App installation token — reconnect GitHub to refresh access.",
     };
   }
   if (res.status === 403) {
@@ -138,7 +149,7 @@ export async function listUserRepos(
       ok: false,
       kind: "reconnect",
       status: 403,
-      message: "GitHub denied access with the stored credentials — reconnect GitHub.",
+      message: "GitHub denied access to the App installation — reconnect GitHub.",
     };
   }
   if (!res.ok) {
@@ -162,10 +173,38 @@ export async function listUserRepos(
     };
   }
 
-  const list = Array.isArray(raw) ? raw : [];
-  let repos = list
-    .map(coerceRepo)
-    .filter((r): r is PickerRepo => r !== null);
+  // `/installation/repositories` responds with a WRAPPER object
+  // (`{ total_count, repositories: [...] }`), unlike `/user/repos`'s bare
+  // array — the shape this whole function exists to unwrap.
+  const wrapper = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const repositories = Array.isArray(wrapper.repositories) ? wrapper.repositories : [];
+  return { ok: true, repositories };
+}
+
+/**
+ * List every repo the workspace's App installation was granted, most of
+ * which is what the picker shows (AC1). Fully paginates
+ * `GET /installation/repositories` (`per_page=100`, stopping once a page
+ * returns fewer than 100 — the standard "was that the last page" signal)
+ * rather than exposing a caller-chosen page: an installation's repo set is
+ * the full universe the picker needs, not a paged view into something much
+ * larger the way a user's cross-org `/user/repos` could be. `q` filters
+ * client-side over the fully-aggregated set by substring of `full_name`
+ * (case-insensitive).
+ */
+export async function listInstallationRepos(
+  token: string,
+  opts: { q?: string } = {}
+): Promise<ListReposResult> {
+  const all: unknown[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const result = await fetchInstallationRepoPage(token, page);
+    if (!result.ok) return result;
+    all.push(...result.repositories);
+    if (result.repositories.length < 100) break;
+  }
+
+  let repos = all.map(coerceRepo).filter((r): r is PickerRepo => r !== null);
 
   const q = opts.q?.trim().toLowerCase();
   if (q) {
@@ -175,41 +214,23 @@ export async function listUserRepos(
 }
 
 /**
- * Confirm `owner/repo` exists AND the token's user has write (push) access —
- * AgentRail must be able to push branches/PRs, so read-only visibility isn't
- * enough. A 404 (private-and-invisible reads identically to non-existent) or a
- * 200 without push/admin/maintain is a definitive reject; a token/rate/network
- * failure is `indeterminate` so the caller can fall back to regex-only rather
- * than block a legitimate connect on a transient GitHub hiccup.
+ * Confirm `owner/repo` is a member of the workspace's App installation
+ * grant — AgentRail can only ever act through that installation, so
+ * membership IS the access check (see the module comment for why the old
+ * per-repo push-permission probe is gone). Case-insensitive on `full_name`
+ * to match GitHub's own case-insensitive repo naming. A failure of the
+ * underlying list call is `indeterminate` so the caller can fall back to
+ * regex-only rather than block a legitimate connect on a transient hiccup.
  */
 export async function checkRepoAccess(
   token: string,
   owner: string,
   repo: string
 ): Promise<RepoAccessResult> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(
-      `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-      { headers: githubHeaders(token) }
-    );
-  } catch {
-    return { ok: false, kind: "indeterminate" };
-  }
+  const result = await listInstallationRepos(token);
+  if (!result.ok) return { ok: false, kind: "indeterminate" };
 
-  if (res.status === 404) return { ok: false, kind: "not_found" };
-  // 401 (bad token) / 403 (rate or scope) → can't conclude anything about the
-  // repo itself; don't block.
-  if (res.status === 401 || res.status === 403) return { ok: false, kind: "indeterminate" };
-  if (!res.ok) return { ok: false, kind: "indeterminate" };
-
-  let body: { permissions?: { push?: unknown; admin?: unknown; maintain?: unknown } };
-  try {
-    body = (await res.json()) as typeof body;
-  } catch {
-    return { ok: false, kind: "indeterminate" };
-  }
-  const p = body.permissions ?? {};
-  const canPush = p.push === true || p.admin === true || p.maintain === true;
-  return canPush ? { ok: true } : { ok: false, kind: "no_push" };
+  const target = `${owner}/${repo}`.toLowerCase();
+  const found = result.repos.some((r) => r.full_name.toLowerCase() === target);
+  return found ? { ok: true } : { ok: false, kind: "not_found" };
 }

@@ -342,6 +342,104 @@ class TestHappyPath:
         push_cmd = runner.command_with("push")
         assert "HEAD:agentrail/issue-7" in push_cmd
 
+    def _green_publish_runner(self, run_dir: Path) -> FakeRunner:
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        return FakeRunner([
+            _Completed(0, stdout="cloned"),                 # git clone
+            _do_run,                                        # agentrail run issue
+            _Completed(0, stdout="main"),                   # rev-parse (branch)
+            _Completed(0),                                  # checkout -B
+            _Completed(0),                                  # add -A
+            _Completed(0),                                  # commit
+            _Completed(0),                                  # push
+            _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+        ])
+
+    def test_green_run_commits_with_neutral_identity_when_no_bot_env(
+        self, tmp_path
+    ) -> None:
+        # No AGENTRAIL_GIT_BOT_NAME/EMAIL in env (the pre-#1391-bot-identity
+        # shape, or a self-host with no GitHub App configured) — the commit
+        # uses the historical neutral identity, byte-identical to before.
+        run_dir = tmp_path / "run-1"
+        runner = self._green_publish_runner(run_dir)
+        self._run(tmp_path, runner, pr_title="Add a thing")
+
+        checkout_cmd = runner.command_with("checkout")
+        commit_cmd = runner.command_with("commit")
+        for cmd in (checkout_cmd, commit_cmd):
+            assert "user.name=AgentRail Runner" in cmd
+            assert "user.email=runner@agentrail.dev" in cmd
+            assert "user.name=jace[bot]" not in cmd
+
+    def test_green_run_commits_with_bot_identity_when_both_env_vars_present(
+        self, tmp_path
+    ) -> None:
+        # Both AGENTRAIL_GIT_BOT_NAME and AGENTRAIL_GIT_BOT_EMAIL present
+        # (threaded by _make_execute from a claim's git_bot_name/email, #7 of
+        # the GitHub App swap) — commits attribute to the bot user.
+        run_dir = tmp_path / "run-1"
+        runner = self._green_publish_runner(run_dir)
+        self._run(
+            tmp_path,
+            runner,
+            pr_title="Add a thing",
+            env={
+                "GIT_TOKEN": "ght-secret",
+                "AGENTRAIL_GIT_BOT_NAME": "jace[bot]",
+                "AGENTRAIL_GIT_BOT_EMAIL": "98765+jace[bot]@users.noreply.github.com",
+            },
+        )
+
+        checkout_cmd = runner.command_with("checkout")
+        commit_cmd = runner.command_with("commit")
+        for cmd in (checkout_cmd, commit_cmd):
+            assert "user.name=jace[bot]" in cmd
+            assert "user.email=98765+jace[bot]@users.noreply.github.com" in cmd
+            assert "user.name=AgentRail Runner" not in cmd
+
+    def test_green_run_falls_back_to_neutral_identity_when_only_name_present(
+        self, tmp_path
+    ) -> None:
+        # A partial/inconsistent env (only one of the two bot vars set) is
+        # treated as absent — never commit with a lone name or email.
+        run_dir = tmp_path / "run-1"
+        runner = self._green_publish_runner(run_dir)
+        self._run(
+            tmp_path,
+            runner,
+            pr_title="Add a thing",
+            env={"GIT_TOKEN": "ght-secret", "AGENTRAIL_GIT_BOT_NAME": "jace[bot]"},
+        )
+
+        checkout_cmd = runner.command_with("checkout")
+        assert "user.name=AgentRail Runner" in checkout_cmd
+        assert "user.email=runner@agentrail.dev" in checkout_cmd
+
+    def test_green_run_falls_back_to_neutral_identity_when_only_email_present(
+        self, tmp_path
+    ) -> None:
+        run_dir = tmp_path / "run-1"
+        runner = self._green_publish_runner(run_dir)
+        self._run(
+            tmp_path,
+            runner,
+            pr_title="Add a thing",
+            env={
+                "GIT_TOKEN": "ght-secret",
+                "AGENTRAIL_GIT_BOT_EMAIL": "98765+jace[bot]@users.noreply.github.com",
+            },
+        )
+
+        checkout_cmd = runner.command_with("checkout")
+        assert "user.name=AgentRail Runner" in checkout_cmd
+        assert "user.email=runner@agentrail.dev" in checkout_cmd
+
     def test_publish_disabled_leaves_no_pr(self, tmp_path) -> None:
         runner = self._ok_runner(tmp_path / "run-1")
         result, _ = self._run(tmp_path, runner, publish_pr=False)

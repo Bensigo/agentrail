@@ -1,30 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureFreshGithubToken, touchApiKeyLastUsed } from "@agentrail/db-postgres";
+import { getInstallationToken, touchApiKeyLastUsed } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
 /**
- * Runner-authed mid-run GitHub token refresh (issue #1391).
+ * Runner-authed mid-run GitHub token refresh (issue #1391; GitHub App swap
+ * spec: docs/superpowers/specs/2026-07-24-jace-github-app-identity-design.md
+ * §5/§6).
  *
- * The claim route already refreshes-on-claim so a handed-out token outlives the
- * execution ceiling. This endpoint is the IN-FLIGHT backstop: when a run's push
- * still 401s (a token that expired mid-run, or a claim that couldn't refresh),
- * the fleet worker calls this ONCE and retries the push with the fresh token,
- * so an in-flight run survives token expiry instead of burning a full attempt's
- * budget for a non-code reason.
+ * The claim route now hands out a freshly minted installation token on EVERY
+ * claim (no OAuth refresh-token exchange left to do at claim time), so this
+ * endpoint is the IN-FLIGHT backstop only: when a run's push still 401s (an
+ * installation token's 1h TTL expired mid-run), the fleet worker calls this
+ * ONCE and retries the push with a fresh mint, so an in-flight run survives
+ * token expiry instead of burning a full attempt's budget for a non-code
+ * reason.
  *
  * Authenticated EXACTLY like `/api/v1/runner/claim` and `/api/v1/runner/result`
  * — the same machine bearer token (an `api_keys` row), same
- * workspace-ownership check. It FORCES a refresh (the trigger is a real push
- * 401, not a TTL estimate) and returns the fresh access token over this
- * already-authenticated channel only — the token is never logged.
+ * workspace-ownership check. Installation tokens are minted fresh from
+ * GitHub on every call (spec §2: no caching, no OAuth refresh-token exchange)
+ * and returned over this already-authenticated channel only — the token is
+ * never logged.
  *
  * Responses:
- *   200 `{ github_token: "<token>" }` — refresh succeeded (or the stored token
- *        was already usable). The runner retries the push with this token.
- *   502 `{ error: "refresh_failed" }` — the refresh is UNRECOVERABLE (no
- *        refresh token, `bad_refresh_token`, network/HTTP error, or no linked
- *        GitHub owner). The runner records a DISTINCT infrastructure-error
- *        classification instead of a generic red (#1391 AC3).
+ *   200 `{ github_token: "<token>" }` — a fresh installation token minted.
+ *        The runner retries the push with this token.
+ *   502 `{ error: "refresh_failed" }` — the mint is UNRECOVERABLE (no GitHub
+ *        App installation bound to this workspace, App env unconfigured,
+ *        GitHub unreachable, or the App was uninstalled). The runner records
+ *        a DISTINCT infrastructure-error classification instead of a
+ *        generic red (#1391 AC3).
  *   401 / 403 / 400 — bad bearer / workspace mismatch / missing workspace_id.
  */
 export async function POST(request: NextRequest) {
@@ -53,19 +58,19 @@ export async function POST(request: NextRequest) {
 
   await touchApiKeyLastUsed(auth.apiKeyId);
 
-  // Force a refresh — the caller only reaches here after a push already failed
-  // auth, so we never want to hand back the same stale token. NEVER throws.
-  const fresh = await ensureFreshGithubToken(workspaceId, { force: true });
+  // Mint a fresh installation token — the caller only reaches here after a
+  // push already failed auth, so we never want to hand back a cached value
+  // (there is none: getInstallationToken never caches, spec §2). Workspace
+  // comes from the bearer key (auth.workspaceId), never the request body.
+  const token = await getInstallationToken(auth.workspaceId);
 
-  if (
-    (fresh.outcome === "refreshed" || fresh.outcome === "no-op") &&
-    fresh.accessToken
-  ) {
-    return NextResponse.json({ github_token: fresh.accessToken });
+  if (token) {
+    return NextResponse.json({ github_token: token });
   }
 
-  // "refresh-failed" or "no-account": the run cannot recover its GitHub auth.
-  // Return a distinct signal (never the token, never the underlying error) so
-  // the runner records the infra classification.
+  // null: no installation bound, App env unconfigured, GitHub unreachable, or
+  // the App was uninstalled — the run cannot recover its GitHub auth. Return
+  // a distinct signal (never the token, never the underlying reason) so the
+  // runner records the infra classification.
   return NextResponse.json({ error: "refresh_failed" }, { status: 502 });
 }

@@ -827,6 +827,27 @@ _GIT_IDENTITY = [
 ]
 
 
+def _git_identity_args(env: Dict[str, str]) -> List[str]:
+    """The ``-c user.email=...`` / ``-c user.name=...`` argv for the runner's
+    own commit (GitHub App swap spec §6).
+
+    Uses the workspace's GitHub App bot identity — ``AGENTRAIL_GIT_BOT_NAME`` /
+    ``AGENTRAIL_GIT_BOT_EMAIL``, threaded into ``env`` by
+    ``agentrail.cli.commands.runner._make_execute`` from a claimed
+    ``WorkItem``'s ``git_bot_name``/``git_bot_email`` — when BOTH are present,
+    so pushed commits attribute to ``<slug>[bot]`` instead of the neutral
+    fallback. Falls back to :data:`_GIT_IDENTITY` when either is missing: an
+    older backend, a self-host with no GitHub App configured, or a partial/
+    inconsistent claim (only one of the two set) all degrade to the same
+    historical neutral identity rather than a lone name or email.
+    """
+    bot_name = env.get("AGENTRAIL_GIT_BOT_NAME")
+    bot_email = env.get("AGENTRAIL_GIT_BOT_EMAIL")
+    if bot_name and bot_email:
+        return ["-c", f"user.email={bot_email}", "-c", f"user.name={bot_name}"]
+    return list(_GIT_IDENTITY)
+
+
 def _publish_green(
     runner, repo_dir: Path, issue_ref: str, pr_title: Optional[str],
     *, base_ref: str, env: Dict[str, str],
@@ -856,6 +877,9 @@ def _publish_green(
     n = number.group(1) if number else str(issue_ref)
     branch = f"agentrail/issue-{n}"
     title = pr_title or f"agentrail: resolve #{n}"
+    # GitHub App bot identity when the claim carried one, else the neutral
+    # fallback (spec §6) — see _git_identity_args's own docstring.
+    identity = _git_identity_args(env)
 
     def _run(cmd: list) -> Optional[object]:
         try:
@@ -872,10 +896,10 @@ def _publish_green(
             return None
 
     # Move the uncommitted work onto a fresh feature branch and commit it.
-    if _run(["git", *_GIT_IDENTITY, "checkout", "-B", branch]) is None:
+    if _run(["git", *identity, "checkout", "-B", branch]) is None:
         return "", "", False
     _run(["git", "add", "-A"])
-    commit = _run(["git", *_GIT_IDENTITY, "commit", "-m", f"{title} (#{n})"])
+    commit = _run(["git", *identity, "commit", "-m", f"{title} (#{n})"])
     if commit is None or getattr(commit, "returncode", 1) != 0:
         return branch, "", False  # nothing to commit / commit failed
 

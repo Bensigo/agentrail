@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  ensureFreshGithubToken: vi.fn(),
+  getInstallationToken: vi.fn(),
   touchApiKeyLastUsed: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
@@ -10,10 +10,10 @@ vi.mock("../../../../../lib/bearer-auth", () => ({
 }));
 
 import { POST } from "./route";
-import { ensureFreshGithubToken, touchApiKeyLastUsed } from "@agentrail/db-postgres";
+import { getInstallationToken, touchApiKeyLastUsed } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
-const mockEnsureFresh = vi.mocked(ensureFreshGithubToken);
+const mockGetInstallationToken = vi.mocked(getInstallationToken);
 const mockTouch = vi.mocked(touchApiKeyLastUsed);
 const mockRequireBearer = vi.mocked(requireBearer);
 
@@ -38,7 +38,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRequireBearer.mockResolvedValue(authResult() as never);
   mockTouch.mockResolvedValue(undefined as never);
-  mockEnsureFresh.mockResolvedValue({ accessToken: "ghu_fresh", outcome: "refreshed" });
+  mockGetInstallationToken.mockResolvedValue("ghs_fresh");
 });
 
 describe("POST /api/v1/runner/refresh-github-token", () => {
@@ -51,14 +51,14 @@ describe("POST /api/v1/runner/refresh-github-token", () => {
 
     expect(res.status).toBe(401);
     expect(mockTouch).not.toHaveBeenCalled();
-    expect(mockEnsureFresh).not.toHaveBeenCalled();
+    expect(mockGetInstallationToken).not.toHaveBeenCalled();
   });
 
   it("400 when workspace_id is missing", async () => {
     const res = await POST(req({}));
 
     expect(res.status).toBe(400);
-    expect(mockEnsureFresh).not.toHaveBeenCalled();
+    expect(mockGetInstallationToken).not.toHaveBeenCalled();
   });
 
   it("403 when the bearer's workspace differs from the requested workspace_id", async () => {
@@ -66,48 +66,39 @@ describe("POST /api/v1/runner/refresh-github-token", () => {
 
     expect(res.status).toBe(403);
     expect(mockTouch).not.toHaveBeenCalled();
-    expect(mockEnsureFresh).not.toHaveBeenCalled();
+    expect(mockGetInstallationToken).not.toHaveBeenCalled();
   });
 
-  it("200 with the fresh github_token on a successful refresh, forcing a refresh", async () => {
+  it("200 with a freshly minted installation token, resolved from the bearer's workspace", async () => {
+    mockGetInstallationToken.mockResolvedValue("ghs_fresh");
+
     const res = await POST(req({ workspace_id: WS }));
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ github_token: "ghu_fresh" });
-    // Forces a refresh — the caller only reaches here after a push already 401'd.
-    expect(mockEnsureFresh).toHaveBeenCalledWith(WS, { force: true });
+    expect(body).toEqual({ github_token: "ghs_fresh" });
+    // Workspace comes from the bearer, never the request body.
+    expect(mockGetInstallationToken).toHaveBeenCalledWith(WS);
     expect(mockTouch).toHaveBeenCalledWith("key-1");
   });
 
-  it("200 with the token when the stored one was still usable (no-op outcome)", async () => {
-    mockEnsureFresh.mockResolvedValue({ accessToken: "ghu_stored", outcome: "no-op" });
-
-    const res = await POST(req({ workspace_id: WS }));
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ github_token: "ghu_stored" });
-  });
-
-  it("502 refresh_failed when the refresh is unrecoverable (bad_refresh_token / network)", async () => {
-    mockEnsureFresh.mockResolvedValue({ accessToken: "ghu_stale", outcome: "refresh-failed" });
+  it("502 refresh_failed when there is no GitHub App installation bound to this workspace", async () => {
+    mockGetInstallationToken.mockResolvedValue(null);
 
     const res = await POST(req({ workspace_id: WS }));
     const body = await res.json();
 
     expect(res.status).toBe(502);
     expect(body).toEqual({ error: "refresh_failed" });
-    // The token is NEVER returned on a failure — only the distinct signal.
-    expect(JSON.stringify(body)).not.toContain("ghu_stale");
   });
 
-  it("502 refresh_failed when the workspace has no linked GitHub owner", async () => {
-    mockEnsureFresh.mockResolvedValue({ accessToken: null, outcome: "no-account" });
+  it("502 refresh_failed never leaks a token when the mint fails", async () => {
+    mockGetInstallationToken.mockResolvedValue(null);
 
     const res = await POST(req({ workspace_id: WS }));
+    const body = await res.json();
 
     expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: "refresh_failed" });
+    expect(JSON.stringify(body)).not.toContain("ghs_");
   });
 });

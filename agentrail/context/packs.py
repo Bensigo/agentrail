@@ -16,12 +16,25 @@ from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_mem
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, get_file_lines, query_context
+# Imported as a module, not `from agentrail.context.wiki import OVERVIEW_SLUG,
+# parse_page, ...`: the cross-file-imported-symbol recall layer (#1043 AC4,
+# agentrail/context/symbol_candidates.py) parses `from X import NAME` lines
+# straight out of this file's raw text (regex, indentation-blind) to decide
+# which OTHER files' definitions to inject as retrieval candidates. Five new
+# named symbols here would compete with packs.py's EXISTING cross-file
+# dependencies (e.g. pack_quality.compute_pack_quality, the #1104-certified
+# promotion in context-pack-build-hard) for the same limited wide-candidate
+# budget. A single module import keeps packs.py's cross-file symbol surface
+# at +1 ("wiki", which nothing in symbolTable defines) instead of +5.
+from agentrail.context import wiki
 from agentrail.shared.json import write_json
 
 
 PACK_SECTION_KEYS = [
     # --- stable cache-eligible prefix (same across repeated calls) ---
     "requiredContext",    # CONTEXT.md, TASTE.md — never changes mid-run
+    "repoOverview",       # compiled Repo Wiki overview page — flag-gated
+                           # (see _repo_overview_items); absent when OFF
     "availableSkills",   # local skill blocks — stable per project
     "availableTools",    # agentrail tool list — stable per install
     # --- dynamic / per-task retrieval results ---
@@ -39,6 +52,7 @@ PACK_SECTION_KEYS = [
 
 SECTION_TITLES = {
     "requiredContext": "Required Context",
+    "repoOverview": "Repo Overview",
     "likelyFiles": "Likely Files",
     "likelyDocs": "Likely Docs",
     "relevantMemory": "Relevant Memory",
@@ -195,6 +209,15 @@ def _section_for(item: Dict[str, Any]) -> str:
         return "likelyFiles"
     if source_type in {"agent_doc", "prd", "milestone", "external_descriptor"}:
         return "likelyDocs"
+    if source_type == "wiki_doc":
+        # Repo Wiki unit/overview pages retrieved as ordinary candidates
+        # (spec 2026-07-23 S3 "Pack integration") bucket with the docs, never
+        # with likelyFiles — a wiki page is prose ABOUT code, not code. The
+        # dedicated repoOverview section (see _repo_overview_items) is a
+        # SEPARATE, always-the-overview-page slot; this branch is what a
+        # retrieved UNIT page falls into. Already reachable via the generic
+        # fallback below, made explicit so it can't silently regress.
+        return "likelyDocs"
     if source_type == "memory":
         return "relevantMemory"
     if source_type == "run_artifact":
@@ -302,6 +325,108 @@ def _target_linked_items(index: Dict[str, Any], target_kind: str, target_number:
             }
         )
     return linked_items
+
+
+# ---------------------------------------------------------------------------
+# Repo Wiki overview section (spec 2026-07-23 S4.3, PR 3 of 7): the compiled
+# overview page inlined into the stable cache-eligible prefix. Capped so the
+# one repo-wide page never crowds out the per-task retrieval budget below.
+# ---------------------------------------------------------------------------
+
+_REPO_OVERVIEW_MAX_TOKENS = 2000
+
+
+def _split_wiki_page_sections(body: str) -> List[str]:
+    """Split a rendered wiki page BODY (post-frontmatter, see wiki.parse_page)
+    into ordered top-level blocks: the leading provenance blockquote (before
+    the first ``## `` heading) as block 0, then one block per ``## `` heading
+    through the next heading or end of text.
+
+    Used by :func:`_cap_repo_overview_body` to cap a page by dropping WHOLE
+    trailing sections rather than truncating mid-sentence.
+    """
+    blocks: List[List[str]] = [[]]
+    for line in body.split("\n"):
+        if line.startswith("## "):
+            blocks.append([line])
+        else:
+            blocks[-1].append(line)
+    return [("\n".join(block)).strip("\n") for block in blocks]
+
+
+def _cap_repo_overview_body(body: str, max_tokens: int = _REPO_OVERVIEW_MAX_TOKENS) -> str:
+    """Cap a compiled overview page body to ~``max_tokens`` by dropping WHOLE
+    trailing sections -- never truncating mid-sentence (spec S4.3 pack
+    integration: "drop whole trailing sections of the page to fit"). The
+    leading provenance blockquote is always kept, even if it alone were near
+    budget, since the section requires it present.
+    """
+    sections = [section for section in _split_wiki_page_sections(body) if section]
+    if not sections:
+        return body.strip()
+    kept = [sections[0]]
+    total = estimate_tokens(sections[0])
+    for section in sections[1:]:
+        section_tokens = estimate_tokens(section)
+        if total + section_tokens > max_tokens:
+            break
+        kept.append(section)
+        total += section_tokens
+    return "\n\n".join(kept)
+
+
+def _repo_overview_items(root: Path, index: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The compiled repo-wiki overview page for the stable ``repoOverview``
+    pack section (spec S4.3).
+
+    Populated ONLY when the wiki rollout flag is ON *and* the compiled
+    overview page's ``wiki_doc`` record exists in the CURRENT index -- either
+    condition unmet returns ``[]`` so the caller removes the key entirely,
+    keeping a flag-OFF pack byte-identical to before this section existed
+    (see ``build_context_pack``). Reads the record's already-redacted
+    ``content`` straight off the loaded index (no extra file I/O, no
+    unredacted disk read) -- the exact same ``wiki_doc`` record retrieval and
+    ``query_context`` see.
+    """
+    if not wiki.repo_wiki_enabled():
+        return []
+    # .as_posix(), not shared.fs.to_posix: same normalization wiki._mint_wiki_source
+    # used to compute this record's path, without adding another named import for
+    # the cross-file-imported-symbol recall layer to compete over (see the wiki
+    # module-import comment above).
+    overview_path = (wiki.wiki_dir_for(root) / wiki.slug_to_filename(wiki.OVERVIEW_SLUG)).relative_to(root).as_posix()
+    record = next(
+        (
+            rec
+            for rec in index.get("records", [])
+            if isinstance(rec, dict) and rec.get("sourceType") == "wiki_doc" and rec.get("path") == overview_path
+        ),
+        None,
+    )
+    if record is None or not isinstance(record.get("content"), str) or not record["content"].strip():
+        return []
+    _fields, body = wiki.parse_page(record["content"])
+    capped = _cap_repo_overview_body(body)
+    if not capped.strip():
+        return []
+    return [
+        _normalized_item(
+            {
+                "sourceType": "wiki_doc",
+                "path": record.get("path"),
+                "sourceId": record.get("id"),
+                "citation": record.get("path"),
+                "contentHash": record.get("contentHash"),
+                "authority": record.get("authority"),
+                "visibility": record.get("visibility"),
+                "freshness": record.get("freshness"),
+                "redactions": record.get("redactions", []),
+                "content": capped,
+            },
+            "repoOverview",
+            "Compiled repo-wiki overview page (spec 2026-07-23): stable orientation context included in every pack while the wiki is enabled.",
+        )
+    ]
 
 
 def _ensure_required_sections(root: Path, sections: Dict[str, List[Dict[str, Any]]], index: Dict[str, Any]) -> None:
@@ -569,6 +694,14 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
         "",
     ]
     for key in PACK_SECTION_KEYS:
+        if key == "repoOverview" and key not in pack:
+            # Flag-OFF (the default) or no compiled overview page yet: the
+            # key is entirely absent from the pack (see build_context_pack),
+            # so its heading must be too -- this is the byte-identical-to-
+            # before-this-section-existed guarantee (spec S4.3 AC). Every
+            # OTHER section key always renders its heading (with "None." when
+            # empty); repoOverview is the one exception, by design.
+            continue
         lines.append(f"## {SECTION_TITLES[key]}")
         values = pack.get(key, [])
         if key == "memoryLane":
@@ -577,6 +710,11 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             # (reusing the #1035 read-side framing pattern), even when empty, so
             # the delimiters/frame are a stable, auditable part of the pack.
             lines.append(frame_untrusted_memory(values))
+        elif key == "repoOverview":
+            # A markdown-formatted page body, not a list of "- `path`: reason"
+            # bullets -- render the compiled prose verbatim (provenance
+            # blockquote included) rather than through _render_item.
+            lines.append(str(values[0].get("content") or "") if values else "None.")
         elif values:
             lines.extend(_render_item(item) for item in values)
         else:
@@ -666,6 +804,19 @@ def build_context_pack(
         _append_unique(sections[section], _normalized_item(result, section, f"Included in {SECTION_TITLES[section].lower()} because it directly cites {_target_label(target_kind, target_number)}."))
     sections["excludedContext"] = _excluded_context(query.get("excluded", []))
     _ensure_required_sections(root, sections, index)
+    # Repo Wiki overview (spec 2026-07-23 S4.3, PR 3 of 7): stable-prefix
+    # section, present only when the flag is ON and a compiled overview page
+    # exists in the current index -- otherwise the key is removed entirely so
+    # a flag-OFF pack (the default) stays byte-identical to before this
+    # section existed. _sectioned_results already seeded sections["repoOverview"]
+    # to [] (it is a PACK_SECTION_KEYS member); nothing routes into it via
+    # _section_for, so without this block it would stay [] forever rather
+    # than being absent -- pop() is what makes flag-OFF byte-identical.
+    repo_overview_items = _repo_overview_items(root, index)
+    if repo_overview_items:
+        sections["repoOverview"] = repo_overview_items
+    else:
+        sections.pop("repoOverview", None)
     sections["goals"] = _relevant_goals(root, target_kind, target_number, phase)
     # Factory read half of shared memory (#1039): a size-capped, deterministic,
     # typed + attributed selection of memory_items, read-side secret-filtered and

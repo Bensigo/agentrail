@@ -158,6 +158,16 @@ def authority_demotion(record: Dict[str, Any]) -> float:
         return 0.45
     if record.get("authority") == "denied":
         return 999.0
+    # Repo Wiki authority tier "generated" (spec 2026-07-23 S3 "Authority",
+    # S4.7): wiki_doc pages sit below context_doc/taste_doc (critical) AND
+    # below code/docs (the "normal" default, 0.0 boost/demotion) -- a nonzero
+    # demotion here is what makes an equally-relevant wiki_doc and code/doc
+    # candidate resolve in the code/doc's favor on a score tie, satisfying
+    # "a wiki_doc can never outrank an equally-matched code/doc source." Kept
+    # well below "low" (0.45): wiki pages are compiled-and-cited, not
+    # low-trust, they just never get to WIN a tie against firsthand sources.
+    if record.get("authority") == "generated":
+        return 0.2
     return 0.0
 
 
@@ -189,7 +199,31 @@ def memory_freshness(memory: Optional[Dict[str, Any]]) -> Tuple[float, List[str]
     return demotion, reasons
 
 
-def freshness_demotion(record: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> Tuple[float, List[str]]:
+def wiki_page_freshness(record: Dict[str, Any], stale_wiki_paths: Optional[Set[str]]) -> Tuple[float, List[str]]:
+    """Freshness demotion for a stale compiled wiki page (spec 2026-07-23
+    S4.3/S4.7), mirroring the expired-memory demotion above: a wiki_doc page
+    whose manifest/frontmatter ``inputsHash`` no longer matches the unit's
+    CURRENT file hashes (see ``wiki.wiki_status``) describes an out-of-date
+    snapshot of the code. It stays retrievable -- a dated answer beats no
+    answer, and the Jace tool surfaces the same stale marker -- but it is
+    demoted and the reason is visible in the pack/query reason string, same
+    as "expired memory"/"stale memory" above.
+
+    ``stale_wiki_paths`` is precomputed once per query (never per-record) by
+    the caller from ``wiki.wiki_status(root)["pages"]`` and keyed by each
+    page's repo-relative file path (matches ``SourceRecord.path`` for
+    ``sourceType == "wiki_doc"``). ``None``/empty means "nothing is stale"
+    (or the caller skipped the check because no wiki_doc records were in the
+    corpus) -- always a no-op for non-wiki_doc records.
+    """
+    if record.get("sourceType") != "wiki_doc" or not stale_wiki_paths:
+        return 0.0, []
+    if str(record.get("path")) in stale_wiki_paths:
+        return 1.5, ["stale wiki page"]
+    return 0.0, []
+
+
+def freshness_demotion(record: Dict[str, Any], chunk: Optional[Dict[str, Any]], stale_wiki_paths: Optional[Set[str]] = None) -> Tuple[float, List[str]]:
     status = str(record.get("freshness", {}).get("status", "current")).lower()
     demotion = 0.0
     reasons: List[str] = []
@@ -203,7 +237,8 @@ def freshness_demotion(record: Dict[str, Any], chunk: Optional[Dict[str, Any]]) 
         demotion += 0.15
         reasons.append("unknown freshness")
     memory_demotion, memory_reasons = memory_freshness((chunk or {}).get("memory") or record.get("memory"))
-    return demotion + memory_demotion, reasons + memory_reasons
+    wiki_demotion, wiki_reasons = wiki_page_freshness(record, stale_wiki_paths)
+    return demotion + memory_demotion + wiki_demotion, reasons + memory_reasons + wiki_reasons
 
 
 def prior_mistake_demotion(prior_mistake: Optional[Dict[str, Any]], effective_issue_refs: List[int]) -> Tuple[float, List[str]]:
@@ -246,7 +281,7 @@ def reciprocal_rank(rank: int) -> float:
 
 
 def build_reason(parts: Set[str]) -> str:
-    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "symbol definition", "exact identifier", "exact path", "lesson target", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
+    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "symbol definition", "exact identifier", "exact path", "lesson target", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "generated source", "current memory", "stale memory", "expired memory", "stale wiki page", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
     return "; ".join(item for item in ordered if item in parts) or "Included by hybrid retrieval score."
 
 
@@ -1643,6 +1678,26 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
                         candidate_ids.add(_iid)
                         break
 
+    # Stale-wiki-page lookup (spec 2026-07-23 S4.3/S4.7), computed once per
+    # query -- never per-record -- and only when the corpus actually holds a
+    # wiki_doc record (compile_wiki never ran otherwise, so this is a no-op
+    # cost when the Repo Wiki flag is OFF, the default). wiki.wiki_status is
+    # READ-ONLY (manifest + already-built index; never triggers a compile) and
+    # itself fails open to {"pages": []} on any error, so this whole block
+    # degrades to "nothing stale" rather than ever breaking retrieval.
+    stale_wiki_paths: Optional[Set[str]] = None
+    if any(doc["source"].get("sourceType") == "wiki_doc" for doc in corpus):
+        try:
+            from agentrail.context.wiki import wiki_status  # deferred: only needed when wiki_doc records exist
+
+            stale_wiki_paths = {
+                str(page["file"])
+                for page in wiki_status(root).get("pages", [])
+                if isinstance(page, dict) and page.get("stale") and page.get("file")
+            }
+        except Exception:
+            stale_wiki_paths = None
+
     scored: List[Dict[str, Any]] = []
     lexical_raw: Dict[str, float] = {}
     phrases = re.findall(r"[a-z0-9_-]+(?:\s+[a-z0-9_-]+){1,4}", query_lower)
@@ -1717,8 +1772,12 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             reasons.add("high authority source")
         authority_penalty = authority_demotion(source)
         if 0 < authority_penalty < 999:
-            reasons.add("low authority source")
-        freshness_penalty, freshness_reasons = freshness_demotion(source, chunk)
+            # "generated" (Repo Wiki pages) is its own tier, distinct from
+            # "low" -- surfacing a different reason string keeps the pack's
+            # provenance honest about WHY a wiki_doc candidate sits where it
+            # does (spec S4.7), instead of reading as a low-trust source.
+            reasons.add("generated source" if source.get("authority") == "generated" else "low authority source")
+        freshness_penalty, freshness_reasons = freshness_demotion(source, chunk, stale_wiki_paths)
         reasons.update(freshness_reasons)
         prior_mistake = (chunk or {}).get("priorMistake") or source.get("priorMistake")
         prior_penalty, prior_reasons = prior_mistake_demotion(prior_mistake, effective_issue_refs)

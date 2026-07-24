@@ -19,21 +19,27 @@ from agentrail.context.packs import (
     RETRIEVAL_MAX_TOKENS,
     SECTION_TITLES,
     _DEFAULT_BUDGET_MODEL,
+    _cap_repo_overview_body,
     _item_tokens,
     _pack_input_tokens,
+    _sectioned_results,
+    _section_for,
     _trim_to_budget,
     build_context_pack,
     estimate_tokens,
     render_context_pack_markdown,
 )
 from agentrail.context.pricing import cost_for
+from agentrail.context.retrieval import query_context
+from agentrail.context.wiki import REPO_WIKI_ENV
+from agentrail.tests.context.test_wiki import _env, _wiki_on, _write_mock, make_repo as _make_wiki_repo
 
 
 # ---------------------------------------------------------------------------
 # AC4(a) — stable-prefix section order
 # ---------------------------------------------------------------------------
 
-_STABLE_SECTIONS = ["requiredContext", "availableSkills", "availableTools"]
+_STABLE_SECTIONS = ["requiredContext", "repoOverview", "availableSkills", "availableTools"]
 _DYNAMIC_SECTIONS = ["likelyFiles", "likelyDocs", "relevantMemory", "priorMistakes", "activeState", "goals"]
 
 
@@ -65,7 +71,7 @@ class PackSectionOrderTests(unittest.TestCase):
 
     def test_all_expected_keys_present(self) -> None:
         expected = {
-            "requiredContext", "availableSkills", "availableTools",
+            "requiredContext", "repoOverview", "availableSkills", "availableTools",
             "likelyFiles", "likelyDocs", "relevantMemory", "memoryLane",
             "priorMistakes", "activeState", "goals",
             "excludedContext", "openQuestions",
@@ -555,6 +561,164 @@ class GreedyBudgetFillAC902Tests(unittest.TestCase):
             "implementation. The compat placeholder name is a known signal that the "
             "budget is not enforced.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Repo Wiki spec (docs/superpowers/specs/2026-07-23-repo-wiki-compiled-repo-
+# knowledge-design.md), delivery plan S7 row 3: the repoOverview pack section.
+# ---------------------------------------------------------------------------
+
+
+class RepoOverviewFlagOffByteIdenticalTests(unittest.TestCase):
+    """AC: flag OFF (the default) -> pack JSON/markdown byte-identical to
+    before this section existed. _make_repo() already configures
+    summary.mode="disabled" (wiki structurally cannot compile), and the
+    _env(REPO_WIKI_ENV, None) wrap additionally guarantees the rollout env
+    var itself is unset for the duration of the call, matching test_wiki.py's
+    own flag-OFF convention."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = _make_repo()
+
+    def test_repo_overview_key_entirely_absent_from_pack_json(self) -> None:
+        with _env(REPO_WIKI_ENV, None):
+            output = build_context_pack(self.root, "issue", 1, "plan")
+        pack_json = json.loads((self.root / output["jsonPath"]).read_text(encoding="utf-8"))
+        self.assertNotIn("repoOverview", pack_json)
+
+    def test_no_repo_overview_heading_in_markdown_and_section_count_matches(self) -> None:
+        with _env(REPO_WIKI_ENV, None):
+            output = build_context_pack(self.root, "issue", 1, "plan")
+        md = (self.root / output["markdownPath"]).read_text(encoding="utf-8")
+        self.assertNotIn("## Repo Overview", md)
+        # Every OTHER PACK_SECTION_KEYS member always renders its heading
+        # exactly once (see render_context_pack_markdown) -- so with
+        # repoOverview the only ever-absent key, the total heading count is
+        # exactly len(PACK_SECTION_KEYS) - 1. A stray/duplicate heading of any
+        # kind would move this number, so this is the byte-identical proof at
+        # the "nothing extra rendered" level.
+        heading_count = sum(1 for title in SECTION_TITLES.values() if f"## {title}" in md)
+        self.assertEqual(heading_count, len(PACK_SECTION_KEYS) - 1)
+
+
+class RepoOverviewFlagOnTests(unittest.TestCase):
+    """AC: flag ON + a compiled overview page -> present and capped."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        tmp = tempfile.mkdtemp()
+        mock_command = _write_mock(Path(tmp))
+        cls.root = _make_wiki_repo(summary_mode="custom-command", summary_command=mock_command)
+        with _wiki_on():
+            build_index(cls.root)
+            cls.output = build_context_pack(cls.root, "issue", 1, "plan")
+        cls.pack_json = json.loads((cls.root / cls.output["jsonPath"]).read_text(encoding="utf-8"))
+
+    def test_repo_overview_present_with_one_item(self) -> None:
+        self.assertIn("repoOverview", self.pack_json)
+        self.assertEqual(len(self.pack_json["repoOverview"]), 1)
+
+    def test_repo_overview_item_is_the_overview_wiki_doc(self) -> None:
+        item = self.pack_json["repoOverview"][0]
+        self.assertEqual(item["sourceType"], "wiki_doc")
+        self.assertEqual(item["authority"], "generated")
+        self.assertEqual(item["path"], ".agentrail/context/wiki/overview.md")
+
+    def test_repo_overview_content_includes_provenance_blockquote(self) -> None:
+        item = self.pack_json["repoOverview"][0]
+        self.assertIn("Compiled from source at", item["content"])
+        self.assertIn("the source is authoritative", item["content"])
+
+    def test_repo_overview_heading_and_content_in_markdown(self) -> None:
+        md = (self.root / self.output["markdownPath"]).read_text(encoding="utf-8")
+        self.assertIn("## Repo Overview", md)
+        self.assertIn("Compiled from source at", md)
+
+    def test_repo_overview_never_dropped_by_the_retrieval_token_budget(self) -> None:
+        """Unlike likelyFiles/likelyDocs/etc., repoOverview is part of the
+        stable prefix -- it must never appear in excludedContext with a
+        budget reason."""
+        excluded_reasons = [str(item.get("reason", "")) for item in self.pack_json.get("excludedContext", [])]
+        self.assertFalse(any("Repo Overview" in reason or "repoOverview" in reason for reason in excluded_reasons))
+
+
+class RepoOverviewCappingTests(unittest.TestCase):
+    """_cap_repo_overview_body: drop whole trailing sections, never truncate
+    mid-sentence (spec S4.3 pack integration)."""
+
+    def test_short_body_under_budget_is_unchanged_apart_from_join_formatting(self) -> None:
+        body = (
+            "> Compiled from source at abc123. Verify claims against the cited files; the source is authoritative.\n\n"
+            "## Responsibility\nDoes one thing well.\n\n"
+            "## Structure\n- 1 file, 1 symbol\n"
+        )
+        capped = _cap_repo_overview_body(body, max_tokens=2000)
+        self.assertIn("Compiled from source at abc123", capped)
+        self.assertIn("## Responsibility", capped)
+        self.assertIn("Does one thing well.", capped)
+        self.assertIn("## Structure", capped)
+
+    def test_over_budget_drops_whole_trailing_sections_never_mid_sentence(self) -> None:
+        responsibility = "This unit does the important thing across several files."
+        huge_structure = "- " + ("word " * 4000)  # far larger than any reasonable per-page budget
+        body = (
+            "> Compiled from source at abc123. Verify claims against the cited files; the source is authoritative.\n\n"
+            "## Responsibility\n" + responsibility + "\n\n"
+            "## Structure\n" + huge_structure + "\n\n"
+            "## Key files\n- a.py — role\n\n"
+            "## Relationships & invariants\n- some relationship\n"
+        )
+        capped = _cap_repo_overview_body(body, max_tokens=50)
+        # Provenance blockquote is always kept, even under pressure.
+        self.assertIn("Compiled from source at abc123", capped)
+        # Responsibility fits and is kept WHOLE (verbatim, not truncated).
+        self.assertIn("## Responsibility", capped)
+        self.assertIn(responsibility, capped)
+        # Structure alone blows the budget: the WHOLE section is dropped, and
+        # because it's dropped, everything after it is dropped too (trailing
+        # sections only) -- never a partial/truncated fragment of Structure.
+        self.assertNotIn("## Structure", capped)
+        self.assertNotIn("## Key files", capped)
+        self.assertNotIn("## Relationships", capped)
+        self.assertNotIn("word word word", capped, "no partial fragment of the dropped section leaked through")
+
+
+# ---------------------------------------------------------------------------
+# Repo Wiki spec S3 "Pack integration": wiki_doc retrieval results bucket
+# into likelyDocs, never likelyFiles.
+# ---------------------------------------------------------------------------
+
+
+class WikiDocBucketingTests(unittest.TestCase):
+    def test_wiki_doc_source_type_buckets_into_likely_docs(self) -> None:
+        self.assertEqual(
+            _section_for({"sourceType": "wiki_doc", "path": ".agentrail/context/wiki/unit__x.md"}),
+            "likelyDocs",
+        )
+
+    def test_wiki_doc_source_type_never_buckets_into_likely_files(self) -> None:
+        self.assertNotEqual(
+            _section_for({"sourceType": "wiki_doc", "path": ".agentrail/context/wiki/unit__x.md"}),
+            "likelyFiles",
+        )
+
+    def test_retrieved_wiki_unit_page_ends_up_in_likely_docs_not_likely_files(self) -> None:
+        """End-to-end: a wiki_doc candidate that query_context actually
+        retrieves (compiled wiki, flag ON) flows through _sectioned_results
+        (the function build_context_pack uses to bucket EVERY retrieval
+        result) into likelyDocs and never likelyFiles."""
+        tmp = tempfile.mkdtemp()
+        mock_command = _write_mock(Path(tmp))
+        root = _make_wiki_repo(summary_mode="custom-command", summary_command=mock_command)
+        with _wiki_on():
+            build_index(root)
+            result = query_context(root, "pkg_a mod1 run_mod1 do_work responsibility structure", limit=20)
+        sections = _sectioned_results(result["results"])
+        wiki_in_docs = [item for item in sections["likelyDocs"] if item.get("sourceType") == "wiki_doc"]
+        wiki_in_files = [item for item in sections["likelyFiles"] if item.get("sourceType") == "wiki_doc"]
+        self.assertTrue(wiki_in_docs, "expected at least one retrieved wiki_doc candidate to bucket into likelyDocs")
+        self.assertEqual(wiki_in_files, [], "a wiki_doc candidate must never bucket into likelyFiles")
 
 
 if __name__ == "__main__":

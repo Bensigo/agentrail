@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "description": "Orientation-probe fixtures for the Repo Wiki spec (docs/superpowers/specs/2026-07-23-repo-wiki-compiled-repo-knowledge-design.md), section 6 item 2. Each fixture is a NATURAL-LANGUAGE question a developer asks when orienting in this codebase for the first time -- unlike retrieval-fixtures.json's fixtures, the task text is a real question, not a keyword bag. Run via `agentrail context evaluate agentrail/context/orientation-probes.json` (AGENTRAIL_CONTEXT_REPO_WIKI unset / flag OFF): these baseline current BM25/graph retrieval's cold-start orientation cost, scored by the existing requiredSourceInclusion/recallAt10/fileRPrecision machinery. minPrecisionAtBudget is deliberately conservative (0.1-0.2) because plain NL competes against this repo's own large adjacent test/doc corpus far more than a symbol-focused task string does -- see each fixture's _comment for the verified answer and, where precision was held below 0.2, why. Once the wiki compiler (PR 2 of the Repo Wiki arc) and its retrieval integration (PR 3) graduate behind AGENTRAIL_CONTEXT_REPO_WIKI, re-running this same file with the flag ON is the comparison arm spec S6 item 2 calls for -- these numbers are the baseline it must beat.",
+  "fixtures": [
+    {
+      "name": "orientation-budget-leash-escalation",
+      "_comment": "Verified 2026-07-24 by reading the code: agentrail/run/budget_leash.py's Decision enum (CONTINUE / ESCALATE / STOP_TO_HUMAN) is the pure, deterministic per-issue budget-and-escalation policy (ADR 0011, milestone 036) -- the one place that decision is made ('given already-computed facts about a run, returns one decision'). docs/adr/0011 and the milestone doc describe the design but budget_leash.py is the implementation a developer would actually be pointed to. Task wording deliberately avoids restating this fixture's own generic 'budget and escalation decided' framing verbatim -- this JSON file is itself indexed as a source, and an exact phrase match against its own task/comment text would otherwise out-rank the real answer (a genuine self-reference gotcha worth knowing about, not something this PR papers over).",
+      "task": "where is the per-issue cost ceiling and escalation attempt limit enforced, deciding whether to continue escalate or stop to a human",
+      "requiredSources": ["agentrail/run/budget_leash.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.2,
+      "expectedFiles": ["agentrail/run/budget_leash.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "orientation-model-pricing-ownership",
+      "_comment": "Verified 2026-07-24 by reading the code: agentrail/context/pricing.py's PRICE_TABLE is explicitly documented as the canonical SINGLE source of truth for all dollar math (#715); agentrail/run/pricing.py imports PRICE_TABLE from it and layers gateway-first rate resolution plus run-level cost/cache-savings accounting on top (its own comment: 'run/pricing.py derives its PRICES view from this table -- do not add a second table'). Both are genuinely correct answers to 'what owns pricing and cost accounting' -- the context module is the more load-bearing one since run/pricing.py depends on it, not the reverse.",
+      "task": "where is the canonical per-model token price table defined for computing dollar costs",
+      "requiredSources": ["agentrail/context/pricing.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.2,
+      "expectedFiles": ["agentrail/context/pricing.py", "agentrail/run/pricing.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "orientation-pack-build-and-render",
+      "_comment": "Verified 2026-07-24 by reading the code: agentrail/context/packs.py's build_context_pack assembles the pack's sections and render_context_pack_markdown renders them to markdown -- both in this one file. minPrecisionAtBudget is held at 0.1 (below this file's usual 0.2) because 'pack'/'context'/'markdown' vocabulary is shared with packs.py's own large test suite (test_packs.py, test_rerank_cost.py, test_retrieval_precision_fixtures.py, test_memory_lane.py) and adjacent docs (README.md#context-packs, CONTEXT.md), which fill most of a plain-NL top-10 -- exactly the non-saturation this baseline is meant to surface for the wiki arm to improve on (spec S6 item 2), mirroring the '-hard' fixtures' documented convention in retrieval-fixtures.json. requiredSourceInclusion (the hard gate) passes at rank 1 regardless.",
+      "task": "how are pack sections assembled and turned into a markdown artifact",
+      "requiredSources": ["agentrail/context/packs.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.1,
+      "expectedFiles": ["agentrail/context/packs.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "orientation-review-gate-verdicts",
+      "_comment": "Verified 2026-07-24 by reading the code: agentrail/run/verifier.py owns Verdict / parse_verdict / gate_evidence -- ADR 0008's Independent Verifier, a BLOCKING check distinct from agentrail/afk/review.py's ADVISORY findings comments (ADR 0007: 'the Objective Gate is done, code review is advisory'). review.py is deliberately excluded from the answer set -- conflating the two would contradict the codebase's own documented model. docs/adr/0007 explains the gate/advisory-review split and is a genuine secondary (doc) answer.",
+      "task": "where do review gate verdicts come from",
+      "requiredSources": ["agentrail/run/verifier.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.2,
+      "expectedFiles": ["agentrail/run/verifier.py"],
+      "expectedDocs": ["docs/adr/0007-objective-gate-is-done-review-advisory.md"],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "orientation-secret-redaction-indexing",
+      "_comment": "Verified 2026-07-24 by reading the code: agentrail/context/redaction.py's redact_text() + DETECTORS (Detector dataclass) is what agentrail/context/sources.py's source_record_for_file calls on every indexed file's content before it becomes a SourceRecord. minPrecisionAtBudget held at 0.2 (not higher) because 'secret'/'password'/'api key' vocabulary collides heavily with apps/console's much larger TypeScript test corpus (SECRET test constants repeated across dozens of route.test.ts files, crypto.ts, etc.), which otherwise fills the whole top-10.",
+      "task": "where are password api key and token patterns matched and replaced with REDACTED markers before a file is indexed",
+      "requiredSources": ["agentrail/context/redaction.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.2,
+      "expectedFiles": ["agentrail/context/redaction.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    }
+  ]
+}

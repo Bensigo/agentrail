@@ -172,7 +172,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/github/webhook", () =
       url: expect.stringContaining("/api/v1/connectors/github/webhook"),
       secret: body.secret,
       contentType: "application/json",
-      events: ["issues"],
+      events: ["issues", "push"],
     });
 
     // Persisted even though every GitHub call failed.

@@ -58,7 +58,7 @@ async function createHookForRepo(
       body: JSON.stringify({
         name: "web",
         active: true,
-        events: ["issues"],
+        events: ["issues", "push"],
         config: { url: targetUrl, content_type: "json", secret },
       }),
     });
@@ -140,7 +140,7 @@ export async function POST(
       url: targetUrl,
       secret,
       contentType: "application/json",
-      events: ["issues"],
+      events: ["issues", "push"],
     },
   });
 }

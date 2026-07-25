@@ -1,0 +1,34 @@
+{
+  // Dedicated build config for the self-contained ClickHouse migrator shipped
+  // in apps/console/Dockerfile's `/ch-migrator` stage — deliberately separate
+  // from tsconfig.json (which stays "noEmit": true / "moduleResolution":
+  // "bundler" for typecheck, since apps/console consumes this package's other
+  // modules straight from src/ via Next's transpilePackages, not from a
+  // build). Only migrate.ts + its two local imports (client.ts, schema.ts)
+  // are included — that is the migrator's entire dependency closure; every
+  // other file in src/ (queries.ts, seed.ts, etc.) is irrelevant to running a
+  // migration and is left out on purpose to keep this build small and fast.
+  //
+  // module/moduleResolution are NodeNext (not bundler) because the output
+  // runs directly under plain `node` at deploy time, not through a bundler —
+  // migrate.ts's local imports use explicit ".js" specifiers
+  // (import ... from "./client.js") for exactly this reason; NodeNext
+  // preserves that specifier verbatim in the emitted JS, and Node's ESM
+  // resolver needs it to find the sibling compiled file. "bundler" mode
+  // (tsconfig.json) also accepts a ".js" specifier resolving to a sibling
+  // ".ts" file, so this does not require a second, diverging import style —
+  // migrate.ts's imports typecheck cleanly under BOTH configs.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/client.ts", "src/schema.ts", "src/migrate.ts"]
+}

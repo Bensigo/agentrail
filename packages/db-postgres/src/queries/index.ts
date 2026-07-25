@@ -1846,6 +1846,7 @@ export {
   entryId,
   linearExternalId,
   enqueueOnboard,
+  findOnboardEntryStatus,
   ONBOARD_EXTERNAL_ID_PREFIX,
   ONBOARD_FORCE_BODY,
   ONBOARD_ALREADY_PENDING_REASON,

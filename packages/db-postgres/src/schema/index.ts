@@ -25,3 +25,4 @@ export * from "./goals.js";
 export * from "./goal_events.js";
 export * from "./wallet_transactions.js";
 export * from "./wiki_pages.js";
+export * from "./fleet_key_rotations.js";

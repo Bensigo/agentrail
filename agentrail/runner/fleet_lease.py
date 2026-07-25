@@ -127,6 +127,33 @@ DEFAULT_LEASE_TTL_SECONDS = 30.0
 _RENEW_FRACTION = 3.0
 
 
+def mint_fleet_instance_id() -> str:
+    """A per-process fleet identity: ``<hostname>-<uuid12>``.
+
+    Promoted out of :meth:`FleetLease._mint_holder_id` (which now just calls
+    this) so ``agentrail/cli/commands/fleet.py::run_fleet`` can mint ONE
+    identity per process and reuse it for TWO purposes that used to have no
+    shared concept: the single-active-fleet lease's ``holder`` (only minted
+    when ``DATABASE_URL`` enables lease coordination) and the self-heal
+    client's ``fleetInstanceId`` (always sent, regardless of lease
+    coordination, on every self-heal call —
+    :mod:`agentrail.runner.fleet_sync`). One identity per process for both
+    means a fleet instance's lease holder id and the self-heal rotations it
+    requests correlate directly in logs and in the console's
+    ``fleet_key_rotations`` audit trail, instead of two separately-tracked
+    ids that happen to describe the same process.
+
+    Not stable across restarts, on purpose — see the module docstring's
+    "Holder identity is per-PROCESS" section for why that is required, not
+    just tolerated.
+    """
+    try:
+        host = socket.gethostname() or "fleet"
+    except OSError:
+        host = "fleet"
+    return f"{host}-{uuid.uuid4().hex[:12]}"
+
+
 class LeaseExecutor(Protocol):
     """The tiny DB vocabulary the lease needs, injectable so the mechanics are
     hermetically testable. :class:`PostgresLeaseExecutor` is the real edge;
@@ -177,12 +204,10 @@ class FleetLease:
     def _mint_holder_id() -> str:
         # Hostname prefix is purely for operator-legible logs ("which container
         # holds it?"); the uuid guarantees per-process uniqueness even if two
-        # overlapping deploy containers share a hostname.
-        try:
-            host = socket.gethostname() or "fleet"
-        except OSError:
-            host = "fleet"
-        return f"{host}-{uuid.uuid4().hex[:12]}"
+        # overlapping deploy containers share a hostname. Delegates to the
+        # module-level mint_fleet_instance_id() — see its own doc-comment for
+        # why this identity is now shared with the self-heal client too.
+        return mint_fleet_instance_id()
 
     @property
     def holder(self) -> str:

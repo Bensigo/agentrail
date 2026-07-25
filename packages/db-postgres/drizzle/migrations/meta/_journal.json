@@ -344,6 +344,13 @@
       "when": 1785100000000,
       "tag": "0047_wiki_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1785200000000,
+      "tag": "0048_fleet_key_rotations",
+      "breakpoints": true
     }
   ]
 }

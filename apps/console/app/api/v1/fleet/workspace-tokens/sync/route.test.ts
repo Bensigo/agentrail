@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   listFleetProvisionState: vi.fn(),
+  listStalledHostedWorkspaces: vi.fn(),
   mintApiKey: vi.fn(),
   revokeApiKey: vi.fn(),
 }));
@@ -10,11 +11,13 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { POST } from "./route";
 import {
   listFleetProvisionState,
+  listStalledHostedWorkspaces,
   mintApiKey,
   revokeApiKey,
 } from "@agentrail/db-postgres";
 
 const mockListState = vi.mocked(listFleetProvisionState);
+const mockListStalled = vi.mocked(listStalledHostedWorkspaces);
 const mockMint = vi.mocked(mintApiKey);
 const mockRevoke = vi.mocked(revokeApiKey);
 
@@ -35,6 +38,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env[ENV_KEY] = SECRET;
   mockListState.mockResolvedValue([]);
+  mockListStalled.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -108,6 +112,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
       active: [],
       revoked: [],
       failed: [],
+      stalled: [],
     });
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -120,7 +125,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const res = await POST(req(SECRET));
     const body = await res.json();
 
-    expect(body).toEqual({ minted: [], active: ["ws-2"], revoked: [], failed: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-2"], revoked: [], failed: [], stalled: [] });
     expect(mockMint).not.toHaveBeenCalled();
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -135,7 +140,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const body = await res.json();
 
     expect(mockRevoke).toHaveBeenCalledWith("ws-3", "key-3");
-    expect(body).toEqual({ minted: [], active: [], revoked: ["ws-3"], failed: [] });
+    expect(body).toEqual({ minted: [], active: [], revoked: ["ws-3"], failed: [], stalled: [] });
     expect(mockMint).not.toHaveBeenCalled();
   });
 
@@ -147,7 +152,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const res = await POST(req(SECRET));
     const body = await res.json();
 
-    expect(body).toEqual({ minted: [], active: [], revoked: [], failed: [] });
+    expect(body).toEqual({ minted: [], active: [], revoked: [], failed: [], stalled: [] });
     expect(mockMint).not.toHaveBeenCalled();
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -170,6 +175,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
       active: ["ws-2"],
       revoked: ["ws-3"],
       failed: [],
+      stalled: [],
     });
   });
 });
@@ -185,7 +191,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint race (unique violati
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ minted: [], active: ["ws-5"], revoked: [], failed: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-5"], revoked: [], failed: [], stalled: [] });
   });
 
   it("treats a DRIZZLE-WRAPPED unique-violation (err.cause.code 23505) as already-active too", async () => {
@@ -200,7 +206,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint race (unique violati
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ minted: [], active: ["ws-6"], revoked: [], failed: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-6"], revoked: [], failed: [], stalled: [] });
   });
 });
 
@@ -236,6 +242,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — per-row failure isolation
       active: [],
       revoked: [],
       failed: [{ workspaceId: "ws-broken", reason: "mint_failed" }],
+      stalled: [],
     });
     // The isolation log must never carry the earlier row's raw token.
     const logged = errorSpy.mock.calls
@@ -265,6 +272,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — per-row failure isolation
       active: [],
       revoked: [],
       failed: [{ workspaceId: "ws-broken", reason: "mint_failed" }],
+      stalled: [],
     });
     expect(mockMint).toHaveBeenCalledTimes(2);
   });
@@ -289,6 +297,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — per-row failure isolation
       active: [],
       revoked: ["ws-revoke-ok"],
       failed: [{ workspaceId: "ws-revoke-broken", reason: "revoke_failed" }],
+      stalled: [],
     });
   });
 
@@ -329,6 +338,72 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — token never logged", () =
 
     logSpy.mockRestore();
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+});
+
+describe("POST /api/v1/fleet/workspace-tokens/sync — stalled bucket (visible self-heal signal)", () => {
+  const STALLED_ENV_KEY = "FLEET_STALLED_QUEUE_MINUTES";
+  const ORIGINAL_STALLED_ENV = process.env[STALLED_ENV_KEY];
+
+  afterEach(() => {
+    if (ORIGINAL_STALLED_ENV === undefined) delete process.env[STALLED_ENV_KEY];
+    else process.env[STALLED_ENV_KEY] = ORIGINAL_STALLED_ENV;
+  });
+
+  it("passes listStalledHostedWorkspaces' result straight through as `stalled`", async () => {
+    mockListStalled.mockResolvedValue([
+      { workspaceId: "ws-stuck", slug: "stuck-co", staleQueuedCount: 3, oldestQueuedMinutes: 42 },
+    ]);
+
+    const res = await POST(req(SECRET));
+    const body = await res.json();
+
+    expect(body.stalled).toEqual([
+      { workspaceId: "ws-stuck", slug: "stuck-co", staleQueuedCount: 3, oldestQueuedMinutes: 42 },
+    ]);
+  });
+
+  it("calls listStalledHostedWorkspaces with the default 15-minute window when unset", async () => {
+    delete process.env[STALLED_ENV_KEY];
+
+    await POST(req(SECRET));
+
+    expect(mockListStalled).toHaveBeenCalledWith(15);
+  });
+
+  it("honors FLEET_STALLED_QUEUE_MINUTES", async () => {
+    process.env[STALLED_ENV_KEY] = "30";
+
+    await POST(req(SECRET));
+
+    expect(mockListStalled).toHaveBeenCalledWith(30);
+  });
+
+  it("a non-numeric FLEET_STALLED_QUEUE_MINUTES falls back to the default", async () => {
+    process.env[STALLED_ENV_KEY] = "not-a-number";
+
+    await POST(req(SECRET));
+
+    expect(mockListStalled).toHaveBeenCalledWith(15);
+  });
+
+  it("degrades to an empty stalled bucket (never 500s) when listStalledHostedWorkspaces throws — token provisioning is the critical path", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockListStalled.mockRejectedValue(new Error("clickhouse-adjacent blip"));
+    mockListState.mockResolvedValue([
+      { workspaceId: "ws-1", slug: "acme", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+    ]);
+    mockMint.mockResolvedValue({ id: "key-1", rawKey: "ar_still_works", keyPrefix: "ar_still_w" });
+
+    const res = await POST(req(SECRET));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.stalled).toEqual([]);
+    // The rest of the sweep (the critical path) is untouched by the failure.
+    expect(body.minted).toEqual([{ workspaceId: "ws-1", slug: "acme", token: "ar_still_works" }]);
+
     errorSpy.mockRestore();
   });
 });

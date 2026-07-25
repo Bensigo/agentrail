@@ -11,10 +11,13 @@ from __future__ import annotations
 
 from typing import List
 
+import re
+
 from agentrail.runner.fleet_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     FleetLease,
     InMemoryLeaseExecutor,
+    mint_fleet_instance_id,
     run_lease_loop,
 )
 
@@ -192,6 +195,39 @@ def test_holder_id_is_unique_per_process():
     a = FleetLease(ex)
     b = FleetLease(ex)
     assert a.holder != b.holder  # distinct processes must be distinguishable
+
+
+# --- mint_fleet_instance_id: the identity shared with the self-heal client --
+# (fleet-key self-heal fix — promoted out of FleetLease._mint_holder_id so
+# agentrail/cli/commands/fleet.py can mint ONE per-process id and reuse it for
+# both the lease holder AND every self-heal request's fleetInstanceId.)
+
+
+def test_mint_fleet_instance_id_looks_like_host_dash_12_hex_chars():
+    instance_id = mint_fleet_instance_id()
+    assert re.match(r"^.+-[0-9a-f]{12}$", instance_id), instance_id
+
+
+def test_mint_fleet_instance_id_is_unique_across_calls():
+    assert mint_fleet_instance_id() != mint_fleet_instance_id()
+
+
+def test_fleet_lease_default_holder_still_goes_through_mint_fleet_instance_id():
+    # _mint_holder_id (FleetLease's own no-holder-given default) now delegates
+    # to the module-level function — this is the regression guard that the
+    # delegation didn't silently change FleetLease()'s own no-args shape.
+    ex = InMemoryLeaseExecutor()
+    lease = FleetLease(ex)
+    assert re.match(r"^.+-[0-9a-f]{12}$", lease.holder), lease.holder
+
+
+def test_fleet_lease_accepts_a_pre_minted_instance_id_as_its_holder():
+    # This is exactly how agentrail/cli/commands/fleet.py::run_fleet wires the
+    # self-heal fix: mint ONE id, pass it as the lease's holder too.
+    instance_id = mint_fleet_instance_id()
+    ex = InMemoryLeaseExecutor()
+    lease = FleetLease(ex, holder=instance_id)
+    assert lease.holder == instance_id
 
 
 def test_renew_interval_is_a_third_of_the_ttl():

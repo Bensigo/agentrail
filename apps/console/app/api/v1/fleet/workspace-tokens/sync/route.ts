@@ -1,13 +1,29 @@
-import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   listFleetProvisionState,
+  listStalledHostedWorkspaces,
   mintApiKey,
   revokeApiKey,
+  type StalledHostedWorkspace,
 } from "@agentrail/db-postgres";
+import { verifyFleetBearer } from "../../../../../../lib/fleet-auth";
 
-const FLEET_TOKEN_ENV = "FLEET_CONSOLE_TOKEN";
 const FLEET_KEY_NAME = "Hosted fleet";
+
+// Staleness window for the `stalled` health bucket (env-tunable, same
+// pattern as the push→wiki-recompile debounce's
+// AGENTRAIL_WIKI_PUSH_MIN_INTERVAL_SECONDS). See listStalledHostedWorkspaces'
+// own doc-comment for why 15 minutes (~3 default sync cycles) is the default.
+const STALLED_QUEUE_MINUTES_ENV = "FLEET_STALLED_QUEUE_MINUTES";
+
+function stalledQueueMinutes(): number {
+  const raw = process.env[STALLED_QUEUE_MINUTES_ENV];
+  if (raw) {
+    const val = Number.parseInt(raw, 10);
+    if (Number.isFinite(val) && val > 0) return val;
+  }
+  return 15;
+}
 
 /**
  * POST /api/v1/fleet/workspace-tokens/sync
@@ -78,25 +94,26 @@ const FLEET_KEY_NAME = "Hosted fleet";
  * a parameter of the failed INSERT.
  *
  * Response 200: `{ minted: [{workspaceId, slug, token}], active: [workspaceId,
- * ...], revoked: [workspaceId, ...], failed: [{workspaceId, reason}, ...] }`.
+ * ...], revoked: [workspaceId, ...], failed: [{workspaceId, reason}, ...],
+ * stalled: [{workspaceId, slug, staleQueuedCount, oldestQueuedMinutes}, ...] }`.
+ *
+ * `stalled` (the fleet-key self-heal fix's VISIBLE half): hosted-eligible
+ * workspaces with unclaimed 'queued' work sitting past
+ * `FLEET_STALLED_QUEUE_MINUTES` (default 15) and no live self-hosted
+ * fallback — see `listStalledHostedWorkspaces`'s own doc-comment. This is a
+ * best-effort ADDITION to the response: a failure computing it is caught and
+ * logged rather than failing the whole sync call, because token
+ * provisioning (everything above) is the critical path and must never be
+ * taken down by a health-signal query. The fleet logs a loud, repeating
+ * line whenever this is non-empty (`agentrail/runner/fleet_sync.py`) — see
+ * that module for why a signal repeated every sync cycle is what makes a
+ * stuck workspace impossible to miss.
+ *
+ * Auth is a shared `verifyFleetBearer` (see `lib/fleet-auth.ts`) — the SAME
+ * check `.../self-heal/route.ts` uses, extracted once a second fleet route
+ * needed it so the timing-safe/anti-enumeration logic has one
+ * implementation, not two that could drift apart.
  */
-
-function verifyFleetBearer(req: NextRequest): boolean {
-  const expected = process.env[FLEET_TOKEN_ENV];
-  if (!expected) return false;
-
-  const authHeader = req.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) return false;
-  const actual = authHeader.slice(7).trim();
-  if (!actual) return false;
-
-  const expectedBuf = Buffer.from(expected);
-  const actualBuf = Buffer.from(actual);
-  return (
-    expectedBuf.length === actualBuf.length &&
-    timingSafeEqual(expectedBuf, actualBuf)
-  );
-}
 
 /**
  * Drizzle can wrap the underlying pg error, so the unique-violation code
@@ -127,6 +144,14 @@ export async function POST(request: NextRequest) {
   }
 
   const state = await listFleetProvisionState();
+  // Best-effort (see the route doc-comment): the critical token-provisioning
+  // sweep below must never be taken down by this health-signal query.
+  let stalled: StalledHostedWorkspace[] = [];
+  try {
+    stalled = await listStalledHostedWorkspaces(stalledQueueMinutes());
+  } catch (err) {
+    console.error("[fleet/workspace-tokens/sync] listStalledHostedWorkspaces failed:", err);
+  }
 
   const minted: MintedFleetToken[] = [];
   const active: string[] = [];
@@ -180,5 +205,5 @@ export async function POST(request: NextRequest) {
     // from every bucket.
   }
 
-  return NextResponse.json({ minted, active, revoked, failed });
+  return NextResponse.json({ minted, active, revoked, failed, stalled });
 }

@@ -45,7 +45,7 @@ export default async function PermissionsPage({
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
         title="Permissions"
-        subtitle="What AgentRail is allowed to do on its own."
+        subtitle="What Jace is allowed to do on its own."
       />
       <MergePermissionToggle
         workspaceId={workspaceId}

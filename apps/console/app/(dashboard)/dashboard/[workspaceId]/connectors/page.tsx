@@ -15,7 +15,7 @@ export default async function ConnectorsPage({
       <p className="mb-4 text-xs text-[var(--gray-09)]">
         Connect the tools your team already uses. Issue sources feed the Issue
         Queue (and configure the autonomous Heartbeat on their cards); MCP
-        servers give runs extra tools; Channels are where you talk to Jace.
+        servers give runs extra tools.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

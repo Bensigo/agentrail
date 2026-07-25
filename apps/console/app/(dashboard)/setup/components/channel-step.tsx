@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckCircle2 } from "lucide-react";
-import { linkedIdentitiesLine } from "@/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { linkedIdentitiesLine } from "../../../../lib/linked-identities";
 import {
   resolveHostedBotUsername,
   telegramDeepLink,
@@ -61,7 +61,7 @@ export function ChannelStep({
     return (
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-[var(--gray-09)]">
-          Skipped for now. You can connect a channel any time from Connectors.
+          Skipped for now. You can connect a channel any time from Gateways.
         </p>
         <button
           type="button"
@@ -118,8 +118,7 @@ export function ChannelStep({
   }
 
   // Self-host default (env unset): no shared bot to deep-link to. A quiet
-  // docs pointer instead of a dead CTA — same treatment as the connectors
-  // page's fully-self-host branch (connectors-panel.tsx's ChannelManage).
+  // docs pointer instead of a dead CTA.
   return (
     <div className="flex items-center justify-between gap-2">
       <p className="text-xs text-[var(--gray-09)]">

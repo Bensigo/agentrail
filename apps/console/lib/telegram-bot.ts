@@ -24,6 +24,19 @@ export function telegramDeepLink(botUsername: string): string {
   return `https://t.me/${botUsername}`;
 }
 
+/**
+ * Self-host BYO-bot docs — the jace README's Channels section, where the
+ * "Hosted vs self-host" note sits next to the existing BotFather + setWebhook
+ * instructions. Lifted here from the setup wizard's `channel-step-helpers.ts`
+ * (gateways-page whole-branch-review fix wave) alongside this file's other
+ * telegram helpers, so both the wizard's channel step AND the Gateways
+ * page's "not set up yet" card can point at the same doc without a second
+ * copy of the URL. `channel-step-helpers.ts` re-exports it unchanged — zero
+ * churn for that caller.
+ */
+export const SELF_HOST_TELEGRAM_DOCS_URL =
+  "https://github.com/Bensigo/agentrail/blob/main/apps/jace/README.md#hosted-vs-self-host";
+
 export interface MessageJaceTarget {
   href: string;
   /** True when `href` deep-links the hosted Telegram bot directly (open in

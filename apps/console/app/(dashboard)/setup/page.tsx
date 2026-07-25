@@ -100,7 +100,8 @@ function SetupPageContent() {
           </h1>
           <p className="mt-2 text-sm text-[var(--gray-09)]">
             Connect the things Jace needs to start shipping. Every step here
-            can be finished later from Connectors, Members, or this page.
+            can be finished later from Connectors, Gateways, Members, or this
+            page.
           </p>
           <div className="mt-8">
             <OnboardingWizard workspaceId={workspaceId} />

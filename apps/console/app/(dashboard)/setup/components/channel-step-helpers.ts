@@ -14,17 +14,13 @@ export {
   resolveHostedBotUsername,
   telegramDeepLink,
   messageJaceTarget,
+  SELF_HOST_TELEGRAM_DOCS_URL,
   type MessageJaceTarget,
 } from "../../../../lib/telegram-bot";
 
-/**
- * Self-host BYO-bot docs — the jace README's Channels section, where the
- * "Hosted vs self-host" note (added alongside this PR) sits next to the
- * existing BotFather + setWebhook instructions.
- */
-export const SELF_HOST_TELEGRAM_DOCS_URL =
-  "https://github.com/Bensigo/agentrail/blob/main/apps/jace/README.md#hosted-vs-self-host";
-
 // `messageJaceTarget`/`MessageJaceTarget` moved to `lib/telegram-bot.ts` at
 // merge time (see the note there) — re-exported above so every existing
-// caller/test keeps its import path.
+// caller/test keeps its import path. `SELF_HOST_TELEGRAM_DOCS_URL` joined
+// them there in the gateways-page whole-branch-review fix wave, for the same
+// reason: the Gateways page needed it too (`gateways-panel.tsx` imports it
+// directly from `lib/telegram-bot.ts`).

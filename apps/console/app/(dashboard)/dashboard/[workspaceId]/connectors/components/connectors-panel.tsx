@@ -14,29 +14,17 @@ import {
   LinearBrand,
   FigmaBrand,
   Context7Brand,
-  DiscordBrand,
-  SlackBrand,
-  TelegramBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
   activeHeartbeatConnectors,
   capabilitySummary,
   CONNECTOR_TYPE_META,
-  linkedIdentitiesLine,
   validateConnectorCredential,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
-// Relative (not @/…) because both targets live outside app/ or src/, the only
-// roots the @/* alias covers — mirrors how channel-step-helpers.ts itself
-// imports lib/telegram-bot.
-import {
-  resolveHostedBotUsername,
-  telegramDeepLink,
-} from "../../../../../../lib/telegram-bot";
-import { SELF_HOST_TELEGRAM_DOCS_URL } from "../../../../setup/components/channel-step-helpers";
 
 /** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
 const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
@@ -44,9 +32,6 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   linear: LinearBrand,
   figma: FigmaBrand,
   context7: Context7Brand,
-  discord: DiscordBrand,
-  slack: SlackBrand,
-  telegram: TelegramBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -55,12 +40,9 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   linear: "text-[#5e6ad2]",
   figma: "text-[#f24e1e]",
   context7: "text-[var(--gray-11)]",
-  discord: "text-[#5865f2]",
-  slack: "text-[#36c5f0]",
-  telegram: "text-[#26a5e4]",
 };
 
-const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "channel"];
+const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp"];
 
 // --------------------------------------------------------------------------- //
 // Trigger controls (#816) — folded into each connected ingest connector card.
@@ -237,10 +219,9 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
 }
 
 // --------------------------------------------------------------------------- //
-// Secret connector management — MCP-key connectors only now (linear/figma/
+// Secret connector management — MCP-key connectors only (linear/figma/
 // context7). Posts the credential to the write-only /connectors/secret route;
-// the value is never read back. Channel kinds (discord/slack/telegram) never
-// reach this component post-cutover — see ChannelManage below.
+// the value is never read back.
 // --------------------------------------------------------------------------- //
 function SecretManage({
   connector,
@@ -347,83 +328,6 @@ function SecretManage({
       {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       <SetupHelp connector={connector} />
     </form>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// Channel management — Discord/Slack/Telegram are Jace-native chat: there is
-// no credential to paste and nothing to disconnect here (CONTEXT.md / the
-// helpers' module doc). Telegram (the only `available` channel kind today)
-// resolves the hosted shared bot's deep link when the env is set; self-host
-// deploys get a quiet docs link instead of a dead button. Discord/Slack
-// (`planned`) render nothing beyond the card's own description + status
-// chip — never a fake affordance.
-// --------------------------------------------------------------------------- //
-
-function ChannelManage({ connector }: { connector: ConnectorView }) {
-  // Discord/Slack: no adapter yet, so no credential to collect and no
-  // affordance to dangle — the card's status chip already reads "Coming".
-  if (connector.availability === "planned") return null;
-
-  const hostedBotUsername = resolveHostedBotUsername(
-    process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
-  );
-
-  if (connector.status === "connected") {
-    return (
-      <div className="flex flex-col gap-1.5">
-        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          {linkedIdentitiesLine(
-            connector.linkedIdentities.map((i) => i.displayName)
-          )}
-        </p>
-        {hostedBotUsername && (
-          <a
-            href={telegramDeepLink(hostedBotUsername)}
-            target="_blank"
-            rel="noreferrer"
-            className="self-start text-xs text-[var(--blue-11-alt)] hover:underline"
-          >
-            Open Telegram
-          </a>
-        )}
-      </div>
-    );
-  }
-
-  if (hostedBotUsername) {
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Message the bot once — that chat becomes your channel.
-        </p>
-        {/* font-bold accent fill — same primary-CTA convention as the setup
-            wizard's hosted branch (channel-step.tsx). */}
-        <a
-          href={telegramDeepLink(hostedBotUsername)}
-          target="_blank"
-          rel="noreferrer"
-          className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
-        >
-          Message @{hostedBotUsername} on Telegram
-        </a>
-      </div>
-    );
-  }
-
-  return (
-    <p className="text-xs text-[var(--gray-09)]">
-      Self-hosting?{" "}
-      <a
-        href={SELF_HOST_TELEGRAM_DOCS_URL}
-        target="_blank"
-        rel="noreferrer"
-        className="text-[var(--blue-11-alt)] hover:underline"
-      >
-        Bring your own bot
-      </a>
-    </p>
   );
 }
 
@@ -585,8 +489,6 @@ function ConnectorCard({
 
           {connector.connectMethod === "oauth" ? (
             <GithubManage connector={connector} workspaceId={workspaceId} />
-          ) : connector.type === "channel" ? (
-            <ChannelManage connector={connector} />
           ) : (
             <SecretManage
               connector={connector}
@@ -665,7 +567,7 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
 }
 
 // --------------------------------------------------------------------------- //
-// One catalog-type section (Issue sources / MCP / Channels) of compact cards.
+// One catalog-type section (Issue sources / MCP) of compact cards.
 // --------------------------------------------------------------------------- //
 function ConnectorSection({
   type,

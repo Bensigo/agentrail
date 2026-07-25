@@ -15,10 +15,12 @@ interface EmailChip {
 export function InviteStep({
   workspaceId,
   teammateCount,
+  skipped,
   onChanged,
 }: {
   workspaceId: string;
   teammateCount: number;
+  skipped: boolean;
   onChanged: () => void;
 }) {
   const [chips, setChips] = useState<EmailChip[]>([]);
@@ -27,6 +29,28 @@ export function InviteStep({
   const [sending, setSending] = useState(false);
   const [generalError, setGeneralError] = useState("");
   const [sent, setSent] = useState(false);
+  const [skipping, setSkipping] = useState(false);
+  // Whether to show the invite form instead of the "Skipped for now"
+  // summary. Starts open unless the workspace already skipped; "Invite now"
+  // flips it back — same pattern as the other two steps.
+  const [showForm, setShowForm] = useState(!skipped);
+
+  async function handleSkip() {
+    setSkipping(true);
+    try {
+      await fetch(
+        `/api/v1/workspaces/${workspaceId}/onboarding/skip-invite-team`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ skip: true }),
+        }
+      );
+      onChanged();
+    } finally {
+      setSkipping(false);
+    }
+  }
 
   function addChip(raw: string) {
     const email = raw.trim();
@@ -96,12 +120,29 @@ export function InviteStep({
     onChanged();
   }
 
+  if (teammateCount === 0 && skipped && !showForm) {
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-[var(--gray-09)]">
+          Skipped for now. You can invite teammates any time from Members.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowForm(true)}
+          className="shrink-0 text-xs text-[var(--blue-11)] hover:underline"
+        >
+          Invite now
+        </button>
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={handleSend} className="flex flex-col gap-2.5">
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         {teammateCount > 0
           ? `${teammateCount} teammate${teammateCount === 1 ? "" : "s"} reached so far.`
-          : "Add workspace members by email. You can also do this later from Members."}
+          : "Optional — add workspace members by email, or do this later from Members."}
       </p>
 
       <div className="flex min-h-[52px] flex-wrap gap-1.5 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-2 focus-within:border-[var(--gray-08)] transition-colors">
@@ -151,14 +192,28 @@ export function InviteStep({
       {generalError && <p className="text-xs text-[var(--red-11)]">{generalError}</p>}
       {sent && <p className="text-xs text-[var(--green-11)]">Invites sent.</p>}
 
-      {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
-      <button
-        type="submit"
-        disabled={sending || (chips.length === 0 && !chipInput.trim())}
-        className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {sending ? "Sending…" : "Send invites"}
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
+        <button
+          type="submit"
+          disabled={sending || (chips.length === 0 && !chipInput.trim())}
+          className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {sending ? "Sending…" : "Send invites"}
+        </button>
+        {teammateCount === 0 && (
+          // font-normal: secondary button, matches the Deny/Refresh/Requeue
+          // plain-weight convention used across the scope.
+          <button
+            type="button"
+            onClick={handleSkip}
+            disabled={skipping}
+            className="shrink-0 h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-normal text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          >
+            {skipping ? "Skipping…" : "Skip for now"}
+          </button>
+        )}
+      </div>
     </form>
   );
 }

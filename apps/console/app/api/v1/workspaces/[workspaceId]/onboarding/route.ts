@@ -4,10 +4,12 @@ import { getWorkspaceMembership } from "@agentrail/db-postgres";
 import { loadOnboardingData } from "../../../../../../lib/onboarding-data";
 
 /**
- * Onboarding wizard read model (#1233, spec §5). Any workspace member can
- * view it. This is the single endpoint the `/setup` wizard fetches on load
- * and polls thereafter — it doubles as the "runner connected" status source
- * (AC3: the runner step flips to connected without a manual refresh), so no
+ * Onboarding wizard read model (three-step rebuild — Connect GitHub, Invite
+ * your team, Message Jace; all three individually optional). Any workspace
+ * member can view it. This is the single endpoint the `/setup` wizard
+ * fetches on load and polls thereafter, so a step that completes outside the
+ * wizard (a GitHub webhook delivery, a teammate accepting an invite, a
+ * Telegram DM landing) flips to complete without a manual refresh — no
  * separate status endpoint exists.
  */
 export async function GET(

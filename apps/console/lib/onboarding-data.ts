@@ -1,7 +1,5 @@
 import {
   getConnector,
-  getWorkspace,
-  hasActiveSelfHostedRunner,
   hasAnyJaceReply,
   listChatIdentitiesForWorkspace,
   listInvites,
@@ -15,18 +13,27 @@ import {
 import { isConsoleChatEnabled } from "./chat/feature-flags";
 
 /**
- * Server-only I/O for the `/setup` onboarding wizard (#1233). Gathers the raw
- * signals `deriveOnboardingSteps` (pure, `onboarding-steps.ts`) needs, plus a
- * little extra display data the wizard UI wants (the repo list, the stored
- * webhook secret, the linked channel identities' display names). Mirrors the
- * digest split (`digest/digest-helpers.ts` is pure; `digest/route.ts` does the
- * I/O) — this file does the I/O, the derivation stays pure and unit-tested on
- * its own.
+ * Server-only I/O for the `/setup` onboarding wizard (three-step rebuild).
+ * Gathers the raw signals `deriveOnboardingSteps` (pure, `onboarding-steps.ts`)
+ * needs, plus a little extra display data the wizard UI wants (the repo
+ * list, the stored webhook secret, the linked channel identities' display
+ * names). Mirrors the digest split (`digest/digest-helpers.ts` is pure;
+ * `digest/route.ts` does the I/O) — this file does the I/O, the derivation
+ * stays pure and unit-tested on its own.
  *
  * Called from two places: the `GET /onboarding` route (the wizard polls it)
- * and the Home progress banner (a server component — no HTTP round trip,
- * spec §5 "Home progress banner … server-derives from the same pure
- * function's inputs").
+ * and the Home progress banner (a server component — no HTTP round trip).
+ *
+ * Skip-flag homes (all three steps are individually skippable, no new
+ * table — see the doc-comments on `ConnectorConfig` in
+ * `packages/db-postgres/src/schema/connectors.ts` for the full rationale):
+ *   - `connect-github` → the `github` connector row's jsonb config
+ *     (`githubSkippedAt`).
+ *   - `invite-team`    → piggybacks on the SAME `github` row
+ *     (`inviteTeamSkippedAt`) — invite-team has no connector of its own.
+ *   - `message-jace`   → the `telegram` connector row's jsonb config
+ *     (`channelSkippedAt` — unchanged field name from the step this
+ *     replaced, so an existing skip survives the rename).
  */
 
 export interface OnboardingData {
@@ -36,8 +43,16 @@ export interface OnboardingData {
     repos: string[];
     hasWebhookSecret: boolean;
     webhookSecret: string | null;
+    skipped: boolean;
   };
-  channel: {
+  /**
+   * Everything the `message-jace` step needs — collapses the old, separate
+   * `channel` + `chat` fields (from the two steps this one step replaced)
+   * into a single honest shape.
+   */
+  messageJace: {
+    /** `connected` (channel) OR `jaceReplied` (chat) — either proves the
+     * user reached Jace. Drives the step's completion. */
     connected: boolean;
     skipped: boolean;
     /**
@@ -46,25 +61,14 @@ export interface OnboardingData {
      * the client (see `listChatIdentitiesForWorkspace`).
      */
     linkedNames: (string | null)[];
-  };
-  chat: {
-    /** Console chat (#1288) is rolled out for this workspace. */
-    enabled: boolean;
-    /** A real jace_messages reply already exists (`hasAnyJaceReply`). */
+    /** A real jace_messages reply already exists (`hasAnyJaceReply`) — lets
+     * the UI say "Jace replied" when that's the reason this step is
+     * complete and no Telegram identity is linked yet. */
     jaceReplied: boolean;
   };
   invites: {
     count: number;
-  };
-  runner: {
-    /** True whenever the workspace has ANY execution path — hosted (the
-     * default) or an active self-hosted runner. Drives the "Attach a runner"
-     * step's completion (#1268, workspaceHasExecutionPath). */
-    connected: boolean;
-    /** Specifically whether a self-hosted runner (not hosted-fleet
-     * execution) is live — lets the UI say something honest instead of
-     * calling hosted-fleet execution "your runner" (#1268). */
-    selfHosted: boolean;
+    skipped: boolean;
   };
 }
 
@@ -79,38 +83,28 @@ export async function loadOnboardingData(
     chatIdentities,
     pendingInvites,
     members,
-    workspace,
-    selfHostedActive,
     jaceReplied,
   ] = await Promise.all([
     getConnector(workspaceId, "github"),
     // Still read for `channelSkippedAt` — the skip mechanism is unchanged.
-    // `hasSecret` on this row no longer drives `channelConnected` below.
     getConnector(workspaceId, "telegram"),
     listChatIdentitiesForWorkspace(workspaceId),
     listInvites(workspaceId), // pending, unexpired only
     listWorkspaceMembers(workspaceId),
-    getWorkspace(workspaceId),
-    hasActiveSelfHostedRunner(workspaceId),
     // Only worth checking once the surface is actually reachable — a
     // workspace with the flag off can never have a jace_messages row anyway
     // (the send/reply endpoints 404 while it's off), so skip the query.
     chatEnabled ? hasAnyJaceReply(workspaceId) : Promise.resolve(false),
   ]);
 
-  // Same disjunct as `workspaceHasExecutionPath` (the named onboard-enqueue
-  // gate the connect-time routes use — see its doc-comment in
-  // packages/db-postgres/src/queries/index.ts), derived LOCALLY here instead
-  // of calling it: this loader also needs the bare `selfHosted` signal for
-  // honest wizard copy, and the predicate internally runs the same two reads
-  // — calling both on the wizard's 4-second poll loop would query
-  // hasActiveSelfHostedRunner twice per tick for no reason. Keep this line in
-  // lockstep with workspaceHasExecutionPath if that predicate ever changes.
-  const hasExecutionPath = Boolean(workspace?.hostedExecution) || selfHostedActive;
-
   const repos = githubConnector?.config.repos ?? [];
   const webhookSecret = githubConnector?.config.webhookSecret ?? null;
-  // Spine-backed signal (connectors-channels cutover, T5): connected once the
+  const githubSkipped = Boolean(githubConnector?.config.githubSkippedAt);
+  const inviteTeamSkipped = Boolean(
+    githubConnector?.config.inviteTeamSkippedAt
+  );
+
+  // Spine-backed signal (connectors-channels cutover): connected once the
   // workspace has ≥1 linked chat identity for telegram — a user DM'd the
   // shared bot and that conversation was recorded — never a stored
   // credential. `listChatIdentitiesForWorkspace` returns every platform for
@@ -120,7 +114,11 @@ export async function loadOnboardingData(
     (identity) => identity.platform === "telegram"
   );
   const channelConnected = telegramIdentities.length > 0;
-  const channelSkipped = Boolean(telegramConnector?.config.channelSkippedAt);
+  // Either signal proves the user reached Jace (owner spec, verbatim): a
+  // linked Telegram identity, or a real console-chat reply.
+  const messageJaceConnected = channelConnected || jaceReplied;
+  const messageJaceSkipped = Boolean(telegramConnector?.config.channelSkippedAt);
+
   // "Reached a teammate" = a still-pending invite, or a membership beyond the
   // owner (an accepted invite becomes a membership row and drops out of
   // listInvites — counting members too means this step never regresses back
@@ -129,11 +127,13 @@ export async function loadOnboardingData(
   const invitesCount = pendingInvites.length + extraMembers;
 
   const input: OnboardingStepsInput = {
-    github: { repoCount: repos.length, hasWebhookSecret: Boolean(webhookSecret) },
-    channel: { connected: channelConnected, skipped: channelSkipped },
-    chat: { enabled: chatEnabled, jaceReplied },
-    invites: { count: invitesCount },
-    runner: { connected: hasExecutionPath },
+    github: {
+      repoCount: repos.length,
+      hasWebhookSecret: Boolean(webhookSecret),
+      skipped: githubSkipped,
+    },
+    invites: { count: invitesCount, skipped: inviteTeamSkipped },
+    messageJace: { connected: messageJaceConnected, skipped: messageJaceSkipped },
   };
 
   return {
@@ -143,15 +143,15 @@ export async function loadOnboardingData(
       repos,
       hasWebhookSecret: Boolean(webhookSecret),
       webhookSecret,
+      skipped: githubSkipped,
     },
-    channel: {
-      connected: channelConnected,
-      skipped: channelSkipped,
+    messageJace: {
+      connected: messageJaceConnected,
+      skipped: messageJaceSkipped,
       // Display names only — never platformUserId (see the interface doc).
       linkedNames: telegramIdentities.map((identity) => identity.displayName),
+      jaceReplied,
     },
-    chat: { enabled: chatEnabled, jaceReplied },
-    invites: { count: invitesCount },
-    runner: { connected: hasExecutionPath, selfHosted: selfHostedActive },
+    invites: { count: invitesCount, skipped: inviteTeamSkipped },
   };
 }

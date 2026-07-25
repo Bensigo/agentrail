@@ -1,54 +1,51 @@
 /**
- * Pure step-derivation for the `/setup` onboarding wizard (#1233, spec §5).
+ * Pure step-derivation for the `/setup` onboarding wizard (three-step
+ * rebuild — owner ruling, verbatim: "on the setup page it should be and all
+ * optional: connect to github / invite team / message Jace that sent to
+ * telegram — the rest is redundant. fix it").
  *
- * "Step completion is derived from data — no wizard-state table." This module
- * takes already-fetched signals (the route / server component does all the
- * I/O — mirrors the digest-helpers split, `digest/digest-helpers.ts`) and
- * decides each step's status. No I/O here, so it is fully unit-testable
+ * "Step completion is derived from data — no wizard-state table." This
+ * module takes already-fetched signals (the route / server component does
+ * all the I/O — mirrors the digest-helpers split, `digest/digest-helpers.ts`)
+ * and decides each step's status. No I/O here, so it is fully unit-testable
  * without a database.
  *
- * Steps (spec §5). Step ids below name the underlying mechanic;
- * `ONBOARDING_STEP_LABELS` is what the wizard/banner actually display and
- * reads chat-first (#1281) — the two are allowed to diverge (e.g. id
- * `connect-channel` / label "Talk to Jace", id `attach-runner` / label
- * "Execution"):
- *   1. Connect GitHub    — complete when the github connector has ≥1 repo AND
+ * **Every step is optional** — none of the three ever "blocks" anything.
+ * `deriveOnboardingSteps` only ever returns `complete | incomplete | skipped`
+ * per step, and `onboardingProgress`/`shouldShowOnboardingBanner` both treat
+ * `skipped` exactly like `complete` ("nothing left for the user to do") —
+ * skipping every step is a fully legitimate way to reach `allDone`. No step
+ * may read as permanently, unskippably incomplete; each has its own
+ * `skip-*` API route the wizard calls (see `onboarding-data.ts` for where
+ * each skip is persisted).
+ *
+ * The three steps, in render order:
+ *   1. Connect GitHub  — complete when the github connector has ≥1 repo AND
  *      a stored webhook secret (`connectors.config.webhookSecret`).
- *   2. Connect a channel — complete when the workspace has ≥1 linked chat
- *      identity for Telegram (`listChatIdentitiesForWorkspace` — a user DM'd
- *      the shared bot and that conversation was recorded), not a stored
- *      credential; skippable, and the skip is remembered per workspace (still
- *      persisted on the telegram connector row's jsonb config — see
- *      `onboarding-data.ts`).
- *   3. Say hi to Jace    — ships with #1288 (console chat). Complete once
- *      `jace_messages` has ANY `role: "jace"` row for the workspace (a real
- *      reply happened, in ANY member's console thread — see
- *      `hasAnyJaceReply`). Distinct from step 2 ("Talk to Jace" — a channel
- *      is CONNECTED) — this step is "you actually said hi and Jace answered."
- *      `skipped` (not `incomplete`) whenever console chat is off for this
- *      workspace (`CONSOLE_CHAT_ENABLED`/allowlist) — the step must not sit
- *      permanently incomplete (blocking `onboardingProgress.allDone`
- *      forever) for a workspace the feature hasn't rolled out to yet.
- *   4. Invite your team  — complete once the workspace has reached at least
+ *      Skippable; the skip is remembered on the github connector row's own
+ *      jsonb config (`githubSkippedAt`).
+ *   2. Invite your team — complete once the workspace has reached at least
  *      one teammate beyond the owner (a pending invite or an accepted one).
- *   5. Attach a runner   — complete when the workspace has an execution path:
- *      hosted execution is enabled (the default for every workspace) or a
- *      self-hosted runner is actively polling (#1268,
- *      `workspaceHasExecutionPath`). The caller (`onboarding-data.ts`) also
- *      passes a `selfHosted` flag alongside this signal so the UI can say
- *      something honest about WHICH path is active — this pure module only
- *      needs the OR'd boolean to decide completion. The step's UI
- *      (`runner-step.tsx`) relocates the device-code form behind a
- *      "Self-hosting?" disclosure whenever hosted execution alone satisfies
- *      it, so a fresh workspace never sees an install form (#1281 AC1).
+ *      Skippable; the skip piggybacks on the github connector row too
+ *      (`inviteTeamSkippedAt` — invite-team has no connector of its own; see
+ *      `onboarding-data.ts` / the schema doc-comment for why).
+ *   3. Message Jace    — replaces BOTH of the old "Connect a channel" and
+ *      "Say hi to Jace" steps; that split was the redundancy the owner
+ *      ruling called out. Complete when the workspace has a linked chat
+ *      identity for Telegram (`listChatIdentitiesForWorkspace` — a user
+ *      DM'd the shared bot) OR Jace has ever replied in console chat
+ *      (`hasAnyJaceReply`) — either one proves the user reached him.
+ *      Skippable; the skip is remembered on the telegram connector row's
+ *      jsonb config (`channelSkippedAt` — unchanged field name from the step
+ *      this superseded, so an existing skip survives the rename).
+ *
+ * Removed outright: the old "Attach a runner" / Execution step. Hosted
+ * execution has been the default for every workspace since the 2026-07-17
+ * e2e cutover, so the step was vestigial — always-complete noise, never
+ * actionable. There is nothing left for it to gate.
  */
 
-export type OnboardingStepId =
-  | "connect-github"
-  | "connect-channel"
-  | "say-hi-to-jace"
-  | "invite-team"
-  | "attach-runner";
+export type OnboardingStepId = "connect-github" | "invite-team" | "message-jace";
 
 export type OnboardingStepStatus = "complete" | "incomplete" | "skipped";
 
@@ -57,28 +54,20 @@ export interface OnboardingStep {
   status: OnboardingStepStatus;
 }
 
-/** The fixed render order for the wizard and the banner. */
+/** The fixed render order for the wizard and the banner — matches the owner
+ * ruling's own numbered list (GitHub, team, Jace). */
 export const ONBOARDING_STEP_ORDER: readonly OnboardingStepId[] = [
   "connect-github",
-  "connect-channel",
-  "say-hi-to-jace",
   "invite-team",
-  "attach-runner",
+  "message-jace",
 ];
 
 export const ONBOARDING_STEP_LABELS: Record<OnboardingStepId, string> = {
   "connect-github": "Connect GitHub",
-  // Chat-first relabel (#1281): this step's own body already leads with the
-  // shared-bot deep link, not a form — the label should say what the user
-  // is doing (message Jace), not the plumbing underneath.
-  "connect-channel": "Talk to Jace",
-  "say-hi-to-jace": "Say hi to Jace",
   "invite-team": "Invite your team",
-  // Chat-first relabel (#1281): hosted execution is the default for every
-  // fresh workspace (see runner-step.tsx) — "Attach a runner" implied an
-  // install step that most workspaces never need. "Execution" covers both
-  // the hosted-done state and the self-host disclosure underneath it.
-  "attach-runner": "Execution",
+  // The owner's own words for this step (verbatim ruling) — it replaces the
+  // old "Talk to Jace" / "Say hi to Jace" split.
+  "message-jace": "Message Jace",
 };
 
 /** The signals every step's completion is derived from. Pure input — no I/O. */
@@ -88,36 +77,29 @@ export interface OnboardingStepsInput {
     repoCount: number;
     /** Whether a webhook secret has been generated + stored for the connector. */
     hasWebhookSecret: boolean;
-  };
-  channel: {
-    /** A channel (Telegram) credential is stored for the workspace. */
-    connected: boolean;
     /** The user explicitly chose "Skip for now" for this workspace. */
     skipped: boolean;
-  };
-  chat: {
-    /** Console chat (#1288) is rolled out for this workspace
-     * (`CONSOLE_CHAT_ENABLED` / the per-workspace allowlist). */
-    enabled: boolean;
-    /** `hasAnyJaceReply` — a real `jace_messages` reply already exists. */
-    jaceReplied: boolean;
   };
   invites: {
     /** Teammates reached beyond the owner: pending invites + accepted members. */
     count: number;
+    /** The user explicitly chose "Skip for now" for this workspace. */
+    skipped: boolean;
   };
-  runner: {
-    /** The workspace has an execution path: hosted execution enabled, or a
-     * self-hosted runner actively polling (#1268). */
+  messageJace: {
+    /** A linked Telegram chat identity exists OR Jace has ever replied in
+     * console chat — either proves the user reached him. */
     connected: boolean;
+    /** The user explicitly chose "Skip for now" for this workspace. */
+    skipped: boolean;
   };
 }
 
 /**
  * Derive each step's status from the input signals. Total and pure: the same
- * input always yields the same four statuses, in {@link ONBOARDING_STEP_ORDER}.
- * `connected` always outranks `skipped` — a channel that gets connected after
- * being skipped reads as complete, not skipped.
+ * input always yields the same three statuses, in {@link ONBOARDING_STEP_ORDER}.
+ * `connected`/count>0 always outranks `skipped` — completing a step after
+ * skipping it reads as complete, not skipped, for all three steps alike.
  */
 export function deriveOnboardingSteps(
   input: OnboardingStepsInput
@@ -126,19 +108,20 @@ export function deriveOnboardingSteps(
     "connect-github":
       input.github.repoCount > 0 && input.github.hasWebhookSecret
         ? "complete"
-        : "incomplete",
-    "connect-channel": input.channel.connected
+        : input.github.skipped
+          ? "skipped"
+          : "incomplete",
+    "invite-team":
+      input.invites.count > 0
+        ? "complete"
+        : input.invites.skipped
+          ? "skipped"
+          : "incomplete",
+    "message-jace": input.messageJace.connected
       ? "complete"
-      : input.channel.skipped
+      : input.messageJace.skipped
         ? "skipped"
         : "incomplete",
-    "say-hi-to-jace": input.chat.jaceReplied
-      ? "complete"
-      : input.chat.enabled
-        ? "incomplete"
-        : "skipped",
-    "invite-team": input.invites.count > 0 ? "complete" : "incomplete",
-    "attach-runner": input.runner.connected ? "complete" : "incomplete",
   };
 
   return ONBOARDING_STEP_ORDER.map((id) => ({ id, status: statuses[id] }));
@@ -161,8 +144,9 @@ export function onboardingProgress(steps: OnboardingStep[]): OnboardingProgress 
 /**
  * Whether the Home progress banner should render. Pure — the banner component
  * itself stays a thin renderer; this is the one bit of logic worth unit
- * testing in isolation (spec §5: "Incomplete steps show as a progress banner
- * on Home … disappears when all steps complete or are skipped").
+ * testing in isolation. Disappears once every step is complete OR skipped —
+ * "all optional" means skipping all three is a legitimate way to get here,
+ * not a state the banner should keep nagging about.
  */
 export function shouldShowOnboardingBanner(steps: OnboardingStep[]): boolean {
   return !onboardingProgress(steps).allDone;

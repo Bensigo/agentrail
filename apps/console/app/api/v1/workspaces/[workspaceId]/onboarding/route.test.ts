@@ -7,8 +7,6 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   getConnector: vi.fn(),
-  getWorkspace: vi.fn(),
-  hasActiveSelfHostedRunner: vi.fn(),
   hasAnyJaceReply: vi.fn(),
   listChatIdentitiesForWorkspace: vi.fn(),
   listInvites: vi.fn(),
@@ -20,8 +18,6 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   getConnector,
-  getWorkspace,
-  hasActiveSelfHostedRunner,
   listChatIdentitiesForWorkspace,
   listInvites,
   listWorkspaceMembers,
@@ -42,19 +38,13 @@ beforeEach(() => {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(getConnector).mockResolvedValue(null);
-  // hostedExecution=false + no self-hosted runner = no execution path — the
-  // loader derives the disjunct locally from these two reads (see
-  // onboarding-data.ts for why it doesn't call workspaceHasExecutionPath).
-  vi.mocked(getWorkspace).mockResolvedValue({
-    id: WS,
-    hostedExecution: false,
-  } as never);
-  vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
   vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([]);
   vi.mocked(listInvites).mockResolvedValue([]);
   vi.mocked(listWorkspaceMembers).mockResolvedValue([
     { userId: "owner-1", name: "Owner", email: "o@x.com", role: "owner", joinedAt: new Date() },
   ] as never);
+  // Console chat is off by default in this test env, so hasAnyJaceReply is
+  // never called (loadOnboardingData short-circuits) — nothing to mock.
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
@@ -75,22 +65,26 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     expect(res.status).toBe(200);
   });
 
-  it("returns all-incomplete steps for a fresh workspace", async () => {
+  it("returns exactly three steps, all incomplete, for a fresh workspace", async () => {
     const res = await GET(req(), params());
     const body = await res.json();
     expect(body.steps).toEqual([
       { id: "connect-github", status: "incomplete" },
-      { id: "connect-channel", status: "incomplete" },
-      // Console chat's flag is unset in this test env, so say-hi-to-jace
-      // reads as skipped (never permanently-incomplete for a workspace the
-      // feature hasn't rolled out to) — see onboarding-steps.ts.
-      { id: "say-hi-to-jace", status: "skipped" },
       { id: "invite-team", status: "incomplete" },
-      { id: "attach-runner", status: "incomplete" },
+      { id: "message-jace", status: "incomplete" },
     ]);
   });
 
-  it("reflects a connected github connector + self-hosted runner + accepted teammate (AC3 runner status)", async () => {
+  it("never returns an attach-runner / execution step — that step was removed outright", async () => {
+    const res = await GET(req(), params());
+    const body = await res.json();
+    expect(body.steps.map((s: { id: string }) => s.id)).not.toContain(
+      "attach-runner"
+    );
+    expect(body).not.toHaveProperty("runner");
+  });
+
+  it("reflects a connected github connector + accepted teammate", async () => {
     vi.mocked(getConnector).mockImplementation(async (_ws, provider) => {
       if (provider === "github") {
         return {
@@ -108,9 +102,6 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
       }
       return null;
     });
-    // hostedExecution stays false so the assertion below proves the
-    // SELF-HOSTED leg of the disjunct drives connected on its own.
-    vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(true);
     vi.mocked(listWorkspaceMembers).mockResolvedValue([
       { userId: "owner-1", name: "Owner", email: "o@x.com", role: "owner", joinedAt: new Date() },
       { userId: "u2", name: "Teammate", email: "t@x.com", role: "member", joinedAt: new Date() },
@@ -120,84 +111,28 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     const body = await res.json();
     expect(body.steps).toEqual([
       { id: "connect-github", status: "complete" },
-      { id: "connect-channel", status: "incomplete" },
-      { id: "say-hi-to-jace", status: "skipped" },
       { id: "invite-team", status: "complete" },
-      { id: "attach-runner", status: "complete" },
+      { id: "message-jace", status: "incomplete" },
     ]);
-    expect(body.runner).toEqual({ connected: true, selfHosted: true });
     expect(body.github.repos).toEqual(["acme/repo"]);
   });
 
-  it("#1268: attach-runner completes for a hosted-eligible workspace with NO self-hosted runner", async () => {
-    // The exact regression #1268 closes: a runner-less (hosted) workspace
-    // must read as having an execution path, but the UI signal must stay
-    // honest that no self-hosted runner is actually polling.
-    vi.mocked(getWorkspace).mockResolvedValue({
-      id: WS,
-      hostedExecution: true,
-    } as never);
-    vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
-
-    const res = await GET(req(), params());
-    const body = await res.json();
-    expect(body.steps).toContainEqual({ id: "attach-runner", status: "complete" });
-    expect(body.runner).toEqual({ connected: true, selfHosted: false });
-  });
-
-  it("defensively reads no execution path when the workspace row is missing", async () => {
-    vi.mocked(getWorkspace).mockResolvedValue(null as never);
-    vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
-
-    const res = await GET(req(), params());
-    const body = await res.json();
-    expect(body.steps).toContainEqual({ id: "attach-runner", status: "incomplete" });
-    expect(body.runner).toEqual({ connected: false, selfHosted: false });
-  });
-
   it("500 when the loader throws", async () => {
-    vi.mocked(getWorkspace).mockRejectedValue(new Error("db down"));
+    vi.mocked(getConnector).mockRejectedValue(new Error("db down"));
     const res = await GET(req(), params());
     expect(res.status).toBe(500);
   });
 
-  // -- connect-channel signal (connectors-channels cutover, T5) -------------
-  // `channel.connected` flips from a stored telegram secret to a spine-backed
-  // signal: ≥1 linked chat identity for platform "telegram"
-  // (`listChatIdentitiesForWorkspace`). `channel.chatId` is gone — the client
-  // gets display names only (`linkedNames`), never `platformUserId`.
-  describe("connect-channel (spine-backed signal)", () => {
-    it("connected is true once the workspace has ≥1 linked telegram chat identity, with its display name surfaced", async () => {
-      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
-        { platform: "telegram", platformUserId: "tg-1", displayName: "Ben" },
-      ] as never);
-
-      const res = await GET(req(), params());
-      const body = await res.json();
-      expect(body.channel).toEqual({
-        connected: true,
-        skipped: false,
-        linkedNames: ["Ben"],
-      });
-      expect(body.steps).toContainEqual({
-        id: "connect-channel",
-        status: "complete",
-      });
-    });
-
-    it("connected stays false for identities on OTHER platforms only — never derives from a stored telegram secret (hasSecret) any more", async () => {
-      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
-        { platform: "discord", platformUserId: "d-1", displayName: "Team" },
-      ] as never);
-      // The OLD signal: a stored telegram credential. Proves it no longer
-      // drives `connected` post-cutover.
+  // -- connect-github skip ---------------------------------------------------
+  describe("connect-github (skippable)", () => {
+    it("is skipped when githubSkippedAt is set and nothing is connected", async () => {
       vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
-        provider === "telegram"
+        provider === "github"
           ? ({
-              provider: "telegram",
+              provider: "github",
               enabled: true,
-              config: {},
-              hasSecret: true,
+              config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, githubSkippedAt: new Date().toISOString() },
+              hasSecret: false,
               updatedAt: null,
             } as never)
           : null
@@ -205,14 +140,124 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
 
       const res = await GET(req(), params());
       const body = await res.json();
-      expect(body.channel).toEqual({
-        connected: false,
+      expect(body.github).toMatchObject({ skipped: true });
+      expect(body.steps).toContainEqual({ id: "connect-github", status: "skipped" });
+    });
+
+    it("connecting after a skip outranks the stale flag — reads complete, not skipped", async () => {
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "github"
+          ? ({
+              provider: "github",
+              enabled: true,
+              config: {
+                repos: ["acme/repo"],
+                webhookSecret: "abc123",
+                triggerLabel: "ready-for-agent",
+                pollIntervalSeconds: 60,
+                githubSkippedAt: new Date().toISOString(),
+              },
+              hasSecret: false,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.github.skipped).toBe(true);
+      expect(body.steps).toContainEqual({ id: "connect-github", status: "complete" });
+    });
+  });
+
+  // -- invite-team skip (piggybacks on the github row) -----------------------
+  describe("invite-team (skippable, flag lives on the github connector row)", () => {
+    it("is skipped when inviteTeamSkippedAt is set and no teammate was reached", async () => {
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "github"
+          ? ({
+              provider: "github",
+              enabled: true,
+              config: {
+                repos: [],
+                triggerLabel: "ready-for-agent",
+                pollIntervalSeconds: 60,
+                inviteTeamSkippedAt: new Date().toISOString(),
+              },
+              hasSecret: false,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.invites).toEqual({ count: 0, skipped: true });
+      expect(body.steps).toContainEqual({ id: "invite-team", status: "skipped" });
+    });
+
+    it("reaching a teammate outranks a stale skip flag", async () => {
+      vi.mocked(getConnector).mockImplementation(async (_ws, provider) =>
+        provider === "github"
+          ? ({
+              provider: "github",
+              enabled: true,
+              config: {
+                repos: [],
+                triggerLabel: "ready-for-agent",
+                pollIntervalSeconds: 60,
+                inviteTeamSkippedAt: new Date().toISOString(),
+              },
+              hasSecret: false,
+              updatedAt: null,
+            } as never)
+          : null
+      );
+      vi.mocked(listWorkspaceMembers).mockResolvedValue([
+        { userId: "owner-1", name: "Owner", email: "o@x.com", role: "owner", joinedAt: new Date() },
+        { userId: "u2", name: "Teammate", email: "t@x.com", role: "member", joinedAt: new Date() },
+      ] as never);
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.invites).toEqual({ count: 1, skipped: true });
+      expect(body.steps).toContainEqual({ id: "invite-team", status: "complete" });
+    });
+  });
+
+  // -- message-jace (replaces connect-channel + say-hi-to-jace) ---------------
+  describe("message-jace (spine-backed signal OR a real chat reply)", () => {
+    it("connected is true once the workspace has ≥1 linked telegram chat identity, with its display name surfaced", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "telegram", platformUserId: "tg-1", displayName: "Ben" },
+      ] as never);
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.messageJace).toEqual({
+        connected: true,
         skipped: false,
-        linkedNames: [],
+        linkedNames: ["Ben"],
+        jaceReplied: false,
+      });
+      expect(body.steps).toContainEqual({
+        id: "message-jace",
+        status: "complete",
       });
     });
 
-    it("linkedNames carries only telegram identities' display names (filters out other platforms), preserving a null display name, and never leaks platformUserId", async () => {
+    it("connected stays false for identities on OTHER platforms only", async () => {
+      vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
+        { platform: "discord", platformUserId: "d-1", displayName: "Team" },
+      ] as never);
+
+      const res = await GET(req(), params());
+      const body = await res.json();
+      expect(body.messageJace.connected).toBe(false);
+      expect(body.messageJace.linkedNames).toEqual([]);
+    });
+
+    it("linkedNames carries only telegram identities' display names, preserving a null display name, and never leaks platformUserId", async () => {
       vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([
         { platform: "telegram", platformUserId: "tg-1", displayName: "Ada" },
         { platform: "telegram", platformUserId: "tg-2", displayName: null },
@@ -221,7 +266,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
 
       const res = await GET(req(), params());
       const body = await res.json();
-      expect(body.channel.linkedNames).toEqual(["Ada", null]);
+      expect(body.messageJace.linkedNames).toEqual(["Ada", null]);
       const raw = JSON.stringify(body);
       expect(raw).not.toContain("tg-1");
       expect(raw).not.toContain("tg-2");
@@ -243,13 +288,14 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
 
       const res = await GET(req(), params());
       const body = await res.json();
-      expect(body.channel).toEqual({
+      expect(body.messageJace).toEqual({
         connected: false,
         skipped: true,
         linkedNames: [],
+        jaceReplied: false,
       });
       expect(body.steps).toContainEqual({
-        id: "connect-channel",
+        id: "message-jace",
         status: "skipped",
       });
     });
@@ -272,13 +318,14 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
 
       const res = await GET(req(), params());
       const body = await res.json();
-      expect(body.channel).toEqual({
+      expect(body.messageJace).toEqual({
         connected: true,
         skipped: true,
         linkedNames: [null],
+        jaceReplied: false,
       });
       expect(body.steps).toContainEqual({
-        id: "connect-channel",
+        id: "message-jace",
         status: "complete",
       });
     });

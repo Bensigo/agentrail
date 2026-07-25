@@ -7,36 +7,48 @@ import {
   resolveHostedBotUsername,
   telegramDeepLink,
   SELF_HOST_TELEGRAM_DOCS_URL,
-} from "./channel-step-helpers";
+} from "../../../../lib/telegram-bot";
 
-export function ChannelStep({
+/**
+ * The onboarding wizard's `message-jace` step — the owner-ruled merge of the
+ * old "Connect a channel" and "Say hi to Jace" steps ("that split is the
+ * redundancy"). Complete once the workspace has a linked Telegram identity
+ * OR Jace has ever replied in console chat; either proves the user reached
+ * him (see `onboarding-data.ts`). Optional, like every step in this wizard —
+ * skippable, and the skip is remembered per workspace.
+ */
+export function MessageJaceStep({
   workspaceId,
   connected,
   skipped,
   linkedNames,
+  jaceReplied,
   onChanged,
 }: {
   workspaceId: string;
   connected: boolean;
   skipped: boolean;
   linkedNames: (string | null)[];
+  jaceReplied: boolean;
   onChanged: () => void;
 }) {
-  // Hosted deploys set this (issue #1262 PR ③) to flip this step's incomplete
-  // render from the self-host docs pointer to a "message the shared bot" deep
-  // link — self-host default (unset) keeps the docs-pointer branch below.
+  // Hosted deploys set this so this step's incomplete render offers a
+  // "message the shared bot" deep link — self-host default (unset) falls
+  // back to an honest notice instead of a dead t.me/undefined href.
   const hostedBotUsername = resolveHostedBotUsername(
     process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
   );
   const [skipping, setSkipping] = useState(false);
-  // Whether to show the connect affordance (the hosted deep-link CTA or the
-  // self-host docs line) instead of the "Skipped for now" summary. Starts
-  // open unless the workspace already skipped; "Connect now" flips it back.
+  // Whether to show the connect affordance instead of the "Skipped for now"
+  // summary. Starts open unless the workspace already skipped; "Connect now"
+  // flips it back.
   const [showConnect, setShowConnect] = useState(!skipped);
 
   async function handleSkip() {
     setSkipping(true);
     try {
+      // Route path predates this step's rename (see skip-channel/route.ts's
+      // own doc-comment) — same underlying mechanism, unchanged.
       await fetch(`/api/v1/workspaces/${workspaceId}/onboarding/skip-channel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -52,7 +64,11 @@ export function ChannelStep({
     return (
       <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
         <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-        Telegram connected · {linkedIdentitiesLine(linkedNames)}
+        {linkedNames.length > 0
+          ? `Telegram connected · ${linkedIdentitiesLine(linkedNames)}`
+          : jaceReplied
+            ? "Jace replied — you're talking."
+            : "Connected."}
       </p>
     );
   }
@@ -61,7 +77,7 @@ export function ChannelStep({
     return (
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-[var(--gray-09)]">
-          Skipped for now. You can connect a channel any time from Gateways.
+          Skipped for now. You can message Jace any time from Gateways.
         </p>
         <button
           type="button"
@@ -78,8 +94,8 @@ export function ChannelStep({
     return (
       <div className="flex flex-col gap-2.5">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Talk to Jace on Telegram. Message the bot once — that chat becomes
-          your channel, no token to paste.
+          Message Jace on Telegram — that chat becomes your channel, no token
+          to paste, and Jace replies right there.
         </p>
         {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
         <a
@@ -117,12 +133,13 @@ export function ChannelStep({
     );
   }
 
-  // Self-host default (env unset): no shared bot to deep-link to. A quiet
-  // docs pointer instead of a dead CTA.
+  // Honest fallback (self-host default, env unset): no shared bot to
+  // deep-link to. Say so directly instead of rendering a dead
+  // t.me/undefined href, and point at the one way to make the link real.
   return (
     <div className="flex items-center justify-between gap-2">
-      <p className="text-xs text-[var(--gray-09)]">
-        Self-hosting?{" "}
+      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+        Telegram messaging isn&apos;t set up for this deployment yet.{" "}
         <a
           href={SELF_HOST_TELEGRAM_DOCS_URL}
           target="_blank"
@@ -132,8 +149,6 @@ export function ChannelStep({
           Bring your own bot
         </a>
       </p>
-      {/* font-normal: secondary button, same convention as the hosted
-          branch's Skip button above. */}
       <button
         type="button"
         onClick={handleSkip}

@@ -70,11 +70,13 @@ export function GithubStep({
   workspaceId,
   repos,
   hasWebhookSecret,
+  skipped,
   onChanged,
 }: {
   workspaceId: string;
   repos: string[];
   hasWebhookSecret: boolean;
+  skipped: boolean;
   onChanged: () => void;
 }) {
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -83,10 +85,33 @@ export function GithubStep({
   const [error, setError] = useState<string | null>(null);
   const [installBusy, setInstallBusy] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [skipping, setSkipping] = useState(false);
+  // Whether to show the connect form instead of the "Skipped for now"
+  // summary. Starts open unless the workspace already skipped; "Connect
+  // now" flips it back — same pattern as the message-jace step.
+  const [showConnect, setShowConnect] = useState(!skipped);
+
+  // Optional, like every step in this wizard: complete once ≥1 repo AND a
+  // webhook secret exist (mirrors deriveOnboardingSteps's own predicate).
+  const complete = repos.length > 0 && hasWebhookSecret;
 
   function handleAdded() {
     setShowAddDialog(false);
     onChanged();
+  }
+
+  async function handleSkip() {
+    setSkipping(true);
+    try {
+      await fetch(`/api/v1/workspaces/${workspaceId}/onboarding/skip-github`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skip: true }),
+      });
+      onChanged();
+    } finally {
+      setSkipping(false);
+    }
   }
 
   async function handleConnectGithub() {
@@ -130,6 +155,23 @@ export function GithubStep({
   }
 
   const failedRepos = result?.results.filter((r) => !r.ok) ?? [];
+
+  if (skipped && !showConnect && !complete) {
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-[var(--gray-09)]">
+          Skipped for now. You can connect GitHub any time from this page.
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowConnect(true)}
+          className="shrink-0 text-xs text-[var(--blue-11)] hover:underline"
+        >
+          Connect now
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -229,6 +271,24 @@ export function GithubStep({
           </>
         )}
       </div>
+
+      {!complete && (
+        <div className="flex items-center justify-between gap-2 border-t border-[var(--gray-04)] pt-3">
+          <p className="text-xs text-[var(--gray-09)]">
+            Optional — connect GitHub any time from this page.
+          </p>
+          {/* font-normal: secondary button, matches the Deny/Refresh/Requeue
+              plain-weight convention used across the scope. */}
+          <button
+            type="button"
+            onClick={handleSkip}
+            disabled={skipping}
+            className="shrink-0 h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-normal text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          >
+            {skipping ? "Skipping…" : "Skip for now"}
+          </button>
+        </div>
+      )}
 
       {showAddDialog && (
         <AddRepositoryDialog

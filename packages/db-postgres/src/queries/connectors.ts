@@ -196,11 +196,21 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     ...(typeof stored?.imessageNotify === "boolean"
       ? { imessageNotify: stored.imessageNotify }
       : {}),
-    // Onboarding wizard "skip for now" on the channel step (#1233) — preserved
-    // across merges so a later config patch (e.g. a label edit) never silently
-    // un-skips the workspace's choice. Lives on the telegram row; read by
-    // `apps/console/lib/onboarding-data.ts`.
+    // Onboarding wizard "skip for now" on the message-jace step (three-step
+    // rebuild; field name predates the rename — see the schema doc-comment)
+    // — preserved across merges so a later config patch (e.g. a label edit)
+    // never silently un-skips the workspace's choice. Lives on the telegram
+    // row; read by `apps/console/lib/onboarding-data.ts`.
     ...(stored?.channelSkippedAt ? { channelSkippedAt: stored.channelSkippedAt } : {}),
+    // Onboarding wizard "skip for now" on the Connect-GitHub / Invite-team
+    // steps (three-step rebuild) — both preserved across merges for the same
+    // reason as channelSkippedAt above. Live on the github row (see the
+    // schema doc-comments on ConnectorConfig for why invite-team piggybacks
+    // here too).
+    ...(stored?.githubSkippedAt ? { githubSkippedAt: stored.githubSkippedAt } : {}),
+    ...(stored?.inviteTeamSkippedAt
+      ? { inviteTeamSkippedAt: stored.inviteTeamSkippedAt }
+      : {}),
   };
 }
 

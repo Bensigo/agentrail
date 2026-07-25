@@ -10,23 +10,30 @@ import {
 } from "../../../../lib/onboarding-steps";
 import { StepCard } from "./step-card";
 import { GithubStep } from "./github-step";
-import { ChannelStep } from "./channel-step";
-import { SayHiStep } from "./say-hi-step";
 import { InviteStep } from "./invite-step";
-import { RunnerStep } from "./runner-step";
+import { MessageJaceStep } from "./message-jace-step";
 
 interface OnboardingData {
   steps: OnboardingStep[];
-  github: { repoCount: number; repos: string[]; hasWebhookSecret: boolean };
-  channel: { connected: boolean; skipped: boolean; linkedNames: (string | null)[] };
-  chat: { enabled: boolean; jaceReplied: boolean };
-  invites: { count: number };
-  runner: { connected: boolean; selfHosted: boolean };
+  github: {
+    repoCount: number;
+    repos: string[];
+    hasWebhookSecret: boolean;
+    skipped: boolean;
+  };
+  messageJace: {
+    connected: boolean;
+    skipped: boolean;
+    linkedNames: (string | null)[];
+    jaceReplied: boolean;
+  };
+  invites: { count: number; skipped: boolean };
 }
 
-// Poll cadence while the wizard is open — fast enough that the runner step
-// flips to "connected" without a manual refresh (AC3), gentle enough not to
-// hammer the read endpoint.
+// Poll cadence while the wizard is open — fast enough that a step that
+// completes outside the wizard (a webhook delivery, an accepted invite, a
+// Telegram DM) flips without a manual refresh, gentle enough not to hammer
+// the read endpoint.
 const POLL_INTERVAL_MS = 4000;
 
 export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
@@ -57,8 +64,8 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
   }, [workspaceId]);
 
   // Self-rescheduling: fetch once, and — only while some step is still
-  // incomplete — queue the next fetch. A finished wizard stops polling
-  // instead of ticking forever in an idle tab.
+  // incomplete — queue the next fetch. A finished (or fully-skipped) wizard
+  // stops polling instead of ticking forever in an idle tab.
   const schedule = useCallback(
     (delay: number) => {
       if (timerRef.current) clearTimeout(timerRef.current);
@@ -107,7 +114,7 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
   if (!data) {
     return (
       <div className="flex flex-col gap-2.5">
-        {[0, 1, 2, 3, 4].map((i) => (
+        {[0, 1, 2].map((i) => (
           <div
             key={i}
             className="h-14 animate-pulse rounded border border-[var(--gray-05)] bg-[var(--gray-01)]"
@@ -119,7 +126,8 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
 
   const progress = onboardingProgress(data.steps);
   // Open the first not-yet-resolved step by default; everything else stays
-  // collapsed so a returning user isn't re-shown steps they already finished.
+  // collapsed so a returning user isn't re-shown steps they already finished
+  // or skipped.
   const firstIncompleteId = data.steps.find((s) => s.status === "incomplete")?.id;
 
   return (
@@ -146,36 +154,26 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
                   workspaceId={workspaceId}
                   repos={data.github.repos}
                   hasWebhookSecret={data.github.hasWebhookSecret}
+                  skipped={data.github.skipped}
                   onChanged={refresh}
-                />
-              )}
-              {id === "connect-channel" && (
-                <ChannelStep
-                  workspaceId={workspaceId}
-                  connected={data.channel.connected}
-                  skipped={data.channel.skipped}
-                  linkedNames={data.channel.linkedNames}
-                  onChanged={refresh}
-                />
-              )}
-              {id === "say-hi-to-jace" && (
-                <SayHiStep
-                  workspaceId={workspaceId}
-                  enabled={data.chat.enabled}
-                  jaceReplied={data.chat.jaceReplied}
                 />
               )}
               {id === "invite-team" && (
                 <InviteStep
                   workspaceId={workspaceId}
                   teammateCount={data.invites.count}
+                  skipped={data.invites.skipped}
                   onChanged={refresh}
                 />
               )}
-              {id === "attach-runner" && (
-                <RunnerStep
-                  connected={data.runner.connected}
-                  selfHosted={data.runner.selfHosted}
+              {id === "message-jace" && (
+                <MessageJaceStep
+                  workspaceId={workspaceId}
+                  connected={data.messageJace.connected}
+                  skipped={data.messageJace.skipped}
+                  linkedNames={data.messageJace.linkedNames}
+                  jaceReplied={data.messageJace.jaceReplied}
+                  onChanged={refresh}
                 />
               )}
             </StepCard>

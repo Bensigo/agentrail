@@ -492,3 +492,76 @@ describe("completeConfig preserves the Jace channel opt-ins (#1050)", () => {
     expect(rows[0].config).not.toHaveProperty("imessageNotify");
   });
 });
+
+// completeConfig is exercised through getConnectors (it runs on every projected
+// row). These assert the onboarding wizard's three-step-rebuild skip flags
+// survive projection, exactly like channelSkippedAt already did — a later
+// config patch (e.g. the webhook route setting webhookSecret) must never
+// silently drop a workspace's "skip for now" choice.
+describe("completeConfig preserves the onboarding skip flags (three-step rebuild)", () => {
+  it("carries githubSkippedAt + inviteTeamSkippedAt through the read projection (github row)", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "github",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            githubSkippedAt: "2026-07-25T00:00:00.000Z",
+            inviteTeamSkippedAt: "2026-07-25T00:00:00.000Z",
+          },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    expect(rows[0].config.githubSkippedAt).toBe("2026-07-25T00:00:00.000Z");
+    expect(rows[0].config.inviteTeamSkippedAt).toBe("2026-07-25T00:00:00.000Z");
+  });
+
+  it("omits both flags entirely when absent", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "github",
+          enabled: true,
+          config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    expect(rows[0].config).not.toHaveProperty("githubSkippedAt");
+    expect(rows[0].config).not.toHaveProperty("inviteTeamSkippedAt");
+  });
+
+  it("a later merge (e.g. setting webhookSecret) does not drop a previously-set skip flag", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectLimitChain([
+        {
+          provider: "github",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            githubSkippedAt: "2026-07-25T00:00:00.000Z",
+          },
+          updatedAt: new Date("2026-07-25T00:00:00.000Z"),
+        },
+      ]) as never
+    );
+    mockDb.insert.mockReturnValue(makeInsertChain() as never);
+
+    const view = await upsertConnector("ws-1", "github", {
+      config: { webhookSecret: "abc123" },
+    });
+
+    expect(view.config.githubSkippedAt).toBe("2026-07-25T00:00:00.000Z");
+    expect(view.config.webhookSecret).toBe("abc123");
+  });
+});

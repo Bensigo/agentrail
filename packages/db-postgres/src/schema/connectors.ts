@@ -97,15 +97,46 @@ export interface ConnectorConfig {
    */
   webhookSecret?: string;
   /**
-   * Onboarding wizard (#1233): the operator chose "Skip for now" on the
-   * Connect-a-channel step for this workspace. Lives on the `telegram`
-   * connector row (the only channel the wizard offers today) so the skip is
-   * remembered per workspace without a new table — `deriveOnboardingSteps`
-   * reads it, but only when the channel is NOT connected (a later real
-   * connect always outranks a stale skip). ISO timestamp of when skipped, or
-   * absent if never skipped / already connected.
+   * Onboarding wizard: the operator chose "Skip for now" on the wizard's
+   * `message-jace` step for this workspace (three-step rebuild — owner
+   * ruling: "connect to github / invite team / message Jace ... the rest is
+   * redundant"; `message-jace` replaced the old two-step "Connect a
+   * channel" + "Say hi to Jace" split). Field name unchanged from the
+   * original Connect-a-channel step this superseded — same mechanism, same
+   * telegram row, so an existing skip survives the rename with zero data
+   * loss. Lives on the `telegram` connector row (the only channel the
+   * wizard offers today) so the skip is remembered per workspace without a
+   * new table — `deriveOnboardingSteps` reads it, but only when
+   * `message-jace` is NOT already complete (a real connect/reply always
+   * outranks a stale skip). ISO timestamp of when skipped, or absent if
+   * never skipped / already complete.
    */
   channelSkippedAt?: string;
+  /**
+   * Onboarding wizard (three-step rebuild, all steps individually
+   * skippable): the operator chose "Skip for now" on the Connect-GitHub
+   * step for this workspace. Lives on the `github` connector row itself —
+   * the most natural per-workspace home for it — mirroring
+   * `channelSkippedAt`'s precedent so no new table is needed.
+   * `deriveOnboardingSteps` reads it, but only when github is NOT already
+   * connected (≥1 repo + a webhook secret always outranks a stale skip).
+   * ISO timestamp of when skipped, or absent if never skipped / already
+   * connected.
+   */
+  githubSkippedAt?: string;
+  /**
+   * Onboarding wizard (three-step rebuild, all steps individually
+   * skippable): the operator chose "Skip for now" on the Invite-team step
+   * for this workspace. Invite-team has no connector of its own to live on
+   * — rather than add a new table (or a new column elsewhere) for one
+   * flag, it piggybacks on the `github` connector row alongside
+   * `githubSkippedAt` above, since that row already exists per workspace by
+   * the time onboarding is in progress. `deriveOnboardingSteps` reads it,
+   * but only when the invite count is still zero (reaching a teammate
+   * always outranks a stale skip). ISO timestamp of when skipped, or absent
+   * if never skipped / already reached a teammate.
+   */
+  inviteTeamSkippedAt?: string;
   /**
    * JACE CHANNEL-MIGRATION opt-in (#1047). Lives on the `jace` connector row and
    * flips the OUTBOUND Telegram run-outcome notify source from the legacy console

@@ -18,11 +18,12 @@ interface FieldError {
 }
 
 /**
- * `/setup` — the first-run flow (#1233, spec §5). Workspace creation (below)
- * stays the entry point; once a workspace exists (freshly created, or via
- * `?workspace=<id>` deep link — the Home progress banner links back here for
- * an existing workspace with incomplete steps) the four derived-state
- * onboarding steps take over.
+ * `/setup` — the first-run flow. Workspace creation (below) stays the entry
+ * point; once a workspace exists (freshly created, or via `?workspace=<id>`
+ * deep link — the Home progress banner links back here for an existing
+ * workspace with incomplete steps) the three derived-state onboarding steps
+ * take over. Every step is optional (owner ruling): connect GitHub, invite
+ * your team, message Jace — skip any of them and pick it up again later.
  */
 function SetupPageContent() {
   const searchParams = useSearchParams();
@@ -99,9 +100,8 @@ function SetupPageContent() {
             Set up your workspace
           </h1>
           <p className="mt-2 text-sm text-[var(--gray-09)]">
-            Connect the things Jace needs to start shipping. Every step here
-            can be finished later from Connectors, Gateways, Members, or this
-            page.
+            Every step below is optional. Connect now, or skip and finish
+            later from GitHub, Gateways, or Members.
           </p>
           <div className="mt-8">
             <OnboardingWizard workspaceId={workspaceId} />

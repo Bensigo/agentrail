@@ -8,15 +8,13 @@ import {
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
 /**
- * "Skip for now" on the onboarding wizard's `message-jace` step (three-step
- * rebuild — every step is individually skippable, skip remembered per
- * workspace). Route path and field name (`channelSkippedAt`) predate the
- * rename: `message-jace` replaced the old two-step "Connect a channel" +
- * "Say hi to Jace" split (the owner-called-out redundancy), and this is the
- * SAME underlying mechanism, unchanged, so an existing skip survives with
- * zero data loss. Persists the choice on the telegram connector row's jsonb
- * config. Owner/admin only, matching the connector-management gate
- * (`connectors/route.ts` PUT / `connectors/secret/route.ts` PUT).
+ * "Skip for now" on the onboarding wizard's Connect-GitHub step (three-step
+ * rebuild — owner ruling: every step is individually skippable, skip
+ * remembered per workspace). Persists the choice on the github connector
+ * row's jsonb config (`githubSkippedAt`) — no new table, mirroring
+ * `skip-channel/route.ts`'s precedent on the telegram row. Owner/admin only,
+ * matching the connector-management gate (`connectors/route.ts` PUT /
+ * `connectors/secret/route.ts` PUT).
  *
  * Body: `{ skip?: boolean }` — defaults to `true`; pass `false` to undo a
  * skip (e.g. the wizard offers "actually, let me connect it" after all).
@@ -46,12 +44,12 @@ export async function POST(
   const skip = body.skip !== false;
 
   try {
-    await upsertConnector(workspaceId, "telegram", {
-      config: { channelSkippedAt: skip ? new Date().toISOString() : undefined },
+    await upsertConnector(workspaceId, "github", {
+      config: { githubSkippedAt: skip ? new Date().toISOString() : undefined },
     });
     return NextResponse.json({ skipped: skip });
   } catch (err) {
-    console.error("[onboarding/skip-channel] failed to persist skip:", err);
+    console.error("[onboarding/skip-github] failed to persist skip:", err);
     return NextResponse.json(
       { error: "Failed to save your choice" },
       { status: 500 }

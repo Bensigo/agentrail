@@ -167,8 +167,9 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
       {
         id: "repo-b",
         name: "bensigo/other",
-        // Never indexed (no snapshot) -> critical, per repoHealth's own contract.
-        healthStatus: "critical",
+        // Never indexed (no snapshot) -> unknown, per repoHealth's own
+        // contract — "no telemetry" is not evidence of a critical repo.
+        healthStatus: "unknown",
         lastIndexedAt: null,
         lastCommitSha: null,
         sourceCount: null,
@@ -197,7 +198,12 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
     expect((await memberRes.json()).canManage).toBe(false);
   });
 
-  it("degrades gracefully when the index-snapshot lookup throws — the repo list still renders, every repo reads critical", async () => {
+  // Owner report, reproduced directly: ClickHouse is unconfigured in prod
+  // (no CLICKHOUSE_* vars), so this lookup throws on every request — and the
+  // pre-fix behavior painted every repo "critical" (red) regardless of how
+  // current the wiki actually is. This is the exact regression this route
+  // must never reintroduce.
+  it("degrades gracefully when the index-snapshot lookup throws — the repo list still renders, every repo reads unknown (never a false critical)", async () => {
     mockAuthed();
     // Two repos so this stays on the "picker list only" branch — the point
     // of this test is the snapshot-lookup failure, not repo auto-select.
@@ -212,7 +218,7 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
       {
         id: "repo-a",
         name: "bensigo/agentrail",
-        healthStatus: "critical",
+        healthStatus: "unknown",
         lastIndexedAt: null,
         lastCommitSha: null,
         sourceCount: null,
@@ -220,12 +226,15 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
       {
         id: "repo-b",
         name: "bensigo/other",
-        healthStatus: "critical",
+        healthStatus: "unknown",
         lastIndexedAt: null,
         lastCommitSha: null,
         sourceCount: null,
       },
     ]);
+    expect(json.repos.map((r: { healthStatus: string }) => r.healthStatus)).not.toContain(
+      "critical"
+    );
   });
 
   it("single-repo workspace auto-selects without a ?repoId (spec §4.5)", async () => {
@@ -315,6 +324,36 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
     expect(res.status).toBe(200);
     expect(json.latestCompile).toBeNull();
     expect(json.pages).toHaveLength(1);
+  });
+
+  // Owner report, end to end: BOTH ClickHouse reads this route makes (the
+  // snapshot lookup for repo health AND the compile-event lookup for the
+  // provenance bar) fail — a total ClickHouse outage, exactly the prod
+  // condition (no CLICKHOUSE_* vars configured at all). The wiki's own
+  // Postgres-backed facts (pages, each with a real `generatedAt`) must
+  // survive completely untouched — that's what lets the client's
+  // wiki-freshness-leads header ("N pages · compiled <age> ago") stay
+  // honest and current even while every ClickHouse-derived field goes null.
+  it("a total ClickHouse outage still returns full, current wiki_pages data — the client's wiki-freshness signal survives", async () => {
+    mockAuthed();
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([repoA] as never);
+    vi.mocked(getRepository).mockResolvedValue(repoA as never);
+    vi.mocked(getLatestIndexSnapshotsForWorkspace).mockRejectedValue(new Error("ClickHouse down"));
+    vi.mocked(getLatestWikiCompileEvent).mockRejectedValue(new Error("ClickHouse down"));
+
+    const res = await GET(makeRequest("?repoId=repo-a"), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.latestCompile).toBeNull();
+    expect(json.pages).toEqual([
+      expect.objectContaining({
+        slug: "wiki/overview",
+        generatedAt: "2026-07-23T14:00:00.000Z",
+        stale: false,
+      }),
+    ]);
+    expect(json.repos[0].healthStatus).toBe("unknown");
   });
 
   it("returns 404 for a repoId outside this workspace", async () => {

@@ -111,7 +111,8 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
 
     expect(res.status).toBe(201);
     expect(json.repository.name).toBe("bensigo/agentrail");
-    expect(json.repository.health_status).toBe("critical");
+    // Never indexed yet — "unknown" (no telemetry), not a false "critical".
+    expect(json.repository.health_status).toBe("unknown");
     expect(json.repository.last_indexed_at).toBeNull();
   });
 

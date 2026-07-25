@@ -11,6 +11,7 @@ import { RecompileButton } from "./recompile-button";
 import {
   computeWikiSummaryStats,
   groupWikiPages,
+  resolveCompiledAt,
   type RepoListItem,
   type WikiPageDTO,
 } from "../wiki-format";
@@ -112,9 +113,20 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
   // read straight off `wiki_pages` rows via `computeWikiSummaryStats` — no
   // derived "knowledge score". `oldestGeneratedAt` deliberately isn't
   // surfaced in the header (TASTE.md: fewer, clearer facts over a bigger
-  // stat strip) — pages/stale/last-indexed/health are the ones the spec
-  // keeps; per-page staleness is already visible via each page's own badge.
+  // stat strip) — pages/stale/compiled-age are the ones the header keeps;
+  // per-page staleness is already visible via each page's own badge.
   const summary = useMemo(() => (pages ? computeWikiSummaryStats(pages) : null), [pages]);
+
+  // Wiki-freshness-leads (owner ruling, honesty fix): the header's PRIMARY
+  // signal is this, not index health. Prefers the ClickHouse compile event's
+  // timestamp when it's already available (it's fetched anyway, for
+  // WikiPageView's provenance bar) but falls back to the newest page's own
+  // `generatedAt` — Postgres, always present — so "compiled <age> ago" is
+  // NEVER blanked out by a ClickHouse outage the way index health used to be.
+  const compiledAt = useMemo(
+    () => resolveCompiledAt(summary?.newestGeneratedAt ?? null, latestCompile),
+    [summary, latestCompile]
+  );
 
   function handleRepoAdded(repo: RepoListItem) {
     setRepos((prev) => [repo, ...prev]);
@@ -137,6 +149,7 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
         canManage={canManage}
         pageCount={summary?.pageCount ?? null}
         staleCount={summary?.staleCount ?? null}
+        compiledAt={compiledAt}
         onSelect={(id) => load(id)}
         onAdded={handleRepoAdded}
       />

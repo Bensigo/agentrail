@@ -52,6 +52,21 @@ Configuration is entirely via environment (documented below and in
                                   ~one TTL (renewed every TTL/3). Smaller = faster
                                   handoff, more DB traffic.
 
+Fleet-key self-heal (the fix for the fleet silently stopping claims on every
+restart — a lost/wiped on-disk token store while the console still reports an
+active key): this process mints its OWN per-process identity at boot
+(mint_fleet_instance_id — a ``<hostname>-<uuid12>`` string, NOT an env var,
+NOT persisted, and deliberately NOT stable across restarts — instance
+identity surviving a restart is explicitly not required, since the whole
+point of self-heal is that ephemeral credentials are fine by design) and
+reports it on every self-heal request. The cooldown that guards against two
+overlapping instances ping-ponging revoke/mint against each other
+(FLEET_SELF_HEAL_COOLDOWN_SECONDS) and the queue-staleness window backing the
+`stalled` health signal (FLEET_STALLED_QUEUE_MINUTES) are both enforced
+SERVER-SIDE — set them on the CONSOLE service, not here; this process reads
+neither. See agentrail/runner/fleet_sync.py's module docstring and
+apps/console/app/api/v1/fleet/workspace-tokens/self-heal/route.ts.
+
 IMPORTANT — do NOT set AGENTRAIL_WORKSPACE_ID in this process's own
 environment. That var (see ``agentrail/cli/commands/afk.py``'s
 ``_WORKSPACE_ID_ENV``) exists ONLY to exempt an operator's OWN dogfood
@@ -87,6 +102,7 @@ from agentrail.runner.fleet_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     FleetLease,
     PostgresLeaseExecutor,
+    mint_fleet_instance_id,
     run_lease_loop,
 )
 from agentrail.runner.fleet_sync import FleetSyncError, run_sync_cycle
@@ -147,6 +163,7 @@ def _run_sync_loop(
     home: "Path | None",
     sync_interval: float,
     rotation: WorkspaceRotation,
+    fleet_instance_id: Optional[str] = None,
     is_active: "Callable[[], bool]" = lambda: True,
 ) -> None:
     """The periodic re-sync thread's body (module-level so tests can drive
@@ -167,6 +184,13 @@ def _run_sync_loop(
     sync (see ``run_fleet``'s ``_on_promote``), so a freshly-promoted instance
     doesn't wait a whole interval for fresh tokens. The default ``lambda: True``
     keeps the no-lease path syncing every tick, exactly as before.
+
+    ``fleet_instance_id`` (fleet-key self-heal fix) is forwarded to every
+    :func:`run_sync_cycle` call UNCONDITIONALLY — including as ``None``,
+    which is exactly what keeps every test/caller that predates self-heal
+    (and so never passes this parameter) byte-identical: ``run_sync_cycle``
+    treats a ``None`` id as "self-heal disabled," so this thread's behavior
+    is completely unchanged for a caller that doesn't opt in.
     """
     while not stop.wait(sync_interval):
         if not is_active():
@@ -174,7 +198,10 @@ def _run_sync_loop(
             continue
         try:
             new_tokens = run_sync_cycle(
-                base_url=base_url, console_token=console_token, home=home
+                base_url=base_url,
+                console_token=console_token,
+                home=home,
+                fleet_instance_id=fleet_instance_id,
             )
         except FleetSyncError as exc:
             # Periodic failure is a warning, not fatal — keep serving the
@@ -224,7 +251,7 @@ def _float_env(name: str, default: float, *, minimum: float | None = None) -> fl
     return value
 
 
-def _make_lease() -> Optional[FleetLease]:
+def _make_lease(fleet_instance_id: Optional[str] = None) -> Optional[FleetLease]:
     """Build the single-active-fleet lease (#1390), or ``None`` when lease
     coordination is disabled.
 
@@ -234,6 +261,14 @@ def _make_lease() -> Optional[FleetLease]:
     mode. Set -> a real Postgres-backed lease so overlapping deploy instances
     coordinate to exactly one active. See ``deploy/fleet/README.md`` /
     ``RUNBOOK.md`` for the operator wiring.
+
+    ``fleet_instance_id``, when given, becomes the lease's ``holder`` — the
+    SAME per-process identity the self-heal client reports as
+    ``fleetInstanceId`` (fleet-key self-heal fix), so a lease holder and the
+    self-heal rotations it requests correlate in logs/audit instead of
+    tracking two separate ids for one process. ``None`` (every pre-existing
+    caller) preserves the old behavior exactly: :class:`FleetLease` mints its
+    own holder id internally when ``holder`` is falsy.
     """
     dsn = (os.environ.get("DATABASE_URL") or "").strip()
     if not dsn:
@@ -241,7 +276,7 @@ def _make_lease() -> Optional[FleetLease]:
     ttl = _float_env(
         "FLEET_LEASE_TTL_SECONDS", DEFAULT_LEASE_TTL_SECONDS, minimum=_MIN_LEASE_TTL_SECONDS
     )
-    return FleetLease(PostgresLeaseExecutor(dsn), ttl_seconds=ttl)
+    return FleetLease(PostgresLeaseExecutor(dsn), holder=fleet_instance_id, ttl_seconds=ttl)
 
 
 def run_fleet(args: List[str]) -> int:
@@ -276,11 +311,21 @@ def run_fleet(args: List[str]) -> int:
         "FLEET_SYNC_INTERVAL_SECONDS", 300.0, minimum=_MIN_SYNC_INTERVAL_SECONDS
     )
 
+    # Fleet-key self-heal fix: ONE identity for this process, minted here
+    # (not deferred into _make_lease) so it is available regardless of
+    # whether lease coordination is enabled — self-heal must work even with
+    # DATABASE_URL unset, since instance identity survives restarts is
+    # explicitly NOT required for it (ephemeral credentials are fine by
+    # design; only the CONSOLE'S rotation record needs to be durable). Reused
+    # as the lease holder id too when a lease IS built, so the two concepts
+    # correlate for one process instead of tracking separate ids.
+    fleet_instance_id = mint_fleet_instance_id()
+
     # Single-active-fleet lease (#1390). Unset DATABASE_URL -> None -> this
     # process is the sole active instance, exactly as before this feature (no
     # lease thread, no gating, no new failure mode). Set -> a Postgres lease so
     # overlapping deploy instances coordinate down to exactly one active.
-    lease = _make_lease()
+    lease = _make_lease(fleet_instance_id)
     is_active: Callable[[], bool] = (lambda: True) if lease is None else lease.is_held
 
     if lease is None:
@@ -306,7 +351,12 @@ def run_fleet(args: List[str]) -> int:
         # HOLDER boot-syncs (AC1/AC3): two instances booting at once must not
         # both mint against the shared token store.
         try:
-            tokens = run_sync_cycle(base_url=base_url, console_token=console_token, home=home)
+            tokens = run_sync_cycle(
+                base_url=base_url,
+                console_token=console_token,
+                home=home,
+                fleet_instance_id=fleet_instance_id,
+            )
         except FleetSyncError as exc:
             print(f"agentrail fleet: initial sync failed — {exc}", file=sys.stderr)
             print(
@@ -343,6 +393,7 @@ def run_fleet(args: List[str]) -> int:
             home=home,
             sync_interval=sync_interval,
             rotation=rotation,
+            fleet_instance_id=fleet_instance_id,
             is_active=is_active,
         ),
         daemon=True,
@@ -360,7 +411,10 @@ def run_fleet(args: List[str]) -> int:
             # (now active) retries on its own cadence.
             try:
                 new_tokens = run_sync_cycle(
-                    base_url=base_url, console_token=console_token, home=home
+                    base_url=base_url,
+                    console_token=console_token,
+                    home=home,
+                    fleet_instance_id=fleet_instance_id,
                 )
             except FleetSyncError as exc:
                 print(

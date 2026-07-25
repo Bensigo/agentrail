@@ -219,8 +219,14 @@ def test_periodic_resync_success_refreshes_the_rotation(tmp_path):
             rotation=rotation,
         )
     # The tick really ran run_sync_cycle and swapped the rotation to the new set.
+    # fleet_instance_id=None here (this test never passes one to _run_sync_loop)
+    # is the fleet-key self-heal fix's opt-in default — see run_sync_cycle's own
+    # doc-comment for why forwarding None is what keeps self-heal disabled.
     mock_sync.assert_called_once_with(
-        base_url="https://app.agentrail.dev", console_token="fleet-secret", home=tmp_path
+        base_url="https://app.agentrail.dev",
+        console_token="fleet-secret",
+        home=tmp_path,
+        fleet_instance_id=None,
     )
     assert rotation.workspace_ids() == ["ws-new"]
     # And it paced itself with the configured interval (both waits: the tick's
@@ -468,6 +474,70 @@ def test_no_lease_worker_is_active_defaults_true_sole_instance():
     assert rc == 0
     is_active = mock_worker.call_args.kwargs["is_active"]
     assert is_active() is True
+
+
+# --- Fleet-key self-heal fix: one minted instance id, threaded everywhere ---
+
+
+def test_run_fleet_mints_one_instance_id_and_forwards_it_to_the_boot_sync():
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "mint_fleet_instance_id", return_value="fleet-test-id") as mock_mint, \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value={}) as mock_sync, \
+         patch.object(fleet_cmd, "run_fleet_worker"):
+        rc = fleet_cmd.run_fleet([])
+    assert rc == 0
+    mock_mint.assert_called_once()
+    assert mock_sync.call_args.kwargs["fleet_instance_id"] == "fleet-test-id"
+
+
+def test_run_fleet_forwards_the_same_instance_id_to_make_lease():
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "mint_fleet_instance_id", return_value="fleet-test-id"), \
+         patch.object(fleet_cmd, "_make_lease", return_value=None) as mock_make_lease, \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value={}), \
+         patch.object(fleet_cmd, "run_fleet_worker"):
+        fleet_cmd.run_fleet([])
+    mock_make_lease.assert_called_once_with("fleet-test-id")
+
+
+def test_run_sync_loop_forwards_a_given_fleet_instance_id_to_every_cycle(tmp_path):
+    # Direct-call companion to test_periodic_resync_success_refreshes_the_rotation
+    # (which covers the fleet_instance_id=None/omitted default): this is the
+    # non-default path run_fleet's real sync thread actually exercises in
+    # production — a concrete id, forwarded on EVERY tick, not just the first.
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, False, True])  # two ticks, then shutdown
+    with patch.object(fleet_cmd, "run_sync_cycle", return_value={}) as mock_sync:
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+            fleet_instance_id="fleet-test-id",
+        )
+    assert mock_sync.call_count == 2
+    for call in mock_sync.call_args_list:
+        assert call.kwargs["fleet_instance_id"] == "fleet-test-id"
+
+
+def test_run_fleet_forwards_the_instance_id_into_the_promotion_catch_up_sync():
+    lease = _fake_lease(active=True)
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "mint_fleet_instance_id", return_value="fleet-test-id"), \
+         patch.object(fleet_cmd, "_make_lease", return_value=lease), \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value={}) as mock_sync, \
+         patch.object(fleet_cmd, "run_lease_loop") as mock_lease_loop, \
+         patch.object(fleet_cmd, "run_fleet_worker"):
+        fleet_cmd.run_fleet([])
+        # Drive the on_promote callback the lease loop was handed, and check
+        # ITS call to run_sync_cycle also carries the same instance id. Must
+        # stay INSIDE the `with` block — run_sync_cycle is only mocked here.
+        on_promote = mock_lease_loop.call_args.kwargs["on_promote"]
+        mock_sync.reset_mock()
+        on_promote()
+        assert mock_sync.call_args.kwargs["fleet_instance_id"] == "fleet-test-id"
 
 
 def test_boot_sync_failure_as_holder_releases_the_lease_and_exits(capsys):

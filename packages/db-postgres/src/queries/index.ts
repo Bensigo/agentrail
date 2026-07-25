@@ -1,6 +1,6 @@
 import { eq, and, lt, gte, lte, desc, isNull, count, max, inArray, gt, sql, or } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { db } from "../db.js";
 import {
   workspaces,
@@ -18,6 +18,7 @@ import {
   users,
   evalArmMetrics,
   chatIdentities,
+  fleetKeyRotations,
 } from "../schema/index.js";
 import type { EvalArmMetric } from "../schema/index.js";
 import type {
@@ -1106,6 +1107,271 @@ export async function listFleetProvisionState(): Promise<FleetProvisionStateRow[
     hostedExecution: r.hostedExecution,
     hasActiveFleetKey: r.fleetKeyId != null,
     fleetKeyId: r.fleetKeyId ?? null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Fleet key self-heal (fix: the hosted fleet silently stops claiming for a
+// workspace whenever its container restarts — see fleetKeyRotations' own
+// doc-comment in schema/fleet_key_rotations.ts for the full story). Backs
+// POST /api/v1/fleet/workspace-tokens/self-heal.
+// ---------------------------------------------------------------------------
+
+/** Same display name the ordinary sync route mints fleet keys under (kept as
+ * its own local literal here, matching that route's own convention of not
+ * centralizing this specific string — a self-healed key should be
+ * indistinguishable from an ordinarily-minted one in the console's API-keys
+ * list; `fleet_key_rotations` is what durably marks it as a self-heal). */
+const FLEET_SELF_HEAL_KEY_NAME = "Hosted fleet";
+
+/**
+ * Drizzle can wrap the underlying pg error, so the unique-violation code
+ * (23505) may live on err.code or err.cause.code — same detection idiom as
+ * `apps/console/app/api/v1/fleet/workspace-tokens/sync/route.ts`'s own
+ * `isUniqueViolation` (duplicated rather than imported, matching that
+ * route's own precedent of not centralizing this specific helper — see its
+ * doc-comment, which cites `runner/workspaces/route.ts`'s copy too).
+ */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
+export type SelfHealFleetKeyResult =
+  | { ok: true; workspaceId: string; slug: string; token: string; keyId: string }
+  | {
+      ok: false;
+      reason: "not_found" | "not_hosted" | "cooldown";
+      /** Only set for `cooldown` — how many more seconds until a retry might
+       * succeed. Advisory only (the fleet's own bounded retry/backoff
+       * decides whether and when to actually retry). */
+      retryAfterSeconds?: number;
+    };
+
+/**
+ * Server-authoritative self-heal: atomically revoke the workspace's current
+ * active `kind: 'fleet'` key (if any) and mint a fresh one, recording the
+ * rotation in `fleet_key_rotations`. This is what a fleet instance calls
+ * when it holds NO token for a workspace the console believes has one — the
+ * "drift" condition `agentrail/runner/fleet_sync.py::apply_sync` detects —
+ * instead of only logging the manual "revoke it in the console" recovery
+ * line.
+ *
+ * Guards, in order:
+ *  1. `not_found` — no such workspace. Post-auth (the caller already proved
+ *     it holds `FLEET_CONSOLE_TOKEN`), so revealing this is not an
+ *     enumeration risk: the fleet only ever calls this for a workspace id it
+ *     already learned from the sync route's own `active` bucket.
+ *  2. `not_hosted` — `workspaces.hosted_execution` is false. Never resurrect
+ *     a fleet key for a workspace an operator (or the ordinary sync route's
+ *     own revoke branch) has turned hosted execution OFF for — that would
+ *     fight the ordinary sync's revoke on the very next cycle.
+ *  3. `cooldown` — the ANTI-PING-PONG guard: refuse a second rotation for
+ *     this workspace inside `cooldownSeconds` of the last one, REGARDLESS OF
+ *     WHICH fleet instance is asking. Two overlapping deploy instances (or
+ *     one instance retrying too eagerly) that both detect drift and both
+ *     self-heal would otherwise alternately revoke each other's freshly
+ *     minted key forever — the cooldown bounds the ROTATION RATE for a
+ *     workspace to at most one per window, full stop, which trivially
+ *     forecloses that loop no matter how many instances are asking or how
+ *     the requests interleave. `fleetInstanceId` is still recorded on every
+ *     successful rotation (audit: "who rotated this"), it just isn't used to
+ *     carve out an exemption — hash-only token storage means even the SAME
+ *     instance replaying a lost response cannot be handed the old raw token
+ *     back, so there is no safe way to special-case "my own retry" here
+ *     without either leaking a second token into existence or reusing one
+ *     that was possibly already delivered once.
+ *
+ * The revoke-then-mint pair runs in ONE transaction (mirrors
+ * `setMergePermission`'s own "flip state + write audit row atomically"
+ * precedent) so a caller never observes a half-done rotation. A mint that
+ * loses a race to a truly CONCURRENT rotation (two self-heal calls for the
+ * same workspace landing at almost the same instant, both past the cooldown
+ * read) hits `api_keys_one_active_fleet_key_idx` and is reported back as
+ * `cooldown` too — the caller's reaction (back off, let a later cycle retry)
+ * is identical either way, and by the time it retries the loser's own
+ * cooldown row will have blocked it if it is now the one racing.
+ */
+export async function selfHealFleetKey(input: {
+  workspaceId: string;
+  fleetInstanceId: string;
+  cooldownSeconds: number;
+}): Promise<SelfHealFleetKeyResult> {
+  const { workspaceId, fleetInstanceId, cooldownSeconds } = input;
+
+  const [workspace] = await db
+    .select({
+      id: workspaces.id,
+      slug: workspaces.slug,
+      hostedExecution: workspaces.hostedExecution,
+    })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  if (!workspace) {
+    return { ok: false, reason: "not_found" };
+  }
+  if (!workspace.hostedExecution) {
+    return { ok: false, reason: "not_hosted" };
+  }
+
+  const [lastRotation] = await db
+    .select({ createdAt: fleetKeyRotations.createdAt })
+    .from(fleetKeyRotations)
+    .where(eq(fleetKeyRotations.workspaceId, workspaceId))
+    .orderBy(desc(fleetKeyRotations.createdAt))
+    .limit(1);
+  if (lastRotation) {
+    const elapsedSeconds = (Date.now() - lastRotation.createdAt.getTime()) / 1000;
+    if (elapsedSeconds < cooldownSeconds) {
+      return {
+        ok: false,
+        reason: "cooldown",
+        retryAfterSeconds: Math.max(1, Math.ceil(cooldownSeconds - elapsedSeconds)),
+      };
+    }
+  }
+
+  try {
+    return await db.transaction(async (tx) => {
+      const [activeKey] = await tx
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(
+          and(
+            eq(apiKeys.workspaceId, workspaceId),
+            eq(apiKeys.kind, "fleet"),
+            isNull(apiKeys.revokedAt)
+          )
+        )
+        .limit(1);
+
+      if (activeKey) {
+        await tx
+          .update(apiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(apiKeys.id, activeKey.id));
+      }
+
+      // Inlined mint (not the shared `mintApiKey` helper): that helper
+      // writes through the top-level `db` handle, which would silently
+      // commit outside THIS transaction — the same rationale
+      // `setMergePermission`'s own doc-comment gives for inlining against
+      // `tx` directly rather than calling an exported `db`-bound helper.
+      const raw = randomBytes(32).toString("hex");
+      const rawKey = `ar_${raw}`;
+      const keyPrefix = `ar_${raw.slice(0, 8)}`;
+      const keyHash = createHash("sha256").update(rawKey).digest("hex");
+      const [minted] = await tx
+        .insert(apiKeys)
+        .values({
+          workspaceId,
+          name: FLEET_SELF_HEAL_KEY_NAME,
+          keyPrefix,
+          keyHash,
+          kind: "fleet",
+        })
+        .returning({ id: apiKeys.id });
+
+      // `.returning()` here is unused (nothing downstream needs the audit
+      // row's own id yet) but keeps this insert's shape uniform with the
+      // mint insert above rather than a special one-off call form.
+      await tx
+        .insert(fleetKeyRotations)
+        .values({
+          workspaceId,
+          fleetInstanceId,
+          oldKeyId: activeKey?.id ?? null,
+          newKeyId: minted!.id,
+        })
+        .returning({ id: fleetKeyRotations.id });
+
+      return {
+        ok: true as const,
+        workspaceId,
+        slug: workspace.slug,
+        token: rawKey,
+        keyId: minted!.id,
+      };
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      // Lost a race to a CONCURRENT rotation for the same workspace — see
+      // this function's own doc-comment (guard 3) for why this collapses to
+      // the same `cooldown` outcome rather than a distinct reason/a 500.
+      return { ok: false, reason: "cooldown", retryAfterSeconds: cooldownSeconds };
+    }
+    throw err;
+  }
+}
+
+export interface StalledHostedWorkspace {
+  workspaceId: string;
+  slug: string;
+  /** How many 'queued' entries have sat past the staleness window. */
+  staleQueuedCount: number;
+  /** Age (whole minutes) of the OLDEST stale queued entry. */
+  oldestQueuedMinutes: number;
+}
+
+/** Default staleness window (minutes) — see {@link listStalledHostedWorkspaces}. */
+export const STALLED_WORKSPACE_DEFAULT_STALE_MINUTES = 15;
+
+/**
+ * The VISIBLE half of the fleet-key self-heal fix: a hosted-eligible
+ * workspace (`hosted_execution = true`) with no live self-hosted fallback
+ * that has 'queued' work sitting unclaimed for longer than `staleMinutes` —
+ * i.e. queued past several fleet sync/claim cycles (the default
+ * `FLEET_SYNC_INTERVAL_SECONDS` is 300s; the default staleness window here
+ * is 15 minutes, ~3 cycles), not a normal poll gap.
+ *
+ * This is the console-observable symptom of "the fleet is not actually
+ * claiming for this workspace right now," regardless of WHY (a lost token
+ * self-heal hasn't caught up on yet, a stuck cooldown, the fleet fully down,
+ * a bad deploy) — a real, falsifiable signal (a human can open the queue
+ * page and see the exact stuck item(s)), not a vanity metric. Mirrors
+ * {@link hasActiveSelfHostedRunner}'s own windowed-presence pattern, just
+ * inverted into "is there unclaimed work AND no execution path currently
+ * alive for it."
+ *
+ * Called from `POST /api/v1/fleet/workspace-tokens/sync`'s response (the
+ * `stalled` bucket) so the fleet's OWN logs — the artifact an operator
+ * already watches after a deploy — carry a loud, REPEATING line for as long
+ * as the condition persists (every sync cycle, by default every 5 minutes).
+ * This is what makes a stuck workspace impossible to miss even if nobody is
+ * looking for it specifically (the bug this fixes went unnoticed for four
+ * days once with zero signal anywhere).
+ */
+export async function listStalledHostedWorkspaces(
+  staleMinutes: number = STALLED_WORKSPACE_DEFAULT_STALE_MINUTES
+): Promise<StalledHostedWorkspace[]> {
+  const result = await db.execute(sql`
+    SELECT
+      w.id AS workspace_id,
+      w.slug AS slug,
+      COUNT(q.id)::int AS stale_queued_count,
+      MIN(EXTRACT(EPOCH FROM (now() - q.created_at)) / 60)::int AS oldest_queued_minutes
+    FROM workspaces w
+    JOIN queue_entries q
+      ON q.workspace_id = w.id
+     AND q.state = 'queued'
+     AND q.created_at < now() - (${staleMinutes} || ' minutes')::interval
+    WHERE w.hosted_execution = true
+      AND NOT EXISTS (
+        SELECT 1 FROM api_keys ak
+        WHERE ak.workspace_id = w.id
+          AND ak.kind = 'self_hosted'
+          AND ak.revoked_at IS NULL
+          AND ak.last_used_at >= now() - interval '1 hour'
+      )
+    GROUP BY w.id, w.slug
+    ORDER BY oldest_queued_minutes DESC
+  `);
+  return (Array.from(result) as Record<string, unknown>[]).map((r) => ({
+    workspaceId: String(r.workspace_id),
+    slug: String(r.slug ?? ""),
+    staleQueuedCount: Number(r.stale_queued_count) || 0,
+    oldestQueuedMinutes: Number(r.oldest_queued_minutes) || 0,
   }));
 }
 

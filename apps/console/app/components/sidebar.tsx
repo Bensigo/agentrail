@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 import { EngineRoomGroup } from "./nav-group";
@@ -47,11 +48,21 @@ export function Sidebar({
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">
       <div className="flex h-12 items-center gap-2 border-b border-[var(--gray-05)] px-3 max-md:justify-center max-md:px-0">
+        {/* The product is Jace (CONTEXT.md: "AgentRail is the SDLC factory CLI
+            underneath him"); the console is his evidence room, so the chrome
+            carries his name and the canonical mascot disc — the same asset the
+            auth shell fronts its cards with (TASTE.md mascot canon). The disc
+            doubles as the collapsed-rail mark, replacing the bare "A". */}
+        <Image
+          src="/jace-avatar.png"
+          alt=""
+          width={24}
+          height={24}
+          priority
+          className="rounded-full"
+        />
         <span className="text-sm font-bold text-[var(--gray-12)] max-md:hidden">
-          AgentRail
-        </span>
-        <span className="hidden text-sm font-bold text-[var(--gray-12)] max-md:block">
-          A
+          Jace
         </span>
       </div>
 

@@ -47,6 +47,15 @@
 # failure-event insert in try/catch and still returns 202 on failure); S3_* has
 # no reader anywhere in apps/console or packages/ at all today (dead config,
 # reserved for a future artifact-storage feature) — see deploy/README.md.
+# CLICKHOUSE_URL sat unset in prod for a long stretch with zero signal: every
+# write silently connection-refused against packages/db-clickhouse/src/
+# client.ts's localhost:8123 fallback, swallowed by the try/catch above — the
+# whole evidence layer (run_events, cost_events, failure_events, ...) was dark
+# and nothing said so. client.ts now warns loudly when that happens in a
+# production-like env. If you DO set CLICKHOUSE_URL (e.g. the hosted Railway
+# deploy against a self-hosted ClickHouse service — see
+# deploy/clickhouse/README.md), its schema is migrated automatically on every
+# rollout via the self-contained `/ch-migrator` stage below, same as Postgres.
 
 # ---- 1. base -----------------------------------------------------------------
 FROM node:24-slim AS base
@@ -101,6 +110,13 @@ ENV NODE_ENV=production
 # its built dist (GitHub App identity arc; same ordering as ci.yml's node job).
 RUN pnpm --filter @agentrail/github-app build
 RUN pnpm --filter @agentrail/db-postgres build
+# Compiles ONLY the ClickHouse migrator's dependency closure (migrate.ts +
+# client.ts + schema.ts — see tsconfig.build.json) to plain ESM .js, for the
+# self-contained /ch-migrator stage below. Unlike db-postgres above, this is
+# NOT needed by `next build` itself: apps/console still consumes
+# @agentrail/db-clickhouse's other modules straight from src/ via
+# transpilePackages, unchanged.
+RUN pnpm --filter @agentrail/db-clickhouse build
 # Regenerate fumadocs' generated `.source/` (gitignored, driven by
 # apps/console/source.config.ts + content/docs/**/*.mdx) explicitly, matching
 # the console's own "predev" belt-and-suspenders re-run rather than trusting
@@ -130,7 +146,7 @@ RUN pnpm --filter @agentrail/console build
 # migrations` and package.json's `"type": "module"` makes plain `node` run it
 # as ESM. The `test -f` lines fail the BUILD (not the deploy) if either half
 # ever goes missing. Wired to Railway's preDeployCommand on the console
-# service (`node migrator/dist/migrate.js`): a failed migration aborts the
+# service (see the combined command below): a failed migration aborts the
 # rollout and the old build keeps serving.
 RUN mkdir -p /migrator/dist /migrator/drizzle \
   && cp -r packages/db-postgres/dist/. /migrator/dist/ \
@@ -145,6 +161,28 @@ RUN mkdir -p /migrator/dist /migrator/drizzle \
   && test -f /migrator/dist/migrate.js \
   && test -f /migrator/drizzle/migrations/meta/_journal.json
 
+# Self-contained ClickHouse migrator — same owner rule, extended to the new
+# self-hosted ClickHouse service (deploy/clickhouse/README.md). Simpler than
+# the Postgres migrator above: @agentrail/db-clickhouse's package.json
+# declares exactly one prod dependency (`@clickhouse/client`, no workspace:*
+# deps to strip) and its `build` script (tsconfig.build.json, run above)
+# already compiled only migrate.ts's 3-file closure to dist/ — so this stage
+# is just copy + npm install + guard. package.json still has `"main":
+# "./src/index.ts"` (irrelevant here; nothing requires this package by name —
+# the runner stage below invokes dist/migrate.js by path) and `"type":
+# "module"`, which is what makes plain `node` run the compiled output as ESM.
+# packages/db-clickhouse/src/migrate.ts's own main() fails SOFT (logs a skip
+# notice, exits 0) when CLICKHOUSE_URL is unset — ClickHouse stays an OPTIONAL
+# dependency, so a self-hoster who never provisions it does not get their
+# rollout blocked — and fails HARD (exits 1) if CLICKHOUSE_URL IS set and the
+# migration genuinely errors, same posture as Postgres. The `test -f` line
+# fails the BUILD (not the deploy) if the compiled entrypoint goes missing.
+RUN mkdir -p /ch-migrator/dist \
+  && cp -r packages/db-clickhouse/dist/. /ch-migrator/dist/ \
+  && cp packages/db-clickhouse/package.json /ch-migrator/package.json \
+  && cd /ch-migrator && npm install --omit=dev --no-audit --no-fund \
+  && test -f /ch-migrator/dist/migrate.js
+
 # ---- 4. runner — slim runtime, standalone server only ------------------------
 FROM node:24-slim AS runner
 WORKDIR /app
@@ -153,11 +191,19 @@ ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
 RUN mkdir -p apps/console/.next && chown node:node apps/console/.next
 COPY --from=builder --chown=node:node /app/apps/console/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/console/.next/static ./apps/console/.next/static
-# The self-contained migrator (see the builder stage note). Runs as Railway's
-# preDeployCommand (`node migrator/dist/migrate.js`) before every rollout;
-# harmless to ship for self-host too (compose users can `docker compose run
-# console node migrator/dist/migrate.js`).
+# The self-contained migrators (see the builder stage notes above). Both run
+# as Railway's preDeployCommand on the console service, chained so Postgres
+# always applies before ClickHouse and either failure aborts the rollout:
+#
+#   node migrator/dist/migrate.js && node ch-migrator/dist/migrate.js
+#
+# The ClickHouse half is a soft no-op (logs a skip line, exits 0) whenever
+# CLICKHOUSE_URL is unset — most self-hosters never provision it, and an
+# optional dependency must never block a rollout. Harmless to ship both for
+# self-host too (compose users can `docker compose run console sh -c "node
+# migrator/dist/migrate.js && node ch-migrator/dist/migrate.js"`).
 COPY --from=builder --chown=node:node /migrator ./migrator
+COPY --from=builder --chown=node:node /ch-migrator ./ch-migrator
 # public/ carries the Jace mascot (jace.png) — served as static assets by the
 # standalone server.
 COPY --from=builder --chown=node:node /app/apps/console/public ./apps/console/public

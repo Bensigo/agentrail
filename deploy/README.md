@@ -8,12 +8,16 @@ one compose file: `postgres`, `console`, `jace`, `caddy`, `runner`.
 absence — see `deploy/.env.production.example`'s comments for exactly which
 code paths are try/caught around ClickHouse and why S3/MinIO is genuinely dead
 config today (grepped: zero readers anywhere in `apps/console` or
-`packages/*`). Also omitted: Jace's Playwright/agent-browser/browser-use MCP
-sidecars (the `researcher`/`qa` subagents' tool sources) — both subagents
-degrade gracefully when their sidecar is unreachable rather than failing to
-boot; add the sidecar services back later (copy them from the root
-`docker-compose.yml`, which already has working recipes for all three) if you
-want those subagents at full strength.
+`packages/*`). This omission is specific to THIS single-VM compose skeleton —
+the hosted Railway deployment runs a separate, optional self-hosted
+ClickHouse service (see `deploy/clickhouse/README.md`), migrated
+automatically by the same console image's `preDeployCommand` this doc's
+Postgres `migrate` service mirrors (§4 below). Also omitted: Jace's
+Playwright/agent-browser/browser-use MCP sidecars (the `researcher`/`qa`
+subagents' tool sources) — both subagents degrade gracefully when their
+sidecar is unreachable rather than failing to boot; add the sidecar services
+back later (copy them from the root `docker-compose.yml`, which already has
+working recipes for all three) if you want those subagents at full strength.
 
 **Public hostname:** `65.20.91.127.sslip.io` — [sslip.io](https://sslip.io)
 resolves that hostname to `65.20.91.127` (a wildcard DNS trick), so Caddy can

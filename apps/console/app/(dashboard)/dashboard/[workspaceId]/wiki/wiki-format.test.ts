@@ -5,6 +5,8 @@ import {
   formatRelativeAge,
   formatPageCount,
   formatRepoDetailLine,
+  formatWikiFreshnessLine,
+  resolveCompiledAt,
   shortSha,
   formatCostUsd,
   healthStatusLabel,
@@ -49,10 +51,11 @@ describe("computeWikiSummaryStats", () => {
       pageCount: 0,
       staleCount: 0,
       oldestGeneratedAt: null,
+      newestGeneratedAt: null,
     });
   });
 
-  it("counts pages and stale pages, and finds the OLDEST generatedAt", () => {
+  it("counts pages and stale pages, and finds the OLDEST and NEWEST generatedAt", () => {
     const pages = [
       page({ slug: "wiki/overview", generatedAt: "2026-07-23T14:00:00.000Z", stale: false }),
       page({ slug: "wiki/unit/a", kind: "unit", generatedAt: "2026-07-20T09:00:00.000Z", stale: true }),
@@ -62,12 +65,49 @@ describe("computeWikiSummaryStats", () => {
       pageCount: 3,
       staleCount: 1,
       oldestGeneratedAt: "2026-07-20T09:00:00.000Z",
+      newestGeneratedAt: "2026-07-23T14:00:00.000Z",
     });
   });
 
   it("stale count can be zero — a healthy wiki is representable, not hidden", () => {
     const pages = [page({ stale: false }), page({ slug: "wiki/unit/a", kind: "unit", stale: false })];
     expect(computeWikiSummaryStats(pages).staleCount).toBe(0);
+  });
+});
+
+describe("resolveCompiledAt", () => {
+  it("prefers the compile event's createdAt when it's already available", () => {
+    expect(
+      resolveCompiledAt("2026-07-23T14:00:00.000Z", { createdAt: "2026-07-23T14:00:05.000Z" })
+    ).toBe("2026-07-23T14:00:05.000Z");
+  });
+
+  it("falls back to the newest page's generatedAt when there's no compile event (ClickHouse down/unconfigured) — never blocked by it", () => {
+    expect(resolveCompiledAt("2026-07-23T14:00:00.000Z", null)).toBe("2026-07-23T14:00:00.000Z");
+  });
+
+  it("is null only when there is truly nothing to report (no pages, no compile event)", () => {
+    expect(resolveCompiledAt(null, null)).toBeNull();
+  });
+});
+
+describe("formatWikiFreshnessLine", () => {
+  const NOW = new Date("2026-07-24T12:00:00.000Z").getTime();
+
+  it("joins page count and compiled age — the wiki header's primary, Postgres-backed signal", () => {
+    expect(formatWikiFreshnessLine(12, "2026-07-24T11:55:00.000Z", NOW)).toBe(
+      "12 pages · compiled 5m ago"
+    );
+  });
+
+  it("singular page count matches formatPageCount", () => {
+    expect(formatWikiFreshnessLine(1, "2026-07-24T11:55:00.000Z", NOW)).toBe(
+      "1 page · compiled 5m ago"
+    );
+  });
+
+  it("an honest zero-state: 0 pages, not compiled yet — never hidden, never a fake age", () => {
+    expect(formatWikiFreshnessLine(0, null, NOW)).toBe("0 pages · not compiled yet");
   });
 });
 
@@ -149,6 +189,7 @@ describe("healthStatusLabel", () => {
     expect(healthStatusLabel("healthy")).toBe("Healthy");
     expect(healthStatusLabel("stale")).toBe("Stale");
     expect(healthStatusLabel("critical")).toBe("Critical");
+    expect(healthStatusLabel("unknown")).toBe("Unknown");
   });
 });
 
@@ -178,9 +219,10 @@ describe("formatRepoDetailLine", () => {
     );
   });
 
-  it("falls back to 'never' when the repo has no index snapshot yet", () => {
+  it("falls back to an em dash when there's no index timestamp — never claims the false certainty of 'never'", () => {
     const r = repo({ lastIndexedAt: null });
-    expect(formatRepoDetailLine(r, NOW)).toContain("last indexed never");
+    expect(formatRepoDetailLine(r, NOW)).toContain("last indexed —");
+    expect(formatRepoDetailLine(r, NOW)).not.toContain("never");
   });
 
   it("omits the commit segment when there is no commit sha", () => {
@@ -193,9 +235,19 @@ describe("formatRepoDetailLine", () => {
     expect(formatRepoDetailLine(r, NOW)).not.toContain("sources");
   });
 
-  it("never indexed AND never counted: health word alone", () => {
+  it("no index snapshot AND no commit/source count: health word alone", () => {
     const r = repo({ lastIndexedAt: null, lastCommitSha: null, sourceCount: null });
-    expect(formatRepoDetailLine(r, NOW)).toBe("Healthy · last indexed never");
+    expect(formatRepoDetailLine(r, NOW)).toBe("Healthy · last indexed —");
+  });
+
+  it("unknown health status (no telemetry — never/never-reported, per lib/repo-health.ts) reads honestly, not as an alarm", () => {
+    const r = repo({
+      healthStatus: "unknown",
+      lastIndexedAt: null,
+      lastCommitSha: null,
+      sourceCount: null,
+    });
+    expect(formatRepoDetailLine(r, NOW)).toBe("Unknown · last indexed —");
   });
 });
 

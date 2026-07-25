@@ -12,7 +12,12 @@ export interface RepoRow {
   last_commit_sha: string | null;
   staleness_seconds: number | null;
   codebase_units_count: number | null;
-  health_status: "healthy" | "stale" | "critical";
+  // Matches lib/repo-health.ts's HealthStatus (kept as its own literal union
+  // here rather than imported — this component intentionally stays free of
+  // cross-feature imports beyond what it already has). "unknown" covers a
+  // freshly-created repo: no index snapshot yet is "no telemetry", never a
+  // false "critical" — POST .../repos below returns exactly that.
+  health_status: "healthy" | "stale" | "critical" | "unknown";
 }
 
 /** One repository as returned by GET .../github/repos (snake_case wire, #1293). */

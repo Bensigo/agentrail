@@ -50,7 +50,8 @@ export async function GET(
   try {
     snapshots = await getLatestIndexSnapshotsForWorkspace(workspaceId, repoIds);
   } catch {
-    // ClickHouse unavailable — return repos with critical health
+    // ClickHouse unavailable — repoHealth(null, ...) below reads this as
+    // "unknown", not "critical": no telemetry isn't evidence of a problem.
   }
 
   const snapshotByRepo = new Map(snapshots.map((s) => [s.repository_id, s]));
@@ -227,7 +228,11 @@ export async function POST(
         last_commit_sha: null,
         staleness_seconds: null,
         codebase_units_count: null,
-        health_status: "critical" as HealthStatus,
+        // A brand-new repo has no index snapshot yet — that's "no
+        // telemetry", not "critical" (repoHealth's own contract for a null
+        // snapshot; mirrored literally here since there's no snapshot lookup
+        // to call on a repo that was just created this request).
+        health_status: "unknown" as HealthStatus,
       },
     },
     { status: 201 }

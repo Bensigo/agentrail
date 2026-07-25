@@ -9,13 +9,7 @@ import { AlertTriangle, Check, ChevronDown, Plus } from "lucide-react";
 // survives the Repos & Health -> Wiki fold (owner ruling); it POSTs to the
 // same `.../repos` route it always has, unchanged.
 import { AddRepositoryDialog, type RepoRow } from "../../repos/components/add-repository-dialog";
-import {
-  formatPageCount,
-  formatRelativeAge,
-  formatRepoDetailLine,
-  healthStatusLabel,
-  type RepoListItem,
-} from "../wiki-format";
+import { formatRepoDetailLine, formatWikiFreshnessLine, type RepoListItem } from "../wiki-format";
 import type { HealthStatus } from "../../../../../../lib/repo-health";
 import { RecompileButton } from "./recompile-button";
 
@@ -29,20 +23,24 @@ interface WikiRepoHeaderProps {
    * that depend on them stay hidden rather than showing a stale count. */
   pageCount: number | null;
   staleCount: number | null;
+  /** ISO, or null — the wiki's own freshness signal (`resolveCompiledAt`:
+   * newest page's `generatedAt`, Postgres, or the ClickHouse compile event
+   * when already available). Same load-boundary as `pageCount`/`staleCount`:
+   * null until the selected repo's pages have loaded. */
+  compiledAt: string | null;
   onSelect: (id: string) => void;
   onAdded: (repo: RepoListItem) => void;
 }
 
+// "unknown" shares healthy/stale/critical's -09 weight, just achromatic —
+// deliberately NOT red/yellow: no telemetry is not evidence of a problem
+// (lib/repo-health.ts's module comment). Never delete this without keeping
+// an explicit, neutral color for "unknown" — the whole point of this fix.
 const HEALTH_DOT_CLASS: Record<HealthStatus, string> = {
   healthy: "bg-[var(--green-09)]",
   stale: "bg-[var(--yellow-09)]",
   critical: "bg-[var(--red-09)]",
-};
-
-const HEALTH_TEXT_CLASS: Record<HealthStatus, string> = {
-  healthy: "text-[var(--green-11)]",
-  stale: "text-[var(--yellow-11)]",
-  critical: "text-[var(--red-11)]",
+  unknown: "bg-[var(--gray-09)]",
 };
 
 function repoRowFromApi(repo: RepoRow): RepoListItem {
@@ -56,7 +54,12 @@ function repoRowFromApi(repo: RepoRow): RepoListItem {
   };
 }
 
-function HealthDot({ status }: { status: HealthStatus }) {
+// Exported (not just used internally): hook-free, so it's the one piece of
+// this "use client" header vitest can call directly and walk the returned
+// element tree (this repo's test infra has no DOM/render harness — see
+// wiki-repo-header.test.ts's own doc comment). Proves the "never red for
+// unknown" rule in a real, fast test rather than only in a screenshot.
+export function HealthDot({ status }: { status: HealthStatus }) {
   return (
     <span
       aria-hidden
@@ -86,6 +89,38 @@ function StaleCountBadge({ count }: { count: number }) {
       <AlertTriangle size={11} />
       {count} stale
     </span>
+  );
+}
+
+/**
+ * Index health — SECONDARY, clearly-labeled detail line under the wiki's own
+ * freshness (the primary line, built from `formatWikiFreshnessLine`). These
+ * are different facts (one is "what does the compiled wiki say", the other
+ * "when did ClickHouse last see an index run") and must never be merged into
+ * one number. Uniform across single- and multi-repo headers — previously
+ * this only rendered for the multi-repo case, leaving single-repo
+ * workspaces with no index-health detail at all once it left the primary
+ * line.
+ *
+ * `"unknown"` (no ClickHouse telemetry — see `lib/repo-health.ts`) renders
+ * with the same neutral grey dot as everywhere else and an explanatory
+ * tooltip, NEVER red, and `formatRepoDetailLine` itself already renders an
+ * honest "—" rather than the word "never" for the missing timestamp.
+ *
+ * Exported and hook-free (no hooks of its own) specifically so it's
+ * unit-testable directly — see this file's sibling `.test.ts` — proving the
+ * "never red / always has the tooltip" contract without a browser.
+ */
+export function IndexHealthLine({ repo, now }: { repo: RepoListItem; now?: number }) {
+  const unknown = repo.healthStatus === "unknown";
+  return (
+    <p
+      className="flex items-center gap-1.5 text-xs text-[var(--gray-09)]"
+      title={unknown ? "Index telemetry unavailable" : undefined}
+    >
+      <HealthDot status={repo.healthStatus} />
+      <span>Index {formatRepoDetailLine(repo, now)}</span>
+    </p>
   );
 }
 
@@ -182,21 +217,27 @@ function RepoPicker({
 }
 
 /**
- * The wiki page's header band — repo selection and health, demoted from a
- * full-width table to a compact single line above the wiki (owner feedback
- * on the live page: the knowledge was buried under the table — "am I
- * supposed to click the repo to see the wiki?"). Single-repo workspaces (the
- * common case) get repo name + health + last-indexed + pages/stale inline,
- * one line, no picker needed. Multi-repo workspaces get a compact dropdown
- * picker instead of a table row-per-repo; the full health detail (last
- * indexed, commit, sources) collapses into a one-line subheader for the
- * SELECTED repo only, since the picker control itself already claims space
- * on the primary line. "Add repository" is the one write affordance that
- * survives the fold (owner ruling) — gated to owner/admin, tucked into a
- * quiet right-aligned link so it never competes with the wiki content below.
- * Owns its own "no repos yet" empty state (rather than `wiki-client.tsx`
- * linking to `/repos`, which is now a redirect stub back to `/wiki` — that
- * would bounce).
+ * The wiki page's header band — repo selection, wiki freshness, and index
+ * health, demoted from a full-width table to a compact single line above the
+ * wiki (owner feedback on the live page: the knowledge was buried under the
+ * table — "am I supposed to click the repo to see the wiki?").
+ *
+ * Wiki-freshness-leads (owner ruling, honesty fix): the PRIMARY line is repo
+ * name/picker + `formatWikiFreshnessLine` (page count, "compiled <age>
+ * ago") — facts read straight from Postgres `wiki_pages`, so they're never
+ * blocked by a ClickHouse outage. Index health (`IndexHealthLine`) is a
+ * SECONDARY, clearly-labeled line below it, uniform for single- and
+ * multi-repo workspaces alike — a different fact from wiki freshness, never
+ * conflated into one number, and never rendered red for `"unknown"` (no
+ * telemetry is not evidence of a critical repo — see `lib/repo-health.ts`).
+ *
+ * Multi-repo workspaces get a compact dropdown picker instead of a table
+ * row-per-repo. "Add repository" is the one write affordance that survives
+ * the fold (owner ruling) — gated to owner/admin, tucked into a quiet
+ * right-aligned link so it never competes with the wiki content below. Owns
+ * its own "no repos yet" empty state (rather than `wiki-client.tsx` linking
+ * to `/repos`, which is now a redirect stub back to `/wiki` — that would
+ * bounce).
  */
 export function WikiRepoHeader({
   workspaceId,
@@ -205,6 +246,7 @@ export function WikiRepoHeader({
   canManage,
   pageCount,
   staleCount,
+  compiledAt,
   onSelect,
   onAdded,
 }: WikiRepoHeaderProps) {
@@ -250,34 +292,22 @@ export function WikiRepoHeader({
             <RepoPicker repos={repos} selected={selectedRepo} onSelect={onSelect} />
           ) : (
             selectedRepo && (
-              <>
-                {/* UI names over IDs: the repo name, never its id. */}
-                <span className="text-sm font-semibold text-[var(--gray-12)]">
-                  {selectedRepo.name}
-                </span>
-                <Sep />
-                <span
-                  className={`inline-flex items-center gap-1 text-xs font-medium ${HEALTH_TEXT_CLASS[selectedRepo.healthStatus]}`}
-                >
-                  <HealthDot status={selectedRepo.healthStatus} />
-                  {healthStatusLabel(selectedRepo.healthStatus)}
-                </span>
-                <Sep />
-                <span className="text-xs text-[var(--gray-09)]">
-                  last indexed{" "}
-                  <span className="font-mono text-[var(--gray-10)]">
-                    {selectedRepo.lastIndexedAt
-                      ? formatRelativeAge(selectedRepo.lastIndexedAt)
-                      : "never"}
-                  </span>
-                </span>
-              </>
+              // UI names over IDs: the repo name, never its id.
+              <span className="text-sm font-semibold text-[var(--gray-12)]">
+                {selectedRepo.name}
+              </span>
             )
           )}
           {selectedRepo && pageCount !== null && (
             <>
               <Sep />
-              <span className="text-xs text-[var(--gray-09)]">{formatPageCount(pageCount)}</span>
+              {/* Wiki freshness leads (owner ruling): page count + "compiled
+                  <age> ago", read straight from Postgres wiki_pages — never
+                  blocked by a ClickHouse outage. Index health lives in
+                  IndexHealthLine below, a separate, secondary fact. */}
+              <span className="text-xs text-[var(--gray-09)]">
+                {formatWikiFreshnessLine(pageCount, compiledAt)}
+              </span>
             </>
           )}
           {selectedRepo && staleCount !== null && staleCount > 0 && (
@@ -310,9 +340,7 @@ export function WikiRepoHeader({
         </div>
       </div>
 
-      {multi && selectedRepo && (
-        <p className="text-xs text-[var(--gray-09)]">{formatRepoDetailLine(selectedRepo)}</p>
-      )}
+      {selectedRepo && <IndexHealthLine repo={selectedRepo} />}
 
       {showAdd && (
         <AddRepositoryDialog

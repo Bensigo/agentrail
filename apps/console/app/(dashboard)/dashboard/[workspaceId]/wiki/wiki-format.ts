@@ -39,6 +39,11 @@ export interface WikiSummaryStats {
   staleCount: number;
   /** ISO `generatedAt` of the OLDEST page, or null when there are no pages. */
   oldestGeneratedAt: string | null;
+  /** ISO `generatedAt` of the NEWEST page, or null when there are no pages —
+   * the Postgres-backed, always-available basis for "compiled <age> ago"
+   * (see `resolveCompiledAt`). Wiki freshness leads (owner ruling): this
+   * number must never depend on ClickHouse being reachable. */
+  newestGeneratedAt: string | null;
 }
 
 /**
@@ -49,14 +54,49 @@ export interface WikiSummaryStats {
  */
 export function computeWikiSummaryStats(pages: WikiPageDTO[]): WikiSummaryStats {
   if (pages.length === 0) {
-    return { pageCount: 0, staleCount: 0, oldestGeneratedAt: null };
+    return { pageCount: 0, staleCount: 0, oldestGeneratedAt: null, newestGeneratedAt: null };
   }
   const staleCount = pages.filter((p) => p.stale).length;
   const oldestGeneratedAt = pages.reduce(
     (oldest, p) => (p.generatedAt < oldest ? p.generatedAt : oldest),
     pages[0]!.generatedAt
   );
-  return { pageCount: pages.length, staleCount, oldestGeneratedAt };
+  const newestGeneratedAt = pages.reduce(
+    (newest, p) => (p.generatedAt > newest ? p.generatedAt : newest),
+    pages[0]!.generatedAt
+  );
+  return { pageCount: pages.length, staleCount, oldestGeneratedAt, newestGeneratedAt };
+}
+
+/**
+ * The wiki header's PRIMARY freshness signal (owner ruling: wiki freshness
+ * leads over index health — they're different facts, never conflated into
+ * one number). Prefers the ClickHouse compile event's `createdAt` when it's
+ * already available (the whole-batch event, precise to the compile that
+ * produced the current page set) but falls back to the newest page's own
+ * `generatedAt` — Postgres, always present whenever `pages` is non-empty —
+ * so "when was this compiled" NEVER blanks out just because the ClickHouse
+ * analytics store is unconfigured/unreachable.
+ */
+export function resolveCompiledAt(
+  newestPageGeneratedAt: string | null,
+  latestCompile: { createdAt: string } | null
+): string | null {
+  return latestCompile?.createdAt ?? newestPageGeneratedAt;
+}
+
+/** "12 pages · compiled 3m ago" / "0 pages · not compiled yet" — the wiki
+ * header's primary line (see `resolveCompiledAt`'s doc comment: built
+ * entirely from Postgres-backed facts, never blocked by a ClickHouse
+ * outage). Falsifiable-only rule: `pageCount` can be zero and stays
+ * representable, same as `formatPageCount` on its own. */
+export function formatWikiFreshnessLine(
+  pageCount: number,
+  compiledAt: string | null,
+  now: number = Date.now()
+): string {
+  const compiledPart = compiledAt ? `compiled ${formatRelativeAge(compiledAt, now)}` : "not compiled yet";
+  return `${formatPageCount(pageCount)} · ${compiledPart}`;
 }
 
 /**
@@ -112,10 +152,12 @@ export function formatCostUsd(usd: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
-/** Title-case health word for display ("healthy" -> "Healthy") — mirrors the
- * platform's other status-label maps (`run-status-label.ts`'s
- * `runStatusLabel`), rather than showing the raw lowercase enum value the
- * former repos-table's cells used verbatim. */
+/** Title-case health word for display ("healthy" -> "Healthy", "unknown" ->
+ * "Unknown") — mirrors the platform's other status-label maps
+ * (`run-status-label.ts`'s `runStatusLabel`), rather than showing the raw
+ * lowercase enum value the former repos-table's cells used verbatim. Purely
+ * a word — callers own the color (see `wiki-repo-header.tsx`'s
+ * `HEALTH_DOT_CLASS`), and "unknown" must always render neutral, never red. */
 export function healthStatusLabel(status: HealthStatus): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
@@ -127,20 +169,25 @@ export function formatPageCount(count: number): string {
 
 /**
  * Wiki UX hierarchy fix (owner feedback: knowledge was buried under a repo
- * table — "am I supposed to click the repo to see the wiki?"). The
- * multi-repo header's compact picker row has no room for the repo's full
- * health detail (last-indexed age, commit, source count) alongside the
- * picker control itself — spec: that detail collapses into a one-line
- * subheader for the SELECTED repo only, rather than living inline like the
- * single-repo header can afford (`wiki-repo-header.tsx`). One plain
- * "·"-joined string: every segment here shares identical muted styling, so
- * there's no need for the per-segment JSX `ProvenanceBar` uses when parts
- * carry different colors/weights.
+ * table — "am I supposed to click the repo to see the wiki?"). Index health
+ * is now a SECONDARY, clearly-labeled detail line under the wiki-freshness
+ * primary line (`formatWikiFreshnessLine`) for both single- and multi-repo
+ * headers alike (`wiki-repo-header.tsx`'s `IndexHealthLine`) — it and the
+ * wiki's own freshness are different facts, never conflated into one number.
+ * One plain "·"-joined string: every segment here shares identical muted
+ * styling, so there's no need for the per-segment JSX `ProvenanceBar` uses
+ * when parts carry different colors/weights.
+ *
+ * Honest-copy rule: a missing `lastIndexedAt` renders "—", never the word
+ * "never" — we don't actually know it was never indexed, only that we have
+ * no timestamp (see `lib/repo-health.ts`'s `"unknown"` state: that's true
+ * both for a repo that's genuinely never been indexed AND for a ClickHouse
+ * outage, and this formatter can't and shouldn't guess which).
  */
 export function formatRepoDetailLine(repo: RepoListItem, now: number = Date.now()): string {
   const parts = [
     healthStatusLabel(repo.healthStatus),
-    `last indexed ${repo.lastIndexedAt ? formatRelativeAge(repo.lastIndexedAt, now) : "never"}`,
+    `last indexed ${repo.lastIndexedAt ? formatRelativeAge(repo.lastIndexedAt, now) : "—"}`,
     repo.lastCommitSha ? `commit ${shortSha(repo.lastCommitSha)}` : null,
     repo.sourceCount !== null ? `${repo.sourceCount.toLocaleString()} sources` : null,
   ];

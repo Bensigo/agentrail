@@ -5,10 +5,20 @@
  * This logic was previously duplicated inline in both the repos API route and
  * the repos page Server Component, which let a timezone-parsing bug live in one
  * copy after the other was fixed. Keep it here; both consumers call it.
+ *
+ * `stalenessSeconds === null` is NOT evidence of a critical repo — it means
+ * "no snapshot row", which happens both when a repo has genuinely never been
+ * indexed AND when the ClickHouse `index_snapshots` read itself failed
+ * (unconfigured/unreachable — every caller wraps that lookup in a try/catch
+ * and passes `null`/no-snapshot through here). Neither case is evidence that
+ * anything is actually wrong; both just mean "no telemetry to judge by".
+ * Collapsing that into "critical" (the pre-fix behavior) painted a red alarm
+ * chip for an outage in an unrelated analytics store, on a wiki that could be
+ * perfectly current — see the `"unknown"` branch below.
  */
 import type { IndexSnapshotRecord } from "@agentrail/db-clickhouse";
 
-export type HealthStatus = "healthy" | "stale" | "critical";
+export type HealthStatus = "healthy" | "stale" | "critical" | "unknown";
 
 /** Seconds since the last snapshot below which a repo is considered healthy. */
 export const HEALTHY_MAX_SECONDS = 3600; // 1h
@@ -29,8 +39,13 @@ export function parseClickhouseUtc(value: string | Date): Date {
   return new Date(hasTz ? value : value.replace(" ", "T") + "Z");
 }
 
+/**
+ * `null` → `"unknown"` (no telemetry — see the module comment above), never
+ * `"critical"`. A real `stalenessSeconds` reading still grades honestly on
+ * the genuine thresholds below, unchanged.
+ */
 export function computeHealth(stalenessSeconds: number | null): HealthStatus {
-  if (stalenessSeconds === null) return "critical";
+  if (stalenessSeconds === null) return "unknown";
   if (stalenessSeconds < HEALTHY_MAX_SECONDS) return "healthy";
   if (stalenessSeconds < STALE_MAX_SECONDS) return "stale";
   return "critical";
@@ -43,16 +58,17 @@ export interface RepoHealth {
 }
 
 /**
- * Derive a repo's health from its latest index snapshot (or `null` if it has
- * never been indexed → critical). `nowMs` defaults to the current time; pass it
- * explicitly to keep a batch of repos consistent.
+ * Derive a repo's health from its latest index snapshot (or `null`/`undefined`
+ * when there's no snapshot row — never indexed, or the ClickHouse read failed
+ * — → `"unknown"`, not `"critical"`). `nowMs` defaults to the current time;
+ * pass it explicitly to keep a batch of repos consistent.
  */
 export function repoHealth(
   snapshot: IndexSnapshotRecord | null | undefined,
   nowMs: number = Date.now()
 ): RepoHealth {
   if (!snapshot) {
-    return { last_indexed_at: null, staleness_seconds: null, health_status: "critical" };
+    return { last_indexed_at: null, staleness_seconds: null, health_status: "unknown" };
   }
   const indexedDate = parseClickhouseUtc(snapshot.indexed_at);
   const stalenessSeconds = Math.floor((nowMs - indexedDate.getTime()) / 1000);

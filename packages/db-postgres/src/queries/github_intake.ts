@@ -1933,6 +1933,44 @@ export async function enqueueOnboard(data: {
   return { enqueued: false, reason: ONBOARD_ALREADY_PENDING_REASON };
 }
 
+/**
+ * Read-only lookup: the onboard-kind queue entry's current `state` and
+ * `updatedAt` for a repo, if one exists. Used ONLY by the github/webhook
+ * route's push-triggered recompile (`AGENTRAIL_WIKI_RECOMPILE_ON_PUSH`) for
+ * its minimum-interval guard (`AGENTRAIL_WIKI_PUSH_MIN_INTERVAL_SECONDS`,
+ * default 300s): `updatedAt` doubles as "when this repo's onboard row last
+ * changed" regardless of what that change was (queued, running, or a
+ * just-finished terminal state) — precise enough for an advisory throttle
+ * that only needs to bound how often a high-push-volume repo forces a fresh
+ * compile.
+ *
+ * Deliberately NOT folded into `enqueueOnboard`'s own atomic re-arm UPDATE:
+ * the guard is advisory, not a correctness boundary — that boundary is
+ * `enqueueOnboard`'s existing `state NOT IN ('queued','running')` guarded
+ * WHERE, untouched by this function. A race between this read and a
+ * concurrent `enqueueOnboard` call can, at worst, let one extra call
+ * through, and that call itself safely reports `already_pending` rather
+ * than double-queueing — so a plain read-then-decide here is safe where it
+ * would NOT be safe for anything that actually writes the row.
+ */
+export async function findOnboardEntryStatus(
+  workspaceId: string,
+  repoFullName: string
+): Promise<{ state: string; updatedAt: Date } | null> {
+  const externalId = `${ONBOARD_EXTERNAL_ID_PREFIX}${repoFullName}`;
+  const rows = await db
+    .select({ state: queueEntries.state, updatedAt: queueEntries.updatedAt })
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        eq(queueEntries.source, "github"),
+        eq(queueEntries.externalId, externalId)
+      )
+    );
+  return rows[0] ?? null;
+}
+
 // --- reconciler seam (#1274 PR③) ----------------------------------------------
 //
 // The find-side of `apps/console/lib/alignment-reconciler.ts::reconcileAlignmentBriefs`.

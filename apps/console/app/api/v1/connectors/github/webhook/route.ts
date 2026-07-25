@@ -5,6 +5,10 @@ import {
   getConnector,
   enqueueGithubIssue,
   findQueueEntryByExternalId,
+  getRepositoryByName,
+  enqueueOnboard,
+  findOnboardEntryStatus,
+  ONBOARD_ALREADY_PENDING_REASON,
 } from "@agentrail/db-postgres";
 import {
   postAlignmentBrief,
@@ -13,7 +17,8 @@ import {
 } from "../../../../../../lib/alignment-reconciler";
 
 /**
- * GitHub `issues` webhook receiver — the trigger that fills the queue.
+ * GitHub `issues`/`push` webhook receiver — the trigger that fills the queue
+ * AND (push) keeps the Repo Wiki current.
  *
  * In the self-hosted-runner model the backend owns the queue, so admitting a
  * GitHub issue is a SERVER job: GitHub POSTs an `issues` delivery here, and when
@@ -28,6 +33,14 @@ import {
  * falling back to the global `GITHUB_WEBHOOK_SECRET` env var for local
  * dev/testing. Because the secret is per-workspace, the payload is parsed and
  * the workspace resolved BEFORE the signature check.
+ *
+ * ALSO handles `push` (owner ask: "the auto recompile feature for the llm
+ * wiki when changes is made", flag `AGENTRAIL_WIKI_RECOMPILE_ON_PUSH`,
+ * default OFF): a push to the repo's default branch force-re-enqueues its
+ * `onboard` queue entry, the SAME job the console's manual wiki "Recompile"
+ * button enqueues
+ * (`apps/console/app/api/v1/workspaces/[workspaceId]/wiki/recompile/route.ts`).
+ * See `handlePush` below for the full trigger/ignore matrix.
  */
 
 // Actions that (re)admit work. `edited` is handled separately below (#1345
@@ -35,6 +48,39 @@ import {
 // other action (closed, assigned, …) is ignored.
 const TRIGGER_ACTIONS = new Set(["opened", "reopened", "labeled"]);
 const SIGNATURE_HEADER = "x-hub-signature-256";
+
+// --- push → wiki recompile (owner ask: "auto recompile ... when changes is
+// made") ------------------------------------------------------------------
+//
+// Default-OFF rollout flag — only the exact value "1" enables push-triggered
+// recompile, same convention every other flag in this codebase uses
+// (ONBOARD_ON_CONNECT_FLAG in workspaces/[workspaceId]/repos/route.ts,
+// V2_FLAG in github_intake.ts). Ships dark; the owner flips it in Railway.
+const WIKI_RECOMPILE_ON_PUSH_FLAG = "AGENTRAIL_WIKI_RECOMPILE_ON_PUSH";
+
+// Minimum-interval guard: a repo whose onboard entry last changed (queued,
+// ran, or just finished) less than this many seconds ago ignores a fresh
+// push rather than force-re-arming another compile. This is NOT the primary
+// debounce — that's `enqueueOnboard`'s own `state NOT IN ('queued',
+// 'running')` guarded re-arm, which already collapses a BURST of pushes
+// (while a compile is queued/running) into the one in-flight compile — see
+// `route.push-recompile.test.ts`'s burst test. This guard instead bounds
+// compile FREQUENCY for a repo pushed to faster than compiles finish: a push
+// landing 1s after the prior compile completes would otherwise re-arm
+// immediately, forever, since a just-finished row is neither 'queued' nor
+// 'running'. No new timer/cron machinery — a plain read-then-decide check
+// against the existing onboard row's `updatedAt` (findOnboardEntryStatus).
+const PUSH_MIN_INTERVAL_ENV = "AGENTRAIL_WIKI_PUSH_MIN_INTERVAL_SECONDS";
+const PUSH_MIN_INTERVAL_DEFAULT_SECONDS = 300;
+
+function pushMinIntervalSeconds(): number {
+  const raw = process.env[PUSH_MIN_INTERVAL_ENV];
+  if (raw) {
+    const val = Number.parseInt(raw, 10);
+    if (Number.isFinite(val) && val >= 0) return val;
+  }
+  return PUSH_MIN_INTERVAL_DEFAULT_SECONDS;
+}
 
 function verifySignature(
   raw: string,
@@ -160,6 +206,132 @@ async function handleIssuesEdited(
   return NextResponse.json(responseBody);
 }
 
+/**
+ * `push` event handler (owner ask: "the auto recompile feature for the llm
+ * wiki when changes is made"). Force-re-enqueues the repo's `onboard` queue
+ * entry — the SAME job the console's manual wiki "Recompile" button enqueues
+ * (`.../wiki/recompile/route.ts`, `enqueueOnboard(..., { force: true })`) —
+ * so a runner re-clones, re-indexes, and re-composes the Repo Wiki.
+ *
+ * Cost stays low even at push frequency: the compile is module-grain
+ * (#1447) and only regenerates pages whose `inputsHash` actually changed, so
+ * a typical push costs cents rather than repricing the whole wiki — and the
+ * compile's own cost ceiling still applies on top of that.
+ *
+ * Every non-actionable outcome is a 202 `{ event: "push", status:
+ * "ignored:<reason>" }`, never a throw or a 4xx/5xx — a push delivery that
+ * doesn't need action is the overwhelmingly common case (most pushes are to
+ * feature branches), not a failure. Mirrors this route's `issues` admission
+ * branch's own non-fatal posture.
+ *
+ * Trigger/ignore matrix:
+ *  - flag off (`AGENTRAIL_WIKI_RECOMPILE_ON_PUSH` unset/not "1") → ignored:flag_off
+ *  - repo unresolvable (no workspace owns it, or no `repositories` row) → ignored:unknown_repo
+ *  - pushed ref is not `refs/heads/<repo.defaultBranch>` → ignored:non_default_branch
+ *  - `deleted: true` (the ref/branch was deleted) → ignored:deleted
+ *  - `commits: []` (no new commits — e.g. a branch pointed at an already-known commit) → ignored:zero_commit
+ *  - within the minimum-interval window since the repo's onboard row last changed → ignored:min_interval
+ *  - `enqueueOnboard` throws, or (defensively unreachable) returns neither
+ *    enqueued NOR the already-pending reason → ignored:enqueue_failed
+ *  - otherwise → `queued` (fresh/re-armed compile) or `already_pending`
+ *    (compile already queued/running) — matching `.../wiki/recompile/route.ts`'s
+ *    own two success outcomes exactly.
+ */
+async function handlePush(
+  payload: Record<string, unknown>,
+  repoFullNameRaw: unknown,
+  workspaceId: string | null
+): Promise<NextResponse> {
+  if (process.env[WIKI_RECOMPILE_ON_PUSH_FLAG] !== "1") {
+    console.log("[github/webhook] push: AGENTRAIL_WIKI_RECOMPILE_ON_PUSH is off, ignoring");
+    return NextResponse.json({ event: "push", status: "ignored:flag_off" }, { status: 202 });
+  }
+
+  if (typeof repoFullNameRaw !== "string") {
+    return NextResponse.json({ event: "push", status: "ignored:unknown_repo" }, { status: 202 });
+  }
+  const repoFullName = repoFullNameRaw;
+  if (!workspaceId) {
+    return NextResponse.json({ event: "push", status: "ignored:unknown_repo" }, { status: 202 });
+  }
+
+  // Resolve WITHIN this workspace only — never trust the payload beyond
+  // what `findWorkspaceByRepo` already scoped it to (no cross-workspace
+  // existence oracle, same posture every other route in this file takes).
+  const repo = await getRepositoryByName(workspaceId, repoFullName);
+  if (!repo) {
+    return NextResponse.json({ event: "push", status: "ignored:unknown_repo" }, { status: 202 });
+  }
+
+  const ref = typeof payload.ref === "string" ? payload.ref : "";
+  if (ref !== `refs/heads/${repo.defaultBranch}`) {
+    return NextResponse.json(
+      { event: "push", status: "ignored:non_default_branch" },
+      { status: 202 }
+    );
+  }
+
+  if (payload.deleted === true) {
+    return NextResponse.json({ event: "push", status: "ignored:deleted" }, { status: 202 });
+  }
+
+  const commits = payload.commits;
+  if (Array.isArray(commits) && commits.length === 0) {
+    return NextResponse.json({ event: "push", status: "ignored:zero_commit" }, { status: 202 });
+  }
+
+  // Minimum-interval guard — see PUSH_MIN_INTERVAL_ENV's own comment above.
+  // Advisory only: enqueueOnboard's guarded UPDATE remains the sole
+  // correctness boundary, so a race here can only ever cost one harmless
+  // extra `already_pending` round trip, never a double-run.
+  const entryStatus = await findOnboardEntryStatus(workspaceId, repoFullName);
+  if (entryStatus && entryStatus.state !== "queued" && entryStatus.state !== "running") {
+    const elapsedSeconds = (Date.now() - entryStatus.updatedAt.getTime()) / 1000;
+    const minIntervalSeconds = pushMinIntervalSeconds();
+    if (elapsedSeconds < minIntervalSeconds) {
+      console.log(
+        `[github/webhook] push: ${repoFullName} onboard entry changed ` +
+          `${Math.round(elapsedSeconds)}s ago (< ${minIntervalSeconds}s min interval), ignoring`
+      );
+      return NextResponse.json(
+        { event: "push", status: "ignored:min_interval" },
+        { status: 202 }
+      );
+    }
+  }
+
+  let result;
+  try {
+    result = await enqueueOnboard({ workspaceId, repoFullName, force: true });
+  } catch (err) {
+    console.error("[github/webhook] push: enqueueOnboard failed:", err);
+    return NextResponse.json(
+      { event: "push", status: "ignored:enqueue_failed" },
+      { status: 202 }
+    );
+  }
+
+  if (result.enqueued) {
+    console.log(`[github/webhook] push: recompile queued for ${repoFullName} (${result.id})`);
+    return NextResponse.json(
+      { event: "push", status: "queued", id: result.id },
+      { status: 202 }
+    );
+  }
+  if (result.reason === ONBOARD_ALREADY_PENDING_REASON) {
+    return NextResponse.json({ event: "push", status: "already_pending" }, { status: 202 });
+  }
+  // Defensive: force:true always takes the "enqueued" or "already_pending"
+  // branch in enqueueOnboard — unreachable in practice (mirrors
+  // wiki/recompile/route.ts's own identical defensive branch), but never
+  // silently fabricate "queued" for a write that didn't happen.
+  console.error("[github/webhook] push: unexpected enqueueOnboard reason:", result.reason);
+  return NextResponse.json(
+    { event: "push", status: "ignored:enqueue_failed" },
+    { status: 202 }
+  );
+}
+
 export async function POST(request: NextRequest) {
   const raw = await request.text();
   const signature = request.headers.get(SIGNATURE_HEADER);
@@ -197,8 +369,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  // Only `issues` events carry work; ack ping / others.
+  // `issues` and `push` events carry work; ack ping / others.
   const event = request.headers.get("x-github-event") ?? "";
+
+  if (event === "push") {
+    if (!payload) {
+      return NextResponse.json({ error: "invalid json" }, { status: 400 });
+    }
+    return handlePush(payload, repoFullName, workspaceId);
+  }
+
   if (event !== "issues") {
     return NextResponse.json({ ignored: event || "unknown" });
   }

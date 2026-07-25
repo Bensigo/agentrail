@@ -14,6 +14,14 @@ vi.mock("@agentrail/db-postgres", async (importOriginal) => {
     findWorkspaceByRepo: vi.fn(),
     getConnector: vi.fn(),
     enqueueGithubIssue: vi.fn(),
+    // push-recompile: the tests below keep AGENTRAIL_WIKI_RECOMPILE_ON_PUSH
+    // unset (default OFF), so `handlePush` short-circuits on the flag check
+    // before ever calling these — mocked purely so `importOriginal`'s real
+    // implementations (which touch a real DB) are never wired in, matching
+    // the pattern already used for the three helpers above.
+    getRepositoryByName: vi.fn(),
+    enqueueOnboard: vi.fn(),
+    findOnboardEntryStatus: vi.fn(),
   };
 });
 
@@ -76,6 +84,16 @@ function issuesBody(): string {
   });
 }
 
+/** A default-branch `push` delivery for REPO. */
+function pushBody(): string {
+  return JSON.stringify({
+    ref: "refs/heads/main",
+    deleted: false,
+    commits: [{ id: "abc123" }],
+    repository: { full_name: REPO },
+  });
+}
+
 function githubConnector(config: Record<string, unknown> = {}) {
   return {
     provider: "github",
@@ -92,10 +110,20 @@ function githubConnector(config: Record<string, unknown> = {}) {
 }
 
 const ORIGINAL_GLOBAL = process.env["GITHUB_WEBHOOK_SECRET"];
+const ORIGINAL_PUSH_FLAG = process.env["AGENTRAIL_WIKI_RECOMPILE_ON_PUSH"];
 
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env["GITHUB_WEBHOOK_SECRET"];
+  // Push tests below stay on the default-OFF flag: signature verification
+  // runs BEFORE the flag check (same "parse+verify before any business
+  // logic" ordering `issues`/`ping` already get), so `handlePush`'s own
+  // flag-off short-circuit is what keeps those tests from needing
+  // getRepositoryByName/enqueueOnboard/findOnboardEntryStatus return values
+  // — this file stays scoped to signature verification alone (push
+  // ADMISSION semantics have their own coverage in
+  // route.push-recompile.test.ts).
+  delete process.env["AGENTRAIL_WIKI_RECOMPILE_ON_PUSH"];
   mockFindWorkspaceByRepo.mockResolvedValue(WS);
   mockGetConnector.mockResolvedValue(
     githubConnector({ webhookSecret: WS_SECRET })
@@ -110,6 +138,11 @@ afterEach(() => {
     delete process.env["GITHUB_WEBHOOK_SECRET"];
   } else {
     process.env["GITHUB_WEBHOOK_SECRET"] = ORIGINAL_GLOBAL;
+  }
+  if (ORIGINAL_PUSH_FLAG === undefined) {
+    delete process.env["AGENTRAIL_WIKI_RECOMPILE_ON_PUSH"];
+  } else {
+    process.env["AGENTRAIL_WIKI_RECOMPILE_ON_PUSH"] = ORIGINAL_PUSH_FLAG;
   }
 });
 
@@ -255,5 +288,58 @@ describe("github webhook — no secret configured (backward compat)", () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: "invalid json" });
+  });
+});
+
+describe("github webhook — push events verified against the SAME per-workspace secret (reuses verifySignature unchanged)", () => {
+  // AGENTRAIL_WIKI_RECOMPILE_ON_PUSH stays unset (this file's own beforeEach)
+  // for every case here — signature verification runs BEFORE the push
+  // handler's flag check, so a correctly-signed push always clears
+  // signature verification and falls through to `handlePush`'s flag-off
+  // 202, while a badly-signed one is rejected before `handlePush` is ever
+  // reached at all. Push ADMISSION semantics (the flag on, branch/deleted/
+  // zero-commit rules, enqueue outcomes) are covered separately in
+  // route.push-recompile.test.ts — this only proves push goes through the
+  // identical `verifySignature` gate `issues`/`ping` already do.
+  it("accepts a push delivery signed with the workspace connector's webhookSecret", async () => {
+    const raw = pushBody();
+
+    const res = await POST(
+      req(raw, { "x-github-event": "push", "x-hub-signature-256": sign(raw, WS_SECRET) })
+    );
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ event: "push", status: "ignored:flag_off" });
+  });
+
+  it("prefers the per-workspace secret over a DIFFERENT global env secret for push too", async () => {
+    process.env["GITHUB_WEBHOOK_SECRET"] = GLOBAL_SECRET;
+    const raw = pushBody();
+
+    const res = await POST(
+      req(raw, { "x-github-event": "push", "x-hub-signature-256": sign(raw, WS_SECRET) })
+    );
+
+    expect(res.status).toBe(202);
+  });
+
+  it("rejects an INVALID signature on a push delivery once a per-workspace secret exists", async () => {
+    const raw = pushBody();
+
+    const res = await POST(
+      req(raw, { "x-github-event": "push", "x-hub-signature-256": sign(raw, "wrong-secret") })
+    );
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: "invalid signature" });
+  });
+
+  it("rejects a MISSING signature on a push delivery once a per-workspace secret exists", async () => {
+    const raw = pushBody();
+
+    const res = await POST(req(raw, { "x-github-event": "push" }));
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: "invalid signature" });
   });
 });

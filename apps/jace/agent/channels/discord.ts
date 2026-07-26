@@ -23,7 +23,9 @@
 // this relies on. The `finishReason`/`message` guard mirrors Eve's default
 // exactly, so tool-call and empty-message turns behave unchanged.
 //
-// PROD BUG FIX (root-caused 2026-07-25, see .superpowers/sdd/discord-followup/):
+// PROD BUG FIX (root-caused 2026-07-25, see .superpowers/sdd/discord-followup/;
+// hardened 2026-07-26 against a follow-up adversarial review, same doc dir,
+// fix-1-brief.md):
 // this hosted-shared-bot deployment routes EVERY discord message through the
 // console's own hand-rolled interactions webhook + the cross-channel
 // `args.receive(discord, { target: { channelId }, auth, message })` hand-off
@@ -44,48 +46,75 @@
 // The fix: apps/console/lib/channel-dispatch.ts's `buildDoorInitiatorAuth`
 // now carries the ORIGINAL interaction's `interactionToken`/`applicationId`
 // (captured at the console's inbound webhook,
-// app/api/v1/connectors/discord/webhook/route.ts) inside `auth.attributes` —
-// the ONE field eve forwards UNCHANGED into `ctx.session.auth.initiator`
-// (verified against eve@0.19.0's SessionAuthContext/SessionContext type
-// declarations), which every channel event handler can read via the 3rd
-// `ctx` argument. `deliverDiscordBubble` (agent/lib/discord-followup.core.mjs)
-// holds the pure decide/build-URL/fall-back logic: when a credential is
-// available, it POSTs straight to Discord's interaction followup webhook
-// (needs no channel permission, no auth header — the token IS the
-// credential); on a missing credential OR ANY followup failure (non-2xx, or
-// the 15-minute window expired), it falls back to the existing
+// app/api/v1/connectors/discord/webhook/route.ts) inside `auth.attributes`.
+// eve forwards that `auth` UNCHANGED into BOTH `ctx.session.auth.current`
+// (refreshed on every subsequent turn) AND `ctx.session.auth.initiator` (set
+// ONCE, at session start, never updated again) — verified against
+// eve@0.19.0's REAL COMPILED RUNTIME, apps/jace/.output/server/_libs/eve.mjs
+// (`.d.ts` type stubs alone don't show this distinction — reading them
+// instead of the runtime is exactly how an earlier version of this fix read
+// `initiator` and broke on a session's 2nd+ turn: a Discord conversation
+// keeps reusing the SAME eve session via `bindEveSession`, so past turn 1
+// `initiator` holds a stale, likely-expired interaction token forever).
+// `resolveSessionAuthAttributes` (agent/lib/discord-followup.core.mjs) reads
+// `current` first, falling back to `initiator` — identical on turn 1,
+// correct on every turn after. `deliverDiscordReply`/`deliverDiscordBubble`
+// (same module) hold the pure decide/build-URL/chunk/fall-back logic: when a
+// credential is available, they POST straight to Discord's interaction
+// followup webhook, chunked at 2000 chars with mentions suppressed (needs no
+// channel permission, no auth header — the token IS the credential); on a
+// missing credential, a followup failure (non-2xx, or the 15-minute window
+// expired), or a transport-level throw, they fall back to the existing
 // `channel.discord.post()` call unchanged, so every case that already works
-// today keeps working.
+// today keeps working — logging the numeric HTTP status + Discord error code
+// on that fallback (never the token, never the URL) so a broken followup
+// path is visible instead of silently indistinguishable from the original
+// bug.
 import { discordChannel } from "eve/channels/discord";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
-import { deliverDiscordBubble } from "../lib/discord-followup.core.mjs";
+import {
+  deliverDiscordReply,
+  resolveSessionAuthAttributes,
+} from "../lib/discord-followup.core.mjs";
 
-/** Raw fetch, narrowed to the `{ status }` shape discord-followup.core.mjs
+/** Raw fetch, narrowed to the `{ status, body }` shape discord-followup.core.mjs
  * expects — mirrors every jace->external-API wrapper's own `realTransport`
- * idiom (e.g. console.ts, imessage.ts). */
+ * idiom (e.g. console.ts, imessage.ts). Always drains the response body (a
+ * non-2xx left unread otherwise leaves the undici connection un-freed) and
+ * best-effort parses it as JSON so a fallback can log Discord's small
+ * numeric `error.code` (fix-1-brief.md finding 4) — this function never logs
+ * anything itself, and never returns anything derived from `url`/`init`
+ * (which embed the interaction token). */
 async function followupTransport(
   url: string,
   init: { method: string; headers: Record<string, string>; body: string },
-): Promise<{ status: number }> {
+): Promise<{ status: number; body?: unknown }> {
   const res = await fetch(url, init);
-  return { status: res.status };
+  const text = await res.text().catch(() => "");
+  let body: unknown;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+  }
+  return { status: res.status, body };
 }
 
 export default discordChannel({
   events: {
     async "message.completed"(data, channel, ctx) {
       if (data.finishReason === "tool-calls" || !data.message) return;
-      const attributes = ctx?.session?.auth?.initiator?.attributes;
-      const messages = splitIntoChatMessages(data.message);
-      for (const [index, message] of messages.entries()) {
-        if (index > 0) await channel.discord.startTyping();
-        await deliverDiscordBubble({
-          content: message,
-          attributes,
-          postFollowup: followupTransport,
-          postViaBot: () => channel.discord.post(message),
-        });
-      }
+      const attributes = resolveSessionAuthAttributes(ctx?.session?.auth);
+      await deliverDiscordReply({
+        text: data.message,
+        attributes,
+        postFollowup: followupTransport,
+        postViaBot: (message) => channel.discord.post(message),
+        startTyping: () => channel.discord.startTyping(),
+        splitMessage: splitIntoChatMessages,
+      });
     },
   },
 });

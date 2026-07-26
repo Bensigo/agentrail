@@ -233,11 +233,24 @@ export async function claimNextChannelMessage(
 
 // --- complete / fail / reclaim (worker side) -----------------------------------
 
-/** Mark a claimed row as successfully processed. */
+/**
+ * Mark a claimed row as successfully processed.
+ *
+ * Also scrubs `interactionToken`/`applicationId` out of the stored `payload`
+ * jsonb (fix-1-brief.md finding 6 minor, Discord followup fix,
+ * .superpowers/sdd/discord-followup/) — a 15-minute-lived Discord credential
+ * has no business surviving indefinitely in `channel_inbox` once the row is
+ * done. The jsonb `-` operator removing an absent key is a no-op, so this is
+ * a byte-identical no-op for every Telegram/Slack/console row, which never
+ * carry those keys at all.
+ */
 export async function completeChannelMessage(id: string): Promise<void> {
   await db.execute(sql`
     UPDATE channel_inbox
-    SET state = 'done', updated_at = now()
+    SET
+      state = 'done',
+      payload = payload - 'interactionToken' - 'applicationId',
+      updated_at = now()
     WHERE id = ${id}
   `);
 }

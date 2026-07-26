@@ -255,21 +255,32 @@ function parseWorkspaceChoice(
  * `auth` through unchanged without re-typing it — see hosted-inbound.ts).
  *
  * Prod bug fix (private-channel Discord replies vanish — root-caused
- * 2026-07-25, see .superpowers/sdd/discord-followup/): `interactionToken`/
- * `applicationId`, when both present, ride in `attributes` alongside the
- * chat-identity fields above — deliberately NOT in `target` (the channel's
- * documented NON-SECRET destination key; see this file's
- * HOSTED_INBOUND_TARGET_KEY doc-comment, and note discord's proactive target
- * shape eve exposes for `receive()` is `{ channelId }` only, with no room for
- * either field — verified against eve@0.19.0's own discordChannel.d.ts, so
- * putting them in `target` would silently drop them). `auth` is the ONE
- * field eve forwards UNCHANGED into `session.auth.initiator`, which Jace's
- * discord channel event handler reads via `ctx.session` to build the
- * interaction followup webhook URL — see apps/jace/agent/lib/
- * discord-followup.core.mjs and apps/jace/agent/channels/discord.ts. A
- * partial pair (only one of the two present) is treated as no credential at
- * all — a followup URL needs both, mirroring `discord-followup.core.mjs`'s
- * own `extractFollowupCredentials`. Telegram/Slack calls never pass these
+ * 2026-07-25, see .superpowers/sdd/discord-followup/; corrected 2026-07-26
+ * per a follow-up adversarial review, same doc dir, fix-1-brief.md finding
+ * 1): `interactionToken`/`applicationId`, when both present, ride in
+ * `attributes` alongside the chat-identity fields above — deliberately NOT
+ * in `target` (the channel's documented NON-SECRET destination key; see this
+ * file's HOSTED_INBOUND_TARGET_KEY doc-comment, and note discord's proactive
+ * target shape eve exposes for `receive()` is `{ channelId }` only, with no
+ * room for either field — verified against eve@0.19.0's own
+ * discordChannel.d.ts, so putting them in `target` would silently drop
+ * them). `auth` is the field eve forwards UNCHANGED into BOTH
+ * `session.auth.current` (refreshed on every subsequent turn — eve's REAL
+ * compiled runtime, apps/jace/.output/server/_libs/eve.mjs, sets this from
+ * each `deliver`-turn's own `auth`) AND `session.auth.initiator` (set ONCE,
+ * at session start, never touched again). Jace's discord channel event
+ * handler reads `current` first (falling back to `initiator` only for turn
+ * 1, where eve seeds both identically) via
+ * `resolveSessionAuthAttributes(ctx.session.auth)` to build the interaction
+ * followup webhook URL — see apps/jace/agent/lib/discord-followup.core.mjs
+ * and apps/jace/agent/channels/discord.ts. This function's OWN job is
+ * unaffected by that distinction: it always sends the CURRENT turn's fresh
+ * `interactionToken`/`applicationId` as `auth`, for eve to route into
+ * whichever of `current`/`initiator` its runtime updates — reading the right
+ * one back out is entirely the discord channel handler's concern. A partial
+ * pair (only one of the two present) is treated as no credential at all — a
+ * followup URL needs both, mirroring `discord-followup.core.mjs`'s own
+ * `extractFollowupCredentials`. Telegram/Slack calls never pass these
  * params, so `attributes` for those channels stays byte-identical to before
  * this fix.
  */

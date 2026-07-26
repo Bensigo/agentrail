@@ -46,9 +46,12 @@ function req(rawBody: string, opts: { signature?: string; timestamp?: string } =
   });
 }
 
-// Every real Discord interaction (PING included) carries `token` and
-// `application_id` — the type guard now requires both (prod bug fix, see
-// .superpowers/sdd/discord-followup/), so every fixture below carries them.
+// A real APPLICATION_COMMAND interaction carries `token`/`application_id`;
+// this default PING fixture carries them too (most PING tests below aren't
+// specifically about those fields). The type guard itself requires ONLY
+// `id`/`type` — see the dedicated "PING handshake" describe block below for
+// the fix-1-brief.md finding 5 coverage proving a PING missing both still
+// PONGs.
 const PING_BODY = JSON.stringify({ id: "int-1", type: 1, token: "ping-tok", application_id: "app-999" });
 
 function commandBody(overrides: Record<string, unknown> = {}) {
@@ -160,11 +163,18 @@ describe("POST /api/v1/connectors/discord/webhook — parse", () => {
     expect(res.status).toBe(400);
   });
 
-  it("400s on an interaction with id/type but missing token/application_id (every real Discord interaction carries both — prod bug fix type-guard tightening)", async () => {
+  // fix-1-brief.md finding 5: token/application_id must NOT be required by
+  // the type guard — Discord's PING handshake must be accepted regardless of
+  // whether it carries either field, or the entire door goes dark on
+  // endpoint-URL validation. This replaces a prior version of this test that
+  // asserted the OPPOSITE (400 on a PING missing token/application_id) —
+  // that assertion was the bug the reviewer caught.
+  it("still PONGs a PING missing token/application_id entirely — the type guard requires ONLY id/type", async () => {
     const raw = JSON.stringify({ id: "int-1", type: 1 });
     const res = await POST(req(raw));
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ type: 1 });
   });
 });
 
@@ -333,6 +343,34 @@ describe("POST /api/v1/connectors/discord/webhook — APPLICATION_COMMAND (a str
         }),
       }),
     );
+  });
+
+  // fix-1-brief.md finding 5: token/application_id are read defensively at
+  // the enqueue site (typeof checks, no cast) precisely BECAUSE the type
+  // guard no longer requires them — this proves that leniency doesn't crash
+  // the APPLICATION_COMMAND path either, it just omits the fields.
+  it("APPLICATION_COMMAND missing token/application_id still enqueues normally, simply omitting them from the payload (no crash, no cast)", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    const raw = JSON.stringify({
+      id: "int-42",
+      type: 2,
+      channel_id: "998877",
+      data: { name: "jace", options: [{ name: "message", value: "hello jace" }] },
+      user: { id: "555", username: "ada", global_name: "Ada" },
+    });
+    const res = await POST(req(raw));
+
+    expect(res.status).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0] as { payload: Record<string, unknown> };
+    expect(enqueueArgs.payload).not.toHaveProperty("interactionToken");
+    expect(enqueueArgs.payload).not.toHaveProperty("applicationId");
   });
 
   it("SECRET SAFETY: never returns the interaction token (or the application id) in the HTTP response body", async () => {

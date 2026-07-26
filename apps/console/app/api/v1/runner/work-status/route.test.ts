@@ -7,6 +7,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceRuns: vi.fn(),
   getWorkspaceQueueEntries: vi.fn(),
   findWorkspaceWorkByRef: vi.fn(),
+  WORKSPACE_RUNS_DEFAULT_LIMIT: 50,
 }));
 import { GET } from "./route";
 import {
@@ -70,17 +71,25 @@ const SAMPLE_RUN = {
   startedAt: NOW,
   finishedAt: null,
   createdAt: NOW,
+  repositoryId: "repo-1",
+  queueEntryId: "qe-1",
+  updatedAt: NOW,
+  lastLivenessAt: NOW,
 };
 
 const SAMPLE_QUEUE_ENTRY = {
   id: "qe-1",
-  externalId: "1468",
+  externalId: "Bensigo/agentrail#1468",
   title: "Some issue",
   state: "queued",
   tier: 1,
   kind: "issue",
   createdAt: NOW,
   updatedAt: NOW,
+  parkReason: null,
+  blockedBy: [],
+  remainingBudget: 5,
+  estimatedBudgetUsd: null,
 };
 
 beforeEach(() => {
@@ -88,11 +97,15 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(PINNED_SESSION as never);
   vi.mocked(getChatIdentityById).mockResolvedValue(BOUND_IDENTITY as never);
-  vi.mocked(getWorkspaceRuns).mockResolvedValue([SAMPLE_RUN] as never);
-  vi.mocked(getWorkspaceQueueEntries).mockResolvedValue([SAMPLE_QUEUE_ENTRY] as never);
+  vi.mocked(getWorkspaceRuns).mockResolvedValue({ rows: [SAMPLE_RUN], truncated: false } as never);
+  vi.mocked(getWorkspaceQueueEntries).mockResolvedValue({
+    rows: [SAMPLE_QUEUE_ENTRY],
+    truncated: false,
+  } as never);
   vi.mocked(findWorkspaceWorkByRef).mockResolvedValue({
     runs: [SAMPLE_RUN],
     queueEntries: [SAMPLE_QUEUE_ENTRY],
+    resolvedAs: "qualified-ref",
   } as never);
 });
 
@@ -177,18 +190,25 @@ describe("GET /api/v1/runner/work-status", () => {
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1");
-    expect(getWorkspaceQueueEntries).toHaveBeenCalledWith("ws-1");
-    expect(getWorkspaceRuns).not.toHaveBeenCalledWith("attacker-supplied-ws");
+    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1", 50);
+    expect(getWorkspaceQueueEntries).toHaveBeenCalledWith("ws-1", 50);
+    expect(getWorkspaceRuns).not.toHaveBeenCalledWith("attacker-supplied-ws", expect.anything());
     expect(findWorkspaceWorkByRef).not.toHaveBeenCalled();
 
     expect(json.ref).toBeNull();
+    expect(json.resolvedAs).toBeNull();
+    expect(typeof json.generatedAt).toBe("string");
+    expect(json.limit).toBe(50);
+    expect(json.truncated).toEqual({ runs: false, queueEntries: false });
     expect(json.runs).toEqual([
       {
         ...SAMPLE_RUN,
+        prUrl: null,
         startedAt: NOW.toISOString(),
         finishedAt: null,
         createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+        lastLivenessAt: NOW.toISOString(),
       },
     ]);
     expect(json.queueEntries).toEqual([
@@ -201,31 +221,163 @@ describe("GET /api/v1/runner/work-status", () => {
   });
 
   // ---------------------------------------------------------------------
-  // happy path — with ref
+  // Important 3 — limit clamping
   // ---------------------------------------------------------------------
 
-  it("200: with ref — findWorkspaceWorkByRef called with (resolvedWorkspaceId, ref)", async () => {
-    const res = await GET(getReq({ eveSessionId: "eve-session-1", ref: "1468" }));
+  it("Important 3: honors an in-range limit query param", async () => {
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", limit: "10" }));
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    expect(findWorkspaceWorkByRef).toHaveBeenCalledWith("ws-1", "1468");
+    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1", 10);
+    expect(getWorkspaceQueueEntries).toHaveBeenCalledWith("ws-1", 10);
+    expect(json.limit).toBe(10);
+  });
+
+  it("Important 3: clamps a limit above 200 down to 200", async () => {
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", limit: "9999" }));
+    const json = await res.json();
+
+    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1", 200);
+    expect(json.limit).toBe(200);
+  });
+
+  it("Important 3: clamps a limit below 1 up to 1", async () => {
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", limit: "0" }));
+    const json = await res.json();
+
+    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1", 1);
+    expect(json.limit).toBe(1);
+  });
+
+  it("Important 3: a garbage limit falls back to the default (50)", async () => {
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", limit: "not-a-number" }));
+    const json = await res.json();
+
+    expect(getWorkspaceRuns).toHaveBeenCalledWith("ws-1", 50);
+    expect(json.limit).toBe(50);
+  });
+
+  it("Important 3: echoes truncated=true per collection when a list read reports it", async () => {
+    vi.mocked(getWorkspaceRuns).mockResolvedValue({ rows: [SAMPLE_RUN], truncated: true } as never);
+    vi.mocked(getWorkspaceQueueEntries).mockResolvedValue({
+      rows: [SAMPLE_QUEUE_ENTRY],
+      truncated: false,
+    } as never);
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1" }));
+    const json = await res.json();
+
+    expect(json.truncated).toEqual({ runs: true, queueEntries: false });
+  });
+
+  // ---------------------------------------------------------------------
+  // happy path — with ref
+  // ---------------------------------------------------------------------
+
+  it("200: with ref — findWorkspaceWorkByRef called with (resolvedWorkspaceId, ref), and resolvedAs is echoed", async () => {
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", ref: "Bensigo/agentrail#1468" }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(findWorkspaceWorkByRef).toHaveBeenCalledWith("ws-1", "Bensigo/agentrail#1468");
     expect(getWorkspaceRuns).not.toHaveBeenCalled();
     expect(getWorkspaceQueueEntries).not.toHaveBeenCalled();
-    expect(json.ref).toBe("1468");
+    expect(json.ref).toBe("Bensigo/agentrail#1468");
+    expect(json.resolvedAs).toBe("qualified-ref");
+    expect(json.truncated).toEqual({ runs: false, queueEntries: false });
     expect(json.runs).toHaveLength(1);
     expect(json.queueEntries).toHaveLength(1);
   });
 
-  it("200: ref matching nothing in this workspace returns empty arrays, NOT 404", async () => {
-    vi.mocked(findWorkspaceWorkByRef).mockResolvedValue({ runs: [], queueEntries: [] } as never);
+  it("200: ref matching nothing in this workspace returns empty arrays, NOT 404 — but still echoes resolvedAs", async () => {
+    vi.mocked(findWorkspaceWorkByRef).mockResolvedValue({
+      runs: [],
+      queueEntries: [],
+      resolvedAs: "unrecognised",
+    } as never);
 
     const res = await GET(getReq({ eveSessionId: "eve-session-1", ref: "does-not-exist" }));
     const json = await res.json();
 
     expect(res.status).toBe(200);
     expect(json.ref).toBe("does-not-exist");
+    expect(json.resolvedAs).toBe("unrecognised");
     expect(json.runs).toEqual([]);
     expect(json.queueEntries).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------
+  // Minor 9 — prUrl "" normalises to null
+  // ---------------------------------------------------------------------
+
+  it("Minor 9: normalises an empty-string prUrl (the schema default) to null", async () => {
+    vi.mocked(getWorkspaceRuns).mockResolvedValue({
+      rows: [{ ...SAMPLE_RUN, prUrl: "" }],
+      truncated: false,
+    } as never);
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1" }));
+    const json = await res.json();
+
+    expect(json.runs[0].prUrl).toBeNull();
+  });
+
+  it("keeps a real prUrl untouched", async () => {
+    const url = "https://github.com/Bensigo/agentrail/pull/1470";
+    vi.mocked(getWorkspaceRuns).mockResolvedValue({
+      rows: [{ ...SAMPLE_RUN, prUrl: url }],
+      truncated: false,
+    } as never);
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1" }));
+    const json = await res.json();
+
+    expect(json.runs[0].prUrl).toBe(url);
+  });
+
+  // ---------------------------------------------------------------------
+  // Important 6 — error handling
+  // ---------------------------------------------------------------------
+
+  it("Important 6: 502 when the session lookup throws, and logs the error", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getJaceSessionByEveSessionId).mockRejectedValue(new Error("connection reset"));
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1" }));
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Upstream storage error" });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[runner/work-status] read failed:",
+      expect.any(Error)
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("Important 6: 502 when the work-status list read throws", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(getWorkspaceRuns).mockRejectedValue(new Error("statement timeout"));
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1" }));
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Upstream storage error" });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "[runner/work-status] read failed:",
+      expect.any(Error)
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("Important 6: 502 when findWorkspaceWorkByRef throws", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(findWorkspaceWorkByRef).mockRejectedValue(new Error("connection reset"));
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", ref: "1468" }));
+
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Upstream storage error" });
+    consoleErrorSpy.mockRestore();
   });
 });

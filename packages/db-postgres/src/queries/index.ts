@@ -2675,4 +2675,7 @@ export {
   type WorkspaceRun,
   type WorkspaceQueueEntry,
   type WorkspaceWorkByRef,
+  type WorkspaceRunsResult,
+  type WorkspaceQueueEntriesResult,
+  type ResolvedRefKind,
 } from "./work_status.js";

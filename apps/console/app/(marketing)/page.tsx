@@ -15,6 +15,7 @@ import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
+import { isPricingClaimLive } from "./_pricing-gate";
 
 
 /**
@@ -335,6 +336,20 @@ export default async function LandingPage() {
                 No seats. No subscription. Every run shows its cost next to
                 its PR.
               </p>
+              {/* Landing honesty rule (#1415): this link is the actual
+                  pricing CLAIM ("here's what you pay, right now") — unlike
+                  the plain step description above, which just states a
+                  future model. Gated OFF by default; the owner flips
+                  NEXT_PUBLIC_BILLING_VERIFIED_LIVE once AC1/AC2 are
+                  browser-verified on prod (see ./_pricing-gate.ts). */}
+              {isPricingClaimLive() && (
+                <Link
+                  href="/pricing"
+                  className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+                >
+                  See exact pricing
+                </Link>
+              )}
             </div>
           </Reveal>
         </div>

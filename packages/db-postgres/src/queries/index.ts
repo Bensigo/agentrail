@@ -2600,3 +2600,16 @@ export {
   type UpsertWikiPageInput,
   type UpsertWikiPagesResult,
 } from "./wiki.js";
+
+// Stripe top-up (#1415, Wave 5 / epic #1257; #1290's deferred PR ③) — the
+// idempotent-per-Stripe-event-id wallet credit path. `creditTopUpForStripeEvent`
+// is the ONLY writer of a `top_up` wallet_transactions row; the webhook route
+// calls it, never `recordWalletTransaction` directly. See
+// `queries/stripe_events.ts` for the transactional dedup design.
+export {
+  creditTopUpForStripeEvent,
+  recordIgnoredStripeEvent,
+  hasProcessedStripeEvent,
+  type CreditTopUpForStripeEventInput,
+  type CreditTopUpForStripeEventResult,
+} from "./stripe_events.js";

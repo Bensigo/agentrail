@@ -24,10 +24,20 @@ const ORIGINAL_ENV = process.env[ENV_KEY];
 // No default value on `token` (matches fleet/workspace-tokens/sync's own
 // `req` helper): req() with no args sends no Authorization header at all;
 // callers pass the secret explicitly, e.g. req(SECRET), for the valid case.
-function req(token?: string): NextRequest {
+//
+// `eveSessionId` (issue #1295, PR ③): defaults to the mock approval's own
+// eveSessionId so every pre-existing test keeps exercising the legitimate,
+// matching-session path unless it deliberately overrides it (e.g. the
+// cross-tenant probe below passes a DIFFERENT session id on purpose).
+function req(
+  token?: string,
+  eveSessionId: string | null = MOCK_APPROVAL.eveSessionId
+): NextRequest {
   const headers: Record<string, string> = {};
   if (token !== undefined) headers["Authorization"] = `Bearer ${token}`;
-  return new NextRequest("http://localhost/api/v1/runner/approvals/approval-1", {
+  const url = new URL("http://localhost/api/v1/runner/approvals/approval-1");
+  if (eveSessionId !== null) url.searchParams.set("eveSessionId", eveSessionId);
+  return new NextRequest(url, {
     method: "GET",
     headers,
   });
@@ -122,5 +132,63 @@ describe("GET /api/v1/runner/approvals/[id]", () => {
 
     expect(res.status).toBe(200);
     expect(body).toEqual({ status: "approved", resolvedAt: RESOLVED.toISOString() });
+  });
+
+  // Issue #1295 (#1273 PR① review item): "GET .../approvals/[id] returns
+  // {status, resolvedAt} to ANY valid bearer that learns an approval id —
+  // no cross-tenant check." JACE_CONSOLE_TOKEN is a single shared secret for
+  // the whole deployment (no per-caller workspaceId to compare against — see
+  // the route's own doc-comment), so the fix is a caller-supplied
+  // eveSessionId cross-checked against the approval's OWN stored
+  // eveSessionId, mirroring the identity resolution POST /approvals and
+  // POST /approvals/[id]/published already use.
+  describe("cross-tenant scoping via eveSessionId (issue #1295)", () => {
+    it("400 when eveSessionId query param is missing — never touches the db", async () => {
+      const res = await GET(req(SECRET, null), params("approval-1"));
+
+      expect(res.status).toBe(400);
+      expect(mockGetById).not.toHaveBeenCalled();
+    });
+
+    it("400 when eveSessionId query param is present but blank — never touches the db", async () => {
+      const res = await GET(req(SECRET, "   "), params("approval-1"));
+
+      expect(res.status).toBe(400);
+      expect(mockGetById).not.toHaveBeenCalled();
+    });
+
+    it("FAIL CLOSED (the negative probe): a caller supplying a DIFFERENT session's eveSessionId gets the SAME 404 as an unknown id — byte-identical body, no {status, resolvedAt} leak, so a cross-tenant caller learns nothing about whether the id exists", async () => {
+      mockGetById.mockResolvedValue(MOCK_APPROVAL as never); // real row, owned by "eve-session-1"
+
+      const crossTenantReq = req(SECRET, "eve-session-BELONGS-TO-WORKSPACE-B");
+      const unknownIdReq = req(SECRET, "eve-session-BELONGS-TO-WORKSPACE-B");
+
+      const crossTenantRes = await GET(crossTenantReq, params("approval-1"));
+      const crossTenantBody = await crossTenantRes.json();
+
+      mockGetById.mockResolvedValue(null); // the genuinely-unknown-id case
+      const unknownIdRes = await GET(unknownIdReq, params("some-other-id"));
+      const unknownIdBody = await unknownIdRes.json();
+
+      expect(crossTenantRes.status).toBe(404);
+      expect(crossTenantBody).toEqual({ error: "Approval not found" });
+      // Byte-identical to the unknown-id response — no oracle distinguishes
+      // "wrong session" from "no such approval".
+      expect(crossTenantBody).toEqual(unknownIdBody);
+      expect(unknownIdRes.status).toBe(404);
+      // Never the narrow, otherwise-legitimate success shape.
+      expect(crossTenantBody).not.toHaveProperty("status");
+      expect(crossTenantBody).not.toHaveProperty("resolvedAt");
+    });
+
+    it("POSITIVE (the legitimate-access probe): the SAME eveSessionId that owns the approval still gets {status, resolvedAt} — no regression", async () => {
+      mockGetById.mockResolvedValue(MOCK_APPROVAL as never);
+
+      const res = await GET(req(SECRET, MOCK_APPROVAL.eveSessionId), params("approval-1"));
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body).toEqual({ status: "pending", resolvedAt: null });
+    });
   });
 });

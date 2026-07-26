@@ -695,9 +695,14 @@ export async function getApprovalByCallbackToken(
  * Look up an approval by its own primary key — the read behind
  * `GET /api/v1/runner/approvals/[id]` (issue #1273), the poller's status
  * check. `id` is a uuid the console itself minted and handed back in the
- * POST response, never caller-guessable, so no further scoping is needed
- * here (mirrors `getApprovalByCallbackToken`'s own no-workspace-scope
- * rationale: the id IS the security boundary).
+ * POST response, never caller-guessable (mirrors `getApprovalByCallbackToken`'s
+ * own no-workspace-scope rationale: the id itself is a real defense layer).
+ *
+ * This query itself stays unscoped by design — it returns the row for ANY
+ * valid id, same as always. The caller-identity cross-check (issue #1295,
+ * PR ③: the row's own `eveSessionId` must match the caller-supplied one)
+ * lives in the ROUTE, not here, because that's where the caller-supplied
+ * value is available to compare against. See the route's own doc-comment.
  */
 export async function getApprovalById(
   id: string

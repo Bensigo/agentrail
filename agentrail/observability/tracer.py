@@ -47,6 +47,8 @@ import logging
 import uuid
 from typing import Optional
 
+from agentrail.shared.task_family import family_langfuse_tag
+
 from . import langfuse_client as lc
 
 _log = logging.getLogger(__name__)
@@ -116,12 +118,22 @@ class RunTracer:
     @classmethod
     def start(cls, run_id: str, session_id: Optional[str] = None,
               metadata: Optional[dict] = None, name: Optional[str] = None,
-              input_text: Optional[str] = None) -> "RunTracer":
+              input_text: Optional[str] = None,
+              family: Optional[str] = None) -> "RunTracer":
         client = lc.LangfuseHTTP.from_env() if lc.enabled() else None
         if lc.enabled() and client is None:
             _log.warning("AGENTRAIL_LANGFUSE_ENABLED set but LANGFUSE_* keys missing; "
                          "tracing disabled for this run")
         tracer = cls(client, run_id, session_id or run_id, metadata or {})
+        # Task-family tag (issue #1223 AC4): `family_langfuse_tag` is a pure,
+        # validated mapping (agentrail.shared.task_family) — an absent or
+        # unrecognized `family` yields None, so a bad/typo'd value never
+        # reaches the trace as a malformed tag; it just contributes no tag,
+        # same as omitting the argument.
+        tags = ["agentrail"]
+        family_tag = family_langfuse_tag(family)
+        if family_tag is not None:
+            tags.append(family_tag)
         # `name or "agentrail-run:<run_id>"` preserves the exact prior default
         # when no readable name is supplied; `input` is pruned when absent so
         # the emitted body stays byte-identical to the pre-I/O behavior.
@@ -131,7 +143,7 @@ class RunTracer:
             "sessionId": tracer._session_id,
             "input": _clip(input_text) if input_text is not None else None,
             "metadata": {"run_id": run_id, **tracer._metadata},
-            "tags": ["agentrail"],
+            "tags": tags,
         }))
         return tracer
 

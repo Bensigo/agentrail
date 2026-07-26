@@ -14,6 +14,7 @@ import pytest
 
 from agentrail.evals.corpus import (
     DIFFICULTY_TAGS,
+    FAMILY_TAGS,
     TASK_KIND_VALUES,
     CorpusError,
     CorpusTask,
@@ -433,3 +434,129 @@ def test_read_context_with_empty_string_entry_is_rejected(tmp_path: Path) -> Non
     task_dir = _write_task(tmp_path, record=rec)
     with pytest.raises(CorpusError, match="readContext"):
         load_task(task_dir)
+
+
+# ---------------------------------------------------------------------------
+# family field (issue #1223 AC1) + --held-out-family split (AC2)
+# ---------------------------------------------------------------------------
+
+
+def test_family_defaults_to_none_when_absent(tmp_path: Path) -> None:
+    """family is optional; absent means 'unclassified', not a fabricated value."""
+    task = load_task(_write_task(tmp_path, record=_valid_record()))
+    assert task.family is None
+
+
+@pytest.mark.parametrize("family", FAMILY_TAGS)
+def test_family_loads_each_vocabulary_value(tmp_path: Path, family: str) -> None:
+    rec = _valid_record()
+    rec["family"] = family
+    task = load_task(_write_task(tmp_path, record=rec, name=f"task-{family}"))
+    assert task.family == family
+
+
+def test_unknown_family_is_rejected(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["family"] = "chore"
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="family"):
+        load_task(task_dir)
+
+
+def test_non_string_family_is_rejected(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["family"] = 123
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="family"):
+        load_task(task_dir)
+
+
+def test_load_corpus_held_out_family_excludes_every_task_in_that_family(
+    tmp_path: Path,
+) -> None:
+    """AC2: --held-out-family excludes EVERY task in that family."""
+    bug = _valid_record()
+    bug["name"] = "bug-task"
+    bug["family"] = "bug"
+    _write_task(tmp_path, record=bug, name="bug-task")
+
+    feature_a = _valid_record()
+    feature_a["name"] = "feature-task-a"
+    feature_a["family"] = "feature"
+    _write_task(tmp_path, record=feature_a, name="feature-task-a")
+
+    feature_b = _valid_record()
+    feature_b["name"] = "feature-task-b"
+    feature_b["family"] = "feature"
+    _write_task(tmp_path, record=feature_b, name="feature-task-b")
+
+    unclassified = _valid_record()
+    unclassified["name"] = "plain-task"
+    _write_task(tmp_path, record=unclassified, name="plain-task")
+
+    names = {t.name for t in load_corpus(tmp_path, held_out_family="feature")}
+    assert names == {"bug-task", "plain-task"}, (
+        "every 'feature' task must be excluded; unclassified/other-family "
+        "tasks must remain"
+    )
+
+
+def test_load_corpus_held_out_family_is_independent_of_held_out_flag(
+    tmp_path: Path,
+) -> None:
+    """AC2: held_out_family filters independently of the per-instance heldOut flag."""
+    dev_bug = _valid_record()
+    dev_bug["name"] = "dev-bug"
+    dev_bug["family"] = "bug"
+    _write_task(tmp_path, record=dev_bug, name="dev-bug")
+
+    held_bug = _valid_record()
+    held_bug["name"] = "held-bug"
+    held_bug["family"] = "bug"
+    held_bug["heldOut"] = True
+    _write_task(tmp_path, record=held_bug, name="held-bug")
+
+    dev_feature = _valid_record()
+    dev_feature["name"] = "dev-feature"
+    dev_feature["family"] = "feature"
+    _write_task(tmp_path, record=dev_feature, name="dev-feature")
+
+    # held_out_family='bug' alone (heldOut instances still excluded by default).
+    names = {t.name for t in load_corpus(tmp_path, held_out_family="bug")}
+    assert names == {"dev-feature"}
+
+    # held_out_family='bug' + include_held_out=True: the family filter still
+    # removes BOTH bug tasks even though the instance-level held-out one is
+    # now eligible to be included.
+    names = {
+        t.name
+        for t in load_corpus(tmp_path, include_held_out=True, held_out_family="bug")
+    }
+    assert names == {"dev-feature"}
+
+
+def test_load_corpus_held_out_family_none_is_a_no_op(tmp_path: Path) -> None:
+    """The default (no --held-out-family) leaves every family in the run set."""
+    rec = _valid_record()
+    rec["name"] = "infra-task"
+    rec["family"] = "infra"
+    _write_task(tmp_path, record=rec, name="infra-task")
+
+    names = {t.name for t in load_corpus(tmp_path)}
+    assert names == {"infra-task"}
+
+
+def test_load_corpus_rejects_unrecognized_held_out_family(tmp_path: Path) -> None:
+    """A typo'd --held-out-family value fails loudly instead of silently matching nothing."""
+    _write_task(tmp_path, record=_valid_record())
+    with pytest.raises(ValueError, match="held-out-family"):
+        load_corpus(tmp_path, held_out_family="chore")
+
+
+def test_real_corpus_family_values_are_valid() -> None:
+    """Every classified task in the real corpus uses a valid family value."""
+    tasks = load_corpus(include_held_out=True)
+    for task in tasks:
+        assert task.family is None or task.family in FAMILY_TAGS, (
+            f"{task.name}: family {task.family!r} is not a valid FAMILY_TAGS entry"
+        )

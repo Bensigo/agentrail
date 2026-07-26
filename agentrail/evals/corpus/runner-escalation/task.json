@@ -22,6 +22,7 @@
     "agentrail/sandbox/docker_runner.py"
   ],
   "difficulty": "medium",
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 910,

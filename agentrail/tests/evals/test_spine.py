@@ -55,6 +55,7 @@ def _write_task(
     *,
     difficulty: str = "easy",
     held_out: bool = False,
+    family: str | None = None,
 ) -> CorpusTask:
     task_dir = root / name
     visible = task_dir / "workdir"
@@ -87,6 +88,8 @@ def _write_task(
         "difficulty": difficulty,
         "heldOut": held_out,
     }
+    if family is not None:
+        task_json["family"] = family
     (task_dir / "task.json").write_text(json.dumps(task_json), encoding="utf-8")
     return load_task(task_dir)
 
@@ -803,6 +806,105 @@ def test_spine_threads_difficulty_into_repetition_records(
     # The reporter then has real strata to break out.
     strata = {s.difficulty for r in result.arm_reports for s in r.strata}
     assert strata == {"easy", "hard"}
+
+
+# ---------------------------------------------------------------------------
+# Issue #1223 — family-level generalization split.
+#   (1) held_out_family excludes EVERY task in that family, independent of
+#       heldOut/include_held_out.
+#   (2) each rep's family is threaded onto the RepetitionRecord from the
+#       CorpusTask, so the reporter can stratify by family too.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def family_split_corpus_root(tmp_path: Path) -> Path:
+    """A corpus spanning two families, one held-out by instance."""
+    root = tmp_path / "family-split-corpus"
+    root.mkdir()
+    _write_task(root, "bug-task", difficulty="easy", family="bug")
+    _write_task(root, "feature-task", difficulty="medium", family="feature")
+    _write_task(
+        root, "held-bug-task", difficulty="hard", held_out=True, family="bug"
+    )
+    return root
+
+
+def test_spine_held_out_family_excludes_every_task_in_that_family(
+    family_split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC2: --held-out-family (threaded via SpineConfig) removes every task
+    in that family from the run, independent of the per-instance heldOut
+    split."""
+    executor = SpyExecutor()
+    hidden = HiddenTestSpy()
+    result = run_spine(
+        SpineConfig(
+            arms=[full()],
+            reps=1,
+            corpus_root=family_split_corpus_root,
+            held_out_family="bug",
+        ),
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    seen = {task for task, _arm in executor.invocations}
+    # Both bug tasks are gone (the held-out one was excluded anyway; the
+    # dev-set one is now ALSO excluded by the family filter) — only the
+    # unrelated feature task remains.
+    assert seen == {"feature-task"}
+    assert all(rep.task == "feature-task" for rep in result.repetitions)
+
+
+def test_spine_held_out_family_default_none_is_unchanged(
+    family_split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """Without --held-out-family, both dev-set families run as before (AC2's
+    filter is a strict opt-in — no accidental exclusion)."""
+    executor = SpyExecutor()
+    result = run_spine(
+        SpineConfig(
+            arms=[full()], reps=1, corpus_root=family_split_corpus_root
+        ),
+        executor=executor,
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    seen = {task for task, _arm in executor.invocations}
+    assert seen == {"bug-task", "feature-task"}
+
+
+def test_spine_threads_family_into_repetition_records(
+    family_split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC4: each RepetitionRecord carries its CorpusTask's family, so the
+    reporter has real family strata to break out."""
+    result = run_spine(
+        SpineConfig(
+            arms=[full()],
+            reps=1,
+            corpus_root=family_split_corpus_root,
+            include_held_out=True,
+        ),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    by_task = {rep.task: rep.family for rep in result.repetitions}
+    assert by_task == {
+        "bug-task": "bug",
+        "feature-task": "feature",
+        "held-bug-task": "bug",
+    }
+    family_strata = {s.family for r in result.arm_reports for s in r.family_strata}
+    assert family_strata == {"bug", "feature"}
 
 
 # ---------------------------------------------------------------------------

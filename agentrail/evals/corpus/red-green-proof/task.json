@@ -23,6 +23,7 @@
     "tests/run/test_pipeline.py"
   ],
   "difficulty": "medium",
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 793,

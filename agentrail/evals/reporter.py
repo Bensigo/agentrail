@@ -37,7 +37,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 from agentrail.run.usage_capture import Usage
 
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
-from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
+from agentrail.evals.corpus.loader import DIFFICULTY_TAGS, FAMILY_TAGS
 from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
@@ -84,6 +84,12 @@ class RepetitionRecord:
     # ``None`` for callers (and old tests) that pre-date the probe; such records
     # simply contribute to no stratum (the aggregate is unaffected).
     difficulty: Optional[str] = None
+    # Task-family stratum (issue #1223), threaded from the ``CorpusTask`` the
+    # same way ``difficulty`` is — a separate axis (what KIND of task, not how
+    # hard) so a change that wins on the corpus overall can be checked for
+    # regressions on a specific family. ``None`` for unclassified tasks/old
+    # callers; such records contribute to no family stratum.
+    family: Optional[str] = None
     # Wall-clock duration of the run, in seconds (issue #980). Threaded straight
     # from the runner's ``RunRecord.wall_time_s`` by the spine so the report can
     # surface wall-time PER TASK per arm — a falsifiable metric (a slower arm
@@ -150,6 +156,33 @@ class StratumReport:
 
 
 @dataclass(frozen=True)
+class FamilyStratumReport:
+    """Per-task-family-stratum metrics for one arm (issue #1223).
+
+    Exactly the same shape and hygiene rules as ``StratumReport`` (issue
+    #941), scoped by task ``family`` (bug/feature/refactor/test/infra) instead
+    of ``difficulty`` — a second, orthogonal way to slice the same underlying
+    reps. Kept as a SEPARATE dataclass (rather than reusing ``StratumReport``)
+    so each stratum's key field name stays honest about what it is grouping
+    by, and a caller cannot accidentally treat a family stratum as a
+    difficulty one or vice versa.
+    """
+
+    family: str
+    repetitions: int
+    solved_count: int
+    failed_count: int
+    # None when the stratum is all network artifacts (no real rep to measure) —
+    # DISTINCT from a real 0.0 (real reps, none solved). Never a fabricated 0%.
+    solve_rate: Optional[float]
+    total_cost_usd: float
+    dollars_per_solved: Optional[float]
+    # Count of ECONNRESET synthetic-fallback reps EXCLUDED from this stratum's
+    # metrics (mirrors issue #1033 AC2 for the family axis).
+    network_artifact_count: int = 0
+
+
+@dataclass(frozen=True)
 class ArmReport:
     """Aggregated metrics for a single arm across all its repetition records."""
 
@@ -186,6 +219,10 @@ class ArmReport:
     # Difficulty-stratified breakdown (issue #941), in canonical difficulty
     # order (easy/medium/hard). Empty when no record carried a difficulty.
     strata: List[StratumReport] = field(default_factory=list)
+    # Family-stratified breakdown (issue #1223), in canonical family order
+    # (bug/feature/refactor/test/infra). Empty when no record carried a
+    # family — e.g. an older corpus/run set that predates this field.
+    family_strata: List[FamilyStratumReport] = field(default_factory=list)
     # Context-pack quality (issue #994): mean precision_at_budget /
     # citation_coverage over the reps THAT CARRIED them. ``None`` when no rep in
     # this arm captured the metric (undefined) — DISTINCT from a measured 0.0.
@@ -292,6 +329,8 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
     # per stratum and (b) render an ALL-artifact stratum as "no data" instead of
     # dropping it. It excludes artifacts from each stratum's metrics itself.
     strata = _strata(all_records)
+    # Same idea, family axis (#1223).
+    family_strata = _family_strata(all_records)
 
     # Context-pack quality (#994): mean over ONLY the reps that carried a metric
     # (None defaults are skipped). ``None`` when no rep carried it — undefined,
@@ -326,6 +365,7 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         false_green_rate=false_green_rate,
         per_task_solve_rate=per_task_solve_rate,
         strata=strata,
+        family_strata=family_strata,
         mean_precision_at_budget=mean_precision,
         mean_citation_coverage=mean_coverage,
         input_cost_usd=input_cost,
@@ -382,6 +422,49 @@ def _strata(records: Sequence[RepetitionRecord]) -> List[StratumReport]:
                 solve_rate=(solved / reps) if reps else None,
                 total_cost_usd=cost,
                 # Same undefined-denominator rule as the aggregate.
+                dollars_per_solved=(cost / solved) if solved else None,
+                network_artifact_count=artifact_count,
+            )
+        )
+    return reports
+
+
+def _family_strata(records: Sequence[RepetitionRecord]) -> List[FamilyStratumReport]:
+    """Break an arm's records out per task-family stratum (issue #1223).
+
+    Mirrors ``_strata`` exactly, one axis over: groups by ``family`` instead
+    of ``difficulty``, in canonical family order (``FAMILY_TAGS``) with any
+    unexpected tag appended (sorted) so a stray value still surfaces. Records
+    with no ``family`` (unclassified tasks, or callers/tests that predate
+    #1223) contribute to no stratum. Network-artifact hygiene (#1033) is
+    applied the same way: artifacts are excluded from each stratum's metrics
+    and counted separately; an all-artifact stratum still surfaces as "no
+    data" rather than being silently dropped.
+    """
+    by_family: Dict[str, List[RepetitionRecord]] = defaultdict(list)
+    for r in records:
+        if r.family is not None:
+            by_family[r.family].append(r)
+
+    ordered = [f for f in FAMILY_TAGS if f in by_family]
+    ordered += sorted(f for f in by_family if f not in FAMILY_TAGS)
+
+    reports: List[FamilyStratumReport] = []
+    for family in ordered:
+        all_recs = by_family[family]
+        artifact_count = sum(1 for r in all_recs if r.network_artifact)
+        recs = [r for r in all_recs if not r.network_artifact]
+        reps = len(recs)
+        solved = sum(1 for r in recs if r.solved)
+        cost = sum(usage_cost(r.usage) for r in recs)
+        reports.append(
+            FamilyStratumReport(
+                family=family,
+                repetitions=reps,
+                solved_count=solved,
+                failed_count=reps - solved,
+                solve_rate=(solved / reps) if reps else None,
+                total_cost_usd=cost,
                 dollars_per_solved=(cost / solved) if solved else None,
                 network_artifact_count=artifact_count,
             )
@@ -1181,6 +1264,71 @@ def render_markdown(
                 lines.append(row)
         lines.append("")
 
+    # --- Family-stratified breakdown (issue #1223) ------------------------
+    # A second, orthogonal slice: a change can win on the corpus overall yet
+    # regress on a specific KIND of task (e.g. helps bug fixes, hurts
+    # refactors) — family-level generalization, distinct from the
+    # instance-level held-out split above. Report solve-rate / cost /
+    # $-per-solved PER family, IN ADDITION TO the aggregate and the
+    # difficulty breakdown.
+    any_family_strata = any(r.family_strata for r in reports)
+    lines.append("## Family-stratified breakdown")
+    lines.append("")
+    if not any_family_strata:
+        lines.append(
+            "_No per-family data in this run set (records carried no family "
+            "tag)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "Solve-rate, cost, and dollars-per-solved-task broken out per task "
+            "family (bug / feature / refactor / test / infra), IN ADDITION TO "
+            "the aggregate above. Lets a family be held out of the corpus "
+            "(``--held-out-family``) and the run compared against it, so a "
+            "harness change that wins overall but regresses on (say) refactors "
+            "is caught rather than hidden inside the headline number."
+        )
+        lines.append("")
+        any_family_artifacts = any(
+            s.network_artifact_count for r in reports for s in r.family_strata
+        )
+        if any_family_artifacts:
+            lines.append(
+                "| Arm | Family | Reps | Solved | Failed | Solve-rate | "
+                "Total cost | Dollars-per-solved-task | Network artifacts |"
+            )
+            lines.append(
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            )
+        else:
+            lines.append(
+                "| Arm | Family | Reps | Solved | Failed | Solve-rate | "
+                "Total cost | Dollars-per-solved-task |"
+            )
+            lines.append(
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+            )
+        for r in reports:
+            if not r.family_strata:
+                lines.append(
+                    f"| {r.arm} | _(no family data)_ | | | | | | |"
+                    + (" |" if any_family_artifacts else "")
+                )
+                continue
+            for s in r.family_strata:
+                row = (
+                    f"| {r.arm} | {s.family} | {s.repetitions} | "
+                    f"{s.solved_count} | {s.failed_count} | "
+                    f"{_fmt_rate_pct(s.solve_rate)} | "
+                    f"{_fmt_usd(s.total_cost_usd)} | "
+                    f"{_fmt_usd(s.dollars_per_solved)} |"
+                )
+                if any_family_artifacts:
+                    row += f" {s.network_artifact_count} |"
+                lines.append(row)
+        lines.append("")
+
     # --- Honesty section: failures, ties, spread per arm -----------------
     lines.append("## Failures, ties, and spread")
     lines.append("")
@@ -1700,6 +1848,22 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
                     "network_artifact_count": s.network_artifact_count,
                 }
                 for s in r.strata
+            ],
+            # Family-stratified breakdown (#1223), same parity contract as the
+            # difficulty strata above — the console can slice solve-rate/$ by
+            # family without disagreeing with the markdown.
+            "family_strata": [
+                {
+                    "family": s.family,
+                    "repetitions": s.repetitions,
+                    "solved_count": s.solved_count,
+                    "failed_count": s.failed_count,
+                    "solve_rate": s.solve_rate,
+                    "total_cost_usd": s.total_cost_usd,
+                    "dollars_per_solved": s.dollars_per_solved,
+                    "network_artifact_count": s.network_artifact_count,
+                }
+                for s in r.family_strata
             ],
         }
         for r in reports

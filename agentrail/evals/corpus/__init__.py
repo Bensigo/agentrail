@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from .loader import (
     DIFFICULTY_TAGS,
+    FAMILY_TAGS,
     TASK_KIND_VALUES,
     CorpusError,
     CorpusTask,
@@ -30,6 +31,7 @@ from .loader import (
 
 __all__ = [
     "DIFFICULTY_TAGS",
+    "FAMILY_TAGS",
     "TASK_KIND_VALUES",
     "CorpusError",
     "CorpusTask",

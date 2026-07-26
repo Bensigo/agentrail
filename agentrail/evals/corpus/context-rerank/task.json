@@ -22,6 +22,7 @@
     "agentrail/context/evaluation.py"
   ],
   "difficulty": "medium",
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 923,

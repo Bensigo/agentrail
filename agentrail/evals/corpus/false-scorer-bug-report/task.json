@@ -16,6 +16,7 @@
     "agentrail/evals/run_record.py"
   ],
   "difficulty": "easy",
+  "family": "bug",
   "source": {
     "issue": 992
   }

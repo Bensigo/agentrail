@@ -20,6 +20,7 @@
     "agentrail/afk/review.py"
   ],
   "difficulty": "easy",
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 857,

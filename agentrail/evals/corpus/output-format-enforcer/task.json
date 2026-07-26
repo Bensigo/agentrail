@@ -19,6 +19,7 @@
     "agentrail/run/pipeline.py"
   ],
   "difficulty": "easy",
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 789,

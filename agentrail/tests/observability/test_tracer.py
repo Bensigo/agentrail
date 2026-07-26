@@ -273,3 +273,38 @@ def test_long_input_flag_off_never_raises(monkeypatch):
     # Fully disabled: even a huge input / malformed output must be a no-op.
     t = RunTracer.start("run-x", input_text="x" * 50000)
     t.finish(0, output={"blob": "y" * 50000})
+
+
+# ---------------------------------------------------------------------------
+# Task-family tag (issue #1223 AC4): a run's Langfuse trace carries a
+# `family:<value>` tag alongside the base "agentrail" tag when a recognized
+# family is supplied. Absent/unrecognized values contribute no tag rather
+# than a malformed one.
+# ---------------------------------------------------------------------------
+
+
+def test_family_tag_added_when_recognized(capture):
+    RunTracer.start("run-x", family="bug")
+    body = _trace_bodies(capture)[0]
+    assert body["tags"] == ["agentrail", "family:bug"]
+
+
+def test_family_tag_absent_when_not_supplied(capture):
+    RunTracer.start("run-x")
+    body = _trace_bodies(capture)[0]
+    assert body["tags"] == ["agentrail"]
+
+
+def test_family_tag_absent_for_unrecognized_value(capture):
+    # A typo'd/unrecognized family must never reach the trace as a malformed
+    # tag — it just contributes no tag, same as omitting the argument.
+    RunTracer.start("run-x", family="not-a-real-family")
+    body = _trace_bodies(capture)[0]
+    assert body["tags"] == ["agentrail"]
+
+
+def test_family_tag_flag_off_never_raises(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("network attempted with flag off")
+    monkeypatch.setattr(lc, "_request", explode)
+    RunTracer.start("run-x", family="feature")  # must not raise

@@ -76,6 +76,11 @@ def _usage() -> str:
         "  --include-held-out\n"
         "                   Include the held-out task split (excluded by default\n"
         "                   so the harness is never developed against it).\n"
+        "  --held-out-family NAME\n"
+        "                   Exclude every task in family NAME (bug|feature|\n"
+        "                   refactor|test|infra) from the run, independent of\n"
+        "                   --include-held-out — the family-level generalization\n"
+        "                   split (#1223).\n"
         "  --pack-index-root DIR\n"
         "                   Checkout with a built context index to score context\n"
         "                   packs against (precision/recall + rerank delta).\n"
@@ -161,6 +166,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     smoke = False
     ablation = False
     include_held_out = False
+    held_out_family: Optional[str] = None
     # Offline pack scoring (#1029). Default: discover the git checkout root and
     # use it iff it has a built index (else None → n/a, never fabricated).
     # --pack-index-root overrides the root explicitly; --no-pack-scores opts out.
@@ -216,6 +222,13 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             # way to pull it in (the deliberate "score the held-out set" pass).
             include_held_out = True
             i += 1
+        elif a == "--held-out-family":
+            # Family-level generalization split (#1223): excludes EVERY task in
+            # this family, independent of --include-held-out — lets a change be
+            # checked for regressions on a whole kind of task, not just held-out
+            # instances. Validated against the fixed vocabulary by load_corpus.
+            held_out_family = _parse_flag_value(args, i, a)
+            i += 2
         elif a == "--pack-index-root":
             # Explicit root for offline pack scoring (#1029). Overrides the
             # git-root default; the report renders n/a if it has no built index.
@@ -255,6 +268,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             task_filter=tasks or None,
             corpus_root=corpus_root,
             include_held_out=include_held_out,
+            held_out_family=held_out_family,
             concurrency=concurrency,
             pack_index_root=pack_index_root,
             cost_ledger_path=cost_ledger_path,

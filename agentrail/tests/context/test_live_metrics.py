@@ -21,7 +21,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from agentrail.context.live_metrics import compute_live_context_metrics
+from agentrail.context.live_metrics import (
+    compute_live_context_metrics,
+    compute_precision_in_pack_proxy,
+)
 from agentrail.guardrails.adapters import git as git_adapter
 
 
@@ -243,6 +246,90 @@ class TestEngineHygiene:
             modified_preexisting=["a.py"],
         )
         assert m["engine"] == "claude"
+
+
+# --------------------------------------------------------------------------- #
+# Live precisionInPack proxy (issue #1225 AC1): packed files vs. diff-touched  #
+# --------------------------------------------------------------------------- #
+class TestPrecisionInPackProxy:
+    def test_proxy_is_touched_pack_files_over_all_pack_files(self):
+        # 2 packed files; only a.py was touched (modified) by the accepted diff.
+        included = _pack(("a.py", 100), ("b.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=["a.py"]
+        )
+        assert proxy["precisionInPackProxyStatus"] == "ok"
+        assert proxy["precisionInPackProxy"] == 0.5
+        assert proxy["touchedPackFileCount"] == 1
+        assert proxy["noisyPackFiles"] == ["b.py"]
+
+    def test_created_files_count_as_touched(self):
+        # b.py is a packed file that also happens to be freshly created in the
+        # diff (edge case, but "touched" is touched either way).
+        included = _pack(("a.py", 100), ("b.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included,
+            modified_preexisting=["a.py"],
+            created_files=["b.py"],
+        )
+        assert proxy["precisionInPackProxy"] == 1.0
+        assert proxy["noisyPackFiles"] == []
+
+    def test_all_pack_files_touched_is_one(self):
+        included = _pack(("a.py", 100), ("b.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=["a.py", "b.py"]
+        )
+        assert proxy["precisionInPackProxy"] == 1.0
+        assert proxy["noisyPackFiles"] == []
+
+    def test_no_pack_file_touched_is_a_real_measured_zero(self):
+        # The denominator (packed files) is well-defined, so an untouched pack
+        # is a real 0.0 — NOT n/a (contrast with the empty-pack case below).
+        included = _pack(("a.py", 100), ("b.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=["elsewhere.py"]
+        )
+        assert proxy["precisionInPackProxyStatus"] == "ok"
+        assert proxy["precisionInPackProxy"] == 0.0
+        assert proxy["touchedPackFileCount"] == 0
+        assert proxy["noisyPackFiles"] == ["a.py", "b.py"]
+
+    def test_empty_pack_is_na_not_divide_by_zero(self):
+        proxy = compute_precision_in_pack_proxy(
+            included=[], modified_preexisting=["a.py"]
+        )
+        assert proxy["precisionInPackProxy"] is None
+        assert proxy["precisionInPackProxyStatus"] == "n/a"
+        assert proxy["noisyPackFiles"] == []
+
+    def test_no_diff_at_all_is_a_real_zero_not_na(self):
+        # Unlike recall (no denominator without a diff), the proxy's
+        # denominator is the pack itself — a no-diff run still yields a real,
+        # measured 0.0 (nothing in the pack was used).
+        included = _pack(("a.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=[], created_files=[]
+        )
+        assert proxy["precisionInPackProxyStatus"] == "ok"
+        assert proxy["precisionInPackProxy"] == 0.0
+
+    def test_paths_are_normalised_for_membership(self):
+        included = _pack(("./a.py", 100))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=["a.py"]
+        )
+        assert proxy["precisionInPackProxy"] == 1.0
+
+    def test_duplicate_pack_entries_count_once(self):
+        # Same file twice in included (e.g. two chunks) must not double-count
+        # the denominator.
+        included = _pack(("a.py", 100), ("a.py", 50))
+        proxy = compute_precision_in_pack_proxy(
+            included=included, modified_preexisting=["a.py"]
+        )
+        assert proxy["touchedPackFileCount"] == 1
+        assert proxy["precisionInPackProxy"] == 1.0
 
 
 # --------------------------------------------------------------------------- #

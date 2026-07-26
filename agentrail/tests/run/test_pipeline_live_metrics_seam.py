@@ -160,6 +160,65 @@ def test_ac3_cursor_run_reports_na_never_zero(tmp_path, monkeypatch):
     assert lm["recall"] == 1.0
 
 
+def test_ac1_1225_precision_in_pack_proxy_lands_on_the_same_seam(tmp_path, monkeypatch):
+    # #1225 AC1: the diff-grounded precisionInPack proxy is computed at the
+    # same finalization seam and merged into liveContextMetrics — no parallel
+    # persist/push path.
+    _clear_link_env(monkeypatch)
+    root = tmp_path
+    _init_repo(root)
+    _git(root, "checkout", "-b", "work")
+    # Only existing.py is touched by the accepted diff.
+    (root / "existing.py").write_text("x = 2\n")
+    pack_file = _write_pack(root, ("existing.py", 400), ("filler.py", 100))
+    meta = _write_run_json(
+        root,
+        {"engine": "claude", "status": "ok", "files": [{"path": "existing.py"}]},
+    )
+
+    pipeline._record_live_context_metrics(
+        metadata_file=meta,
+        target_dir=root,
+        run_id="run-1225-ac1",
+        agent="claude",
+        run_context_pack_file=pack_file,
+    )
+
+    lm = read_json(meta)["liveContextMetrics"]
+    assert lm["precisionInPackProxyStatus"] == "ok"
+    # 1 of 2 packed files (existing.py) was touched by the diff.
+    assert lm["precisionInPackProxy"] == 0.5
+    assert lm["touchedPackFileCount"] == 1
+    assert lm["noisyPackFiles"] == ["filler.py"]
+    # The existing read-grounded metrics are untouched by the merge.
+    assert lm["precision"] == 0.8
+    assert lm["recall"] == 1.0
+
+
+def test_ac1_1225_proxy_is_na_when_pack_unavailable(tmp_path, monkeypatch):
+    _clear_link_env(monkeypatch)
+    root = tmp_path
+    _init_repo(root)
+    _git(root, "checkout", "-b", "work")
+    (root / "existing.py").write_text("x = 2\n")
+    meta = _write_run_json(
+        root,
+        {"engine": "claude", "status": "ok", "files": [{"path": "existing.py"}]},
+    )
+
+    pipeline._record_live_context_metrics(
+        metadata_file=meta,
+        target_dir=root,
+        run_id="run-1225-ac1-nopack",
+        agent="claude",
+        run_context_pack_file=None,
+    )
+
+    lm = read_json(meta)["liveContextMetrics"]
+    assert lm["precisionInPackProxy"] is None
+    assert lm["precisionInPackProxyStatus"] == "n/a"
+
+
 def test_seam_preserves_existing_run_json_keys(tmp_path, monkeypatch):
     _clear_link_env(monkeypatch)
     root = tmp_path

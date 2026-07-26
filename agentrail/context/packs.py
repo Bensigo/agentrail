@@ -15,7 +15,7 @@ from agentrail.context.llm_rerank import llm_rerank_cost_usd
 from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory, memory_lane_enabled
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
-from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, get_file_lines, query_context
+from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, get_file_lines, query_context, resolve_retrieval_max_tokens
 # Imported as a module, not `from agentrail.context.wiki import OVERVIEW_SLUG,
 # parse_page, ...`: the cross-file-imported-symbol recall layer (#1043 AC4,
 # agentrail/context/symbol_candidates.py) parses `from X import NAME` lines
@@ -642,25 +642,28 @@ def _trim_to_budget(
 
 
 def _greedy_token_budget_fill(sections: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    """Enforce RETRIEVAL_MAX_TOKENS by dropping whole low-relevance candidates.
+    """Enforce the retrieval token budget by dropping whole low-relevance candidates.
 
     Rank all droppable retrieval items by score ascending (lowest first).
     Drop items one by one until the included-item token total ≤
-    RETRIEVAL_MAX_TOKENS.  Returns a list of items that were dropped (each
-    to be recorded in excludedContext with a budget reason).
+    :func:`resolve_retrieval_max_tokens` (the default :data:`RETRIEVAL_MAX_TOKENS`,
+    unless the offline packer-tightening A/B (#1225 AC2) overrides it smaller for
+    this process). Returns a list of items that were dropped (each to be recorded
+    in excludedContext with a budget reason).
 
     Protected sections (never dropped): requiredContext, availableTools,
     availableSkills, goals, openQuestions.
     Droppable: likelyFiles, likelyDocs, relevantMemory, priorMistakes,
     activeState (in ascending score order).
     """
+    budget = resolve_retrieval_max_tokens()
     # Compute total tokens over included (non-excluded) sections only.
     included_sections = [k for k in PACK_SECTION_KEYS if k not in {"excludedContext", "openQuestions"}]
 
     def _included_tokens() -> int:
         return sum(_item_tokens(item) for key in included_sections for item in sections.get(key, []))
 
-    if _included_tokens() <= RETRIEVAL_MAX_TOKENS:
+    if _included_tokens() <= budget:
         return []
 
     # Build droppable list: retrieval sections only, sorted by score ascending.
@@ -672,7 +675,7 @@ def _greedy_token_budget_fill(sections: Dict[str, List[Dict[str, Any]]]) -> List
 
     dropped: List[Dict[str, Any]] = []
     for section_key, item in candidates:
-        if _included_tokens() <= RETRIEVAL_MAX_TOKENS:
+        if _included_tokens() <= budget:
             break
         try:
             sections[section_key].remove(item)
@@ -794,7 +797,7 @@ def build_context_pack(
     if target_kind == "issue" and phase not in {"gather", "plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
         raise RuntimeError("context build phase must be one of: issue gather|plan|execute|verify, pr review")
 
-    retrieval_budget = {"maxItems": 20, "maxTokens": RETRIEVAL_MAX_TOKENS}
+    retrieval_budget = {"maxItems": 20, "maxTokens": resolve_retrieval_max_tokens()}
     query_text = _query_for(target_kind, target_number, phase)
     query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
     index = load_index(root)

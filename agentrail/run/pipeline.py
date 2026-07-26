@@ -422,8 +422,24 @@ def _record_live_context_metrics(
     re-pushed on the #1027 pack channel with the engine tag + waste/miss items
     (AC4). Callers wrap this in a non-fatal guard; it also degrades internally so
     a partial failure still records what it can.
+
+    #1225 AC1 rides the SAME seam: once the final accepted diff's classified
+    changes are known (needed for recall above), the pure
+    :func:`compute_precision_in_pack_proxy` derives the live proxy for the
+    offline ``precisionInPack`` — of the packed files, how many did the diff
+    actually touch — and its keys (``precisionInPackProxy`` /
+    ``precisionInPackProxyStatus`` / ``touchedPackFileCount`` /
+    ``noisyPackFiles``) are merged straight into ``metrics`` BEFORE the single
+    persist + push below, so it lands in ``run.json`` and on the #1027 pack
+    channel through the existing path — no parallel persist/push is added.
+    Strictly diagnostic (like every metric in this function): never read by
+    ``agentrail.guardrails`` (guarded by
+    ``agentrail/tests/guardrails/test_no_precision_gating.py``).
     """
-    from agentrail.context.live_metrics import compute_live_context_metrics
+    from agentrail.context.live_metrics import (
+        compute_live_context_metrics,
+        compute_precision_in_pack_proxy,
+    )
     from agentrail.guardrails.adapters.git import collect_classified_changes
 
     included = read_pack_included(target_dir, run_context_pack_file)
@@ -448,6 +464,20 @@ def _record_live_context_metrics(
         created_files=created_files,
         engine_fallback=agent,
     )
+
+    # #1225 AC1: the live precisionInPack proxy, from the SAME classified diff
+    # already collected for recall above. Merged into ``metrics`` (not a
+    # separate dict) so persist + push stay single-sourced.
+    try:
+        proxy = compute_precision_in_pack_proxy(
+            included=included,
+            modified_preexisting=modified_preexisting,
+            created_files=created_files,
+        )
+    except Exception:  # noqa: BLE001 — diagnostic-only; a failure here must
+        # never break the (already-computed) live metrics persist/push below.
+        proxy = {}
+    metrics.update(proxy)
 
     # Persist to run.json (AC1) — read-modify-write, mirroring
     # record_reads_into_run_json; never clobbers other keys.

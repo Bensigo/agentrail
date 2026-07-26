@@ -303,6 +303,36 @@ def estimate_tokens(text: str) -> int:
 # recorded in pack retrievalBudget metadata and pushed as token_budget telemetry.
 RETRIEVAL_MAX_TOKENS = 6000
 
+# Env override name for the budget above. Exists ONLY so the offline
+# packer-tightening A/B (#1225 AC2) can run a smaller-budget "tightened" packer
+# variant against the SAME process/CLI path production uses, without a second
+# hardcoded constant to drift out of sync — mirrors the
+# ``AGENTRAIL_CONTEXT_PACK_CUTOFF_RATIO`` pattern next to
+# :func:`resolve_pack_cutoff`. Unset in production, so live runs keep using the
+# module constant untouched.
+_RETRIEVAL_MAX_TOKENS_ENV = "AGENTRAIL_RETRIEVAL_MAX_TOKENS"
+
+
+def resolve_retrieval_max_tokens() -> int:
+    """Resolve the pack token budget: :data:`RETRIEVAL_MAX_TOKENS`, env-overridable.
+
+    Reads ``AGENTRAIL_RETRIEVAL_MAX_TOKENS`` (must parse as a positive int); any
+    missing/invalid/non-positive value falls back to the default
+    :data:`RETRIEVAL_MAX_TOKENS` so production behaviour is unchanged unless the
+    env var is deliberately set. Callers that enforce/report the budget
+    (``packs.py``'s greedy fill, the run-level retrieval budget metadata) should
+    call this instead of reading the module constant directly, so the eval
+    harness's tightened-budget arm (#1225 AC2) actually takes effect.
+    """
+    raw = (os.environ.get(_RETRIEVAL_MAX_TOKENS_ENV) or "").strip()
+    if not raw:
+        return RETRIEVAL_MAX_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        return RETRIEVAL_MAX_TOKENS
+    return value if value > 0 else RETRIEVAL_MAX_TOKENS
+
 
 def compute_tokens_saved(root: Path, items: Iterable[Dict[str, Any]]) -> int:
     """Estimated tokens saved by bounded retrieval versus reading whole files.
@@ -2414,7 +2444,7 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
     run_budget = dict(raw.get("retrievalBudget") or {})
     run_budget.setdefault("maxItems", limit)
     if not run_budget.get("maxTokens"):
-        run_budget["maxTokens"] = RETRIEVAL_MAX_TOKENS
+        run_budget["maxTokens"] = resolve_retrieval_max_tokens()
     run_metadata = {
         "retrievalMode": raw.get("retrievalMode"),
         "selectedSources": selected_sources,

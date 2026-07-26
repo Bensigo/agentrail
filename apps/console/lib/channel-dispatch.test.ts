@@ -774,6 +774,115 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
     expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("hosted-inbound returned 500"));
     expect(mockComplete).not.toHaveBeenCalled();
   });
+
+  // --- prod bug fix: thread the interaction token to Jace's reply (see
+  // .superpowers/sdd/discord-followup/) — captured by the webhook route into
+  // the row's payload, carried here into `auth.attributes` (the ONE field
+  // eve forwards unchanged into the session Jace's discord channel reads),
+  // and deliberately NEVER added to `target` (the channel's documented
+  // NON-SECRET destination key, whose discord shape is `{ channelId }` only
+  // — see this file's HOSTED_INBOUND_TARGET_KEY doc-comment).
+  describe("dispatchQueuedChannelMessages — discord interaction-token threading (prod bug fix)", () => {
+    it("carries interactionToken/applicationId from the payload into auth.attributes, WITHOUT adding either to target", async () => {
+      mockClaim
+        .mockResolvedValueOnce(
+          discordRow({
+            payload: {
+              chatId: "998877",
+              text: "hello jace",
+              interactionToken: "interaction-tok-abc",
+              applicationId: "app-999",
+            },
+          }),
+        )
+        .mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+      mockResolve.mockResolvedValue({ kind: "intro" } as never);
+      mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+
+      await dispatchQueuedChannelMessages();
+
+      const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+      // target stays exactly { channelId } — eve's proactive DiscordReceiveTarget
+      // has no room for either field, so putting them there would silently drop
+      // them (verified against eve@0.19.0's own discordChannel.d.ts).
+      expect(body.target).toEqual({ channelId: "998877" });
+      // auth.attributes is where eve actually forwards these through to
+      // ctx.session.auth.initiator, which Jace's discord channel reads.
+      expect(body.auth.attributes).toMatchObject({
+        interactionToken: "interaction-tok-abc",
+        applicationId: "app-999",
+      });
+    });
+
+    it("omits interactionToken/applicationId from auth.attributes when the payload carries neither (default discord row, unchanged)", async () => {
+      mockClaim.mockResolvedValueOnce(discordRow()).mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+      mockResolve.mockResolvedValue({ kind: "intro" } as never);
+      mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+
+      await dispatchQueuedChannelMessages();
+
+      const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+      expect(body.auth.attributes).toEqual({
+        chatIdentityId: "chat-discord-1",
+        workspaceId: null,
+        channel: "discord",
+        conversationKey: "998877",
+      });
+      expect(body.auth.attributes).not.toHaveProperty("interactionToken");
+      expect(body.auth.attributes).not.toHaveProperty("applicationId");
+    });
+
+    it("omits both from auth.attributes when only one of the two is present in the payload (a partial capture is treated as absent)", async () => {
+      mockClaim
+        .mockResolvedValueOnce(
+          discordRow({
+            payload: { chatId: "998877", text: "hello jace", interactionToken: "tok-only" },
+          }),
+        )
+        .mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+      mockResolve.mockResolvedValue({ kind: "intro" } as never);
+      mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+
+      await dispatchQueuedChannelMessages();
+
+      const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+      expect(body.auth.attributes).not.toHaveProperty("interactionToken");
+      expect(body.auth.attributes).not.toHaveProperty("applicationId");
+    });
+
+    it("never logs the interaction token when the sidecar call fails for a row that carries one", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockClaim
+        .mockResolvedValueOnce(
+          discordRow({
+            payload: {
+              chatId: "998877",
+              text: "hello jace",
+              interactionToken: "super-secret-token-value",
+              applicationId: "app-999",
+            },
+          }),
+        )
+        .mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+      mockResolve.mockResolvedValue({ kind: "intro" } as never);
+      mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+      mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+      await dispatchQueuedChannelMessages();
+
+      expect(mockFail).toHaveBeenCalledWith("row-1", expect.any(String));
+      const failMessage = mockFail.mock.calls[0]?.[1] as string;
+      expect(failMessage).not.toContain("super-secret-token-value");
+      for (const call of errorSpy.mock.calls) {
+        expect(JSON.stringify(call)).not.toContain("super-secret-token-value");
+      }
+      errorSpy.mockRestore();
+    });
+  });
 });
 
 // --- #1285: Slack rows ride the SAME dispatcher, additively -----------------

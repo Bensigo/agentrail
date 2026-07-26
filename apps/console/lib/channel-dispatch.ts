@@ -120,6 +120,16 @@ interface TelegramInboxPayload {
   /** #1277 — set by the webhook route when this message replies to a
    * parseable run-outcome notification. See `withReplyContextPreface`. */
   replyContext?: RunOutcomeReplyContext;
+  /**
+   * Prod bug fix (private-channel Discord replies vanish — see
+   * .superpowers/sdd/discord-followup/): set by the Discord webhook route
+   * (connectors/discord/webhook/route.ts) from the inbound interaction's own
+   * `token`/`application_id` fields. Discord-only; telegram/slack payloads
+   * never carry these. Both travel together — see `buildDoorInitiatorAuth`,
+   * which treats one without the other as no credential at all.
+   */
+  interactionToken?: string;
+  applicationId?: string;
 }
 
 /**
@@ -172,6 +182,17 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   }
   const replyContext = extractReplyContext(p["replyContext"]);
   if (replyContext) result.replyContext = replyContext;
+  // Prod bug fix — discord-only, tolerantly extracted the same way as
+  // messageThreadId above; a telegram/slack payload simply never has these
+  // keys, so `extractPayload`'s behavior for those channels is unchanged.
+  const interactionToken = p["interactionToken"];
+  if (typeof interactionToken === "string" && interactionToken.trim()) {
+    result.interactionToken = interactionToken;
+  }
+  const applicationId = p["applicationId"];
+  if (typeof applicationId === "string" && applicationId.trim()) {
+    result.applicationId = applicationId;
+  }
   return result;
 }
 
@@ -232,23 +253,60 @@ function parseWorkspaceChoice(
  * type, so this is not constrained by that interface's `string`-only
  * attribute values (only the jace-side receiver would be, and it forwards
  * `auth` through unchanged without re-typing it — see hosted-inbound.ts).
+ *
+ * Prod bug fix (private-channel Discord replies vanish — root-caused
+ * 2026-07-25, see .superpowers/sdd/discord-followup/; corrected 2026-07-26
+ * per a follow-up adversarial review, same doc dir, fix-1-brief.md finding
+ * 1): `interactionToken`/`applicationId`, when both present, ride in
+ * `attributes` alongside the chat-identity fields above — deliberately NOT
+ * in `target` (the channel's documented NON-SECRET destination key; see this
+ * file's HOSTED_INBOUND_TARGET_KEY doc-comment, and note discord's proactive
+ * target shape eve exposes for `receive()` is `{ channelId }` only, with no
+ * room for either field — verified against eve@0.19.0's own
+ * discordChannel.d.ts, so putting them in `target` would silently drop
+ * them). `auth` is the field eve forwards UNCHANGED into BOTH
+ * `session.auth.current` (refreshed on every subsequent turn — eve's REAL
+ * compiled runtime, apps/jace/.output/server/_libs/eve.mjs, sets this from
+ * each `deliver`-turn's own `auth`) AND `session.auth.initiator` (set ONCE,
+ * at session start, never touched again). Jace's discord channel event
+ * handler reads `current` first (falling back to `initiator` only for turn
+ * 1, where eve seeds both identically) via
+ * `resolveSessionAuthAttributes(ctx.session.auth)` to build the interaction
+ * followup webhook URL — see apps/jace/agent/lib/discord-followup.core.mjs
+ * and apps/jace/agent/channels/discord.ts. This function's OWN job is
+ * unaffected by that distinction: it always sends the CURRENT turn's fresh
+ * `interactionToken`/`applicationId` as `auth`, for eve to route into
+ * whichever of `current`/`initiator` its runtime updates — reading the right
+ * one back out is entirely the discord channel handler's concern. A partial
+ * pair (only one of the two present) is treated as no credential at all — a
+ * followup URL needs both, mirroring `discord-followup.core.mjs`'s own
+ * `extractFollowupCredentials`. Telegram/Slack calls never pass these
+ * params, so `attributes` for those channels stays byte-identical to before
+ * this fix.
  */
 function buildDoorInitiatorAuth(params: {
   chatIdentityId: string;
   workspaceId: string | null;
   channel: string;
   conversationKey: string;
+  interactionToken?: string;
+  applicationId?: string;
 }): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {
+    chatIdentityId: params.chatIdentityId,
+    workspaceId: params.workspaceId,
+    channel: params.channel,
+    conversationKey: params.conversationKey,
+  };
+  if (params.interactionToken && params.applicationId) {
+    attributes["interactionToken"] = params.interactionToken;
+    attributes["applicationId"] = params.applicationId;
+  }
   return {
     authenticator: "agentrail",
     principalType: "service",
     principalId: params.workspaceId ?? params.chatIdentityId,
-    attributes: {
-      chatIdentityId: params.chatIdentityId,
-      workspaceId: params.workspaceId,
-      channel: params.channel,
-      conversationKey: params.conversationKey,
-    },
+    attributes,
   };
 }
 
@@ -593,6 +651,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       workspaceId,
       channel: row.channel,
       conversationKey: row.conversationKey,
+      interactionToken: payload.interactionToken,
+      applicationId: payload.applicationId,
     });
 
     const message = await withReplyContextPreface(workspaceId, payload);

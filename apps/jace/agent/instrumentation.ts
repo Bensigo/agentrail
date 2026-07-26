@@ -87,6 +87,7 @@ export default defineInstrumentation({
   },
   events: {
     "step.started"(input) {
+      // WARNING: input.session.auth.{current,initiator}.attributes now carries the Discord interactionToken (eve's projectSessionAuth deep-copies it in) — never spread/echo input.session into the returned runtimeContext, or it lands on an exported span.
       return buildStepStartedResult({
         configured: isLangfuseConfigured(process.env),
         session: input.session,

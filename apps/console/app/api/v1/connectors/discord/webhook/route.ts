@@ -35,10 +35,35 @@ import {
  * #1261), enqueues into `channel_inbox` (PR ①), kicks the dispatcher
  * (`lib/channel-dispatch.ts`) fire-and-forget, and immediately ACKs with a
  * visible `CHANNEL_MESSAGE_WITH_SOURCE` placeholder — Discord requires SOME
- * response within 3 seconds. Jace's real reply lands as a SEPARATE message
- * posted via the bot token through Jace's native discord channel
- * (`args.receive`'s `{ channelId }` target, see hosted-inbound.ts) once the
- * Eve turn completes; this route never awaits that turn.
+ * response within 3 seconds. This route never awaits the Eve turn.
+ *
+ * PROD BUG FIX (root-caused 2026-07-25, see
+ * .superpowers/sdd/discord-followup/): Jace's real reply used to ALWAYS land
+ * as a SEPARATE message posted via the bot token through Jace's native
+ * discord channel (`args.receive`'s `{ channelId }` target, see
+ * hosted-inbound.ts) once the Eve turn completed — which needs the shared
+ * bot to have View Channel + Send Messages on that specific channel. A
+ * private channel that hasn't granted the bot's role that permission (or a
+ * user-install where the bot isn't in the guild at all) rejected the post
+ * with `50001 Missing Access`, silently — the user's own slash-command
+ * invocation still "worked" because invocation is authorized by the USER's
+ * permissions, not the bot's, so the reply just vanished. This route now
+ * also captures the APPLICATION_COMMAND interaction's OWN `token`/
+ * `application_id` (read defensively — see `DiscordInteraction` below;
+ * corrected 2026-07-26 per fix-1-brief.md finding 5 to NOT require them on
+ * every interaction type, since Discord's PING handshake must be accepted
+ * regardless — an earlier version of this route required both fields via
+ * `isDiscordInteraction`'s type guard, which would 400 a PING missing either
+ * one and take the entire door dark on endpoint-URL (re-)validation, strictly
+ * worse than the bug this fixes) into the enqueued payload, so the
+ * dispatcher can carry them into the session Jace's discord channel reads,
+ * and reply through Discord's interaction FOLLOWUP webhook instead — no
+ * channel permission needed, no auth header (the token IS the credential),
+ * valid for 15 minutes. When no token is available (or the followup fails),
+ * Jace falls back to the original bot-post path unchanged. SECRET: the token
+ * is a short-lived credential — it is enqueued into `channel_inbox.payload`
+ * (jsonb) and forwarded to Jace's dispatch POST, but never logged and never
+ * present in this route's own HTTP response.
  *
  * Any other interaction type (e.g. `MESSAGE_COMPONENT` — button taps; no
  * approvals flow exists on this door yet, unlike Telegram's `ar:` callback
@@ -83,12 +108,40 @@ interface DiscordCommandOption {
 interface DiscordInteraction {
   id: string;
   type: number;
+  /**
+   * Prod bug fix (private-channel replies vanish — root-caused 2026-07-25,
+   * see .superpowers/sdd/discord-followup/; corrected 2026-07-26 by a
+   * follow-up adversarial review, same doc dir, fix-1-brief.md finding 5):
+   * Discord sends `token`/`application_id` on APPLICATION_COMMAND
+   * interactions — the credential pair needed to reply through the
+   * interaction followup webhook instead of a bot-API channel post that
+   * needs channel permissions the shared hosted bot may not have. They are
+   * OPTIONAL here, deliberately: the type guard below (`isDiscordInteraction`)
+   * must accept PING (type 1) — the one-time endpoint-URL validation
+   * handshake Discord requires before it will ever send anything else to
+   * this route — regardless of whether it carries these fields. An earlier
+   * version of this fix required them on every interaction, PING included;
+   * if that assumption is ever wrong, Discord's endpoint-URL validation
+   * fails and the entire door goes dark — strictly worse than the bug this
+   * PR fixes. Read type-safely below (a `typeof x === "string"` check at the
+   * enqueue site), never via a cast.
+   */
+  token?: string;
+  application_id?: string;
   channel_id?: string;
   data?: { name?: string; options?: DiscordCommandOption[] };
   member?: { user?: DiscordUser };
   user?: DiscordUser;
 }
 
+/**
+ * Structural guard for "is this a Discord interaction at all" — deliberately
+ * ONLY `id`/`type` (fix-1-brief.md finding 5). PING (type 1) is Discord's
+ * endpoint-URL validation handshake and must be accepted regardless of which
+ * other fields it carries; `token`/`application_id` are read defensively,
+ * with their own `typeof` checks, only where actually needed (the
+ * APPLICATION_COMMAND enqueue path below) — never required here.
+ */
 function isDiscordInteraction(value: unknown): value is DiscordInteraction {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -180,6 +233,46 @@ export async function POST(request: NextRequest) {
     ? { workspaceId: identity.workspaceId }
     : { chatIdentityId: identity.id };
 
+  // fix-1-brief.md finding 5: token/application_id are now optional on
+  // DiscordInteraction (PING must not require them), so they're read here
+  // with an explicit runtime check rather than trusted as always-present
+  // strings — type-safe, no cast. In practice Discord always sends both on
+  // an APPLICATION_COMMAND interaction (this is the ONLY branch that reaches
+  // here — PING and unhandled types both return earlier); this guard is
+  // belt-and-suspenders against that assumption ever being wrong, matching
+  // channel-dispatch.ts's own tolerant `extractPayload` on the other end,
+  // which already treats an absent/partial pair as "no credential at all".
+  const tokenValue = typeof body.token === "string" ? body.token : undefined;
+  const applicationIdValue =
+    typeof body.application_id === "string" ? body.application_id : undefined;
+
+  // Reuses the SAME field name channel-dispatch.ts's (Telegram-authored)
+  // extractPayload already reads — see channel-dispatch.ts's doc-comment on
+  // why this door deliberately does not fork that function.
+  const payload: Record<string, unknown> = {
+    chatId: channelId,
+    text,
+    fromId: discordUser.id,
+    fromUsername: discordUser.username ?? null,
+  };
+  // Prod bug fix (private-channel replies vanish — see
+  // .superpowers/sdd/discord-followup/): captured here so channel-dispatch.ts
+  // can carry it into the session's auth attributes, which Jace's discord
+  // channel reads to reply through the interaction followup webhook instead
+  // of a bot-API channel post. SECRET: this travels only inbound body ->
+  // channel_inbox.payload (jsonb) -> the dispatch POST to Jace — never
+  // logged, never echoed in this route's own response (see the
+  // response-building code below, which never reads
+  // `body.token`/`body.application_id`). Both-or-neither, matching
+  // buildDoorInitiatorAuth's own convention (channel-dispatch.ts): the KEYS
+  // are omitted entirely (not set to `undefined`) rather than written as a
+  // partial/absent pair, so the stored jsonb never carries a half-formed
+  // credential.
+  if (tokenValue !== undefined && applicationIdValue !== undefined) {
+    payload.interactionToken = tokenValue;
+    payload.applicationId = applicationIdValue;
+  }
+
   // The interaction's ack content is static regardless of dedup (unlike
   // Telegram's webhook, which reports `deduped` in its JSON body) — Discord
   // interactions are not provider-redelivered the way Telegram's Bot API
@@ -195,15 +288,7 @@ export async function POST(request: NextRequest) {
     // channel keeps the shape consistent with every other channel's
     // (channel, provider_message_id) unique — never actually collides.
     providerMessageId: `${channelId}:${body.id}`,
-    payload: {
-      // Reuses the SAME field name channel-dispatch.ts's (Telegram-authored)
-      // extractPayload already reads — see channel-dispatch.ts's doc-comment
-      // on why this door deliberately does not fork that function.
-      chatId: channelId,
-      text,
-      fromId: discordUser.id,
-      fromUsername: discordUser.username ?? null,
-    },
+    payload,
   });
 
   // Fire-and-forget kick (mirrors the Telegram webhook's identical pattern):

@@ -4,10 +4,13 @@
 // cannot import it directly (no TS loader is configured for the test run, and
 // constructing a real `discordChannel()` would require Eve's runtime
 // context). Following this repo's convention (see telegram-channel.test.mjs),
-// the split LOGIC lives in and is fully exercised by chat-split.core.test.mjs;
+// ALL the real logic — paragraph splitting (chat-split.core.mjs), and the
+// bubble-loop/typing/followup-vs-fallback/current-vs-initiator delivery
+// (discord-followup.core.mjs) — lives in and is fully exercised FOR REAL by
+// chat-split.core.test.mjs and discord-followup.core.test.mjs respectively;
 // this test only locks the WIRING — that the channel's `message.completed`
-// override actually calls the pure splitter and preserves Eve's default
-// guard — by reading the source as text.
+// override preserves Eve's default guard and hands off to the right pure
+// functions with the right arguments — by reading the source as text.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -35,8 +38,72 @@ test("overrides message.completed and preserves Eve's default guard", () => {
   assert.match(code, /!data\.message/);
 });
 
-test("posts the split messages and pauses typing between them", () => {
-  assert.match(code, /splitIntoChatMessages\(data\.message\)/);
-  assert.match(code, /channel\.discord\.post\(message\)/);
-  assert.match(code, /channel\.discord\.startTyping\(\)/);
+test("delegates the full reply to deliverDiscordReply, injecting the real Eve callbacks", () => {
+  // The split/loop/typing/delivery logic used to live directly in this
+  // file, where it could only be regex-matched, never executed (`node
+  // --test` can't import a `.ts` Eve channel module without a TS loader).
+  // fix-1-brief.md's minor "move the bubble loop into the core module ...
+  // and test it for real" moved it into deliverDiscordReply
+  // (agent/lib/discord-followup.core.mjs), which
+  // discord-followup.core.test.mjs executes for real. This test only locks
+  // that discord.ts wires the REAL Eve callbacks into it correctly.
+  assert.match(code, /deliverDiscordReply\(\s*\{/);
+  assert.match(code, /text\s*:\s*data\.message/);
+  assert.match(code, /splitMessage\s*:\s*splitIntoChatMessages/);
+  assert.match(
+    code,
+    /postViaBot\s*:\s*\(\s*message\s*\)\s*=>\s*channel\.discord\.post\(message\)/,
+  );
+  assert.match(
+    code,
+    /startTyping\s*:\s*\(\)\s*=>\s*channel\.discord\.startTyping\(\)/,
+  );
+});
+
+// --- prod bug fix: reply via the interaction followup webhook -------------
+//
+// Root cause (diagnosed in prod 2026-07-25): channel.discord.post() always
+// posts through the Bot API, which needs channel permissions the shared
+// hosted bot may not have in a private channel or user-install. These tests
+// lock the WIRING of the fix — that the handler resolves the followup
+// credential via resolveSessionAuthAttributes(ctx.session.auth) (current,
+// falling back to initiator ONLY — see that function's own doc comment for
+// why "current" has to come first, verified against eve@0.19.0's REAL
+// compiled runtime, not just its .d.ts stubs) and hands the whole reply to
+// the pure, unit-tested discord-followup.core.mjs, whose own branch coverage
+// (test/discord-followup.core.test.mjs) exercises followup-vs-fallback,
+// current-beats-a-differing-initiator, 2000-char chunking, and mention
+// suppression FOR REAL.
+//
+// The whole-file `assert.doesNotMatch(code, /Authorization/)` scan that used
+// to live here is dropped (fix-1-brief.md minor): it breaks on any comment
+// merely mentioning the word "Authorization", and
+// discord-followup.core.test.mjs's "sends NO Authorization header" test
+// already deep-equals the real `init.headers` object passed to the
+// transport — a strictly stronger guarantee than grepping source text.
+
+test("imports the pure followup-delivery core from agent/lib", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*deliverDiscordReply\s*,\s*resolveSessionAuthAttributes\s*,?\s*\}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']/,
+  );
+});
+
+test("message.completed accepts ctx (3rd handler arg) to reach session.auth", () => {
+  assert.match(code, /async\s*["']message\.completed["']\s*\(\s*data\s*,\s*channel\s*,\s*ctx\s*\)/);
+});
+
+test("resolves the followup attributes via resolveSessionAuthAttributes(ctx.session.auth) — the whole point being that discord.ts itself never picks current vs initiator", () => {
+  // Deliberately NOT a doesNotMatch(/ctx.session.auth.initiator/) guard
+  // alongside this: this file's own header comment above legitimately
+  // discusses both `.current` and `.initiator` in prose, and a whole-file
+  // substring scan can't tell doc-comment prose from live code — exactly the
+  // fragility fix-1-brief.md's minor flags about the OLD Authorization scan
+  // this file used to have (now removed, see below). The single positive
+  // match below is what actually matters: the attribute-precedence decision
+  // happens in resolveSessionAuthAttributes, not here.
+  assert.match(
+    code,
+    /resolveSessionAuthAttributes\(\s*ctx\??\.session\??\.auth\s*\)/,
+  );
 });

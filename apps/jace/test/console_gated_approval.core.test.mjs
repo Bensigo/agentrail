@@ -102,17 +102,24 @@ test("buildApprovalsUrl joins the base url and the approvals path", () => {
   assert.equal(APPROVALS_PATH, "/api/v1/runner/approvals");
 });
 
-test("buildApprovalStatusUrl joins the base url, the approvals path, and the approvalId", () => {
+test("buildApprovalStatusUrl joins the base url, the approvals path, the approvalId, and the eveSessionId query param (issue #1295 cross-tenant scoping)", () => {
   assert.equal(
-    buildApprovalStatusUrl("https://c.example.com", "approval-1"),
-    `https://c.example.com${APPROVALS_PATH}/approval-1`
+    buildApprovalStatusUrl("https://c.example.com", "approval-1", "eve-session-1"),
+    `https://c.example.com${APPROVALS_PATH}/approval-1?eveSessionId=eve-session-1`
   );
 });
 
 test("buildApprovalStatusUrl encodes an approvalId that needs it", () => {
   assert.equal(
-    buildApprovalStatusUrl("https://c.example.com", "a/b c"),
-    `https://c.example.com${APPROVALS_PATH}/a%2Fb%20c`
+    buildApprovalStatusUrl("https://c.example.com", "a/b c", "eve-session-1"),
+    `https://c.example.com${APPROVALS_PATH}/a%2Fb%20c?eveSessionId=eve-session-1`
+  );
+});
+
+test("buildApprovalStatusUrl encodes an eveSessionId that needs it", () => {
+  assert.equal(
+    buildApprovalStatusUrl("https://c.example.com", "approval-1", "s/1 x"),
+    `https://c.example.com${APPROVALS_PATH}/approval-1?eveSessionId=s%2F1+x`
   );
 });
 
@@ -343,9 +350,15 @@ test("polls GET with backoff until approved — pending twice then approved", as
   assert.ok(sleep.delays[2] >= 10000 && sleep.delays[2] < 10250, `${sleep.delays[2]}`);
 
   // Each GET must hit the status endpoint with the approvalId from the POST,
-  // bearer-authenticated the same as the POST.
+  // bearer-authenticated the same as the POST, AND carry the same
+  // eveSessionId that minted the approval (issue #1295 cross-tenant scoping
+  // — the console route now cross-checks this against the approval's own
+  // stored eveSessionId).
   const getCall = transport.calls[1];
-  assert.equal(getCall.url, `https://console.example.com${APPROVALS_PATH}/approval-1`);
+  assert.equal(
+    getCall.url,
+    `https://console.example.com${APPROVALS_PATH}/approval-1?eveSessionId=eve-session-1`
+  );
   assert.equal(getCall.init.method, "GET");
   assert.equal(getCall.init.headers.Authorization, "Bearer tok-secret-123");
 });

@@ -181,12 +181,23 @@ export function buildApprovalsUrl(baseUrl) {
 
 /**
  * Build the GET .../approvals/[id] poll URL.
+ *
+ * `eveSessionId` (issue #1295, PR ③) rides as a query param — the console
+ * route now requires it and cross-checks it against the approval's own
+ * stored `eveSessionId` before returning `{status, resolvedAt}`, closing the
+ * "any valid bearer + a learned approval id reads any workspace's approval"
+ * gap. This is the SAME session id already used to mint the approval via
+ * `postApprovalRequest` above — no new value to track, just threaded through
+ * to the poll too.
+ *
  * @param {string} baseUrl — already trimmed + de-slashed
  * @param {string} approvalId
+ * @param {string} eveSessionId
  * @returns {string}
  */
-export function buildApprovalStatusUrl(baseUrl, approvalId) {
-  return `${baseUrl}${APPROVALS_PATH}/${encodeURIComponent(approvalId)}`;
+export function buildApprovalStatusUrl(baseUrl, approvalId, eveSessionId) {
+  const query = new URLSearchParams({ eveSessionId }).toString();
+  return `${baseUrl}${APPROVALS_PATH}/${encodeURIComponent(approvalId)}?${query}`;
 }
 
 /**
@@ -338,8 +349,8 @@ async function postApprovalRequest({
  * treating it as a fail-closed denial — see the module comment on why
  * "never throws" matters more than "never gives up".
  */
-async function getApprovalStatus({ baseUrl, token, approvalId, transport }) {
-  const url = buildApprovalStatusUrl(baseUrl, approvalId);
+async function getApprovalStatus({ baseUrl, token, approvalId, eveSessionId, transport }) {
+  const url = buildApprovalStatusUrl(baseUrl, approvalId, eveSessionId);
   let res;
   try {
     res = await transport(url, {
@@ -377,7 +388,7 @@ async function getApprovalStatus({ baseUrl, token, approvalId, transport }) {
  * failed GET gets exactly one immediate retry (BLIP_RETRY_DELAY_MS) before
  * this fails the poll closed — see that constant's own comment for why.
  */
-async function pollApprovalStatus({ baseUrl, token, approvalId, transport, sleep, now }) {
+async function pollApprovalStatus({ baseUrl, token, approvalId, eveSessionId, transport, sleep, now }) {
   const deadline = now() + POLL_TTL_MS;
   let attempt = 0;
 
@@ -387,7 +398,7 @@ async function pollApprovalStatus({ baseUrl, token, approvalId, transport, sleep
     await sleep(nextBackoffDelay(attempt));
     attempt += 1;
 
-    let polled = await getApprovalStatus({ baseUrl, token, approvalId, transport });
+    let polled = await getApprovalStatus({ baseUrl, token, approvalId, eveSessionId, transport });
     if (!polled.ok) {
       // One transient failure gets exactly one immediate retry (see
       // BLIP_RETRY_DELAY_MS' own comment) — a 30-min human approval
@@ -395,7 +406,7 @@ async function pollApprovalStatus({ baseUrl, token, approvalId, transport, sleep
       // failure right here IS treated as infrastructure trouble, same as
       // before this retry existed: fail closed.
       await sleep(BLIP_RETRY_DELAY_MS);
-      polled = await getApprovalStatus({ baseUrl, token, approvalId, transport });
+      polled = await getApprovalStatus({ baseUrl, token, approvalId, eveSessionId, transport });
       if (!polled.ok) return deniedStatus(INFRA_FAILURE_REASON);
     }
     if (polled.status !== "pending") return mapTerminalStatus(polled.status);
@@ -461,6 +472,7 @@ export async function runConsoleGatedApproval({
       baseUrl: cfg.baseUrl,
       token: cfg.token,
       approvalId: posted.approvalId,
+      eveSessionId: sessionId,
       transport,
       sleep,
       now,

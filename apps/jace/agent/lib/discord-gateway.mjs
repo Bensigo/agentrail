@@ -72,6 +72,23 @@
 // no schedule, nothing that could re-attempt Identify with the same
 // disallowed intents a second later.
 //
+// INITIAL-CONNECT RETRY (I4) — the manager's own initial connect (not a
+// later Closed event) can reject: it fetches GET /gateway/bot over REST
+// before opening any socket, and can also throw on `session_start_limit`.
+// That REST-layer failure mode is unrelated to the fatal-close-code path
+// above — verified against the installed @discordjs/ws@2.0.4 source
+// (node_modules/@discordjs/ws/dist/index.mjs, `WebSocketShard#connect`): a
+// FATAL close during the initial IDENTIFY never settles that shard's own
+// "ready"/"resumed" race (there is no listener racing against a timeout, and
+// nothing else rejects it), so that initial connect call neither resolves
+// nor rejects on that path — only the `error`/`Closed` events already wired
+// below carry it, and they run independently of whatever triggered the
+// connect. So retrying only the thrown/rejected path (`connectWithRetry`,
+// below) cannot ever retry a 4014/4004-style fatal close: there is no call
+// site for that inside the Closed handler, then or now. Without this retry,
+// one blip at boot (a transient network error, or `session_start_limit`)
+// left Jace permanently offline until a redeploy — see `connectWithRetry`.
+//
 // MULTI-REPLICA STANCE — the jace service runs at ONE replica in steady
 // state (no `numReplicas` is configured for it, mirroring the fleet
 // service's own documented convention, deploy/fleet/README.md: "Never
@@ -98,6 +115,8 @@ import { GatewayDispatchEvents, GatewayIntentBits } from "discord-api-types/v10"
 import {
   admitMessage,
   classifyCloseCode,
+  computeInitialConnectBackoffMs,
+  INITIAL_CONNECT_MAX_ATTEMPTS,
   postDiscordInboundMessage,
   shapeInboundPayload,
 } from "./discord_gateway.core.mjs";
@@ -121,13 +140,6 @@ const state = {
   botUserId: /** @type {string | null} */ (null),
 };
 
-/** Observability only — not wired to any route; a future debug surface can
- * read it, and it keeps the structural test honest about what state this
- * module tracks. Never includes the token. */
-export function getDiscordGatewayStatus() {
-  return { ...state };
-}
-
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
 }
@@ -138,6 +150,48 @@ function warn(...args) {
 
 function error(...args) {
   console.error(LOG_PREFIX, ...args);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry the manager's INITIAL connect up to `INITIAL_CONNECT_MAX_ATTEMPTS`
+ * times with a capped exponential backoff + full jitter
+ * (`computeInitialConnectBackoffMs`, unit-tested in
+ * discord_gateway.core.test.mjs) before giving up (I4). See this file's
+ * header comment ("INITIAL-CONNECT RETRY") for why this can never retry a
+ * fatal close code: that path does not reject this call at all — it is
+ * carried entirely by the Closed/Error listeners already attached above
+ * (before this runs), which is what performs the actual permanent stop.
+ *
+ * Exported (unlike the rest of this file's internals) because, unlike
+ * `startDiscordGateway`, it only needs an object shaped like
+ * `{ connect(): Promise<void> }` — it never constructs a WebSocketManager or
+ * opens a socket itself — so it CAN be exercised behaviorally with
+ * `node --test` and a fake manager, see discord-gateway-wiring.test.mjs.
+ * `deps.sleep` lets those tests skip real backoff delays.
+ *
+ * @param {WebSocketManager} manager
+ * @param {{ sleep?: (ms: number) => Promise<void> }} [deps]
+ */
+export async function connectWithRetry(manager, deps = {}) {
+  const wait = deps.sleep ?? sleep;
+  for (let attempt = 1; attempt <= INITIAL_CONNECT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await manager.connect();
+      return;
+    } catch (err) {
+      if (attempt === INITIAL_CONNECT_MAX_ATTEMPTS) throw err;
+      const delay = computeInitialConnectBackoffMs(attempt);
+      warn(
+        `initial connect failed (attempt ${attempt}/${INITIAL_CONNECT_MAX_ATTEMPTS}) — retrying in ${delay}ms:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      await wait(delay);
+    }
+  }
 }
 
 /**
@@ -221,11 +275,11 @@ export async function startDiscordGateway(env = process.env) {
       });
     });
 
-    await manager.connect();
+    await connectWithRetry(manager);
   } catch (err) {
     state.stopped = true;
     error(
-      "failed to start (e.g. fetching /gateway/bot info, or an invalid token) — not retrying automatically:",
+      `failed to start after ${INITIAL_CONNECT_MAX_ATTEMPTS} attempts (e.g. persistent REST/network failure, session_start_limit, or bad Discord credentials) — giving up:`,
       err instanceof Error ? err.message : String(err),
     );
   }

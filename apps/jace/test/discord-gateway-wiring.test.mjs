@@ -1,4 +1,5 @@
-// Structural test for the Discord Gateway listener's wiring.
+// Structural test for the Discord Gateway listener's wiring, PLUS one
+// behavioral exception (see below).
 //
 // agent/lib/discord-gateway.mjs imports a real `@discordjs/ws` client and
 // opens a live socket on call — `node --test` cannot exercise that without a
@@ -13,11 +14,18 @@
 // the safety properties the spec calls out as the highest-risk part: an
 // attached `error` listener (or the process can crash), a fatal close that
 // stops rather than reconnects, and exactly one `connect()` call site.
+//
+// EXCEPTION — `connectWithRetry` (I4): unlike everything else here, it takes
+// an already-constructed manager and never opens a socket itself, so it CAN
+// be exercised directly with a fake `{ connect() }` and an injected `sleep`.
+// See the "connectWithRetry — BEHAVIORAL" section at the bottom.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { connectWithRetry } from "../agent/lib/discord-gateway.mjs";
+import { INITIAL_CONNECT_MAX_ATTEMPTS } from "../agent/lib/discord_gateway.core.mjs";
 
 const sourcePath = fileURLToPath(new URL("../agent/lib/discord-gateway.mjs", import.meta.url));
 const code = readFileSync(sourcePath, "utf8");
@@ -86,6 +94,38 @@ test("connect() is called exactly once in the source — no reconnect-on-close c
   assert.equal(occurrences.length, 1, "expected exactly one manager.connect() call site");
 });
 
+// ---------------------------------------------------------------------------
+// I4 — the INITIAL connect is retried with a capped backoff, but a fatal
+// close must remain the only PERMANENT stop (never retry 4014/4004).
+// ---------------------------------------------------------------------------
+
+test("imports the initial-connect backoff helpers from the pure core (I4)", () => {
+  assert.match(
+    code,
+    /import\s*{[^}]*computeInitialConnectBackoffMs[^}]*}\s*from\s*["']\.\/discord_gateway\.core\.mjs["']/s,
+  );
+  assert.match(code, /\bINITIAL_CONNECT_MAX_ATTEMPTS\b/);
+});
+
+test("retries the INITIAL connect on failure instead of giving up after one attempt", () => {
+  assert.match(code, /for\s*\(\s*let\s+attempt\s*=\s*1;\s*attempt\s*<=\s*INITIAL_CONNECT_MAX_ATTEMPTS/);
+  assert.match(code, /computeInitialConnectBackoffMs\(attempt\)/);
+});
+
+test("the initial-connect retry loop rethrows once attempts are exhausted, so startDiscordGateway's own catch still runs", () => {
+  const retryFnMatch = code.match(/async function connectWithRetry\([\s\S]*?\n\}/);
+  assert.ok(retryFnMatch, "connectWithRetry function not found");
+  assert.match(retryFnMatch[0], /throw err/);
+});
+
+test("the Closed handler (where fatal codes are classified) never itself calls connect() — retries live exclusively in the one-time boot path, never triggered by a fatal close", () => {
+  const closedHandlerMatch = code.match(
+    /manager\.on\(WebSocketShardEvents\.Closed,[\s\S]*?\n {4}\}\);/,
+  );
+  assert.ok(closedHandlerMatch, "Closed handler block not found");
+  assert.doesNotMatch(closedHandlerMatch[0], /connect\(/);
+});
+
 test("startDiscordGateway guards against being started twice in the same process", () => {
   assert.match(code, /state\.started/);
 });
@@ -109,12 +149,92 @@ test("never logs the token", () => {
   }
 });
 
-test("exports startDiscordGateway and a status getter", () => {
+test("exports startDiscordGateway", () => {
   assert.match(code, /export\s+(?:async\s+)?function\s+startDiscordGateway/);
-  assert.match(code, /export\s+function\s+getDiscordGatewayStatus/);
+});
+
+test("does not export the old getDiscordGatewayStatus dead code (review minor — it was referenced only by its own test; removed rather than wired to a real caller)", () => {
+  assert.doesNotMatch(code, /getDiscordGatewayStatus/);
 });
 
 test("documents the multi-replica stance explicitly (spec requirement)", () => {
   assert.match(code, /MULTI-REPLICA STANCE/);
   assert.match(code, /ON CONFLICT/i);
+});
+
+// ---------------------------------------------------------------------------
+// connectWithRetry — BEHAVIORAL (I4). See the header comment's "EXCEPTION".
+// ---------------------------------------------------------------------------
+
+/** A fake manager: `behaviors[i]` is either "ok" (connect() resolves) or any
+ * other string (connect() rejects with an Error carrying that string as its
+ * message) for the (0-indexed) i-th call. */
+function fakeManager(behaviors) {
+  let callCount = 0;
+  return {
+    calls: () => callCount,
+    async connect() {
+      const behavior = behaviors[callCount];
+      callCount += 1;
+      if (behavior === "ok") return;
+      throw new Error(behavior);
+    },
+  };
+}
+
+/** Injected sleep that resolves immediately but records every requested
+ * delay, so tests run instantly with no real timers. */
+function instantSleep() {
+  const delays = [];
+  return { sleep: async (ms) => { delays.push(ms); }, delays };
+}
+
+test("connectWithRetry: succeeds on the first attempt without any retry", async () => {
+  const manager = fakeManager(["ok"]);
+  const { sleep, delays } = instantSleep();
+  await connectWithRetry(manager, { sleep });
+  assert.equal(manager.calls(), 1);
+  assert.deepEqual(delays, []);
+});
+
+test("connectWithRetry: retries after failures, then succeeds", async () => {
+  const manager = fakeManager(["boom-1", "boom-2", "ok"]);
+  const { sleep, delays } = instantSleep();
+  await connectWithRetry(manager, { sleep });
+  assert.equal(manager.calls(), 3);
+  assert.equal(delays.length, 2, "slept before each retry, not before the final success");
+});
+
+test("connectWithRetry: exhausts INITIAL_CONNECT_MAX_ATTEMPTS then rethrows the LAST attempt's error", async () => {
+  const manager = fakeManager(["e1", "e2", "e3", "e4", "e5", "e6-never-reached"]);
+  const { sleep, delays } = instantSleep();
+  await assert.rejects(
+    () => connectWithRetry(manager, { sleep }),
+    (err) => {
+      assert.equal(err.message, "e5");
+      return true;
+    },
+  );
+  assert.equal(manager.calls(), INITIAL_CONNECT_MAX_ATTEMPTS, "never attempts a 6th time");
+  assert.equal(
+    delays.length,
+    INITIAL_CONNECT_MAX_ATTEMPTS - 1,
+    "slept between each retry, but not after the final giving-up",
+  );
+});
+
+test("connectWithRetry: never calls connect() more than INITIAL_CONNECT_MAX_ATTEMPTS times, even if every attempt fails", async () => {
+  const manager = fakeManager(new Array(10).fill("always fails"));
+  const { sleep } = instantSleep();
+  await assert.rejects(() => connectWithRetry(manager, { sleep }));
+  assert.equal(manager.calls(), INITIAL_CONNECT_MAX_ATTEMPTS);
+});
+
+test("connectWithRetry: the FIRST retry is attempted immediately after a failure (no delay parameter of 0 vs undefined confusion) — sleep is always called with a number", async () => {
+  const manager = fakeManager(["boom", "ok"]);
+  const { sleep, delays } = instantSleep();
+  await connectWithRetry(manager, { sleep });
+  assert.equal(delays.length, 1);
+  assert.equal(typeof delays[0], "number");
+  assert.ok(delays[0] >= 0);
 });

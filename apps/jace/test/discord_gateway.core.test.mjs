@@ -19,6 +19,8 @@ import {
   resolveGatewayConsoleConfig,
   buildDiscordInboundUrl,
   postDiscordInboundMessage,
+  INITIAL_CONNECT_MAX_ATTEMPTS,
+  computeInitialConnectBackoffMs,
 } from "../agent/lib/discord_gateway.core.mjs";
 
 const BOT_ID = "1530306014740615328";
@@ -58,6 +60,19 @@ test("isDirectMessage: true iff guild_id is absent/null/undefined", () => {
   assert.equal(isDirectMessage({ guild_id: null }), true);
   assert.equal(isDirectMessage({ guild_id: undefined }), true);
   assert.equal(isDirectMessage({ guild_id: "guild-1" }), false);
+});
+
+test("isDirectMessage: false when guild_id is missing but a member object is present (malformed-guild-event guard)", () => {
+  // Discord attaches `member` to every guild message and never to a DM — a
+  // guild_id-only check fails OPEN on a malformed event missing guild_id but
+  // still carrying `member`. Requiring member == null too keeps it out of
+  // the "admit unconditionally" DM path.
+  assert.equal(isDirectMessage({ member: { nick: "x" } }), false);
+  assert.equal(isDirectMessage({ guild_id: null, member: {} }), false);
+});
+
+test("isDirectMessage: still true for a real DM shape (no guild_id, no member)", () => {
+  assert.equal(isDirectMessage({ guild_id: undefined, member: undefined }), true);
 });
 
 test("mentionsBot: true iff botUserId appears in the mentions array", () => {
@@ -141,6 +156,47 @@ test("admitMessage: a role mention (not this user id) does not admit", () => {
   assert.equal(admitMessage(msg, BOT_ID).admit, false);
 });
 
+test("admitMessage: a malformed event with no guild_id but a member object is NOT treated as a DM (fails closed, not open)", () => {
+  const msg = guildMessage({ member: { nick: "x" } });
+  delete msg.guild_id;
+  // mentions is [] by default (from guildMessage()) -> falls through to the
+  // ordinary "guild message without a mention" rejection, not silently
+  // admitted as a DM.
+  const result = admitMessage(msg, BOT_ID);
+  assert.equal(result.admit, false);
+  assert.match(result.reason, /without a mention/);
+});
+
+// ---------------------------------------------------------------------------
+// admitMessage — I1: mention-only content (nothing left after stripping the
+// bot's own mention token) must be skipped cleanly, not admitted then 400'd
+// by the console's discord-inbound route.
+// ---------------------------------------------------------------------------
+
+test("admitMessage: a guild message that is ONLY the bot mention is NOT admitted (I1)", () => {
+  const msg = guildMessage({ content: `<@${BOT_ID}>`, mentions: [{ id: BOT_ID }] });
+  const result = admitMessage(msg, BOT_ID);
+  assert.equal(result.admit, false);
+  assert.match(result.reason, /empty after stripping/);
+});
+
+test("admitMessage: a guild message with only whitespace around the mention token is NOT admitted", () => {
+  const msg = guildMessage({ content: `   <@!${BOT_ID}>   `, mentions: [{ id: BOT_ID }] });
+  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+});
+
+test("admitMessage: a guild mention WITH real text after it is still admitted", () => {
+  const msg = guildMessage({ content: `<@${BOT_ID}> hello`, mentions: [{ id: BOT_ID }] });
+  const result = admitMessage(msg, BOT_ID);
+  assert.equal(result.admit, true);
+  assert.match(result.reason, /mentions the bot/);
+});
+
+test("admitMessage: a DM is unaffected by the strip-empty check when its content has no mention token", () => {
+  const result = admitMessage(dmMessage({ content: "hello" }), BOT_ID);
+  assert.equal(result.admit, true);
+});
+
 // ---------------------------------------------------------------------------
 // stripBotMention
 // ---------------------------------------------------------------------------
@@ -209,6 +265,13 @@ test("shapeInboundPayload: display name falls back to username, then the raw id"
   const shaped = shapeInboundPayload({ message: noNameAtAll, botUserId: BOT_ID });
   assert.equal(shaped.senderDisplay, "user-3");
   assert.equal(shaped.senderUsername, null);
+});
+
+test("shapeInboundPayload: display name uses ?? not || — an explicit empty string is kept, matching the interactions webhook door's chain", () => {
+  const emptyGlobalName = guildMessage({
+    author: { id: "user-4", username: "ada_handle", global_name: "", bot: false },
+  });
+  assert.equal(shapeInboundPayload({ message: emptyGlobalName, botUserId: BOT_ID }).senderDisplay, "");
 });
 
 test("shapeInboundPayload: works on a DM message (no channel-mention token to strip)", () => {
@@ -378,4 +441,39 @@ test("postDiscordInboundMessage: a 2xx with an unparsable body is still ok:true,
     }),
   });
   assert.deepEqual(result, { ok: true, deduped: false });
+});
+
+// ---------------------------------------------------------------------------
+// computeInitialConnectBackoffMs / INITIAL_CONNECT_MAX_ATTEMPTS (I4) — the
+// INITIAL manager.connect() retry backoff. Mid-session reconnect backoff is
+// @discordjs/ws's own internal responsibility and is not covered here.
+// ---------------------------------------------------------------------------
+
+test("INITIAL_CONNECT_MAX_ATTEMPTS: capped at 5 per the spec", () => {
+  assert.equal(INITIAL_CONNECT_MAX_ATTEMPTS, 5);
+});
+
+test("computeInitialConnectBackoffMs: grows exponentially with attempt, capped at 15s (random()=1 pins the delay to the cap exactly)", () => {
+  const deps = { random: () => 1 };
+  assert.equal(computeInitialConnectBackoffMs(1, deps), 500);
+  assert.equal(computeInitialConnectBackoffMs(2, deps), 1000);
+  assert.equal(computeInitialConnectBackoffMs(3, deps), 2000);
+  assert.equal(computeInitialConnectBackoffMs(4, deps), 4000);
+  assert.equal(computeInitialConnectBackoffMs(5, deps), 8000);
+  assert.equal(computeInitialConnectBackoffMs(6, deps), 15000, "capped at the max delay");
+  assert.equal(computeInitialConnectBackoffMs(20, deps), 15000, "stays capped, never grows unbounded");
+});
+
+test("computeInitialConnectBackoffMs: random()=0 -> zero delay (full jitter's lower bound)", () => {
+  assert.equal(computeInitialConnectBackoffMs(1, { random: () => 0 }), 0);
+});
+
+test("computeInitialConnectBackoffMs: mid-range jitter stays strictly inside (0, cap) for that attempt", () => {
+  const delay = computeInitialConnectBackoffMs(2, { random: () => 0.5 });
+  assert.equal(delay, 500, "0.5 * 1000ms cap");
+});
+
+test("computeInitialConnectBackoffMs: defaults to Math.random when no deps given, staying in [0, 500)", () => {
+  const delay = computeInitialConnectBackoffMs(1);
+  assert.ok(delay >= 0 && delay < 500, `expected [0,500), got ${delay}`);
 });

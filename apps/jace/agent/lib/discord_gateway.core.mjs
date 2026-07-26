@@ -46,9 +46,17 @@ export function isFromBot(author) {
 
 /** Discord omits `guild_id` entirely on a DM MESSAGE_CREATE (present on every
  * guild message) — the standard, documented way to tell them apart without a
- * channel-type cache lookup. */
+ * channel-type cache lookup. Also requires `member` to be absent: Discord
+ * attaches a (possibly partial) `member` object to every GUILD message and
+ * never to a DM, so a malformed/corrupted event that is missing `guild_id`
+ * but still carries a `member` is NOT treated as a DM. This matters because
+ * `admitMessage` admits every DM unconditionally with no mention check — a
+ * `guild_id == null` check alone fails OPEN on such an event (Jace would
+ * answer every message in the channel); requiring `member == null` too means
+ * it instead falls through to the ordinary mention check, same as any other
+ * guild message. */
 export function isDirectMessage(message) {
-  return message?.guild_id == null;
+  return message?.guild_id == null && message?.member == null;
 }
 
 /**
@@ -73,8 +81,15 @@ export function mentionsBot(mentions, botUserId) {
  * (known only after READY; see discord-gateway.mjs) — with no botUserId yet
  * there is no way to tell a real mention from noise, so nothing is admitted.
  *
+ * Also rejects a message that is admissible ONLY because of the bot's own
+ * mention token: stripping `<@BOT_ID>` out of a guild message like "@Jace"
+ * (nothing else) leaves empty text (I1) — that is the single most likely
+ * first thing anyone types at the bot, and admitting it would only reach the
+ * console's discord-inbound route to be rejected with `text is required`.
+ * Caught here instead, so it is skipped cleanly and never enqueued.
+ *
  * @param {{ author?: { id?: string, bot?: boolean } | null, guild_id?: string | null,
- *           mentions?: Array<{ id?: string }>, content?: string }} message
+ *           member?: unknown, mentions?: Array<{ id?: string }>, content?: string }} message
  * @param {string | null | undefined} botUserId
  * @returns {{ admit: boolean, reason: string }}
  */
@@ -92,13 +107,14 @@ export function admitMessage(message, botUserId) {
   if (!content) {
     return { admit: false, reason: "empty content" };
   }
-  if (isDirectMessage(message)) {
-    return { admit: true, reason: "direct message" };
+  const isDM = isDirectMessage(message);
+  if (!isDM && !mentionsBot(message.mentions, botUserId)) {
+    return { admit: false, reason: "guild message without a mention of the bot" };
   }
-  if (mentionsBot(message.mentions, botUserId)) {
-    return { admit: true, reason: "mentions the bot" };
+  if (!stripBotMention(message.content, botUserId)) {
+    return { admit: false, reason: "empty after stripping the bot mention" };
   }
-  return { admit: false, reason: "guild message without a mention of the bot" };
+  return { admit: true, reason: isDM ? "direct message" : "mentions the bot" };
 }
 
 // --- 2. Payload shaping ------------------------------------------------------
@@ -126,10 +142,13 @@ export function buildProviderMessageId(channelId, messageId) {
 
 /** `global_name` (display name) falls back to `username`, then the raw id —
  * the SAME fallback chain the interactions webhook door's `displayNameFor`
- * already uses, kept consistent so a user's display name never depends on
- * which Discord door they reached Jace through. */
+ * already uses (`apps/console/app/api/v1/connectors/discord/webhook/route.ts`:
+ * `user.global_name ?? user.username ?? user.id`), kept consistent so a
+ * user's display name never depends on which Discord door they reached Jace
+ * through — including on an edge case like an explicit empty string, which
+ * `??` keeps and `||` would incorrectly treat as "try the next fallback". */
 function displayNameFor(author) {
-  return author?.global_name || author?.username || author?.id || "";
+  return author?.global_name ?? author?.username ?? author?.id ?? "";
 }
 
 /**
@@ -321,4 +340,46 @@ export async function postDiscordInboundMessage({
     // best-effort observability, not load-bearing.
   }
   return { ok: true, deduped };
+}
+
+// --- 5. Initial-connect retry backoff (I4) -----------------------------------
+//
+// Capped attempts for the INITIAL `manager.connect()` only —
+// @discordjs/ws's own internal backoff already owns every reconnect AFTER a
+// successful first connection (RESUME or a fresh IDENTIFY on a non-fatal
+// close; see `classifyCloseCode`'s doc comment above). `connect()` fetches
+// GET /gateway/bot over REST before any socket opens and can also throw on
+// `session_start_limit` — without a retry around exactly that, one blip at
+// process boot (a network error, a transient REST failure) leaves Jace
+// permanently offline until a redeploy, since nothing else would ever call
+// `connect()` again. See discord-gateway.mjs's `connectWithRetry` (and its
+// own header comment) for why this can never retry a FATAL close code
+// (4014/4004 etc.): that path does not reject `manager.connect()` at all —
+// it is carried entirely by the shard's `error`/`Closed` events, independent
+// of whatever awaited `connect()`.
+
+/** Capped retry count for the initial connect (I4's "e.g. 5 attempts"). */
+export const INITIAL_CONNECT_MAX_ATTEMPTS = 5;
+const INITIAL_CONNECT_BASE_DELAY_MS = 500;
+const INITIAL_CONNECT_MAX_DELAY_MS = 15000;
+
+/**
+ * Full-jitter capped exponential backoff (the standard "decorrelated/full
+ * jitter" shape: `random(0, min(cap, base * 2^(attempt-1)))`) for the delay
+ * BEFORE retrying a failed initial connect. Uniform random jitter — not a
+ * fixed schedule — so multiple replicas restarting at once (e.g. a Railway
+ * deploy overlap) do not all hammer Discord's REST API on the same clock.
+ *
+ * @param {number} attempt 1-indexed number of the attempt that just failed
+ *   (the delay returned is the wait before the NEXT attempt).
+ * @param {{ random?: () => number }} [deps] injected RNG for deterministic tests.
+ * @returns {number} delay in whole milliseconds, `0 <= delay < cap`.
+ */
+export function computeInitialConnectBackoffMs(attempt, deps = {}) {
+  const random = deps.random ?? Math.random;
+  const cap = Math.min(
+    INITIAL_CONNECT_MAX_DELAY_MS,
+    INITIAL_CONNECT_BASE_DELAY_MS * 2 ** (attempt - 1),
+  );
+  return Math.floor(random() * cap);
 }

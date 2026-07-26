@@ -11,6 +11,28 @@
 //   DISCORD_APPLICATION_ID  — edits the deferred response / sends followups
 //   DISCORD_BOT_TOKEN       — proactive messages + typing indicators
 //
+// These three are passed to `discordChannel({ credentials })` EXPLICITLY
+// below — do not remove that and rely on env alone (review finding C1).
+// eve's docs (node_modules/eve/docs/channels/discord.mdx) and api.d.ts both
+// document a same-named env-var fallback inside resolveDiscordBotToken /
+// resolveDiscordApplicationId / resolveDiscordPublicKey, but reading the
+// INSTALLED COMPILED runtime (node_modules/eve/dist/src/public/channels/
+// discord/{api,discordChannel}.js) shows only applicationId and publicKey
+// actually reach their fallback (both are called unconditionally). botToken's
+// fallback is DEAD CODE: callDiscordApi only calls resolveDiscordBotToken
+// (where `?? process.env.DISCORD_BOT_TOKEN` lives) inside
+// `if (e.botToken !== void 0)` — so with no `credentials.botToken` passed,
+// that branch never runs and no Authorization header is ever set, for ANY
+// call (sendDiscordChannelMessage, triggerDiscordTypingIndicator, and
+// `request()` with `botAuth: true`), env var set or not. A Gateway-sourced
+// session (agent/lib/discord-gateway.mjs) has no interaction token, so its
+// post() always takes the botToken-requiring sendViaChannel path — omitting
+// `credentials` here means every such reply goes out unauthenticated (401)
+// and the user gets nothing, not even a typing indicator. Verified by
+// executing eve's own compiled functions with the env var set and observing
+// `auth: null` — trust the compiled source over the docs/api.d.ts if they
+// ever disagree again; this exact gap has now caused two bugs in this arc.
+//
 // NOTE: shape follows the eve@0.19.0 docs; boot behavior when the env is unset and
 // live delivery are verified against the running sidecar (#1038/#1101), behind the
 // per-workspace `jaceOwnsDiscordNotify` opt-in.
@@ -74,7 +96,11 @@
 // `events["turn.started"]` overrides Eve's default one-shot `startTyping()`
 // with a keep-alive (spec: docs/superpowers/specs/2026-07-26-discord-gateway-listener-design.md
 // "Reply path" — Discord expires a typing indicator after ~10s, so on a slow
-// model the chat looks dead for the rest of a 30s-2min turn). Mirrors
+// model the chat looks dead for the rest of a 30s-2min turn). Refreshed here
+// every 8000ms — comfortably under Discord's ~10s expiry, but NOT the
+// keep-alive module's own 4000ms default, which is tuned to Telegram's much
+// shorter ~5s expiry (see typing-keepalive.core.mjs); leaving Discord on that
+// default would fire ~2.5x the /typing calls Discord actually needs. Mirrors
 // telegram.ts's identical use of the SAME agent/lib/typing-keepalive.core.mjs
 // (stopped on message.completed / turn.completed; the failure path is
 // backstopped by the keep-alive's own safety cap, since eve does not export
@@ -118,11 +144,16 @@ async function followupTransport(
   return { status: res.status, body };
 }
 
-const typing = createTypingKeepalive();
+const typing = createTypingKeepalive({ refreshMs: 8000 });
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "discord";
 
 export default discordChannel({
+  credentials: {
+    botToken: process.env["DISCORD_BOT_TOKEN"],
+    applicationId: process.env["DISCORD_APPLICATION_ID"],
+    publicKey: process.env["DISCORD_PUBLIC_KEY"],
+  },
   events: {
     "turn.started"(_data, channel, ctx) {
       typing.start(convoKey(ctx), () => channel.discord.startTyping());

@@ -22,6 +22,17 @@ const discordTsPath = fileURLToPath(
 );
 const code = readFileSync(discordTsPath, "utf8");
 
+test("passes Discord credentials explicitly (C1) — eve's compiled callDiscordApi only sets the auth header when config.credentials.botToken is defined, so its documented DISCORD_BOT_TOKEN env fallback is unreachable without this", () => {
+  assert.match(code, /credentials\s*:\s*\{/);
+  assert.match(code, /botToken\s*:\s*process\.env\[["']DISCORD_BOT_TOKEN["']\]/);
+  assert.match(code, /applicationId\s*:\s*process\.env\[["']DISCORD_APPLICATION_ID["']\]/);
+  assert.match(code, /publicKey\s*:\s*process\.env\[["']DISCORD_PUBLIC_KEY["']\]/);
+});
+
+test("tunes the typing keep-alive refresh for Discord's ~10s expiry, not the module's Telegram-tuned 4000ms default", () => {
+  assert.match(code, /createTypingKeepalive\(\s*\{\s*refreshMs:\s*8000\s*\}\s*\)/);
+});
+
 test("imports the pure splitter from agent/lib", () => {
   assert.match(
     code,

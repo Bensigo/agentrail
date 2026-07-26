@@ -14,6 +14,17 @@ Score vocabulary (FIXED — do not invent additional score names elsewhere):
 
     solved          — eval rep record's hidden-test outcome (bool)
     false_green     — eval rep record's objective-gate false-green probe (bool)
+    gate_passed     — eval rep record's own Objective Gate decision (bool).
+                      Added for issue #1221 AC2: pushed ALONGSIDE false_green
+                      (never alone) so the false-green RATE (false_green ÷
+                      gate_passed — the same ratio
+                      ``agentrail.evals.reporter._arm_report`` computes
+                      locally per arm) is computable as a Langfuse aggregate
+                      without a per-trace join — see
+                      ``agentrail.observability.calibration.false_green_rate``.
+                      Production run records never carry this field (see
+                      ``_production_scores`` below) — production coverage is
+                      explicitly deferred to #1222.
     verify_verdict  — production run record's verify-phase structured verdict
                       ("accepted", bool)
     judge_verdict   — optional external shadow-judge decision, supplied via
@@ -140,11 +151,30 @@ silently swallowed as a per-record skip.
 
 ``push_scores`` return contract: ``{"pushed": int, "skipped": [{"record":
 <filename>, "reason": <str>}, ...]}``. ``pushed`` counts individual score
-POSTs (one record can contribute more than one — e.g. an eval record with
-both ``solved`` and ``false_green`` present pushes two), NOT records.
-``dry_run=True`` performs all the same file reads and decisions but issues
-zero POSTs — mirrors ``sync_models``'s dry-run contract exactly (still
-reports what WOULD be pushed).
+POSTs (one record can contribute more than one — e.g. a real eval record
+with ``solved``, ``false_green``, AND ``gate_passed`` all present pushes
+three), NOT records. ``dry_run=True`` performs all the same file reads and
+decisions but issues zero POSTs — mirrors ``sync_models``'s dry-run contract
+exactly (still reports what WOULD be pushed).
+
+Automatic push at rep finalization (issue #1221 AC3)
+------------------------------------------------------
+``push_scores`` above is the explicit, manually-invoked operator action (its
+HTTP failures propagate — see the fail-closed contract above). A SEPARATE
+entry point, :func:`push_eval_rep_score`, is called automatically by
+``agentrail.evals.spine`` right after each rep's forensics record is
+written, so a corpus run pushes its ``solved``/``false_green``/
+``gate_passed`` scores WITHOUT an operator ever running ``agentrail langfuse
+push-scores`` by hand. It shares the exact same per-record logic
+(:func:`_record_scores`) but is deliberately FAIL-SOFT: it is called from
+inside the eval spine's hot per-unit path, so a transient Langfuse outage
+must never fail — or even slow down the retry of — an eval run. Every
+exception (network, malformed record, whatever) is caught and logged; the
+caller never sees one. Gated by the SAME ``AGENTRAIL_LANGFUSE_ENABLED`` +
+``LANGFUSE_*`` env-var convention every other automatic Langfuse integration
+in this codebase uses (see ``agentrail.observability.tracer.RunTracer.start``)
+— the eval spine only constructs a client, and therefore only calls this, when
+that convention says push. This is why no additional feature flag exists here.
 """
 from __future__ import annotations
 
@@ -160,7 +190,7 @@ _log = logging.getLogger(__name__)
 # Fixed score-name vocabulary (module docstring). Exported for callers (e.g.
 # Task 9's calibration report) that need to filter Langfuse scores back down
 # to exactly the names this module ever pushes.
-SCORE_NAMES = ("solved", "false_green", "verify_verdict", "judge_verdict")
+SCORE_NAMES = ("solved", "false_green", "gate_passed", "verify_verdict", "judge_verdict")
 
 
 def _bool_value(value: Any) -> Optional[int]:
@@ -237,7 +267,18 @@ def _identity_and_kind(record: dict, file_path: Path) -> Tuple[Optional[str], Op
 
 
 def _production_scores(record: dict) -> List[Tuple[str, int, Optional[str]]]:
-    """``[(score_name, value, comment)]`` derivable from a production run record."""
+    """``[(score_name, value, comment)]`` derivable from a production run record.
+
+    Deliberately never emits ``false_green`` or ``gate_passed``: a
+    production ``agentrail.run.run_record`` has no hidden-test ground truth
+    (unlike an eval rep, where ``solved`` is measured against a hidden
+    answer key) and no persisted Objective Gate decision either, so neither
+    field is even DEFINABLE for a production run today. This is issue #1221
+    AC4 — production false-green coverage is explicitly OUT of scope here
+    and deferred to #1222 (the private-gate issue); do not add a
+    ``gate_passed``/``false_green`` field to this function to "complete" the
+    parallel with ``_eval_scores`` without reading that issue first.
+    """
     scores: List[Tuple[str, int, Optional[str]]] = []
     verdict = record.get("verify_verdict")
     if isinstance(verdict, dict):
@@ -256,7 +297,67 @@ def _eval_scores(record: dict) -> List[Tuple[str, int, Optional[str]]]:
     false_green = _bool_value(record.get("false_green"))
     if false_green is not None:
         scores.append(("false_green", false_green, None))
+    # Objective Gate outcome (#1221 AC2) — pushed alongside false_green so the
+    # false-green RATE is computable as a Langfuse aggregate (see SCORE_NAMES
+    # docstring above). ``.get("gate_passed")`` is None (not pushed) for
+    # records written before this field existed — same None-vs-absent
+    # discipline as solved/false_green above, never a fabricated False.
+    gate_passed = _bool_value(record.get("gate_passed"))
+    if gate_passed is not None:
+        scores.append(("gate_passed", gate_passed, None))
     return scores
+
+
+def _record_scores(
+    client: LangfuseHTTP,
+    data: dict,
+    file_path: Path,
+    *,
+    judge_value: Optional[int] = None,
+    dry_run: bool = False,
+) -> Tuple[int, Optional[str]]:
+    """Push every applicable score for ONE already-parsed record dict.
+
+    Returns ``(pushed_count, skip_reason)`` — ``skip_reason`` is ``None`` on
+    success. Shared by :func:`push_scores`'s directory-walk loop (the
+    manual/batch path) and :func:`push_eval_rep_score` (the automatic
+    per-rep path, #1221 AC3) — both apply the EXACT same fail-closed rules
+    (synthetic skip, identity derivation, score extraction) so a rep pushed
+    automatically at finalization is indistinguishable from one pushed later
+    by a manual ``push-scores`` re-run over the same record.
+
+    Does NOT handle file read/parse errors — those are the caller's concern
+    (only ``push_scores`` reads from disk; ``push_eval_rep_score`` is handed
+    an in-memory dict that was never serialized to begin with).
+    """
+    # Synthetic-hygiene rule: checked BEFORE identity/verdict extraction so a
+    # synthetic record is NEVER turned into any score, regardless of what
+    # else it contains.
+    if data.get("synthetic") is True:
+        return 0, "synthetic"
+
+    identity, kind = _identity_and_kind(data, file_path)
+    if identity is None:
+        return 0, "missing run_id"
+
+    record_scores = (
+        _production_scores(data) if kind == "production" else _eval_scores(data)
+    )
+
+    if judge_value is not None:
+        record_scores.append(("judge_verdict", judge_value, None))
+
+    if not record_scores:
+        return 0, "missing verdict"
+
+    trace_id = deterministic_trace_id(identity)
+    pushed = 0
+    for name, value, comment in record_scores:
+        body = _score_body(trace_id, name, value, comment)
+        if not dry_run:
+            client.post_json("/api/public/scores", body)
+        pushed += 1
+    return pushed, None
 
 
 def push_scores(
@@ -294,35 +395,50 @@ def push_scores(
             skipped.append({"record": record_name, "reason": "unparseable"})
             continue
 
-        # Synthetic-hygiene rule: checked BEFORE identity/verdict extraction
-        # so a synthetic record is NEVER turned into any score, regardless
-        # of what else it contains.
-        if data.get("synthetic") is True:
-            skipped.append({"record": record_name, "reason": "synthetic"})
-            continue
-
-        identity, kind = _identity_and_kind(data, file_path)
-        if identity is None:
-            skipped.append({"record": record_name, "reason": "missing run_id"})
-            continue
-
-        record_scores = (
-            _production_scores(data) if kind == "production" else _eval_scores(data)
+        identity, _kind = _identity_and_kind(data, file_path)
+        judge_value = (
+            _judge_verdict_for(ledger, identity) if identity is not None else None
         )
 
-        judge_value = _judge_verdict_for(ledger, identity)
-        if judge_value is not None:
-            record_scores.append(("judge_verdict", judge_value, None))
-
-        if not record_scores:
-            skipped.append({"record": record_name, "reason": "missing verdict"})
+        record_pushed, reason = _record_scores(
+            client, data, file_path, judge_value=judge_value, dry_run=dry_run
+        )
+        if reason is not None:
+            skipped.append({"record": record_name, "reason": reason})
             continue
-
-        trace_id = deterministic_trace_id(identity)
-        for name, value, comment in record_scores:
-            body = _score_body(trace_id, name, value, comment)
-            if not dry_run:
-                client.post_json("/api/public/scores", body)
-            pushed += 1
+        pushed += record_pushed
 
     return {"pushed": pushed, "skipped": skipped}
+
+
+def push_eval_rep_score(client: LangfuseHTTP, record: dict, record_path: Path) -> None:
+    """Automatically push one eval rep's scores at finalization (issue #1221 AC3).
+
+    Called by ``agentrail.evals.spine`` immediately after a rep's forensics
+    record is written — NOT a manual operator action, and deliberately
+    FAIL-SOFT: unlike :func:`push_scores` (whose HTTP failures propagate,
+    per the module's fail-closed contract for an explicit operator command),
+    this is invoked from inside the eval spine's hot per-unit path, so a
+    transient Langfuse outage (or any other failure) must never fail — or
+    visibly disrupt — an eval run. Every exception is caught and logged;
+    this function never raises.
+
+    ``record`` is the SAME in-memory payload dict
+    ``agentrail.evals.spine._write_forensics_record`` writes to disk —
+    passed directly, not re-read from the file, so this never depends on
+    that write having succeeded. ``record_path`` is the (possibly
+    not-yet-existent) path that record was/would be written to; only its
+    ``.parent.name`` (the dated run-records directory) is read, to derive
+    the SAME identity string :func:`_identity_and_kind` would derive for a
+    later manual ``push-scores`` run over the same directory — so a rep
+    pushed automatically here and a rep pushed later by hand resolve to the
+    identical Langfuse trace id.
+    """
+    try:
+        _record_scores(client, record, record_path)
+    except Exception as exc:  # noqa: BLE001 — auto-push must never fail a run
+        _log.warning(
+            "langfuse auto-push failed for %s (eval run continues): %s",
+            record_path.name,
+            exc,
+        )

@@ -66,6 +66,7 @@ from agentrail.evals.spine import (
     SpineResult,
     run_spine,
 )
+from agentrail.observability.langfuse_client import LangfuseHTTP, client_if_enabled
 
 _log = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class SpineRunner(Protocol):
         reports_dir: Optional[Path],
         date: Optional[str],
         run_id: Optional[str],
+        langfuse_client: Optional[LangfuseHTTP] = None,
     ) -> SpineResult:
         ...  # pragma: no cover - Protocol body
 
@@ -205,6 +207,7 @@ def run_canary(
     executor: Optional[AgentExecutor] = None,
     hidden_test_runner: Optional[HiddenTestRunner] = None,
     metrics_writer: Optional[MetricsWriter] = None,
+    langfuse_client: Optional[LangfuseHTTP] = None,
     spine_runner: SpineRunner = run_spine,
 ) -> CanaryResult:
     """Run one nightly canary: fail-closed auth → bounded subset → dated report → telemetry.
@@ -252,6 +255,13 @@ def run_canary(
         metrics_writer = HttpMetricsWriter(target=resolved_target)
 
     executor = executor if executor is not None else SandboxAgentExecutor()
+    # Issue #1221 AC3: automatic per-rep score push, same opt-in convention as
+    # the CLI's `agentrail evals run` (AGENTRAIL_LANGFUSE_ENABLED + LANGFUSE_*
+    # — client_if_enabled() is a no-op None when unconfigured). An explicitly
+    # injected ``langfuse_client`` (e.g. a test spy) always wins.
+    resolved_langfuse_client = (
+        langfuse_client if langfuse_client is not None else client_if_enabled()
+    )
 
     date_str = date or _date.today().isoformat()
     run_id = f"canary-{date_str}"
@@ -266,6 +276,7 @@ def run_canary(
         reports_dir=reports_dir,
         date=date_str,
         run_id=run_id,
+        langfuse_client=resolved_langfuse_client,
     )
 
     _check_cost_bound(result, cost_bound_usd)

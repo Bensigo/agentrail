@@ -612,6 +612,158 @@ def test_render_markdown_omits_verdict_sections_for_old_shape_dicts():
     assert "Jace QA verdict vs reality" not in md
 
 
+# ---------------------------------------------------------------------------
+# #1221 AC2 — false_green_rate: false_green ÷ gate_passed, aggregated from
+# Langfuse scores. NOT an agreement metric — its own fetch, its own section.
+# ---------------------------------------------------------------------------
+
+
+def test_false_green_rate_computes_ratio(monkeypatch, client):
+    gate_passed_rows = [
+        _row("t1", "gate_passed", 1),
+        _row("t2", "gate_passed", 1),
+        _row("t3", "gate_passed", 1),
+        _row("t4", "gate_passed", 0),  # gate did NOT pass -> not in denominator
+    ]
+    false_green_rows = [
+        _row("t1", "false_green", 1),
+        _row("t2", "false_green", 0),
+        _row("t3", "false_green", 1),
+    ]
+    _serve_by_name(
+        monkeypatch,
+        {"gate_passed": gate_passed_rows, "false_green": false_green_rows},
+    )
+
+    result = calibration.false_green_rate(client)
+
+    assert result["gate_passed_count"] == 3  # only value==1 rows count
+    assert result["false_green_count"] == 2
+    assert result["rate"] == pytest.approx(2 / 3)
+    assert result["insufficient"] is True  # 3 < FALSE_GREEN_MIN_SAMPLE_SIZE (10)
+
+
+def test_false_green_rate_none_when_no_gate_passed_scores(monkeypatch, client):
+    """Undefined denominator (no gate-passed reps at all) -> rate is None,
+    never a fabricated 0.0 — same discipline as the local reporter."""
+    _serve_by_name(monkeypatch, {"gate_passed": [], "false_green": []})
+
+    result = calibration.false_green_rate(client)
+
+    assert result["gate_passed_count"] == 0
+    assert result["false_green_count"] == 0
+    assert result["rate"] is None
+    assert result["insufficient"] is True
+
+
+def test_false_green_rate_sufficient_above_min_sample(monkeypatch, client):
+    gate_passed_rows = [_row(f"t{i}", "gate_passed", 1) for i in range(12)]
+    false_green_rows = [_row(f"t{i}", "false_green", 1) for i in range(3)]
+    _serve_by_name(
+        monkeypatch,
+        {"gate_passed": gate_passed_rows, "false_green": false_green_rows},
+    )
+
+    result = calibration.false_green_rate(client)
+
+    assert result["gate_passed_count"] == 12
+    assert result["rate"] == pytest.approx(3 / 12)
+    assert result["insufficient"] is False
+
+
+def test_calibration_includes_false_green_key(monkeypatch, client):
+    """calibration() folds false_green_rate() in additively, alongside the
+    existing judge/triage/qa keys — never replacing them."""
+    _serve_by_name(
+        monkeypatch,
+        {
+            "gate_passed": [_row("t1", "gate_passed", 1)],
+            "false_green": [_row("t1", "false_green", 1)],
+        },
+    )
+
+    result = calibration.calibration(client)
+
+    assert "false_green" in result
+    assert result["false_green"]["gate_passed_count"] == 1
+    assert result["false_green"]["false_green_count"] == 1
+    # The pre-existing contract keys are untouched.
+    assert set(["n", "agreement", "insufficient"]).issubset(result.keys())
+
+
+def test_render_false_green_section_shows_rate_and_counts():
+    result = {
+        "gate_passed_count": 20,
+        "false_green_count": 5,
+        "rate": 0.25,
+        "insufficient": False,
+    }
+    md = calibration.render_markdown(
+        {
+            "n": 0,
+            "agreement": {"judge_vs_solved": None, "judge_vs_verify": None},
+            "insufficient": True,
+            "false_green": result,
+        },
+        generated_at="2026-07-26",
+    )
+    assert "False-green rate (eval harness, all pushed reps)" in md
+    rate_line = [l for l in md.splitlines() if l.startswith("| 25.0%")][0]
+    assert "n=20" in rate_line
+    assert "5" in rate_line
+
+
+def test_render_false_green_section_renders_insufficient_not_bare_rate():
+    result = {
+        "gate_passed_count": 4,
+        "false_green_count": 1,
+        "rate": 0.25,
+        "insufficient": True,
+    }
+    md = calibration.render_markdown(
+        {
+            "n": 0,
+            "agreement": {"judge_vs_solved": None, "judge_vs_verify": None},
+            "insufficient": True,
+            "false_green": result,
+        },
+        generated_at="2026-07-26",
+    )
+    assert "insufficient data" in md
+    assert "25.0%" not in md
+
+
+def test_render_false_green_section_absent_key_is_a_no_op():
+    """Old-shape result dicts (no false_green key) render unchanged — same
+    convention as the triage/qa sections."""
+    result = {
+        "n": 12,
+        "agreement": {"judge_vs_solved": 0.9166666666666666, "judge_vs_verify": None},
+        "insufficient": False,
+    }
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    assert "False-green rate" not in md
+
+
+def test_false_green_rate_production_records_never_contribute(monkeypatch, client):
+    """A production run's verify_verdict score is a DIFFERENT name from
+    gate_passed/false_green entirely, so it structurally never enters this
+    aggregate — the eval-only scope is enforced by score_push's push-side
+    contract (#1221 AC4), not by an extra filter here."""
+    _serve_by_name(
+        monkeypatch,
+        {
+            "gate_passed": [],
+            "false_green": [],
+            "verify_verdict": [_row("prod-run-1", "verify_verdict", 1)],
+        },
+    )
+    result = calibration.false_green_rate(client)
+    assert result["gate_passed_count"] == 0
+    assert result["false_green_count"] == 0
+    assert result["rate"] is None
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

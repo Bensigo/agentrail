@@ -213,6 +213,15 @@ class ArmReport:
     false_green_count: int = 0
     # None when NO run's gate passed (undefined denominator) — DISTINCT from a
     # 0.0 rate (gate passed but never a false-green). Never divide-by-zero.
+    #
+    # This IS issue #1221 AC1 ("false-green rate computed from eval-rep
+    # records and shown in the eval report output") — it predates #1221
+    # (issue #940) and needed no new work there. #1221's real gaps were the
+    # Langfuse side: this same false_green ÷ gate_passed ratio, aggregated
+    # ACROSS runs as a Langfuse-queryable metric (AC2 — see
+    # agentrail.observability.calibration.false_green_rate), and the
+    # false_green score's automatic push at rep finalization (AC3 — see
+    # agentrail.observability.score_push.push_eval_rep_score).
     false_green_rate: Optional[float] = None
     # per-task solve fractions, kept for transparency in the report.
     per_task_solve_rate: Dict[str, float] = field(default_factory=dict)

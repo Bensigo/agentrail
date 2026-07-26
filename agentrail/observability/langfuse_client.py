@@ -10,12 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 from typing import Optional
 
 _TIMEOUT = 10
+_log = logging.getLogger(__name__)
 
 
 def enabled() -> bool:
@@ -82,3 +84,29 @@ class LangfuseHTTP:
         if status >= 400:
             raise RuntimeError(f"langfuse POST {path} HTTP {status}")
         return json.loads(resp) if resp else {}
+
+
+def client_if_enabled() -> Optional["LangfuseHTTP"]:
+    """``LangfuseHTTP.from_env()`` gated by :func:`enabled` — the shared
+    convention every AUTOMATIC (not manually-invoked) Langfuse integration in
+    this codebase uses (see ``RunTracer.start``, and, for issue #1221 AC3,
+    ``agentrail.evals.spine``'s per-rep score auto-push). Manually-invoked
+    operator commands (``agentrail langfuse push-scores`` et al.) call
+    ``LangfuseHTTP.from_env()`` directly and print their own error — this
+    helper is only for call sites that must stay silent/inert when Langfuse
+    isn't configured.
+
+    Returns ``None`` when :func:`enabled` is ``False`` (default: the feature
+    is OFF) OR when it is ``True`` but the ``LANGFUSE_*`` keys are missing
+    (logged as a warning, never raised) — either way the caller then behaves
+    exactly as if this integration did not exist for this run.
+    """
+    if not enabled():
+        return None
+    client = LangfuseHTTP.from_env()
+    if client is None:
+        _log.warning(
+            "AGENTRAIL_LANGFUSE_ENABLED is set but LANGFUSE_* keys are "
+            "missing; automatic Langfuse push disabled for this run"
+        )
+    return client

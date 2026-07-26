@@ -16,12 +16,18 @@ scores above (see the "Jace verdict calibration" block lower in this file).
 Every verdict block is gated by its OWN ``n`` against ``MIN_SAMPLE_SIZE`` too.
 
 Score vocabulary (consumed, not invented): this module reads back exactly the
-four names ``agentrail.observability.score_push.SCORE_NAMES`` ever pushes
-(``solved``, ``false_green``, ``verify_verdict``, ``judge_verdict``) — see that
-module's docstring for the push-side contract. ``false_green`` carries no
-truth signal of its own (it is a probe about the Objective Gate, not a
-solved/accepted verdict) so it is read for vocabulary bookkeeping only and
-never enters an agreement calculation here.
+five names ``agentrail.observability.score_push.SCORE_NAMES`` ever pushes
+(``solved``, ``false_green``, ``gate_passed``, ``verify_verdict``,
+``judge_verdict``) — see that module's docstring for the push-side contract.
+``false_green`` carries no truth signal of its own (it is a probe about the
+Objective Gate, not a solved/accepted verdict) so it never enters an
+AGREEMENT calculation here (the judge-vs-truth rows above). It DOES, as of
+issue #1221 AC2, feed a separate RATE: see :func:`false_green_rate` below —
+a plain false_green-÷-gate_passed aggregate, paired with the ``gate_passed``
+score (added alongside ``false_green`` specifically so this ratio is
+computable without a per-trace join — every real eval rep pushes both
+together, see ``score_push._eval_scores``). That rate is reported in its own
+section, never folded into ``agreement``.
 
 Step 1 PIN — scores list endpoint (2026-07-13)
 ------------------------------------------------
@@ -63,7 +69,7 @@ exist for scores; the choice below is deliberate, not the first one found:
     takes exactly one value — confirmed from each operation's own parameter
     description in the schema.)
 
-Request params used: ``name`` (exactly one of the four SCORE_NAMES per call —
+Request params used: ``name`` (exactly one of the five SCORE_NAMES per call —
 this module makes one full paginated fetch per name of interest), ``page``
 (1-indexed), ``limit`` (<=100; ``_PAGE_LIMIT`` below mirrors price_sync.py's
 choice of 100 to keep the common case a one-page fetch).
@@ -139,7 +145,13 @@ _PAGE_LIMIT = 100
 # (a name added, renamed, or removed) so a calibration report generated
 # against a stale vocabulary is visibly distinguishable, on its own dated
 # markdown file, from one generated after the vocabulary changed.
-SCORE_VOCABULARY_VERSION = 1
+# v2 (#1221 AC2): SCORE_NAMES gained ``gate_passed``.
+SCORE_VOCABULARY_VERSION = 2
+
+# Below this many gate-passed reps, the false-green rate (#1221 AC2) is not
+# rendered as a percentage — mirrors MIN_SAMPLE_SIZE's no-vanity-metrics gate
+# above, applied to this separate (non-agreement) aggregate.
+FALSE_GREEN_MIN_SAMPLE_SIZE = 10
 
 
 def _fetch_scores_by_name(client: LangfuseHTTP, name: str) -> List[dict]:
@@ -202,6 +214,60 @@ def _agreement(judge: Dict[str, bool], truth: Dict[str, bool]) -> Tuple[Optional
         return None, 0
     agree = sum(1 for trace_id in shared if judge[trace_id] == truth[trace_id])
     return agree / n, n
+
+
+# ---------------------------------------------------------------------------
+# False-green RATE (issue #1221 AC2) — false_green ÷ gate_passed, aggregated
+# from pushed Langfuse scores. NOT an agreement metric (there is no "judge" or
+# "truth" being compared here — see the module docstring); a straightforward
+# count-based rate, the SAME ratio agentrail.evals.reporter._arm_report already
+# computes locally per arm from a single run's in-process records. This
+# function answers the same question ACROSS every rep that has ever pushed a
+# score, from whatever eval runs pushed scores automatically (AC3) or via a
+# manual ``push-scores`` backfill — a Langfuse-queryable aggregate, not just a
+# one-run-at-a-time local number.
+#
+# Why no per-trace join is needed: score_push._eval_scores pushes false_green
+# and gate_passed TOGETHER for every real (non-synthetic) eval rep — the two
+# fetched populations are the exact same set of reps, so counting each
+# name's ``value == 1`` rows independently and dividing is correct; a rep
+# that only ever pushed ONE of the two (e.g. an old record from before
+# gate_passed existed) is simply absent from the newer population's count,
+# which undercounts the denominator honestly rather than joining it to a
+# false_green row it was never paired with.
+# ---------------------------------------------------------------------------
+
+
+def false_green_rate(client: LangfuseHTTP) -> dict:
+    """Aggregate the eval-harness false-green RATE from Langfuse scores.
+
+    Returns ``{"gate_passed_count": int, "false_green_count": int, "rate":
+    float|None, "insufficient": bool}``. ``rate`` is ``None`` — never a
+    fabricated ``0.0`` — when ``gate_passed_count == 0`` (undefined
+    denominator), matching the None-vs-0.0 discipline
+    ``agentrail.evals.reporter.ArmReport.false_green_rate`` already keeps
+    locally. ``insufficient`` gates on :data:`FALSE_GREEN_MIN_SAMPLE_SIZE`,
+    mirroring :data:`MIN_SAMPLE_SIZE`'s no-vanity-metrics rule for the
+    agreement rows above — a thin sample renders "insufficient data" in
+    :func:`render_markdown`, never a bare, overconfident percentage.
+
+    Production run records never contribute here: ``score_push.
+    _production_scores`` has no ``gate_passed`` field (issue #1221 AC4 —
+    production coverage is explicitly deferred to #1222, the private-gate
+    issue). This aggregate is eval-corpus-only by construction, not by an
+    extra filter.
+    """
+    gate_passed_rows = _fetch_scores_by_name(client, "gate_passed")
+    false_green_rows = _fetch_scores_by_name(client, "false_green")
+    gate_passed_count = sum(1 for row in gate_passed_rows if row.get("value") == 1)
+    false_green_count = sum(1 for row in false_green_rows if row.get("value") == 1)
+    rate = (false_green_count / gate_passed_count) if gate_passed_count else None
+    return {
+        "gate_passed_count": gate_passed_count,
+        "false_green_count": false_green_count,
+        "rate": rate,
+        "insufficient": gate_passed_count < FALSE_GREEN_MIN_SAMPLE_SIZE,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +461,10 @@ def calibration(client: LangfuseHTTP) -> dict:
     and :func:`_qa_agreement`. Each is independently gated by its OWN ``n``
     against :data:`MIN_SAMPLE_SIZE`; zero paired data renders "insufficient
     data", never a vanity rate or a crash.
+
+    Also additive: ``"false_green"`` carries the false-green RATE (issue
+    #1221 AC2, :func:`false_green_rate`) — NOT an agreement metric, computed
+    independently of the judge/truth fetches above.
     """
     judge = _bool_by_trace(_fetch_scores_by_name(client, "judge_verdict"))
     solved = _bool_by_trace(_fetch_scores_by_name(client, "solved"))
@@ -422,6 +492,7 @@ def calibration(client: LangfuseHTTP) -> dict:
         },
         "triage": _triage_agreement(triage_by_run, solved, verify),
         "qa": _qa_agreement(qa_by_run, solved, verify),
+        "false_green": false_green_rate(client),
     }
 
 
@@ -515,6 +586,7 @@ def render_markdown(result: dict, *, generated_at: str) -> str:
 
     _render_triage(lines, result.get("triage"))
     _render_qa(lines, result.get("qa"))
+    _render_false_green(lines, result.get("false_green"))
 
     return "\n".join(lines)
 
@@ -589,6 +661,42 @@ def _render_qa(lines: List[str], qa: Optional[dict]) -> None:
         lines.append(
             f"_Insufficient data: only {n} comparable run pair(s) "
             f"(need >= {MIN_SAMPLE_SIZE})._"
+        )
+        lines.append("")
+
+
+def _render_false_green(lines: List[str], false_green: Optional[dict]) -> None:
+    """Append the false-green RATE section (#1221 AC2). No-op when absent, so
+    old-shape ``result`` dicts without a ``"false_green"`` key render
+    unchanged (same convention as ``_render_triage``/``_render_qa``)."""
+    if false_green is None:
+        return
+    gate_passed_count = false_green["gate_passed_count"]
+    false_green_count = false_green["false_green_count"]
+    rate = false_green["rate"]
+    insufficient = false_green["insufficient"]
+    lines.append("## False-green rate (eval harness, all pushed reps)")
+    lines.append("")
+    lines.append(
+        "`false_green ÷ gate_passed`, aggregated from every `false_green`/"
+        "`gate_passed` score pair Langfuse has ever received (issue #1221 "
+        "AC2) — NOT an agreement metric (see `agreement` above); the same "
+        "ratio `agentrail.evals.reporter` computes per arm for one run, here "
+        "aggregated across every eval run that pushed scores. Production-run "
+        "coverage is explicitly out of scope (#1221 AC4 — deferred to "
+        "#1222, the private-gate issue): a production run record never "
+        "carries a `gate_passed` score, so it can never appear here."
+    )
+    lines.append("")
+    lines.append("| Rate | Gate-passed reps | False-green reps |")
+    lines.append("| ---: | ---: | ---: |")
+    rate_cell = _fmt_rate(rate, insufficient)
+    lines.append(f"| {rate_cell} | n={gate_passed_count} | {false_green_count} |")
+    lines.append("")
+    if insufficient:
+        lines.append(
+            f"_Insufficient data: only {gate_passed_count} gate-passed rep(s) "
+            f"with a pushed score so far (need >= {FALSE_GREEN_MIN_SAMPLE_SIZE})._"
         )
         lines.append("")
 

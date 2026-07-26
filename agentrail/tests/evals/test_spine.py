@@ -1851,6 +1851,9 @@ def test_ac1_forensics_record_has_all_fields_for_a_normal_rep(
     assert record["rep"] == 1
     assert record["solved"] is True
     assert record["false_green"] is False
+    # #1221 AC2: the record's own Objective Gate decision, carried alongside
+    # false_green so the false-green rate is derivable downstream.
+    assert record["gate_passed"] is True
     assert record["synthetic"] is False
     # HiddenTestSpy is bool-only (no run_hidden_tests_with_output) — the
     # hasattr() fallback in spine.py leaves gate_output honestly empty.
@@ -2114,3 +2117,97 @@ def test_memory_report_section_populated_with_arm_tagged_ledger(
     assert len(ledger_rows) == 2
     assert sum(1 for r in ledger_rows if r["arm"] == "full-minus-memory_lane") == 1
     assert sum(1 for r in ledger_rows if r["arm"] == "full") == 1
+
+
+# ---------------------------------------------------------------------------
+# #1221 AC3 — automatic Langfuse score push at rep finalization, driven
+# straight through run_spine's ``langfuse_client`` param (no manual
+# ``push-scores`` invocation anywhere in these tests).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _LangfuseSpy:
+    """Faithful fake of the ONE method push_eval_rep_score calls
+    (``post_json``) — records every call, never touches a real socket."""
+
+    calls: List[tuple] = field(default_factory=list)
+    raise_on_post: bool = False
+
+    def post_json(self, path: str, body: dict) -> dict:
+        if self.raise_on_post:
+            raise RuntimeError("langfuse POST /api/public/scores HTTP 503")
+        self.calls.append((path, body))
+        return {"id": "spy-score-id"}
+
+
+def test_ac3_run_spine_auto_pushes_scores_without_manual_push_scores(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A plain ``run_spine(..., langfuse_client=spy)`` call — no
+    ``agentrail.observability.score_push.push_scores`` anywhere in this test —
+    still lands solved/false_green/gate_passed scores on the spy client,
+    proving the push happens automatically at rep finalization."""
+    spy = _LangfuseSpy()
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-26",
+        langfuse_client=spy,
+    )
+    assert result.repetitions[0].solved is True
+
+    names = {body["name"] for _path, body in spy.calls}
+    assert names == {"solved", "false_green", "gate_passed"}
+    for path, body in spy.calls:
+        assert path == "/api/public/scores"
+        assert body["dataType"] == "BOOLEAN"
+    # solved=True, gate_passed=True -> false_green must be False (by
+    # construction: false_green = gate_passed and not solved).
+    values = {body["name"]: body["value"] for _path, body in spy.calls}
+    assert values == {"solved": 1, "false_green": 0, "gate_passed": 1}
+
+
+def test_ac3_no_langfuse_client_means_no_push_calls(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """The default (``langfuse_client=None``) is a pure no-op — proves the
+    auto-push is additive and never fires unless a caller opts in by
+    supplying a client (the CLI only does when Langfuse is configured AND
+    enabled)."""
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-26",
+    )
+    assert result.repetitions[0].solved is True
+    # No assertion possible on "no network call" directly (no spy was even
+    # constructed) — the real proof is that run_spine completed without
+    # requiring a langfuse_client at all, matching every pre-#1221 call site.
+
+
+def test_ac3_auto_push_failure_does_not_fail_the_eval_run(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A Langfuse outage during auto-push must not fail the eval run — the
+    rep still scores and the report still writes, exactly as if
+    langfuse_client had been None."""
+    spy = _LangfuseSpy(raise_on_post=True)
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-26",
+        langfuse_client=spy,
+    )
+    assert result.repetitions[0].solved is True
+    assert result.report_path is not None
+    assert spy.calls == []  # every attempted POST raised, none recorded

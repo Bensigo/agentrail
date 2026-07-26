@@ -68,3 +68,28 @@ test("telegram: the ack posts via channel.telegram.post", () => {
   const turnStarted = code.slice(code.indexOf('"turn.started"'), code.indexOf('"turn.completed"'));
   assert.match(turnStarted, /channel\.telegram\.post\(\s*ACK_TEXT\s*\)/);
 });
+
+test("discord: the ack is delivered via deliverDiscordBubble, not a bare channel.post", () => {
+  const code = read("discord.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+
+  // The ack is a reply like any other, so it MUST take the interaction
+  // followup path. channel.discord.post() alone needs View Channel + Send
+  // Messages on this specific channel and dies with a swallowed 50001 in
+  // private channels — that was the production bug fixed in #1463.
+  assert.match(turnStarted, /deliverDiscordBubble\(/);
+  assert.match(turnStarted, /content:\s*ACK_TEXT/);
+  assert.match(turnStarted, /attributes:\s*resolveSessionAuthAttributes\(/);
+  assert.match(turnStarted, /postFollowup:\s*followupTransport/);
+  // channel.discord.post may appear ONLY as the postViaBot fallback.
+  assert.match(turnStarted, /postViaBot:\s*\(\)\s*=>\s*channel\.discord\.post\(/);
+});
+
+test("discord: imports deliverDiscordBubble alongside deliverDiscordReply", () => {
+  const code = read("discord.ts");
+  assert.match(code, /deliverDiscordBubble/);
+  assert.match(code, /deliverDiscordReply/);
+});

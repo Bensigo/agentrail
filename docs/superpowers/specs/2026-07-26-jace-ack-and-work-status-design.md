@@ -96,32 +96,46 @@ or an expired 15-minute window.
 
 ### Error handling
 
-This is the part that needs care, and it corrects a stale assumption in the
-existing code.
+The existing code's claim that eve "does not export `defaultEvents`" is
+**correct**, and an earlier draft of this spec wrongly said otherwise. For the
+record, so nobody re-litigates it:
 
-`typing-keepalive.core.mjs` and both channel files state that eve "does not
-export `defaultEvents`" and therefore the failure paths (`turn.failed`,
-`session.failed`) cannot be chained, leaving a 2-minute `maxMs` cap as the only
-backstop. That is **not true of eve@0.19.0**:
+- `defaultEvents` is declared in eve's *internal*
+  `dist/src/public/channels/telegram/defaults.d.ts`, but the public entrypoint
+  `eve/channels/telegram` (`index.d.ts`) re-exports only `defaultTelegramAuth`.
+  There is no importable path to it — `#public/...` is a Node subpath import,
+  package-internal.
+- The default `turn.failed` handler posts a user-facing error message built from
+  `formatErrorHint`/`extractErrorId` out of `#internal/logging.js`, also
+  unreachable. Overriding `turn.failed` would clobber that message *and* drop
+  the error id, with no clean way to reproduce it.
 
-- `node_modules/eve/dist/src/public/channels/telegram/defaults.d.ts` exports
-  `defaultEvents`.
-- `telegramChannel.d.ts:66` documents that a supplied `events` object *merges
-  over* `defaultEvents` — an entry you specify replaces that default, entries
-  you omit keep it.
+So: **do not override `turn.failed` or `session.failed`.** The ack is stopped on
+the real `message.completed` and on `turn.completed`.
 
-For the typing indicator a missed stop is invisible. For the ack it is not: a
-timer that survives a failed turn would post `On it.` *after* the error reply had
-already gone out. So:
+**Known residual race, accepted.** A turn that fails in under 4s posts eve's
+error message, and the still-armed ack then fires at 4s — the user sees the error
+followed by `On it.` Cosmetic, narrow, and strictly better than losing eve's
+error reporting. If it proves annoying in practice, the follow-up is to override
+the failure handlers and re-author the error copy in Jace's own voice.
 
-- Override `turn.failed` and `session.failed`.
-- Call the corresponding exported `defaultEvents` handler first, so eve's own
-  error reporting is preserved rather than clobbered.
-- Then `stop(key)` for both the ack and the typing keepalive.
-- Keep a `maxMs` cap as belt-and-braces.
+**Verify during implementation:** whether eve also emits `turn.completed` after
+`turn.failed`. `protocol/message.js` constructs them as separate events and the
+emit order is not evident from the type stubs. If `turn.completed` does fire on a
+failed turn, the existing `turn.completed` handler already closes this race and
+nothing further is needed. Determine it against the running sidecar, not the
+`.d.ts` — that mistake is what produced the incorrect claim above, and it is the
+same mistake #1463 was root-caused on twice.
 
-A `postAck` that throws must never propagate into the turn — same `safe()`
-wrapper `typing-keepalive` already uses.
+**Stop placement.** `message.completed` currently stops the typing keepalive
+*before* its `finishReason === "tool-calls"` early return, so typing dies at the
+first tool call and the rest of a multi-tool turn shows no indicator. Both the
+ack `stop` and the typing `stop` move *below* that guard, so a tool-calling turn
+keeps both alive until it actually replies. This is an intentional fix to
+existing behaviour and gets its own test.
+
+A `postAck` that throws — or whose returned promise rejects — must never
+propagate into the turn, same `safe()` wrapper `typing-keepalive` already uses.
 
 ### Testing
 
@@ -212,9 +226,9 @@ before merge.
 
 Three PRs.
 
-1. **Ack** — `ack-on-silence.core.mjs`, Telegram + Discord wiring, the
-   `defaultEvents` chaining fix for `turn.failed`/`session.failed`, Slack and
-   console `turn.started` handlers. Independent of the others.
+1. **Ack** — `ack-on-silence.core.mjs`, Telegram + Discord wiring, the stop
+   placement fix in `message.completed`, Slack and console `turn.started`
+   handlers. Independent of the others.
 2. **Console route** — `GET /api/v1/runner/work-status` + tests.
 3. **Tool + retirement** — `fetch_work_status` tool and core, `instructions.md`
    intent rule, standup re-pointed at the route, `standup.db.mjs` deleted.

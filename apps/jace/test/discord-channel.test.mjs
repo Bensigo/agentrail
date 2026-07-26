@@ -22,6 +22,17 @@ const discordTsPath = fileURLToPath(
 );
 const code = readFileSync(discordTsPath, "utf8");
 
+test("passes Discord credentials explicitly (C1) — eve's compiled callDiscordApi only sets the auth header when config.credentials.botToken is defined, so its documented DISCORD_BOT_TOKEN env fallback is unreachable without this", () => {
+  assert.match(code, /credentials\s*:\s*\{/);
+  assert.match(code, /botToken\s*:\s*process\.env\[["']DISCORD_BOT_TOKEN["']\]/);
+  assert.match(code, /applicationId\s*:\s*process\.env\[["']DISCORD_APPLICATION_ID["']\]/);
+  assert.match(code, /publicKey\s*:\s*process\.env\[["']DISCORD_PUBLIC_KEY["']\]/);
+});
+
+test("tunes the typing keep-alive refresh for Discord's ~10s expiry, not the module's Telegram-tuned 4000ms default", () => {
+  assert.match(code, /createTypingKeepalive\(\s*\{\s*refreshMs:\s*8000\s*\}\s*\)/);
+});
+
 test("imports the pure splitter from agent/lib", () => {
   assert.match(
     code,
@@ -106,4 +117,28 @@ test("resolves the followup attributes via resolveSessionAuthAttributes(ctx.sess
     code,
     /resolveSessionAuthAttributes\(\s*ctx\??\.session\??\.auth\s*\)/,
   );
+});
+
+test("wires the typing keep-alive: start on turn.started, stop on turn end", () => {
+  // The keep-alive LOGIC is fully exercised by typing-keepalive.core.test.mjs;
+  // this locks that the channel actually drives it on the right events —
+  // benefits both the interaction-backed reply path and the Gateway
+  // receive()-triggered path equally (both go through channel.discord.startTyping()).
+  assert.match(
+    code,
+    /import\s*{\s*createTypingKeepalive\s*}\s*from\s*["']\.\.\/lib\/typing-keepalive\.core\.mjs["']/,
+  );
+  assert.match(code, /["']turn\.started["']/);
+  assert.match(code, /typing\.start\(convoKey\(ctx\),\s*\(\)\s*=>\s*channel\.discord\.startTyping\(\)\)/);
+  // Stops on both success paths.
+  assert.match(code, /["']turn\.completed["']/);
+  assert.match(code, /typing\.stop\(convoKey\(ctx\)\)/);
+});
+
+test("does NOT override turn.failed / session.failed (keeps Eve's error posts)", () => {
+  // Overriding these would clobber Eve's default terminal-error messages, which
+  // are not exported for chaining. The keep-alive's own safety cap covers the
+  // failure path instead.
+  assert.doesNotMatch(code, /["']turn\.failed["']/);
+  assert.doesNotMatch(code, /["']session\.failed["']/);
 });

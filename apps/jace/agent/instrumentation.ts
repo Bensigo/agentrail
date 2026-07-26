@@ -60,6 +60,7 @@ import {
   createSessionPromotingProcessor,
   isLangfuseConfigured,
 } from "./lib/instrumentation.core.mjs";
+import { startDiscordGateway } from "./lib/discord-gateway.mjs";
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {
@@ -84,6 +85,25 @@ export default defineInstrumentation({
           }),
       }),
     );
+
+    // NOT telemetry — this file's `setup` is reused here purely because it
+    // is eve's only verified "runs once at server startup, before any agent
+    // code" hook (node_modules/eve/docs/guides/instrumentation.md: "The
+    // framework auto-discovers agent/instrumentation.ts and runs it at
+    // server startup before any agent code"). The Discord Gateway listener
+    // (agent/lib/discord-gateway.mjs) needs exactly that: opened once per
+    // process, held for the process's lifetime — there is no other authored
+    // slot in eve's project layout for a persistent background connection
+    // (channels are HTTP-shaped ingress; schedules are periodic run-to-
+    // completion jobs, not a place to hold a socket open). Fire-and-forget
+    // and defensively `.catch`ed so a Discord-side failure (missing token,
+    // bad credentials, a network blip while fetching gateway info) can never
+    // take down the OTel registration above it or the server boot itself —
+    // startDiscordGateway() already catches everything it can internally
+    // (see its own doc comment), this is a last-resort backstop.
+    void startDiscordGateway(process.env).catch((err) => {
+      console.error("[instrumentation] startDiscordGateway rejected unexpectedly:", err);
+    });
   },
   events: {
     "step.started"(input) {

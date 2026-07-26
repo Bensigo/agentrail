@@ -17,14 +17,14 @@
 // env is unset and live delivery are verified against the running sidecar
 // (#1038/#1101), behind the per-workspace `jaceOwnsTelegramNotify` opt-in.
 //
-// `events["message.completed"]` overrides Eve's default handler (which posts
+// The message.completed handler overrides Eve's default handler (which posts
 // the full reply as one message) to instead split it into several bubbles on
 // the model's own paragraph breaks — see agent/lib/chat-split.core.mjs for
 // why, and instructions.md's "Voice and reply length" section for the model
 // contract this relies on. The `finishReason`/`message` guard mirrors Eve's
 // default exactly, so tool-call and empty-message turns behave unchanged.
 //
-// `events["turn.started"]` overrides Eve's default one-shot `startTyping()`.
+// The turn.started handler overrides Eve's default one-shot `startTyping()`.
 // Telegram expires a typing indicator after ~5s, so on a slow model the chat
 // looks dead for the rest of a 30s–2min turn. The keep-alive re-sends the
 // action until the turn ends (stopped on message.completed / turn.completed;
@@ -34,10 +34,12 @@
 import { telegramChannel } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
+import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
 
 const typing = createTypingKeepalive();
+const ack = createAckOnSilence();
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "telegram";
 
@@ -45,14 +47,27 @@ export default telegramChannel({
   botUsername,
   events: {
     "turn.started"(_data, channel, ctx) {
-      typing.start(convoKey(ctx), () => channel.telegram.startTyping());
+      const key = convoKey(ctx);
+      typing.start(key, () => channel.telegram.startTyping());
+      // One-shot: if this turn goes quiet for ACK_AFTER_MS, tell the human
+      // we're on it. Disarmed below the moment a real reply lands.
+      ack.start(key, () => channel.telegram.post(ACK_TEXT));
     },
     "turn.completed"(_data, _channel, ctx) {
-      typing.stop(convoKey(ctx));
+      const key = convoKey(ctx);
+      typing.stop(key);
+      ack.stop(key);
     },
     async "message.completed"(data, channel, ctx) {
-      typing.stop(convoKey(ctx));
+      // NOTE: both stops sit BELOW this guard on purpose. A `tool-calls`
+      // message.completed fires mid-turn while the turn keeps working —
+      // stopping here would kill the typing indicator at the first tool call
+      // (the pre-existing behaviour this fixes) and suppress the ack on
+      // exactly the slow, tool-calling turns that most need it.
       if (data.finishReason === "tool-calls" || !data.message) return;
+      const key = convoKey(ctx);
+      typing.stop(key);
+      ack.stop(key);
       const messages = splitIntoChatMessages(data.message);
       for (const [index, message] of messages.entries()) {
         if (index > 0) await channel.telegram.startTyping();

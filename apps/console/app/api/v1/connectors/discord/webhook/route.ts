@@ -35,10 +35,30 @@ import {
  * #1261), enqueues into `channel_inbox` (PR ①), kicks the dispatcher
  * (`lib/channel-dispatch.ts`) fire-and-forget, and immediately ACKs with a
  * visible `CHANNEL_MESSAGE_WITH_SOURCE` placeholder — Discord requires SOME
- * response within 3 seconds. Jace's real reply lands as a SEPARATE message
- * posted via the bot token through Jace's native discord channel
- * (`args.receive`'s `{ channelId }` target, see hosted-inbound.ts) once the
- * Eve turn completes; this route never awaits that turn.
+ * response within 3 seconds. This route never awaits the Eve turn.
+ *
+ * PROD BUG FIX (root-caused 2026-07-25, see
+ * .superpowers/sdd/discord-followup/): Jace's real reply used to ALWAYS land
+ * as a SEPARATE message posted via the bot token through Jace's native
+ * discord channel (`args.receive`'s `{ channelId }` target, see
+ * hosted-inbound.ts) once the Eve turn completed — which needs the shared
+ * bot to have View Channel + Send Messages on that specific channel. A
+ * private channel that hasn't granted the bot's role that permission (or a
+ * user-install where the bot isn't in the guild at all) rejected the post
+ * with `50001 Missing Access`, silently — the user's own slash-command
+ * invocation still "worked" because invocation is authorized by the USER's
+ * permissions, not the bot's, so the reply just vanished. This route now
+ * also captures the interaction's OWN `token`/`application_id` (every
+ * Discord interaction carries both — see `DiscordInteraction` below) into
+ * the enqueued payload, so the dispatcher can carry them into the session
+ * Jace's discord channel reads, and reply through Discord's interaction
+ * FOLLOWUP webhook instead — no channel permission needed, no auth header
+ * (the token IS the credential), valid for 15 minutes. When no token is
+ * available (or the followup fails), Jace falls back to the original
+ * bot-post path unchanged. SECRET: the token is a short-lived credential —
+ * it is enqueued into `channel_inbox.payload` (jsonb) and forwarded to
+ * Jace's dispatch POST, but never logged and never present in this route's
+ * own HTTP response.
  *
  * Any other interaction type (e.g. `MESSAGE_COMPONENT` — button taps; no
  * approvals flow exists on this door yet, unlike Telegram's `ar:` callback
@@ -83,6 +103,17 @@ interface DiscordCommandOption {
 interface DiscordInteraction {
   id: string;
   type: number;
+  /**
+   * Prod bug fix (private-channel replies vanish — root-caused 2026-07-25,
+   * see .superpowers/sdd/discord-followup/): Discord sends `token` and
+   * `application_id` on EVERY interaction (PING included), the credential
+   * pair needed to reply through the interaction followup webhook instead
+   * of a bot-API channel post that needs channel permissions the shared
+   * hosted bot may not have. Required here (not optional) so both are read
+   * type-safely below, never via a cast.
+   */
+  token: string;
+  application_id: string;
   channel_id?: string;
   data?: { name?: string; options?: DiscordCommandOption[] };
   member?: { user?: DiscordUser };
@@ -92,7 +123,12 @@ interface DiscordInteraction {
 function isDiscordInteraction(value: unknown): value is DiscordInteraction {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return typeof v["id"] === "string" && typeof v["type"] === "number";
+  return (
+    typeof v["id"] === "string" &&
+    typeof v["type"] === "number" &&
+    typeof v["token"] === "string" &&
+    typeof v["application_id"] === "string"
+  );
 }
 
 /** Guild interactions carry the invoking user under `member.user`; DM (and group-DM) interactions carry it directly under `user`. Checking both, in this order, covers every context without depending on the newer/optional `context` field. */
@@ -203,6 +239,17 @@ export async function POST(request: NextRequest) {
       text,
       fromId: discordUser.id,
       fromUsername: discordUser.username ?? null,
+      // Prod bug fix (private-channel replies vanish — see
+      // .superpowers/sdd/discord-followup/): captured here so
+      // channel-dispatch.ts can carry it into the session's auth attributes,
+      // which Jace's discord channel reads to reply through the interaction
+      // followup webhook instead of a bot-API channel post. SECRET: this
+      // travels only inbound body -> channel_inbox.payload (jsonb) -> the
+      // dispatch POST to Jace — never logged, never echoed in this route's
+      // own response (see the response-building code below, which never
+      // reads `body.token`/`body.application_id`).
+      interactionToken: body.token,
+      applicationId: body.application_id,
     },
   });
 

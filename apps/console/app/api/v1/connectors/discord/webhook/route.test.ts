@@ -46,12 +46,17 @@ function req(rawBody: string, opts: { signature?: string; timestamp?: string } =
   });
 }
 
-const PING_BODY = JSON.stringify({ id: "int-1", type: 1 });
+// Every real Discord interaction (PING included) carries `token` and
+// `application_id` — the type guard now requires both (prod bug fix, see
+// .superpowers/sdd/discord-followup/), so every fixture below carries them.
+const PING_BODY = JSON.stringify({ id: "int-1", type: 1, token: "ping-tok", application_id: "app-999" });
 
 function commandBody(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     id: "int-42",
     type: 2,
+    token: "interaction-tok-42",
+    application_id: "app-999",
     channel_id: "998877",
     data: { name: "jace", options: [{ name: "message", value: "hello jace" }] },
     user: { id: "555", username: "ada", global_name: "Ada" },
@@ -154,11 +159,18 @@ describe("POST /api/v1/connectors/discord/webhook — parse", () => {
 
     expect(res.status).toBe(400);
   });
+
+  it("400s on an interaction with id/type but missing token/application_id (every real Discord interaction carries both — prod bug fix type-guard tightening)", async () => {
+    const raw = JSON.stringify({ id: "int-1", type: 1 });
+    const res = await POST(req(raw));
+
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("POST /api/v1/connectors/discord/webhook — unhandled interaction types", () => {
   it("acks a MESSAGE_COMPONENT (type 3) minimally, without enqueuing", async () => {
-    const raw = JSON.stringify({ id: "int-3", type: 3 });
+    const raw = JSON.stringify({ id: "int-3", type: 3, token: "comp-tok", application_id: "app-999" });
     const res = await POST(req(raw));
 
     expect(res.status).toBe(200);
@@ -202,6 +214,8 @@ describe("POST /api/v1/connectors/discord/webhook — APPLICATION_COMMAND (a str
         text: "hello jace",
         fromId: "555",
         fromUsername: "ada",
+        interactionToken: "interaction-tok-42",
+        applicationId: "app-999",
       },
     });
   });
@@ -293,5 +307,62 @@ describe("POST /api/v1/connectors/discord/webhook — APPLICATION_COMMAND (a str
     const body = await res.json();
     expect(body.data.flags).toBe(64);
     expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  // --- prod bug fix: capture the interaction token so Jace can reply
+  // through the followup webhook instead of a bot-API channel post (see
+  // .superpowers/sdd/discord-followup/) ---------------------------------
+
+  it("captures the interaction's own token and application_id into the enqueued payload, read type-safely (not via a cast)", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    await POST(
+      req(commandBody({ token: "interaction-tok-secret-abc", application_id: "app-42" })),
+    );
+
+    expect(mockEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          interactionToken: "interaction-tok-secret-abc",
+          applicationId: "app-42",
+        }),
+      }),
+    );
+  });
+
+  it("SECRET SAFETY: never returns the interaction token (or the application id) in the HTTP response body", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    const secretToken = "super-secret-interaction-token-do-not-leak";
+    const res = await POST(req(commandBody({ token: secretToken, application_id: "app-42" })));
+    const raw = await res.text();
+
+    expect(raw).not.toContain(secretToken);
+    const body = JSON.parse(raw);
+    expect(body).not.toHaveProperty("token");
+    expect(body).not.toHaveProperty("application_id");
+    expect(body).not.toHaveProperty("interactionToken");
+    expect(body).not.toHaveProperty("applicationId");
+  });
+
+  it("SECRET SAFETY: the PONG response to a PING never echoes token/application_id either", async () => {
+    const secretToken = "ping-secret-token-do-not-leak";
+    const raw = JSON.stringify({ id: "int-1", type: 1, token: secretToken, application_id: "app-42" });
+    const res = await POST(req(raw));
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(text).not.toContain(secretToken);
+    expect(JSON.parse(text)).toEqual({ type: 1 });
   });
 });

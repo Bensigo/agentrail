@@ -40,3 +40,42 @@ test("posts the split messages and pauses typing between them", () => {
   assert.match(code, /channel\.discord\.post\(message\)/);
   assert.match(code, /channel\.discord\.startTyping\(\)/);
 });
+
+// --- prod bug fix: reply via the interaction followup webhook -------------
+//
+// Root cause (diagnosed in prod 2026-07-25): channel.discord.post() always
+// posts through the Bot API, which needs channel permissions the shared
+// hosted bot may not have in a private channel or user-install. These tests
+// lock the WIRING of the fix — that the handler reads the interaction token
+// out of ctx.session.auth.initiator.attributes (the one seam eve forwards
+// `auth` through unchanged into, per eve@0.19.0's SessionAuthContext/
+// SessionContext types) and hands delivery to the pure, unit-tested
+// discord-followup.core.mjs, whose own branch coverage
+// (test/discord-followup.core.test.mjs) exercises followup-vs-fallback.
+
+test("imports the pure followup-delivery core from agent/lib", () => {
+  assert.match(
+    code,
+    /import\s*{\s*deliverDiscordBubble\s*}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']/,
+  );
+});
+
+test("message.completed accepts ctx (3rd handler arg) to reach session.auth.initiator", () => {
+  assert.match(code, /async\s*["']message\.completed["']\s*\(\s*data\s*,\s*channel\s*,\s*ctx\s*\)/);
+});
+
+test("reads the followup credential out of ctx.session.auth.initiator.attributes, defensively", () => {
+  assert.match(code, /ctx\??\.session\??\.auth\??\.initiator\??\.attributes/);
+});
+
+test("delegates delivery to deliverDiscordBubble, still passing channel.discord.post(message) as the bot fallback", () => {
+  assert.match(code, /deliverDiscordBubble\(/);
+  assert.match(code, /postViaBot\s*:\s*\(\)\s*=>\s*channel\.discord\.post\(message\)/);
+});
+
+test("the followup transport sends no Authorization header (the token IS the credential)", () => {
+  // A structural guard against a regression that bolts bot-token auth onto
+  // the followup call — the whole point of this endpoint is that it needs
+  // none. The transport helper's header object must be exactly Content-Type.
+  assert.doesNotMatch(code, /Authorization/);
+});

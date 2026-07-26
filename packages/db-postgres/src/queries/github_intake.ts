@@ -1362,11 +1362,38 @@ export async function requeueParkedQueueEntry(
         parkReason: queueEntries.parkReason,
         kind: queueEntries.kind,
         estimatedBudgetUsd: queueEntries.estimatedBudgetUsd,
+        nextEligibleAt: queueEntries.nextEligibleAt,
       })
       .from(queueEntries)
       .where(and(eq(queueEntries.id, id), eq(queueEntries.workspaceId, workspaceId)));
     const row = rows[0];
     if (!row) return "not_found";
+
+    // #1389 (AC2): a 'queued' entry carrying a pending backoff delay (a red/
+    // error retry re-admitted it, but its eligibility delay hasn't elapsed
+    // yet) is a DIFFERENT hold than the alignment-gate 'parked' state this
+    // function otherwise handles below — human intent always outranks
+    // backoff, so Requeue on such an entry simply clears the delay, making
+    // it immediately claimable. State/tier/remaining_budget are untouched:
+    // this is "stop waiting", not "start over". A 'queued' entry with NO
+    // pending delay falls through to `not_parked` (nothing for Requeue to
+    // do — it's already claimable).
+    if (row.state === "queued") {
+      if (row.nextEligibleAt == null) return "not_parked";
+      const cleared = await tx
+        .update(queueEntries)
+        .set({ nextEligibleAt: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(queueEntries.id, id),
+            eq(queueEntries.workspaceId, workspaceId),
+            eq(queueEntries.state, "queued")
+          )
+        )
+        .returning({ id: queueEntries.id });
+      return cleared.length > 0 ? "requeued" : "not_parked";
+    }
+
     if (row.state !== "parked") return "not_parked";
 
     // A denial always wins — refused regardless of the gate flag, mirroring

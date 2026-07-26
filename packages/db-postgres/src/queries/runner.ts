@@ -9,6 +9,7 @@ import { apiKeys } from "../schema/api_keys.js";
 import type { ApiKeyKind } from "../schema/api_keys.js";
 import { runs } from "../schema/runs.js";
 import { repositories } from "../schema/repositories.js";
+import { queueAttempts } from "../schema/queue_attempts.js";
 import {
   unparkDependents,
   ONBOARD_EXTERNAL_ID_PREFIX,
@@ -260,6 +261,20 @@ function parseNullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/** #1389: bound the runner's `gate_reason` before it lands in a
+ * `queue_attempts.error_summary` cell — the attempt-log twin of the failure-
+ * evidence write's own bounding (`apps/console/lib/evidence.ts::boundEvidence`),
+ * kept local to this package rather than imported (db-postgres has no
+ * dependency on the console app). A long/absent value never breaks the
+ * attempt-history render. */
+const ERROR_SUMMARY_MAX_LEN = 500;
+function boundErrorSummary(value: string | undefined | null): string | null {
+  if (!value) return null;
+  return value.length > ERROR_SUMMARY_MAX_LEN
+    ? `${value.slice(0, ERROR_SUMMARY_MAX_LEN)}…`
+    : value;
 }
 
 /** Find (or create) the repositories row for a repo slug; returns its id. */
@@ -640,12 +655,19 @@ export async function claimQueueEntry(
     // best-effort — never fail a claim on reconciliation
   }
   // Single statement: select-the-oldest-queued + flip to running, atomically.
+  // #1389: the inner SELECT also skips a 'queued' entry whose backoff delay
+  // hasn't elapsed yet (`next_eligible_at` in the future) — the SQL twin of
+  // {@link isClaimEligible} (#910 lockstep rule). `next_eligible_at` is
+  // cleared on claim (SET ... = NULL) so a stale future timestamp never
+  // lingers on a row that is no longer 'queued' — it will be recomputed
+  // fresh on that row's NEXT red/error requeue, if any.
   const result = await db.execute(sql`
     UPDATE queue_entries
-    SET state = 'running', updated_at = now()
+    SET state = 'running', next_eligible_at = NULL, updated_at = now()
     WHERE id = (
       SELECT id FROM queue_entries
       WHERE workspace_id = ${workspaceId} AND state = 'queued'
+        AND (next_eligible_at IS NULL OR next_eligible_at <= now())
       ORDER BY created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -752,6 +774,90 @@ function isHostedRefusal(status: RunnerStatus, gateReason?: string): boolean {
   return status === "error" && !!gateReason && gateReason.startsWith(HOSTED_REFUSAL_PREFIX);
 }
 
+// ---------------------------------------------------------------------------
+// #1389 — retry backoff with jitter, growing per attempt
+// ---------------------------------------------------------------------------
+
+/** The backoff floor (ms) for the FIRST retry after a failure. */
+export const BACKOFF_BASE_MS = 30_000; // 30s
+/** Exponential growth factor applied to the floor per additional attempt. */
+export const BACKOFF_MULTIPLIER = 2;
+/** The backoff floor never grows past this (ms) — a long-failing entry still
+ * gets re-attempted at a bounded cadence rather than waiting hours. */
+export const BACKOFF_MAX_MS = 15 * 60 * 1000; // 15 minutes
+/**
+ * Jitter is ADDED on top of the deterministic floor, up to this fraction of
+ * it — it never REPLACES the floor (unlike "full jitter"). That is what
+ * guarantees AC1's "strictly increasing gaps between successive attempts" by
+ * construction, not by chance: attempt N's worst case
+ * (`floor(N) * (1 + BACKOFF_JITTER_RATIO)`) is always less than attempt N+1's
+ * best case (`floor(N+1)`, zero jitter) as long as the floor hasn't hit
+ * {@link BACKOFF_MAX_MS} yet, because `floor(N+1) = floor(N) *
+ * BACKOFF_MULTIPLIER` and `BACKOFF_MULTIPLIER(2) > 1 + BACKOFF_JITTER_RATIO(1.2)`.
+ */
+export const BACKOFF_JITTER_RATIO = 0.2;
+
+/**
+ * The deterministic backoff floor (ms) for the Nth retry attempt (1-indexed:
+ * the delay before the 1st retry uses attempt=1). Exponential, capped at
+ * {@link BACKOFF_MAX_MS}. Exported so both the pure spec below and the
+ * DB-integration tests can assert against the exact same curve.
+ */
+export function backoffFloorMs(attempt: number): number {
+  const n = Math.max(1, Math.floor(attempt));
+  return Math.min(
+    BACKOFF_MAX_MS,
+    BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, n - 1)
+  );
+}
+
+/**
+ * Exponential backoff WITH JITTER (#1389 AC1) for the Nth retry attempt.
+ * `rand` is injectable (defaults to `Math.random`) purely so a test can pin
+ * it and assert exact bounds — production callers never pass it.
+ *
+ * NOTE: the durable `next_eligible_at` value `recordRunnerResult` actually
+ * persists is computed IN SQL (Postgres' own `random()`), not by calling
+ * this function — see that function's doc-comment for why (the backoff
+ * exponent depends on the attempt count, which only the SQL statement that
+ * inserts the attempt row can read atomically). The SQL interpolates the
+ * SAME exported constants (`BACKOFF_BASE_MS`, `BACKOFF_MULTIPLIER`,
+ * `BACKOFF_MAX_MS`, `BACKOFF_JITTER_RATIO`) as literal bound parameters, so
+ * the two formulas can never drift apart (#910 lockstep rule) even though
+ * each draws its own independent random jitter. This JS function is the
+ * unit-tested spec for that shared formula, and is what a pure caller (e.g.
+ * `nextQueueTransition`) uses when it needs a delay value in-process.
+ */
+export function computeBackoffDelayMs(
+  attempt: number,
+  rand: () => number = Math.random
+): number {
+  const floor = backoffFloorMs(attempt);
+  const jitter = Math.floor(floor * BACKOFF_JITTER_RATIO * rand());
+  return floor + jitter;
+}
+
+/**
+ * The pure mirror of {@link claimQueueEntry}'s SQL eligibility predicate
+ * (#910 lockstep rule: any eligibility predicate added to the SQL claim path
+ * must be added here too, and vice versa). A 'queued' entry is claimable
+ * unless it carries a `nextEligibleAt` still in the future — a pending
+ * backoff delay set by a prior red/error attempt. `now` is injectable so a
+ * test can pin it.
+ */
+export function isClaimEligible(
+  entry: { state: string; nextEligibleAt: Date | string | null },
+  now: Date = new Date()
+): boolean {
+  if (entry.state !== "queued") return false;
+  if (entry.nextEligibleAt == null) return true;
+  const t =
+    entry.nextEligibleAt instanceof Date
+      ? entry.nextEligibleAt
+      : new Date(entry.nextEligibleAt);
+  return t.getTime() <= now.getTime();
+}
+
 /**
  * The PURE result→queue-transition decision, extracted so it is unit-testable
  * without a live Postgres. Given the current `remainingBudget`/`tier` and the
@@ -785,17 +891,36 @@ export function nextQueueTransition(input: {
    * every existing caller that never passed it keeps byte-identical
    * behavior). Only consulted to detect a hosted-refusal `error`. */
   gateReason?: string;
-}): { state: string; remainingBudget: number; tier: number } {
-  const { status, remainingBudget, tier, gateReason } = input;
+  /** #1389: this failure's 1-indexed retry ordinal — how many attempts
+   * (including the one this call is deciding) have now been logged for this
+   * entry. Only consulted when the decision re-admits the entry as 'queued'
+   * (ignored for green/running/escalation). Defaults to 1 so a caller that
+   * doesn't track attempt count still gets a sensible (first-retry) delay —
+   * state/remainingBudget/tier are computed exactly as before regardless,
+   * byte-identical to pre-#1389 behavior on those three fields. */
+  attemptNumber?: number;
+  /** #1389: injectable RNG for the jitter component (defaults to
+   * `Math.random`) — tests pin this to assert exact bounds. */
+  rand?: () => number;
+}): {
+  state: string;
+  remainingBudget: number;
+  tier: number;
+  /** #1389: the backoff delay (ms) to apply before this entry is claimable
+   * again, or `null` when the transition doesn't re-admit as 'queued' (green,
+   * running, or either escalation path) — nothing to delay. */
+  retryDelayMs: number | null;
+} {
+  const { status, remainingBudget, tier, gateReason, attemptNumber = 1, rand } = input;
   if (status === "green") {
-    return { state: "green", remainingBudget, tier };
+    return { state: "green", remainingBudget, tier, retryDelayMs: null };
   }
   if (status === "running") {
-    return { state: "running", remainingBudget, tier };
+    return { state: "running", remainingBudget, tier, retryDelayMs: null };
   }
   if (isHostedRefusal(status, gateReason)) {
     // Jump straight to a human — spend NEITHER budget nor tier (#1267 PR③).
-    return { state: "escalated-to-human", remainingBudget, tier };
+    return { state: "escalated-to-human", remainingBudget, tier, retryDelayMs: null };
   }
   // red OR error (ordinary): retryable + bounded. Spend one unit of budget;
   // escalate to a human when this attempt exhausts it.
@@ -804,7 +929,11 @@ export function nextQueueTransition(input: {
   // can't fix an infra/timeout error, so `error` retries at the same tier.
   const nextTier = status === "red" ? Math.min(tier + 1, MAX_TIER) : tier;
   const state = remainingBudget <= 1 ? "escalated-to-human" : "queued";
-  return { state, remainingBudget: nextBudget, tier: nextTier };
+  // #1389: a re-admitted entry carries an eligibility delay; an escalation
+  // carries none (there is no future claim to delay).
+  const retryDelayMs =
+    state === "queued" ? computeBackoffDelayMs(attemptNumber, rand) : null;
+  return { state, remainingBudget: nextBudget, tier: nextTier, retryDelayMs };
 }
 
 /**
@@ -937,11 +1066,27 @@ export async function recordRunnerResult(data: {
       // (today scoped by convention to `parked`; reused here rather than
       // inventing a new column, since `escalated-to-human` is equally "sitting
       // here, needs a human" — see queue_entries.ts's parkReason doc comment).
+      //
+      // #1389: the `ins` CTE ALSO logs this attempt to `queue_attempts` (tier
+      // read pre-update, outcome = the raw runner status, error_summary =
+      // the same gate_reason that lands on park_reason) — this is the ONE
+      // attempt an escalated-on-first-contact hosted-refusal entry ever gets,
+      // and AC3 requires it to explain itself on the console. No backoff
+      // math needed here (there is nothing left to retry), so
+      // `next_eligible_at` is explicitly cleared.
       const rows = Array.from(
         await db.execute(sql`
+        WITH ins AS (
+          INSERT INTO queue_attempts (queue_entry_id, workspace_id, tier, outcome, error_summary)
+          SELECT id, workspace_id, tier, ${data.status}, ${boundErrorSummary(data.gateReason)}
+          FROM queue_entries
+          WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+          RETURNING queue_entry_id
+        )
         UPDATE queue_entries
         SET state = 'escalated-to-human',
             park_reason = ${data.gateReason ?? null},
+            next_eligible_at = NULL,
             updated_at = now()
         WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
         RETURNING id, state, external_id, task_type
@@ -959,15 +1104,67 @@ export async function recordRunnerResult(data: {
       // tier bumps only for red (mirrors nextQueueTransition's status==='red').
       const tierExpr =
         data.status === "red" ? sql`LEAST(tier + 1, ${MAX_TIER})` : sql`tier`;
+      // #1389: the `ins` CTE logs this attempt (tier read pre-update — "this
+      // attempt ran at tier T"). `attempt_count` then reads
+      // `COUNT(*) FROM queue_attempts` — the ONE source of truth for "how
+      // many attempts this entry has made", no separate counter column to
+      // drift out of sync with what's actually logged.
+      //
+      // IMPORTANT Postgres CTE semantics: every statement inside one `WITH`
+      // shares the SAME snapshot taken before the query began — `ins`'s
+      // INSERT is NOT visible to `attempt_count`'s plain table scan of
+      // `queue_attempts` even though `ins` runs "first" in the WITH list
+      // (Postgres docs: "changes made by [a data-modifying WITH statement]
+      // are not visible to other WITH subqueries... they all use the same
+      // snapshot"). So `attempt_count.n` is the count of PRIOR (already
+      // committed) attempts only — i.e. exactly `attemptNumber - 1` for
+      // THIS attempt — and is used directly as the exponent below with NO
+      // extra "- 1" (an earlier version of this query subtracted 1 AGAIN
+      // here, which silently flattened the curve: attempt 2 computed the
+      // same floor as attempt 1. The DB integration test's strictly-
+      // increasing-delays assertion is what caught it).
+      //
+      // The backoff formula interpolates the SAME exported JS constants
+      // (BACKOFF_BASE_MS/BACKOFF_MULTIPLIER/BACKOFF_MAX_MS/BACKOFF_JITTER_RATIO)
+      // as bound parameters — not duplicated magic numbers — so the SQL twin
+      // of {@link computeBackoffDelayMs} can never drift from it (#910
+      // lockstep rule); each side still draws its OWN random jitter
+      // (Postgres' `random()` here vs `Math.random` there), which is fine —
+      // AC1/AC4 verify observable claim-eligibility behavior, not bit-for-bit
+      // equal delays. `next_eligible_at` is set only on the re-admit branch;
+      // an exhausted-budget escalation clears it (NULL) — there is nothing
+      // left to retry.
       const rows = Array.from(
         await db.execute(sql`
+        WITH ins AS (
+          INSERT INTO queue_attempts (queue_entry_id, workspace_id, tier, outcome, error_summary)
+          SELECT id, workspace_id, tier, ${data.status}, ${boundErrorSummary(data.gateReason)}
+          FROM queue_entries
+          WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+          RETURNING queue_entry_id
+        ),
+        attempt_count AS (
+          SELECT COUNT(*) AS n FROM queue_attempts WHERE queue_entry_id = ${data.id}
+        )
         UPDATE queue_entries
         SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
             remaining_budget = GREATEST(remaining_budget - 1, 0),
             tier = ${tierExpr},
+            next_eligible_at = CASE
+              WHEN remaining_budget <= 1 THEN NULL
+              ELSE now() + (
+                LEAST(
+                  ${BACKOFF_MAX_MS / 1000}::double precision,
+                  ${BACKOFF_BASE_MS / 1000}::double precision
+                    * power(${BACKOFF_MULTIPLIER}::double precision, GREATEST((SELECT n FROM attempt_count), 0))
+                )
+                * (1 + ${BACKOFF_JITTER_RATIO}::double precision * random())
+              ) * interval '1 second'
+            END,
             updated_at = now()
-        WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
-        RETURNING id, state, external_id, task_type
+        FROM attempt_count
+        WHERE queue_entries.id = ${data.id} AND queue_entries.workspace_id = ${data.workspaceId}
+        RETURNING queue_entries.id, queue_entries.state, queue_entries.external_id, queue_entries.task_type
       `)
       ) as Array<{ id: string; state: string; external_id: string; task_type: string | null }>;
       updated = rows.length > 0;
@@ -1005,13 +1202,14 @@ export async function recordRunnerResult(data: {
         FROM prior
         WHERE queue_entries.id = ${data.id} AND queue_entries.workspace_id = ${data.workspaceId}
         RETURNING queue_entries.id, queue_entries.state, queue_entries.external_id,
-                  queue_entries.task_type, prior.state AS prior_state
+                  queue_entries.task_type, queue_entries.tier, prior.state AS prior_state
       `)
     ) as Array<{
       id: string;
       state: string;
       external_id: string;
       task_type: string | null;
+      tier: number;
       prior_state: string;
     }>;
     updated = rows.length > 0;
@@ -1020,6 +1218,28 @@ export async function recordRunnerResult(data: {
       completedExternalId = rows[0]!.external_id;
       resultingTaskType = rows[0]!.task_type ?? null;
       transitioned = rows[0]!.prior_state !== rows[0]!.state;
+
+      // #1389: log the terminal 'green' attempt too (not just red/error) so
+      // an entry that eventually succeeded after retries has a COMPLETE
+      // history, not just the failures. Skipped for 'running' (a heartbeat,
+      // not a completed attempt) and for a duplicate-green replay
+      // (`!transitioned` — see RecordRunnerResult.transitioned's own
+      // doc-comment; a replay is the SAME fact, not a second attempt).
+      // Best-effort: a logging failure must never fail the actual (already-
+      // committed) state transition.
+      if (data.status === "green" && transitioned) {
+        try {
+          await db.insert(queueAttempts).values({
+            queueEntryId: data.id,
+            workspaceId: data.workspaceId,
+            tier: rows[0]!.tier,
+            outcome: "green",
+            errorSummary: null,
+          });
+        } catch (err) {
+          console.error("[recordRunnerResult] attempt-log insert failed:", err);
+        }
+      }
     }
   }
   if (!updated) {

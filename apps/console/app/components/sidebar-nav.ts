@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   DollarSign,
   Wallet,
+  CreditCard,
   Brain,
   BookOpen,
   Users,
@@ -92,6 +93,15 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
     { label: "Costs", href: "costs", icon: DollarSign },
     { label: "Budget", href: "budget", icon: Wallet },
+    // "Wallet" (#1415, #1290's deferred PR ③) — the prepaid per-task balance
+    // + ledger, and where an owner/admin tops up via Stripe Checkout.
+    // Deliberately its own item, not folded into Budget: Budget is the
+    // monthly-ceiling spend view (Postgres-backed, per-task/monthly $ this
+    // workspace SPENT), Wallet is the prepaid balance that FUNDS spend in
+    // the first place — same "operational depth" category, different
+    // question ("what did this cost" vs "can this workspace afford the next
+    // task").
+    { label: "Wallet", href: "wallet", icon: CreditCard },
     // #1338 PR③ observe view: per-task-type "which execute model is
     // winning on real run data" breakdown — read-only evidence, same
     // category as Costs/Budget (spend/model economics), so it lands here.

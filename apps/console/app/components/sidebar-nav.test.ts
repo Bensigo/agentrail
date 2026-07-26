@@ -50,12 +50,13 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Model selection (#1338 PR③), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
+  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
       "costs",
       "budget",
+      "wallet",
       "model-selection",
       "memory",
       "wiki",
@@ -103,6 +104,11 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs.filter((h) => h === "budget")).toHaveLength(1);
   });
 
+  it("wallet is present exactly once (#1415: prepaid balance + Stripe top-up)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs.filter((h) => h === "wallet")).toHaveLength(1);
+  });
+
   it("approvals is present exactly once (#1276: pending approvals, parked work, dead letters)", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs.filter((h) => h === "approvals")).toHaveLength(1);
@@ -130,7 +136,7 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("repos");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, permissions, model-selection, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -140,6 +146,7 @@ describe("NAV_ZONES data structure", () => {
       "review-gates",
       "costs",
       "budget", // #1272: new workspace $ ceiling + per-task/monthly spend page
+      "wallet", // #1415: prepaid wallet balance + Stripe top-up (#1290's deferred PR③)
       "approvals", // #1276: pending approvals, parked work, dead letters
       "memory",
       "members",

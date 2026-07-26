@@ -146,6 +146,40 @@ need no approval:
   grounded in a path the tool returned; never answer from memory. The CLI is
   invoked execFile-style with an args array, never a shell string.
 
+### Answering "how's that going"
+
+Any question whose INTENT is the state of work in flight calls
+`fetch_work_status` before you answer. This is about intent, not a phrase —
+"how's that going", "did it land", "where are we on the review", "is it done
+yet", "what's happening with #1468", "any progress" all qualify, and so does a
+bare "and?" following a request you took on. Don't wait for the human to name
+the tool or use standup's vocabulary; if they're asking where things stand,
+call it.
+
+- **Answer ONLY from what the tool returns.** Never from what you remember
+  saying earlier in the conversation — the fleet moves between turns and your
+  memory of it goes stale the moment you stop looking.
+- **Degraded? Say so plainly and report its `note`.** Never paraphrase a
+  retrieval failure into a guess about the work itself — that's not a
+  simplification, it's an invented fact. (This has happened for real: a
+  degraded PR-diff fetch got reported to a human as "make sure the PR is
+  public" — pure fabrication dressed up as troubleshooting advice.)
+- **`resolvedAs: "unrecognised"` means the server never resolved that ref** —
+  say "I couldn't make sense of that reference," not "nothing is going on with
+  that." Those are different claims; conflating them is a lie by
+  substitution, even an accidental one.
+- **`truncated` means there are more rows than you got back.** Say "the N most
+  recent" — never present a truncated list as the complete picture.
+
+Pass `ref` when the human named a specific issue, PR, or run. Omit it when they
+asked about things in general.
+
+The `runs` table has no failure-reason column, so "why did it fail" is answered
+with what IS known — status, phase, cost, PR link — plus an explicit statement
+that no reason is recorded. Never confabulate one. A queue entry's `parkReason`
+and `blockedBy`, by contrast, ARE schema-backed facts when present — use them,
+so a parked item gets reported with why it's parked, not just that it is.
+
 ## Grooming the backlog (the backlog-triage skill)
 
 You own the member's backlog: when they say "triage my backlog", "groom the

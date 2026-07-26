@@ -2659,3 +2659,20 @@ export {
 // is started/tagged. Both are dependency-free and unit-tested in isolation
 // from any real Langfuse client or database.
 export { isRunFamily, runFamilyLangfuseTag } from "./run-family.js";
+// Workspace-scoped work-status reads (Task 5; see `queries/work_status.ts`
+// for the full WHY). Backs Task 6's console "how's that going" read route.
+// `getWorkspaceRuns`/`getWorkspaceQueueEntries` are the list views;
+// `findWorkspaceWorkByRef` resolves a free-text ref (a run id or a queue
+// entry's externalId, e.g. a GitHub issue number) against ONE workspace's
+// own work only — every query here carries the workspace predicate, by
+// design there is no unscoped variant.
+export {
+  getWorkspaceRuns,
+  getWorkspaceQueueEntries,
+  findWorkspaceWorkByRef,
+  WORKSPACE_RUNS_DEFAULT_LIMIT,
+  WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT,
+  type WorkspaceRun,
+  type WorkspaceQueueEntry,
+  type WorkspaceWorkByRef,
+} from "./work_status.js";

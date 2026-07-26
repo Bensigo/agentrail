@@ -1,0 +1,299 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { and, desc, eq } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+
+// Task 5 (console "how's that going" feature, backing Task 6's read route).
+// These are the workspace-scoped `runs` / `queue_entries` reads that replace
+// an older tool which read every workspace's rows with no WHERE clause at
+// all — every query here MUST carry the workspace predicate; there is
+// deliberately no unscoped variant. Mocked db chain: same "mock the chain,
+// control the terminal value" approach as runs-by-id.test.ts /
+// workspace_costs.test.ts.
+vi.mock("../db.js", () => ({
+  db: {
+    select: vi.fn(),
+  },
+}));
+
+import { db } from "../db.js";
+import { runs } from "../schema/runs.js";
+import { queueEntries } from "../schema/queue_entries.js";
+import {
+  getWorkspaceRuns,
+  getWorkspaceQueueEntries,
+  findWorkspaceWorkByRef,
+  WORKSPACE_RUNS_DEFAULT_LIMIT,
+  WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT,
+} from "./work_status.js";
+
+const mockDb = vi.mocked(db);
+
+/** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
+function makeChain(terminalMethod: string, finalValue: unknown) {
+  const chain: Record<string, unknown> = {};
+  const methods = ["from", "where", "orderBy", "limit"];
+  for (const m of methods) {
+    chain[m] = vi.fn(() => chain);
+  }
+  chain[terminalMethod] = vi.fn(() => Promise.resolve(finalValue));
+  return chain;
+}
+
+// Argument-level condition assertions (see runs-by-id.test.ts /
+// workspace_costs.test.ts for the full rationale): a mock chain proves a
+// method was *called*, not what it was called *with* — render both the
+// actual captured `.where(...)`/`.orderBy(...)` argument and an expected one
+// (built with the same drizzle operators against the real columns) to
+// literal {sql, params} text via PgDialect.sqlToQuery and compare THAT.
+const dialect = new PgDialect();
+function renderCondition(condition: unknown) {
+  return dialect.sqlToQuery(condition as Parameters<typeof dialect.sqlToQuery>[0]);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+const NOW = new Date("2026-07-20T00:00:00Z");
+
+const MOCK_RUN = {
+  id: "run-1",
+  title: "Fix login bug",
+  status: "success",
+  phase: null,
+  branch: "main",
+  agent: "claude",
+  prUrl: null,
+  costUsd: 1.5,
+  startedAt: NOW,
+  finishedAt: NOW,
+  createdAt: NOW,
+};
+
+const MOCK_QUEUE_ENTRY = {
+  id: "qe-1",
+  externalId: "1468",
+  title: "Ship the thing",
+  state: "queued",
+  tier: 0,
+  kind: "issue",
+  createdAt: NOW,
+  updatedAt: NOW,
+};
+
+describe("getWorkspaceRuns", () => {
+  it("scopes to the workspace, ordered createdAt DESC, capped at the default limit", async () => {
+    const selectChain = makeChain("limit", [MOCK_RUN]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getWorkspaceRuns("ws-1");
+
+    expect(result).toEqual([MOCK_RUN]);
+
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(runs.workspaceId, "ws-1"))
+    );
+
+    const orderByArgs = (selectChain.orderBy as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(orderByArgs)).toEqual(
+      renderCondition(desc(runs.createdAt))
+    );
+
+    const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(limitArgs).toBe(WORKSPACE_RUNS_DEFAULT_LIMIT);
+    expect(WORKSPACE_RUNS_DEFAULT_LIMIT).toBe(50);
+  });
+
+  it("honors an explicit limit override", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    await getWorkspaceRuns("ws-1", 5);
+
+    const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(limitArgs).toBe(5);
+  });
+
+  it("returns an empty array when the workspace has no runs", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getWorkspaceRuns("ws-empty");
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe("getWorkspaceQueueEntries", () => {
+  it("scopes to the workspace, ordered updatedAt DESC, capped at the default limit", async () => {
+    const selectChain = makeChain("limit", [MOCK_QUEUE_ENTRY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getWorkspaceQueueEntries("ws-1");
+
+    expect(result).toEqual([MOCK_QUEUE_ENTRY]);
+
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(queueEntries.workspaceId, "ws-1"))
+    );
+
+    const orderByArgs = (selectChain.orderBy as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(orderByArgs)).toEqual(
+      renderCondition(desc(queueEntries.updatedAt))
+    );
+
+    const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(limitArgs).toBe(WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT);
+    expect(WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT).toBe(50);
+  });
+
+  it("honors an explicit limit override", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    await getWorkspaceQueueEntries("ws-1", 7);
+
+    const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(limitArgs).toBe(7);
+  });
+
+  it("returns an empty array when the workspace has no queue entries", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getWorkspaceQueueEntries("ws-empty");
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe("findWorkspaceWorkByRef", () => {
+  it("matches a run by id, scoped to the workspace — the run branch's WHERE is AND(workspaceId, id)", async () => {
+    const runChain = makeChain("limit", [MOCK_RUN]);
+    const queueChain = makeChain("where", []);
+    let call = 0;
+    mockDb.select = vi.fn(() => {
+      call += 1;
+      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
+    });
+
+    const result = await findWorkspaceWorkByRef("ws-1", "run-1");
+
+    expect(result.runs).toEqual([MOCK_RUN]);
+
+    const runWhereArgs = (runChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(runWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(runs.workspaceId, "ws-1"), eq(runs.id, "run-1"))
+      )
+    );
+  });
+
+  it("matches queue entries by externalId (e.g. \"1468\"), scoped to the workspace", async () => {
+    const runChain = makeChain("limit", []);
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    let call = 0;
+    mockDb.select = vi.fn(() => {
+      call += 1;
+      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
+    });
+
+    const result = await findWorkspaceWorkByRef("ws-1", "1468");
+
+    expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(queueEntries.workspaceId, "ws-1"),
+          eq(queueEntries.externalId, "1468")
+        )
+      )
+    );
+  });
+
+  // The cross-tenant assertion: a ref belonging to ANOTHER workspace must
+  // return empty, indistinguishable from a ref that does not exist at all —
+  // this function must never leak existence across tenants. Proven here by
+  // pinning that the WHERE clause ALWAYS conjuncts the caller's workspaceId
+  // with the ref match, on both branches — a real database scoped this way
+  // returns zero rows for a foreign-workspace ref regardless of whether the
+  // underlying row exists in some other tenant.
+  it("never leaks existence across tenants: both branches' WHERE always conjuncts the caller's workspaceId with the ref match", async () => {
+    const runChain = makeChain("limit", []);
+    const queueChain = makeChain("where", []);
+    let call = 0;
+    mockDb.select = vi.fn(() => {
+      call += 1;
+      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
+    });
+
+    const result = await findWorkspaceWorkByRef(
+      "ws-1",
+      "run-owned-by-another-workspace"
+    );
+
+    expect(result).toEqual({ runs: [], queueEntries: [] });
+
+    const runWhereArgs = (runChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(runWhereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(runs.workspaceId, "ws-1"),
+          eq(runs.id, "run-owned-by-another-workspace")
+        )
+      )
+    );
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(queueEntries.workspaceId, "ws-1"),
+          eq(queueEntries.externalId, "run-owned-by-another-workspace")
+        )
+      )
+    );
+
+    // Neither branch's WHERE is a bare ref-only condition — the workspace
+    // scope is never dropped, which is the property that keeps existence
+    // from leaking across tenants.
+    expect(renderCondition(runWhereArgs)).not.toEqual(
+      renderCondition(eq(runs.id, "run-owned-by-another-workspace"))
+    );
+    expect(renderCondition(queueWhereArgs)).not.toEqual(
+      renderCondition(
+        eq(queueEntries.externalId, "run-owned-by-another-workspace")
+      )
+    );
+  });
+
+  it("returns { runs: [], queueEntries: [] } when nothing matches either branch", async () => {
+    const runChain = makeChain("limit", []);
+    const queueChain = makeChain("where", []);
+    let call = 0;
+    mockDb.select = vi.fn(() => {
+      call += 1;
+      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
+    });
+
+    const result = await findWorkspaceWorkByRef("ws-1", "unknown-ref");
+
+    expect(result).toEqual({ runs: [], queueEntries: [] });
+  });
+});

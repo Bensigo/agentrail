@@ -70,12 +70,28 @@
 // on that fallback (never the token, never the URL) so a broken followup
 // path is visible instead of silently indistinguishable from the original
 // bug.
+//
+// `events["turn.started"]` overrides Eve's default one-shot `startTyping()`
+// with a keep-alive (spec: docs/superpowers/specs/2026-07-26-discord-gateway-listener-design.md
+// "Reply path" — Discord expires a typing indicator after ~10s, so on a slow
+// model the chat looks dead for the rest of a 30s-2min turn). Mirrors
+// telegram.ts's identical use of the SAME agent/lib/typing-keepalive.core.mjs
+// (stopped on message.completed / turn.completed; the failure path is
+// backstopped by the keep-alive's own safety cap, since eve does not export
+// its default turn.failed / session.failed handlers for chaining — same
+// rationale as telegram.ts's own header comment). This benefits BOTH reply
+// paths equally: an interaction-backed session (channel.discord.startTyping()
+// posts via the interaction token) and a Gateway-`receive()`-triggered
+// session with no interaction token at all (posts via the Bot API directly —
+// see agent/lib/discord-gateway.mjs's header comment on the reply path) both
+// go through this same `channel.discord.startTyping()` call.
 import { discordChannel } from "eve/channels/discord";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import {
   deliverDiscordReply,
   resolveSessionAuthAttributes,
 } from "../lib/discord-followup.core.mjs";
+import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 
 /** Raw fetch, narrowed to the `{ status, body }` shape discord-followup.core.mjs
  * expects — mirrors every jace->external-API wrapper's own `realTransport`
@@ -102,9 +118,20 @@ async function followupTransport(
   return { status: res.status, body };
 }
 
+const typing = createTypingKeepalive();
+const convoKey = (ctx: { session?: { id?: string } }) =>
+  ctx?.session?.id ?? "discord";
+
 export default discordChannel({
   events: {
+    "turn.started"(_data, channel, ctx) {
+      typing.start(convoKey(ctx), () => channel.discord.startTyping());
+    },
+    "turn.completed"(_data, _channel, ctx) {
+      typing.stop(convoKey(ctx));
+    },
     async "message.completed"(data, channel, ctx) {
+      typing.stop(convoKey(ctx));
       if (data.finishReason === "tool-calls" || !data.message) return;
       const attributes = resolveSessionAuthAttributes(ctx?.session?.auth);
       await deliverDiscordReply({

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db-postgres";
-import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
+import { admitDiscordChannelMessage } from "../../../../../../lib/discord-inbound";
 import {
   verifyDiscordSignature,
   DISCORD_INTERACTION_RESPONSE,
@@ -23,17 +22,27 @@ import {
  * in a DM with it — Discord explicitly supports bot-DM-context commands —
  * which arrives here as a normal APPLICATION_COMMAND interaction. This keeps
  * the console's inbound door stateless/serverless like every other channel's
- * webhook; no Gateway websocket is opened here (Eve's own self-host discord
- * channel, apps/jace/agent/channels/discord.ts, is the same interactions-only
- * model — see that file's header comment).
+ * webhook; no Gateway websocket is opened here.
+ *
+ * PLAIN messages and @mentions (no interaction, no signature) are a SEPARATE
+ * door: the jace service holds the actual Gateway WebSocket
+ * (apps/jace/agent/lib/discord-gateway.mjs) and, on an admitted
+ * MESSAGE_CREATE, POSTs to `app/api/v1/runner/discord-inbound/route.ts`
+ * instead — authenticated by the shared `JACE_CONSOLE_TOKEN` bearer rather
+ * than an Ed25519 signature, since that traffic never comes from Discord
+ * directly. Both routes call the SAME `admitDiscordChannelMessage` (see
+ * `lib/discord-inbound.ts`) so there is one pipeline behind two doors, not
+ * two pipelines — see that file's header comment.
  *
  * `PING` (type 1): required handshake Discord sends when the Interactions
  * Endpoint URL is first configured — must ack with `{ type: 1 }` (PONG) or
  * the URL fails validation.
  *
  * `APPLICATION_COMMAND` (type 2): ensures the sender's chat identity (issue
- * #1261), enqueues into `channel_inbox` (PR ①), kicks the dispatcher
- * (`lib/channel-dispatch.ts`) fire-and-forget, and immediately ACKs with a
+ * #1261), enqueues into `channel_inbox` (PR ①) via
+ * `admitDiscordChannelMessage` (lib/discord-inbound.ts — the SAME intake
+ * the Gateway listener uses, so there is one pipeline, not two), which
+ * also kicks the dispatcher fire-and-forget, and immediately ACKs with a
  * visible `CHANNEL_MESSAGE_WITH_SOURCE` placeholder — Discord requires SOME
  * response within 3 seconds. This route never awaits the Eve turn.
  *
@@ -220,18 +229,6 @@ export async function POST(request: NextRequest) {
   }
 
   const displayName = displayNameFor(discordUser);
-  const { identity } = await resolveInboundChatIdentity({
-    platform: "discord",
-    platformUserId: discordUser.id,
-    displayName,
-  });
-
-  // The anchor is EITHER workspaceId (identity already bound) OR
-  // chatIdentityId (intro sender, no resolved workspace yet) — mirrors the
-  // Telegram webhook's identical anchor convention.
-  const anchor = identity.workspaceId
-    ? { workspaceId: identity.workspaceId }
-    : { chatIdentityId: identity.id };
 
   // fix-1-brief.md finding 5: token/application_id are now optional on
   // DiscordInteraction (PING must not require them), so they're read here
@@ -246,55 +243,31 @@ export async function POST(request: NextRequest) {
   const applicationIdValue =
     typeof body.application_id === "string" ? body.application_id : undefined;
 
-  // Reuses the SAME field name channel-dispatch.ts's (Telegram-authored)
-  // extractPayload already reads — see channel-dispatch.ts's doc-comment on
-  // why this door deliberately does not fork that function.
-  const payload: Record<string, unknown> = {
-    chatId: channelId,
-    text,
-    fromId: discordUser.id,
-    fromUsername: discordUser.username ?? null,
-  };
-  // Prod bug fix (private-channel replies vanish — see
-  // .superpowers/sdd/discord-followup/): captured here so channel-dispatch.ts
-  // can carry it into the session's auth attributes, which Jace's discord
-  // channel reads to reply through the interaction followup webhook instead
-  // of a bot-API channel post. SECRET: this travels only inbound body ->
-  // channel_inbox.payload (jsonb) -> the dispatch POST to Jace — never
-  // logged, never echoed in this route's own response (see the
-  // response-building code below, which never reads
-  // `body.token`/`body.application_id`). Both-or-neither, matching
-  // buildDoorInitiatorAuth's own convention (channel-dispatch.ts): the KEYS
-  // are omitted entirely (not set to `undefined`) rather than written as a
-  // partial/absent pair, so the stored jsonb never carries a half-formed
-  // credential.
-  if (tokenValue !== undefined && applicationIdValue !== undefined) {
-    payload.interactionToken = tokenValue;
-    payload.applicationId = applicationIdValue;
-  }
-
   // The interaction's ack content is static regardless of dedup (unlike
   // Telegram's webhook, which reports `deduped` in its JSON body) — Discord
   // interactions are not provider-redelivered the way Telegram's Bot API
   // retries a slow-ACKed webhook, so there is no dedup-specific UX to show.
-  await enqueueChannelMessage({
-    ...anchor,
-    channel: "discord",
-    conversationKey: String(channelId),
-    kind: "message",
+  // Discord interaction ids are globally unique, but namespacing the dedupe
+  // key by channel keeps the shape consistent with every other channel's
+  // (channel, provider_message_id) unique — never actually collides.
+  await admitDiscordChannelMessage({
+    channelId: String(channelId),
+    providerMessageId: `${channelId}:${body.id}`,
     senderId: discordUser.id,
     senderDisplay: displayName,
-    // Discord interaction ids are globally unique, but namespacing by
-    // channel keeps the shape consistent with every other channel's
-    // (channel, provider_message_id) unique — never actually collides.
-    providerMessageId: `${channelId}:${body.id}`,
-    payload,
-  });
-
-  // Fire-and-forget kick (mirrors the Telegram webhook's identical pattern):
-  // never awaited, never allowed to affect this route's response.
-  void dispatchQueuedChannelMessages().catch((err) => {
-    console.error("[discord/webhook] dispatch kick failed:", err);
+    senderUsername: discordUser.username ?? null,
+    text,
+    // The interaction's OWN short-lived credential, so Jace can reply via the
+    // followup webhook instead of a permission-bound channel post (see this
+    // file's header). SECRET: travels only inbound body -> channel_inbox.payload
+    // (jsonb) -> the dispatch POST to Jace — never logged, never echoed in this
+    // route's own response. Both-or-neither, matching buildDoorInitiatorAuth's
+    // convention: the keys are omitted entirely rather than written as a
+    // half-formed pair. The Gateway listener's own call into this same helper
+    // passes neither — a plain @mention has no interaction to follow up on.
+    ...(tokenValue !== undefined && applicationIdValue !== undefined
+      ? { interactionToken: tokenValue, applicationId: applicationIdValue }
+      : {}),
   });
 
   return json({

@@ -62,6 +62,11 @@ describe("completeConnectOwnerElect", () => {
       requireAlignment: true,
       jaceGoalLoop: false,
       billingEnabled: false,
+      githubInstallationId: null,
+      githubInstallationAccountLogin: null,
+      githubInstallationAccountType: null,
+      githubInstallState: null,
+      githubInstallStateExpiresAt: null,
     });
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });

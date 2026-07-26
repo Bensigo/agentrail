@@ -336,100 +336,82 @@ git commit -m "feat(jace): one-shot silence timer for slow-turn acknowledgement"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `apps/jace/test/ack-channel-wiring.test.mjs`. This exercises the handler shape directly rather than booting eve — same approach `discord-channel.test.mjs` uses.
+Create `apps/jace/test/ack-channel-wiring.test.mjs`.
+
+**Follow this repo's channel-test convention exactly** — read `apps/jace/test/discord-channel.test.mjs:1-20` first. `node --test` cannot import the `.ts` channel modules (no TS loader is configured, and constructing a real channel needs eve's runtime), so channel tests assert against the **source as text**. All real behaviour is covered for real by the pure-core tests in Task 1; this file locks only the *wiring*.
+
+Do **not** re-implement the handler bodies inside the test — a test that mirrors the code passes while the channel is broken.
 
 ```javascript
-// Verifies each channel arms the ack on turn.started, stops it only when a
-// REAL reply lands (not on a tool-calls message), and delivers through that
-// channel's correct seam.
+// Structural test for the slow-turn acknowledgement wiring across channels.
+//
+// agent/channels/*.ts are Eve channel modules — `node --test` cannot import
+// them directly (no TS loader is configured for the test run, and constructing
+// a real channel would need Eve's runtime context). Following this repo's
+// convention (see discord-channel.test.mjs), ALL the real logic lives in and is
+// fully exercised by ack-on-silence.core.test.mjs; this test locks only the
+// WIRING — that each channel arms the ack on turn.started, disarms it on
+// turn.completed, and places its stops BELOW the tool-calls guard — by reading
+// the source as text.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createAckOnSilence,
-  ACK_TEXT,
-} from "../agent/lib/ack-on-silence.core.mjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-function fakeTimers() {
-  let nextId = 1;
-  const timeouts = new Map();
-  return {
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timeouts.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timeouts.delete(id),
-    advanceTo(ms) {
-      for (const [id, entry] of [...timeouts]) {
-        if (entry.ms === ms) {
-          timeouts.delete(id);
-          entry.fn();
-        }
-      }
-    },
-  };
+const read = (name) =>
+  readFileSync(
+    fileURLToPath(new URL(`../agent/channels/${name}`, import.meta.url)),
+    "utf8",
+  );
+
+const CHANNELS = ["telegram.ts", "discord.ts", "slack.ts", "console.ts"];
+
+for (const name of CHANNELS) {
+  test(`${name}: imports the ack module and instantiates it`, () => {
+    const code = read(name);
+    assert.match(
+      code,
+      /import\s*{[^}]*createAckOnSilence[^}]*ACK_TEXT[^}]*}\s*from\s*["']\.\.\/lib\/ack-on-silence\.core\.mjs["']/,
+    );
+    assert.match(code, /const\s+ack\s*=\s*createAckOnSilence\(/);
+  });
+
+  test(`${name}: arms the ack in turn.started and disarms it in turn.completed`, () => {
+    const code = read(name);
+    const turnStarted = code.slice(code.indexOf('"turn.started"'));
+    assert.match(turnStarted.slice(0, 400), /ack\.start\(/);
+    const turnCompleted = code.slice(code.indexOf('"turn.completed"'));
+    assert.match(turnCompleted.slice(0, 300), /ack\.stop\(/);
+  });
+
+  test(`${name}: stops the ack BELOW the tool-calls guard, not above it`, () => {
+    // A `tool-calls` message.completed fires mid-turn while the turn keeps
+    // working. Stopping above the guard would suppress the ack on exactly the
+    // slow, tool-calling turns that most need it.
+    const code = read(name);
+    const body = code.slice(code.indexOf('"message.completed"'));
+    const guard = body.indexOf('finishReason === "tool-calls"');
+    const stop = body.indexOf("ack.stop(");
+    assert.ok(guard !== -1, "message.completed must keep eve's default guard");
+    assert.ok(stop !== -1, "message.completed must stop the ack");
+    assert.ok(stop > guard, "ack.stop must come AFTER the tool-calls guard");
+  });
 }
 
-// Mirrors telegram.ts's handler bodies. Kept in the test so a regression in
-// the channel file is caught by comparing behaviour, and so this test does not
-// need eve booted.
-function telegramHandlers(ack, posts) {
-  const key = () => "session-1";
-  return {
-    turnStarted: (channel) => ack.start(key(), () => channel.post(ACK_TEXT)),
-    messageCompleted: (data, channel) => {
-      if (data.finishReason === "tool-calls" || !data.message) return;
-      ack.stop(key());
-      posts.push(data.message);
-    },
-    turnCompleted: () => ack.stop(key()),
-  };
-}
-
-test("telegram: a tool-calls message does NOT cancel the ack", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const acks = [];
-  const posts = [];
-  const channel = { post: (t) => acks.push(t) };
-  const h = telegramHandlers(ack, posts);
-
-  h.turnStarted(channel);
-  h.messageCompleted({ finishReason: "tool-calls", message: "" }, channel);
-  timers.advanceTo(4000);
-
-  assert.deepEqual(acks, [ACK_TEXT], "a tool-calling turn must still ack");
+test("telegram + discord: typing.stop also moved below the tool-calls guard", () => {
+  for (const name of ["telegram.ts", "discord.ts"]) {
+    const body = read(name).slice(read(name).indexOf('"message.completed"'));
+    const guard = body.indexOf('finishReason === "tool-calls"');
+    const stop = body.indexOf("typing.stop(");
+    assert.ok(stop > guard, `${name}: typing.stop must come AFTER the guard`);
+  }
 });
 
-test("telegram: a real reply inside the window cancels the ack", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const acks = [];
-  const posts = [];
-  const channel = { post: (t) => acks.push(t) };
-  const h = telegramHandlers(ack, posts);
-
-  h.turnStarted(channel);
-  h.messageCompleted({ finishReason: "stop", message: "done" }, channel);
-  timers.advanceTo(4000);
-
-  assert.deepEqual(acks, [], "a fast turn must never ack");
-  assert.deepEqual(posts, ["done"]);
-});
-
-test("telegram: turn.completed disarms a still-pending ack", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const acks = [];
-  const channel = { post: (t) => acks.push(t) };
-  const h = telegramHandlers(ack, []);
-
-  h.turnStarted(channel);
-  h.turnCompleted();
-  timers.advanceTo(4000);
-
-  assert.deepEqual(acks, []);
+test("telegram: the ack posts via channel.telegram.post", () => {
+  const code = read("telegram.ts");
+  const turnStarted = code.slice(code.indexOf('"turn.started"'), code.indexOf('"turn.completed"'));
+  assert.match(turnStarted, /channel\.telegram\.post\(\s*ACK_TEXT\s*\)/);
 });
 ```
 
@@ -439,7 +421,7 @@ test("telegram: turn.completed disarms a still-pending ack", () => {
 cd apps/jace && pnpm test 2>&1 | grep -A5 "ack-channel-wiring"
 ```
 
-Expected: FAIL — the tool-calls test fails because no ack wiring exists yet in the shared module path, or the file imports resolve but assertions on `ACK_TEXT` mismatch. (If Task 1 is complete these tests pass immediately for the module; the point of this file is to lock the *handler contract* the channel must satisfy. Confirm it runs and is green before editing the channel, then keep it green through Step 3.)
+Expected: FAIL — the channels do not import `ack-on-silence.core.mjs` yet, so the import and `ack.start`/`ack.stop` assertions all fail. Tasks 3 and 4 turn the remaining channels green.
 
 - [ ] **Step 3: Edit `apps/jace/agent/channels/telegram.ts`**
 
@@ -522,45 +504,42 @@ git commit -m "feat(jace): acknowledge slow turns on Telegram; keep typing alive
 
 - [ ] **Step 1: Add the failing test**
 
-Append to `apps/jace/test/ack-channel-wiring.test.mjs`:
+Append to `apps/jace/test/ack-channel-wiring.test.mjs`, following the same source-as-text convention as Task 2:
 
 ```javascript
-test("discord: the ack goes out via deliverDiscordBubble, never channel.post", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const seams = [];
-
-  // Mirrors discord.ts's turn.started body.
-  const attributes = { application_id: "app-1", interaction_token: "tok-1" };
-  const deliverBubble = ({ content }) => {
-    seams.push({ seam: "followup", content });
-    return Promise.resolve({ delivered: "followup" });
-  };
-  const postViaBot = () => {
-    seams.push({ seam: "bot" });
-    return Promise.resolve();
-  };
-
-  ack.start("session-1", () =>
-    deliverBubble({ content: ACK_TEXT, attributes, postViaBot }),
+test("discord: the ack is delivered via deliverDiscordBubble, not a bare channel.post", () => {
+  const code = read("discord.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
   );
-  timers.advanceTo(4000);
 
-  assert.deepEqual(seams, [{ seam: "followup", content: ACK_TEXT }]);
-  assert.ok(
-    !seams.some((s) => s.seam === "bot"),
-    "must not fall straight to the Bot API path",
-  );
+  // The ack is a reply like any other, so it MUST take the interaction
+  // followup path. channel.discord.post() alone needs View Channel + Send
+  // Messages on this specific channel and dies with a swallowed 50001 in
+  // private channels — that was the production bug fixed in #1463.
+  assert.match(turnStarted, /deliverDiscordBubble\(/);
+  assert.match(turnStarted, /content:\s*ACK_TEXT/);
+  assert.match(turnStarted, /attributes:\s*resolveSessionAuthAttributes\(/);
+  assert.match(turnStarted, /postFollowup:\s*followupTransport/);
+  // channel.discord.post may appear ONLY as the postViaBot fallback.
+  assert.match(turnStarted, /postViaBot:\s*\(\)\s*=>\s*channel\.discord\.post\(/);
+});
+
+test("discord: imports deliverDiscordBubble alongside deliverDiscordReply", () => {
+  const code = read("discord.ts");
+  assert.match(code, /deliverDiscordBubble/);
+  assert.match(code, /deliverDiscordReply/);
 });
 ```
 
-- [ ] **Step 2: Run to verify it passes against the intended contract**
+- [ ] **Step 2: Run to verify it fails**
 
 ```bash
 cd apps/jace && pnpm test 2>&1 | grep -A5 discord
 ```
 
-Expected: PASS (the test pins the contract; Step 3 makes the channel satisfy it).
+Expected: FAIL — `discord.ts` has no `turn.started` ack wiring and does not import `deliverDiscordBubble` yet.
 
 - [ ] **Step 3: Edit `apps/jace/agent/channels/discord.ts`**
 
@@ -657,52 +636,38 @@ Neither channel has a `turn.started` or `turn.completed` handler today; both are
 
 - [ ] **Step 1: Add the failing test**
 
-Append to `apps/jace/test/ack-channel-wiring.test.mjs`:
+Append to `apps/jace/test/ack-channel-wiring.test.mjs`, same source-as-text convention:
 
 ```javascript
-test("slack: ack posts to the thread seam", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const posted = [];
-  const channel = { thread: { post: (t) => posted.push(t) } };
-
-  ack.start("session-1", () => channel.thread.post(ACK_TEXT));
-  timers.advanceTo(4000);
-
-  assert.deepEqual(posted, [ACK_TEXT]);
+test("slack: the ack posts to the thread seam", () => {
+  const code = read("slack.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(turnStarted, /channel\.thread\.post\(\s*ACK_TEXT\s*\)/);
 });
 
-test("console: ack posts through the console chat-reply seam", () => {
-  const timers = fakeTimers();
-  const ack = createAckOnSilence(timers);
-  const calls = [];
-  const postConsoleChatReply = (args) => {
-    calls.push(args);
-    return Promise.resolve();
-  };
-
-  ack.start("session-1", () =>
-    postConsoleChatReply({
-      workspaceId: "ws-1",
-      conversationKey: "convo-1",
-      text: ACK_TEXT,
-    }),
+test("console: the ack posts through postConsoleChatReply, not a raw transport call", () => {
+  const code = read("console.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
   );
-  timers.advanceTo(4000);
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].text, ACK_TEXT);
-  assert.equal(calls[0].workspaceId, "ws-1");
+  assert.match(turnStarted, /postConsoleChatReply\(/);
+  assert.match(turnStarted, /text:\s*ACK_TEXT/);
+  assert.match(turnStarted, /workspaceId:\s*channel\.state\.workspaceId/);
+  assert.match(turnStarted, /conversationKey:\s*channel\.state\.conversationKey/);
 });
 ```
 
-- [ ] **Step 2: Run to confirm the contract**
+- [ ] **Step 2: Run to verify it fails**
 
 ```bash
 cd apps/jace && pnpm test 2>&1 | grep -A5 "slack:\|console:"
 ```
 
-Expected: PASS.
+Expected: FAIL — neither channel has a `turn.started` handler yet.
 
 - [ ] **Step 3a: Edit `apps/jace/agent/channels/slack.ts`**
 

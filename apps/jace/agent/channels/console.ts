@@ -62,7 +62,11 @@
 // guide, "Cross-channel hand-off" + "Define a channel" sections).
 import { defineChannel, POST } from "eve/channels";
 import { postConsoleChatReply } from "../lib/console_chat_reply.core.mjs";
-import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
 
 const ack = createAckOnSilence();
 const convoKey = (ctx: { session?: { id?: string } }) =>
@@ -125,6 +129,12 @@ export default defineChannel<ConsoleState>({
   },
   events: {
     "turn.started"(_data, channel, ctx) {
+      // Skipped entirely for a Jace-initiated turn — see
+      // ack-on-silence.core.mjs's isProactiveTurn. Console isn't wired into
+      // run-outcome.ts's CHANNELS map today, but the predicate is applied
+      // identically across all four ack-wired channels so this stays
+      // correct if that ever changes.
+      if (isProactiveTurn(ctx?.session?.auth)) return;
       ack.start(convoKey(ctx), () =>
         postConsoleChatReply({
           workspaceId: channel.state.workspaceId,

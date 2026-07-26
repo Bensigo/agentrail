@@ -119,7 +119,11 @@ import {
   resolveSessionAuthAttributes,
 } from "../lib/discord-followup.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
-import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
 
 /** Raw fetch, narrowed to the `{ status, body }` shape discord-followup.core.mjs
  * expects — mirrors every jace->external-API wrapper's own `realTransport`
@@ -163,15 +167,20 @@ export default discordChannel({
       typing.start(key, () => channel.discord.startTyping());
       // Same interaction-followup path message.completed uses — a bare
       // channel.discord.post() silently eats 50001 in private channels
-      // (the #1463 bug).
-      ack.start(key, () =>
-        deliverDiscordBubble({
-          content: ACK_TEXT,
-          attributes: resolveSessionAuthAttributes(ctx?.session?.auth),
-          postFollowup: followupTransport,
-          postViaBot: () => channel.discord.post(ACK_TEXT),
-        }),
-      );
+      // (the #1463 bug). Skipped entirely for a Jace-initiated turn
+      // (run-outcome.ts's hand-off) — see ack-on-silence.core.mjs's
+      // isProactiveTurn: there is no human message behind that turn to
+      // acknowledge, and composing it routinely exceeds the ack window.
+      if (!isProactiveTurn(ctx?.session?.auth)) {
+        ack.start(key, () =>
+          deliverDiscordBubble({
+            content: ACK_TEXT,
+            attributes: resolveSessionAuthAttributes(ctx?.session?.auth),
+            postFollowup: followupTransport,
+            postViaBot: () => channel.discord.post(ACK_TEXT),
+          }),
+        );
+      }
     },
     "turn.completed"(_data, _channel, ctx) {
       const key = convoKey(ctx);

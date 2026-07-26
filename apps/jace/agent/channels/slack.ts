@@ -44,10 +44,32 @@
 // agent/lib/ack-on-silence.core.mjs) so a slow turn does not look dead in
 // the thread. Stopped on message.completed / turn.completed; deliberately
 // not stopped on turn.failed / session.failed — same rationale as
-// telegram.ts's header comment.
+// telegram.ts's header comment. Skipped entirely for a Jace-initiated turn
+// (run-outcome.ts's hand-off) — see isProactiveTurn: there is no human
+// message behind that turn to acknowledge.
+//
+// eve's slackChannel resolves ONE handler per event — roughly
+// `events[eventName] ?? defaultEvents[eventName]` — rather than chaining
+// ours over its default the way telegram/discord merge
+// `{...defaultEvents, ...events}` — so declaring our own turn.started here
+// REPLACES eve's default rather than adding to it. That default (verified
+// against eve@0.19.0's REAL compiled runtime,
+// apps/jace/.output/server/_libs/eve.mjs — search defaultEvents' entry for
+// this same event) does four things: clears `state.pendingToolCallMessage`,
+// `state.lastReasoningTypingAtMs`, and `state.lastReasoningTypingStatus`,
+// then posts "Working..." typing. Losing that clear makes the still-default
+// `reasoning.appended` handler wrongly suppress the first reasoning status of
+// a new turn whenever the previous turn ended under 5s ago (it compares
+// against the stale `lastReasoningTypingAtMs`), and losing the "Working..."
+// call drops the per-turn typing status entirely on the proactive
+// `receive()` path. Reproduced below rather than skipped.
 import { slackChannel } from "eve/channels/slack";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
-import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
 
 const ack = createAckOnSilence();
 const convoKey = (ctx: { session?: { id?: string } }) =>
@@ -55,8 +77,17 @@ const convoKey = (ctx: { session?: { id?: string } }) =>
 
 export default slackChannel({
   events: {
-    "turn.started"(_data, channel, ctx) {
-      ack.start(convoKey(ctx), () => channel.thread.post(ACK_TEXT));
+    async "turn.started"(_data, channel, ctx) {
+      // Reproduce eve's default turn.started (see the header comment above)
+      // since declaring this handler replaces it rather than chaining over
+      // it.
+      channel.state.pendingToolCallMessage = null;
+      channel.state.lastReasoningTypingAtMs = null;
+      channel.state.lastReasoningTypingStatus = null;
+      if (!isProactiveTurn(ctx?.session?.auth)) {
+        ack.start(convoKey(ctx), () => channel.thread.post(ACK_TEXT));
+      }
+      await channel.thread.startTyping("Working...");
     },
     "turn.completed"(_data, _channel, ctx) {
       ack.stop(convoKey(ctx));

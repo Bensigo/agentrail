@@ -40,3 +40,27 @@ test("posts the split messages via the bound thread and pauses typing between th
   assert.match(code, /channel\.thread\.post\(message\)/);
   assert.match(code, /channel\.thread\.startTyping\(\)/);
 });
+
+// --- Important 1: turn.started replaces eve's default handler, not chains
+// over it (eve's slackChannel resolves ONE handler per event) — so the
+// default's four side effects must be reproduced here or they're silently
+// lost. Verified against eve@0.19.0's REAL compiled runtime,
+// apps/jace/.output/server/_libs/eve.mjs (defaultEvents' turn.started).
+
+test("turn.started reproduces eve's default: clears pendingToolCallMessage, lastReasoningTypingAtMs, lastReasoningTypingStatus", () => {
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(turnStarted, /channel\.state\.pendingToolCallMessage\s*=\s*null/);
+  assert.match(turnStarted, /channel\.state\.lastReasoningTypingAtMs\s*=\s*null/);
+  assert.match(turnStarted, /channel\.state\.lastReasoningTypingStatus\s*=\s*null/);
+});
+
+test("turn.started reproduces eve's default: still calls channel.thread.startTyping(\"Working...\")", () => {
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(turnStarted, /channel\.thread\.startTyping\(\s*["']Working\.\.\.["']\s*\)/);
+});

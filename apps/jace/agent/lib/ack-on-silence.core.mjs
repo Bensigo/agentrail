@@ -29,6 +29,46 @@
 export const ACK_AFTER_MS = 4000; // long enough that fast turns never ack
 export const ACK_TEXT = "On it.";
 
+/**
+ * The `auth.attributes` key run-outcome.ts stamps onto a hand-off it starts
+ * itself (a terminal run outcome, or the #1289 goal-loop's synthetic
+ * message) to mark that turn as Jace-initiated — no human message behind
+ * it. See {@link isProactiveTurn}'s doc comment for the full rationale.
+ */
+export const JACE_PROACTIVE_ATTRIBUTE = "jaceProactive";
+
+/**
+ * Whether a turn was started proactively by Jace itself
+ * (agent/channels/run-outcome.ts's terminal-outcome / goal-loop hand-off via
+ * `args.receive`) rather than by a real human message. ALL of Jace's hosted
+ * inbound — the Discord Gateway listener, the console's dispatcher, a
+ * workspace member's console chat message — is ALSO `receive()`-started, so
+ * "started via receive()" cannot be the signal; the actual distinguishing
+ * fact is that run-outcome.ts is the only starter with no human message
+ * behind it, and it alone marks its hand-off with this attribute.
+ *
+ * Composing a real turn (an LLM call, possibly with tool use) routinely
+ * exceeds the ack's 4s window, so without this guard a Jace-initiated
+ * "PR #1470 merged" notification would be preceded by an unsolicited
+ * "On it." acknowledging a message the user never sent.
+ *
+ * Reads `auth` the SAME way eve's own session-auth shape is read everywhere
+ * else in this codebase — `current` first (refreshed on every subsequent
+ * turn), falling back to `initiator` (set once, at session start) — see
+ * `resolveSessionAuthAttributes` in agent/lib/discord-followup.core.mjs for
+ * the verified-against-the-compiled-runtime rationale for that precedence.
+ * This is the ONE place the "is this turn proactive?" decision is made; each
+ * channel's `turn.started` calls it before `ack.start` rather than
+ * re-deriving the attribute lookup itself.
+ *
+ * @param {{ current?: { attributes?: Record<string, unknown> | null } | null, initiator?: { attributes?: Record<string, unknown> | null } | null } | null | undefined} auth
+ * @returns {boolean}
+ */
+export function isProactiveTurn(auth) {
+  const attributes = auth?.current?.attributes ?? auth?.initiator?.attributes;
+  return attributes?.[JACE_PROACTIVE_ATTRIBUTE] === true;
+}
+
 export function createAckOnSilence(deps = {}) {
   const setTo = deps.setTimeout ?? setTimeout;
   const clearTo = deps.clearTimeout ?? clearTimeout;

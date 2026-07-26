@@ -22,22 +22,73 @@ const read = (name) =>
 
 const CHANNELS = ["telegram.ts", "discord.ts", "slack.ts", "console.ts"];
 
+// Minor 3 fix: slack/console key the ack by `convoKey(ctx)` directly;
+// telegram/discord instead hoist that into a local `key` (shared with the
+// typing keep-alive) and pass `key`. Asserting only `/ack\.start\(/` /
+// `/ack\.stop\(/` (as this file used to) is argument-blind: swapping
+// `ack.stop(convoKey(ctx))` for e.g. `ack.stop("slack")` would keep every
+// test here green while making every turn on that channel post "On it."
+// even on an instant reply — exactly the regression this suite exists to
+// prevent. These per-channel patterns assert the actual key argument too.
+const START_KEY_PATTERN = {
+  "telegram.ts": /ack\.start\(\s*key\s*,/,
+  "discord.ts": /ack\.start\(\s*key\s*,/,
+  "slack.ts": /ack\.start\(\s*convoKey\(ctx\)/,
+  "console.ts": /ack\.start\(\s*convoKey\(ctx\)/,
+};
+const STOP_KEY_PATTERN = {
+  "telegram.ts": /ack\.stop\(\s*key\s*\)/,
+  "discord.ts": /ack\.stop\(\s*key\s*\)/,
+  "slack.ts": /ack\.stop\(\s*convoKey\(ctx\)\s*\)/,
+  "console.ts": /ack\.stop\(\s*convoKey\(ctx\)\s*\)/,
+};
+
 for (const name of CHANNELS) {
-  test(`${name}: imports the ack module and instantiates it`, () => {
+  test(`${name}: imports the ack module (createAckOnSilence, ACK_TEXT, isProactiveTurn) and instantiates it`, () => {
     const code = read(name);
-    assert.match(
-      code,
-      /import\s*{[^}]*createAckOnSilence[^}]*ACK_TEXT[^}]*}\s*from\s*["']\.\.\/lib\/ack-on-silence\.core\.mjs["']/,
+    const importMatch = code.match(
+      /import\s*\{([^}]*)\}\s*from\s*["']\.\.\/lib\/ack-on-silence\.core\.mjs["']/,
     );
+    assert.ok(importMatch, `${name}: must import from ack-on-silence.core.mjs`);
+    assert.match(importMatch[1], /createAckOnSilence/);
+    assert.match(importMatch[1], /ACK_TEXT/);
+    assert.match(importMatch[1], /isProactiveTurn/);
     assert.match(code, /const\s+ack\s*=\s*createAckOnSilence\(/);
   });
 
-  test(`${name}: arms the ack in turn.started and disarms it in turn.completed`, () => {
+  // Bounded slices, not a fixed-width scan (Minor 4 fix). A fixed
+  // `code.slice(idx, idx + N)` window is brittle to unrelated edits growing
+  // the handler body past N chars (measured headroom before this fix: 284
+  // used out of 400 for telegram, 309 of 400 for discord) — a comment line
+  // added anywhere in the window trips a misleading "does not arm the ack"
+  // failure. Bounding by the NEXT handler's key (as the tool-calls-guard
+  // test below already does) has no such ceiling.
+  test(`${name}: arms the ack in turn.started (skipping a Jace-initiated turn) and disarms it in turn.completed`, () => {
     const code = read(name);
-    const turnStarted = code.slice(code.indexOf('"turn.started"'));
-    assert.match(turnStarted.slice(0, 400), /ack\.start\(/);
-    const turnCompleted = code.slice(code.indexOf('"turn.completed"'));
-    assert.match(turnCompleted.slice(0, 300), /ack\.stop\(/);
+    const turnStarted = code.slice(
+      code.indexOf('"turn.started"'),
+      code.indexOf('"turn.completed"'),
+    );
+    assert.match(turnStarted, START_KEY_PATTERN[name]);
+    // Important 2: run-outcome.ts's Jace-initiated hand-offs (terminal run
+    // outcome / goal-loop message) mark their forwarded auth with
+    // JACE_PROACTIVE_ATTRIBUTE; every channel must consult isProactiveTurn
+    // BEFORE arming the ack so that mark suppresses it — composing that
+    // reply is a full model turn that routinely exceeds the ack window, and
+    // there's no human message behind it to acknowledge.
+    const guardIdx = turnStarted.indexOf("isProactiveTurn(");
+    const armIdx = turnStarted.search(START_KEY_PATTERN[name]);
+    assert.ok(guardIdx !== -1, `${name}: turn.started must consult isProactiveTurn`);
+    assert.ok(
+      guardIdx < armIdx,
+      `${name}: isProactiveTurn must be consulted BEFORE ack.start arms the ack`,
+    );
+
+    const turnCompleted = code.slice(
+      code.indexOf('"turn.completed"'),
+      code.indexOf('"message.completed"'),
+    );
+    assert.match(turnCompleted, STOP_KEY_PATTERN[name]);
   });
 
   test(`${name}: stops the ack BELOW the tool-calls guard, not above it`, () => {
@@ -47,10 +98,22 @@ for (const name of CHANNELS) {
     const code = read(name);
     const body = code.slice(code.indexOf('"message.completed"'));
     const guard = body.indexOf('finishReason === "tool-calls"');
-    const stop = body.indexOf("ack.stop(");
+    const stop = body.search(STOP_KEY_PATTERN[name]);
     assert.ok(guard !== -1, "message.completed must keep eve's default guard");
     assert.ok(stop !== -1, "message.completed must stop the ack");
     assert.ok(stop > guard, "ack.stop must come AFTER the tool-calls guard");
+  });
+
+  // Minor 7: this non-override is load-bearing (overriding would clobber
+  // eve's own error message and drop its error id — see each channel's own
+  // header comment / the ack module's header comment for the rationale).
+  // discord-channel.test.mjs and telegram-channel.test.mjs already asserted
+  // this individually; folded into the shared four-channel loop here so
+  // slack.ts and console.ts are covered too.
+  test(`${name}: does NOT override turn.failed / session.failed (keeps Eve's error posts)`, () => {
+    const code = read(name);
+    assert.doesNotMatch(code, /["']turn\.failed["']/);
+    assert.doesNotMatch(code, /["']session\.failed["']/);
   });
 }
 

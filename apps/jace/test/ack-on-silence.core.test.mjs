@@ -7,6 +7,8 @@ import {
   createAckOnSilence,
   ACK_AFTER_MS,
   ACK_TEXT,
+  isProactiveTurn,
+  JACE_PROACTIVE_ATTRIBUTE,
 } from "../agent/lib/ack-on-silence.core.mjs";
 
 function fakeTimers() {
@@ -159,6 +161,53 @@ test("a rejecting postAck is swallowed, not surfaced as an unhandled rejection",
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }
+});
+
+// --- isProactiveTurn (Important 2: run-outcome.ts hand-offs never ack) ----
+
+test("isProactiveTurn: true when current.attributes carries the marker", () => {
+  assert.equal(
+    isProactiveTurn({ current: { attributes: { [JACE_PROACTIVE_ATTRIBUTE]: true } } }),
+    true,
+  );
+});
+
+test("isProactiveTurn: true when only initiator.attributes carries the marker (turn 1 shape)", () => {
+  assert.equal(
+    isProactiveTurn({ initiator: { attributes: { [JACE_PROACTIVE_ATTRIBUTE]: true } } }),
+    true,
+  );
+});
+
+test("isProactiveTurn: false when the attribute is absent from a normal human-initiated auth", () => {
+  assert.equal(
+    isProactiveTurn({
+      current: { attributes: { chatIdentityId: "abc", workspaceId: "ws_1" } },
+    }),
+    false,
+  );
+});
+
+test("isProactiveTurn: false when current.attributes exists but lacks the marker, even if a differing initiator has it (current wins)", () => {
+  assert.equal(
+    isProactiveTurn({
+      current: { attributes: { chatIdentityId: "abc" } },
+      initiator: { attributes: { [JACE_PROACTIVE_ATTRIBUTE]: true } },
+    }),
+    false,
+  );
+});
+
+test("isProactiveTurn: false when auth is null", () => {
+  assert.equal(isProactiveTurn(null), false);
+});
+
+test("isProactiveTurn: false when auth is undefined", () => {
+  assert.equal(isProactiveTurn(undefined), false);
+});
+
+test("isProactiveTurn: false when auth is an empty object", () => {
+  assert.equal(isProactiveTurn({}), false);
 });
 
 test("afterMs is overridable per channel", () => {

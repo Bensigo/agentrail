@@ -31,10 +31,20 @@
 // the failure path is backstopped by the keep-alive's own safety cap so we do
 // not clobber Eve's default turn.failed / session.failed error handlers, which
 // Eve does not export for chaining). See agent/lib/typing-keepalive.core.mjs.
+//
+// The ack is skipped for a Jace-initiated turn (run-outcome.ts's terminal-
+// outcome / goal-loop hand-off) — see ack-on-silence.core.mjs's
+// isProactiveTurn for why: composing that reply is a full model turn that
+// routinely exceeds the ack window, and there is no human message behind it
+// to acknowledge.
 import { telegramChannel } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
-import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
 
@@ -50,8 +60,11 @@ export default telegramChannel({
       const key = convoKey(ctx);
       typing.start(key, () => channel.telegram.startTyping());
       // One-shot: if this turn goes quiet for ACK_AFTER_MS, tell the human
-      // we're on it. Disarmed below the moment a real reply lands.
-      ack.start(key, () => channel.telegram.post(ACK_TEXT));
+      // we're on it. Disarmed below the moment a real reply lands. Skipped
+      // entirely for a Jace-initiated turn — see the header comment.
+      if (!isProactiveTurn(ctx?.session?.auth)) {
+        ack.start(key, () => channel.telegram.post(ACK_TEXT));
+      }
     },
     "turn.completed"(_data, _channel, ctx) {
       const key = convoKey(ctx);

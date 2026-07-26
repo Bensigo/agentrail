@@ -8,6 +8,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceQueueEntries: vi.fn(),
   findWorkspaceWorkByRef: vi.fn(),
   WORKSPACE_RUNS_DEFAULT_LIMIT: 50,
+  WORKSPACE_RUNS_MAX_LIMIT: 200,
 }));
 import { GET } from "./route";
 import {
@@ -288,6 +289,9 @@ describe("GET /api/v1/runner/work-status", () => {
     expect(json.truncated).toEqual({ runs: false, queueEntries: false });
     expect(json.runs).toHaveLength(1);
     expect(json.queueEntries).toHaveLength(1);
+    // Minor 7: `limit` is echoed as null in ref mode — the ref queries are
+    // unpaginated, so a numeric limit would falsely imply a page applied.
+    expect(json.limit).toBeNull();
   });
 
   it("200: ref matching nothing in this workspace returns empty arrays, NOT 404 — but still echoes resolvedAs", async () => {
@@ -305,6 +309,7 @@ describe("GET /api/v1/runner/work-status", () => {
     expect(json.resolvedAs).toBe("unrecognised");
     expect(json.runs).toEqual([]);
     expect(json.queueEntries).toEqual([]);
+    expect(json.limit).toBeNull();
   });
 
   // ---------------------------------------------------------------------

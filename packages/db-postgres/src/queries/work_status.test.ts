@@ -24,7 +24,50 @@ import {
   findWorkspaceWorkByRef,
   WORKSPACE_RUNS_DEFAULT_LIMIT,
   WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT,
+  WORKSPACE_RUNS_MAX_LIMIT,
 } from "./work_status.js";
+
+// Important 2: hardcoded INDEPENDENTLY of `work_status.ts`'s own exported
+// column maps — built directly from the `runs`/`queueEntries` schema
+// imports above, not by importing (and thus mirroring) the production
+// object. Asserting a call was made `with(workspaceRunColumns)` (the
+// production export) would be tautological: deleting a key from that export
+// mutates BOTH the value passed to `db.select()` and the value the test
+// compares against, since they're the same object reference — the
+// assertion could never fail. These literals are the independent source of
+// truth the mutation check (see task report) actually needs.
+const EXPECTED_RUN_COLUMNS = {
+  id: runs.id,
+  title: runs.title,
+  status: runs.status,
+  phase: runs.phase,
+  branch: runs.branch,
+  agent: runs.agent,
+  prUrl: runs.prUrl,
+  costUsd: runs.costUsd,
+  startedAt: runs.startedAt,
+  finishedAt: runs.finishedAt,
+  createdAt: runs.createdAt,
+  repositoryId: runs.repositoryId,
+  queueEntryId: runs.queueEntryId,
+  updatedAt: runs.updatedAt,
+  lastLivenessAt: runs.lastLivenessAt,
+};
+
+const EXPECTED_QUEUE_ENTRY_COLUMNS = {
+  id: queueEntries.id,
+  externalId: queueEntries.externalId,
+  title: queueEntries.title,
+  state: queueEntries.state,
+  tier: queueEntries.tier,
+  kind: queueEntries.kind,
+  createdAt: queueEntries.createdAt,
+  updatedAt: queueEntries.updatedAt,
+  parkReason: queueEntries.parkReason,
+  blockedBy: queueEntries.blockedBy,
+  remainingBudget: queueEntries.remainingBudget,
+  estimatedBudgetUsd: queueEntries.estimatedBudgetUsd,
+};
 
 const mockDb = vi.mocked(db);
 
@@ -116,15 +159,19 @@ const MOCK_QUEUE_ENTRY = {
 };
 
 describe("getWorkspaceRuns", () => {
-  it("scopes to the workspace, ordered createdAt DESC, capped at the default limit; truncated=true when the page is full", async () => {
+  it("scopes to the workspace, ordered createdAt DESC, over-fetches by one; truncated=false under the limit", async () => {
     const pageChain = makeChain("limit", [MOCK_RUN]);
-    const inFlightChain = makeChain("where", []);
+    const inFlightChain = makeChain("limit", []);
     dispatchSelect(pageChain, inFlightChain);
 
     const result = await getWorkspaceRuns("ws-1");
 
     expect(result.rows).toEqual([MOCK_RUN]);
-    expect(result.truncated).toBe(false); // page has 1 row, limit is 50
+    expect(result.truncated).toBe(false); // 1 row came back, limit+1 was requested
+
+    // Important 2: assert the exact column map, not just that select() ran —
+    // deleting a key here (lastLivenessAt, queueEntryId, ...) must fail this.
+    expect(mockDb.select).toHaveBeenNthCalledWith(1, EXPECTED_RUN_COLUMNS);
 
     const whereArgs = (pageChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(renderCondition(whereArgs)).toEqual(renderCondition(eq(runs.workspaceId, "ws-1")));
@@ -132,8 +179,10 @@ describe("getWorkspaceRuns", () => {
     const orderByArgs = (pageChain.orderBy as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(renderCondition(orderByArgs)).toEqual(renderCondition(desc(runs.createdAt)));
 
+    // Minor 4: requests limit+1, not limit, so an exactly-full page can be
+    // told apart from a truncated one.
     const limitArgs = (pageChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(limitArgs).toBe(WORKSPACE_RUNS_DEFAULT_LIMIT);
+    expect(limitArgs).toBe(WORKSPACE_RUNS_DEFAULT_LIMIT + 1);
     expect(WORKSPACE_RUNS_DEFAULT_LIMIT).toBe(50);
 
     // Important 4: the in-flight union query is workspace-scoped AND
@@ -144,22 +193,43 @@ describe("getWorkspaceRuns", () => {
         and(eq(runs.workspaceId, "ws-1"), inArray(runs.status, ["queued", "running"]))
       )
     );
+
+    // Minor 5: the in-flight query is capped, not unbounded.
+    const inFlightLimitArgs = (inFlightChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(inFlightLimitArgs).toBe(WORKSPACE_RUNS_MAX_LIMIT);
+    expect(WORKSPACE_RUNS_MAX_LIMIT).toBe(200);
+  });
+
+  it("Minor 4: exactly `limit` rows total does NOT falsely report truncated=true", async () => {
+    // limit=1 -> requests limit+1=2 rows; only 1 comes back, proving the
+    // workspace has exactly 1 row and the page is NOT truncated.
+    const pageChain = makeChain("limit", [MOCK_RUN]);
+    const inFlightChain = makeChain("limit", []);
+    dispatchSelect(pageChain, inFlightChain);
+
+    const result = await getWorkspaceRuns("ws-1", 1);
+
+    expect(result.rows).toEqual([MOCK_RUN]);
+    expect(result.truncated).toBe(false);
+
+    const limitArgs = (pageChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(limitArgs).toBe(2);
   });
 
   it("honors an explicit limit override", async () => {
     const pageChain = makeChain("limit", []);
-    const inFlightChain = makeChain("where", []);
+    const inFlightChain = makeChain("limit", []);
     dispatchSelect(pageChain, inFlightChain);
 
     await getWorkspaceRuns("ws-1", 5);
 
     const limitArgs = (pageChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(limitArgs).toBe(5);
+    expect(limitArgs).toBe(6); // limit + 1
   });
 
   it("returns empty rows and truncated=false when the workspace has no runs", async () => {
     const pageChain = makeChain("limit", []);
-    const inFlightChain = makeChain("where", []);
+    const inFlightChain = makeChain("limit", []);
     dispatchSelect(pageChain, inFlightChain);
 
     const result = await getWorkspaceRuns("ws-empty");
@@ -168,28 +238,31 @@ describe("getWorkspaceRuns", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("Important 4: unions an in-flight run NOT present on the recency page, deduped by id, newest first", async () => {
+  it("Important 4: unions an in-flight run NOT present on the recency page, deduped by id, newest first; truncated reflects the over-fetch", async () => {
     const pagedRun = { ...MOCK_RUN, id: "run-recent", createdAt: NOW, status: "success" };
+    // An extra row beyond `limit` (1) proves the recency page itself was
+    // truncated — the over-fetch (limit+1=2) came back full.
+    const extraPageRun = { ...MOCK_RUN, id: "run-extra", createdAt: OLDER, status: "success" };
     // Pushed off a 1-row page by `pagedRun`, but still running — must not
     // vanish from the result.
     const wedgedRun = { ...MOCK_RUN, id: "run-wedged", createdAt: OLDER, status: "running" };
 
-    const pageChain = makeChain("limit", [pagedRun]);
-    const inFlightChain = makeChain("where", [wedgedRun]);
+    const pageChain = makeChain("limit", [pagedRun, extraPageRun]);
+    const inFlightChain = makeChain("limit", [wedgedRun]);
     dispatchSelect(pageChain, inFlightChain);
 
     const result = await getWorkspaceRuns("ws-1", 1);
 
+    // `run-extra` was beyond the page's `limit` and is not in-flight, so it
+    // is sliced off before the merge.
     expect(result.rows.map((r) => r.id)).toEqual(["run-recent", "run-wedged"]);
-    // The page itself was full (1 row at limit 1) — truncated reflects the
-    // page, independent of the union making rows.length (2) exceed limit (1).
     expect(result.truncated).toBe(true);
   });
 
   it("dedupes a run returned by BOTH the page and the in-flight union (same id)", async () => {
     const runningRun = { ...MOCK_RUN, id: "run-both", status: "running" };
     const pageChain = makeChain("limit", [runningRun]);
-    const inFlightChain = makeChain("where", [runningRun]);
+    const inFlightChain = makeChain("limit", [runningRun]);
     dispatchSelect(pageChain, inFlightChain);
 
     const result = await getWorkspaceRuns("ws-1");
@@ -200,7 +273,7 @@ describe("getWorkspaceRuns", () => {
 });
 
 describe("getWorkspaceQueueEntries", () => {
-  it("scopes to the workspace, ordered updatedAt DESC, capped at the default limit; truncated=false under the limit", async () => {
+  it("scopes to the workspace, ordered updatedAt DESC, over-fetches by one; truncated=false under the limit", async () => {
     const selectChain = makeChain("limit", [MOCK_QUEUE_ENTRY]);
     mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
 
@@ -208,6 +281,9 @@ describe("getWorkspaceQueueEntries", () => {
 
     expect(result.rows).toEqual([MOCK_QUEUE_ENTRY]);
     expect(result.truncated).toBe(false);
+
+    // Important 2: assert the exact column map, not just that select() ran.
+    expect(mockDb.select).toHaveBeenCalledWith(EXPECTED_QUEUE_ENTRY_COLUMNS);
 
     const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(renderCondition(whereArgs)).toEqual(
@@ -217,8 +293,9 @@ describe("getWorkspaceQueueEntries", () => {
     const orderByArgs = (selectChain.orderBy as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(renderCondition(orderByArgs)).toEqual(renderCondition(desc(queueEntries.updatedAt)));
 
+    // Minor 4: requests limit+1, not limit.
     const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(limitArgs).toBe(WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT);
+    expect(limitArgs).toBe(WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT + 1);
     expect(WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT).toBe(50);
   });
 
@@ -229,7 +306,7 @@ describe("getWorkspaceQueueEntries", () => {
     await getWorkspaceQueueEntries("ws-1", 7);
 
     const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    expect(limitArgs).toBe(7);
+    expect(limitArgs).toBe(8); // limit + 1
   });
 
   it("returns empty rows and truncated=false when the workspace has no queue entries", async () => {
@@ -242,22 +319,55 @@ describe("getWorkspaceQueueEntries", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("Important 3: truncated=true when the returned row count equals the applied limit", async () => {
+  it("Minor 4: exactly `limit` rows total does NOT falsely report truncated=true (off-by-one fix)", async () => {
+    // limit=1 -> requests limit+1=2 rows; only 1 comes back, proving the
+    // workspace has exactly 1 row and the page is NOT truncated. The OLD
+    // (buggy) behaviour reported truncated=true here.
     const selectChain = makeChain("limit", [MOCK_QUEUE_ENTRY]);
     mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
 
     const result = await getWorkspaceQueueEntries("ws-1", 1);
 
     expect(result.rows).toHaveLength(1);
+    expect(result.truncated).toBe(false);
+
+    const limitArgs = (selectChain.limit as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(limitArgs).toBe(2);
+  });
+
+  it("truncated=true when more rows exist beyond the limit", async () => {
+    const extra = { ...MOCK_QUEUE_ENTRY, id: "qe-2" };
+    const selectChain = makeChain("limit", [MOCK_QUEUE_ENTRY, extra]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getWorkspaceQueueEntries("ws-1", 1);
+
+    // Sliced back down to `limit` (1) even though 2 rows came back.
+    expect(result.rows).toEqual([MOCK_QUEUE_ENTRY]);
     expect(result.truncated).toBe(true);
   });
 });
 
-describe("findWorkspaceWorkByRef — Critical-1 anchoring proof (pure, no DB)", () => {
-  it("'%#10' matches an externalId ending '#10' but NOT one ending '#101' or '#1010'", () => {
-    // This is exactly the pattern findWorkspaceWorkByRef builds for ref "10":
-    // `%#${stripped}` with stripped = "10".
-    const re = likeToRegExp("%#10");
+describe("findWorkspaceWorkByRef — Critical-1 anchoring proof", () => {
+  it("'%#10' matches an externalId ending '#10' but NOT one ending '#101' or '#1010' — pattern taken from the real call, not hardcoded", async () => {
+    // Minor 3: the previous version of this test built "%#10" from a
+    // hardcoded string and never called findWorkspaceWorkByRef — it would
+    // have kept passing even if the production code reverted to eq(). This
+    // version calls the real function and pulls the actual LIKE parameter
+    // out of the captured .where() argument, so it only passes if the
+    // production code still builds that exact pattern.
+    const queueChain = makeChain("where", []);
+    const prRunChain = makeChain("where", []);
+    dispatchSelect(queueChain, prRunChain);
+
+    await findWorkspaceWorkByRef("ws-1", "10");
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const rendered = renderCondition(queueWhereArgs);
+    const likeParam = rendered.params[rendered.params.length - 1] as string;
+    expect(likeParam).toBe("%#10");
+
+    const re = likeToRegExp(likeParam);
     expect(re.test("Bensigo/agentrail#10")).toBe(true);
     expect(re.test("Bensigo/agentrail#101")).toBe(false);
     expect(re.test("Bensigo/agentrail#1010")).toBe(false);
@@ -303,6 +413,73 @@ describe("findWorkspaceWorkByRef", () => {
     );
   });
 
+  it("Important 1: a GitHub issue URL resolves as 'issue-ref', number extracted, matching by SUFFIX just like a bare number", async () => {
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    const joinedRunChain = makeChain("where", [MOCK_RUN]);
+    const prRunChain = makeChain("where", []);
+    dispatchSelect(queueChain, joinedRunChain, prRunChain);
+
+    const result = await findWorkspaceWorkByRef(
+      "ws-1",
+      "https://github.com/Bensigo/agentrail/issues/1468"
+    );
+
+    expect(result.resolvedAs).toBe("issue-ref");
+    expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(queueEntries.workspaceId, "ws-1"), sql`${queueEntries.externalId} LIKE ${"%#1468"}`)
+      )
+    );
+  });
+
+  it("Important 1: an issue URL with a trailing slash still resolves", async () => {
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    const joinedRunChain = makeChain("where", [MOCK_RUN]);
+    const prRunChain = makeChain("where", []);
+    dispatchSelect(queueChain, joinedRunChain, prRunChain);
+
+    const result = await findWorkspaceWorkByRef(
+      "ws-1",
+      "https://github.com/Bensigo/agentrail/issues/1468/"
+    );
+
+    expect(result.resolvedAs).toBe("issue-ref");
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(queueEntries.workspaceId, "ws-1"), sql`${queueEntries.externalId} LIKE ${"%#1468"}`)
+      )
+    );
+  });
+
+  it("Important 1: an issue URL does not collide with the PR-URL branch — resolvedAs is 'issue-ref', not 'pr-number'", async () => {
+    const prRun = { ...MOCK_RUN, id: "run-pr", prUrl: "https://github.com/Bensigo/agentrail/pull/1468" };
+    const queueChain = makeChain("where", []);
+    const prRunChain = makeChain("where", [prRun]);
+    dispatchSelect(queueChain, prRunChain);
+
+    const result = await findWorkspaceWorkByRef(
+      "ws-1",
+      "https://github.com/Bensigo/agentrail/issues/1468"
+    );
+
+    // Ambiguous with a PR number by design (Minor 7's existing rule for bare
+    // digits) — resolvedAs stays 'issue-ref', but the pr-number-shaped query
+    // is ALSO run and its results included.
+    expect(result.resolvedAs).toBe("issue-ref");
+    expect(result.runs).toEqual([prRun]);
+
+    const prWhereArgs = (prRunChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(prWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(runs.workspaceId, "ws-1"), sql`${runs.prUrl} LIKE ${"%/pull/1468"}`)
+      )
+    );
+  });
+
   it("CRITICAL 2 fix: matched queue entries pull their runs via queue_entry_id (never runs.id === queueEntries.id)", async () => {
     const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
     const joinedRunChain = makeChain("where", [MOCK_RUN]);
@@ -339,7 +516,7 @@ describe("findWorkspaceWorkByRef", () => {
     expect(result.runs).toEqual([]);
   });
 
-  it("qualified-ref branch: 'owner/repo#N' matches externalId by EXACT equality; resolvedAs='qualified-ref'", async () => {
+  it("qualified-ref branch: 'owner/repo#N' matches externalId by case-insensitive equality; resolvedAs='qualified-ref'", async () => {
     const qualifiedRef = "Bensigo/agentrail#1468";
     const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
     const joinedRunChain = makeChain("where", [MOCK_RUN]);
@@ -356,7 +533,32 @@ describe("findWorkspaceWorkByRef", () => {
     const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
     expect(renderCondition(queueWhereArgs)).toEqual(
       renderCondition(
-        and(eq(queueEntries.workspaceId, "ws-1"), eq(queueEntries.externalId, qualifiedRef))
+        and(
+          eq(queueEntries.workspaceId, "ws-1"),
+          sql`lower(${queueEntries.externalId}) = ${qualifiedRef.toLowerCase()}`
+        )
+      )
+    );
+  });
+
+  it("Minor 6: qualified-ref matching is case-insensitive — a lowercased owner/repo still resolves", async () => {
+    const lowercasedRef = "bensigo/agentrail#1468";
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    const joinedRunChain = makeChain("where", [MOCK_RUN]);
+    dispatchSelect(queueChain, joinedRunChain);
+
+    const result = await findWorkspaceWorkByRef("ws-1", lowercasedRef);
+
+    expect(result.resolvedAs).toBe("qualified-ref");
+    expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(queueEntries.workspaceId, "ws-1"),
+          sql`lower(${queueEntries.externalId}) = ${"bensigo/agentrail#1468"}`
+        )
       )
     );
   });

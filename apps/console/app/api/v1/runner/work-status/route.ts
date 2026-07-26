@@ -6,6 +6,7 @@ import {
   getWorkspaceQueueEntries,
   findWorkspaceWorkByRef,
   WORKSPACE_RUNS_DEFAULT_LIMIT,
+  WORKSPACE_RUNS_MAX_LIMIT,
   type WorkspaceRun,
   type WorkspaceQueueEntry,
   type ResolvedRefKind,
@@ -51,9 +52,12 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  * `findWorkspaceWorkByRef`'s own doc-comment for why this is enforced at the
  * query layer, not just here.
  *
- * `limit` (optional, list mode only — ignored when `ref` is given): page
- * size for the runs/queue-entries lists, clamped to 1..200, default 50 (see
- * `LIMIT_MIN`/`LIMIT_MAX` below). The response echoes the applied limit and
+ * `limit` (optional, list mode only — ignored when `ref` is given, since the
+ * `ref` queries are unpaginated): page size for the runs/queue-entries
+ * lists, clamped to 1..200, default 50 (see `LIMIT_MIN`/`LIMIT_MAX` below).
+ * The response echoes the applied limit in list mode, and `null` in `ref`
+ * mode (Minor 7) — a numeric `limit` in `ref` mode would falsely imply the
+ * ref results were paginated when they never are. The response also carries
  * a per-collection `truncated` flag so a caller can tell a full page from a
  * complete one instead of silently under-reporting (Important 3). NOTE:
  * this does not compute exact workspace-wide SQL aggregate totals (e.g.
@@ -67,12 +71,20 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  */
 
 const LIMIT_MIN = 1;
-const LIMIT_MAX = 200;
+// Same ceiling as `WORKSPACE_RUNS_MAX_LIMIT` (packages/db-postgres/src/queries/work_status.ts),
+// which also caps the in-flight-runs union query on the hot list path
+// (Minor 5) — imported, not re-declared, so the two can never drift into
+// two independently-maintained magic numbers.
+const LIMIT_MAX = WORKSPACE_RUNS_MAX_LIMIT;
 
 function parseLimit(raw: string | null): number {
   if (!raw) return WORKSPACE_RUNS_DEFAULT_LIMIT;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return WORKSPACE_RUNS_DEFAULT_LIMIT;
+  // NOTE (Minor 7): this falls back to WORKSPACE_RUNS_DEFAULT_LIMIT for the
+  // queue-entries read too, not WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT — both
+  // are 50 today so this is latent, not a live bug, but the two constants
+  // are NOT actually the same constant and could drift.
   return Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, parsed));
 }
 
@@ -172,7 +184,9 @@ export async function GET(request: NextRequest) {
       // Minor 11: server-stamped freshness marker — the consuming tool must
       // never answer from memory because this state goes stale.
       generatedAt: new Date().toISOString(),
-      limit,
+      // Minor 7: null in ref mode — the ref queries are unpaginated, so
+      // echoing the numeric `limit` would imply a page that never applied.
+      limit: ref ? null : limit,
       runs: runRows.map(serialiseRun),
       queueEntries: queueRows.map(serialiseQueueEntry),
       truncated: { runs: runsTruncated, queueEntries: queueTruncated },

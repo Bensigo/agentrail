@@ -2672,6 +2672,7 @@ export {
   findWorkspaceWorkByRef,
   WORKSPACE_RUNS_DEFAULT_LIMIT,
   WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT,
+  WORKSPACE_RUNS_MAX_LIMIT,
   type WorkspaceRun,
   type WorkspaceQueueEntry,
   type WorkspaceWorkByRef,

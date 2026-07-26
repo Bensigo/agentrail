@@ -21,6 +21,17 @@ export const WORKSPACE_RUNS_DEFAULT_LIMIT = 50;
 /** Default page size for {@link getWorkspaceQueueEntries}. */
 export const WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT = 50;
 
+/**
+ * Shared response-size ceiling (Minor 5). Two independent uses, ONE
+ * constant so they can never drift into two magic numbers:
+ *  - {@link getWorkspaceRuns}'s in-flight (`queued`/`running`) union query,
+ *    which otherwise has no `LIMIT` at all and grows with however many
+ *    in-flight runs a workspace accumulates, on the hot list path.
+ *  - `apps/console/app/api/v1/runner/work-status/route.ts`'s `LIMIT_MAX`,
+ *    the clamp on the caller-supplied `limit` query param.
+ */
+export const WORKSPACE_RUNS_MAX_LIMIT = 200;
+
 /** Non-terminal run statuses — "work happening right now". */
 const IN_FLIGHT_RUN_STATUSES: Array<"queued" | "running"> = ["queued", "running"];
 
@@ -42,6 +53,19 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * ever match a `pull/N` suffix, never an arbitrary substring.
  */
 const PR_REF_PATTERN = /(?:^|\/)pull\/(\d+)\/?$/i;
+
+/**
+ * Matches an explicit GitHub issue URL: "issues/<digits>" at the end of the
+ * string, optionally preceded by a path (`owner/repo/issues/1468`, a full
+ * `https://github.com/owner/repo/issues/1468` URL) and optionally followed
+ * by a trailing slash. Mirrors {@link PR_REF_PATTERN}'s shape exactly — same
+ * end-anchoring, same reason: an issue link is the most natural way to paste
+ * "did this land?" into chat, and without this the URL falls past every
+ * other branch into `qualified-ref`'s `eq()` against the whole URL string,
+ * which matches zero rows and gets reported as "resolved" when it was never
+ * actually attempted (Important 1).
+ */
+const ISSUE_URL_PATTERN = /(?:^|\/)issues\/(\d+)\/?$/i;
 
 /** Longest `ref` this module will attempt to resolve (Minor 8). Anything
  * longer is treated as `"unrecognised"` with zero DB round-trips — refs this
@@ -115,12 +139,15 @@ export interface WorkspaceQueueEntry {
 }
 
 /** {@link getWorkspaceRuns}'s result: the page itself, plus whether that
- * page was truncated (page row count === the applied limit) — the caller
- * needs this to avoid silently under-reporting as if the page were
- * complete (Important 3). `rows` may exceed `limit` in length: in-flight
- * (`queued`/`running`) runs are unconditionally unioned in regardless of
- * whether they fit the recency page (Important 4), so `truncated` reflects
- * the PAGE's completeness, not `rows.length`. */
+ * page was truncated — determined by requesting `limit + 1` rows and
+ * checking whether more than `limit` came back (Minor 4), NOT by checking
+ * whether the row count equals `limit`; the latter is a false positive for
+ * a workspace with exactly `limit` rows total. The caller needs this to
+ * avoid silently under-reporting as if the page were complete (Important
+ * 3). `rows` may exceed `limit` in length: in-flight (`queued`/`running`)
+ * runs are unconditionally unioned in regardless of whether they fit the
+ * recency page (Important 4), so `truncated` reflects the PAGE's
+ * completeness, not `rows.length`. */
 export interface WorkspaceRunsResult {
   rows: WorkspaceRun[];
   truncated: boolean;
@@ -141,7 +168,17 @@ export interface WorkspaceWorkByRef {
   resolvedAs: ResolvedRefKind;
 }
 
-const workspaceRunColumns = {
+/**
+ * Exported (Important 2) so the test suite can assert `db.select()` was
+ * called with THIS exact object, not merely that `.select()` was called.
+ * Without that assertion, deleting a key here (e.g. `lastLivenessAt`,
+ * `queueEntryId`) still passes every test — the console suite mocks this
+ * package entirely, and the `as WorkspaceRun[]` casts downstream are
+ * downcasts tsc permits — so the missing field would arrive `undefined` and
+ * silently serialise to `null` for every consumer, including the follow-up
+ * tool this route backs.
+ */
+export const workspaceRunColumns = {
   id: runs.id,
   title: runs.title,
   status: runs.status,
@@ -159,7 +196,8 @@ const workspaceRunColumns = {
   lastLivenessAt: runs.lastLivenessAt,
 };
 
-const workspaceQueueEntryColumns = {
+/** See {@link workspaceRunColumns}'s doc-comment — same reason this is exported. */
+export const workspaceQueueEntryColumns = {
   id: queueEntries.id,
   externalId: queueEntries.externalId,
   title: queueEntries.title,
@@ -185,21 +223,28 @@ const workspaceQueueEntryColumns = {
  * order. Always scoped by `eq(runs.workspaceId, workspaceId)` — see this
  * file's own doc-comment for why there is no unscoped variant.
  *
- * `truncated` reflects the recency PAGE only (page row count === `limit`),
- * not `rows.length` — the in-flight union can make `rows` longer than
- * `limit` without the page itself being incomplete.
+ * `truncated` reflects the recency PAGE only (see {@link WorkspaceRunsResult}
+ * for the off-by-one this avoids), not `rows.length` — the in-flight union
+ * can make `rows` longer than `limit` without the page itself being
+ * incomplete. The in-flight union query is itself capped at
+ * {@link WORKSPACE_RUNS_MAX_LIMIT} (Minor 5) — it otherwise has no `LIMIT`
+ * at all, and response size/query cost would grow unbounded with however
+ * many in-flight runs a workspace accumulates.
  */
 export async function getWorkspaceRuns(
   workspaceId: string,
   limit: number = WORKSPACE_RUNS_DEFAULT_LIMIT
 ): Promise<WorkspaceRunsResult> {
-  const [pageRows, inFlightRows] = await Promise.all([
+  const [pageRowsRaw, inFlightRows] = await Promise.all([
     db
       .select(workspaceRunColumns)
       .from(runs)
       .where(eq(runs.workspaceId, workspaceId))
       .orderBy(desc(runs.createdAt))
-      .limit(limit),
+      // Minor 4: over-fetch by one to detect truncation without the
+      // row-count-equals-limit false positive (a complete `limit`-row
+      // workspace would otherwise report truncated=true).
+      .limit(limit + 1),
     db
       .select(workspaceRunColumns)
       .from(runs)
@@ -208,18 +253,22 @@ export async function getWorkspaceRuns(
           eq(runs.workspaceId, workspaceId),
           inArray(runs.status, IN_FLIGHT_RUN_STATUSES)
         )
-      ),
+      )
+      .limit(WORKSPACE_RUNS_MAX_LIMIT),
   ]);
 
+  const truncated = pageRowsRaw.length > limit;
+  const pageRows = (pageRowsRaw as WorkspaceRun[]).slice(0, limit);
+
   const merged = new Map<string, WorkspaceRun>();
-  for (const r of pageRows as WorkspaceRun[]) merged.set(r.id, r);
+  for (const r of pageRows) merged.set(r.id, r);
   for (const r of inFlightRows as WorkspaceRun[]) merged.set(r.id, r);
 
   const rows = [...merged.values()].sort(
     (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
   );
 
-  return { rows, truncated: pageRows.length === limit };
+  return { rows, truncated };
 }
 
 /**
@@ -238,14 +287,20 @@ export async function getWorkspaceQueueEntries(
   workspaceId: string,
   limit: number = WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT
 ): Promise<WorkspaceQueueEntriesResult> {
-  const rows = await db
+  // Minor 4: over-fetch by one, same reasoning as getWorkspaceRuns — a
+  // row-count-equals-limit check false-positives on a workspace with
+  // exactly `limit` rows total.
+  const rowsRaw = await db
     .select(workspaceQueueEntryColumns)
     .from(queueEntries)
     .where(eq(queueEntries.workspaceId, workspaceId))
     .orderBy(desc(queueEntries.updatedAt))
-    .limit(limit);
+    .limit(limit + 1);
 
-  return { rows: rows as WorkspaceQueueEntry[], truncated: rows.length === limit };
+  const truncated = rowsRaw.length > limit;
+  const rows = (rowsRaw as WorkspaceQueueEntry[]).slice(0, limit);
+
+  return { rows, truncated };
 }
 
 /**
@@ -258,13 +313,18 @@ export async function getWorkspaceQueueEntries(
  *  1. UUID-shaped (after stripping a single leading `#`) -> `"run-id"`.
  *  2. Ends in `pull/<digits>` (optionally preceded by a path, optionally
  *     followed by `/`) — an explicit PR link or `pull/N` -> `"pr-number"`.
- *  3. All digits -> `"issue-ref"`. Ambiguous between "issue number" and "PR
+ *  3. Ends in `issues/<digits>` (optionally preceded by a path, optionally
+ *     followed by `/`) — an explicit GitHub issue URL -> `"issue-ref"`, with
+ *     `stripped` set to the extracted digits (Important 1). Checked before
+ *     the all-digits rule below since a URL is never all-digits, and before
+ *     the qualified-ref rule since a URL always contains `/`.
+ *  4. All digits -> `"issue-ref"`. Ambiguous between "issue number" and "PR
  *     number" on its own (both are just a bare number to a human), so the
  *     caller resolves BOTH kinds of match for this shape; see the Minor-7
  *     spec this implements.
- *  4. Contains `/` or `#` -> `"qualified-ref"` (a fully-qualified
+ *  5. Contains `/` or `#` -> `"qualified-ref"` (a fully-qualified
  *     `owner/repo#N`).
- *  5. Anything else, or longer than {@link REF_MAX_LENGTH} -> `"unrecognised"`.
+ *  6. Anything else, or longer than {@link REF_MAX_LENGTH} -> `"unrecognised"`.
  */
 function classifyRef(ref: string): { resolvedAs: ResolvedRefKind; stripped: string; prNumber: string | null } {
   if (ref.length === 0 || ref.length > REF_MAX_LENGTH) {
@@ -283,6 +343,17 @@ function classifyRef(ref: string): { resolvedAs: ResolvedRefKind; stripped: stri
   const prMatch = PR_REF_PATTERN.exec(stripped);
   if (prMatch) {
     return { resolvedAs: "pr-number", stripped, prNumber: prMatch[1] };
+  }
+
+  // Important 1: an issue URL (e.g.
+  // "https://github.com/Bensigo/agentrail/issues/1468") would otherwise fall
+  // past every branch into qualified-ref's eq() against the whole URL
+  // string — zero rows, reported as "resolved" when it was never attempted.
+  // `stripped` becomes the extracted digits, preserving the digits-only
+  // invariant the issue-ref LIKE branch below depends on.
+  const issueUrlMatch = ISSUE_URL_PATTERN.exec(stripped);
+  if (issueUrlMatch) {
+    return { resolvedAs: "issue-ref", stripped: issueUrlMatch[1], prNumber: null };
   }
 
   if (/^\d+$/.test(stripped)) {
@@ -313,20 +384,38 @@ function classifyRef(ref: string): { resolvedAs: ResolvedRefKind; stripped: stri
  *  - `"run-id"` (UUID-shaped): `eq(runs.id, ref)`, workspace-scoped. Only
  *    attempted for UUID-shaped refs — a non-UUID ref would otherwise trip
  *    Postgres's "invalid input syntax for type uuid" and 500.
- *  - `"issue-ref"` (bare digits, e.g. "1468"): stored `queue_entries`
- *    external ids are `owner/repo#N` (see `github_intake.ts`'s
- *    `enqueueGithubIssue`), so a bare number can only ever match on a `#N`
- *    SUFFIX: `queueEntries.externalId LIKE '%#<digits>'`. The leading `%` is
- *    the ONLY wildcard — anchored on the literal `#` and the end of the
- *    string, so `"#10"` can never match an entry ending `…#101` or `…#1010`.
- *    This mirrors `runner.ts`'s `latestRunForIssue`, which solved the exact
- *    same anchoring problem first. Bare digits are ALSO ambiguous with a PR
- *    number (both are just "a number" to a human), so this shape resolves
- *    BOTH the issue-ref match AND the `"pr-number"` match below, unioned —
- *    `resolvedAs` stays `"issue-ref"` for this shape either way.
+ *  - `"issue-ref"` (bare digits, e.g. "1468", OR a full issue URL like
+ *    "https://github.com/Bensigo/agentrail/issues/1468" — Important 1):
+ *    stored `queue_entries` external ids are `owner/repo#N` (see
+ *    `github_intake.ts`'s `enqueueGithubIssue`), so a bare number can only
+ *    ever match on a `#N` SUFFIX: `queueEntries.externalId LIKE
+ *    '%#<digits>'`. The leading `%` is the ONLY wildcard — anchored on the
+ *    literal `#` and the end of the string, so `"#10"` can never match an
+ *    entry ending `…#101` or `…#1010`. This mirrors `runner.ts`'s
+ *    `latestRunForIssue`, which solved the exact same anchoring problem
+ *    first. Bare digits are ALSO ambiguous with a PR number (both are just
+ *    "a number" to a human), so this shape resolves BOTH the issue-ref
+ *    match AND the `"pr-number"` match below, unioned — `resolvedAs` stays
+ *    `"issue-ref"` for this shape either way.
+ *
+ *    Two behaviours worth knowing before building on top of this (both
+ *    pre-existing, mirrored from `runner.ts`'s `latestRunForIssue`, and not
+ *    bugs to fix here):
+ *      - `%#N` matches issue N in ANY repo of a multi-repo workspace — it is
+ *        NOT repo-qualified unless the caller passes a qualified ref
+ *        (`owner/repo#N`).
+ *      - Legacy `source='cli'` queue rows can carry a bare-digit
+ *        `external_id` (no `owner/repo#` prefix at all — see
+ *        `agentrail/afk/queue_store.py:160`'s `_entry_number`), which `%#N`
+ *        cannot match since there is no `#` in the stored value to anchor
+ *        on.
  *  - `"qualified-ref"` (contains `/` or `#`, e.g. "Bensigo/agentrail#1468"):
- *    exact equality against `queueEntries.externalId` — the caller supplied
- *    the fully-qualified form the column actually stores.
+ *    case-insensitive equality against `queueEntries.externalId` via
+ *    `lower(external_id) = lower($ref)` (Minor 6) — GitHub treats owner/repo
+ *    case-insensitively and this is free text typed in chat, so
+ *    "bensigo/agentrail#1468" must still match a stored
+ *    "Bensigo/agentrail#1468". Still fully parameter-bound; this is equality
+ *    (not LIKE) so lower-casing user input carries no metacharacter risk.
  *  - `"pr-number"` (explicit `pull/<digits>` or a full PR URL):
  *    `runs.prUrl LIKE '%/pull/<digits>'`, workspace-scoped — `runs.prUrl`
  *    looks like `https://github.com/owner/repo/pull/1470`, so this is a
@@ -369,7 +458,12 @@ export async function findWorkspaceWorkByRef(
     // Leading '%' is the only wildcard — anchored on '#' and the string end.
     queueCondition = sql`${queueEntries.externalId} LIKE ${`%#${stripped}`}`;
   } else if (resolvedAs === "qualified-ref") {
-    queueCondition = eq(queueEntries.externalId, stripped);
+    // Minor 6: case-insensitive — GitHub treats owner/repo case-insensitively
+    // and this is free text typed in chat ("bensigo/agentrail#1468" should
+    // still match a stored "Bensigo/agentrail#1468"). Still fully
+    // parameter-bound, and this is equality (not LIKE) so there is no
+    // metacharacter concern from lower-casing user input.
+    queueCondition = sql`lower(${queueEntries.externalId}) = ${stripped.toLowerCase()}`;
   }
 
   const queueEntryPromise = queueCondition

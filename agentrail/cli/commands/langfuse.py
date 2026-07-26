@@ -10,20 +10,28 @@ Three subcommands:
     (see that module's docstring for the pinned API contract and
     unit-conversion rules).
   * ``push-scores`` pushes truth/judge scores (``solved``, ``false_green``,
-    ``verify_verdict``, ``judge_verdict``) onto Langfuse traces via
-    ``agentrail.observability.score_push.push_scores`` (see that module's
-    docstring for the pinned scores-API contract and the fail-closed
-    per-record contract).
-  * ``calibration-report`` reads those same scores back and reports how often
-    the optional shadow judge (``judge_verdict``) agrees with the ground
-    truth (``solved`` / ``verify_verdict``) via
-    ``agentrail.observability.calibration.calibration`` (see that module's
-    docstring for the pinned read-side API contract and the no-vanity-metrics
-    sample-size gate); writes a dated markdown report under
-    ``agentrail/evals/reports/``.
+    ``gate_passed``, ``verify_verdict``, ``judge_verdict``) onto Langfuse
+    traces via ``agentrail.observability.score_push.push_scores`` (see that
+    module's docstring for the pinned scores-API contract and the
+    fail-closed per-record contract). Note: eval runs ALSO push
+    ``solved``/``false_green``/``gate_passed`` automatically at rep
+    finalization when ``AGENTRAIL_LANGFUSE_ENABLED`` + ``LANGFUSE_*`` are set
+    (issue #1221 AC3) — this command remains useful for a manual backfill or
+    re-push (e.g. with a ``--judge`` ledger), it is no longer the only way
+    those three scores reach Langfuse.
+  * ``calibration-report`` reads those same scores back and reports (a) how
+    often the optional shadow judge (``judge_verdict``) agrees with the
+    ground truth (``solved`` / ``verify_verdict``), and (b) the eval-harness
+    false-green RATE (``false_green`` ÷ ``gate_passed``, issue #1221 AC2) —
+    via ``agentrail.observability.calibration.calibration`` (see that
+    module's docstring for the pinned read-side API contract and the
+    no-vanity-metrics sample-size gate); writes a dated markdown report
+    under ``agentrail/evals/reports/``.
 
 All three are explicit operator actions — none is ever run implicitly by a
-flag, so there is no feature-flag gate here.
+flag, so there is no feature-flag gate here. (The AUTOMATIC per-rep push
+mentioned above is a property of ``agentrail evals run``/``canary``, not of
+this command.)
 """
 from __future__ import annotations
 
@@ -214,6 +222,16 @@ def _run_calibration_report(args: List[str]) -> int:
     print(f"n={result['n']} (insufficient: {result['insufficient']})")
     for key, rate in result["agreement"].items():
         print(f"  {key}: {rate if rate is not None else 'n/a'}")
+    # False-green rate (#1221 AC2) — a separate aggregate, not an agreement row.
+    fg = result.get("false_green")
+    if fg is not None:
+        rate = fg["rate"]
+        print(
+            f"false_green rate: {rate if rate is not None else 'n/a'} "
+            f"(gate_passed_count={fg['gate_passed_count']}, "
+            f"false_green_count={fg['false_green_count']}, "
+            f"insufficient={fg['insufficient']})"
+        )
     return 0
 
 

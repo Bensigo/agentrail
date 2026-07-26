@@ -108,9 +108,14 @@ def _production_record(run_id: str, *, accepted: bool, reason: str = "looks good
 
 
 def _eval_record(task: str, arm: str, rep: int, *, solved: bool, false_green: bool = False,
-                  synthetic: bool = False) -> dict:
-    """A (real field-name-accurate) _write_forensics_record() payload."""
-    return {
+                  synthetic: bool = False, gate_passed: "bool | None" = None) -> dict:
+    """A (real field-name-accurate) _write_forensics_record() payload.
+
+    ``gate_passed`` defaults to ``None`` — meaning "absent", matching a
+    forensics record written BEFORE issue #1221 AC2 added the field. Pass a
+    real bool to simulate a current-shape record (which always carries it).
+    """
+    payload = {
         "task": task,
         "arm": arm,
         "rep": rep,
@@ -124,6 +129,9 @@ def _eval_record(task: str, arm: str, rep: int, *, solved: bool, false_green: bo
         "started_at": "2026-07-11T00:00:00Z",
         "finished_at": "2026-07-11T00:05:00Z",
     }
+    if gate_passed is not None:
+        payload["gate_passed"] = gate_passed
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -369,3 +377,106 @@ def test_mixed_batch_skip_list_is_exact(tmp_path, monkeypatch, client):
         key=lambda d: d["record"],
     )
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# (g) #1221 AC2 — gate_passed score, pushed alongside solved/false_green
+# ---------------------------------------------------------------------------
+
+def test_eval_record_with_gate_passed_pushes_three_scores(tmp_path, monkeypatch, client):
+    date_dir = tmp_path / "2026-07-26"
+    _write(
+        date_dir / "alpha-task--baseline--rep1.json",
+        _eval_record("alpha-task", "baseline", 1, solved=False, false_green=True, gate_passed=True),
+    )
+
+    calls = _post_spy(monkeypatch)
+    result = score_push.push_scores(client, date_dir)
+
+    assert result["pushed"] == 3
+    assert result["skipped"] == []
+    names_to_value = {c[1]["name"]: c[1]["value"] for c in calls}
+    assert names_to_value == {"solved": 0, "false_green": 1, "gate_passed": 1}
+    for _url, body in calls:
+        assert body["dataType"] == "BOOLEAN"
+
+
+def test_eval_record_without_gate_passed_field_pushes_two_scores_unchanged(
+    tmp_path, monkeypatch, client
+):
+    """A record written before #1221 AC2 (no ``gate_passed`` key at all)
+    keeps pushing exactly ``solved``/``false_green`` — backward compatible,
+    never a fabricated ``gate_passed`` score."""
+    date_dir = tmp_path / "2026-07-11"
+    _write(
+        date_dir / "alpha-task--baseline--rep1.json",
+        _eval_record("alpha-task", "baseline", 1, solved=True, false_green=False),
+    )
+
+    calls = _post_spy(monkeypatch)
+    result = score_push.push_scores(client, date_dir)
+
+    assert result["pushed"] == 2
+    names = {c[1]["name"] for c in calls}
+    assert names == {"solved", "false_green"}
+
+
+# ---------------------------------------------------------------------------
+# (h) #1221 AC3 — push_eval_rep_score: the automatic per-rep push
+# ---------------------------------------------------------------------------
+
+def test_push_eval_rep_score_pushes_same_scores_as_batch_path(tmp_path, monkeypatch, client):
+    record = _eval_record(
+        "alpha-task", "baseline", 1, solved=False, false_green=True, gate_passed=True
+    )
+    record_path = tmp_path / "2026-07-26" / "alpha-task--baseline--rep1.json"
+
+    calls = _post_spy(monkeypatch)
+    score_push.push_eval_rep_score(client, record, record_path)
+
+    assert len(calls) == 3
+    names_to_value = {c[1]["name"]: c[1]["value"] for c in calls}
+    assert names_to_value == {"solved": 0, "false_green": 1, "gate_passed": 1}
+    expected_identity = "2026-07-26--alpha-task--baseline--rep1"
+    for _url, body in calls:
+        assert body["traceId"] == deterministic_trace_id(expected_identity)
+
+
+def test_push_eval_rep_score_skips_synthetic_record(tmp_path, monkeypatch, client):
+    record = _eval_record(
+        "beta-task", "gather", 2, solved=False, synthetic=True, gate_passed=False
+    )
+    record_path = tmp_path / "2026-07-26" / "beta-task--gather--rep2.json"
+
+    calls = _post_spy(monkeypatch)
+    score_push.push_eval_rep_score(client, record, record_path)
+
+    assert calls == []
+
+
+def test_push_eval_rep_score_never_raises_on_http_failure(tmp_path, monkeypatch, client, caplog):
+    """The automatic auto-push is fail-soft: an HTTP failure mid-push (e.g. a
+    transient Langfuse outage) must be swallowed, not propagated — an eval
+    run must never crash because Langfuse was briefly unreachable."""
+    record = _eval_record(
+        "alpha-task", "baseline", 1, solved=False, false_green=True, gate_passed=True
+    )
+    record_path = tmp_path / "2026-07-26" / "alpha-task--baseline--rep1.json"
+
+    def fail_request(*args, **kwargs):
+        raise RuntimeError("langfuse POST /api/public/scores HTTP 503")
+
+    monkeypatch.setattr(lc, "_request", fail_request)
+
+    # Must not raise.
+    score_push.push_eval_rep_score(client, record, record_path)
+
+
+def test_push_eval_rep_score_missing_verdict_is_a_silent_no_op(tmp_path, monkeypatch, client):
+    """A record with no usable score field (e.g. all fields absent) is a
+    normal, silent no-op for the auto-push path — there is no caller to
+    report a "skipped" reason to, unlike the batch push_scores contract."""
+    record_path = tmp_path / "2026-07-26" / "alpha-task--baseline--rep1.json"
+    calls = _post_spy(monkeypatch)
+    score_push.push_eval_rep_score(client, {"task": "alpha-task", "arm": "baseline", "rep": 1}, record_path)
+    assert calls == []

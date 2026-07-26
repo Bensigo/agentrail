@@ -33,6 +33,7 @@ from agentrail.evals.spine import (
     resolve_arm,
     run_spine,
 )
+from agentrail.observability import langfuse_client
 
 
 def _usage() -> str:
@@ -340,11 +341,16 @@ def _run_run(args: List[str]) -> int:
         UnimplementedHiddenTestRunner() if smoke else ProductionHiddenTestRunner()
     )
 
+    # Issue #1221 AC3: automatic per-rep score push, gated by the SAME
+    # AGENTRAIL_LANGFUSE_ENABLED + LANGFUSE_* convention every other
+    # automatic Langfuse integration uses (client_if_enabled() returns None,
+    # a pure no-op, when unconfigured — the default).
     result = run_spine(
         config,
         executor=executor,
         hidden_test_runner=hidden_runner,
         reports_dir=reports_dir,
+        langfuse_client=langfuse_client.client_if_enabled(),
     )
 
     print(f"Eval run id: {result.run_id}")

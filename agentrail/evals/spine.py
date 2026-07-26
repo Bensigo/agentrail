@@ -129,6 +129,12 @@ from agentrail.evals.runner import (
     run,
 )
 from agentrail.evals.scorer import Verdict, score
+# #1221 AC3 — automatic Langfuse score push at rep finalization.
+# push_eval_rep_score is the fail-soft entry point _write_forensics_record
+# calls once a rep's record is built; agentrail.observability.score_push has
+# no dependency back on agentrail.evals, so no circular-import risk.
+from agentrail.observability.langfuse_client import LangfuseHTTP
+from agentrail.observability.score_push import push_eval_rep_score
 from agentrail.run.usage_capture import Usage
 
 
@@ -371,6 +377,7 @@ def _write_forensics_record(
     rep: int,
     solved: bool,
     false_green: bool,
+    gate_passed: bool,
     synthetic: bool,
     gate_output: str,
     verdicts: Sequence[Dict[str, Any]],
@@ -378,6 +385,7 @@ def _write_forensics_record(
     diff: str,
     started_at: Optional[str],
     finished_at: Optional[str],
+    langfuse_client: Optional["LangfuseHTTP"] = None,
 ) -> None:
     """Write one per-rep forensics record (#1169 AC1): identity, verbatim gate
     output, verdicts, per-phase cost — everything needed to answer "what
@@ -401,35 +409,48 @@ def _write_forensics_record(
     never target the same record file; ``lock`` exists for the same reason
     ``cost_ledger_lock`` does elsewhere in this module — cheap, obviously-
     correct serialization of a filesystem side effect, not a performance path.
+
+    ``gate_passed`` (#1221 AC2) is the run's own Objective Gate decision —
+    carried alongside ``false_green`` (which is ``gate_passed and not
+    solved`` by construction, see ``scorer.score``) so the false-green RATE
+    is derivable downstream without re-deriving the gate decision.
+
+    ``langfuse_client`` (#1221 AC3), when not ``None``, triggers an
+    AUTOMATIC best-effort push of this rep's scores to Langfuse right after
+    the record above is written — see
+    ``agentrail.observability.score_push.push_eval_rep_score`` for the
+    fail-soft contract (it never raises; a push failure is logged and the
+    eval run continues unaffected). The push happens regardless of whether
+    the on-disk write above succeeded — local persistence and the Langfuse
+    push are independent best-effort side effects, one is not a
+    precondition for the other.
     """
+    record_path = _forensics_record_path(
+        records_dir, task_name=task_name, arm_name=arm_name, rep=rep
+    )
+    payload = {
+        "task": task_name,
+        "arm": arm_name,
+        "rep": rep,
+        "solved": solved,
+        "false_green": false_green,
+        "gate_passed": gate_passed,
+        "synthetic": synthetic,
+        "gate_output": gate_output,
+        "verdicts": list(verdicts),
+        "phase_usage": _aggregate_phase_usage(cost_events),
+        "diff_path": record_path.with_suffix(".diff").name if diff.strip() else None,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
     try:
         with lock:
             records_dir.mkdir(parents=True, exist_ok=True)
-            record_path = _forensics_record_path(
-                records_dir, task_name=task_name, arm_name=arm_name, rep=rep
-            )
-            diff_path: Optional[Path] = None
-            if diff.strip():
-                diff_path = record_path.with_suffix(".diff")
-            payload = {
-                "task": task_name,
-                "arm": arm_name,
-                "rep": rep,
-                "solved": solved,
-                "false_green": false_green,
-                "synthetic": synthetic,
-                "gate_output": gate_output,
-                "verdicts": list(verdicts),
-                "phase_usage": _aggregate_phase_usage(cost_events),
-                "diff_path": diff_path.name if diff_path is not None else None,
-                "started_at": started_at,
-                "finished_at": finished_at,
-            }
             record_path.write_text(
                 json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
-            if diff_path is not None:
-                diff_path.write_text(diff, encoding="utf-8")
+            if payload["diff_path"] is not None:
+                record_path.with_suffix(".diff").write_text(diff, encoding="utf-8")
     except (OSError, TypeError, ValueError) as exc:
         _log.warning(
             "could not write forensics record for task=%s arm=%s rep=%s: %s",
@@ -438,6 +459,9 @@ def _write_forensics_record(
             rep,
             exc,
         )
+
+    if langfuse_client is not None:
+        push_eval_rep_score(langfuse_client, payload, record_path)
 
 
 def run_spine(
@@ -449,8 +473,19 @@ def run_spine(
     reports_dir: Optional[Path] = None,
     date: Optional[str] = None,
     run_id: Optional[str] = None,
+    langfuse_client: Optional[LangfuseHTTP] = None,
 ) -> SpineResult:
     """Drive one full eval pass: corpus → runner → hidden tests → scorer → reporter.
+
+    ``langfuse_client`` (#1221 AC3): when the CALLER supplies one (the CLI
+    only does when ``agentrail.observability.langfuse_client.enabled()`` AND
+    ``LangfuseHTTP.from_env()`` both resolve — the same gate every other
+    automatic Langfuse integration in this codebase uses), every rep's
+    ``solved``/``false_green``/``gate_passed`` scores are pushed to Langfuse
+    automatically as each rep finalizes — see
+    ``agentrail.observability.score_push.push_eval_rep_score``. ``None``
+    (the default) makes this a pure no-op: an eval run with Langfuse
+    unconfigured behaves exactly as before this parameter existed.
 
     Sequencing per repetition (this IS the AC2 temporal guarantee):
 
@@ -681,6 +716,7 @@ def run_spine(
             rep=rep_index + 1,
             solved=verdict.solved,
             false_green=verdict.false_green,
+            gate_passed=verdict.gate_passed,
             synthetic=rep.network_artifact,
             gate_output=gate_output,
             verdicts=record.verdicts,
@@ -688,6 +724,7 @@ def run_spine(
             diff=record.diff,
             started_at=record.started_at,
             finished_at=record.finished_at,
+            langfuse_client=langfuse_client,
         )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven
@@ -755,6 +792,7 @@ def run_spine(
             rep=rep_index + 1,
             solved=False,
             false_green=False,
+            gate_passed=False,
             synthetic=rep.network_artifact,
             gate_output=str(exc),
             verdicts=[],
@@ -762,6 +800,7 @@ def run_spine(
             diff="",
             started_at=None,
             finished_at=None,
+            langfuse_client=langfuse_client,
         )
         return rep, verdict, None
 

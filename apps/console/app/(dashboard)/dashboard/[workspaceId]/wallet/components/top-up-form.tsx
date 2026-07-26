@@ -1,11 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import {
-  createTopUpCheckoutSessionAction,
-  MAX_TOP_UP_USD_CENTS,
-  MIN_TOP_UP_USD_CENTS,
-} from "../actions";
+import { createTopUpCheckoutSessionAction } from "../actions";
+import { MAX_TOP_UP_USD_CENTS, MIN_TOP_UP_USD_CENTS } from "../top-up-constants";
 
 interface TopUpFormProps {
   workspaceId: string;

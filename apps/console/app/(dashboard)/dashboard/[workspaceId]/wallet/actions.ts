@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { getStripeClient } from "../../../../../lib/stripe";
+import { MAX_TOP_UP_USD_CENTS, MIN_TOP_UP_USD_CENTS } from "./top-up-constants";
 
 /**
  * #1415 (Stripe top-up, Wave 5 / epic #1257; #1290's deferred PR ③) — the
@@ -29,13 +30,6 @@ export type CreateTopUpCheckoutResult =
   | { ok: false; error: string };
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
-
-// ASSUMPTION (recalibrate later): top-up bounds in integer cents. A
-// fat-finger guard, not a business-rule ceiling — Stripe itself enforces the
-// real payment-method limits. Exported so the client form and any test can
-// share the same numbers.
-export const MIN_TOP_UP_USD_CENTS = 500; // $5.00
-export const MAX_TOP_UP_USD_CENTS = 200_000; // $2,000.00
 
 /**
  * This deploy sets no `NEXTAUTH_URL`/`AUTH_URL`/`APP_URL` env (see

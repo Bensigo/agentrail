@@ -23,7 +23,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * park also requeues"); the tests below pin the corrected semantics.
  */
 let mockRow:
-  | { state: string; parkReason: string | null; kind: string; estimatedBudgetUsd: number | null }
+  | {
+      state: string;
+      parkReason: string | null;
+      kind: string;
+      estimatedBudgetUsd: number | null;
+      nextEligibleAt?: Date | null;
+    }
   | undefined;
 let mockRequireAlignment: boolean;
 let mockConfirmRowLookup: unknown[];
@@ -146,6 +152,53 @@ describe("requeueParkedQueueEntry", () => {
     const result = await requeueParkedQueueEntry("ws-1", "entry-1");
     expect(result).toBe("not_parked");
     expect(updateCalls).toHaveLength(0);
+  });
+
+  // #1389 AC2 — a 'queued' entry carrying a pending backoff delay is a
+  // DIFFERENT hold than the alignment-gate 'parked' branch above: Requeue
+  // just clears the delay (human intent outranks backoff), it does not touch
+  // state/tier/remaining_budget.
+  it("#1389: queued WITH a pending backoff delay — requeued, clears next_eligible_at only", async () => {
+    mockRow = {
+      state: "queued",
+      parkReason: null,
+      kind: "issue",
+      estimatedBudgetUsd: null,
+      nextEligibleAt: new Date(Date.now() + 60_000),
+    };
+    const result = await requeueParkedQueueEntry("ws-1", "entry-1");
+    expect(result).toBe("requeued");
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]).toHaveProperty("nextEligibleAt", null);
+    // Never touches state/tier/remaining_budget — this clears a delay, it
+    // doesn't restart the entry.
+    expect(updateCalls[0]?.["state"]).toBeUndefined();
+  });
+
+  it("#1389: queued with NO pending delay — not_parked, no update issued (nothing to clear)", async () => {
+    mockRow = {
+      state: "queued",
+      parkReason: null,
+      kind: "issue",
+      estimatedBudgetUsd: null,
+      nextEligibleAt: null,
+    };
+    const result = await requeueParkedQueueEntry("ws-1", "entry-1");
+    expect(result).toBe("not_parked");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("#1389: queued with a pending delay, but the guarded UPDATE races to zero rows -> not_parked", async () => {
+    mockRow = {
+      state: "queued",
+      parkReason: null,
+      kind: "issue",
+      estimatedBudgetUsd: null,
+      nextEligibleAt: new Date(Date.now() + 60_000),
+    };
+    updateMatches = false;
+    const result = await requeueParkedQueueEntry("ws-1", "entry-1");
+    expect(result).toBe("not_parked");
   });
 
   it("denial always wins: ALIGNMENT_DENIED_PARK_REASON is refused even with the gate OFF, row untouched", async () => {

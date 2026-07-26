@@ -135,6 +135,20 @@ export const queueEntries = pgTable("queue_entries", {
   // sweep unchanged. Kept SEPARATE from `updated_at` on purpose — a liveness
   // ping must not reorder the queue view or masquerade as a state change.
   lastLivenessAt: timestamp("last_liveness_at", { withTimezone: true }),
+  // #1389: the eligibility delay a requeued-after-failure entry carries.
+  // NULL = claimable right now (a fresh entry, or one whose delay already
+  // elapsed and was never cleared — see below). Set by `recordRunnerResult`
+  // to `now() + backoff(attempt)` whenever a red/error result re-admits the
+  // entry as 'queued' (exponential backoff with jitter, growing per attempt —
+  // see `computeBackoffDelayMs` in `queries/runner.ts`), so a deterministic
+  // failure (bad creds, broken branch state) no longer burns the whole
+  // Budget Leash in minutes. `claimQueueEntry`'s SQL WHERE skips a 'queued'
+  // row while `next_eligible_at > now()`. The human Requeue action
+  // (`requeueParkedQueueEntry`) sets this back to NULL — human intent always
+  // outranks backoff. Left un-set (NULL) for green/running transitions and
+  // for the hosted-refusal escalation (neither re-admits as 'queued', so
+  // there is nothing to delay).
+  nextEligibleAt: timestamp("next_eligible_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

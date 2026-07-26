@@ -50,6 +50,29 @@ jobs:
   # this job every line of apps/jace and packages/db-postgres was invisible to CI.
   node:
     runs-on: ubuntu-latest
+    # #1389: a real Postgres for db-postgres's retry-backoff integration
+    # tests (queue-retry-backoff.integration.test.ts) — the AC1/AC2/AC4
+    # evidence for the queue's retry-backoff/attempt-log feature is a real
+    # claim/transition against real Postgres, not a mock of the query under
+    # test. Credentials/port match `packages/db-postgres/src/db.ts`'s own
+    # DATABASE_URL default exactly, so every OTHER db-postgres test (which
+    # mocks `db` and never reads DATABASE_URL) is unaffected either way.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentrail
+          POSTGRES_PASSWORD: agentrail
+          POSTGRES_DB: agentrail
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrail"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://agentrail:agentrail@localhost:5432/agentrail
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,6 +107,11 @@ jobs:
       # build it before running any console test that touches the barrel.
       - name: db-postgres — build
         run: pnpm --filter @agentrail/db-postgres build
+      # #1389: migrate the CI Postgres service (through 0049_queue_retry_backoff
+      # and beyond) before the vitest run below — queue-retry-backoff.integration.test.ts
+      # needs the real schema, not just a reachable server.
+      - name: db-postgres — migrate (CI Postgres, for the #1389 real-DB integration tests)
+        run: pnpm --filter @agentrail/db-postgres migrate
       - name: db-postgres — vitest (incl. jace-intake kill switch)
         run: pnpm --filter @agentrail/db-postgres test
       # Prove the kill-switch gate is wired at the real inbound boundary: run the

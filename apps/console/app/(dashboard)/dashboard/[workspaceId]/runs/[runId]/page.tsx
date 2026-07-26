@@ -7,6 +7,7 @@ import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
 import { FailuresSection } from "./components/failures-section";
+import { AttemptHistorySection } from "./components/attempt-history-section";
 import { CostSection } from "./components/cost-section";
 import { TelemetryHealthSection } from "./components/telemetry-health-section";
 import { WaterfallSection } from "./components/waterfall-section";
@@ -245,6 +246,11 @@ export default function RunDetailPage() {
       )}
 
       {run && <FailuresSection workspaceId={workspaceId} runId={runId} />}
+
+      {/* #1389 (AC3): the retry-backoff attempt log — every attempt this
+          entry has made (tier/outcome/error summary), so an
+          escalated-to-human entry explains itself. */}
+      {run && <AttemptHistorySection workspaceId={workspaceId} runId={runId} />}
 
       {run && <MemorySection workspaceId={workspaceId} runId={runId} />}
     </div>

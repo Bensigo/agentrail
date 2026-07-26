@@ -2037,6 +2037,17 @@ export {
   LIVENESS_INTERVAL_SECONDS,
   LIVENESS_STALENESS_SECONDS,
   DEVICE_CODE_TTL_MS,
+  // #1389 — retry backoff with jitter (the pure spec + the eligibility
+  // predicate its SQL twin in claimQueueEntry must stay in lockstep with).
+  nextQueueTransition,
+  isClaimEligible,
+  computeBackoffDelayMs,
+  backoffFloorMs,
+  BACKOFF_BASE_MS,
+  BACKOFF_MULTIPLIER,
+  BACKOFF_MAX_MS,
+  BACKOFF_JITTER_RATIO,
+  MAX_TIER,
   type StartedDeviceCode,
   type DeviceTokenResult,
   type ApproveDeviceCodeResult,
@@ -2613,3 +2624,11 @@ export {
   type CreditTopUpForStripeEventInput,
   type CreditTopUpForStripeEventResult,
 } from "./stripe_events.js";
+// #1389 — the per-attempt log a queue entry accumulates across its retry
+// lifecycle (timestamp, tier, outcome, error summary). Written by
+// `recordRunnerResult` (see `queries/runner.ts`); read here for the console's
+// engine-room queue-entry attempt-history view (AC3).
+export {
+  listQueueAttempts,
+  type QueueAttemptListItem,
+} from "./queue_attempts.js";

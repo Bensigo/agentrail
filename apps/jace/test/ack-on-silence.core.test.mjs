@@ -75,6 +75,27 @@ test("fires at most once per armed turn", () => {
   assert.equal(ack.pendingCount(), 0, "entry is cleared once it fires");
 });
 
+test("a postAck that re-arms the same key survives its own firing", () => {
+  const timers = fakeTimers();
+  const ack = createAckOnSilence(timers);
+  const posted = [];
+
+  ack.start("a", () => {
+    posted.push("first");
+    // Re-arm from inside the callback. The firing entry must ALREADY be
+    // cleared, or this new timer would be deleted by the very firing that
+    // scheduled it.
+    ack.start("a", () => posted.push("second"));
+  });
+
+  timers.advanceTo(ACK_AFTER_MS);
+  assert.deepEqual(posted, ["first"]);
+  assert.equal(ack.pendingCount(), 1, "the re-armed timer must still be pending");
+
+  timers.advanceTo(ACK_AFTER_MS);
+  assert.deepEqual(posted, ["first", "second"]);
+});
+
 test("two conversations stay isolated", () => {
   const timers = fakeTimers();
   const ack = createAckOnSilence(timers);
@@ -105,6 +126,7 @@ test("stop on an unknown key is a no-op", () => {
   const timers = fakeTimers();
   const ack = createAckOnSilence(timers);
   assert.doesNotThrow(() => ack.stop("never-started"));
+  assert.equal(ack.pendingCount(), 0);
 });
 
 test("a throwing postAck never propagates", () => {
@@ -117,15 +139,26 @@ test("a throwing postAck never propagates", () => {
   assert.doesNotThrow(() => timers.advanceTo(ACK_AFTER_MS));
 });
 
-test("a rejecting postAck never propagates", async () => {
+test("a rejecting postAck is swallowed, not surfaced as an unhandled rejection", async () => {
   const timers = fakeTimers();
   const ack = createAckOnSilence(timers);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
 
-  ack.start("a", async () => {
-    throw new Error("telegram is down");
-  });
-  assert.doesNotThrow(() => timers.advanceTo(ACK_AFTER_MS));
-  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    ack.start("a", async () => {
+      throw new Error("telegram is down");
+    });
+    timers.advanceTo(ACK_AFTER_MS);
+    // Drain microtasks, then a macrotask turn — by now Node would have
+    // reported the rejection had safe() not attached its handler.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], "safe() must swallow the rejection");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("afterMs is overridable per channel", () => {

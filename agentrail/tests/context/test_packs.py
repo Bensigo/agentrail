@@ -721,5 +721,82 @@ class WikiDocBucketingTests(unittest.TestCase):
         self.assertEqual(wiki_in_files, [], "a wiki_doc candidate must never bucket into likelyFiles")
 
 
+class RetrievalMaxTokensEnvOverrideTests(unittest.TestCase):
+    """The offline packer-tightening A/B's budget knob (#1225 AC2), end to end.
+
+    Reuses the #902 greedy-budget-fill fixture (:func:`_make_budget_repo`) —
+    the fixture is DESIGNED to retrieve far more content than fits in any
+    reasonable budget, which is exactly what proves a SMALLER
+    ``AGENTRAIL_RETRIEVAL_MAX_TOKENS`` actually shrinks what gets packed,
+    end to end through the real ``build_context_pack`` entrypoint (not just
+    the resolver in isolation — see ``test_retrieval_max_tokens_resolver.py``
+    for the unit-level coverage of the resolver itself).
+    """
+
+    ENV = "AGENTRAIL_RETRIEVAL_MAX_TOKENS"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = _make_budget_repo()
+
+    def _build(self, max_tokens):
+        import os
+
+        prior = os.environ.get(self.ENV)
+        try:
+            if max_tokens is None:
+                os.environ.pop(self.ENV, None)
+            else:
+                os.environ[self.ENV] = str(max_tokens)
+            result = build_context_pack(self.root, "issue", 42, "plan")
+        finally:
+            if prior is None:
+                os.environ.pop(self.ENV, None)
+            else:
+                os.environ[self.ENV] = prior
+        pack_path = self.root / result["jsonPath"]
+        return json.loads(pack_path.read_text(encoding="utf-8"))
+
+    def test_smaller_budget_env_shrinks_the_pack(self) -> None:
+        default_pack = self._build(None)
+        tightened_pack = self._build(RETRIEVAL_MAX_TOKENS // 2)
+
+        default_total = sum(
+            estimate_tokens(item["content"])
+            for item in default_pack.get("included", [])
+            if isinstance(item.get("content"), str) and item["content"]
+        )
+        tightened_total = sum(
+            estimate_tokens(item["content"])
+            for item in tightened_pack.get("included", [])
+            if isinstance(item.get("content"), str) and item["content"]
+        )
+        self.assertLessEqual(tightened_total, RETRIEVAL_MAX_TOKENS // 2)
+        self.assertLess(tightened_total, default_total)
+        # A tighter budget can only drop items, never add them.
+        self.assertLessEqual(
+            len(tightened_pack.get("included", [])),
+            len(default_pack.get("included", [])),
+        )
+
+    def test_pack_metadata_records_the_overridden_budget(self) -> None:
+        tightened_pack = self._build(2500)
+        self.assertEqual(tightened_pack["retrievalBudget"]["maxTokens"], 2500)
+
+    def test_unset_env_is_byte_identical_to_before(self) -> None:
+        """No env -> the resolver falls back to RETRIEVAL_MAX_TOKENS, so an
+        unset-env build is identical to one that names the default explicitly."""
+        implicit = self._build(None)
+        explicit = self._build(RETRIEVAL_MAX_TOKENS)
+        self.assertEqual(
+            implicit["retrievalBudget"]["maxTokens"],
+            explicit["retrievalBudget"]["maxTokens"],
+        )
+        self.assertEqual(
+            [item["path"] for item in implicit.get("included", [])],
+            [item["path"] for item in explicit.get("included", [])],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,7 +36,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 # The AgentRail layers, in a fixed, documented order. Adding a new layer to the
 # harness is a one-line change here (plus a matching ``Layers`` field). Every
@@ -100,6 +100,24 @@ LLM_RERANK_LAYER: str = "llm_rerank"
 CUTOFF_LAYER: str = "cutoff"
 SYMBOL_PACKING_LAYER: str = "symbol_packing"
 GATHER_LAYER: str = "gather"
+
+# The offline packer-tightening A/B (issue #1225 AC2). Unlike the other PLUS
+# arms above, "tightened" is not a single boolean layer — it COMPOSES the
+# existing cutoff layer (#1096, dropping the low-confidence pack tail) with a
+# SMALLER token budget (a numeric override, not a flag), so the tightened
+# variant genuinely produces fewer, higher-precision chunks under a harder
+# budget constraint, matching the issue's "fewer/higher-precision chunks... at
+# a SMALLER context budget" shape. It rides ``extra_layers`` for the cutoff
+# half (like every PLUS arm) and the new ``Arm.retrieval_max_tokens`` field for
+# the budget half.
+TIGHTENED_PACKER_LAYER: str = "tightened_packer"
+
+# The tightened packer's token budget: half of the default
+# ``agentrail.context.retrieval.RETRIEVAL_MAX_TOKENS`` (6000) — tight enough to
+# force real drops beyond what the cutoff ratio alone removes, not so tight the
+# pack empties out. Kept here (not re-derived from the retrieval module) so the
+# arm's declaration stays pure data with no import of the context/runtime layer.
+TIGHTENED_PACKER_MAX_TOKENS: int = 3000
 
 # Pinned execution model + temperature. Held fixed across every arm so that
 # leave-one-out ablation isolates a single layer and nothing else (PRD:
@@ -187,6 +205,12 @@ class Arm:
             When set, the eval runner forwards it via ``AGENTRAIL_EVAL_GATHER_MODEL``
             so a gather command is built — the trigger (alongside
             ``AGENTRAIL_JIT_GATHER=1``) the opt-in gather phase needs to fire.
+        retrieval_max_tokens: a SMALLER pack token budget than the default
+            ``RETRIEVAL_MAX_TOKENS``, or ``None`` when the arm uses the default
+            (every arm but the tightened-packer arm, #1225 AC2). When set, the
+            eval runner forwards it via ``AGENTRAIL_RETRIEVAL_MAX_TOKENS`` so
+            ``agentrail.context.retrieval.resolve_retrieval_max_tokens`` actually
+            shrinks the budget for this arm's runs.
     """
 
     name: str
@@ -196,6 +220,7 @@ class Arm:
     extra_layers: Mapping[str, bool] = field(default_factory=lambda: _NO_EXTRA_LAYERS)
     critic_model: str = ""
     gather_model: str = ""
+    retrieval_max_tokens: Optional[int] = None
 
 
 def baseline() -> Arm:
@@ -460,6 +485,52 @@ def gather_arms() -> List[Arm]:
     return [full(), gather_arm()]
 
 
+# ---------------------------------------------------------------------------
+# The packer-tightening A/B arm (issue #1225 AC2): ``full`` PLUS the cutoff
+# layer, at a SMALLER token budget than the current packer's default.
+# ---------------------------------------------------------------------------
+
+
+def tightened_packer_arm() -> Arm:
+    """``full`` PLUS the adaptive cutoff, at a SMALLER token budget (#1225 AC2).
+
+    Every base AgentRail layer stays ON (a strict superset of ``full``, like
+    every other PLUS arm). Two things compose to make this "tightened":
+
+      * the cutoff layer switched ON via ``extra_layers`` (``{cutoff: True}``,
+        the SAME #1096 mechanism :func:`cutoff_arm` uses — unchanged, reused);
+      * :data:`TIGHTENED_PACKER_MAX_TOKENS`, a smaller-than-default pack token
+        budget carried on the NEW ``retrieval_max_tokens`` field.
+
+    The runner's ``_arm_env`` bridges the cutoff flag exactly as it does for
+    :func:`cutoff_arm`, and separately bridges ``retrieval_max_tokens`` to
+    ``AGENTRAIL_RETRIEVAL_MAX_TOKENS`` — the only var
+    ``agentrail.context.retrieval.resolve_retrieval_max_tokens`` reads. ``full``
+    carries neither, so a ``full`` vs this comparison isolates exactly the
+    packer tightening (fewer, higher-precision chunks under a harder budget).
+    """
+    base = full()
+    return Arm(
+        name=f"full-plus-{TIGHTENED_PACKER_LAYER}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType({CUTOFF_LAYER: True}),
+        retrieval_max_tokens=TIGHTENED_PACKER_MAX_TOKENS,
+    )
+
+
+def tightened_packer_arms() -> List[Arm]:
+    """The packer-tightening A/B pair: ``full`` (current packer) vs the tightened variant.
+
+    Feeds :func:`agentrail.evals.packer_tightening.run_packer_tightening_ab`,
+    which pairs these two arms through the existing two-set
+    ``agentrail.evals.regression_gate`` (#1225 AC2) — the SAME gate the rest of
+    the harness uses, never a new one.
+    """
+    return [full(), tightened_packer_arm()]
+
+
 __all__ = [
     "LAYER_NAMES",
     "NEW_FLOW_LAYERS",
@@ -467,6 +538,8 @@ __all__ = [
     "CUTOFF_LAYER",
     "SYMBOL_PACKING_LAYER",
     "GATHER_LAYER",
+    "TIGHTENED_PACKER_LAYER",
+    "TIGHTENED_PACKER_MAX_TOKENS",
     "PINNED_MODEL",
     "PINNED_TEMPERATURE",
     "PINNED_CRITIC_MODEL",
@@ -491,6 +564,8 @@ __all__ = [
     "symbol_packing_arms",
     "gather_arm",
     "gather_arms",
+    "tightened_packer_arm",
+    "tightened_packer_arms",
 ]
 
 # Re-export for callers that prefer ``dataclasses.FrozenInstanceError`` checks

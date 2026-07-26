@@ -41,6 +41,8 @@ def _usage() -> str:
         "  agentrail evals run [--corpus DIR] [--task NAME[,NAME...]] "
         "[--arm NAME] [--reps N]\n"
         "  agentrail evals canary [--target DIR] [--reps N] [--date YYYY-MM-DD]\n"
+        "  agentrail evals packer-ab [--corpus DIR] [--task NAME[,NAME...]] "
+        "[--reps N]\n"
         "  agentrail evals apply (--report PATH | --date YYYY-MM-DD)\n"
         "                        [--reports-dir DIR] [--target DIR] [--apply]\n"
         "\n"
@@ -51,6 +53,13 @@ def _usage() -> str:
         "          difficulty stratum) that FAILS CLOSED on missing server auth,\n"
         "          writes the dated report, and pushes telemetry (not dark) so\n"
         "          the regression gate's live-metrics lane is populated (#1041).\n"
+        "  packer-ab\n"
+        "          Offline packer-tightening A/B (#1225 AC2): current packer\n"
+        "          (`full`) vs a tightened variant (adaptive cutoff ON, HALF the\n"
+        "          token budget), paired per task through the EXISTING two-set\n"
+        "          `agentrail.evals.regression_gate` — solve-rate + $/solved,\n"
+        "          GREEN/RED/INSUFFICIENT_REPS, diagnostic-only (never gates a\n"
+        "          run). Costs real model calls unless --smoke.\n"
         "  probes  Run the intrinsic guardrail catch-rate probe against the\n"
         "          built-in injection corpus and print the catch-rate (#943).\n"
         "  apply   Read a dated eval report and print proposed layer-override\n"
@@ -499,6 +508,94 @@ def _run_canary(args: List[str]) -> int:
     return 0
 
 
+def _run_packer_ab(args: List[str]) -> int:
+    """Offline packer-tightening A/B (#1225 AC2) — current packer vs tightened.
+
+    Thin CLI wrapper around
+    :func:`agentrail.evals.packer_tightening.run_packer_tightening_ab`: builds
+    the two arms (:func:`agentrail.evals.arms.full` and
+    :func:`agentrail.evals.arms.tightened_packer_arm`), runs them through the
+    SAME spine ``agentrail evals run`` uses, and gates the result through the
+    EXISTING two-set ``agentrail.evals.regression_gate`` — no new statistics,
+    no new gate. ``--smoke`` swaps in the in-process fake executor (mirrors
+    ``run --smoke``) so the wiring can be dry-run for free; a real A/B needs a
+    real sandbox + hidden-test runner and costs real model calls.
+    """
+    from agentrail.evals.packer_tightening import (
+        render_packer_tightening_markdown,
+        run_packer_tightening_ab,
+    )
+
+    corpus_root: Optional[Path] = None
+    tasks: List[str] = []
+    reps = 5
+    concurrency = 4
+    reports_dir: Optional[Path] = None
+    include_held_out = False
+    date: Optional[str] = None
+    run_id: Optional[str] = None
+    smoke = False
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(_usage())
+            return 0
+        elif a == "--corpus":
+            corpus_root = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--task":
+            for name in _split_csv(_parse_flag_value(args, i, a)):
+                tasks.append(name)
+            i += 2
+        elif a == "--reps":
+            reps = int(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--concurrency":
+            concurrency = int(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--reports-dir":
+            reports_dir = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--include-held-out":
+            include_held_out = True
+            i += 1
+        elif a == "--date":
+            date = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--run-id":
+            run_id = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--smoke":
+            smoke = True
+            i += 1
+        else:
+            print(f"error: unknown option: {a}", file=sys.stderr)
+            return 2
+
+    executor = _smoke_executor() if smoke else SandboxAgentExecutor()
+    hidden_runner: HiddenTestRunner = (
+        UnimplementedHiddenTestRunner() if smoke else ProductionHiddenTestRunner()
+    )
+
+    result = run_packer_tightening_ab(
+        reps=reps,
+        task_filter=tasks or None,
+        corpus_root=corpus_root,
+        concurrency=concurrency,
+        include_held_out=include_held_out,
+        reports_dir=reports_dir,
+        date=date,
+        run_id=run_id,
+        executor=executor,
+        hidden_test_runner=hidden_runner,
+    )
+
+    print(render_packer_tightening_markdown(result))
+    return 0
+
+
 def _run_probes(args: List[str]) -> int:
     """Run the intrinsic guardrail catch-rate probe (#943).
 
@@ -630,6 +727,9 @@ def run_evals(args: List[str]) -> int:
 
     if kind == "canary":
         return _run_canary(args[1:])
+
+    if kind == "packer-ab":
+        return _run_packer_ab(args[1:])
 
     if kind == "probes":
         return _run_probes(args[1:])

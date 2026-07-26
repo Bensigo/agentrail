@@ -35,7 +35,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-__all__ = ["compute_live_context_metrics", "LiveContextMetrics"]
+__all__ = [
+    "compute_live_context_metrics",
+    "compute_precision_in_pack_proxy",
+    "LiveContextMetrics",
+]
 
 # Type alias for the structured result (a plain dict, JSON-serialisable).
 LiveContextMetrics = Dict[str, Any]
@@ -221,3 +225,79 @@ def compute_live_context_metrics(
             result["recallMissedUnread"] = sorted(modified - pack_files - read_set)
 
     return result
+
+
+def compute_precision_in_pack_proxy(
+    *,
+    included: Sequence[Mapping[str, Any]],
+    modified_preexisting: Sequence[str],
+    created_files: Sequence[str] = (),
+) -> Dict[str, Any]:
+    """Diff-grounded live proxy for the offline file-level ``precisionInPack`` (#1225).
+
+    ``agentrail.context.evaluation._file_level_precision`` computes
+    ``precisionInPack`` — of the distinct files the compiler actually packed, how
+    many are RELEVANT (ground-truth ``relevant_paths``). That comparison only
+    exists OFFLINE, inside the eval harness: a live run has no ground truth.
+
+    This is the live PROXY for it: of the distinct files actually packed, how
+    many were TOUCHED by the FINAL ACCEPTED DIFF — pre-existing files it modified
+    plus files it newly created. "Touched by the diff" stands in for "relevant"
+    because a live run has nothing better to check against; a low proxy value
+    does NOT prove the untouched pack files were noise (the agent may simply not
+    have needed to touch every relevant file), so this is named ``...Proxy``
+    throughout and must never be read as the real offline metric.
+
+    A low ``precisionInPackProxy`` alongside a high read-grounded ``precision``
+    (:func:`compute_live_context_metrics`) is the live echo of the offline
+    over-fill signature (``rPrecision`` high, ``precisionInPack`` low): the
+    ranker put the right files in front — they got read — but the pack carried
+    plenty the accepted diff never needed. That is a packing problem, not a
+    ranking one.
+
+    Strictly diagnostic, like every other metric in this module: nothing under
+    ``agentrail.guardrails`` may read it (see
+    ``agentrail/tests/guardrails/test_no_precision_gating.py``).
+
+    Parameters
+    ----------
+    included:
+        The pack's ``included`` items (each a dict with ``path``), i.e. the
+        ACTUAL pack the run produced — same shape :func:`compute_live_context_metrics`
+        takes.
+    modified_preexisting:
+        Repo-relative paths of pre-existing files modified in the final
+        accepted diff.
+    created_files:
+        Repo-relative paths of files the accepted diff CREATED.
+
+    Returns a JSON-serialisable dict — merge its keys into the
+    :func:`compute_live_context_metrics` result (same run, same push). Never
+    raises: an empty pack has no denominator, so it reports ``n/a``, never a
+    fabricated zero. A pack where the diff touched none of its files is a real,
+    measured ``0.0`` (the denominator — packed files — is well defined; the
+    diff simply used none of them).
+    """
+    pack_files = sorted(_pack_file_tokens(included or [])[0].keys())
+    if not pack_files:
+        return {
+            "precisionInPackProxy": None,
+            "precisionInPackProxyStatus": "n/a",
+            "touchedPackFileCount": 0,
+            "noisyPackFiles": [],
+        }
+
+    touched = {
+        _norm(p)
+        for p in (*(modified_preexisting or []), *(created_files or []))
+        if isinstance(p, str) and p.strip()
+    }
+    touched_in_pack = [p for p in pack_files if p in touched]
+    noisy = [p for p in pack_files if p not in touched]
+    value = len(touched_in_pack) / len(pack_files)
+    return {
+        "precisionInPackProxy": round(value, 4),
+        "precisionInPackProxyStatus": "ok",
+        "touchedPackFileCount": len(touched_in_pack),
+        "noisyPackFiles": noisy,
+    }

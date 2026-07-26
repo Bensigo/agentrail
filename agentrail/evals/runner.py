@@ -1332,6 +1332,15 @@ def _arm_env(arm: Arm) -> dict:
         env["AGENTRAIL_JIT_GATHER"] = "1"
     if arm.gather_model:
         env[GATHER_MODEL_ENV] = arm.gather_model
+    # Tightened-packer budget bridge (#1225 AC2): a NUMERIC override, unlike
+    # every other bridge above (which toggle a boolean layer). The tightened-
+    # packer arm pins a smaller ``retrieval_max_tokens``; forward it as
+    # ``AGENTRAIL_RETRIEVAL_MAX_TOKENS`` — the only var
+    # ``agentrail.context.retrieval.resolve_retrieval_max_tokens`` reads.
+    # ``full`` / every other arm carries ``None``, so their env (and behaviour)
+    # stays byte-identical.
+    if arm.retrieval_max_tokens is not None:
+        env["AGENTRAIL_RETRIEVAL_MAX_TOKENS"] = str(arm.retrieval_max_tokens)
     return env
 
 

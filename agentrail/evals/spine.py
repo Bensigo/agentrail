@@ -88,6 +88,7 @@ from agentrail.evals.arms import (
     new_flow,
     new_flow_minus,
     symbol_packing_arm,
+    tightened_packer_arm,
 )
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
 from agentrail.evals.gather_report import (
@@ -934,6 +935,7 @@ _FULL_PLUS_ARMS = {
     "cutoff": cutoff_arm,
     "symbol_packing": symbol_packing_arm,
     "gather": gather_arm,
+    "tightened_packer": tightened_packer_arm,
 }
 
 
@@ -945,7 +947,8 @@ def resolve_arm(spec: str) -> Arm:
         - ``full``
         - ``full-minus-<layer>`` (e.g. ``full-minus-context``)
         - ``full-plus-<layer>`` (opt-in PLUS arms: ``llm_rerank`` #1044,
-          ``cutoff`` #1096, ``symbol_packing`` #1044 AC4, ``gather`` #1049)
+          ``cutoff`` #1096, ``symbol_packing`` #1044 AC4, ``gather`` #1049,
+          ``tightened_packer`` #1225 AC2)
         - ``new-flow`` (full + critic + best-of-N + warm-cache, issue #980)
         - ``new-flow-minus-<layer>`` (e.g. ``new-flow-minus-warmcache``)
 

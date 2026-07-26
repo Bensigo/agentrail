@@ -167,5 +167,39 @@ class EvalsRunNewFlowCliTests(unittest.TestCase):
             self.assertIn("arm=new-flow", out)
 
 
+class HeldOutFamilyFlagTests(unittest.TestCase):
+    """``--held-out-family`` (issue #1223 AC2): parses into ``SpineConfig``.
+
+    Mirrors the existing ``--include-held-out`` contract: the CLI layer only
+    captures the raw string and threads it through — validation against the
+    fixed vocabulary happens once, in ``load_corpus`` (exercised directly in
+    ``tests/evals/test_corpus_loader.py``), so this test only needs to prove
+    the flag reaches ``SpineConfig.held_out_family`` unchanged.
+    """
+
+    def test_held_out_family_flag_sets_spine_config(self) -> None:
+        from agentrail.cli.commands.evals import _parse_run_args
+
+        config, _smoke, _reports_dir = _parse_run_args(
+            ["--smoke", "--held-out-family", "feature"]
+        )
+        self.assertEqual(config.held_out_family, "feature")
+
+    def test_held_out_family_defaults_to_none(self) -> None:
+        from agentrail.cli.commands.evals import _parse_run_args
+
+        config, _smoke, _reports_dir = _parse_run_args(["--smoke"])
+        self.assertIsNone(config.held_out_family)
+
+    def test_held_out_family_is_independent_of_include_held_out(self) -> None:
+        from agentrail.cli.commands.evals import _parse_run_args
+
+        config, _smoke, _reports_dir = _parse_run_args(
+            ["--smoke", "--include-held-out", "--held-out-family", "bug"]
+        )
+        self.assertTrue(config.include_held_out)
+        self.assertEqual(config.held_out_family, "bug")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

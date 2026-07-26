@@ -22,6 +22,7 @@
   ],
   "difficulty": "easy",
   "heldOut": true,
+  "family": "feature",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 795,

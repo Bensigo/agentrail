@@ -60,6 +60,7 @@ def _rep(
     gate_passed: bool = False,
     false_green: bool = False,
     difficulty: str | None = None,
+    family: str | None = None,
     wall_time_s: float = 0.0,
 ) -> RepetitionRecord:
     return RepetitionRecord(
@@ -70,6 +71,7 @@ def _rep(
         gate_passed=gate_passed,
         false_green=false_green,
         difficulty=difficulty,
+        family=family,
         wall_time_s=wall_time_s,
     )
 
@@ -1110,6 +1112,120 @@ def test_strata_in_arm_metric_rows():
     assert by_diff["easy"]["solve_rate"] == pytest.approx(1.0)
     assert by_diff["hard"]["solve_rate"] == pytest.approx(0.0)
     assert by_diff["hard"]["dollars_per_solved"] is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #1223: family-stratified reporting.
+#   Same idea as #941's difficulty strata, one axis over: break solve-rate /
+#   cost / $-per-solved out PER task family (bug/feature/refactor/test/infra),
+#   IN ADDITION TO the aggregate and the difficulty strata.
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_carries_per_family_strata():
+    """AC4: exact per-stratum solve-rate from a mixed-family fixture."""
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        # bug: 1 task, 2 reps, both solved -> 1.0
+        _rep("bug-a", "full", True, u, family="bug"),
+        _rep("bug-a", "full", True, u, family="bug"),
+        # refactor: 2 tasks, 1 rep each, 1 solved 1 failed -> 0.5
+        _rep("refactor-a", "full", True, u, family="refactor"),
+        _rep("refactor-b", "full", False, u, family="refactor"),
+    ]
+    r = aggregate(records)[0]
+    # aggregate is unchanged: 3/4 solved overall
+    assert r.solve_rate == pytest.approx(0.75)
+
+    strata = {s.family: s for s in r.family_strata}
+    assert set(strata) == {"bug", "refactor"}
+
+    bug = strata["bug"]
+    assert bug.repetitions == 2
+    assert bug.solved_count == 2
+    assert bug.solve_rate == pytest.approx(1.0)
+    assert bug.total_cost_usd == pytest.approx(2 * cost_usd(u))
+    assert bug.dollars_per_solved == pytest.approx((2 * cost_usd(u)) / 2)
+
+    refactor = strata["refactor"]
+    assert refactor.repetitions == 2
+    assert refactor.solved_count == 1
+    assert refactor.solve_rate == pytest.approx(0.5)
+    assert refactor.dollars_per_solved == pytest.approx((2 * cost_usd(u)) / 1)
+
+
+def test_family_strata_dollars_per_solved_undefined_when_none_solved():
+    """A family stratum where nothing solved reports None $/solved, never a crash."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("refactor-a", "full", False, u, family="refactor"),
+        _rep("refactor-b", "full", False, u, family="refactor"),
+        _rep("bug-a", "full", True, u, family="bug"),
+    ]
+    strata = {s.family: s for s in aggregate(records)[0].family_strata}
+    assert strata["refactor"].solved_count == 0
+    assert strata["refactor"].dollars_per_solved is None
+    assert strata["bug"].dollars_per_solved is not None
+
+
+def test_family_strata_sorted_canonical_order():
+    """Family strata are reported in canonical FAMILY_TAGS order (deterministic)."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("i", "full", True, u, family="infra"),
+        _rep("b", "full", True, u, family="bug"),
+        _rep("t", "full", True, u, family="test"),
+        _rep("r", "full", True, u, family="refactor"),
+        _rep("f", "full", True, u, family="feature"),
+    ]
+    order = [s.family for s in aggregate(records)[0].family_strata]
+    assert order == ["bug", "feature", "refactor", "test", "infra"]
+
+
+def test_records_without_family_produce_no_family_strata():
+    """Back-compat: records with no family (pre-#1223) yield an empty
+    family_strata list and an unchanged aggregate."""
+    u = _usage(input_tokens=1000)
+    records = [_rep("task-a", "full", True, u), _rep("task-a", "full", False, u)]
+    r = aggregate(records)[0]
+    assert r.family_strata == []
+    assert r.solve_rate == pytest.approx(0.5)
+
+
+def test_family_strata_surfaced_in_markdown_with_exact_numbers():
+    """AC4: the per-family breakdown appears in the rendered report."""
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("bug-a", "full", True, u, family="bug"),
+        _rep("bug-a", "full", True, u, family="bug"),
+        _rep("refactor-a", "full", True, u, family="refactor"),
+        _rep("refactor-b", "full", False, u, family="refactor"),
+    ]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23")
+    low = md.lower()
+    # a family-stratified section exists, naming the families
+    assert "family" in low
+    assert "bug" in low
+    assert "refactor" in low
+    # exact per-stratum solve-rates surface (bug 100.0%, refactor 50.0%)
+    assert "100.0%" in md
+    assert "50.0%" in md
+
+
+def test_family_strata_in_arm_metric_rows():
+    """AC4: the per-family numbers flow into the persistence rows (console parity)."""
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("bug-a", "full", True, u, family="bug"),
+        _rep("refactor-a", "full", False, u, family="refactor"),
+    ]
+    rows = arm_metric_rows(aggregate(records), run_id="r1")
+    by_family = {s["family"]: s for s in rows[0]["family_strata"]}
+    assert by_family["bug"]["solve_rate"] == pytest.approx(1.0)
+    assert by_family["refactor"]["solve_rate"] == pytest.approx(0.0)
+    assert by_family["refactor"]["dollars_per_solved"] is None
 
 
 def test_write_markdown_report_creates_dated_file(tmp_path):

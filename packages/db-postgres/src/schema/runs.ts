@@ -7,7 +7,9 @@ import {
   jsonb,
   doublePrecision,
   index,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 
 export const runStatusEnum = pgEnum("run_status", [
@@ -16,6 +18,21 @@ export const runStatusEnum = pgEnum("run_status", [
   "success",
   "failed",
 ]);
+
+// Task-family vocabulary (issue #1223) — what KIND of change a run is (bug
+// fix / new capability / restructuring / test-only / build-tooling),
+// orthogonal to `status`. Fixed and kept in lockstep with the Python side's
+// canonical vocabulary (agentrail/shared/task_family.py) and the eval
+// corpus's `family` field (agentrail/evals/corpus/loader.py) so a family
+// label never means two different things depending on where it was applied.
+export const RUN_FAMILY_VALUES = [
+  "bug",
+  "feature",
+  "refactor",
+  "test",
+  "infra",
+] as const;
+export type RunFamily = (typeof RUN_FAMILY_VALUES)[number];
 
 export const runs = pgTable(
   "runs",
@@ -58,6 +75,13 @@ export const runs = pgTable(
     // sweep, byte-identical to the pre-#1388 behavior. NOT a state machine: this
     // is a liveness signal, it opens no new terminal Run Outcome.
     lastLivenessAt: timestamp("last_liveness_at", { withTimezone: true }),
+    // Task-family tag (issue #1223 AC4): what KIND of task this run is,
+    // mirrored onto the Langfuse trace as a `family:<value>` tag (see
+    // agentrail/observability/tracer.py) so solve-rate/$-per-solved can be
+    // sliced by family later. Nullable — there is no source that classifies
+    // a live GitHub issue's family yet, so most rows stay unclassified; the
+    // CHECK still guards against a malformed value on the rows that DO set it.
+    family: text("family").$type<RunFamily>(),
   },
   (t) => ({
     // Backs the workspace monthly-budget-ceiling SUM (#1269 PR ②a,
@@ -67,6 +91,10 @@ export const runs = pgTable(
     workspaceCreatedAtIdx: index("runs_workspace_id_created_at_idx").on(
       t.workspaceId,
       t.createdAt
+    ),
+    familyCheck: check(
+      "runs_family_check",
+      sql`${t.family} IS NULL OR ${t.family} IN ('bug', 'feature', 'refactor', 'test', 'infra')`
     ),
   })
 );

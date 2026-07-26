@@ -24,6 +24,7 @@
   ],
   "difficulty": "medium",
   "heldOut": true,
+  "family": "bug",
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 913,

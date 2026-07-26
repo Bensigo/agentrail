@@ -32,6 +32,10 @@ Layout (one directory per task under ``agentrail/evals/corpus/``):
       "taskKind": "implement|abstain",    # optional; default "implement". "abstain"
                                           #   tasks are already correct — empty diff
                                           #   must pass, any agent change must fail.
+      "family": "bug|feature|refactor|test|infra",  # optional; default None
+                                          #   (unclassified). What KIND of change this
+                                          #   is — orthogonal to difficulty/taskKind.
+                                          #   See agentrail.shared.task_family.
       "source": {                         # provenance (optional but recommended)
         "pr": 791,
         "issue": 770,
@@ -50,12 +54,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentrail.shared.task_family import TASK_FAMILY_VALUES, is_task_family
+
 # Difficulty is proxied by required-context scatter (PRD "Honesty rails").
 DIFFICULTY_TAGS = ("easy", "medium", "hard")
 
 # Task kind: "implement" tasks require an agent change; "abstain" tasks are
 # correct as-is (empty diff passes the hidden tests, any change breaks them).
 TASK_KIND_VALUES = ("implement", "abstain")
+
+# Task family (issue #1223): what KIND of change this task is (bug/feature/
+# refactor/test/infra) — orthogonal to difficulty and taskKind. Re-exported
+# here (rather than imported ad hoc) so callers that already do
+# ``from agentrail.evals.corpus.loader import DIFFICULTY_TAGS, ...`` pick this
+# up the same way. Canonical values live in ``agentrail.shared.task_family``
+# so the eval corpus and the live-run tagging (``agentrail.observability.tracer``,
+# the ``runs`` table) never drift into two different vocabularies.
+FAMILY_TAGS = TASK_FAMILY_VALUES
 
 TASK_FILE = "task.json"
 
@@ -109,6 +124,13 @@ class CorpusTask:
     # scorer grades against it instead. Optional in task.json (``readContext``);
     # defaults to an empty list ("fall back to requiredContext").
     read_context: List[str] = field(default_factory=list)
+    # Task family (#1223): what KIND of change this task is (bug/feature/
+    # refactor/test/infra) — orthogonal to difficulty (how hard) and taskKind
+    # (implement/abstain). Optional in task.json; defaults to ``None``
+    # ("unclassified") so existing corpus tasks that predate this field keep
+    # loading unchanged. A ``None`` family contributes to no family stratum in
+    # the reporter and never matches a ``--held-out-family`` filter.
+    family: Optional[str] = None
     source: Dict[str, Any] = field(default_factory=dict)
     task_dir: Optional[Path] = None
 
@@ -230,6 +252,20 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
             f"{', '.join(TASK_KIND_VALUES)} when present (got {task_kind_raw!r})"
         )
 
+    # --- task family (optional, defaults None — "unclassified") -------------
+    # Issue #1223 AC1: what KIND of change this task is. Unlike ``taskKind``
+    # (which defaults to a real value, "implement") there is no honest default
+    # *value* here — a task the corpus author never classified is genuinely
+    # unclassified, not secretly "feature". ``None`` is that honest default; a
+    # PRESENT value must still be one of the fixed vocabulary so live-run
+    # tagging and corpus tagging never drift into different vocabularies.
+    family_raw = record.get("family")
+    if family_raw is not None and not is_task_family(family_raw):
+        raise CorpusError(
+            f"corpus task {where}: field 'family' must be one of "
+            f"{', '.join(TASK_FAMILY_VALUES)} when present (got {family_raw!r})"
+        )
+
     source = record.get("source") or {}
     if not isinstance(source, dict):
         raise CorpusError(f"corpus task {where}: field 'source' must be an object when present")
@@ -246,6 +282,7 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
         held_out=held_out_raw,
         task_kind=task_kind_raw,
         read_context=read_context,
+        family=family_raw,
         source=source,
         task_dir=base_dir,
     )
@@ -290,7 +327,10 @@ def load_task(task_dir: Path) -> CorpusTask:
 
 
 def load_corpus(
-    root: Optional[Path] = None, *, include_held_out: bool = False
+    root: Optional[Path] = None,
+    *,
+    include_held_out: bool = False,
+    held_out_family: Optional[str] = None,
 ) -> List[CorpusTask]:
     """Load every valid task under the corpus directory, sorted by name.
 
@@ -302,13 +342,30 @@ def load_corpus(
     EXCLUDED by default so the harness is never developed against them. Pass
     ``include_held_out=True`` to include the full corpus (the explicit,
     deliberate "score the held-out split" path).
+
+    Family generalization split (#1223): ``held_out_family`` excludes EVERY
+    task whose ``family`` equals it, INDEPENDENT of ``heldOut``/
+    ``include_held_out`` — a task can be held out by instance, by family, by
+    both, or by neither. This is how a family-level generalization split is
+    built: run once with the family included (development), once with
+    ``held_out_family=<name>`` (the held-out pass), and compare — the same
+    shape as the existing instance-level held-out split, one axis over.
+    Unclassified tasks (``family is None``) are never excluded by this filter
+    — they simply never match a real family name.
     """
+    if held_out_family is not None and not is_task_family(held_out_family):
+        raise ValueError(
+            f"--held-out-family: {held_out_family!r} is not a recognized task "
+            f"family; expected one of {', '.join(TASK_FAMILY_VALUES)}"
+        )
     base = Path(root) if root is not None else corpus_root()
     task_dirs = sorted(
         (child for child in base.iterdir() if child.is_dir() and (child / TASK_FILE).is_file()),
         key=lambda path: path.name,
     )
     tasks = [load_task(task_dir) for task_dir in task_dirs]
-    if include_held_out:
-        return tasks
-    return [task for task in tasks if not task.held_out]
+    if not include_held_out:
+        tasks = [task for task in tasks if not task.held_out]
+    if held_out_family is not None:
+        tasks = [task for task in tasks if task.family != held_out_family]
+    return tasks

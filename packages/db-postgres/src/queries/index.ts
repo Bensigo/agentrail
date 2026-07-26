@@ -25,6 +25,7 @@ import type {
   ReviewGate,
   ReviewGateFindingCategory,
   MemoryItem,
+  RunFamily,
 } from "../schema/index.js";
 import { reviewGateFindingCategories } from "../schema/index.js";
 
@@ -1648,6 +1649,13 @@ export interface UpsertRunInput {
   status: "queued" | "running" | "success" | "failed";
   startedAt?: string | null;
   finishedAt?: string | null;
+  // Task-family tag (issue #1223 AC4): what KIND of task this run is, mirrored
+  // onto the run's Langfuse trace via `runFamilyLangfuseTag`
+  // (agentrail/observability/tracer.py does the same on the Python side).
+  // Optional — no source classifies a live GitHub issue's family yet, so most
+  // callers omit it and the row stays unclassified (family stays NULL/
+  // unchanged on conflict rather than being clobbered by an absent value).
+  family?: RunFamily | null;
 }
 
 export async function upsertRun(input: UpsertRunInput): Promise<void> {
@@ -1663,6 +1671,7 @@ export async function upsertRun(input: UpsertRunInput): Promise<void> {
       status: input.status,
       startedAt: input.startedAt ? new Date(input.startedAt) : null,
       finishedAt: input.finishedAt ? new Date(input.finishedAt) : null,
+      family: input.family ?? null,
     })
     .onConflictDoUpdate({
       target: runs.id,
@@ -1674,6 +1683,10 @@ export async function upsertRun(input: UpsertRunInput): Promise<void> {
         // (server briefly down) still gets a duration.
         ...(input.startedAt ? { startedAt: new Date(input.startedAt) } : {}),
         finishedAt: input.finishedAt ? new Date(input.finishedAt) : null,
+        // Only overwrite family when the caller actually supplied one — an
+        // update call that doesn't know the family (e.g. a plain status
+        // flip) must not clobber a value set by an earlier upsert.
+        ...(input.family !== undefined ? { family: input.family } : {}),
       },
     });
 }
@@ -2211,6 +2224,10 @@ export interface EvalArmMetricInput {
   falseGreenCount: number;
   falseGreenRate: number | null;
   strata: Array<Record<string, unknown>>;
+  // Family-stratified breakdown (issue #1223 AC4) — same parity contract as
+  // `strata`, one axis over. Optional so pre-#1223 callers keep working;
+  // callers that omit it get the column's own default (empty array).
+  familyStrata?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -2243,6 +2260,7 @@ export async function insertEvalArmMetrics(data: {
     falseGreenCount: r.falseGreenCount,
     falseGreenRate: r.falseGreenRate,
     strata: r.strata,
+    familyStrata: r.familyStrata ?? [],
   }));
   await db
     .insert(evalArmMetrics)
@@ -2270,6 +2288,7 @@ export async function insertEvalArmMetrics(data: {
         falseGreenCount: sql`excluded.false_green_count`,
         falseGreenRate: sql`excluded.false_green_rate`,
         strata: sql`excluded.strata`,
+        familyStrata: sql`excluded.family_strata`,
         createdAt: sql`now()`,
       },
     });
@@ -2632,3 +2651,11 @@ export {
   listQueueAttempts,
   type QueueAttemptListItem,
 } from "./queue_attempts.js";
+// Task-family classification for a run (issue #1223 AC4; see
+// `queries/run-family.ts` for the full WHY). isRunFamily is the type guard
+// against the fixed `runs.family` vocabulary (mirrors the Python side's
+// agentrail.shared.task_family.is_task_family); runFamilyLangfuseTag is the
+// pure `family:<value>` tag mapping consumed wherever a run's Langfuse trace
+// is started/tagged. Both are dependency-free and unit-tested in isolation
+// from any real Langfuse client or database.
+export { isRunFamily, runFamilyLangfuseTag } from "./run-family.js";

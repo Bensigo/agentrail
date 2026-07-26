@@ -200,6 +200,10 @@ class SpineConfig:
     # so the harness is never developed against them. Off by default; flip it
     # only for the deliberate "score the held-out split" pass.
     include_held_out: bool = False
+    # Family generalization split (#1223): when set, EVERY task in this family
+    # is excluded from the run, independent of ``include_held_out``/``heldOut``.
+    # ``None`` (default) preserves the exact prior behavior (no family filter).
+    held_out_family: Optional[str] = None
     # Wall-clock lever: every ``(task, arm, rep)`` unit is FULLY independent —
     # the runner clones into its own random tempdir and the hidden-test runner
     # uses its own isolated workspace, so units share no state. Running them
@@ -483,8 +487,14 @@ def run_spine(
         hidden_test_runner = ProductionHiddenTestRunner()
 
     # Honesty rail (#941): held-out tasks are excluded by default; only the
-    # explicit ``include_held_out`` flag pulls them into the run set.
-    tasks = load_corpus(config.corpus_root, include_held_out=config.include_held_out)
+    # explicit ``include_held_out`` flag pulls them into the run set. Family
+    # generalization split (#1223): ``held_out_family`` independently excludes
+    # every task in that family, regardless of ``include_held_out``.
+    tasks = load_corpus(
+        config.corpus_root,
+        include_held_out=config.include_held_out,
+        held_out_family=config.held_out_family,
+    )
     tasks = _select_tasks(tasks, config.task_filter)
     if not tasks:
         raise ValueError("no corpus tasks selected")
@@ -620,6 +630,10 @@ def run_spine(
             # Difficulty-stratified reporting (#941): thread the CorpusTask's
             # difficulty straight onto the record for per-stratum breakdowns.
             difficulty=task.difficulty,
+            # Family-stratified reporting (#1223): same idea, one axis over —
+            # thread the CorpusTask's family so the reporter can break
+            # solve-rate/$ out per family (``None`` for unclassified tasks).
+            family=task.family,
             # Wall-time per task (#980): carry the runner's measured wall-clock
             # so the report can surface wall-time per task per arm.
             wall_time_s=record.wall_time_s,
@@ -722,6 +736,7 @@ def run_spine(
             gate_passed=False,
             false_green=False,
             difficulty=task.difficulty,
+            family=task.family,
         )
         verdict = Verdict(
             task=task.name, arm=arm.name, solved=False, gate_passed=False, false_green=False

@@ -11,7 +11,7 @@
  *     total_input_tokens, total_output_tokens, total_cache_tokens,
  *     total_cache_creation_tokens, total_tokens, total_cost_usd,
  *     dollars_per_solved (number|null), gate_passed_count, false_green_count,
- *     false_green_rate (number|null), strata: [...] }
+ *     false_green_rate (number|null), strata: [...], family_strata: [...] }
  *
  * NULL-vs-0.0 is load-bearing: dollars_per_solved / false_green_rate may be null
  * (undefined denominator) and are persisted as NULL, never coalesced to 0.
@@ -41,6 +41,9 @@ interface RawEvalArmMetric {
   false_green_count: number;
   false_green_rate: number | null;
   strata?: Array<Record<string, unknown>>;
+  // Family-stratified breakdown (issue #1223 AC4) — same optional/parity
+  // contract as `strata` above, one axis over.
+  family_strata?: Array<Record<string, unknown>>;
 }
 
 function isNum(v: unknown): v is number {
@@ -75,7 +78,8 @@ function isRawEvalArmMetric(v: unknown): v is RawEvalArmMetric {
     isNum(o.gate_passed_count) &&
     isNum(o.false_green_count) &&
     isNullableNum(o.false_green_rate) &&
-    (o.strata === undefined || Array.isArray(o.strata))
+    (o.strata === undefined || Array.isArray(o.strata)) &&
+    (o.family_strata === undefined || Array.isArray(o.family_strata))
   );
 }
 
@@ -132,6 +136,7 @@ export async function POST(req: NextRequest) {
     falseGreenCount: r.false_green_count,
     falseGreenRate: r.false_green_rate,
     strata: r.strata ?? [],
+    familyStrata: r.family_strata ?? [],
   }));
 
   let accepted = 0;

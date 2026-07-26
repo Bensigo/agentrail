@@ -56,6 +56,19 @@ const valid = {
       dollars_per_solved: 0.1,
     },
   ],
+  // Family-stratified breakdown (issue #1223 AC4) — same shape/parity
+  // contract as `strata` above, one axis over.
+  family_strata: [
+    {
+      family: "bug",
+      repetitions: 4,
+      solved_count: 3,
+      failed_count: 1,
+      solve_rate: 0.75,
+      total_cost_usd: 0.2,
+      dollars_per_solved: 0.0667,
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -104,6 +117,7 @@ describe("POST /api/v1/ingest/eval-arm-metrics", () => {
           falseGreenCount: 1,
           falseGreenRate: 0.1111,
           strata: valid.strata,
+          familyStrata: valid.family_strata,
         },
       ],
     });
@@ -141,6 +155,22 @@ describe("POST /api/v1/ingest/eval-arm-metrics", () => {
       workspaceId: WS,
       rows: [expect.objectContaining({ strata: [] })],
     });
+  });
+
+  it("defaults missing family_strata to [] (issue #1223 AC4, pre-#1223 callers)", async () => {
+    const { family_strata: _omit, ...noFamilyStrata } = valid;
+    const res = await POST(req(noFamilyStrata));
+    expect(res.status).toBe(202);
+    expect(insertEvalArmMetrics).toHaveBeenCalledWith({
+      workspaceId: WS,
+      rows: [expect.objectContaining({ familyStrata: [] })],
+    });
+  });
+
+  it("400 when family_strata is present but not an array", async () => {
+    const res = await POST(req({ ...valid, family_strata: "not-an-array" }));
+    expect(res.status).toBe(400);
+    expect(insertEvalArmMetrics).not.toHaveBeenCalled();
   });
 
   it("400 on malformed row (missing required field)", async () => {

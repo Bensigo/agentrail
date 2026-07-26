@@ -55,6 +55,16 @@ export const evalArmMetrics = pgTable(
     falseGreenRate: doublePrecision("false_green_rate"),
     /** Difficulty-stratified breakdown (#941), stored verbatim from the reporter. */
     strata: jsonb("strata").$type<Array<Record<string, unknown>>>().default([]),
+    /**
+     * Family-stratified breakdown (issue #1223 AC4), stored verbatim from the
+     * reporter's `arm_metric_rows` — same shape/parity contract as `strata`
+     * above, one axis over (task family: bug/feature/refactor/test/infra
+     * instead of difficulty), so the console can slice solve-rate/$ by family
+     * without a second round-trip.
+     */
+    familyStrata: jsonb("family_strata")
+      .$type<Array<Record<string, unknown>>>()
+      .default([]),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -20,6 +20,16 @@ export const WORKSPACE_RUNS_DEFAULT_LIMIT = 50;
 /** Default page size for {@link getWorkspaceQueueEntries}. */
 export const WORKSPACE_QUEUE_ENTRIES_DEFAULT_LIMIT = 50;
 
+/**
+ * UUID validation pattern (8-4-4-4-12 hex, case-insensitive). Used in
+ * {@link findWorkspaceWorkByRef} to guard against Postgres "invalid input
+ * syntax for type uuid" errors when users pass non-UUID refs (e.g. issue
+ * numbers like "1468"). This is not cosmetic validation — skipping a
+ * non-UUID ref's run-by-id branch prevents the Postgres type error that
+ * would otherwise cause a 500 on the single most common input.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface WorkspaceRun {
   id: string;
   title: string | null;
@@ -123,27 +133,36 @@ export async function getWorkspaceQueueEntries(
  * never leak across workspaces, so this function performs no unscoped
  * lookup anywhere, at any point, to distinguish "wrong tenant" from
  * "doesn't exist".
+ *
+ * Only attempts the run-by-id lookup if `ref` is UUID-shaped; non-UUID refs
+ * skip that branch entirely to avoid Postgres "invalid input syntax for type
+ * uuid" errors on user-supplied refs.
  */
 export async function findWorkspaceWorkByRef(
   workspaceId: string,
   ref: string
 ): Promise<WorkspaceWorkByRef> {
-  const [runRows, queueRows] = await Promise.all([
-    db
-      .select(workspaceRunColumns)
-      .from(runs)
-      .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, ref)))
-      .limit(1),
-    db
-      .select(workspaceQueueEntryColumns)
-      .from(queueEntries)
-      .where(
-        and(
-          eq(queueEntries.workspaceId, workspaceId),
-          eq(queueEntries.externalId, ref)
-        )
-      ),
-  ]);
+  const isUuidShaped = UUID_PATTERN.test(ref);
+
+  const runPromise = isUuidShaped
+    ? db
+        .select(workspaceRunColumns)
+        .from(runs)
+        .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, ref)))
+        .limit(1)
+    : Promise.resolve([] as WorkspaceRun[]);
+
+  const queuePromise = db
+    .select(workspaceQueueEntryColumns)
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        eq(queueEntries.externalId, ref)
+      )
+    );
+
+  const [runRows, queueRows] = await Promise.all([runPromise, queuePromise]);
 
   return {
     runs: runRows as WorkspaceRun[],

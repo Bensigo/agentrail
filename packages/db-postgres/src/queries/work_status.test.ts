@@ -179,6 +179,7 @@ describe("getWorkspaceQueueEntries", () => {
 
 describe("findWorkspaceWorkByRef", () => {
   it("matches a run by id, scoped to the workspace — the run branch's WHERE is AND(workspaceId, id)", async () => {
+    const uuidRef = "123e4567-e89b-12d3-a456-426614174000";
     const runChain = makeChain("limit", [MOCK_RUN]);
     const queueChain = makeChain("where", []);
     let call = 0;
@@ -187,7 +188,7 @@ describe("findWorkspaceWorkByRef", () => {
       return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
     });
 
-    const result = await findWorkspaceWorkByRef("ws-1", "run-1");
+    const result = await findWorkspaceWorkByRef("ws-1", uuidRef);
 
     expect(result.runs).toEqual([MOCK_RUN]);
 
@@ -195,22 +196,19 @@ describe("findWorkspaceWorkByRef", () => {
       .calls[0]?.[0];
     expect(renderCondition(runWhereArgs)).toEqual(
       renderCondition(
-        and(eq(runs.workspaceId, "ws-1"), eq(runs.id, "run-1"))
+        and(eq(runs.workspaceId, "ws-1"), eq(runs.id, uuidRef))
       )
     );
   });
 
   it("matches queue entries by externalId (e.g. \"1468\"), scoped to the workspace", async () => {
-    const runChain = makeChain("limit", []);
     const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
-    let call = 0;
-    mockDb.select = vi.fn(() => {
-      call += 1;
-      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
-    });
+    mockDb.select = vi.fn(() => queueChain as ReturnType<typeof db.select>);
 
     const result = await findWorkspaceWorkByRef("ws-1", "1468");
 
+    // Only one db.select call for non-UUID refs
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
     expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
 
     const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock
@@ -229,10 +227,11 @@ describe("findWorkspaceWorkByRef", () => {
   // return empty, indistinguishable from a ref that does not exist at all —
   // this function must never leak existence across tenants. Proven here by
   // pinning that the WHERE clause ALWAYS conjuncts the caller's workspaceId
-  // with the ref match, on both branches — a real database scoped this way
-  // returns zero rows for a foreign-workspace ref regardless of whether the
-  // underlying row exists in some other tenant.
-  it("never leaks existence across tenants: both branches' WHERE always conjuncts the caller's workspaceId with the ref match", async () => {
+  // with the ref match on every query that DOES run — a real database scoped
+  // this way returns zero rows for a foreign-workspace ref regardless of
+  // whether the underlying row exists in some other tenant.
+  it("never leaks existence across tenants: every query that runs has the caller's workspaceId conjuncted with the ref match", async () => {
+    const uuidRef = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     const runChain = makeChain("limit", []);
     const queueChain = makeChain("where", []);
     let call = 0;
@@ -241,10 +240,7 @@ describe("findWorkspaceWorkByRef", () => {
       return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
     });
 
-    const result = await findWorkspaceWorkByRef(
-      "ws-1",
-      "run-owned-by-another-workspace"
-    );
+    const result = await findWorkspaceWorkByRef("ws-1", uuidRef);
 
     expect(result).toEqual({ runs: [], queueEntries: [] });
 
@@ -252,10 +248,87 @@ describe("findWorkspaceWorkByRef", () => {
       .calls[0]?.[0];
     expect(renderCondition(runWhereArgs)).toEqual(
       renderCondition(
+        and(eq(runs.workspaceId, "ws-1"), eq(runs.id, uuidRef))
+      )
+    );
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(queueEntries.workspaceId, "ws-1"), eq(queueEntries.externalId, uuidRef))
+      )
+    );
+
+    // Neither branch's WHERE is a bare ref-only condition — the workspace
+    // scope is never dropped, which is the property that keeps existence
+    // from leaking across tenants.
+    expect(renderCondition(runWhereArgs)).not.toEqual(
+      renderCondition(eq(runs.id, uuidRef))
+    );
+    expect(renderCondition(queueWhereArgs)).not.toEqual(
+      renderCondition(eq(queueEntries.externalId, uuidRef))
+    );
+  });
+
+  it("returns { runs: [], queueEntries: [] } when nothing matches — for non-UUID refs, only queue query runs", async () => {
+    const queueChain = makeChain("where", []);
+    mockDb.select = vi.fn(() => queueChain as ReturnType<typeof db.select>);
+
+    const result = await findWorkspaceWorkByRef("ws-1", "unknown-ref");
+
+    // Only one select call for non-UUID ref
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ runs: [], queueEntries: [] });
+  });
+
+  it("does NOT issue a run-by-id query for non-UUID refs (e.g. issue numbers) — only queue-entry query", async () => {
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    mockDb.select = vi.fn(() => queueChain as ReturnType<typeof db.select>);
+
+    const result = await findWorkspaceWorkByRef("ws-1", "1468");
+
+    // Only one select call for the queue-entry branch
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+
+    expect(result.runs).toEqual([]);
+    expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
+
+    const queueWhereArgs = (queueChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(queueWhereArgs)).toEqual(
+      renderCondition(
         and(
-          eq(runs.workspaceId, "ws-1"),
-          eq(runs.id, "run-owned-by-another-workspace")
+          eq(queueEntries.workspaceId, "ws-1"),
+          eq(queueEntries.externalId, "1468")
         )
+      )
+    );
+  });
+
+  it("DOES issue both queries for UUID-shaped refs, both carrying the workspace predicate", async () => {
+    const runChain = makeChain("limit", [MOCK_RUN]);
+    const queueChain = makeChain("where", []);
+    let call = 0;
+    mockDb.select = vi.fn(() => {
+      call += 1;
+      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
+    });
+
+    const uuidRef = "123e4567-e89b-12d3-a456-426614174000";
+    const result = await findWorkspaceWorkByRef("ws-1", uuidRef);
+
+    // Both select calls issued
+    expect(mockDb.select).toHaveBeenCalledTimes(2);
+
+    expect(result.runs).toEqual([MOCK_RUN]);
+    expect(result.queueEntries).toEqual([]);
+
+    const runWhereArgs = (runChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(runWhereArgs)).toEqual(
+      renderCondition(
+        and(eq(runs.workspaceId, "ws-1"), eq(runs.id, uuidRef))
       )
     );
 
@@ -265,35 +338,21 @@ describe("findWorkspaceWorkByRef", () => {
       renderCondition(
         and(
           eq(queueEntries.workspaceId, "ws-1"),
-          eq(queueEntries.externalId, "run-owned-by-another-workspace")
+          eq(queueEntries.externalId, uuidRef)
         )
-      )
-    );
-
-    // Neither branch's WHERE is a bare ref-only condition — the workspace
-    // scope is never dropped, which is the property that keeps existence
-    // from leaking across tenants.
-    expect(renderCondition(runWhereArgs)).not.toEqual(
-      renderCondition(eq(runs.id, "run-owned-by-another-workspace"))
-    );
-    expect(renderCondition(queueWhereArgs)).not.toEqual(
-      renderCondition(
-        eq(queueEntries.externalId, "run-owned-by-another-workspace")
       )
     );
   });
 
-  it("returns { runs: [], queueEntries: [] } when nothing matches either branch", async () => {
-    const runChain = makeChain("limit", []);
-    const queueChain = makeChain("where", []);
-    let call = 0;
-    mockDb.select = vi.fn(() => {
-      call += 1;
-      return (call === 1 ? runChain : queueChain) as ReturnType<typeof db.select>;
-    });
+  it("returns { runs: [], queueEntries: [...] } for non-UUID refs: runs is an empty array, not undefined", async () => {
+    const queueChain = makeChain("where", [MOCK_QUEUE_ENTRY]);
+    mockDb.select = vi.fn(() => queueChain as ReturnType<typeof db.select>);
 
-    const result = await findWorkspaceWorkByRef("ws-1", "unknown-ref");
+    const result = await findWorkspaceWorkByRef("ws-1", "1468");
 
-    expect(result).toEqual({ runs: [], queueEntries: [] });
+    // runs array is empty, not undefined
+    expect(Array.isArray(result.runs)).toBe(true);
+    expect(result.runs.length).toBe(0);
+    expect(result.queueEntries).toEqual([MOCK_QUEUE_ENTRY]);
   });
 });

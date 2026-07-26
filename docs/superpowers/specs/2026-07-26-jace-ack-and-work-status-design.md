@@ -113,11 +113,39 @@ record, so nobody re-litigates it:
 So: **do not override `turn.failed` or `session.failed`.** The ack is stopped on
 the real `message.completed` and on `turn.completed`.
 
-**Known residual race, accepted.** A turn that fails in under 4s posts eve's
-error message, and the still-armed ack then fires at 4s — the user sees the error
-followed by `On it.` Cosmetic, narrow, and strictly better than losing eve's
-error reporting. If it proves annoying in practice, the follow-up is to override
-the failure handlers and re-author the error copy in Jace's own voice.
+**Known residual races, accepted.** Three, all cosmetic:
+
+1. A turn that fails in under 4s posts eve's error message, and the still-armed
+   ack then fires at 4s — the user sees the error followed by `On it.` Strictly
+   better than losing eve's error reporting. If it proves annoying, the follow-up
+   is to override the failure handlers and re-author the error copy in Jace's own
+   voice.
+2. eve's `authorization.required` park path returns without running its turn
+   epilogue, so it emits neither `turn.completed` nor `turn.failed` — the ack
+   would fire 4s after an auth prompt while the turn is genuinely blocked on the
+   user. **Currently unreachable**: Jace registers no eve authorization
+   challenges. It becomes reachable the moment connectors land, so whoever wires
+   the first one must disarm the ack on that event. (`input.requested` is fine —
+   it does run the epilogue.)
+3. On the success path, a reply landing in the few hundred ms after the timer has
+   already fired cannot be recalled by `stop`, so the answer can arrive just
+   before `On it.` Same class, much narrower.
+
+**Jace-initiated turns do not ack.** `run-outcome.ts` starts real eve turns via
+`args.receive(...)` to deliver terminal run outcomes — composing one is a full
+model turn and routinely exceeds 4s, which would produce an `On it.`
+acknowledging a message the user never sent. Filtering on "was this a
+`receive()` turn" is not available: *all* of Jace's hosted inbound is
+`receive()`-driven. So `run-outcome.ts` marks its hand-off with a
+`jaceProactive` auth attribute and every channel's `turn.started` consults one
+shared predicate before arming.
+
+**iMessage is deliberately not wired.** It is the channel that would benefit
+most — LoopMessage exposes no typing signal at all, so it has zero in-flight
+feedback today — but it is not configured in production and its wiring could not
+be verified live. Wiring an unverifiable dead channel adds risk without benefit.
+Wire it when LoopMessage is live; the ack module and the proactive predicate are
+channel-agnostic and need no change.
 
 **Verify during implementation:** whether eve also emits `turn.completed` after
 `turn.failed`. `protocol/message.js` constructs them as separate events and the

@@ -83,15 +83,18 @@ const CHANNELS: Record<string, unknown> = { telegram, discord, slack, imessage }
  * marker to reach the session, so this always returns an object rather than
  * only merging into one that already exists.
  */
-function withProactiveMarker(
-  auth: Record<string, unknown> | undefined,
-): Record<string, unknown> {
+// Takes `object` rather than `Record<string, unknown>` because that is what
+// normalizeRunOutcome's own JSDoc declares `auth` as, and `object` is not
+// assignable to an index-signature type — typing the parameter narrowly makes
+// the call sites fail with TS2345. The single cast inside is the narrowing.
+function withProactiveMarker(auth: object | undefined): Record<string, unknown> {
+  const record = (auth ?? {}) as Record<string, unknown>;
   const existingAttributes =
-    auth && typeof auth["attributes"] === "object" && auth["attributes"] !== null
-      ? (auth["attributes"] as Record<string, unknown>)
+    typeof record["attributes"] === "object" && record["attributes"] !== null
+      ? (record["attributes"] as Record<string, unknown>)
       : {};
   return {
-    ...(auth ?? {}),
+    ...record,
     attributes: { ...existingAttributes, [JACE_PROACTIVE_ATTRIBUTE]: true },
   };
 }

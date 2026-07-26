@@ -30,7 +30,7 @@
 // live delivery are verified against the running sidecar (#1038/#1101), behind the
 // per-workspace `jaceOwnsSlackNotify` opt-in.
 //
-// `events["message.completed"]` overrides Eve's default handler (which posts
+// The message.completed handler overrides Eve's default handler (which posts
 // the full reply as one message to the thread) to instead split it into
 // several bubbles on the model's own paragraph breaks — see
 // agent/lib/chat-split.core.mjs for why, and instructions.md's "Voice and
@@ -39,13 +39,32 @@
 // and empty-message turns behave unchanged. Delivery goes through
 // `channel.thread` (not `channel.slack`), matching Eve's own docs example —
 // `thread` owns the thread-scoped post/startTyping operations.
+//
+// The turn.started handler arms a one-shot silence ack (see
+// agent/lib/ack-on-silence.core.mjs) so a slow turn does not look dead in
+// the thread. Stopped on message.completed / turn.completed; deliberately
+// not stopped on turn.failed / session.failed — same rationale as
+// telegram.ts's header comment.
 import { slackChannel } from "eve/channels/slack";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
+import { createAckOnSilence, ACK_TEXT } from "../lib/ack-on-silence.core.mjs";
+
+const ack = createAckOnSilence();
+const convoKey = (ctx: { session?: { id?: string } }) =>
+  ctx?.session?.id ?? "slack";
 
 export default slackChannel({
   events: {
-    async "message.completed"(data, channel) {
+    "turn.started"(_data, channel, ctx) {
+      ack.start(convoKey(ctx), () => channel.thread.post(ACK_TEXT));
+    },
+    "turn.completed"(_data, _channel, ctx) {
+      ack.stop(convoKey(ctx));
+    },
+    async "message.completed"(data, channel, ctx) {
+      // Stop sits BELOW this guard — see telegram.ts's identical comment.
       if (data.finishReason === "tool-calls" || !data.message) return;
+      ack.stop(convoKey(ctx));
       const messages = splitIntoChatMessages(data.message);
       for (const [index, message] of messages.entries()) {
         if (index > 0) await channel.thread.startTyping();

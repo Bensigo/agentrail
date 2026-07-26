@@ -90,6 +90,29 @@ test("discord: the ack is delivered via deliverDiscordBubble, not a bare channel
 
 test("discord: imports deliverDiscordBubble alongside deliverDiscordReply", () => {
   const code = read("discord.ts");
-  assert.match(code, /deliverDiscordBubble/);
-  assert.match(code, /deliverDiscordReply/);
+  assert.match(
+    code,
+    /import\s*{[^}]*deliverDiscordBubble[^}]*deliverDiscordReply[^}]*}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']|import\s*{[^}]*deliverDiscordReply[^}]*deliverDiscordBubble[^}]*}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']/,
+  );
+});
+
+test("slack: the ack posts to the thread seam", () => {
+  const code = read("slack.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(turnStarted, /channel\.thread\.post\(\s*ACK_TEXT\s*\)/);
+});
+
+test("console: the ack posts through postConsoleChatReply, not a raw transport call", () => {
+  const code = read("console.ts");
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(turnStarted, /postConsoleChatReply\(/);
+  assert.match(turnStarted, /text:\s*ACK_TEXT/);
+  assert.match(turnStarted, /workspaceId:\s*channel\.state\.workspaceId/);
+  assert.match(turnStarted, /conversationKey:\s*channel\.state\.conversationKey/);
 });

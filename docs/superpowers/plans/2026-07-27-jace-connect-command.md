@@ -422,7 +422,7 @@ export interface RepinConversationWorkspaceInput {
 
 export type RepinConversationWorkspaceResult =
   | { ok: true; sessionId: string }
-  | { ok: false; reason: "not_reachable" | "moved" };
+  | { ok: false; reason: "not_reachable" | "moved" | "conflict" };
 
 /**
  * Move an already-pinned conversation to a different workspace.

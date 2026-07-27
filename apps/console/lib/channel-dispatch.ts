@@ -44,7 +44,12 @@ import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirm
 import { sendSystemDiscordMessage } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
-import { parseConnectCommand, decideConnectCommand, type ConnectCommandAction } from "./connect-command";
+import {
+  parseConnectCommand,
+  decideConnectCommand,
+  type ConnectCommandAction,
+  type WorkspaceRef,
+} from "./connect-command";
 import { renderConnectReply } from "./connect-command-copy";
 
 /**
@@ -560,6 +565,33 @@ async function ensureConnectLink(
 }
 
 /**
+ * After a pin/re-pin that did not land, report the state that ACTUALLY
+ * exists rather than the one we intended. Re-resolves exactly once — never
+ * retries in a loop — matching pinConversationWorkspace's own race contract:
+ * a caller must treat its result as "this call's write landed", never as
+ * "this workspace is now the exclusive answer".
+ */
+async function reportActualPin(
+  chatIdentityId: string,
+  row: { channel: string; conversationKey: string },
+  reachable: WorkspaceRef[]
+): Promise<ConnectCommandAction> {
+  const now = await resolveConversationWorkspace({
+    chatIdentityId,
+    channel: row.channel,
+    conversationKey: row.conversationKey,
+  });
+  const nowId = now.kind === "pinned" ? now.workspaceId : null;
+  if (!nowId) return { kind: "repin_refused" };
+  return {
+    kind: "already_pinned",
+    // null when we cannot reach it — never echo an unreachable workspace.
+    workspace: reachable.find((w) => w.id === nowId) ?? null,
+    alternatives: reachable.filter((w) => w.id !== nowId),
+  };
+}
+
+/**
  * Process exactly one claimed row end to end. NEVER throws: every failure
  * mode — malformed payload, no identity, sidecar down, an unexpected
  * exception anywhere in the chain — resolves to `"failed"` via
@@ -639,12 +671,18 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       if (action.kind === "send_link") {
         linkUrl = await ensureConnectLink(identity, chatIdentityId);
       } else if (action.kind === "pin") {
-        await pinConversationWorkspace({
+        const pinResult = await pinConversationWorkspace({
           chatIdentityId,
           channel: row.channel,
           conversationKey: row.conversationKey,
           workspaceId: action.workspace.id,
         });
+        // Lost a race (already_pinned_elsewhere) or unreachable: report the
+        // state that actually exists rather than echoing back the success
+        // copy for a pin that never landed.
+        if (!pinResult.ok) {
+          reportAction = await reportActualPin(chatIdentityId, row, reachable);
+        }
       } else if (action.kind === "repin") {
         const moved = await repinConversationWorkspace({
           chatIdentityId,
@@ -657,20 +695,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         // report the state that actually exists, never retry in a loop. Same
         // posture as pinConversationWorkspace's own race contract.
         if (!moved.ok) {
-          const now = await resolveConversationWorkspace({
-            chatIdentityId,
-            channel: row.channel,
-            conversationKey: row.conversationKey,
-          });
-          const nowId = now.kind === "pinned" ? now.workspaceId : null;
-          reportAction = nowId
-            ? {
-                kind: "already_pinned",
-                // null when we cannot reach it — never echo an unreachable id.
-                workspace: reachable.find((w) => w.id === nowId) ?? null,
-                alternatives: reachable.filter((w) => w.id !== nowId),
-              }
-            : { kind: "repin_refused" };
+          reportAction = await reportActualPin(chatIdentityId, row, reachable);
         }
       }
 

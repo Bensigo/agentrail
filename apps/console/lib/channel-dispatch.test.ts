@@ -535,6 +535,51 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
     expect(mockComplete).toHaveBeenCalledWith("row-1");
     expect(mockFail).not.toHaveBeenCalled();
   });
+
+  it("a lost pin race (pinConversationWorkspace ok:false, already_pinned_elsewhere) re-resolves ONCE and reports the DIFFERENT workspace actually pinned — never claims success for the one the user asked for", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve
+      // First resolve (inside command handling, to find any existing pin): none yet.
+      .mockResolvedValueOnce({ kind: "intro" } as never)
+      // Second resolve (reportActualPin's re-resolve after the failed pin):
+      // someone else won the race and it's actually pinned to Widgets.
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-2", sessionId: "s-2", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([
+      { id: "ws-1", name: "Acme" },
+      { id: "ws-2", name: "Widgets" },
+    ]);
+    mockPin.mockResolvedValue({ ok: false, reason: "already_pinned_elsewhere" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockResolve).toHaveBeenCalledTimes(2);
+    const [, replyArg] = mockSendSystem.mock.calls[0]!;
+    expect(replyArg).not.toContain("Connected to Acme");
+    expect(replyArg).toContain("This chat is connected to Widgets.");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+  });
+
+  it("a lost pin race where the re-resolve finds the conversation pinned to a workspace the identity CANNOT reach: nothing identifying about it leaks into the reply", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve
+      .mockResolvedValueOnce({ kind: "intro" } as never)
+      // Actually pinned to a workspace NOT in this identity's reachable set.
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-secret-99", sessionId: "s-3", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([{ id: "ws-1", name: "Acme" }]);
+    mockPin.mockResolvedValue({ ok: false, reason: "already_pinned_elsewhere" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const [, replyArg] = mockSendSystem.mock.calls[0]!;
+    expect(replyArg).not.toContain("ws-secret-99");
+    expect(replyArg).not.toContain("Connected to Acme");
+    expect(replyArg).toContain("This chat is connected to a workspace.");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+  });
 });
 
 describe("dispatchQueuedChannelMessages — 'intro' kind", () => {

@@ -6,13 +6,11 @@ is patched so these tests run without a real repo, gh CLI, or context index.
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agentrail.context.wiki import WIKI_MAX_COST_ENV
 from agentrail.run.context import (
     issue_resolution_text,
     build_pack,
@@ -24,11 +22,6 @@ from agentrail.run.context import (
     _MAX_SNIPPET_LINES,
     _MAX_TOTAL_CHARS,
 )
-# Reuses test_wiki.py's env-var contextmanagers (test_packs.py already
-# cross-imports these same helpers) instead of re-inventing a third copy of
-# "set an env var for the duration of a block, restore whatever was there
-# before" in this file.
-from agentrail.tests.context.test_wiki import _env, _wiki_on, _REPO_WIKI_FLAG
 
 
 class IssueResolutionTextTests(unittest.TestCase):
@@ -548,147 +541,6 @@ class BuildPackTests(unittest.TestCase):
         ):
             result = build_issue_context_pack(Path("/tmp/repo"), 42, "plan")
         self.assertIsNone(result)
-
-
-class BuildPackWikiHydrateTests(unittest.TestCase):
-    """Repo Wiki task-time-context spec, section A "Ingest on the run path"
-    (docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md):
-    build_pack() hydrates .agentrail/context/wiki/ from the linked server
-    beside its existing fetch_memory_snapshot() call, on the SAME contract —
-    gated on agentrail.context.wiki.repo_wiki_enabled(), every failure
-    non-fatal, and it zeroes the wiki's per-compile cost ceiling for the
-    duration of the build_context_pack call so compile_wiki (invoked lazily
-    inside build_index, which retrieval calls while building a pack) never
-    reaches the prose provider on a run.
-    """
-
-    def setUp(self) -> None:
-        # Belt-and-braces: never let a leaked env var from a prior test (or
-        # this process's real shell) make a test see the wrong gate/ceiling
-        # state. _wiki_on()/_env() already restore on exit, but tests that
-        # assert the ABSENCE of a var need a known-clean starting point too.
-        self._prev_flag = os.environ.pop(_REPO_WIKI_FLAG, None)
-        self._prev_ceiling = os.environ.pop(WIKI_MAX_COST_ENV, None)
-
-    def tearDown(self) -> None:
-        if self._prev_flag is None:
-            os.environ.pop(_REPO_WIKI_FLAG, None)
-        else:
-            os.environ[_REPO_WIKI_FLAG] = self._prev_flag
-        if self._prev_ceiling is None:
-            os.environ.pop(WIKI_MAX_COST_ENV, None)
-        else:
-            os.environ[WIKI_MAX_COST_ENV] = self._prev_ceiling
-
-    def test_hydrate_is_noop_when_flag_off(self) -> None:
-        """Flag OFF (the default, nothing set): build_pack must never resolve
-        an origin repo or call fetch_wiki_snapshot."""
-        fake_pack = {"jsonPath": "p.json"}
-        with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-             patch("agentrail.shared.git.origin_repo_full_name") as mock_origin, \
-             patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot") as mock_fetch:
-            result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-        self.assertEqual(result, "p.json")
-        mock_origin.assert_not_called()
-        mock_fetch.assert_not_called()
-
-    def test_flag_off_pack_build_makes_no_wiki_calls_at_all(self) -> None:
-        """Same guarantee, stated as the spec's own acceptance line: a
-        flag-OFF pack build makes ZERO wiki calls — hydrate AND the cost
-        ceiling never touch os.environ."""
-        fake_pack = {"jsonPath": "p.json"}
-        with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-             patch("agentrail.shared.git.origin_repo_full_name") as mock_origin, \
-             patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot") as mock_fetch:
-            build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-        mock_origin.assert_not_called()
-        mock_fetch.assert_not_called()
-        self.assertNotIn(WIKI_MAX_COST_ENV, os.environ)
-
-    def test_hydrate_fetches_when_flag_on_and_repo_linked(self) -> None:
-        with _wiki_on():
-            fake_pack = {"jsonPath": "p.json"}
-            with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value="acme/widgets") as mock_origin, \
-                 patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot", return_value=True) as mock_fetch:
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(result, "p.json")
-            mock_origin.assert_called_once_with(Path("/tmp/repo"))
-            mock_fetch.assert_called_once_with(Path("/tmp/repo"), "acme/widgets")
-
-    def test_hydrate_skips_fetch_when_repo_unlinked_to_github(self) -> None:
-        """origin_repo_full_name returning None (no origin remote, or not a
-        GitHub remote) means fetch_wiki_snapshot is never even called —
-        mirrors the CLI's `context index` hydrate call site."""
-        with _wiki_on():
-            fake_pack = {"jsonPath": "p.json"}
-            with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value=None), \
-                 patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot") as mock_fetch:
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(result, "p.json")
-            mock_fetch.assert_not_called()
-
-    def test_hydrate_transport_failure_does_not_fail_the_pack_build(self) -> None:
-        """fetch_wiki_snapshot raising (a failing server, a broken transport)
-        must never surface as a pack-build failure — non-fatal by contract,
-        same as fetch_memory_snapshot's precedent."""
-        with _wiki_on():
-            fake_pack = {"jsonPath": "p.json"}
-            with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value="acme/widgets"), \
-                 patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot", side_effect=RuntimeError("boom")):
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(result, "p.json")
-
-    def test_hydrate_unresolvable_origin_does_not_fail_the_pack_build(self) -> None:
-        """origin_repo_full_name itself raising (e.g. no git binary on PATH)
-        must also be swallowed — the "unlinked repo" failure mode named in
-        the spec's Testing section."""
-        with _wiki_on():
-            fake_pack = {"jsonPath": "p.json"}
-            with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", side_effect=FileNotFoundError("no git")), \
-                 patch("agentrail.context.wiki_fetch.fetch_wiki_snapshot") as mock_fetch:
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(result, "p.json")
-            mock_fetch.assert_not_called()
-
-    def test_ceiling_set_to_zero_during_build_and_restored_after(self) -> None:
-        """Section A "Runs never prompt the model": the ceiling must read
-        "0" from INSIDE build_context_pack (where retrieval's lazy
-        build_index -> compile_wiki call would see it), and be gone again
-        once build_pack returns."""
-        seen_during_build: dict = {}
-
-        def _fake_build_context_pack(*_args, **_kwargs):
-            seen_during_build["ceiling"] = os.environ.get(WIKI_MAX_COST_ENV)
-            return {"jsonPath": "p.json"}
-
-        with _wiki_on():
-            self.assertNotIn(WIKI_MAX_COST_ENV, os.environ)
-            with patch("agentrail.run.context.build_context_pack", side_effect=_fake_build_context_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value=None):
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(result, "p.json")
-            self.assertEqual(seen_during_build["ceiling"], "0")
-            self.assertNotIn(WIKI_MAX_COST_ENV, os.environ)
-
-    def test_ceiling_restores_a_prior_value_rather_than_just_clearing_it(self) -> None:
-        with _wiki_on(**{WIKI_MAX_COST_ENV: "2.50"}):
-            fake_pack = {"jsonPath": "p.json"}
-            with patch("agentrail.run.context.build_context_pack", return_value=fake_pack), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value=None):
-                build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertEqual(os.environ.get(WIKI_MAX_COST_ENV), "2.50")
-
-    def test_ceiling_restored_even_when_pack_build_raises(self) -> None:
-        with _wiki_on(**{WIKI_MAX_COST_ENV: "2.50"}):
-            with patch("agentrail.run.context.build_context_pack", side_effect=RuntimeError("boom")), \
-                 patch("agentrail.shared.git.origin_repo_full_name", return_value=None):
-                result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
-            self.assertIsNone(result)  # build_pack's own fail-open contract
-            self.assertEqual(os.environ.get(WIKI_MAX_COST_ENV), "2.50")
 
 
 if __name__ == "__main__":

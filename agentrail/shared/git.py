@@ -40,12 +40,14 @@ def current_commit_sha(root: Path) -> Optional[str]:
     return value or None
 
 
-# Moved here from agentrail.cli.commands.context (Repo Wiki task-time-context
-# spec, section A "Shared repo-full-name helper" —
-# docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md):
-# the run path (agentrail.run.context.build_pack) needs the EXACT SAME
-# owner/repo resolution the CLI's `context index` push path already had, so
-# a second copy of git-remote parsing would just be drift waiting to happen.
+# Moved here from agentrail.cli.commands.context (context source registry
+# spec, section G —
+# docs/superpowers/specs/2026-07-27-context-source-registry-design.md):
+# anything that talks to the server about a repo is scoped by owner/repo, so
+# the server-backed wiki source and CLI will need the EXACT SAME resolution
+# the CLI's `context index` push path already had. The CLI is still the only
+# caller today; this is a shared home ahead of a second one, because a second
+# copy of git-remote parsing would just be drift waiting to happen.
 # `agentrail.shared` is the right common home for both callers — neither the
 # run path nor the CLI should depend on the other, and this stays out of
 # agentrail.context on purpose (wiki_push.py's own docstring explicitly

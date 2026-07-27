@@ -27,11 +27,11 @@ from agentrail.context.client import _resolve_context_client
 # `origin` remote, needed because push_wiki_pages's wire contract is scoped
 # by repo FULL NAME, not id (agentrail/context/wiki_push.py's docstring),
 # while this CLI path only ever has a repository UUID via
-# .agentrail/server.json. Moved to agentrail.shared.git (Repo Wiki
-# task-time-context spec, section A — docs/superpowers/specs/2026-07-27-
-# repo-wiki-task-time-context-design.md): the run path
-# (agentrail.run.context.build_pack) needs this exact same resolution, so it
-# now lives in one shared place rather than a second private copy. Imported
+# .agentrail/server.json. Moved to agentrail.shared.git (context source
+# registry spec, section G — docs/superpowers/specs/2026-07-27-context-
+# source-registry-design.md): the server-backed wiki source and CLI will need
+# this exact same resolution, so it now lives in one shared place rather than
+# a private copy that a second caller would have to duplicate. Imported
 # under its old private name so every existing call site and test in this
 # module is untouched.
 from agentrail.shared.git import origin_repo_full_name as _origin_repo_full_name

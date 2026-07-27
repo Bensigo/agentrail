@@ -1,10 +1,10 @@
 """Tests for agentrail/shared/git.py's origin_repo_full_name.
 
-Repo Wiki task-time-context spec, section A "Shared repo-full-name helper"
-(docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md):
-this helper moved here from agentrail.cli.commands.context._origin_repo_full_name
-so both the CLI's `context index` push path and the run path
-(agentrail.run.context.build_pack) resolve a repo's owner/repo the same way.
+Context source registry spec, section G
+(docs/superpowers/specs/2026-07-27-context-source-registry-design.md): this
+helper moved here from agentrail.cli.commands.context._origin_repo_full_name
+so the CLI's `context index` push path and the coming server-backed wiki
+source resolve a repo's owner/repo the same way.
 
 These are the SAME six cases agentrail/tests/cli/test_context_cli.py's
 OriginRepoFullNameTests already exercised against the old private CLI

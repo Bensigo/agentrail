@@ -482,17 +482,18 @@ class CostCeilingTests(unittest.TestCase):
         self.assertEqual(report["pagesWritten"], 3)
 
     def test_zero_ceiling_makes_zero_prose_calls_and_ships_skeletons(self) -> None:
-        """A ceiling of 0 is the run path's spend guard (Repo Wiki
-        task-time-context spec, section A "Runs never prompt the model" --
-        docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md).
+        """A ceiling of 0 means zero provider calls, not one-then-stop.
 
         Unlike the nonzero case above -- where the FIRST call completes and
         crosses the ceiling -- ``_CostTracker.exceeded`` is ``total_usd >=
         ceiling``, so 0 reads as breached BEFORE the first page and not one
-        prose call is made. Every page still ships, skeleton-only. This is
-        what lets ``run/context.py``'s ``_wiki_run_hydrate`` wrap a whole
-        pack build without putting unbounded LLM spend inside a task, so it
-        is pinned here rather than left as an inference from the ``>=``.
+        prose call is made. Every page still ships, skeleton-only.
+
+        Pinned because the boundary is a real operational contract, not an
+        inference from the ``>=``: an operator setting the ceiling to 0
+        expects a structurally accurate wiki at exactly no spend, and the
+        difference between ">= (never calls)" and "> (one call, then stops)"
+        is invisible at every other ceiling value.
         """
         mock_dir = Path(tempfile.mkdtemp())
         command = _write_mock(mock_dir)

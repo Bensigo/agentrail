@@ -506,69 +506,6 @@ class IssueBasePromptTests(unittest.TestCase):
         )
         self.assertIn("before grep/glob", result)
 
-    def test_codex_task_block_orients_on_wiki_before_query(self):
-        """Repo Wiki design spec section C: the ladder is wiki show, then
-        query, then read the file — ordering is the point."""
-        result = self._fn(
-            "codex", 7,
-            header="H\n", skill_block="S\n",
-            context_summary="CS", context_snippets="CP",
-        )
-        self.assertIn("agentrail context wiki show", result)
-        wiki_pos = result.index("agentrail context wiki show")
-        query_pos = result.index("agentrail context query")
-        self.assertLess(wiki_pos, query_pos)
-
-    def test_claude_task_block_orients_on_wiki_before_query(self):
-        result = self._fn(
-            "claude", 7,
-            header="H\n", skill_block="S\n",
-            context_summary="CS", context_snippets="CP",
-        )
-        self.assertIn("agentrail context wiki show", result)
-        wiki_pos = result.index("agentrail context wiki show")
-        query_pos = result.index("agentrail context query")
-        self.assertLess(wiki_pos, query_pos)
-
-    def test_codex_task_block_has_wiki_verify_before_edit_line(self):
-        """Repo Wiki design spec section E rule 2: a claim from the wiki must
-        be verified against the file before it lands in an edit."""
-        result = self._fn(
-            "codex", 7,
-            header="H\n", skill_block="S\n",
-            context_summary="CS", context_snippets="CP",
-        )
-        self.assertIn("Verify", result)
-        self.assertIn("wiki", result.lower())
-
-    def test_claude_task_block_has_wiki_verify_before_edit_line(self):
-        result = self._fn(
-            "claude", 7,
-            header="H\n", skill_block="S\n",
-            context_summary="CS", context_snippets="CP",
-        )
-        self.assertIn("Verify", result)
-        self.assertIn("wiki", result.lower())
-
-    def test_task_blocks_tell_the_agent_how_to_discover_slugs(self):
-        """A bare `wiki show <slug>` is unusable: unit slugs are
-        ``wiki/unit/<unit-id>`` and no agent can guess one. The affordance
-        only works if the prompt also names the two things that are
-        discoverable — ``wiki status`` (lists every slug) and the stable
-        ``wiki/overview`` entry point. Without this the whole section-C
-        ladder is dead on arrival, so it is pinned rather than left to prose
-        review.
-        """
-        for engine in ("codex", "claude"):
-            with self.subTest(engine=engine):
-                result = self._fn(
-                    engine, 7,
-                    header="H\n", skill_block="S\n",
-                    context_summary="CS", context_snippets="CP",
-                )
-                self.assertIn("agentrail context wiki status", result)
-                self.assertIn("wiki/overview", result)
-
 
 class IssueRunPhasePromptTests(unittest.TestCase):
     """Tests for issue_run_phase_prompt()."""

@@ -9,11 +9,9 @@ Legacy reference: scripts/agentrail-legacy lines 4837-4916.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 from agentrail.context.memory_fetch import fetch_memory_snapshot
 from agentrail.context.packs import build_context_pack
@@ -37,86 +35,6 @@ def issue_resolution_text(target_dir: Path, issue: int) -> str:
     return text or f"GitHub issue #{issue}"
 
 
-@contextmanager
-def _wiki_run_hydrate(target_dir: Path) -> Iterator[None]:
-    """Hydrate the wiki + zero its per-compile cost ceiling for one
-    ``build_context_pack`` call (Repo Wiki task-time-context spec, section A
-    "Ingest on the run path" —
-    docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md).
-
-    Same contract as :func:`fetch_memory_snapshot`'s call site right above
-    this function, plus the run-only cost guard the memory precedent has no
-    equivalent of:
-
-    * **Gated** on the SAME rollout flag ``build_index`` itself checks
-      (``agentrail.context.wiki.repo_wiki_enabled()``) — flag OFF (the
-      default) is a pure no-op, no origin-remote resolution, no
-      ``fetch_wiki_snapshot`` call, no env var touched.
-    * **Non-fatal.** Resolving the repo's ``owner/repo`` (an unlinked repo,
-      no origin remote, or a non-GitHub remote) and the fetch itself
-      (failing server, missing route) are wrapped in one ``try/except`` —
-      mirrors ``fetch_wiki_snapshot``'s own fail-open contract defensively,
-      the same way ``context/index.py``'s ``compile_wiki`` call wraps an
-      already-fail-open function again so a bug anywhere in the chain can
-      never surface as a pack-build failure.
-    * **TTL-deduped.** ``fetch_wiki_snapshot`` reuses its own local-cache TTL
-      (``WIKI_SNAPSHOT_TTL_SECONDS``, 300s) exactly like
-      ``fetch_memory_snapshot`` — a run builds several packs (plan/execute/
-      verify, JIT gather), each calling this, but the network round trip
-      happens about once per run, not once per pack.
-    * **Runs never prompt the model.** ``compile_wiki`` runs lazily inside
-      ``build_index``, which ``build_context_pack`` reaches through
-      retrieval — this context manager wraps that ENTIRE call (not just the
-      hydrate step) so the ceiling is in place for whatever ``build_index``
-      does inside it. Setting ``WIKI_MAX_COST_ENV`` to ``"0"`` makes
-      ``_CostTracker.exceeded`` (``total_usd >= ceiling``,
-      ``agentrail/context/wiki.py`` ~L676) true before the first page, so
-      every drifted page ships skeleton-only with zero provider calls, and
-      unchanged pages still take the existing byte-identical hash-reuse
-      path. Compilation-with-real-prose stays the onboarder's and the
-      push-recompile webhook's job, never the run path's.
-
-    Restore shape (temp env set + restore, including restoring a
-    pre-existing value) mirrors
-    ``agentrail.runner.onboard._wiki_onboard_env``'s ``_temp_env`` exactly.
-
-    Importing ``agentrail.context.wiki_fetch`` (the module that actually
-    talks to the network) only inside the flag-ON branch keeps that specific
-    import lazy; ``agentrail.context.wiki`` itself is already imported
-    transitively the moment this module loads (``agentrail.context.packs``
-    imports it unconditionally at module scope to pin the compiled overview
-    page into every pack — spec section B), so checking
-    ``repo_wiki_enabled()`` here costs nothing extra either way.
-    """
-    from agentrail.context.wiki import repo_wiki_enabled
-
-    if not repo_wiki_enabled():
-        yield
-        return
-
-    from agentrail.context.wiki import WIKI_MAX_COST_ENV
-    from agentrail.shared.git import origin_repo_full_name
-
-    try:
-        repo_full_name = origin_repo_full_name(target_dir)
-        if repo_full_name:
-            from agentrail.context.wiki_fetch import fetch_wiki_snapshot
-
-            fetch_wiki_snapshot(target_dir, repo_full_name)
-    except Exception:  # noqa: BLE001 - hydration must never fail a pack build
-        pass
-
-    prev_ceiling = os.environ.get(WIKI_MAX_COST_ENV)
-    os.environ[WIKI_MAX_COST_ENV] = "0"
-    try:
-        yield
-    finally:
-        if prev_ceiling is None:
-            os.environ.pop(WIKI_MAX_COST_ENV, None)
-        else:
-            os.environ[WIKI_MAX_COST_ENV] = prev_ceiling
-
-
 def build_pack(target_dir: Path, kind: str, number: int, phase: str, *, run_id: Optional[str] = None) -> Optional[str]:
     """Build a context pack for any target kind ('issue'|'pr'); return relative jsonPath
     or None on failure. Mirrors legacy build_context_pack_file.
@@ -126,15 +44,10 @@ def build_pack(target_dir: Path, kind: str, number: int, phase: str, *, run_id: 
     don't pass ``memory_items`` — reads real Postgres rows on a live run. The
     fetch is non-fatal and TTL-cached (~once per run); an unlinked repo or a
     failed fetch just leaves the lane stale or empty, never fails the build.
-
-    Also hydrates the repo wiki and zeroes its per-compile cost ceiling for
-    the duration of the ``build_context_pack`` call — see
-    :func:`_wiki_run_hydrate`.
     """
     fetch_memory_snapshot(target_dir)
     try:
-        with _wiki_run_hydrate(target_dir):
-            pack = build_context_pack(target_dir, kind, number, phase, run_id=run_id)
+        pack = build_context_pack(target_dir, kind, number, phase, run_id=run_id)
     except Exception:
         return None
     return pack.get("jsonPath")

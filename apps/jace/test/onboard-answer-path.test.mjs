@@ -31,12 +31,16 @@
 // separation, the honest onboarding-index fallback, no approval change) are
 // unaffected and still hold.
 //
-// UPDATE (docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-
-// design.md §D/§E rule 2): the wiki instruction now also covers grounding a
+// UPDATE (2026-07-27): the wiki instruction now also covers grounding a
 // DRAFT, not just answering a question — read the relevant unit page before
 // `emit-issue-brief` and before publishing a PRD's slices, and verify a
 // wiki-sourced claim before it becomes an acceptance criterion. Both are
 // prompt-only additions; no tool, gating, or read-only framing changed.
+//
+// This half is independent of how the CONTEXT ENGINE consumes the wiki (see
+// docs/superpowers/specs/2026-07-27-context-source-registry-design.md §J):
+// `fetch_repo_wiki` reads the server directly, so Jace's grounding needs
+// nothing from the clone and survives the registry work unchanged.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

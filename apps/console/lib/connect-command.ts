@@ -32,3 +32,74 @@ export function parseConnectCommand(text: string): {
   const arg = firstSpace === -1 ? "" : stripped.slice(firstSpace).trim();
   return { isCommand: true, arg };
 }
+
+export interface WorkspaceRef {
+  id: string;
+  name: string;
+}
+
+/** The current pin. `name` is null when the requester cannot reach it — in
+ * that case nothing about it may be echoed back (see `repin_refused`). */
+export interface PinnedRef {
+  id: string;
+  name: string | null;
+}
+
+export type ConnectCommandAction =
+  | { kind: "send_link" }
+  | { kind: "no_workspaces" }
+  | { kind: "pin"; workspace: WorkspaceRef }
+  | { kind: "repin"; from: WorkspaceRef; to: WorkspaceRef }
+  | { kind: "repin_refused" }
+  | { kind: "already_pinned"; workspace: PinnedRef; alternatives: WorkspaceRef[] }
+  | { kind: "choose"; options: WorkspaceRef[] }
+  | { kind: "unknown_workspace"; options: WorkspaceRef[] };
+
+export interface DecideConnectCommandInput {
+  arg: string;
+  identity: { userId: string | null };
+  pinned: PinnedRef | null;
+  reachable: WorkspaceRef[];
+}
+
+/** Exact, case-insensitive name match. Returns null for zero OR 2+ matches —
+ * an ambiguous name must re-render the list, never silently pick one. */
+function matchWorkspace(arg: string, reachable: WorkspaceRef[]): WorkspaceRef | null {
+  const wanted = arg.trim().toLowerCase();
+  if (!wanted) return null;
+  const hits = reachable.filter((w) => w.name.toLowerCase() === wanted);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+export function decideConnectCommand(
+  input: DecideConnectCommandInput
+): ConnectCommandAction {
+  const { arg, identity, pinned, reachable } = input;
+
+  // Account linking always comes first — the arg is meaningless until we know
+  // which user this chat account belongs to.
+  if (identity.userId == null) return { kind: "send_link" };
+  if (reachable.length === 0) return { kind: "no_workspaces" };
+
+  const target = arg ? matchWorkspace(arg, reachable) : null;
+  if (arg && !target) return { kind: "unknown_workspace", options: reachable };
+
+  if (!pinned) {
+    if (target) return { kind: "pin", workspace: target };
+    if (reachable.length === 1) return { kind: "pin", workspace: reachable[0]! };
+    return { kind: "choose", options: reachable };
+  }
+
+  const alternatives = reachable.filter((w) => w.id !== pinned.id);
+  if (!target || target.id === pinned.id) {
+    return { kind: "already_pinned", workspace: pinned, alternatives };
+  }
+
+  // Authority rule: you may move a conversation BETWEEN workspaces you have
+  // standing in, but you may not move one out of a workspace you are a
+  // stranger to. `pinned.name` is non-null exactly when it is reachable.
+  const current = reachable.find((w) => w.id === pinned.id);
+  if (!current) return { kind: "repin_refused" };
+
+  return { kind: "repin", from: current, to: target };
+}

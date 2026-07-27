@@ -158,4 +158,80 @@ describe("repinConversationWorkspace", () => {
       )
     );
   });
+
+  it("calls db.update with jaceSessions, not some other table", async () => {
+    // A wrong-table update would satisfy every other assertion in this file
+    // (they only inspect the chained where/set/returning calls) without this
+    // one checking what `db.update(...)` itself was invoked with.
+    mockListWorkspaces.mockResolvedValueOnce([
+      { id: "ws-1", name: "Acme" },
+      { id: "ws-2", name: "Beta" },
+    ]);
+    const updateChain = makeChain("returning", [{ id: "session-1" }]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    await repinConversationWorkspace({
+      chatIdentityId: "chat-identity-1",
+      channel: "telegram",
+      conversationKey: "tg-chat-77",
+      fromWorkspaceId: "ws-1",
+      toWorkspaceId: "ws-2",
+    });
+
+    expect(mockDb.update).toHaveBeenCalledWith(jaceSessions);
+  });
+
+  it("returns conflict (not a rejected promise) when the UPDATE hits the unique constraint", async () => {
+    // Finding 1: a row already anchored at (toWorkspaceId, channel,
+    // conversationKey) makes the UPDATE violate
+    // jace_sessions_conversation_unique. The driver rejects with a
+    // 23505-coded error; repinConversationWorkspace must catch it and return
+    // a clean refusal instead of letting the rejection propagate.
+    mockListWorkspaces.mockResolvedValueOnce([
+      { id: "ws-1", name: "Acme" },
+      { id: "ws-2", name: "Beta" },
+    ]);
+    const updateChain: Record<string, unknown> = {};
+    for (const m of ["where", "set"]) {
+      updateChain[m] = vi.fn(() => updateChain);
+    }
+    updateChain.returning = vi.fn(() =>
+      Promise.reject({ code: "23505", message: "duplicate key value" })
+    );
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    await expect(
+      repinConversationWorkspace({
+        chatIdentityId: "chat-identity-1",
+        channel: "telegram",
+        conversationKey: "tg-chat-77",
+        fromWorkspaceId: "ws-1",
+        toWorkspaceId: "ws-2",
+      })
+    ).resolves.toEqual({ ok: false, reason: "conflict" });
+  });
+
+  it("re-throws a non-23505 database error rather than swallowing it into a union member", async () => {
+    mockListWorkspaces.mockResolvedValueOnce([
+      { id: "ws-1", name: "Acme" },
+      { id: "ws-2", name: "Beta" },
+    ]);
+    const updateChain: Record<string, unknown> = {};
+    for (const m of ["where", "set"]) {
+      updateChain[m] = vi.fn(() => updateChain);
+    }
+    const dbError = new Error("connection reset");
+    updateChain.returning = vi.fn(() => Promise.reject(dbError));
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    await expect(
+      repinConversationWorkspace({
+        chatIdentityId: "chat-identity-1",
+        channel: "telegram",
+        conversationKey: "tg-chat-77",
+        fromWorkspaceId: "ws-1",
+        toWorkspaceId: "ws-2",
+      })
+    ).rejects.toBe(dbError);
+  });
 });

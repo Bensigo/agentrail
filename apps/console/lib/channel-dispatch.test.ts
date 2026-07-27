@@ -467,6 +467,33 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
     errorSpy.mockRestore();
   });
 
+  it("'/connect' takes precedence over an in-flight 'ask' — the ask branch's numbered-list re-send must NOT swallow the command (reviewer Important #2)", async () => {
+    const ASK_OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    // The conversation is mid-'ask' (2+ reachable workspaces, no pin yet) —
+    // parseWorkspaceChoice("/connect", options) would match NEITHER a name
+    // nor a numeric index, so if the 'ask' branch ran first it would
+    // silently re-send its numbered list and complete the row, never
+    // reaching the '/connect' handling at all.
+    mockResolve.mockResolvedValue({ kind: "ask", options: ASK_OPTIONS } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue(ASK_OPTIONS);
+
+    await dispatchQueuedChannelMessages();
+
+    // Only the '/connect' path calls this — proves that branch actually ran.
+    expect(mockListWorkspacesForChatIdentity).toHaveBeenCalledWith("chat-connect-1");
+    // The '/connect' "choose" copy — distinct wording from the 'ask' branch's
+    // "Which one is this about?" numbered-list re-send.
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Which workspace should this chat use?\n- Acme\n- Widgets\n\nSend /connect <name>.",
+      undefined,
+    );
+    expect(mockPin).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
   it("a linked identity with no reachable workspaces gets the no_workspaces reply and the row is completed", async () => {
     mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(linkedIdentity());
@@ -476,9 +503,30 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
     await dispatchQueuedChannelMessages();
 
     expect(mockPin).not.toHaveBeenCalled();
+    // Tightened (reviewer Minor #9): assert the resolved URL actually
+    // appears, not merely that SOME text follows "Create one at" — the
+    // previous `stringContaining` alone would still pass with an empty gap
+    // where the URL should be.
     expect(mockSendSystem).toHaveBeenCalledWith(
       "-100123",
-      expect.stringContaining("Create one at"),
+      `Your account is connected, but you're not in a workspace yet. Create one at ${CONSOLE_PUBLIC_URL}, then send /connect again.`,
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("no_workspaces falls back to 'the console' when CONSOLE_PUBLIC_URL is an EMPTY STRING (the stock .env.example deploy state, not merely unset — reviewer Important #1 / Minor #9)", async () => {
+    process.env["CONSOLE_PUBLIC_URL"] = "";
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([]);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Your account is connected, but you're not in a workspace yet. Create one at the console, then send /connect again.",
       undefined,
     );
     expect(mockComplete).toHaveBeenCalledWith("row-1");
@@ -579,6 +627,64 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
     expect(replyArg).toContain("This chat is connected to a workspace.");
     expect(mockComplete).toHaveBeenCalledWith("row-1");
     expect(mockFail).not.toHaveBeenCalled();
+  });
+
+  // reviewer Important #3: the headline production case this feature exists
+  // to repair — a conversation ALREADY pinned (via `resolveConversationWorkspace`,
+  // not a race) to a workspace this identity cannot reach. Line 657's
+  // `?? { id: pinnedId, name: null }` is the only entry point that lets an
+  // unreachable pinned id reach `decideConnectCommand` at all; mutating it to
+  // `?? null` makes `pinned` look like "no pin exists yet" and silently
+  // attempts a NEW pin instead of refusing.
+  describe("'/connect' against a conversation pinned to a workspace this identity CANNOT reach (reviewer Important #3)", () => {
+    const UNREACHABLE_PINNED_ID = "ws-secret-99";
+    const REACHABLE = [{ id: "ws-1", name: "Acme" }];
+
+    it("bare '/connect': the reply says the chat is connected to A workspace, and leaks neither the unreachable id nor its name", async () => {
+      mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+      mockResolve.mockResolvedValue({
+        kind: "pinned",
+        workspaceId: UNREACHABLE_PINNED_ID,
+        sessionId: "s-1",
+        ambiguous: false,
+      } as never);
+      mockListWorkspacesForChatIdentity.mockResolvedValue(REACHABLE);
+
+      await dispatchQueuedChannelMessages();
+
+      expect(mockPin).not.toHaveBeenCalled();
+      expect(mockRepin).not.toHaveBeenCalled();
+      const [, replyArg] = mockSendSystem.mock.calls[0]!;
+      expect(replyArg).toContain("This chat is connected to a workspace");
+      expect(replyArg).not.toContain(UNREACHABLE_PINNED_ID);
+      expect(mockComplete).toHaveBeenCalledWith("row-1");
+      expect(mockFail).not.toHaveBeenCalled();
+    });
+
+    it("'/connect <reachable name>': refused (authority rule — you cannot move a conversation OUT of a workspace you're a stranger to), and NO pin/repin write is attempted", async () => {
+      mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+      mockResolve.mockResolvedValue({
+        kind: "pinned",
+        workspaceId: UNREACHABLE_PINNED_ID,
+        sessionId: "s-1",
+        ambiguous: false,
+      } as never);
+      mockListWorkspacesForChatIdentity.mockResolvedValue(REACHABLE);
+
+      await dispatchQueuedChannelMessages();
+
+      expect(mockPin).not.toHaveBeenCalled();
+      expect(mockRepin).not.toHaveBeenCalled();
+      expect(mockSendSystem).toHaveBeenCalledWith(
+        "-100123",
+        "This chat is already connected to a workspace you're not a member of, so I can't move it. Someone who is a member can, or you can change it in the console.",
+        undefined,
+      );
+      expect(mockComplete).toHaveBeenCalledWith("row-1");
+      expect(mockFail).not.toHaveBeenCalled();
+    });
   });
 });
 

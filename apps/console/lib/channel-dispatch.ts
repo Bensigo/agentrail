@@ -531,18 +531,33 @@ const LINK_TOKEN_BYTES = 24;
 const LINK_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 /**
+ * Resolve CONSOLE_PUBLIC_URL exactly ONCE per row, trimmed with any trailing
+ * slash(es) stripped. A stock deploy ships `.env.example`'s
+ * `CONSOLE_PUBLIC_URL=` loaded via `env_file` in
+ * deploy/docker-compose.prod.yml — an EMPTY string, not an unset var — so
+ * `??` alone (nullish-only) is not enough; both call sites below (the
+ * `ensureConnectLink` link-building path and the `no_workspaces` copy) must
+ * treat that empty string identically, which is why they both read this ONE
+ * resolved value rather than each reading `process.env` independently.
+ */
+function resolveConsolePublicUrl(): string {
+  return (process.env["CONSOLE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+}
+
+/**
  * Return a usable connect URL for this identity, re-sending an existing
  * unexpired token rather than minting a new one. Re-minting is last-write-wins
  * (`setChatIdentityLinkToken`), so a fresh mint would silently kill a link the
  * user is about to tap; re-sending is idempotent and self-rate-limits repeated
- * /connect. Returns undefined when CONSOLE_PUBLIC_URL is unset or the write
+ * /connect. Returns undefined when `base` (the caller's already-resolved
+ * CONSOLE_PUBLIC_URL, see `resolveConsolePublicUrl`) is empty or the write
  * fails — the caller renders honest failure copy rather than a broken link.
  */
 async function ensureConnectLink(
   identity: { linkToken: string | null; linkTokenExpiresAt: Date | null },
-  chatIdentityId: string
+  chatIdentityId: string,
+  base: string
 ): Promise<string | undefined> {
-  const base = (process.env["CONSOLE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
   if (!base) return undefined;
 
   const live =
@@ -651,6 +666,10 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
     // not a repair path. Deterministic string match, never the model.
     const command = parseConnectCommand(payload.text);
     if (command.isCommand) {
+      // Resolved ONCE here, per `resolveConsolePublicUrl`'s doc-comment — both
+      // the link-building path below and the reply's `consoleUrl` fallback
+      // read this SAME local, never two independent `process.env` reads.
+      const consolePublicUrl = resolveConsolePublicUrl();
       const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
       const pinnedId = decision.kind === "pinned" ? decision.workspaceId : null;
       const pinned = pinnedId
@@ -669,7 +688,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
 
       let linkUrl: string | undefined;
       if (action.kind === "send_link") {
-        linkUrl = await ensureConnectLink(identity, chatIdentityId);
+        linkUrl = await ensureConnectLink(identity, chatIdentityId, consolePublicUrl);
       } else if (action.kind === "pin") {
         const pinResult = await pinConversationWorkspace({
           chatIdentityId,
@@ -704,7 +723,11 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         String(payload.chatId),
         renderConnectReply(reportAction, {
           linkUrl,
-          consoleUrl: process.env["CONSOLE_PUBLIC_URL"] ?? "the console",
+          // `||`, not `??` — an empty string (the stock-deploy case; see
+          // resolveConsolePublicUrl's doc-comment) must fall back the same
+          // way an unset var does, or the no_workspaces copy renders "Create
+          // one at , then send /connect again."
+          consoleUrl: consolePublicUrl || "the console",
         }),
         payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
       );

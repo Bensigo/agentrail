@@ -79,13 +79,23 @@ class _StubSource:
 
 
 class FlagTests(unittest.TestCase):
-    def test_default_is_off(self) -> None:
+    def test_default_is_on(self) -> None:
+        """Inverted from the package's usual default-OFF convention on
+        purpose. With `code` as the only source there is no behaviour change
+        to protect against, and default-OFF would leave the thread pool,
+        fail-open path, and provenance unexercised until the day a second
+        source lands — flipping the seam and the source together, with no way
+        to tell which one moved a metric."""
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(REGISTRY_ENV, None)
-            self.assertFalse(registry_enabled())
+            self.assertTrue(registry_enabled())
 
-    def test_only_exactly_one_turns_it_on(self) -> None:
-        for raw, expected in (("1", True), (" 1 ", True), ("true", False), ("yes", False), ("0", False), ("", False)):
+    def test_only_an_explicit_zero_turns_it_off(self) -> None:
+        """The escape hatch has to be unambiguous: an incident or a bisect
+        sets 0 and gets the direct query_context call back without a deploy.
+        Nothing else reads as off — an empty or misspelled value must not
+        silently disable retrieval plumbing."""
+        for raw, expected in (("0", False), (" 0 ", False), ("1", True), ("", True), ("true", True), ("no", True)):
             with self.subTest(raw=raw), mock.patch.dict(os.environ, {REGISTRY_ENV: raw}):
                 self.assertEqual(registry_enabled(), expected)
 
@@ -219,10 +229,7 @@ class ByteIdenticalPackTests(unittest.TestCase):
         ordering, not by the registry. Distinct ids give both builds the same
         empty prior state; the id itself is then normalized out.
         """
-        env = {REGISTRY_ENV: "1"} if registry_on else {}
-        with mock.patch.dict(os.environ, env, clear=False):
-            if not registry_on:
-                os.environ.pop(REGISTRY_ENV, None)
+        with mock.patch.dict(os.environ, {REGISTRY_ENV: "1" if registry_on else "0"}):
             pack = build_context_pack(self.root, "issue", 9, "plan", run_id=run_id)
         return json.dumps(_stable(pack), sort_keys=True).replace(run_id, "RUN_ID")
 
@@ -234,19 +241,21 @@ class ByteIdenticalPackTests(unittest.TestCase):
             "the registry's code-only path must not change a single pack field",
         )
 
-    def test_the_flag_actually_routed_through_the_registry(self) -> None:
+    def test_the_default_routes_through_the_registry(self) -> None:
         """Guards the test above from passing vacuously: if the flag were
-        ignored, both branches would trivially match."""
-        with mock.patch.dict(os.environ, {REGISTRY_ENV: "1"}), \
-             mock.patch.object(source_registry, "query_sources", wraps=source_registry.query_sources) as spied:
-            build_context_pack(self.root, "issue", 9, "plan", run_id="fixed-run")
-        spied.assert_called_once()
-
-    def test_flag_off_never_touches_the_registry(self) -> None:
+        ignored, both branches would trivially match. Also pins that an
+        UNSET env — what production actually runs with — takes the registry
+        path, not just an explicit "1"."""
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(REGISTRY_ENV, None)
-            with mock.patch.object(source_registry, "query_sources") as spied:
+            with mock.patch.object(source_registry, "query_sources", wraps=source_registry.query_sources) as spied:
                 build_context_pack(self.root, "issue", 9, "plan", run_id="fixed-run")
+        spied.assert_called_once()
+
+    def test_the_escape_hatch_bypasses_the_registry_entirely(self) -> None:
+        with mock.patch.dict(os.environ, {REGISTRY_ENV: "0"}), \
+             mock.patch.object(source_registry, "query_sources") as spied:
+            build_context_pack(self.root, "issue", 9, "plan", run_id="fixed-run")
         spied.assert_not_called()
 
 

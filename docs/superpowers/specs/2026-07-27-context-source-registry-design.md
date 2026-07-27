@@ -244,7 +244,13 @@ cannot reward an orientation layer (audit finding, 2026-07-23).
 4. **The `wiki` source** and the planner's source weights. Run the gate.
 5. **Migrate the memory lane** into the registry, as its own change.
 
-Steps 3–5 each carry a flag defaulting off.
+Step 3's flag (`AGENTRAIL_CONTEXT_SOURCE_REGISTRY`) defaults **ON**, opt-out
+via `=0`. It is the one place the usual default-OFF convention is inverted,
+because with `code` as the only source there is no behaviour change to protect
+against — the branches are byte-identical — and default-OFF would leave the
+seam unexercised in production until the day a second source lands, flipping
+both at once with no way to attribute a metric move. Steps 4 and 5 carry
+flags defaulting off, where a real behaviour change does exist.
 
 ## Open questions
 

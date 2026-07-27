@@ -52,13 +52,30 @@ SOURCE_TIMEOUT_SECONDS = 20.0
 
 
 def registry_enabled() -> bool:
-    """Is the source registry ON for this process? DEFAULT OFF.
+    """Is the source registry ON for this process? DEFAULT ON, opt-out.
 
-    Same convention as every other rollout flag in this package: explicitly
-    ``"1"`` and nothing else. Flag OFF means ``build_context_pack`` calls
-    ``query_context`` directly, exactly as it did before this module existed.
+    Deliberately inverted from every other rollout flag in this package, and
+    the inversion is the safe direction here rather than the bold one.
+
+    The usual default-OFF convention protects against a behaviour change. This
+    phase has none to protect against: ``code`` is the only registered source,
+    its ``search`` IS the ``query_context`` call the old path made, and
+    :func:`merge` is the identity function for one source — so both branches
+    produce byte-identical packs, proven end to end in
+    ``tests/context/test_source_registry.py``.
+
+    What default-OFF would actually buy is worse: the registry would never
+    execute on a real run, so the thread pool, the fail-open path, and the
+    provenance plumbing would all go unexercised until the day a second source
+    arrives — and that day would flip the seam AND the new source at once,
+    with no way to tell which one moved a metric. Running the no-op path in
+    production now is how the seam earns trust before anything depends on it.
+
+    ``AGENTRAIL_CONTEXT_SOURCE_REGISTRY=0`` is the escape hatch: it restores
+    the direct ``query_context`` call for a bisect or an incident, without a
+    deploy.
     """
-    return (os.environ.get(REGISTRY_ENV) or "").strip() == "1"
+    return (os.environ.get(REGISTRY_ENV) or "").strip() != "0"
 
 
 @dataclass(frozen=True)

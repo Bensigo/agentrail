@@ -458,6 +458,113 @@ export async function pinConversationWorkspace(
   return { ok: true, sessionId: session.id };
 }
 
+export interface RepinConversationWorkspaceInput {
+  chatIdentityId: string;
+  channel: string;
+  conversationKey: string;
+  fromWorkspaceId: string;
+  toWorkspaceId: string;
+}
+
+export type RepinConversationWorkspaceResult =
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: "not_reachable" | "moved" | "conflict" };
+
+/**
+ * Drizzle can wrap the underlying pg error, so the unique-violation code
+ * (23505) may live on err.code or err.cause.code — same detection idiom as
+ * `queries/index.ts`'s own `isUniqueViolation` (duplicated rather than
+ * imported, matching that function's own precedent of not centralizing this
+ * specific helper across modules).
+ */
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
+/**
+ * Move an already-pinned conversation to a different workspace — the
+ * `/connect` command's move path (issue #1261 PR).
+ *
+ * The pin belongs to the CONVERSATION, not to any identity in it (see
+ * `resolveConversationWorkspace`'s doc-comment): every participant sharing
+ * (channel, conversationKey) inherits it. So the authority rule is that the
+ * requester must reach BOTH the current and target workspace — you may move a
+ * conversation between workspaces you have standing in, but you may not walk
+ * into a channel pinned to a workspace you are a stranger to and move it
+ * elsewhere. That rule is decided in `connect-command.ts` and RE-VERIFIED
+ * here, so a caller bug alone cannot bypass it — this is deliberate defence
+ * in depth, not redundancy.
+ *
+ * TOCTOU: the authority check above and the UPDATE below are separate round
+ * trips. If the requester's membership in `fromWorkspaceId` or
+ * `toWorkspaceId` is revoked in the gap between them, the move still lands —
+ * the re-check is NOT atomic with the write. This mirrors
+ * `pinConversationWorkspace`'s own posture (see its CONCURRENCY paragraph);
+ * unlike that function, this one does not attempt to close the window, only
+ * to document it.
+ *
+ * The UPDATE is guarded on the row's CURRENT workspace_id (in addition to
+ * channel + conversationKey), so a concurrent re-pin that landed first yields
+ * `moved` rather than silently clobbering it. `moved` is also returned when
+ * the caller passed a `fromWorkspaceId` that was simply wrong, or when no
+ * session was ever pinned for this (channel, conversationKey) at all — the
+ * guarded UPDATE cannot distinguish "someone else already moved it" from
+ * "this was never pinned here" from "bad input"; all three land on zero rows
+ * matched. Callers re-resolve once rather than retrying in a loop.
+ *
+ * `.returning({ id })` rather than the full row: safe to read as "at most one
+ * row" because `jace_sessions_conversation_unique` — UNIQUE(workspace_id,
+ * channel, conversation_key) — guarantees at most one row can match
+ * `(workspace_id = fromWorkspaceId, channel, conversationKey)`. If that
+ * constraint were ever loosened, this UPDATE would silently move every
+ * matching row while still reporting a single id.
+ *
+ * CONFLICT: a row can already exist at `(toWorkspaceId, channel,
+ * conversationKey)` — dual-anchored rows for one (channel, conversationKey)
+ * are a designed, reachable state (see `pinConversationWorkspace`'s
+ * CONCURRENCY paragraph and `resolveConversationWorkspace`'s `ambiguous`
+ * flag), and a user consolidating an ambiguous conversation by moving one
+ * anchor onto the other's workspace is exactly how a caller lands here. That
+ * makes the UPDATE violate `jace_sessions_conversation_unique`, which this
+ * catches and reports as `{ ok: false, reason: "conflict" }` rather than
+ * letting the rejection propagate. Any other database error is re-thrown
+ * unchanged.
+ */
+export async function repinConversationWorkspace(
+  input: RepinConversationWorkspaceInput
+): Promise<RepinConversationWorkspaceResult> {
+  const { chatIdentityId, channel, conversationKey, fromWorkspaceId, toWorkspaceId } = input;
+
+  const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+  const reaches = (id: string) => reachable.some((workspace) => workspace.id === id);
+  if (!reaches(fromWorkspaceId) || !reaches(toWorkspaceId)) {
+    return { ok: false, reason: "not_reachable" };
+  }
+
+  let row: { id: string } | undefined;
+  try {
+    [row] = await db
+      .update(jaceSessions)
+      .set({ workspaceId: toWorkspaceId, updatedAt: new Date() })
+      .where(
+        and(
+          eq(jaceSessions.channel, channel),
+          eq(jaceSessions.conversationKey, conversationKey),
+          eq(jaceSessions.workspaceId, fromWorkspaceId)
+        )
+      )
+      .returning({ id: jaceSessions.id });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      return { ok: false, reason: "conflict" };
+    }
+    throw err;
+  }
+
+  return row ? { ok: true, sessionId: row.id } : { ok: false, reason: "moved" };
+}
+
 // --- post-bind confirmation (spec §4.2, issue #1263 PR ②) -------------------
 
 /**

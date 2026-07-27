@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ClaimedChannelInboxRow } from "@agentrail/db-postgres";
 
 vi.mock("@agentrail/db-postgres", () => ({
@@ -13,6 +13,12 @@ vi.mock("@agentrail/db-postgres", () => ({
   getOrCreateJaceSession: vi.fn(),
   bindEveSession: vi.fn(),
   latestRunForIssue: vi.fn(),
+  // /connect (this task): the dispatcher-side pieces the command interception
+  // calls directly. `pinConversationWorkspace` above is reused as-is for the
+  // 'pin' action.
+  listWorkspacesForChatIdentity: vi.fn(),
+  setChatIdentityLinkToken: vi.fn(),
+  repinConversationWorkspace: vi.fn(),
 }));
 
 // Stub ONLY the network-performing send; keep the REAL pure message
@@ -50,6 +56,9 @@ import {
   getOrCreateJaceSession,
   bindEveSession,
   latestRunForIssue,
+  listWorkspacesForChatIdentity,
+  setChatIdentityLinkToken,
+  repinConversationWorkspace,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
@@ -70,6 +79,9 @@ const mockSendSystem = vi.mocked(sendSystemTelegramMessage);
 const mockSendSystemDiscord = vi.mocked(sendSystemDiscordMessage);
 const mockSendSystemSlack = vi.mocked(sendSystemSlackMessage);
 const mockLatestRunForIssue = vi.mocked(latestRunForIssue);
+const mockListWorkspacesForChatIdentity = vi.mocked(listWorkspacesForChatIdentity);
+const mockSetChatIdentityLinkToken = vi.mocked(setChatIdentityLinkToken);
+const mockRepin = vi.mocked(repinConversationWorkspace);
 
 const mockFetch = vi.fn();
 
@@ -112,6 +124,10 @@ beforeEach(() => {
   // #1277: unused by any row without a replyContext (the overwhelming
   // majority of existing tests) — a harmless default for the few that do.
   mockLatestRunForIssue.mockResolvedValue(null);
+  // /connect: harmless defaults for the overwhelming majority of tests that
+  // never send "/connect" at all.
+  mockListWorkspacesForChatIdentity.mockResolvedValue([]);
+  mockSetChatIdentityLinkToken.mockResolvedValue(undefined);
 });
 
 describe("dispatchQueuedChannelMessages — loop shape", () => {
@@ -263,6 +279,479 @@ describe("dispatchQueuedChannelMessages — 'ask' kind — name-vs-index precede
     expect(mockPin).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-named-2" }),
     );
+  });
+});
+
+describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask'/'intro'/'pinned' resolution)", () => {
+  const CONSOLE_PUBLIC_URL = "https://heyjace.com";
+
+  beforeEach(() => {
+    process.env["CONSOLE_PUBLIC_URL"] = CONSOLE_PUBLIC_URL;
+  });
+
+  afterEach(() => {
+    delete process.env["CONSOLE_PUBLIC_URL"];
+    // Defence against a queued `mockResolvedValueOnce` outliving this
+    // describe block (e.g. a test that expects a retry-resolve which, pre-
+    // implementation, never gets consumed) — reset rather than clear, so no
+    // leftover queued value can leak into a later describe block's tests.
+    mockResolve.mockReset();
+  });
+
+  function linkedIdentity(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "chat-connect-1",
+      platform: "telegram",
+      platformUserId: "777",
+      userId: "user-42",
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      ...overrides,
+    } as never;
+  }
+
+  function unlinkedIdentity(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "chat-connect-2",
+      platform: "telegram",
+      platformUserId: "778",
+      userId: null,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      ...overrides,
+    } as never;
+  }
+
+  function connectRow(text = "/connect") {
+    return row({ payload: { chatId: -100123, text } });
+  }
+
+  it("a '/connect' row is consumed: completeChannelMessage is called and the Eve turn is NEVER started (pin path)", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    // No pin yet ('intro') and exactly one reachable workspace -> decideConnectCommand
+    // auto-pins it (no disambiguation needed for a single option).
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([{ id: "ws-1", name: "Acme" }]);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-connect-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockPin).toHaveBeenCalledWith({
+      chatIdentityId: "chat-connect-1",
+      channel: "telegram",
+      conversationKey: "-100123",
+      workspaceId: "ws-1",
+    });
+    expect(mockSendSystem).toHaveBeenCalledWith("-100123", "Connected to Acme.", undefined);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetOrCreateIntro).not.toHaveBeenCalled();
+    expect(mockGetOrCreateSession).not.toHaveBeenCalled();
+    expect(mockBindEveSession).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("a normal (non-'/connect') message row still reaches the Eve turn (no regression)", async () => {
+    mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hello jace" } })).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-connect-intro-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockPin).not.toHaveBeenCalled();
+    expect(mockListWorkspacesForChatIdentity).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("an unlinked identity (no GitHub account yet) gets setChatIdentityLinkToken called exactly once, and the reply carries the minted link", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockSetChatIdentityLinkToken.mockResolvedValue(undefined);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSetChatIdentityLinkToken).toHaveBeenCalledTimes(1);
+    const [chatIdentityIdArg, tokenArg, expiresAtArg] = mockSetChatIdentityLinkToken.mock.calls[0]!;
+    expect(chatIdentityIdArg).toBe("chat-connect-2");
+    expect(typeof tokenArg).toBe("string");
+    expect((tokenArg as string).length).toBeGreaterThan(0);
+    expect(expiresAtArg).toBeInstanceOf(Date);
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      expect.stringContaining(`${CONSOLE_PUBLIC_URL}/connect/${tokenArg}`),
+      undefined,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("an identity with an unexpired existing link token is NOT re-minted; the SAME URL is re-sent", async () => {
+    const futureExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(
+      unlinkedIdentity({ linkToken: "existing-live-token", linkTokenExpiresAt: futureExpiry }),
+    );
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSetChatIdentityLinkToken).not.toHaveBeenCalled();
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      expect.stringContaining(`${CONSOLE_PUBLIC_URL}/connect/existing-live-token`),
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("an EXPIRED existing token IS re-minted (not treated as live)", async () => {
+    const pastExpiry = new Date(Date.now() - 1000);
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(
+      unlinkedIdentity({ linkToken: "expired-token", linkTokenExpiresAt: pastExpiry }),
+    );
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSetChatIdentityLinkToken).toHaveBeenCalledTimes(1);
+    const [, tokenArg] = mockSetChatIdentityLinkToken.mock.calls[0]!;
+    expect(tokenArg).not.toBe("expired-token");
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      expect.stringContaining(`${CONSOLE_PUBLIC_URL}/connect/${tokenArg}`),
+      undefined,
+    );
+  });
+
+  it("CONSOLE_PUBLIC_URL unset produces the honest failure copy and still COMPLETES the row (never a guessed host)", async () => {
+    delete process.env["CONSOLE_PUBLIC_URL"];
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockSetChatIdentityLinkToken).not.toHaveBeenCalled();
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "I couldn't create a connect link right now. Try /connect again in a moment.",
+      undefined,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("never logs the raw link token, even when the reply carrying it is being sent", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const tokenArg = mockSetChatIdentityLinkToken.mock.calls[0]?.[1] as string;
+    expect(tokenArg).toBeTruthy();
+    for (const call of [...logSpy.mock.calls, ...errorSpy.mock.calls]) {
+      expect(JSON.stringify(call)).not.toContain(tokenArg);
+    }
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  it("'/connect' takes precedence over an in-flight 'ask' — the ask branch's numbered-list re-send must NOT swallow the command (reviewer Important #2)", async () => {
+    const ASK_OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    // The conversation is mid-'ask' (2+ reachable workspaces, no pin yet) —
+    // parseWorkspaceChoice("/connect", options) would match NEITHER a name
+    // nor a numeric index, so if the 'ask' branch ran first it would
+    // silently re-send its numbered list and complete the row, never
+    // reaching the '/connect' handling at all.
+    mockResolve.mockResolvedValue({ kind: "ask", options: ASK_OPTIONS } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue(ASK_OPTIONS);
+
+    await dispatchQueuedChannelMessages();
+
+    // Only the '/connect' path calls this — proves that branch actually ran.
+    expect(mockListWorkspacesForChatIdentity).toHaveBeenCalledWith("chat-connect-1");
+    // The '/connect' "choose" copy — distinct wording from the 'ask' branch's
+    // "Which one is this about?" numbered-list re-send.
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Which workspace should this chat use?\n- Acme\n- Widgets\n\nSend /connect <name>.",
+      undefined,
+    );
+    expect(mockPin).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("a linked identity with no reachable workspaces gets the no_workspaces reply and the row is completed", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([]);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockPin).not.toHaveBeenCalled();
+    // Tightened (reviewer Minor #9): assert the resolved URL actually
+    // appears, not merely that SOME text follows "Create one at" — the
+    // previous `stringContaining` alone would still pass with an empty gap
+    // where the URL should be.
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      `Your account is connected, but you're not in a workspace yet. Create one at ${CONSOLE_PUBLIC_URL}, then send /connect again.`,
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("no_workspaces falls back to 'the console' when CONSOLE_PUBLIC_URL is an EMPTY STRING (the stock .env.example deploy state, not merely unset — reviewer Important #1 / Minor #9)", async () => {
+    process.env["CONSOLE_PUBLIC_URL"] = "";
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([]);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Your account is connected, but you're not in a workspace yet. Create one at the console, then send /connect again.",
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("'/connect <name>' moves an already-pinned conversation to a different reachable workspace (repin)", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect New")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-old", sessionId: "s-1", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([
+      { id: "ws-old", name: "Old" },
+      { id: "ws-new", name: "New" },
+    ]);
+    mockRepin.mockResolvedValue({ ok: true, sessionId: "repin-sess-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockRepin).toHaveBeenCalledWith({
+      chatIdentityId: "chat-connect-1",
+      channel: "telegram",
+      conversationKey: "-100123",
+      fromWorkspaceId: "ws-old",
+      toWorkspaceId: "ws-new",
+    });
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Moved this chat from Old to New. Everyone here is now working in New.",
+      undefined,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("a lost repin race (repinConversationWorkspace ok:false) re-resolves ONCE and reports the state that actually exists", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect New")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-old", sessionId: "s-1", ambiguous: false } as never)
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-new", sessionId: "s-2", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([
+      { id: "ws-old", name: "Old" },
+      { id: "ws-new", name: "New" },
+    ]);
+    mockRepin.mockResolvedValue({ ok: false, reason: "moved" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockResolve).toHaveBeenCalledTimes(2);
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      expect.stringContaining("This chat is connected to New."),
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+  });
+
+  it("a lost pin race (pinConversationWorkspace ok:false, already_pinned_elsewhere) re-resolves ONCE and reports the DIFFERENT workspace actually pinned — never claims success for the one the user asked for", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve
+      // First resolve (inside command handling, to find any existing pin): none yet.
+      .mockResolvedValueOnce({ kind: "intro" } as never)
+      // Second resolve (reportActualPin's re-resolve after the failed pin):
+      // someone else won the race and it's actually pinned to Widgets.
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-2", sessionId: "s-2", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([
+      { id: "ws-1", name: "Acme" },
+      { id: "ws-2", name: "Widgets" },
+    ]);
+    mockPin.mockResolvedValue({ ok: false, reason: "already_pinned_elsewhere" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockResolve).toHaveBeenCalledTimes(2);
+    const [, replyArg] = mockSendSystem.mock.calls[0]!;
+    expect(replyArg).not.toContain("Connected to Acme");
+    expect(replyArg).toContain("This chat is connected to Widgets.");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+  });
+
+  it("a lost pin race where the re-resolve finds the conversation pinned to a workspace the identity CANNOT reach: nothing identifying about it leaks into the reply", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve
+      .mockResolvedValueOnce({ kind: "intro" } as never)
+      // Actually pinned to a workspace NOT in this identity's reachable set.
+      .mockResolvedValueOnce({ kind: "pinned", workspaceId: "ws-secret-99", sessionId: "s-3", ambiguous: false } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([{ id: "ws-1", name: "Acme" }]);
+    mockPin.mockResolvedValue({ ok: false, reason: "already_pinned_elsewhere" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const [, replyArg] = mockSendSystem.mock.calls[0]!;
+    expect(replyArg).not.toContain("ws-secret-99");
+    expect(replyArg).not.toContain("Connected to Acme");
+    expect(replyArg).toContain("This chat is connected to a workspace.");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+  });
+
+  // reviewer Important #3: the headline production case this feature exists
+  // to repair — a conversation ALREADY pinned (via `resolveConversationWorkspace`,
+  // not a race) to a workspace this identity cannot reach. Line 657's
+  // `?? { id: pinnedId, name: null }` is the only entry point that lets an
+  // unreachable pinned id reach `decideConnectCommand` at all; mutating it to
+  // `?? null` makes `pinned` look like "no pin exists yet" and silently
+  // attempts a NEW pin instead of refusing.
+  describe("'/connect' against a conversation pinned to a workspace this identity CANNOT reach (reviewer Important #3)", () => {
+    const UNREACHABLE_PINNED_ID = "ws-secret-99";
+    const REACHABLE = [{ id: "ws-1", name: "Acme" }];
+
+    it("bare '/connect': the reply says the chat is connected to A workspace, and leaks neither the unreachable id nor its name", async () => {
+      mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+      mockResolve.mockResolvedValue({
+        kind: "pinned",
+        workspaceId: UNREACHABLE_PINNED_ID,
+        sessionId: "s-1",
+        ambiguous: false,
+      } as never);
+      mockListWorkspacesForChatIdentity.mockResolvedValue(REACHABLE);
+
+      await dispatchQueuedChannelMessages();
+
+      expect(mockPin).not.toHaveBeenCalled();
+      expect(mockRepin).not.toHaveBeenCalled();
+      const [, replyArg] = mockSendSystem.mock.calls[0]!;
+      expect(replyArg).toContain("This chat is connected to a workspace");
+      expect(replyArg).not.toContain(UNREACHABLE_PINNED_ID);
+      expect(mockComplete).toHaveBeenCalledWith("row-1");
+      expect(mockFail).not.toHaveBeenCalled();
+    });
+
+    it("'/connect <reachable name>': refused (authority rule — you cannot move a conversation OUT of a workspace you're a stranger to), and NO pin/repin write is attempted", async () => {
+      mockClaim.mockResolvedValueOnce(connectRow("/connect Acme")).mockResolvedValueOnce(null);
+      mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+      mockResolve.mockResolvedValue({
+        kind: "pinned",
+        workspaceId: UNREACHABLE_PINNED_ID,
+        sessionId: "s-1",
+        ambiguous: false,
+      } as never);
+      mockListWorkspacesForChatIdentity.mockResolvedValue(REACHABLE);
+
+      await dispatchQueuedChannelMessages();
+
+      expect(mockPin).not.toHaveBeenCalled();
+      expect(mockRepin).not.toHaveBeenCalled();
+      expect(mockSendSystem).toHaveBeenCalledWith(
+        "-100123",
+        "This chat is already connected to a workspace you're not a member of, so I can't move it. Someone who is a member can, or you can change it in the console.",
+        undefined,
+      );
+      expect(mockComplete).toHaveBeenCalledWith("row-1");
+      expect(mockFail).not.toHaveBeenCalled();
+    });
+  });
+
+  // Final whole-branch review, must-fix #3: the spec's error table requires
+  // "mint fails (DB) -> honest failure copy; row completed, not failed" —
+  // `ensureConnectLink`'s try/catch is what implements that, but nothing
+  // rejected `setChatIdentityLinkToken` before this test, so deleting that
+  // try/catch passed the whole suite (turning this into must-fix #2's
+  // silence: the throw would escape to `processRow`'s outer catch, which
+  // fails the row and sends nothing to the channel).
+  it("setChatIdentityLinkToken rejecting (DB write fails) still sends the honest failure copy and COMPLETES the row — never fails it", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockSetChatIdentityLinkToken.mockRejectedValue(new Error("connection terminated"));
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "I couldn't create a connect link right now. Try /connect again in a moment.",
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  // Final whole-branch review, must-fix #2: ANY throw inside the '/connect'
+  // handling (listWorkspacesForChatIdentity, pinConversationWorkspace,
+  // repinConversationWorkspace, reportActualPin's re-resolve) used to fall
+  // through to processRow's outer catch, which calls failChannelMessage and
+  // sends NOTHING to the channel — silence, exactly what /connect exists to
+  // eliminate. The whole '/connect' block is now wrapped in its own
+  // try/catch that replies with a generic in-channel failure and completes
+  // (not fails) the row, since requeuing would just replay the same error
+  // N times and /connect is trivially retypable.
+  it("a throw anywhere in '/connect' handling (e.g. listWorkspacesForChatIdentity rejecting) still replies in-channel and COMPLETES the row — never silence", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockRejectedValue(new Error("db unreachable"));
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Something went wrong handling /connect. Try again in a moment.",
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("warns via console.warn when CONSOLE_PUBLIC_URL is unset, so the failure is no longer perfectly silent server-side", async () => {
+    delete process.env["CONSOLE_PUBLIC_URL"];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("CONSOLE_PUBLIC_URL is unset/empty"),
+    );
+    warnSpy.mockRestore();
   });
 });
 

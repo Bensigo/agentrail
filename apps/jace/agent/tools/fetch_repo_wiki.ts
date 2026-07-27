@@ -64,10 +64,13 @@ export default defineTool({
   description:
     "Read the compiled repo wiki for the workspace's connected repo — a " +
     "repo overview page plus one page per codebase unit, generated at " +
-    "onboard/index time from the deterministic code graph. Call this FIRST " +
-    "for a connected repo's architecture / \"how does X work\" / \"where is " +
-    "Y\" question — it is cheaper and more grounded than exploring from " +
-    "scratch. Three modes: 'list' (the page index — slugs, titles, " +
+    "onboard/index time from the deterministic code graph. This is THE tool " +
+    "for any question about a connected repo's code — including AgentRail's " +
+    "own codebase. Call it FIRST for architecture / \"how does X work\" / " +
+    "\"where is Y\" / \"where does Z live\" questions — it is cheaper and " +
+    "more grounded than exploring from scratch, and unlike `codebase_query` " +
+    "it needs no local checkout, so it works in the hosted deployment. " +
+    "Three modes: 'list' (the page index — slugs, titles, " +
     "staleness; call this first to see what's compiled), 'get' (one page's " +
     "full body + citations, needs `slug` from a prior list/search result), " +
     "'search' (a query across page content, needs `query`). If the " +

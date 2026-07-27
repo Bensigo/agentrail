@@ -63,18 +63,23 @@ export function resolveConsoleConfig(env = {}) {
  * Build the GET .../work-status URL. `eveSessionId` is what the console
  * resolves the real tenant from server-side (via the jace_sessions ledger);
  * `ref` optionally scopes to a specific run/issue/PR — when blank, the `ref`
- * param is omitted entirely (list mode).
+ * param is omitted entirely (list mode). `limit` optionally requests a page
+ * size — when omitted/null, the `limit` param is omitted entirely and the
+ * route applies its own default (50). The route owns the 1..200 clamp; this
+ * function never clamps, it only forwards whatever the caller passed.
  *
  * @param {string} baseUrl — already trimmed + de-slashed
  * @param {string} eveSessionId
  * @param {string} [ref]
+ * @param {number} [limit]
  * @returns {string}
  */
-export function buildWorkStatusUrl(baseUrl, eveSessionId, ref) {
+export function buildWorkStatusUrl(baseUrl, eveSessionId, ref, limit) {
   const params = new URLSearchParams();
   params.set("eveSessionId", eveSessionId);
   const refTrimmed = String(ref ?? "").trim();
   if (refTrimmed) params.set("ref", refTrimmed);
+  if (limit !== undefined && limit !== null) params.set("limit", String(limit));
   return `${baseUrl}${WORK_STATUS_PATH}?${params.toString()}`;
 }
 
@@ -126,12 +131,19 @@ export function degraded(reason, extra = {}) {
  *   6. success                   -> { ok:true, ref, resolvedAs, generatedAt,
  *                                     limit, runs, queueEntries, truncated }
  *
+ * `limit` is an optional passthrough (list mode only, ignored by the route
+ * when `ref` is set): when supplied it rides on the query string as-is; when
+ * omitted, no `limit` param is sent and the route falls back to its own
+ * default. This function never clamps the value itself — the route owns the
+ * 1..200 clamp, so re-clamping here would just be a second, driftable copy
+ * of that policy.
+ *
  * @param {{ env?: Record<string, string|undefined>, eveSessionId: string,
- *           ref?: string,
+ *           ref?: string, limit?: number,
  *           transport: (url: string, init: { headers: Record<string,string> }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
  */
-export async function fetchWorkStatus({ env = {}, eveSessionId, ref, transport }) {
+export async function fetchWorkStatus({ env = {}, eveSessionId, ref, limit, transport }) {
   const sessionId = String(eveSessionId ?? "").trim();
   if (!sessionId) {
     return degraded("bad_request");
@@ -140,7 +152,7 @@ export async function fetchWorkStatus({ env = {}, eveSessionId, ref, transport }
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) return degraded("config_missing", { missing: cfg.missing });
 
-  const url = buildWorkStatusUrl(cfg.baseUrl, sessionId, ref);
+  const url = buildWorkStatusUrl(cfg.baseUrl, sessionId, ref, limit);
 
   let res;
   try {

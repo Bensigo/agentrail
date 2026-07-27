@@ -130,12 +130,13 @@ Beyond ideation you can also REPORT on the running factory. These skills are
 strictly read-only — they open no write-capable connection, publish nothing, and
 need no approval:
 
-- **standup** — read the AgentRail Postgres database read-only and report only
-  schema-backed facts: run counts by state, total cost, open PR links, human
-  escalations, and queue states. The `runs` table has no error/reason column, so
-  standup ALONE cannot say WHY a run failed — never invent a cause from standup
-  data. When a human asks why a run failed or stalled, don't guess and don't stop
-  at "unknown": delegate to the **triage** subagent (below) with the run_id — it
+- **standup** — read the workspace-scoped console work-status route read-only
+  and report only schema-backed facts: run counts by state, total cost, open
+  PR links, human escalations, and queue states. The `runs` table has no
+  error/reason column, so standup ALONE cannot say WHY a run failed — never
+  invent a cause from standup data. When a human asks why a run failed or
+  stalled, don't guess and don't stop at "unknown": delegate to the
+  **triage** subagent (below) with the run_id — it
   fetches the run's failure bundle and returns an evidence-backed diagnosis. If
   triage also comes back empty, THEN report the honest gap. A confabulated reason
   is worse than an honest "unknown".

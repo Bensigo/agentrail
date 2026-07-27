@@ -2,9 +2,11 @@
 //
 // The standup reports on the AgentRail factory using ONLY facts that are backed
 // by a real Postgres column. Everything here is side-effect-free and
-// dependency-injected: the DB access is passed in as an already-fetched row set
-// (see agent/lib/standup.db.mjs for the read-only fetch edge), so this module
-// never opens a connection, never writes, and is unit-testable without Postgres.
+// dependency-injected: the row sets are passed in already-fetched (from
+// agent/lib/fetch_work_status.core.mjs's workspace-scoped console read — see
+// agent/tools/standup.ts's own doc-comment for why that replaced the old
+// direct-Postgres edge), so this module never opens a connection, never
+// writes, and is unit-testable without Postgres or a live console.
 //
 // This file lives under agent/lib/, which Eve treats as a recognized lib
 // directory: helper .mjs modules here are NOT loaded as tools.
@@ -168,15 +170,34 @@ export function buildStandup({ runs = [], queueEntries = [] } = {}) {
  * renderer only ever prints values produced by buildStandup, so it too stays
  * inside the schema-backed field set (AC1).
  *
+ * `opts.truncated` mirrors fetchWorkStatus's `truncated` shape
+ * (`{ runs?: boolean, queueEntries?: boolean }`) — the console route caps how
+ * many rows it returns, so when either flag is true the collection handed to
+ * `standup` is only a PAGE, not the workspace's complete history. This
+ * function is the single place that honesty gets threaded into the text: it
+ * never prints a truncated collection as if it were complete. When `runs` is
+ * truncated, the headline reads "N most recent" instead of "N total" — never
+ * a bare total that would silently under-report (a truncated run count also
+ * means the total cost / open-PR count summed from it are partial, not the
+ * full history). When `queueEntries` is truncated, the "Queue states" section
+ * header says so too.
+ *
  * @param {ReturnType<typeof buildStandup>} standup
+ * @param {{ truncated?: { runs?: boolean, queueEntries?: boolean } }} [opts]
  * @returns {string}
  */
-export function renderStandup(standup) {
+export function renderStandup(standup, opts = {}) {
   const s = standup ?? buildStandup({});
+  const runsTruncated = opts?.truncated?.runs === true;
+  const queueTruncated = opts?.truncated?.queueEntries === true;
   const lines = [];
   lines.push("Standup — schema-backed facts only");
   lines.push("");
-  lines.push(`Runs: ${s.totalRuns} total`);
+  lines.push(
+    runsTruncated
+      ? `Runs: ${s.totalRuns} most recent — truncated, not the complete history`
+      : `Runs: ${s.totalRuns} total`,
+  );
   for (const state of RUN_STATES) {
     lines.push(`  ${state}: ${s.runCountsByState[state] ?? 0}`);
   }
@@ -192,10 +213,25 @@ export function renderStandup(standup) {
   }
   const queueStates = Object.keys(s.queueStateCounts).sort();
   if (queueStates.length) {
-    lines.push("Queue states:");
+    lines.push(
+      queueTruncated
+        ? "Queue states (most recent — truncated, not the complete history):"
+        : "Queue states:",
+    );
     for (const state of queueStates) {
       lines.push(`  ${state}: ${s.queueStateCounts[state]}`);
     }
+  }
+  if (runsTruncated || queueTruncated) {
+    const parts = [];
+    if (runsTruncated) parts.push("runs");
+    if (queueTruncated) parts.push("queue entries");
+    lines.push("");
+    lines.push(
+      `Note: the ${parts.join(" and ")} above reflect only the most recent page ` +
+        "returned by the console — there may be more not shown here. Totals " +
+        "above are NOT the workspace's complete history.",
+    );
   }
   return lines.join("\n");
 }
@@ -229,5 +265,66 @@ export function answerWhyFailed(run) {
     hasFailureReason: false,
     message: WHY_FAILED_NO_SOURCE,
     known,
+  };
+}
+
+/**
+ * Orchestrate the standup tool's result from an already-fetched work-status
+ * snapshot (the shape `fetchWorkStatus` — agent/lib/fetch_work_status.core.mjs
+ * — returns, ok or degraded). Pure: no fetch, no env, no session; the tool
+ * wrapper (agent/tools/standup.ts) does the one real fetch and hands the
+ * result here. This is the same "injected dependency, no module mocking"
+ * convention the rest of this app uses for its *.core.mjs modules (see
+ * fetch_run_evidence.core.mjs's `transport` seam / instrumentation.core.mjs's
+ * header comment) — it is what makes the tool's orchestration logic
+ * (degraded passthrough, truncation, whyFailedRunId lookup) unit-testable
+ * without mocking `fetchWorkStatus` itself.
+ *
+ * - A degraded status is returned VERBATIM (same reference) — never turned
+ *   into an empty standup, which would read as "nothing is running" when the
+ *   truth is "this read failed" (Part 3 of the retirement: an empty report
+ *   would lie).
+ * - An ok status is folded through buildStandup/renderStandup exactly as
+ *   before, with `status.truncated` threaded into renderStandup so a
+ *   truncated page is never presented as the complete picture (Part 2).
+ * - `whyFailedRunId`, when given, is resolved against `status.runs` (never a
+ *   second, separate fetch) via the existing `answerWhyFailed` (AC2 — still
+ *   never a fabricated reason).
+ *
+ * @param {object} args
+ * @param {{ ok: boolean, runs?: Array<object>, queueEntries?: Array<object>,
+ *           truncated?: { runs?: boolean, queueEntries?: boolean } }} args.status
+ *   the fetchWorkStatus result — ok or degraded
+ * @param {string} [args.whyFailedRunId]
+ * @returns {object} either `status` verbatim (degraded), or
+ *   `{ report, standup, whyFailed, failureReasonPolicy, truncated }`
+ */
+export function buildStandupOutcome({ status, whyFailedRunId } = {}) {
+  if (!status || status.ok !== true) return status;
+
+  const standup = buildStandup({
+    runs: status.runs,
+    queueEntries: status.queueEntries,
+  });
+  const report = renderStandup(standup, { truncated: status.truncated });
+
+  let whyFailed = null;
+  if (whyFailedRunId) {
+    const run = (Array.isArray(status.runs) ? status.runs : []).find(
+      (r) => r && r.id === whyFailedRunId,
+    );
+    whyFailed = answerWhyFailed(run);
+  }
+
+  return {
+    report,
+    standup,
+    whyFailed,
+    // A stable note so the model never fills a failure-reason gap from memory.
+    failureReasonPolicy: WHY_FAILED_NO_SOURCE,
+    // Raw truncation flags, alongside the note folded into `report` above —
+    // a caller inspecting the object directly (not just the rendered text)
+    // can still tell a full page from a complete one.
+    truncated: status.truncated,
   };
 }

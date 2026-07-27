@@ -15,8 +15,9 @@
 // opens that connection; agent/channels/discord.ts is untouched by it.
 //
 // WHY .mjs, NOT .ts (this file has no TypeScript-only syntax — plain ESM +
-// JSDoc, matching agent/lib/standup.db.mjs's own "impure lib file with a
-// real external dependency" precedent): agent/instrumentation.ts is the only
+// JSDoc, an "impure lib file with a real external dependency" — unlike the
+// *.core.mjs modules elsewhere in agent/lib/, which stay pure and inject
+// their real dependency instead): agent/instrumentation.ts is the only
 // place that starts this listener (see that file's own comment), and
 // instrumentation.test.mjs imports agent/instrumentation.ts DIRECTLY (not
 // structurally) to pin its default-export shape. Under `tsc`'s `nodenext`

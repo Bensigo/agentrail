@@ -131,6 +131,39 @@ test("buildWorkStatusUrl omits the ref param entirely when ref is blank", () => 
   );
 });
 
+test("buildWorkStatusUrl omits the limit param entirely when limit is not supplied", () => {
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", "issue-42"),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42`,
+  );
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", "issue-42", undefined),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42`,
+  );
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", "issue-42", null),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42`,
+  );
+  // No ref either — still no stray `limit=undefined` in the query string.
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", ""),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1`,
+  );
+});
+
+test("buildWorkStatusUrl sends the limit param verbatim when supplied, without re-clamping", () => {
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", "issue-42", 200),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42&limit=200`,
+  );
+  // Deliberately out-of-route-range values ride through unchanged — the
+  // route owns the 1..200 clamp, this function must never re-clamp.
+  assert.equal(
+    buildWorkStatusUrl("https://c.example.com", "eve-1", "", 9999),
+    `https://c.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&limit=9999`,
+  );
+});
+
 test("classifyStatus maps HTTP status to outcome (2xx ok, rest degraded reasons)", () => {
   assert.deepEqual(classifyStatus(200), { ok: true });
   assert.deepEqual(classifyStatus(400), { ok: false, reason: "bad_request" });
@@ -180,6 +213,41 @@ test("fetchWorkStatus returns the full contract shape on 200 (ok path), with bea
   assert.equal(
     transport.calls[0].url,
     `https://console.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42`,
+  );
+});
+
+test("fetchWorkStatus omits the limit query param when limit is not supplied", async () => {
+  const body = statusBody();
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", ref: "issue-42", transport });
+
+  assert.equal(res.ok, true);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42`,
+  );
+  assert.doesNotMatch(transport.calls[0].url, /limit=/);
+});
+
+test("fetchWorkStatus sends the limit query param verbatim when supplied", async () => {
+  const body = statusBody();
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+
+  const res = await fetchWorkStatus({
+    env: ENV,
+    eveSessionId: "eve-1",
+    ref: "issue-42",
+    limit: 200,
+    transport,
+  });
+
+  assert.equal(res.ok, true);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${WORK_STATUS_PATH}?eveSessionId=eve-1&ref=issue-42&limit=200`,
   );
 });
 

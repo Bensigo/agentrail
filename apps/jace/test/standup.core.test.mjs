@@ -8,6 +8,21 @@
 // AC2: "why did run X fail" returns an honest "no failure-detail source"
 //      answer that reports only what IS known (state, cost, PR link) and never
 //      confabulates a reason.
+//
+// Also (Task 9 — retiring standup's direct-Postgres edge onto the console's
+// workspace-scoped work-status route):
+//
+//   Part 2: renderStandup's truncation honesty — a truncated page (the
+//   console route caps how many rows it returns) must never be rendered as
+//   if it were the complete history.
+//
+//   Part 3: buildStandupOutcome — the pure orchestration the standup TOOL
+//   (agent/tools/standup.ts) now delegates to, given an already-fetched
+//   fetchWorkStatus-shaped result (ok or degraded) instead of a fake SQL
+//   driver. This is what makes the tool's degraded-passthrough, truncation
+//   threading, and whyFailedRunId lookup unit-testable without a live fetch
+//   or mocking the fetchWorkStatus module (this repo's "injected dependency,
+//   no module mocking" convention — see instrumentation.test.mjs's header).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +37,7 @@ import {
   buildStandup,
   renderStandup,
   answerWhyFailed,
+  buildStandupOutcome,
 } from "../agent/lib/standup.core.mjs";
 
 // A representative snapshot with every run state, a couple of PR links, some
@@ -131,4 +147,93 @@ test("AC2: answerWhyFailed on an unknown run still refuses to guess", () => {
   assert.equal(ans.hasFailureReason, false);
   assert.equal(ans.message, WHY_FAILED_NO_SOURCE);
   assert.equal(ans.known, null);
+});
+
+// ── Part 2: renderStandup truncation honesty ────────────────────────────────
+
+test("renderStandup with no truncated arg (or all-false) renders exactly as before — 'N total'", () => {
+  const standup = buildStandup({ runs: RUNS, queueEntries: QUEUE });
+  const withoutArg = renderStandup(standup);
+  const withFalseFlags = renderStandup(standup, { truncated: { runs: false, queueEntries: false } });
+  assert.equal(withoutArg, withFalseFlags);
+  assert.match(withoutArg, /Runs: 4 total/);
+  assert.match(withoutArg, /Queue states:\n/);
+  assert.doesNotMatch(withoutArg, /most recent|truncated/i);
+});
+
+test("renderStandup says so — 'most recent', not 'N total' — when truncated.runs is true", () => {
+  const standup = buildStandup({ runs: RUNS, queueEntries: QUEUE });
+  const text = renderStandup(standup, { truncated: { runs: true } });
+  // The exact regression named by the task: never "Runs: 4 total" once truncated.
+  assert.doesNotMatch(text, /Runs: 4 total/);
+  assert.match(text, /Runs: 4 most recent.*truncated/);
+  assert.match(text, /not the complete history/i);
+  assert.match(text, /Note:.*runs.*most recent page/i);
+});
+
+test("renderStandup flags queue-entries truncation on the 'Queue states' header", () => {
+  const standup = buildStandup({ runs: RUNS, queueEntries: QUEUE });
+  const text = renderStandup(standup, { truncated: { queueEntries: true } });
+  assert.doesNotMatch(text, /^Queue states:$/m);
+  assert.match(text, /Queue states \(most recent — truncated, not the complete history\):/);
+  // Runs line is untouched when only queueEntries is truncated.
+  assert.match(text, /Runs: 4 total/);
+  assert.match(text, /Note:.*queue entries.*most recent page/i);
+});
+
+test("renderStandup flags BOTH runs and queue entries truncation together", () => {
+  const standup = buildStandup({ runs: RUNS, queueEntries: QUEUE });
+  const text = renderStandup(standup, { truncated: { runs: true, queueEntries: true } });
+  assert.match(text, /Runs: 4 most recent/);
+  assert.match(text, /Queue states \(most recent/);
+  assert.match(text, /Note: the runs and queue entries above/);
+});
+
+// ── Part 3: buildStandupOutcome — the tool's orchestration, pure ───────────
+
+test("buildStandupOutcome returns a degraded fetchWorkStatus result VERBATIM, never an empty report", () => {
+  const degraded = {
+    ok: false,
+    degraded: true,
+    reason: "unreachable",
+    note: "The console work-status endpoint could not be reached.",
+  };
+  const outcome = buildStandupOutcome({ status: degraded, whyFailedRunId: undefined });
+  // Same object, not rebuilt/rewrapped — and critically, no `report`/`standup`
+  // keys that would make this look like a (fake, empty) rendered standup.
+  assert.equal(outcome, degraded);
+  assert.equal("report" in outcome, false);
+  assert.equal("standup" in outcome, false);
+});
+
+test("buildStandupOutcome on an ok status builds+renders the standup and threads truncated through", () => {
+  const status = {
+    ok: true,
+    runs: RUNS,
+    queueEntries: QUEUE,
+    truncated: { runs: true, queueEntries: false },
+  };
+  const outcome = buildStandupOutcome({ status });
+  assert.equal(outcome.standup.totalRuns, 4);
+  assert.match(outcome.report, /Runs: 4 most recent.*truncated/);
+  assert.equal(outcome.failureReasonPolicy, WHY_FAILED_NO_SOURCE);
+  assert.deepEqual(outcome.truncated, { runs: true, queueEntries: false });
+  assert.equal(outcome.whyFailed, null); // no whyFailedRunId given
+});
+
+test("buildStandupOutcome resolves whyFailedRunId against status.runs (found)", () => {
+  const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2" });
+  assert.equal(outcome.whyFailed.hasFailureReason, false);
+  assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
+  assert.equal(outcome.whyFailed.known.id, "r2");
+  assert.equal(outcome.whyFailed.known.status, "failed");
+});
+
+test("buildStandupOutcome resolves whyFailedRunId against status.runs (not found -> honest no-source, not a throw)", () => {
+  const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "does-not-exist" });
+  assert.equal(outcome.whyFailed.hasFailureReason, false);
+  assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
+  assert.equal(outcome.whyFailed.known, null);
 });

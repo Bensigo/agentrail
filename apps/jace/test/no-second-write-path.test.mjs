@@ -68,8 +68,9 @@
 //      shell string — to the read-only `agentrail context` CLI, restricted
 //      to an allowlist of read-only subcommands). `create_workspace` and
 //      `create_repo` each reach the console over HTTP (like
-//      `send_connect_link`), never `child_process`. `standup` reaches the
-//      database directly via `postgres` and must NOT appear here.
+//      `send_connect_link`), never `child_process`. `standup` also reaches
+//      the console over HTTP now (via `fetch_work_status.core.mjs`, retiring
+//      its old direct-Postgres edge) and must NOT appear here either.
 //
 // String or comment mentions of "agentrail" elsewhere (docs, the driver
 // harness's prompt) are not a write path — only an imported child_process is.
@@ -127,7 +128,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // gated: posts an ADVISORY, COMMENT-only PR review (the console hardcodes the GitHub review event server-side) — same gate class as create_issue; no child_process (HTTP to the console, like create_repo/create_goal)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
-  "standup.ts",
+  "standup.ts", // read-only: reads recent runs + queue entries via fetch_work_status.core.mjs over the console token API (retired direct-Postgres edge); no approval, no child_process
   "update_issue.ts", // gated (issue #1345): edits an EXISTING issue's title/body in the house format — same gate class as create_issue, via the SAME consoleGatedApproval seam; shells out to `agentrail issue update` (child_process, like create_issue)
 ].sort();
 // The enumerated set of gated/mutating tools. Every tool named here must
@@ -286,7 +287,7 @@ test("child_process is shelled out from ONLY the expected, reviewed sites", () =
     `child_process must be imported ONLY by the reviewed sites (the gated ` +
       `create_issue tool, and the read-only codebase_query tool, which shells ` +
       `out via execFile — never a shell string — to the read-only agentrail ` +
-      `context CLI). standup must NOT appear here: it reaches the database ` +
-      `directly via postgres. Found in: ${shellOutSites.join(", ") || "(none)"}`,
+      `context CLI). standup must NOT appear here: it reaches the console ` +
+      `over HTTP, never child_process. Found in: ${shellOutSites.join(", ") || "(none)"}`,
   );
 });

@@ -1,11 +1,27 @@
 // standup — Jace's READ-ONLY window onto the running AgentRail factory.
 //
-// This is a read-only reporting tool: it opens the AgentRail Postgres database
-// through a hard read-only edge (agent/lib/standup.db.mjs), reads the run and
-// queue snapshots, and renders a standup of ONLY schema-backed facts (run counts
-// by state, total cost, open PR links, human escalations, queue states). It
-// NEVER narrates why a run failed — the runs table has no error/reason column,
-// so a "why did it fail" question is answered honestly with no source (AC1/AC2).
+// This is a read-only reporting tool: it reads the workspace-scoped console
+// route (agent/lib/fetch_work_status.core.mjs, GET /api/v1/runner/work-status)
+// and renders a standup of ONLY schema-backed facts (run counts by state,
+// total cost, open PR links, human escalations, queue states). It NEVER
+// narrates why a run failed — the runs table has no error/reason column, so a
+// "why did it fail" question is answered honestly with no source (AC1/AC2).
+//
+// It used to open the AgentRail Postgres database directly through a hard
+// read-only edge (the now-deleted agent/lib/standup.db.mjs). That edge was
+// retired for two reasons:
+//   1. Its query was `SELECT … FROM runs ORDER BY created_at DESC LIMIT 500`
+//      — no `WHERE`, no workspace filter. It was the only Jace tool that
+//      opened Postgres directly instead of going through the console's
+//      `/api/v1/runner/*` seam, so it read every workspace's runs, bypassing
+//      the tenant resolution every other Jace tool uses.
+//   2. It was dark in production: it resolved `DATABASE_URL`, which the jace
+//      service does not set, so it silently fell back to a localhost URL and
+//      could never actually connect.
+// Re-pointing standup at fetchWorkStatus fixes both: the console route
+// resolves the real workspace server-side from `ctx.session.id` (via the
+// jace_sessions ledger), and it removes the `DATABASE_URL` dependency
+// entirely — standup no longer touches Postgres from Jace at all.
 //
 // It performs NO write of any kind, so — unlike the gated write tools
 // (create_issue, create_workspace, create_repo) — it sets NO `approval`. Human
@@ -21,47 +37,36 @@ import { z } from "zod";
 //  - This tool sets NO `approval` — it is read-only. Approval gates are
 //    reserved for the mutating tools (create_issue, create_workspace,
 //    create_repo).
-import { openReadOnlyDb } from "../lib/standup.db.mjs";
-import {
-  buildStandup,
-  renderStandup,
-  answerWhyFailed,
-  WHY_FAILED_NO_SOURCE,
-} from "../lib/standup.core.mjs";
+import { fetchWorkStatus } from "../lib/fetch_work_status.core.mjs";
+import { buildStandupOutcome } from "../lib/standup.core.mjs";
 
-// The REAL postgres driver, injected into openReadOnlyDb exactly as create_issue
-// injects the real promisified execFile. Importing it lazily keeps the tool
-// module importable (e.g. by the tool loader) without a live database, and — as
-// with create_issue's execFile — the tool wires the genuine dependency, not a
-// fake. openReadOnlyDb constructs it with the read-only session guard.
-async function realSqlFactory(url: string, options: Record<string, unknown>) {
-  // `postgres` is a direct dependency (declared in package.json); the import
-  // stays dynamic to keep the tool module importable without a live database.
-  const mod = await import("postgres");
-  const postgres = (mod.default ?? mod) as (
-    u: string,
-    o: Record<string, unknown>,
-  ) => unknown;
-  return postgres(url, options);
+// The REAL transport: one GET via the global fetch, narrowed to the { status,
+// json } shape fetchWorkStatus expects. Injected exactly as fetch_work_status
+// injects its real driver, so the core stays hermetic in tests. Mirrored
+// verbatim from agent/tools/fetch_work_status.ts's realTransport.
+async function realTransport(
+  url: string,
+  init: { headers: Record<string, string> },
+): Promise<{ status: number; json: () => Promise<unknown> }> {
+  const res = await fetch(url, { method: "GET", headers: init.headers });
+  return { status: res.status, json: () => res.json() };
 }
+
+// Request the route's own maximum page size (1..200, see the route's
+// LIMIT_MAX) — standup wants as complete a snapshot as the route allows, not
+// its default page (50). The route owns the clamp; this tool never re-clamps.
+const STANDUP_LIMIT = 200;
 
 export default defineTool({
   description:
-    "Report a READ-ONLY standup of the AgentRail factory from Postgres using " +
-    "ONLY schema-backed facts: run counts by state, total cost, open PR links, " +
-    "human escalations, and queue states. It writes nothing and needs no " +
-    "approval. It never invents WHY a run failed — the runs table has no " +
-    "error/reason column, so a failure reason is honestly reported as " +
-    "unavailable (pass whyFailedRunId to get that honest no-source answer for a " +
-    "specific run).",
+    "Report a READ-ONLY standup of the AgentRail factory, scoped to this " +
+    "workspace, using ONLY schema-backed facts: run counts by state, total " +
+    "cost, open PR links, human escalations, and queue states. It writes " +
+    "nothing and needs no approval. It never invents WHY a run failed — the " +
+    "runs table has no error/reason column, so a failure reason is honestly " +
+    "reported as unavailable (pass whyFailedRunId to get that honest " +
+    "no-source answer for a specific run).",
   inputSchema: z.object({
-    limit: z
-      .number()
-      .int()
-      .positive()
-      .max(2000)
-      .default(500)
-      .describe("Max rows to read per table (runs / queue_entries)."),
     whyFailedRunId: z
       .string()
       .optional()
@@ -71,40 +76,26 @@ export default defineTool({
           "(state, cost, PR link) and never a confabulated reason.",
       ),
   }),
-  async execute(input) {
-    // Open the read-only edge with the REAL postgres driver injected. The edge
-    // pins the session to read-only and wraps every SELECT in a READ ONLY
-    // transaction; no write-capable client is ever constructed (AC5).
-    const db = await openReadOnlyDb({
+  async execute(input, ctx) {
+    // fetchWorkStatus resolves the real workspace server-side from
+    // ctx.session.id (never a model-supplied argument — see the global
+    // constraint that this tool never accepts a workspaceId). `ref` is
+    // omitted (list mode); `limit` requests the route's own maximum so the
+    // standup sees as complete a snapshot as the route allows.
+    const status = await fetchWorkStatus({
       env: process.env,
-      sqlFactory: realSqlFactory,
+      eveSessionId: ctx.session.id,
+      ref: "",
+      limit: STANDUP_LIMIT,
+      transport: realTransport,
     });
-    try {
-      const [runs, queueEntries] = await Promise.all([
-        db.fetchRuns(input.limit),
-        db.fetchQueueEntries(input.limit),
-      ]);
 
-      const standup = buildStandup({ runs, queueEntries });
-      const report = renderStandup(standup);
-
-      // Honest "why did run X fail" answer, derived only from schema-backed
-      // columns — never a fabricated reason (AC2).
-      let whyFailed: ReturnType<typeof answerWhyFailed> | null = null;
-      if (input.whyFailedRunId) {
-        const run = runs.find((r) => r.id === input.whyFailedRunId);
-        whyFailed = answerWhyFailed(run);
-      }
-
-      return {
-        report,
-        standup,
-        whyFailed,
-        // A stable note so the model never fills a failure-reason gap from memory.
-        failureReasonPolicy: WHY_FAILED_NO_SOURCE,
-      };
-    } finally {
-      await db.close();
-    }
+    // All the orchestration — degraded passthrough (never an empty standup
+    // that would lie by reading as "nothing is running"), truncation honesty
+    // threaded into the rendered text, and the honest no-source
+    // whyFailedRunId lookup (AC2) — lives in the pure, unit-tested
+    // buildStandupOutcome so it never has to be exercised through a live
+    // fetch or a mocked module.
+    return buildStandupOutcome({ status, whyFailedRunId: input.whyFailedRunId });
   },
 });

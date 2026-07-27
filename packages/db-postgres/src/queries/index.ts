@@ -853,6 +853,33 @@ export async function listWorkspaceRepositories(workspaceId: string) {
     .orderBy(repositories.name);
 }
 
+/**
+ * Look up a workspace's repository by full name ("owner/repo"),
+ * CASE-INSENSITIVELY.
+ *
+ * GitHub itself treats owner/repo lookups as case-insensitive
+ * (github.com/Bensigo/agentrail and github.com/bensigo/agentrail are the same
+ * repository), and the two sides of this comparison disagree in practice:
+ *
+ *   - WRITES store GitHub's own casing. `runner/repos`' connect chain passes
+ *     `name: created.full_name` straight from the API, so the row for this
+ *     project reads "Bensigo/agentrail".
+ *   - READS often arrive lowercased. `agentrail.shared.git.origin_repo_full_name`
+ *     lowercases what it parses out of the git remote, and it is what the
+ *     factory's wiki client, the `context index` push path, and the hydration
+ *     client all pass to the routes that call this.
+ *
+ * With an exact `eq` those never matched for any owner carrying an uppercase
+ * letter, and every caller reads a miss as "this workspace has no such repo".
+ * That failure is SILENT by design at the call sites — a 404 here makes the
+ * wiki client fall back to a local cache an ephemeral clone does not have, so
+ * an executor simply found no wiki and carried on — which is precisely why it
+ * survived unnoticed.
+ *
+ * Case-folding both sides cannot over-match: GitHub does not allow two repos
+ * under one owner differing only by case, so a workspace cannot hold two rows
+ * that collide here.
+ */
 export async function getRepositoryByName(workspaceId: string, name: string) {
   const rows = await db
     .select()
@@ -860,7 +887,7 @@ export async function getRepositoryByName(workspaceId: string, name: string) {
     .where(
       and(
         eq(repositories.workspaceId, workspaceId),
-        eq(repositories.name, name)
+        sql`lower(${repositories.name}) = lower(${name})`
       )
     )
     .limit(1);

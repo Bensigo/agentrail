@@ -20,6 +20,7 @@
  * per-workspace fairness cap does not yet special-case NULL-workspace (intro)
  * rows; that gap is noted for Wave 2, not fixed here.
  */
+import { randomBytes } from "node:crypto";
 import {
   reclaimStaleChannelMessages,
   claimNextChannelMessage,
@@ -32,6 +33,9 @@ import {
   getOrCreateJaceSession,
   bindEveSession,
   latestRunForIssue,
+  listWorkspacesForChatIdentity,
+  setChatIdentityLinkToken,
+  repinConversationWorkspace,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
@@ -40,6 +44,8 @@ import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirm
 import { sendSystemDiscordMessage } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
+import { parseConnectCommand, decideConnectCommand, type ConnectCommandAction } from "./connect-command";
+import { renderConnectReply } from "./connect-command-copy";
 
 /**
  * The NON-SECRET destination key each channel's hosted-inbound `target`
@@ -516,6 +522,43 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
   }
 }
 
+const LINK_TOKEN_BYTES = 24;
+const LINK_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Return a usable connect URL for this identity, re-sending an existing
+ * unexpired token rather than minting a new one. Re-minting is last-write-wins
+ * (`setChatIdentityLinkToken`), so a fresh mint would silently kill a link the
+ * user is about to tap; re-sending is idempotent and self-rate-limits repeated
+ * /connect. Returns undefined when CONSOLE_PUBLIC_URL is unset or the write
+ * fails — the caller renders honest failure copy rather than a broken link.
+ */
+async function ensureConnectLink(
+  identity: { linkToken: string | null; linkTokenExpiresAt: Date | null },
+  chatIdentityId: string
+): Promise<string | undefined> {
+  const base = (process.env["CONSOLE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+  if (!base) return undefined;
+
+  const live =
+    identity.linkToken &&
+    identity.linkTokenExpiresAt &&
+    identity.linkTokenExpiresAt.getTime() > Date.now();
+  if (live) return `${base}/connect/${identity.linkToken}`;
+
+  try {
+    const token = randomBytes(LINK_TOKEN_BYTES).toString("hex");
+    await setChatIdentityLinkToken(
+      chatIdentityId,
+      token,
+      new Date(Date.now() + LINK_TOKEN_TTL_MS)
+    );
+    return `${base}/connect/${token}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Process exactly one claimed row end to end. NEVER throws: every failure
  * mode — malformed payload, no identity, sidecar down, an unexpected
@@ -569,6 +612,80 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       channel: row.channel,
       conversationKey: row.conversationKey,
     });
+
+    // --- '/connect': consumed here, never forwarded to Jace. Runs BEFORE the
+    // resolution below so it works on conversations that cannot resolve at
+    // all — a repair path with the same precondition as the broken thing is
+    // not a repair path. Deterministic string match, never the model.
+    const command = parseConnectCommand(payload.text);
+    if (command.isCommand) {
+      const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+      const pinnedId = decision.kind === "pinned" ? decision.workspaceId : null;
+      const pinned = pinnedId
+        ? reachable.find((w) => w.id === pinnedId) ?? { id: pinnedId, name: null }
+        : null;
+
+      const action = decideConnectCommand({
+        arg: command.arg,
+        identity: { userId: identity.userId },
+        pinned,
+        reachable,
+      });
+      // What we actually tell the user. Diverges from `action` only when a
+      // write below loses a race — see the repin branch.
+      let reportAction: ConnectCommandAction = action;
+
+      let linkUrl: string | undefined;
+      if (action.kind === "send_link") {
+        linkUrl = await ensureConnectLink(identity, chatIdentityId);
+      } else if (action.kind === "pin") {
+        await pinConversationWorkspace({
+          chatIdentityId,
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          workspaceId: action.workspace.id,
+        });
+      } else if (action.kind === "repin") {
+        const moved = await repinConversationWorkspace({
+          chatIdentityId,
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          fromWorkspaceId: action.from.id,
+          toWorkspaceId: action.to.id,
+        });
+        // Lost a race, or the authority re-check refused: re-resolve ONCE and
+        // report the state that actually exists, never retry in a loop. Same
+        // posture as pinConversationWorkspace's own race contract.
+        if (!moved.ok) {
+          const now = await resolveConversationWorkspace({
+            chatIdentityId,
+            channel: row.channel,
+            conversationKey: row.conversationKey,
+          });
+          const nowId = now.kind === "pinned" ? now.workspaceId : null;
+          reportAction = nowId
+            ? {
+                kind: "already_pinned",
+                // null when we cannot reach it — never echo an unreachable id.
+                workspace: reachable.find((w) => w.id === nowId) ?? null,
+                alternatives: reachable.filter((w) => w.id !== nowId),
+              }
+            : { kind: "repin_refused" };
+        }
+      }
+
+      await sendSystemChannelMessage(
+        row.channel,
+        String(payload.chatId),
+        renderConnectReply(reportAction, {
+          linkUrl,
+          consoleUrl: process.env["CONSOLE_PUBLIC_URL"] ?? "the console",
+        }),
+        payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+      );
+      await completeChannelMessage(row.id);
+      return "completed";
+    }
 
     // --- 'ask': the reply itself may BE the workspace choice; consumed, never forwarded to Jace. ---
     if (decision.kind === "ask") {

@@ -21,6 +21,7 @@ from agentrail.context.snapshot_push import load_link
 from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 from agentrail.context.wiki import REPO_WIKI_ENV, WIKI_FORCE_ENV, WikiPageNotFoundError, repo_wiki_enabled, wiki_show, wiki_status
+from agentrail.context import wiki_client
 from agentrail.context import daemon as _daemon_mod
 from agentrail.context.client import _resolve_context_client
 # Best-effort GitHub owner/repo resolution from the LOCAL git checkout's
@@ -111,6 +112,7 @@ def _usage() -> str:
   agentrail context wiki build [--force] [--target DIR] [--json]
   agentrail context wiki status [--target DIR] [--json]
   agentrail context wiki show SLUG [--target DIR] [--json]
+  agentrail context wiki search "<terms>" [--limit N] [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -257,23 +259,30 @@ def _run_wiki(args: List[str]) -> int:
     action = args[0] if args else ""
     rest = args[1:] if args else []
 
-    if action not in {"build", "status", "show"}:
+    if action not in {"build", "status", "show", "search"}:
         raise SystemExit(
-            f"Unknown context wiki action: {action!r}. Use build, status, or show."
+            f"Unknown context wiki action: {action!r}. Use build, status, show, or search."
             if action
-            else "context wiki requires an action: build, status, or show"
+            else "context wiki requires an action: build, status, show, or search"
         )
 
     slug: str | None = None
+    query: str | None = None
     if action == "show":
         if not rest or rest[0].startswith("--"):
             raise SystemExit("context wiki show requires a slug")
         slug = rest[0]
         rest = rest[1:]
+    elif action == "search":
+        if not rest or rest[0].startswith("--"):
+            raise SystemExit("context wiki search requires a query")
+        query = rest[0]
+        rest = rest[1:]
 
     target_str: str | None = None
     json_output = False
     force = False
+    limit = 5
     index = 0
     while index < len(rest):
         arg = rest[index]
@@ -290,6 +299,18 @@ def _run_wiki(args: List[str]) -> int:
                 raise SystemExit("--force is only valid for context wiki build")
             force = True
             index += 1
+        elif arg == "--limit":
+            if action != "search":
+                raise SystemExit("--limit is only valid for context wiki search")
+            if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                raise SystemExit("--limit requires a number")
+            try:
+                limit = int(rest[index + 1])
+            except ValueError as exc:
+                raise SystemExit(f"--limit must be a number, got {rest[index + 1]!r}") from exc
+            if limit < 1:
+                raise SystemExit("--limit must be at least 1")
+            index += 2
         else:
             raise SystemExit(f"Unknown context wiki {action} option: {arg}")
 
@@ -325,26 +346,72 @@ def _run_wiki(args: List[str]) -> int:
         return 0
 
     if action == "status":
-        status = wiki_status(target)
+        # Server first (context source registry spec S.G): wiki_pages is the
+        # system of record, and an ephemeral clone is usually NOT hydrated --
+        # falling back to local files keeps a hydrated or offline clone
+        # working exactly as before.
+        status = wiki_client.remote_status(target) or wiki_status(target)
         if json_output:
             _print_json(status)
         else:
             if not status["compiled"]:
-                print("No wiki compiled yet. Run `agentrail context wiki build` to compile one.")
+                print(
+                    "No wiki pages available. The repo may not be linked, or no wiki "
+                    "has been compiled yet (`agentrail context wiki build`)."
+                )
                 return 0
-            print(f"commitSha={status.get('commitSha')} compiledAt={status.get('compiledAt')}")
+            origin = status.get("origin", "local")
+            print(f"origin={origin} commitSha={status.get('commitSha')} compiledAt={status.get('compiledAt')}")
             for page in status["pages"]:
                 age = page.get("ageSeconds")
                 age_text = f"{int(age)}s" if isinstance(age, (int, float)) else "?"
                 print(f"{page['slug']}  hash={str(page.get('inputsHash'))[:15]}…  stale={page['stale']}  age={age_text}  model={page.get('model')}")
         return 0
 
+    if action == "search":
+        assert query is not None  # guaranteed by the parse above
+        pages = wiki_client.remote_pages(target)
+        origin = "server"
+        if pages is None:
+            pages, origin = wiki_client.local_pages(target), "local"
+        results = wiki_client.rank_pages(pages, query, limit=limit)
+        if json_output:
+            _print_json({"query": query, "origin": origin, "pageCount": len(pages), "results": results})
+        else:
+            if not pages:
+                print(
+                    "No wiki pages available. The repo may not be linked, or no wiki "
+                    "has been compiled yet (`agentrail context wiki build`)."
+                )
+                return 0
+            if not results:
+                print(f"No wiki page matches {query!r} (searched {len(pages)} pages from {origin}).")
+                return 0
+            for result in results:
+                stale_marker = " [stale]" if result["stale"] else ""
+                print(f"{result['slug']}  score={result['score']}{stale_marker}")
+                if result["snippet"]:
+                    print(f"    {result['snippet']}")
+            print(f"\nRead one with: agentrail context wiki show {results[0]['slug']}")
+        return 0
+
     # action == "show"
     assert slug is not None  # guaranteed by the parse above
-    try:
-        page = wiki_show(target, slug)
-    except (WikiPageNotFoundError, ValueError) as exc:
-        raise SystemExit(str(exc)) from exc
+    remote = wiki_client.remote_show(target, slug)
+    if remote is not None and not remote.get("found"):
+        # The server answered and has no such slug -- a real miss, not an
+        # outage. Listing what DOES exist is the whole slug-discovery story
+        # for an agent that cannot grep for one (unit slugs are
+        # `wiki/unit/<unit-id>`, unguessable by construction).
+        available = "\n  ".join(remote.get("slugs") or []) or "(none)"
+        raise SystemExit(f"no wiki page for slug {slug!r}. Available slugs:\n  {available}")
+    if remote is not None:
+        page = remote
+    else:
+        try:
+            page = wiki_show(target, slug)
+        except (WikiPageNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
     if json_output:
         _print_json(page)
     else:

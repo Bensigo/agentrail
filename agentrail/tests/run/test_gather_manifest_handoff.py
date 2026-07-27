@@ -144,6 +144,33 @@ class PhasePromptManifestTests(unittest.TestCase):
         kwargs.update(overrides)
         return shared_task_prefix(**kwargs)
 
+    def test_gather_fence_names_the_wiki_orientation_commands(self):
+        """Context source registry spec S.K step 2. The fence already permits
+        `agentrail context` subcommands, but an affordance nobody names goes
+        unused — and `wiki show <slug>` alone is unreachable here, because the
+        gather agent cannot grep for a slug and cannot guess a
+        `wiki/unit/<unit-id>`. Naming `wiki search` is what makes the
+        orienting step usable under the read-only constraint."""
+        gather = self._make("gather")
+        self.assertIn("agentrail context wiki search", gather)
+        self.assertIn("agentrail context wiki show", gather)
+        self.assertIn("wiki/overview", gather)
+
+    def test_gather_fence_is_not_widened_by_the_wiki_affordance(self):
+        """Naming more `agentrail context` subcommands must not loosen the
+        read-only constraint the gather phase depends on."""
+        gather = self._make("gather")
+        self.assertIn("No grep/rg/find, no other shell commands, no editors.", gather)
+        self.assertIn("You are READ-ONLY", gather)
+
+    def test_gather_requires_verifying_a_wiki_claim_before_the_manifest(self):
+        """The manifest is a contract later phases trust without re-checking,
+        so compiled prose must be verified against the file before it gets in
+        — the same rule the task blocks apply to edits."""
+        gather = self._make("gather")
+        self.assertIn("Verify wiki claims against the file", gather)
+        self.assertIn("manifest", gather)
+
     def test_ac1_manifest_bytes_identical_across_the_three_phases(self):
         prefix = self._prefix(gather_manifest=MANIFEST)
         leading = [

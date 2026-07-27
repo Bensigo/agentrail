@@ -672,10 +672,19 @@ class WikiCliTests(unittest.TestCase):
             self.assertIn('slug: "wiki/overview"', show_out)
 
     def test_status_before_any_compile_is_honest(self) -> None:
+        """An empty status must name BOTH causes, not just the local one.
+
+        Since the reader became server-first (context source registry spec
+        §K step 2) "nothing here" has two explanations — an unlinked repo and
+        a repo whose wiki was never compiled — and a message that only offers
+        `wiki build` sends an unlinked clone down the wrong path.
+        """
         root = make_repo(summary_mode="disabled")
         code, out = self._run(["wiki", "status", "--target", str(root)])
         self.assertEqual(code, 0)
-        self.assertIn("No wiki compiled yet", out)
+        self.assertIn("No wiki pages available", out)
+        self.assertIn("not be linked", out)
+        self.assertIn("wiki build", out)
 
     def test_show_missing_slug_is_a_clean_error(self) -> None:
         root = make_repo(summary_mode="disabled")

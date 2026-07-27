@@ -506,6 +506,50 @@ class IssueBasePromptTests(unittest.TestCase):
         )
         self.assertIn("before grep/glob", result)
 
+    def _task_block(self, engine):
+        return self._fn(
+            engine, 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+
+    def test_task_blocks_orient_on_the_wiki_before_querying_code(self):
+        """Context source registry spec §K step 2: the ladder is wiki search
+        -> wiki show -> context query -> read the file. The ORDER is the
+        point — orienting in compiled prose is cheaper than ranked chunk
+        retrieval, which is cheaper than reading files."""
+        for engine in ("codex", "claude"):
+            with self.subTest(engine=engine):
+                result = self._task_block(engine)
+                self.assertLess(
+                    result.index("agentrail context wiki search"),
+                    result.index("agentrail context query"),
+                    "wiki orientation must come before code retrieval in the ladder",
+                )
+
+    def test_task_blocks_tell_the_agent_how_to_discover_a_slug(self):
+        """A bare `wiki show <slug>` is unusable: unit slugs are
+        ``wiki/unit/<unit-id>`` and no agent can guess one. The affordance
+        only works if the prompt also names what IS discoverable — `wiki
+        search`, which ranks pages and prints their slugs, and the stable
+        `wiki/overview` entry point. Without this the ladder is dead on
+        arrival, so it is pinned rather than left to prose review."""
+        for engine in ("codex", "claude"):
+            with self.subTest(engine=engine):
+                result = self._task_block(engine)
+                self.assertIn("agentrail context wiki search", result)
+                self.assertIn("agentrail context wiki show", result)
+                self.assertIn("wiki/overview", result)
+
+    def test_task_blocks_require_verifying_a_wiki_claim_before_an_edit(self):
+        """The anti-hallucination half. A page is compiled prose ABOUT code,
+        and a stale one reads as a confident lie — so a wiki-sourced claim
+        gets checked against the file before it lands in an edit."""
+        for engine in ("codex", "claude"):
+            with self.subTest(engine=engine):
+                result = self._task_block(engine)
+                self.assertIn("Verify wiki claims against the file", result)
+
 
 class IssueRunPhasePromptTests(unittest.TestCase):
     """Tests for issue_run_phase_prompt()."""

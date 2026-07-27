@@ -115,7 +115,7 @@ unchanged.
 
 ### Behaviour
 
-A pure module, `apps/console/lib/connect-command-decision.ts`, following the
+A pure module, `apps/console/lib/connect-command.ts`, following the
 shape of the existing `connect-bind-decision.ts`: a total function from
 `(arg, identity, resolution, reachable)` to a discriminated action. All
 branching is in that function; the dispatcher only executes the action it

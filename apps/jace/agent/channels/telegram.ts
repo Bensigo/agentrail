@@ -58,7 +58,7 @@
 // When the flag is off, `onMessage` is `undefined` — not a conditionally
 // no-op handler — so eve's own default admission/turn-start logic (which
 // this shim does not attempt to reproduce) is the thing that runs, unchanged.
-import { telegramChannel } from "eve/channels/telegram";
+import { telegramChannel, type TelegramContext } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 import {
@@ -82,6 +82,16 @@ function isTruthyFlag(value: string | undefined): boolean {
 const forwardToConsole = isTruthyFlag(process.env["JACE_TELEGRAM_FORWARD_TO_CONSOLE"]);
 
 /**
+ * Shown in-channel when a forward to the console fails — a console outage
+ * (unreachable host, 502, unset JACE_CONSOLE_* vars) must never be silent:
+ * eve already returns 200 to Telegram for this webhook delivery regardless
+ * of what `onMessage` does, so Telegram will not retry, and nothing else in
+ * this path enqueues the message. Short and dry (Jace's voice, no apology
+ * paragraph) — something the sender can act on immediately.
+ */
+const FORWARD_FAILURE_NOTICE = "Couldn't reach the workspace to log that — try sending it again in a moment.";
+
+/**
  * Inbound admission override, wired ONLY when `forwardToConsole` is true
  * (see the header comment). `message.raw` is eve's documented raw-payload
  * escape hatch on the normalized inbound `message` (the same shape every
@@ -93,9 +103,17 @@ const forwardToConsole = isTruthyFlag(process.env["JACE_TELEGRAM_FORWARD_TO_CONS
  * failure is logged, not re-attempted, and the door still returns `null` —
  * an inbound Telegram update should never fall through to starting a turn on
  * this door once the flag is on, forward failure or not.
+ *
+ * On a failed forward, also posts `FORWARD_FAILURE_NOTICE` in-channel via
+ * `ctx.telegram.post` (see eve's `TelegramContext` — the minimal context
+ * `onMessage` receives before a session exists, `{ readonly telegram:
+ * TelegramHandle }`) BEFORE returning `null`, so a console outage never
+ * blackholes the user's message with zero feedback (final-branch review
+ * Finding 2). Posting the notice is itself wrapped in its own try/catch: it
+ * must never throw out of `onMessage`, forward failure or not.
  */
 async function onMessage(
-  _ctx: unknown,
+  ctx: TelegramContext,
   message: { raw?: unknown },
 ): Promise<null> {
   const result = await forwardTelegramInbound({
@@ -105,6 +123,11 @@ async function onMessage(
   });
   if (!result.ok) {
     console.error("[telegram] forward-to-console failed:", result.reason);
+    try {
+      await ctx.telegram.post(FORWARD_FAILURE_NOTICE);
+    } catch (err) {
+      console.error("[telegram] forward-failure notice itself failed:", err);
+    }
   }
   return null;
 }

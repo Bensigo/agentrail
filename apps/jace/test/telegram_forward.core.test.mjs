@@ -8,12 +8,18 @@ import assert from "node:assert/strict";
 import {
   shapeTelegramInbound,
   forwardTelegramInbound,
+  admitTelegramMessage,
   TELEGRAM_INBOUND_PATH,
   resolveConsoleConfig,
   buildTelegramInboundUrl,
 } from "../agent/lib/telegram_forward.core.mjs";
 
 function telegramUpdate(overrides = {}) {
+  // `message` is merged field-by-field (see below) rather than replaced
+  // wholesale, so it must be excluded from the outer `...rest` spread —
+  // otherwise a `...overrides` applied AFTER the merged `message` would
+  // clobber it back to the caller's own (partial, unmerged) override object.
+  const { message: messageOverrides, ...rest } = overrides;
   return {
     update_id: 100,
     message: {
@@ -22,9 +28,9 @@ function telegramUpdate(overrides = {}) {
       chat: { id: 555, type: "private" },
       from: { id: 777, username: "ada", first_name: "Ada", last_name: "Lovelace" },
       text: "hello Jace",
-      ...overrides.message,
+      ...messageOverrides,
     },
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -94,6 +100,118 @@ test("shapeTelegramInbound: a message missing chat/from is refused", () => {
   const update = telegramUpdate();
   delete update.message.chat;
   assert.equal(shapeTelegramInbound(update).ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// Group/supergroup mention gate (Finding 1, final-branch review) —
+// shapeTelegramInbound's admission of group/supergroup traffic, mirroring
+// eve's own shouldDispatchTelegramMessage.
+// ---------------------------------------------------------------------------
+
+test("shapeTelegramInbound: a private chat admits, even with no botUsername known", () => {
+  const result = shapeTelegramInbound(telegramUpdate());
+  assert.equal(result.ok, true);
+});
+
+test("shapeTelegramInbound: a bare group message (no command/mention/reply) is refused", () => {
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "just chatting" },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, false);
+});
+
+test("shapeTelegramInbound: a group message starting with /command is admitted", () => {
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "/start" },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, true);
+});
+
+test("shapeTelegramInbound: a group message containing @botusername is admitted", () => {
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "hey @jace_bot can you help" },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, true);
+});
+
+test("shapeTelegramInbound: the @mention match is case-insensitive", () => {
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "hey @JACE_BOT" },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, true);
+});
+
+test("shapeTelegramInbound: a group message replying to the bot's own message is admitted", () => {
+  const update = telegramUpdate({
+    message: {
+      chat: { id: 555, type: "group" },
+      text: "yes please",
+      reply_to_message: { from: { is_bot: true } },
+    },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, true);
+});
+
+test("shapeTelegramInbound: a group message replying to a human (not the bot) is refused", () => {
+  const update = telegramUpdate({
+    message: {
+      chat: { id: 555, type: "group" },
+      text: "yes please",
+      reply_to_message: { from: { is_bot: false } },
+    },
+  });
+  const result = shapeTelegramInbound(update, { botUsername: "jace_bot" });
+  assert.equal(result.ok, false);
+});
+
+test("shapeTelegramInbound: a supergroup follows the identical gate as group", () => {
+  const bare = telegramUpdate({
+    message: { chat: { id: 555, type: "supergroup" }, text: "hi" },
+  });
+  assert.equal(shapeTelegramInbound(bare, { botUsername: "jace_bot" }).ok, false);
+
+  const command = telegramUpdate({
+    message: { chat: { id: 555, type: "supergroup" }, text: "/start" },
+  });
+  assert.equal(shapeTelegramInbound(command, { botUsername: "jace_bot" }).ok, true);
+});
+
+test("shapeTelegramInbound: a channel post is refused outright, even with a slash command", () => {
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "channel" }, text: "/start" },
+  });
+  assert.equal(shapeTelegramInbound(update, { botUsername: "jace_bot" }).ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// admitTelegramMessage (unit)
+// ---------------------------------------------------------------------------
+
+test("admitTelegramMessage: private admits unconditionally", () => {
+  assert.equal(admitTelegramMessage({ chat: { type: "private" } }, undefined), true);
+});
+
+test("admitTelegramMessage: group without command/mention/reply refuses", () => {
+  assert.equal(
+    admitTelegramMessage({ chat: { type: "group" }, text: "hello" }, "jace_bot"),
+    false,
+  );
+});
+
+test("admitTelegramMessage: a bare /command admits even with no botUsername known", () => {
+  assert.equal(admitTelegramMessage({ chat: { type: "group" }, text: "/start" }, undefined), true);
+});
+
+test("admitTelegramMessage: an unrecognized chat type (e.g. channel) refuses regardless", () => {
+  assert.equal(
+    admitTelegramMessage({ chat: { type: "channel" }, text: "/start" }, "jace_bot"),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -203,6 +321,40 @@ test("forwardTelegramInbound: missing console config resolves to ok:false, reaso
   });
   assert.deepEqual(result, { ok: false, reason: "config_missing" });
   assert.equal(called, false);
+});
+
+test("forwardTelegramInbound: a bare group message is refused WITHOUT a network call (Finding 1)", async () => {
+  let called = false;
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "just chatting" },
+  });
+  const result = await forwardTelegramInbound({
+    env: { ...ENV, TELEGRAM_BOT_USERNAME: "jace_bot" },
+    update,
+    transport: async () => {
+      called = true;
+      return { status: 200 };
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(called, false);
+});
+
+test("forwardTelegramInbound: threads env.TELEGRAM_BOT_USERNAME through to the mention gate", async () => {
+  let called = false;
+  const update = telegramUpdate({
+    message: { chat: { id: 555, type: "group" }, text: "hey @jace_bot" },
+  });
+  const result = await forwardTelegramInbound({
+    env: { ...ENV, TELEGRAM_BOT_USERNAME: "jace_bot" },
+    update,
+    transport: async () => {
+      called = true;
+      return { status: 200 };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(called, true);
 });
 
 test("forwardTelegramInbound: a 2xx status resolves to ok:true", async () => {

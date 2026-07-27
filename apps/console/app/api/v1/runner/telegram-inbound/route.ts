@@ -3,7 +3,14 @@ import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { dispatchQueuedChannelMessages } from "../../../../../lib/channel-dispatch";
 
-const MAX_TEXT_LENGTH = 4000;
+// Telegram's own documented text-message cap (sendMessage/message.text) is
+// 4096 chars, NOT Discord's 2000 — unlike `runner/discord-inbound`'s
+// `MAX_TEXT_LENGTH = 4000` (a cap already above Discord's own limit and thus
+// unreachable there), 4000 here is BELOW Telegram's real cap and would 400 +
+// silently drop any legal 4001-4096 char message (final-branch review
+// Finding 3; see Finding 2's in-channel notice for what "silently" used to
+// mean before this route existed).
+const MAX_TEXT_LENGTH = 4096;
 
 /**
  * POST /api/v1/runner/telegram-inbound

@@ -114,9 +114,19 @@ describe("POST /api/v1/runner/telegram-inbound", () => {
       expect(mockEnqueue).not.toHaveBeenCalled();
     });
 
-    it("400 when text exceeds the max length", async () => {
-      const res = await POST(req({ token: SECRET, body: { ...VALID_BODY, text: "x".repeat(4001) } }));
+    // Telegram's own documented text-message cap is 4096, not Discord's 2000
+    // (see route.ts's own comment on MAX_TEXT_LENGTH — final-branch review
+    // Finding 3). Pinned at the exact boundary so a regression toward the
+    // discord-inbound sibling's 4000 constant is caught immediately.
+    it("200 at exactly the 4096-char Telegram cap", async () => {
+      const res = await POST(req({ token: SECRET, body: { ...VALID_BODY, text: "x".repeat(4096) } }));
+      expect(res.status).toBe(200);
+    });
+
+    it("400 when text exceeds the 4096-char Telegram cap", async () => {
+      const res = await POST(req({ token: SECRET, body: { ...VALID_BODY, text: "x".repeat(4097) } }));
       expect(res.status).toBe(400);
+      expect(mockEnqueue).not.toHaveBeenCalled();
     });
 
     it("falls back senderDisplay to senderId when blank", async () => {

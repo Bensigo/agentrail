@@ -64,8 +64,15 @@ Neither gap has an existing issue.
   and "repo not connected" stop being indistinguishable. Separate issue.
 - Subagent trace nesting in Langfuse. Separate issue.
 - Any change to how work is *executed*, or to the reviewer subagent.
-- Slack credentials. The Slack events route already exists; this design covers
-  Slack with no Slack-specific code, but configuring it is out of scope.
+- Slack. **Correction, established during implementation:** the original claim
+  that this design covers Slack with no Slack-specific code is false, and the
+  reason is a platform constraint rather than a gap in the design. Slack's own
+  client intercepts a leading `/` as a slash command and never delivers the
+  message as an event, so `/connect` as typed never reaches the dispatcher.
+  Separately, `LEADING_MENTION` matches numeric Discord snowflakes only, not
+  Slack's `<@U08ABC123>` form. Slack support needs a registered slash command
+  and a widened mention pattern — its own issue. Slack is unconfigured on this
+  deployment, so nothing here is blocked by it.
 
 ## Part 1 — `/connect`
 
@@ -102,9 +109,13 @@ case-insensitively to `/connect`, after two normalizations:
 
 - Strip a trailing `@botname` suffix. Telegram appends it in group chats
   (`/connect@jace_bot`).
-- Strip a leading bot mention. Discord guild messages arrive as
-  `<@1234567890> /connect`; the gateway listener only admits @mentions in guild
-  channels, so the mention is always present there.
+- Strip a leading bot mention. **Correction, established during
+  implementation:** Discord guild messages do NOT arrive mention-prefixed — the
+  gateway listener's `shapeInboundPayload` already calls `stripBotMention`
+  before POSTing to the console, so text reaching `channel_inbox` is
+  mention-free. The pattern stays as defence in depth, and it does correctly
+  strip a third party's mention (`@jace @alice /connect`), but nothing should
+  depend on it being load-bearing.
 
 Everything after the first token is the optional workspace argument, trimmed.
 An empty remainder is the bare form.

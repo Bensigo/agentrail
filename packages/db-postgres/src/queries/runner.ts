@@ -1,4 +1,4 @@
-import { eq, and, sql, inArray } from "drizzle-orm";
+import { eq, and, asc, sql, inArray } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
 import { db } from "../db.js";
 import { deviceCodes } from "../schema/device_codes.js";
@@ -277,7 +277,30 @@ function boundErrorSummary(value: string | undefined | null): string | null {
     : value;
 }
 
-/** Find (or create) the repositories row for a repo slug; returns its id. */
+/**
+ * Find (or create) the repositories row for a repo slug; returns its id.
+ *
+ * The lookup is CASE-INSENSITIVE, for the same reason `getRepositoryByName`
+ * is (#1478): writes store GitHub's own casing (`Bensigo/agentrail`) while
+ * reads often arrive lowercased, and GitHub itself treats `owner/repo` as
+ * case-insensitive.
+ *
+ * This site matters MORE than a plain read, and is why #1478's own
+ * "a workspace cannot hold two colliding rows" reasoning did not hold: on a
+ * miss this function INSERTS. `deriveRepoSlug` passes casing straight through
+ * from the queue entry's `externalId` or from `connectors.config.repos[0]`,
+ * neither of which is normalized — so with an exact `eq`, a differently-cased
+ * slug for a repo the workspace already has manufactured a SECOND row. There
+ * is no unique constraint on `(workspace_id, name)` to stop it (see
+ * migrations/0003_add_repositories.sql — only the workspaces FK), so nothing
+ * below the application layer was holding that invariant either.
+ *
+ * `orderBy` is not decoration: a workspace that ALREADY accumulated colliding
+ * rows this way must resolve to the same one on every call, or the same issue
+ * would ingest its cost/telemetry against a different repository_id per run.
+ * Oldest-first, tie-broken by id, makes that deterministic and picks the row
+ * the rest of the workspace has been using for longest.
+ */
 async function findOrCreateRepository(
   workspaceId: string,
   slug: string
@@ -288,9 +311,10 @@ async function findOrCreateRepository(
     .where(
       and(
         eq(repositories.workspaceId, workspaceId),
-        eq(repositories.name, slug)
+        sql`lower(${repositories.name}) = lower(${slug})`
       )
     )
+    .orderBy(asc(repositories.createdAt), asc(repositories.id))
     .limit(1);
   if (existing[0]) return existing[0].id;
 

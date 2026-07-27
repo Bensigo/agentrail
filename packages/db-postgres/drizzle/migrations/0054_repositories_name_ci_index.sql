@@ -1,0 +1,22 @@
+-- Case-insensitive lookup index on `repositories` (#1480, follow-up to #1478).
+--
+-- Three queries now match this column with `lower(name) = lower($1)` —
+-- `getRepositoryByName` (#1478), `getLatestOnboardMemoryAt`, and the runner's
+-- `findOrCreateRepository`. The table has NO index on `name` at all today
+-- (migrations/0003_add_repositories.sql creates only the workspaces FK), so
+-- every one of them is a sequential scan, and a plain b-tree on `name` could
+-- not serve them anyway: `lower()` on the column makes an ordinary index
+-- unusable. This is the functional index those three actually need.
+--
+-- DELIBERATELY NOT UNIQUE. A unique index is what the codebase morally wants
+-- — #1478 argues its fix is safe because "a workspace cannot hold two rows
+-- differing only by case", and nothing enforces that today — but adding one
+-- here would be a footgun: migrations run in Railway's `preDeployCommand`, so
+-- if prod already holds a colliding pair (which `findOrCreateRepository` could
+-- create before this PR fixes it), the migration fails and takes the DEPLOY
+-- down with it. Deduping existing rows is its own piece of work with its own
+-- data decisions; until that lands, the reads are made deterministic in
+-- application code (`orderBy` in `findOrCreateRepository`) rather than by a
+-- constraint that cannot be applied safely.
+CREATE INDEX IF NOT EXISTS "repositories_workspace_id_lower_name_idx"
+  ON "repositories" ("workspace_id", lower("name"));

@@ -647,6 +647,21 @@ export async function getLatestOnboardMemoryAt(
   // (workspace_id, name) match. When the repo row is absent or has no such
   // memory the inner-join yields no rows and Postgres still returns one row
   // with max=NULL / count=0 — i.e. { onboardedAt: null, count: 0 }.
+  //
+  // The name match is CASE-INSENSITIVE for the same reason
+  // `getRepositoryByName` above is (#1478): writes store GitHub's own casing
+  // (`Bensigo/agentrail`) while reads arrive lowercased out of
+  // `agentrail.shared.git.origin_repo_full_name`. This was the OTHER exact
+  // match left on this column after #1478 — that PR scoped itself to
+  // `getRepositoryByName`'s callers, but the mismatch is a property of
+  // `repositories.name` itself, not of one function. An exact `eq` here made
+  // an onboarded repo look never-onboarded, which is a silent re-onboard.
+  //
+  // Aggregating over BOTH rows of a case-collision is the right behavior for
+  // this query specifically — it asks "has this repo been onboarded", and a
+  // workspace that accumulated a duplicate row (see runner.ts's
+  // `findOrCreateRepository`) has genuinely been onboarded if either row has
+  // onboarder memory. There is no row to pick here, so no tiebreak is needed.
   const rows = await db
     .select({
       onboardedAt: max(memoryItems.createdAt),
@@ -657,7 +672,7 @@ export async function getLatestOnboardMemoryAt(
     .where(
       and(
         eq(repositories.workspaceId, workspaceId),
-        eq(repositories.name, repoFullName),
+        sql`lower(${repositories.name}) = lower(${repoFullName})`,
         eq(memoryItems.writtenBy, "onboarder"),
       ),
     );

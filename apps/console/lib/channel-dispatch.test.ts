@@ -1196,7 +1196,9 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
     expect(mockGetChatIdentity).toHaveBeenCalledWith("discord", "555");
     const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
     expect(body.channel).toBe("discord");
-    expect(body.target).toEqual({ channelId: "998877" });
+    // `conversationId` is the #1479 session-continuity pin — see its own
+    // describe block below for why it is here and what it must equal.
+    expect(body.target).toEqual({ channelId: "998877", conversationId: "998877" });
     expect(body.target).not.toHaveProperty("chatId");
     expect(mockBindEveSession).toHaveBeenCalledWith("ledger-discord-1", "eve-sess-1");
     expect(mockComplete).toHaveBeenCalledWith("row-1");
@@ -1292,10 +1294,14 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
       await dispatchQueuedChannelMessages();
 
       const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
-      // target stays exactly { channelId } — eve's proactive DiscordReceiveTarget
-      // has no room for either field, so putting them there would silently drop
-      // them (verified against eve@0.19.0's own discordChannel.d.ts).
-      expect(body.target).toEqual({ channelId: "998877" });
+      // The interaction credential NEVER rides `target` — eve's proactive
+      // DiscordReceiveTarget has no room for either field, so putting them
+      // there would silently drop them (verified against eve@0.19.0's own
+      // discordChannel.d.ts). `conversationId` is the one field that IS part
+      // of that shape, and it carries the #1479 continuity pin.
+      expect(body.target).toEqual({ channelId: "998877", conversationId: "998877" });
+      expect(body.target).not.toHaveProperty("interactionToken");
+      expect(body.target).not.toHaveProperty("applicationId");
       // auth.attributes is where eve actually forwards these through to
       // ctx.session.auth.initiator, which Jace's discord channel reads.
       expect(body.auth.attributes).toMatchObject({
@@ -1380,6 +1386,100 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
 // (connectors/slack/events/route.ts) enqueues a Slack row's target under the
 // SAME internal `chatId` payload field, so extractPayload needs no fork here
 // either.
+
+// --- #1479: the Discord session-continuity pin ------------------------------
+//
+// Before this, EVERY Discord turn started a brand-new Eve session: the door
+// sent `target: { channelId }` with no `conversationId`, so eve's
+// `discordChannel().receive` set `hasMessageAnchor = false`, and the first
+// outbound `channel.discord.post()` ran `anchor()` -> re-keyed the live
+// session's continuation token to the id of the message it had just posted.
+// The next inbound turn — still keyed `"<channelId>:"` — matched no active
+// session, and `createSendFn` SILENTLY started a fresh one rather than
+// erroring. Observed in prod: a human's "yes" approving a PR review Jace had
+// just offered to post arrived at an agent with an empty history, which
+// introduced itself instead (Langfuse, two `wrun_*` sessions both at
+// `eve.turn.sequence: 0`).
+//
+// The contract these pin: the value must be STABLE across messages in one
+// conversation (a per-message value would re-key every turn — the exact bug),
+// DISTINCT per conversation, and absent from every other channel.
+describe("dispatchQueuedChannelMessages — discord session continuity (#1479)", () => {
+  beforeEach(() => {
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+  });
+
+  it("sends the SAME target.conversationId for two different messages in one channel", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({ id: "row-1", providerMessageId: "998877:1", payload: { chatId: "998877", text: "review this pr" } })
+      )
+      .mockResolvedValueOnce(
+        discordRow({ id: "row-2", providerMessageId: "998877:2", payload: { chatId: "998877", text: "yes" } })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const first = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    const second = JSON.parse(mockFetch.mock.calls[1]?.[1]?.body as string);
+    expect(first.target.conversationId).toBe("998877");
+    // The whole fix in one assertion: turn 2 must be able to resume turn 1.
+    expect(second.target.conversationId).toBe(first.target.conversationId);
+  });
+
+  it("pins conversationId to the row's conversationKey, NOT to anything per-message", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({ conversationKey: "chan-A", providerMessageId: "chan-A:99", payload: { chatId: "chan-A", text: "hi" } })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.conversationId).toBe("chan-A");
+    expect(body.target.conversationId).not.toBe("chan-A:99");
+  });
+
+  it("gives two DIFFERENT channels different conversationIds (no cross-channel session bleed)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(discordRow({ conversationKey: "chan-A", payload: { chatId: "chan-A", text: "hi" } }))
+      .mockResolvedValueOnce(discordRow({ id: "row-2", conversationKey: "chan-B", payload: { chatId: "chan-B", text: "hi" } }))
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const a = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    const b = JSON.parse(mockFetch.mock.calls[1]?.[1]?.body as string);
+    expect(a.target.conversationId).toBe("chan-A");
+    expect(b.target.conversationId).toBe("chan-B");
+  });
+
+  it("does NOT add conversationId to a telegram target (its DM token is already stable — adding one would orphan live sessions)", async () => {
+    mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(IDENTITY);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123 });
+    expect(body.target).not.toHaveProperty("conversationId");
+  });
+
+  it("does NOT add conversationId to a slack target (slack's own continuity gap needs its own fix, not this one)", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ channelId: "D0PNCRP9N" });
+    expect(body.target).not.toHaveProperty("conversationId");
+  });
+});
 
 function slackRow(overrides: Partial<ClaimedChannelInboxRow> & { payload?: unknown } = {}): ClaimedChannelInboxRow {
   return row({

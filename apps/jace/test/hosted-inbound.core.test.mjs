@@ -153,6 +153,31 @@ test("normalizeHostedInbound keeps conversationId when present, omits when absen
   assert.equal("conversationId" in withoutConvo.target, false);
 });
 
+// #1479 — the console's discord door now pins a STABLE `target.conversationId`
+// so consecutive turns in one channel resume ONE eve session (without it,
+// eve's `anchor()` re-keys the live session to the id of the message it just
+// posted, and every turn starts over). That fix only works if this normalizer
+// forwards the field for `channel: "discord"` — not just for telegram above.
+test("normalizeHostedInbound forwards conversationId on a discord target (#1479 continuity pin)", () => {
+  const pinned = normalizeHostedInbound({
+    channel: "discord",
+    message: "yes",
+    target: { channelId: "998877", conversationId: "998877" },
+    auth: {},
+  });
+  assert.deepEqual(pinned.target, { channelId: "998877", conversationId: "998877" });
+
+  // Absent stays absent — a discord caller that has not been updated yet is
+  // byte-unchanged, so this is additive, not a new required field.
+  const unpinned = normalizeHostedInbound({
+    channel: "discord",
+    message: "yes",
+    target: { channelId: "998877" },
+    auth: {},
+  });
+  assert.equal("conversationId" in unpinned.target, false);
+});
+
 test("normalizeHostedInbound keeps messageThreadId when present, omits when absent", () => {
   const withThread = normalizeHostedInbound({
     message: "hi",

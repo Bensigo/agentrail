@@ -70,6 +70,51 @@ const HOSTED_INBOUND_TARGET_KEY: Record<string, "chatId" | "channelId"> = {
 };
 
 /**
+ * Channels whose hosted-inbound `target` must ALSO carry a stable
+ * `conversationId` — the fix for #1479, where every Discord turn started a
+ * BRAND-NEW Eve session and Jace lost all conversational memory between
+ * messages (a human's "yes, post that review" arrived at an agent that had
+ * never heard of the review).
+ *
+ * Verified against the installed eve@0.19.0 compiled runtime
+ * (apps/jace/.output/server/_libs/eve.mjs — the same read-the-runtime-not-the-
+ * .d.ts convention agent/channels/discord.ts's own header comment follows):
+ *
+ *   - `discordChannel().receive` derives its continuation token as
+ *     `discordContinuationToken(channelId, target.conversationId ?? "")`, and
+ *     sets `hasMessageAnchor = (target.conversationId !== undefined)`.
+ *   - `createSendFn` tries `deliver(<token>)` first and, on
+ *     `RuntimeNoActiveSessionError`, silently falls back to STARTING A NEW
+ *     SESSION. So a token that stops matching does not error — it quietly
+ *     resets the conversation.
+ *   - With no `conversationId`, `hasMessageAnchor` is false, so the first
+ *     outbound `channel.discord.post()` runs `sendViaChannel` -> `anchor(msg)`
+ *     -> `session.setContinuationToken(discordContinuationToken(channelId,
+ *     <the id of the message it just posted>))`. The live session RE-KEYS
+ *     ITSELF to its own reply, and the next inbound turn — still keyed
+ *     `"<channelId>:"` — matches nothing. Every turn is turn 0.
+ *
+ * Supplying a stable `conversationId` makes `hasMessageAnchor` true, which
+ * turns `anchor()` into a no-op and pins the token for the life of the
+ * conversation. It changes NO outbound behavior: on eve's discord handle
+ * `conversationId` is used only to build that token and as a read-only field,
+ * and `sendViaChannel` addresses `channelId` alone.
+ *
+ * Telegram is deliberately ABSENT. It has never had this bug — its `anchor()`
+ * is gated by `shouldAnchorTelegramConversation()`, true only for
+ * `group`/`supergroup`, so a DM's token stays `chatId::` forever. Adding a
+ * `conversationId` there would CHANGE that token and orphan every in-flight
+ * Telegram session exactly once, for no benefit.
+ *
+ * Slack is deliberately ABSENT too, and is NOT fixed by this: its receive
+ * does `let l = threadTs || crypto.randomUUID()`, so with no `threadTs` every
+ * receive gets a random token and Slack can never resume at all. `threadTs`
+ * carries real Slack threading semantics, so it needs its own design rather
+ * than a copy of this — tracked on #1479.
+ */
+const HOSTED_INBOUND_PINS_CONVERSATION: ReadonlySet<string> = new Set(["discord"]);
+
+/**
  * Dispatch a system (non-model) message to the right channel's own sender —
  * additive: Telegram's `sendSystemTelegramMessage` import above and every
  * one of its call sites in `processRow`'s 'ask' branch are UNCHANGED by this
@@ -375,6 +420,17 @@ async function runEveTurn(params: {
    * `chatId` is ignored entirely.
    */
   target?: Record<string, unknown>;
+  /**
+   * The row's own `conversationKey` — the STABLE per-conversation id this
+   * door is already keyed on. Used only to pin `target.conversationId` for
+   * the channels in `HOSTED_INBOUND_PINS_CONVERSATION` (#1479); every other
+   * channel's target is byte-unchanged whether this is passed or not.
+   *
+   * It must be the conversation's id, never anything per-message: a
+   * per-message value would re-key the session on every turn, which is the
+   * exact bug being fixed.
+   */
+  conversationKey?: string;
   auth: Record<string, unknown>;
 }): Promise<EveTurnOutcome> {
   const channel = params.channel ?? "telegram";
@@ -385,10 +441,21 @@ async function runEveTurn(params: {
   // under that same internal payload field. Console (#1288) supplies its own
   // compound `target` instead — see the param doc above.
   const targetKey = HOSTED_INBOUND_TARGET_KEY[channel] ?? "chatId";
+  // #1479: pin `conversationId` for the channels that need it, from the row's
+  // own stable conversationKey (falling back to the destination id, which for
+  // discord IS the channelId this conversation is keyed on). Never per-message
+  // — see HOSTED_INBOUND_PINS_CONVERSATION. `normalizeHostedInbound` forwards
+  // `target.conversationId` through untouched, so nothing changes Jace-side.
+  const pinnedConversationId = HOSTED_INBOUND_PINS_CONVERSATION.has(channel)
+    ? params.conversationKey ?? (params.chatId !== undefined ? String(params.chatId) : undefined)
+    : undefined;
   const target =
     params.target ??
     {
       [targetKey]: params.chatId,
+      ...(pinnedConversationId !== undefined && pinnedConversationId !== ""
+        ? { conversationId: pinnedConversationId }
+        : {}),
       ...(params.messageThreadId !== undefined
         ? { messageThreadId: params.messageThreadId }
         : {}),
@@ -885,6 +952,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       message,
       channel: row.channel,
       chatId: payload.chatId,
+      conversationKey: row.conversationKey,
       messageThreadId: payload.messageThreadId,
       auth,
     });

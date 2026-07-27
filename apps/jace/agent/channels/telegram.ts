@@ -32,11 +32,16 @@
 // not clobber Eve's default turn.failed / session.failed error handlers, which
 // Eve does not export for chaining). See agent/lib/typing-keepalive.core.mjs.
 //
+// The actions.requested handler arms the work acknowledgement: when the model
+// asks for a tool, we say what we're doing rather than leaving the chat silent.
+// It is NOT armed from turn.started — a turn whose whole output is a clarifying
+// question does no work, and announcing "on it" there is simply false. See
+// agent/lib/ack-on-work.core.mjs.
+//
 // The ack is skipped for a Jace-initiated turn (run-outcome.ts's terminal-
-// outcome / goal-loop hand-off) — see ack-on-silence.core.mjs's
-// isProactiveTurn for why: composing that reply is a full model turn that
-// routinely exceeds the ack window, and there is no human message behind it
-// to acknowledge.
+// outcome / goal-loop hand-off) — see ack-on-work.core.mjs's isProactiveTurn
+// for why: those turns call tools too, so the new trigger does not filter them
+// out by itself, and there is no human message behind them to acknowledge.
 //
 // INBOUND SHIM (#1472, docs/superpowers/specs/2026-07-27-jace-connect-command-design.md
 // "Part 2 — Telegram transport shim"): this native `/eve/v1/telegram` webhook
@@ -62,10 +67,10 @@ import { telegramChannel, type TelegramContext } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 import {
-  createAckOnSilence,
-  ACK_TEXT,
+  createAckOnWork,
+  workPhraseFor,
   isProactiveTurn,
-} from "../lib/ack-on-silence.core.mjs";
+} from "../lib/ack-on-work.core.mjs";
 import { forwardTelegramInbound } from "../lib/telegram_forward.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
@@ -133,7 +138,7 @@ async function onMessage(
 }
 
 const typing = createTypingKeepalive();
-const ack = createAckOnSilence();
+const ack = createAckOnWork();
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "telegram";
 
@@ -144,12 +149,16 @@ export default telegramChannel({
     "turn.started"(_data, channel, ctx) {
       const key = convoKey(ctx);
       typing.start(key, () => channel.telegram.startTyping());
-      // One-shot: if this turn goes quiet for ACK_AFTER_MS, tell the human
-      // we're on it. Disarmed below the moment a real reply lands. Skipped
+    },
+    "actions.requested"(data, channel, ctx) {
+      // Real work just started. One-shot per turn: if it is still running
+      // ACK_AFTER_MS later, say what we're doing. Disarmed below the moment a
+      // real reply lands, so a fast tool never announces itself. Skipped
       // entirely for a Jace-initiated turn — see the header comment.
-      if (!isProactiveTurn(ctx?.session?.auth)) {
-        ack.start(key, () => channel.telegram.post(ACK_TEXT));
-      }
+      if (isProactiveTurn(ctx?.session?.auth)) return;
+      const phrase = workPhraseFor(data.actions);
+      if (!phrase) return;
+      ack.arm(convoKey(ctx), data.turnId, () => channel.telegram.post(phrase));
     },
     "turn.completed"(_data, _channel, ctx) {
       const key = convoKey(ctx);

@@ -120,10 +120,10 @@ import {
 } from "../lib/discord-followup.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 import {
-  createAckOnSilence,
-  ACK_TEXT,
+  createAckOnWork,
+  workPhraseFor,
   isProactiveTurn,
-} from "../lib/ack-on-silence.core.mjs";
+} from "../lib/ack-on-work.core.mjs";
 
 /** Raw fetch, narrowed to the `{ status, body }` shape discord-followup.core.mjs
  * expects — mirrors every jace->external-API wrapper's own `realTransport`
@@ -151,7 +151,7 @@ async function followupTransport(
 }
 
 const typing = createTypingKeepalive({ refreshMs: 8000 });
-const ack = createAckOnSilence();
+const ack = createAckOnWork();
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "discord";
 
@@ -165,22 +165,26 @@ export default discordChannel({
     "turn.started"(_data, channel, ctx) {
       const key = convoKey(ctx);
       typing.start(key, () => channel.discord.startTyping());
-      // Same interaction-followup path message.completed uses — a bare
-      // channel.discord.post() silently eats 50001 in private channels
+    },
+    "actions.requested"(data, channel, ctx) {
+      // Real work just started, and the payload names it. One-shot per turn.
+      // Delivered on the same interaction-followup path message.completed uses
+      // — a bare channel.discord.post() silently eats 50001 in private channels
       // (the #1463 bug). Skipped entirely for a Jace-initiated turn
-      // (run-outcome.ts's hand-off) — see ack-on-silence.core.mjs's
-      // isProactiveTurn: there is no human message behind that turn to
-      // acknowledge, and composing it routinely exceeds the ack window.
-      if (!isProactiveTurn(ctx?.session?.auth)) {
-        ack.start(key, () =>
-          deliverDiscordBubble({
-            content: ACK_TEXT,
-            attributes: resolveSessionAuthAttributes(ctx?.session?.auth),
-            postFollowup: followupTransport,
-            postViaBot: () => channel.discord.post(ACK_TEXT),
-          }),
-        );
-      }
+      // (run-outcome.ts's hand-off) — see ack-on-work.core.mjs's
+      // isProactiveTurn: those turns call tools too, and there is no human
+      // message behind them to acknowledge.
+      if (isProactiveTurn(ctx?.session?.auth)) return;
+      const phrase = workPhraseFor(data.actions);
+      if (!phrase) return;
+      ack.arm(convoKey(ctx), data.turnId, () =>
+        deliverDiscordBubble({
+          content: phrase,
+          attributes: resolveSessionAuthAttributes(ctx?.session?.auth),
+          postFollowup: followupTransport,
+          postViaBot: () => channel.discord.post(phrase),
+        }),
+      );
     },
     "turn.completed"(_data, _channel, ctx) {
       const key = convoKey(ctx);

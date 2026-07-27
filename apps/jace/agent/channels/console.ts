@@ -63,12 +63,12 @@
 import { defineChannel, POST } from "eve/channels";
 import { postConsoleChatReply } from "../lib/console_chat_reply.core.mjs";
 import {
-  createAckOnSilence,
-  ACK_TEXT,
+  createAckOnWork,
+  workPhraseFor,
   isProactiveTurn,
-} from "../lib/ack-on-silence.core.mjs";
+} from "../lib/ack-on-work.core.mjs";
 
-const ack = createAckOnSilence();
+const ack = createAckOnWork();
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "console";
 
@@ -128,18 +128,21 @@ export default defineChannel<ConsoleState>({
     });
   },
   events: {
-    "turn.started"(_data, channel, ctx) {
-      // Skipped entirely for a Jace-initiated turn — see
-      // ack-on-silence.core.mjs's isProactiveTurn. Console isn't wired into
-      // run-outcome.ts's CHANNELS map today, but the predicate is applied
-      // identically across all four ack-wired channels so this stays
-      // correct if that ever changes.
+    "actions.requested"(data, channel, ctx) {
+      // Armed when real work starts, not when the message arrives — a turn that
+      // only asks a clarifying question never reaches here. Skipped entirely
+      // for a Jace-initiated turn — see ack-on-work.core.mjs's isProactiveTurn.
+      // Console isn't wired into run-outcome.ts's CHANNELS map today, but the
+      // predicate is applied identically across every ack-wired channel so this
+      // stays correct if that ever changes.
       if (isProactiveTurn(ctx?.session?.auth)) return;
-      ack.start(convoKey(ctx), () =>
+      const phrase = workPhraseFor(data.actions);
+      if (!phrase) return;
+      ack.arm(convoKey(ctx), data.turnId, () =>
         postConsoleChatReply({
           workspaceId: channel.state.workspaceId,
           conversationKey: channel.state.conversationKey,
-          text: ACK_TEXT,
+          text: phrase,
           env: process.env,
           transport: realTransport,
         }),

@@ -305,6 +305,75 @@ test("fetchWorkStatus defaults truncated safely when the body's truncated field 
 });
 
 // ---------------------------------------------------------------------------
+// fetchWorkStatus — success, untrusted-field hardening (Minor 9)
+// ---------------------------------------------------------------------------
+// `title` (GitHub issue/PR title), `parkReason` (guardrail/dependency-park
+// wording), and `branch` are all third-party-writable on a public repo, so
+// they go through the same hardenUntrusted() treatment fetch_backlog.core.mjs
+// applies to issue titles — invisible/bidi/control stripping + a length cap —
+// before the model ever reads them.
+
+test("fetchWorkStatus strips invisible/control characters from run.title and run.branch", async () => {
+  const body = statusBody({
+    runs: [
+      {
+        id: "run-1",
+        title: "Fix widget​​ (hidden zero-width)",
+        branch: "feat/‮widget",
+        status: "running",
+      },
+    ],
+  });
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+
+  assert.equal(res.runs[0].title, "Fix widget (hidden zero-width)");
+  assert.doesNotMatch(res.runs[0].title, /[​‮]/);
+  assert.doesNotMatch(res.runs[0].branch, /[​‮]/);
+});
+
+test("fetchWorkStatus strips invisible characters from queueEntries.title and .parkReason, and caps length", async () => {
+  const longReason = "x".repeat(1000);
+  const body = statusBody({
+    queueEntries: [
+      {
+        id: "q-1",
+        title: "Fix widget​",
+        state: "parked",
+        parkReason: longReason,
+      },
+    ],
+  });
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+
+  assert.equal(res.queueEntries[0].title, "Fix widget");
+  assert.ok(res.queueEntries[0].parkReason.length < longReason.length);
+});
+
+test("fetchWorkStatus leaves a null parkReason as null, not an empty string (un-parked entries stay distinguishable)", async () => {
+  const body = statusBody({
+    queueEntries: [
+      { id: "q-1", title: "Fix widget", state: "running", parkReason: null },
+    ],
+  });
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+
+  assert.equal(res.queueEntries[0].parkReason, null);
+});
+
+test("fetchWorkStatus leaves clean, short title/branch/parkReason values byte-for-byte unchanged", async () => {
+  const body = statusBody();
+  const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+
+  assert.equal(res.runs[0].title, "Fix widget");
+  assert.equal(res.runs[0].branch, "feat/widget");
+  assert.equal(res.queueEntries[0].title, "Fix widget");
+});
+
+// ---------------------------------------------------------------------------
 // fetchWorkStatus — degraded outcomes, never throws, never retries
 // ---------------------------------------------------------------------------
 

@@ -44,11 +44,21 @@ import { buildStandupOutcome } from "../lib/standup.core.mjs";
 // json } shape fetchWorkStatus expects. Injected exactly as fetch_work_status
 // injects its real driver, so the core stays hermetic in tests. Mirrored
 // verbatim from agent/tools/fetch_work_status.ts's realTransport.
+// A wedged/unresponsive console must not hang the chat turn for minutes
+// (Minor 11) — the resulting AbortError throw already maps to
+// degraded("unreachable") in fetchWorkStatus's try/catch, so this needs no
+// extra handling here.
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function realTransport(
   url: string,
   init: { headers: Record<string, string> },
 ): Promise<{ status: number; json: () => Promise<unknown> }> {
-  const res = await fetch(url, { method: "GET", headers: init.headers });
+  const res = await fetch(url, {
+    method: "GET",
+    headers: init.headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   return { status: res.status, json: () => res.json() };
 }
 
@@ -90,12 +100,36 @@ export default defineTool({
       transport: realTransport,
     });
 
+    // Important 4: whyFailedRunId is resolved via a SECOND, targeted fetch
+    // with `ref: whyFailedRunId` — the route's ref mode resolves a run id
+    // EXACTLY and unpaginated (findWorkspaceWorkByRef's `run-id` branch),
+    // unlike the aggregate call above, which only ever sees STANDUP_LIMIT's
+    // page. Without this, a failed run older than that page would look
+    // identical to "no such run" — a silent truncation, not an honest gap.
+    // Skipped when the aggregate call above is already degraded:
+    // buildStandupOutcome returns a degraded `status` verbatim without ever
+    // looking at whyFailedStatus, so firing this against an already-down
+    // console would just be a wasted second call.
+    let whyFailedStatus: Awaited<ReturnType<typeof fetchWorkStatus>> | undefined;
+    if (input.whyFailedRunId && status.ok === true) {
+      whyFailedStatus = await fetchWorkStatus({
+        env: process.env,
+        eveSessionId: ctx.session.id,
+        ref: input.whyFailedRunId,
+        transport: realTransport,
+      });
+    }
+
     // All the orchestration — degraded passthrough (never an empty standup
     // that would lie by reading as "nothing is running"), truncation honesty
     // threaded into the rendered text, and the honest no-source
     // whyFailedRunId lookup (AC2) — lives in the pure, unit-tested
     // buildStandupOutcome so it never has to be exercised through a live
     // fetch or a mocked module.
-    return buildStandupOutcome({ status, whyFailedRunId: input.whyFailedRunId });
+    return buildStandupOutcome({
+      status,
+      whyFailedRunId: input.whyFailedRunId,
+      whyFailedStatus,
+    });
   },
 });

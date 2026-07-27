@@ -26,6 +26,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   RUNS_ALLOWED_FIELDS,
@@ -236,4 +238,96 @@ test("buildStandupOutcome resolves whyFailedRunId against status.runs (not found
   assert.equal(outcome.whyFailed.hasFailureReason, false);
   assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
   assert.equal(outcome.whyFailed.known, null);
+});
+
+// ── Important 4: whyFailedRunId via a dedicated, unpaginated ref lookup ────
+//
+// The aggregate `status.runs` above is only ever a PAGE (STANDUP_LIMIT rows
+// off the top of the standup.ts fetch) — a failed run older than that page
+// is invisible to the fallback search above and would read identically to
+// "no such run". The fix: agent/tools/standup.ts makes a SECOND, targeted
+// fetchWorkStatus({ ref: whyFailedRunId }) call, which the console route
+// resolves EXACTLY and unpaginated via findWorkspaceWorkByRef's `run-id`
+// branch. That result is passed in here as `whyFailedStatus`.
+
+test("buildStandupOutcome resolves whyFailedRunId via the dedicated whyFailedStatus fetch, reaching a run OUTSIDE the aggregate page", () => {
+  const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: true, queueEntries: false } };
+  // Not present anywhere in `status.runs` — only the dedicated, unpaginated
+  // ref=<runId> fetch can find it.
+  const whyFailedStatus = {
+    ok: true,
+    runs: [{ id: "old-run-outside-page", status: "failed", costUsd: 4, prUrl: "https://gh/pr/99" }],
+    queueEntries: [],
+  };
+  const outcome = buildStandupOutcome({
+    status,
+    whyFailedRunId: "old-run-outside-page",
+    whyFailedStatus,
+  });
+  assert.equal(outcome.whyFailed.hasFailureReason, false);
+  assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
+  assert.equal(outcome.whyFailed.known.id, "old-run-outside-page");
+  assert.equal(outcome.whyFailed.known.status, "failed");
+});
+
+test("buildStandupOutcome reports a degraded whyFailedStatus fetch honestly — never a fabricated 'no such run'", () => {
+  const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
+  const whyFailedStatus = {
+    ok: false,
+    degraded: true,
+    reason: "unreachable",
+    note: "The console work-status endpoint could not be reached (network error); no status could be fetched. Do not retry from here.",
+  };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2", whyFailedStatus });
+  assert.equal(outcome.whyFailed.degraded, true);
+  assert.equal(outcome.whyFailed.reason, "unreachable");
+  assert.equal(outcome.whyFailed.message, whyFailedStatus.note);
+  assert.equal(outcome.whyFailed.known, null);
+  // Must not silently claim "no failure reason on record" for a lookup that
+  // never actually completed.
+  assert.notEqual(outcome.whyFailed.hasFailureReason, true);
+});
+
+test("buildStandupOutcome still falls back to searching status.runs when no whyFailedStatus is given (back-compat)", () => {
+  const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2" });
+  assert.equal(outcome.whyFailed.known.id, "r2");
+  assert.equal(outcome.whyFailed.known.status, "failed");
+});
+
+// ── standup.ts wiring: the dedicated ref=<runId> fetch actually exists ─────
+// buildStandupOutcome's whyFailedStatus path (above) is dead unless the tool
+// wrapper actually makes the second, targeted fetch and passes its result
+// through. Assert the source, the same structural-wiring convention used by
+// backlog-triage-skill.test.mjs for its tool files.
+
+test("standup.ts issues a SECOND fetchWorkStatus call with ref: input.whyFailedRunId, and passes the result as whyFailedStatus", () => {
+  const src = readFileSync(
+    fileURLToPath(new URL("../agent/tools/standup.ts", import.meta.url)),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /ref:\s*input\.whyFailedRunId/,
+    "must pass whyFailedRunId as `ref` to a dedicated fetchWorkStatus call (exact, unpaginated resolution)",
+  );
+  assert.match(
+    src,
+    /whyFailedStatus/,
+    "must thread the dedicated fetch's result into buildStandupOutcome as whyFailedStatus",
+  );
+});
+
+test("standup.ts and fetch_work_status.ts both bound the console fetch with a 10s AbortSignal timeout (Minor 11)", () => {
+  for (const name of ["standup.ts", "fetch_work_status.ts"]) {
+    const src = readFileSync(
+      fileURLToPath(new URL(`../agent/tools/${name}`, import.meta.url)),
+      "utf8",
+    );
+    assert.match(
+      src,
+      /AbortSignal\.timeout\(\s*(?:FETCH_TIMEOUT_MS|10_000|10000)\s*\)/,
+      `${name} must bound its fetch with AbortSignal.timeout so a wedged console can't hang the turn`,
+    );
+  }
 });

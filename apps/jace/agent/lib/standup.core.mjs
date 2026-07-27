@@ -287,19 +287,38 @@ export function answerWhyFailed(run) {
  * - An ok status is folded through buildStandup/renderStandup exactly as
  *   before, with `status.truncated` threaded into renderStandup so a
  *   truncated page is never presented as the complete picture (Part 2).
- * - `whyFailedRunId`, when given, is resolved against `status.runs` (never a
- *   second, separate fetch) via the existing `answerWhyFailed` (AC2 — still
- *   never a fabricated reason).
+ * - `whyFailedRunId` is resolved two ways (Important 4):
+ *   - Preferred: the tool wrapper (agent/tools/standup.ts) makes a SECOND,
+ *     targeted `fetchWorkStatus({ ref: whyFailedRunId })` call — the
+ *     route's `ref` mode resolves a run id EXACTLY and unpaginated (see
+ *     `findWorkspaceWorkByRef`'s `run-id` branch in
+ *     packages/db-postgres/src/queries/work_status.ts), so a failed run
+ *     older than the aggregate list's page is still found. That result is
+ *     passed in here as `whyFailedStatus`; when it's ok, the run is looked
+ *     up in ITS (unpaginated) `runs` array. When it's itself degraded, that
+ *     gap is surfaced honestly on `whyFailed` rather than silently
+ *     re-interpreted as "no such run".
+ *   - Fallback (no `whyFailedStatus` given — back-compat for callers that
+ *     only have the aggregate `status`): search `status.runs`, the same as
+ *     before this fix. This CAN miss a run outside the aggregate page — the
+ *     dedicated fetch above is what actually closes that gap; this path
+ *     only exists so a caller without the second fetch still gets an
+ *     honest (if page-limited) answer instead of a throw.
+ *   Either way the answer itself still goes through `answerWhyFailed` (AC2
+ *   — never a fabricated reason).
  *
  * @param {object} args
  * @param {{ ok: boolean, runs?: Array<object>, queueEntries?: Array<object>,
  *           truncated?: { runs?: boolean, queueEntries?: boolean } }} args.status
  *   the fetchWorkStatus result — ok or degraded
  * @param {string} [args.whyFailedRunId]
+ * @param {{ ok: boolean, runs?: Array<object>, degraded?: boolean,
+ *           reason?: string, note?: string }} [args.whyFailedStatus]
+ *   the fetchWorkStatus({ ref: whyFailedRunId }) result — ok or degraded
  * @returns {object} either `status` verbatim (degraded), or
  *   `{ report, standup, whyFailed, failureReasonPolicy, truncated }`
  */
-export function buildStandupOutcome({ status, whyFailedRunId } = {}) {
+export function buildStandupOutcome({ status, whyFailedRunId, whyFailedStatus } = {}) {
   if (!status || status.ok !== true) return status;
 
   const standup = buildStandup({
@@ -310,10 +329,33 @@ export function buildStandupOutcome({ status, whyFailedRunId } = {}) {
 
   let whyFailed = null;
   if (whyFailedRunId) {
-    const run = (Array.isArray(status.runs) ? status.runs : []).find(
-      (r) => r && r.id === whyFailedRunId,
-    );
-    whyFailed = answerWhyFailed(run);
+    if (whyFailedStatus) {
+      if (whyFailedStatus.ok === true) {
+        const run = (Array.isArray(whyFailedStatus.runs) ? whyFailedStatus.runs : []).find(
+          (r) => r && r.id === whyFailedRunId,
+        );
+        whyFailed = answerWhyFailed(run);
+      } else {
+        // The dedicated ref=<runId> lookup itself failed (unreachable,
+        // unconfigured, ...) — an honest gap in THIS fetch, never
+        // downgraded to a fabricated "no such run".
+        whyFailed = {
+          hasFailureReason: false,
+          message: whyFailedStatus.note || WHY_FAILED_NO_SOURCE,
+          known: null,
+          degraded: true,
+          reason: whyFailedStatus.reason,
+        };
+      }
+    } else {
+      // Back-compat fallback: no dedicated fetch was made, so search
+      // whatever page `status.runs` happens to be. May miss a run outside
+      // that page — callers should prefer passing whyFailedStatus.
+      const run = (Array.isArray(status.runs) ? status.runs : []).find(
+        (r) => r && r.id === whyFailedRunId,
+      );
+      whyFailed = answerWhyFailed(run);
+    }
   }
 
   return {

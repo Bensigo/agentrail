@@ -44,6 +44,22 @@ derive every field from the columns above and nothing else.
   verify gate, not GitHub CI (see CONTEXT.md); the standup speaks only to the
   columns it can read.
 
+## Degraded read
+
+This skill's ONLY data source is `agent/lib/fetch_work_status.core.mjs`'s
+`fetchWorkStatus` — a single GET to the console. That means standup can now
+fail to read at all (it did not have this failure mode when it opened
+Postgres directly): if the console is unconfigured, unreachable, or this
+conversation has no workspace yet, the tool returns the fetch's DEGRADED
+result verbatim — `{ ok: false, degraded: true, reason, note }` — with no
+`report`, no `standup`, and no `whyFailed` key at all.
+
+Recognize that shape and report it plainly: relay the `note` as-is, and stop
+— never render an empty standup ("0 runs, 0 escalations") in its place, and
+never guess at the factory's state to fill the gap. A degraded read is an
+honest gap, not a fact, exactly like a degraded `fetch_backlog` read in the
+backlog-triage skill.
+
 ## Read-only guarantee
 
 Data access goes through `agent/lib/fetch_work_status.core.mjs`'s

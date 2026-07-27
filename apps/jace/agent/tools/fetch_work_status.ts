@@ -33,6 +33,12 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { fetchWorkStatus } from "../lib/fetch_work_status.core.mjs";
 
+// A wedged/unresponsive console must not hang the chat turn for minutes
+// (Minor 11) — the resulting AbortError throw already maps to
+// degraded("unreachable") in fetchWorkStatus's try/catch, so this needs no
+// extra handling here.
+const FETCH_TIMEOUT_MS = 10_000;
+
 // The REAL transport: one GET via the global fetch, narrowed to the { status,
 // json } shape the core expects. Injected exactly as fetch_backlog injects its
 // real driver, so the core stays hermetic in tests.
@@ -40,7 +46,11 @@ async function realTransport(
   url: string,
   init: { headers: Record<string, string> },
 ): Promise<{ status: number; json: () => Promise<unknown> }> {
-  const res = await fetch(url, { method: "GET", headers: init.headers });
+  const res = await fetch(url, {
+    method: "GET",
+    headers: init.headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   return { status: res.status, json: () => res.json() };
 }
 
@@ -63,8 +73,12 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        "Optional issue number, PR number, or run id to narrow to one item. " +
-          "Omit for the whole workspace's current picture.",
+        "Optional issue number, PR number, run id, `owner/repo#N`, or a pasted " +
+          "GitHub issue/PR URL — to narrow to one item. If the workspace has " +
+          "more than one connected repo, prefer the qualified `owner/repo#N` " +
+          "form: a bare `#N` matches that number in ANY of the workspace's " +
+          "repos, so it can resolve to the wrong item. Omit for the whole " +
+          "workspace's current picture.",
       ),
   }),
   async execute(input, ctx) {

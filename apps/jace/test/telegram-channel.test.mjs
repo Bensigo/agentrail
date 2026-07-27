@@ -69,3 +69,119 @@ test("does NOT override turn.failed / session.failed (keeps Eve's error posts)",
   assert.doesNotMatch(code, /["']turn\.failed["']/);
   assert.doesNotMatch(code, /["']session\.failed["']/);
 });
+
+// --- Task 8: Telegram inbound shim (JACE_TELEGRAM_FORWARD_TO_CONSOLE) -------
+//
+// apps/jace/agent/channels/telegram.ts stops handling turns on the way in
+// once the flag is truthy — see
+// docs/superpowers/specs/2026-07-27-jace-connect-command-design.md ("Part 2 —
+// Telegram transport shim") and .superpowers/sdd/task-8-brief.md. Off
+// (unset/falsy) must be today's behaviour byte-for-byte: no `onMessage`
+// override at all, so eve's own default inbound dispatch — the thing that
+// starts a turn from a raw webhook update — is completely untouched. On: an
+// `onMessage` override forwards the raw update to the console via
+// `forwardTelegramInbound` and returns `null` (eve's documented "drop this
+// message" signal, see eve/channels/{slack,teams}'s own onMessage docs), so
+// no turn is ever started on this door while the flag is on.
+
+test("references JACE_TELEGRAM_FORWARD_TO_CONSOLE", () => {
+  assert.match(code, /JACE_TELEGRAM_FORWARD_TO_CONSOLE/);
+});
+
+test("imports forwardTelegramInbound from the pure forward core (Task 7)", () => {
+  assert.match(
+    code,
+    /import\s*{\s*forwardTelegramInbound\s*}\s*from\s*["']\.\.\/lib\/telegram_forward\.core\.mjs["']/,
+  );
+});
+
+test("gates onMessage on the flag: no override at all when off, so eve's default inbound dispatch is byte-for-byte unchanged", () => {
+  // Deliberately NOT `onMessage(ctx, message) { if (flag) {...} }` — a
+  // handler that's always REGISTERED but conditionally no-ops would still
+  // replace eve's own default admission/turn-start logic even when the flag
+  // is off, which is exactly the "byte-for-byte unchanged" guarantee the
+  // brief requires. `onMessage: forwardToConsole ? onMessage : undefined`
+  // means the key is functionally absent (same as never having been passed)
+  // whenever the flag is off.
+  assert.match(
+    code,
+    /onMessage\s*:\s*forwardToConsole\s*\?\s*onMessage\s*:\s*undefined/,
+  );
+});
+
+test("the flag-on onMessage handler calls forwardTelegramInbound and returns null (never starts a turn)", () => {
+  const start = code.indexOf("function onMessage");
+  assert.ok(start !== -1, "must define an onMessage handler function");
+  const defaultIdx = code.indexOf("export default telegramChannel");
+  assert.ok(defaultIdx !== -1 && defaultIdx > start, "onMessage must be defined before the channel export");
+  const body = code.slice(start, defaultIdx);
+  assert.match(body, /forwardTelegramInbound\(/);
+  assert.match(body, /return\s+null/);
+});
+
+// --- Final-branch review Finding 2: a failed forward posts an in-channel
+// notice instead of blackholing the user's message. -------------------------
+//
+// eve already returns 200 to Telegram for this webhook delivery no matter
+// what onMessage does, so Telegram never retries a failed forward, and
+// nothing else in this path enqueues the message — a console outage would
+// otherwise silently drop 100% of Telegram traffic once the flag is on.
+
+test("imports TelegramContext so onMessage can call ctx.telegram.post", () => {
+  assert.match(
+    code,
+    /import\s*{\s*telegramChannel\s*,\s*type\s+TelegramContext\s*}\s*from\s*["']eve\/channels\/telegram["']/,
+  );
+});
+
+test("onMessage's ctx parameter is typed TelegramContext, not discarded/unknown", () => {
+  const start = code.indexOf("function onMessage");
+  const defaultIdx = code.indexOf("export default telegramChannel");
+  const signature = code.slice(start, code.indexOf(")", start) + 1);
+  assert.match(signature, /ctx\s*:\s*TelegramContext/);
+  assert.ok(defaultIdx > start);
+});
+
+test("a failed forward posts an in-channel failure notice before returning null", () => {
+  const start = code.indexOf("function onMessage");
+  const defaultIdx = code.indexOf("export default telegramChannel");
+  const body = code.slice(start, defaultIdx);
+  assert.match(body, /if\s*\(\s*!result\.ok\s*\)\s*{/);
+  assert.match(body, /ctx\.telegram\.post\(/);
+  // The notice text is a named constant, not inlined, and non-trivial length.
+  assert.match(code, /const\s+FORWARD_FAILURE_NOTICE\s*=\s*["'].{10,}["']/);
+  assert.match(body, /FORWARD_FAILURE_NOTICE/);
+});
+
+test("posting the failure notice is wrapped so it can never throw out of onMessage", () => {
+  const start = code.indexOf("function onMessage");
+  const defaultIdx = code.indexOf("export default telegramChannel");
+  const body = code.slice(start, defaultIdx);
+  const tryIdx = body.indexOf("try");
+  const postIdx = body.indexOf("ctx.telegram.post(");
+  const catchIdx = body.indexOf("catch", postIdx);
+  assert.ok(tryIdx !== -1 && tryIdx < postIdx, "ctx.telegram.post must be inside a try block");
+  assert.ok(catchIdx !== -1, "the try around ctx.telegram.post must have a catch");
+});
+
+test("still returns null after a failed forward, notice sent or not", () => {
+  const start = code.indexOf("function onMessage");
+  const defaultIdx = code.indexOf("export default telegramChannel");
+  const body = code.slice(start, defaultIdx);
+  const lastReturnNull = body.lastIndexOf("return null");
+  const catchIdx = body.indexOf("} catch");
+  assert.ok(lastReturnNull > catchIdx, "return null must come after the notice's own catch");
+});
+
+test("outbound handlers stay exactly as they were: message.completed still chat-splits, turn.started still keeps typing alive", () => {
+  // Re-asserts (alongside the tests above and ack-channel-wiring.test.mjs's
+  // shared coverage) the brief's own "Do not touch any outbound handler"
+  // constraint for this specific task's diff.
+  assert.match(code, /splitIntoChatMessages\(data\.message\)/);
+  assert.match(code, /channel\.telegram\.post\(message\)/);
+  assert.match(
+    code,
+    /typing\.start\(key,\s*\(\)\s*=>\s*channel\.telegram\.startTyping\(\)\)/,
+  );
+  assert.match(code, /["']turn\.completed["']/);
+});

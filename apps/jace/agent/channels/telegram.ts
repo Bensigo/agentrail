@@ -37,7 +37,28 @@
 // isProactiveTurn for why: composing that reply is a full model turn that
 // routinely exceeds the ack window, and there is no human message behind it
 // to acknowledge.
-import { telegramChannel } from "eve/channels/telegram";
+//
+// INBOUND SHIM (#1472, docs/superpowers/specs/2026-07-27-jace-connect-command-design.md
+// "Part 2 — Telegram transport shim"): this native `/eve/v1/telegram` webhook
+// used to turn every inbound Update straight into an Eve turn, bypassing the
+// console's own workspace resolver entirely (resolveInboundChatIdentity /
+// enqueueChannelMessage / the jace_sessions ledger write) — every
+// workspace-scoped tool 404'd, because the conversation was never registered.
+// Behind JACE_TELEGRAM_FORWARD_TO_CONSOLE (default off — unset/falsy is
+// today's behaviour byte-for-byte), `onMessage` normalizes the raw update and
+// POSTs it to the console's intake (agent/lib/telegram_forward.core.mjs,
+// mirroring discord_gateway.core.mjs's shape) instead of admitting it here,
+// returning `null` — eve's documented "drop this message, do not start a
+// turn" signal for onMessage (see eve/channels/{slack,teams}.mdx: "Return
+// `null` to drop the message"). The console's dispatcher resolves the
+// workspace and hands the turn BACK to this same module via
+// `args.receive(telegram, ...)` (agent/channels/hosted-inbound.ts), which is
+// why outbound delivery below is completely unchanged: message.completed /
+// turn.started still fire for that continued turn exactly as they do today.
+// When the flag is off, `onMessage` is `undefined` — not a conditionally
+// no-op handler — so eve's own default admission/turn-start logic (which
+// this shim does not attempt to reproduce) is the thing that runs, unchanged.
+import { telegramChannel, type TelegramContext } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 import {
@@ -45,8 +66,71 @@ import {
   ACK_TEXT,
   isProactiveTurn,
 } from "../lib/ack-on-silence.core.mjs";
+import { forwardTelegramInbound } from "../lib/telegram_forward.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
+
+/** Same "1"/"true" (case-insensitive) convention as
+ * apps/console/lib/chat/feature-flags.ts's `isTruthyFlag` — not duplicated
+ * across the app boundary since apps/jace installs standalone (see this
+ * file's package.json note) and cannot import from apps/console. */
+function isTruthyFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  return value === "1" || value.toLowerCase() === "true";
+}
+
+const forwardToConsole = isTruthyFlag(process.env["JACE_TELEGRAM_FORWARD_TO_CONSOLE"]);
+
+/**
+ * Shown in-channel when a forward to the console fails — a console outage
+ * (unreachable host, 502, unset JACE_CONSOLE_* vars) must never be silent:
+ * eve already returns 200 to Telegram for this webhook delivery regardless
+ * of what `onMessage` does, so Telegram will not retry, and nothing else in
+ * this path enqueues the message. Short and dry (Jace's voice, no apology
+ * paragraph) — something the sender can act on immediately.
+ */
+const FORWARD_FAILURE_NOTICE = "Couldn't reach the workspace to log that — try sending it again in a moment.";
+
+/**
+ * Inbound admission override, wired ONLY when `forwardToConsole` is true
+ * (see the header comment). `message.raw` is eve's documented raw-payload
+ * escape hatch on the normalized inbound `message` (the same shape every
+ * first-class channel's `onMessage` exposes, e.g. Slack's
+ * `message.raw.channel_type`) — here it is Telegram's raw `Message` object,
+ * so it is wrapped as `{ message: message.raw }` to match
+ * `shapeTelegramInbound`'s documented `Update` shape
+ * (`update.message ?? update.edited_message`). Never throws: a forward
+ * failure is logged, not re-attempted, and the door still returns `null` —
+ * an inbound Telegram update should never fall through to starting a turn on
+ * this door once the flag is on, forward failure or not.
+ *
+ * On a failed forward, also posts `FORWARD_FAILURE_NOTICE` in-channel via
+ * `ctx.telegram.post` (see eve's `TelegramContext` — the minimal context
+ * `onMessage` receives before a session exists, `{ readonly telegram:
+ * TelegramHandle }`) BEFORE returning `null`, so a console outage never
+ * blackholes the user's message with zero feedback (final-branch review
+ * Finding 2). Posting the notice is itself wrapped in its own try/catch: it
+ * must never throw out of `onMessage`, forward failure or not.
+ */
+async function onMessage(
+  ctx: TelegramContext,
+  message: { raw?: unknown },
+): Promise<null> {
+  const result = await forwardTelegramInbound({
+    env: process.env,
+    update: { message: message?.raw },
+    transport: fetch,
+  });
+  if (!result.ok) {
+    console.error("[telegram] forward-to-console failed:", result.reason);
+    try {
+      await ctx.telegram.post(FORWARD_FAILURE_NOTICE);
+    } catch (err) {
+      console.error("[telegram] forward-failure notice itself failed:", err);
+    }
+  }
+  return null;
+}
 
 const typing = createTypingKeepalive();
 const ack = createAckOnSilence();
@@ -55,6 +139,7 @@ const convoKey = (ctx: { session?: { id?: string } }) =>
 
 export default telegramChannel({
   botUsername,
+  onMessage: forwardToConsole ? onMessage : undefined,
   events: {
     "turn.started"(_data, channel, ctx) {
       const key = convoKey(ctx);

@@ -1,4 +1,24 @@
-// codebase_query — Jace's READ-ONLY window onto the AgentRail codebase.
+// codebase_query — Jace's READ-ONLY window onto a LOCAL AgentRail checkout.
+//
+// RUNTIME AVAILABILITY (observed in prod 2026-07-27, hence this note): this
+// tool works ONLY where Jace runs beside a repo checkout — i.e. self-hosted or
+// local dev. In the hosted deployment it always fails, and installing `git`
+// would NOT fix it:
+//
+//   1. apps/jace/Dockerfile deliberately ships no git and no gh ("no git, no
+//      gh, no Docker socket") — Jace's only outside-world write path is a pure
+//      Python urllib REST call, so VCS tooling is excluded on purpose.
+//   2. More fundamentally, that image contains NO checkout to search. Jace is
+//      multi-tenant — one process serving every workspace's conversations —
+//      so there is no single repo it could clone.
+//
+// The hosted path for the same questions is `fetch_repo_wiki`, which reads the
+// compiled wiki over HTTP and is tenant-scoped by construction. Both tool
+// descriptions state this split, because the model previously chose between
+// them at random: on 2026-07-27 the same class of question routed to
+// fetch_repo_wiki on Discord (worked) and to this tool on Telegram (failed
+// with "No such file or directory: 'git'"). Keep the descriptions
+// disambiguated if you touch either.
 //
 // This tool answers questions about the code by shelling out to the existing
 // `agentrail context` CLI (query / def / callers) and returning its output so the
@@ -40,13 +60,20 @@ const subcommandSchema = z.enum(
 
 export default defineTool({
   description:
-    "Answer a question about the AgentRail codebase by invoking the READ-ONLY " +
-    "`agentrail context` CLI and citing its output. `sub` selects the retrieval " +
-    "verb: 'query' for a natural-language question, 'def' for a symbol's " +
-    "definition, 'callers' for who calls a symbol. Only these read-only verbs " +
-    "are allowed. The subprocess is run execFile-style with an args array (never " +
-    "a shell string); it writes nothing and needs no approval. Answer ONLY from " +
-    "the returned citations — never from memory.",
+    "SELF-HOSTED ONLY — requires a local repo checkout plus the `agentrail` " +
+    "CLI and `git` on this same machine. The hosted deployment has NEITHER " +
+    "(apps/jace/Dockerfile installs no git and clones no repo, deliberately), " +
+    "so this tool CANNOT work there and calling it only produces an error. " +
+    "For any question about a workspace's connected repo — including " +
+    "AgentRail's own — use `fetch_repo_wiki` instead; it reads the compiled " +
+    "wiki over HTTP and works everywhere. Only reach for this tool when you " +
+    "already know you are running beside a checkout and the wiki has no " +
+    "answer. `sub` selects the retrieval verb: 'query' for a natural-language " +
+    "question, 'def' for a symbol's definition, 'callers' for who calls a " +
+    "symbol. Only these read-only verbs are allowed. The subprocess is run " +
+    "execFile-style with an args array (never a shell string); it writes " +
+    "nothing and needs no approval. Answer ONLY from the returned citations " +
+    "— never from memory.",
   inputSchema: z.object({
     sub: subcommandSchema.describe(
       "Read-only agentrail context subcommand: query | def | callers.",

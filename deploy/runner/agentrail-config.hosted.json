@@ -11,5 +11,10 @@
         "critic": "anthropic/claude-haiku-4.5"
       }
     }
+  },
+  "context": {
+    "summary": {
+      "mode": "claude-cli"
+    }
   }
 }

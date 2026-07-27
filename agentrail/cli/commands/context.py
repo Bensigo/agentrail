@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -24,48 +23,22 @@ from agentrail.context.sources import inventory_sources
 from agentrail.context.wiki import REPO_WIKI_ENV, WIKI_FORCE_ENV, WikiPageNotFoundError, repo_wiki_enabled, wiki_show, wiki_status
 from agentrail.context import daemon as _daemon_mod
 from agentrail.context.client import _resolve_context_client
+# Best-effort GitHub owner/repo resolution from the LOCAL git checkout's
+# `origin` remote, needed because push_wiki_pages's wire contract is scoped
+# by repo FULL NAME, not id (agentrail/context/wiki_push.py's docstring),
+# while this CLI path only ever has a repository UUID via
+# .agentrail/server.json. Moved to agentrail.shared.git (Repo Wiki
+# task-time-context spec, section A — docs/superpowers/specs/2026-07-27-
+# repo-wiki-task-time-context-design.md): the run path
+# (agentrail.run.context.build_pack) needs this exact same resolution, so it
+# now lives in one shared place rather than a second private copy. Imported
+# under its old private name so every existing call site and test in this
+# module is untouched.
+from agentrail.shared.git import origin_repo_full_name as _origin_repo_full_name
 
 
 def _resolve_target(value: str | None) -> Path:
     return Path(value or ".").resolve()
-
-
-# Best-effort GitHub owner/repo resolution from the LOCAL git checkout's
-# `origin` remote. Needed because push_wiki_pages's wire contract is scoped
-# by repo FULL NAME, not id (agentrail/context/wiki_push.py's docstring),
-# while this CLI path only ever has a repository UUID via
-# .agentrail/server.json. Mirrors
-# agentrail.afk.hosted_repo_guard.parse_repo_slug /
-# agentrail.cli.commands.afk._origin_repo_slug's exact regex and resolution
-# strategy — duplicated locally rather than cross-imported, both for the
-# self-containment convention hosted_repo_guard.py's own docstring documents
-# ("import-free of its sibling seam modules") and to keep this CLI-only
-# git-remote parsing out of the agentrail.context package (wiki_push.py's
-# docstring explicitly flags that boundary as one to avoid).
-_GITHUB_REMOTE_RE = re.compile(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$")
-
-
-def _origin_repo_full_name(target: Path) -> str | None:
-    """Best-effort lowercase ``owner/repo`` for ``target``'s git ``origin``
-    remote. ``None`` when there is no origin remote, ``target`` isn't a git
-    checkout, or the URL isn't a recognizable GitHub remote (including SSH
-    host aliases — this deliberately does no ssh-config parsing) — the
-    caller treats that as "nothing to push/hydrate wiki pages under", never
-    an error.
-    """
-    result = subprocess.run(
-        ["git", "-C", str(target), "remote", "get-url", "origin"],
-        check=False, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-    match = _GITHUB_REMOTE_RE.search(result.stdout.strip())
-    if not match:
-        return None
-    owner, repo = match.group(1), match.group(2)
-    if not owner or not repo:
-        return None
-    return f"{owner}/{repo}".lower()
 
 
 def _touch_context_marker(target: Path) -> None:

@@ -481,6 +481,33 @@ class CostCeilingTests(unittest.TestCase):
         # The pages that never got a prose call still shipped, skeleton-only.
         self.assertEqual(report["pagesWritten"], 3)
 
+    def test_zero_ceiling_makes_zero_prose_calls_and_ships_skeletons(self) -> None:
+        """A ceiling of 0 is the run path's spend guard (Repo Wiki
+        task-time-context spec, section A "Runs never prompt the model" --
+        docs/superpowers/specs/2026-07-27-repo-wiki-task-time-context-design.md).
+
+        Unlike the nonzero case above -- where the FIRST call completes and
+        crosses the ceiling -- ``_CostTracker.exceeded`` is ``total_usd >=
+        ceiling``, so 0 reads as breached BEFORE the first page and not one
+        prose call is made. Every page still ships, skeleton-only. This is
+        what lets ``run/context.py``'s ``_wiki_run_hydrate`` wrap a whole
+        pack build without putting unbounded LLM spend inside a task, so it
+        is pinned here rather than left as an inference from the ``>=``.
+        """
+        mock_dir = Path(tempfile.mkdtemp())
+        command = _write_mock(mock_dir)
+        root = make_repo(summary_mode="custom-command", summary_command=command)
+        plan = [{"usage": {"inputTokens": 100000, "outputTokens": 100000}}]
+        with _wiki_on(**_plan_env(mock_dir, plan), **{_MAX_COST_ENV: "0"}):
+            result = build_index(root)
+        report = result["wikiReport"]
+        self.assertTrue(report["costCeilingExceeded"])
+        self.assertEqual(report["llmCalls"], 0, "a 0 ceiling must skip even the first prose call")
+        self.assertEqual(report["costUsd"], 0.0)
+        # Skeleton-only, but every page is still written and indexed -- a
+        # zero-spend run gets structurally accurate pages, never an empty wiki.
+        self.assertEqual(report["pagesWritten"], 3)
+
     def test_default_ceiling_is_half_a_dollar(self) -> None:
         with _env(_MAX_COST_ENV, None):
             self.assertEqual(wiki.wiki_max_cost_usd(), 0.50)

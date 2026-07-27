@@ -238,6 +238,35 @@ class PhasePromptManifestTests(unittest.TestCase):
         ):
             self.assertIn(marker, g, marker)
 
+    def test_gather_prompt_names_the_wiki_subcommand(self):
+        """Repo Wiki design spec section C: the fence already permits the
+        wiki subcommand via `agentrail context`; it must be named explicitly
+        or it goes unused."""
+        g = self._make("gather")
+        self.assertIn("agentrail context wiki show", g)
+
+    def test_gather_prompt_names_the_slug_discovery_command(self):
+        """`wiki show <slug>` alone is unusable inside the fence — the gather
+        agent cannot grep for slugs and cannot guess a `wiki/unit/<unit-id>`.
+        Naming `wiki status` is what makes the orienting affordance reachable
+        under the read-only constraint."""
+        g = self._make("gather")
+        self.assertIn("agentrail context wiki status", g)
+        self.assertIn("wiki/overview", g)
+
+    def test_gather_prompt_still_forbids_grep_and_editors(self):
+        # Naming the wiki subcommand must not widen the fence.
+        g = self._make("gather")
+        self.assertIn("No grep/rg/find, no other shell commands, no editors.", g)
+
+    def test_gather_prompt_has_wiki_verify_before_manifest_line(self):
+        """Repo Wiki design spec section E rule 2: a claim sourced from the
+        wiki must be verified against the file before it goes in the
+        manifest."""
+        g = self._make("gather")
+        self.assertIn("Verify", g)
+        self.assertIn("wiki", g.lower())
+
 
 # ---------------------------------------------------------------------------
 # run_issue_phase level: rc.gather_manifest flows into the real stdin prompt

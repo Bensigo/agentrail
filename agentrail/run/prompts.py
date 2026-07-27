@@ -215,7 +215,8 @@ Hard limits:
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
-- When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
+- When you need code you don't see, work cheap to expensive: `agentrail context wiki show wiki/overview` to orient (`agentrail context wiki status` lists the unit pages and their slugs), then `agentrail context query "<term>" --json --limit 6` (ranked, cheap) to find it, then read the file — all before grep/glob.
+- Verify wiki claims against the file before they land in an edit — a wiki page is prose about code, not the code, and a stale page reads as a confident lie.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
@@ -237,7 +238,8 @@ Hard limits:
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
-- When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
+- When you need code you don't see, work cheap to expensive: `agentrail context wiki show wiki/overview` to orient (`agentrail context wiki status` lists the unit pages and their slugs), then `agentrail context query "<term>" --json --limit 6` (ranked, cheap) to find it, then read the file — all before grep/glob.
+- Verify wiki claims against the file before they land in an edit — a wiki page is prose about code, not the code, and a stale page reads as a confident lie.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
@@ -659,15 +661,20 @@ def issue_run_phase_prompt(
             "- Work SEQUENTIALLY: one search or file read at a time, letting "
             "each result steer the next. Do NOT fan out parallel searches.\n"
             "- Your ONLY tools are the `agentrail context` CLI for searching "
-            "(ranked repo search, e.g. `agentrail context query \"<terms>\"`) "
-            "and reading files. No grep/rg/find, no other shell commands, no "
-            "editors.\n"
+            "(ranked repo search, e.g. `agentrail context query \"<terms>\"`), "
+            "orienting (`agentrail context wiki status` lists the compiled "
+            "pages and their slugs; `agentrail context wiki show <slug>` "
+            "reads one, starting at `wiki/overview`), and reading files. No "
+            "grep/rg/find, no other shell commands, no editors.\n"
             "- You are READ-ONLY: do not edit, create, or delete any file, do "
             "not implement anything, do not write tests, do not commit or push. "
             "Producing the manifest is the whole job for this phase.\n"
             "- Pin EXACT symbol names, signatures, and keys by READING the "
             "code. Never guess or invent a name — if you did not read it, it "
             "does not go in the manifest.\n"
+            "- Verify wiki claims against the file before they go in the "
+            "manifest — a wiki page is prose about code, not the code, and a "
+            "stale page reads as a confident lie.\n"
             "- Record what you ruled out: paths you checked that looked "
             "relevant but are not, and why, so later phases do not re-check "
             "them.\n"

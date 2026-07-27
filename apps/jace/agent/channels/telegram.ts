@@ -37,6 +37,27 @@
 // isProactiveTurn for why: composing that reply is a full model turn that
 // routinely exceeds the ack window, and there is no human message behind it
 // to acknowledge.
+//
+// INBOUND SHIM (#1472, docs/superpowers/specs/2026-07-27-jace-connect-command-design.md
+// "Part 2 — Telegram transport shim"): this native `/eve/v1/telegram` webhook
+// used to turn every inbound Update straight into an Eve turn, bypassing the
+// console's own workspace resolver entirely (resolveInboundChatIdentity /
+// enqueueChannelMessage / the jace_sessions ledger write) — every
+// workspace-scoped tool 404'd, because the conversation was never registered.
+// Behind JACE_TELEGRAM_FORWARD_TO_CONSOLE (default off — unset/falsy is
+// today's behaviour byte-for-byte), `onMessage` normalizes the raw update and
+// POSTs it to the console's intake (agent/lib/telegram_forward.core.mjs,
+// mirroring discord_gateway.core.mjs's shape) instead of admitting it here,
+// returning `null` — eve's documented "drop this message, do not start a
+// turn" signal for onMessage (see eve/channels/{slack,teams}.mdx: "Return
+// `null` to drop the message"). The console's dispatcher resolves the
+// workspace and hands the turn BACK to this same module via
+// `args.receive(telegram, ...)` (agent/channels/hosted-inbound.ts), which is
+// why outbound delivery below is completely unchanged: message.completed /
+// turn.started still fire for that continued turn exactly as they do today.
+// When the flag is off, `onMessage` is `undefined` — not a conditionally
+// no-op handler — so eve's own default admission/turn-start logic (which
+// this shim does not attempt to reproduce) is the thing that runs, unchanged.
 import { telegramChannel } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
@@ -45,8 +66,48 @@ import {
   ACK_TEXT,
   isProactiveTurn,
 } from "../lib/ack-on-silence.core.mjs";
+import { forwardTelegramInbound } from "../lib/telegram_forward.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
+
+/** Same "1"/"true" (case-insensitive) convention as
+ * apps/console/lib/chat/feature-flags.ts's `isTruthyFlag` — not duplicated
+ * across the app boundary since apps/jace installs standalone (see this
+ * file's package.json note) and cannot import from apps/console. */
+function isTruthyFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  return value === "1" || value.toLowerCase() === "true";
+}
+
+const forwardToConsole = isTruthyFlag(process.env["JACE_TELEGRAM_FORWARD_TO_CONSOLE"]);
+
+/**
+ * Inbound admission override, wired ONLY when `forwardToConsole` is true
+ * (see the header comment). `message.raw` is eve's documented raw-payload
+ * escape hatch on the normalized inbound `message` (the same shape every
+ * first-class channel's `onMessage` exposes, e.g. Slack's
+ * `message.raw.channel_type`) — here it is Telegram's raw `Message` object,
+ * so it is wrapped as `{ message: message.raw }` to match
+ * `shapeTelegramInbound`'s documented `Update` shape
+ * (`update.message ?? update.edited_message`). Never throws: a forward
+ * failure is logged, not re-attempted, and the door still returns `null` —
+ * an inbound Telegram update should never fall through to starting a turn on
+ * this door once the flag is on, forward failure or not.
+ */
+async function onMessage(
+  _ctx: unknown,
+  message: { raw?: unknown },
+): Promise<null> {
+  const result = await forwardTelegramInbound({
+    env: process.env,
+    update: { message: message?.raw },
+    transport: fetch,
+  });
+  if (!result.ok) {
+    console.error("[telegram] forward-to-console failed:", result.reason);
+  }
+  return null;
+}
 
 const typing = createTypingKeepalive();
 const ack = createAckOnSilence();
@@ -55,6 +116,7 @@ const convoKey = (ctx: { session?: { id?: string } }) =>
 
 export default telegramChannel({
   botUsername,
+  onMessage: forwardToConsole ? onMessage : undefined,
   events: {
     "turn.started"(_data, channel, ctx) {
       const key = convoKey(ctx);

@@ -109,17 +109,27 @@ def _page_frontmatter(page: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_page_text(page: Dict[str, Any]) -> str:
+    """One server page row -> the exact text a hydrated page file holds.
+
+    Public because the read-only client (:mod:`agentrail.context.wiki_client`)
+    renders server rows for display WITHOUT writing them anywhere, and its
+    output must be byte-identical to what hydration would have written — a
+    page read over the wire and the same page read from a hydrated cache must
+    not differ in a single character, or ``wiki show`` output would depend on
+    whether a clone happened to be hydrated.
+    """
+    content = _page_frontmatter(page) + str(page.get("bodyMd") or "")
+    return content if content.endswith("\n") else content + "\n"
+
+
 def _write_page_file(wiki_dir: Path, page: Dict[str, Any]) -> str:
     """Write one page's markdown file; returns the filename written (or "" if skipped)."""
     slug = str(page.get("slug") or "")
     if not slug:
         return ""
     filename = wiki_page_filename(slug)
-    body_md = str(page.get("bodyMd") or "")
-    content = _page_frontmatter(page) + body_md
-    if not content.endswith("\n"):
-        content += "\n"
-    (wiki_dir / filename).write_text(content, encoding="utf-8")
+    (wiki_dir / filename).write_text(render_page_text(page), encoding="utf-8")
     return filename
 
 

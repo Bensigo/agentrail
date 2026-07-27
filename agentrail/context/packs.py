@@ -27,6 +27,7 @@ from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_sav
 # budget. A single module import keeps packs.py's cross-file symbol surface
 # at +1 ("wiki", which nothing in symbolTable defines) instead of +5.
 from agentrail.context import wiki
+from agentrail.context import source_registry
 from agentrail.shared.json import write_json
 
 
@@ -799,7 +800,17 @@ def build_context_pack(
 
     retrieval_budget = {"maxItems": 20, "maxTokens": resolve_retrieval_max_tokens()}
     query_text = _query_for(target_kind, target_number, phase)
-    query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
+    # Context source registry (spec S.B, PR 3 of the S.K sequence), default
+    # OFF. With the flag on, retrieval goes through the registry instead of
+    # calling query_context directly -- but phase one registers only the
+    # `code` source, whose search() IS this same call, and merge() is the
+    # identity function for a single source. So the two branches produce
+    # byte-identical packs by construction, which is the whole point of
+    # shipping the seam before a second source exists.
+    if source_registry.registry_enabled():
+        query = source_registry.query_sources(root, query_text, retrieval_budget)
+    else:
+        query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
     index = load_index(root)
     sections = _sectioned_results(query.get("results", []))
     for result in _target_linked_items(index, target_kind, target_number):

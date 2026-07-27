@@ -481,6 +481,34 @@ class CostCeilingTests(unittest.TestCase):
         # The pages that never got a prose call still shipped, skeleton-only.
         self.assertEqual(report["pagesWritten"], 3)
 
+    def test_zero_ceiling_makes_zero_prose_calls_and_ships_skeletons(self) -> None:
+        """A ceiling of 0 means zero provider calls, not one-then-stop.
+
+        Unlike the nonzero case above -- where the FIRST call completes and
+        crosses the ceiling -- ``_CostTracker.exceeded`` is ``total_usd >=
+        ceiling``, so 0 reads as breached BEFORE the first page and not one
+        prose call is made. Every page still ships, skeleton-only.
+
+        Pinned because the boundary is a real operational contract, not an
+        inference from the ``>=``: an operator setting the ceiling to 0
+        expects a structurally accurate wiki at exactly no spend, and the
+        difference between ">= (never calls)" and "> (one call, then stops)"
+        is invisible at every other ceiling value.
+        """
+        mock_dir = Path(tempfile.mkdtemp())
+        command = _write_mock(mock_dir)
+        root = make_repo(summary_mode="custom-command", summary_command=command)
+        plan = [{"usage": {"inputTokens": 100000, "outputTokens": 100000}}]
+        with _wiki_on(**_plan_env(mock_dir, plan), **{_MAX_COST_ENV: "0"}):
+            result = build_index(root)
+        report = result["wikiReport"]
+        self.assertTrue(report["costCeilingExceeded"])
+        self.assertEqual(report["llmCalls"], 0, "a 0 ceiling must skip even the first prose call")
+        self.assertEqual(report["costUsd"], 0.0)
+        # Skeleton-only, but every page is still written and indexed -- a
+        # zero-spend run gets structurally accurate pages, never an empty wiki.
+        self.assertEqual(report["pagesWritten"], 3)
+
     def test_default_ceiling_is_half_a_dollar(self) -> None:
         with _env(_MAX_COST_ENV, None):
             self.assertEqual(wiki.wiki_max_cost_usd(), 0.50)
@@ -644,10 +672,19 @@ class WikiCliTests(unittest.TestCase):
             self.assertIn('slug: "wiki/overview"', show_out)
 
     def test_status_before_any_compile_is_honest(self) -> None:
+        """An empty status must name BOTH causes, not just the local one.
+
+        Since the reader became server-first (context source registry spec
+        §K step 2) "nothing here" has two explanations — an unlinked repo and
+        a repo whose wiki was never compiled — and a message that only offers
+        `wiki build` sends an unlinked clone down the wrong path.
+        """
         root = make_repo(summary_mode="disabled")
         code, out = self._run(["wiki", "status", "--target", str(root)])
         self.assertEqual(code, 0)
-        self.assertIn("No wiki compiled yet", out)
+        self.assertIn("No wiki pages available", out)
+        self.assertIn("not be linked", out)
+        self.assertIn("wiki build", out)
 
     def test_show_missing_slug_is_a_clean_error(self) -> None:
         root = make_repo(summary_mode="disabled")

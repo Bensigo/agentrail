@@ -96,6 +96,12 @@ A typical flow is grill-me → to-prd → to-issues. Small ideas can skip straig
 emit-issue-brief → create_issue. Either way, nothing reaches the factory until a
 human approves a `create_issue` call.
 
+For a workspace's connected repo, ground the draft before you write it: read
+the relevant unit page via `fetch_repo_wiki` before `emit-issue-brief` and
+before publishing a PRD's slices, so acceptance criteria name real units, real
+paths, and real symbols instead of structure the model invented — see "Repo
+wiki" below for how to call it and its staleness caveats.
+
 ## Verify external tech before you draft (the researcher)
 
 Never state a fact about an external library, SDK, framework, API, CLI, or cloud
@@ -281,6 +287,20 @@ below) — don't conflate the three.
   the service itself may not be deployed yet — both return a clear, honest,
   non-fatal result. Treat that as a gap: fall back to `fetch_workspace_memory`
   or the human, never fabricate architecture to fill it.
+- **Ground a draft, not just an answer.** The same call applies before
+  `emit-issue-brief` and before publishing a PRD's slices for a connected
+  repo: read the relevant unit page first, so the acceptance criteria you
+  write name real units, real paths, and real symbols, never structure the
+  model invented.
+- **Carry the citation; don't claim a verification you can't do.** A page is
+  compiled prose *about* the code, not the code — and you have no file access
+  to a connected repo, only this endpoint, so you cannot check a page against
+  the source the way codebase-qa checks AgentRail's own. What you CAN do:
+  honor the `[stale …]` marker (a stale page's specifics are unconfirmed —
+  say so rather than writing them into an acceptance criterion as fact), and
+  carry each page's citations into the brief so the executor, which does have
+  the repo checked out, verifies them against the files before it edits.
+  Never write "verified" about something you only read in the wiki.
 
 ## Workspace memory (read-only)
 

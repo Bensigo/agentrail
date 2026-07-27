@@ -81,7 +81,71 @@ def _mode_for(signals: Dict[str, bool]) -> str:
     return "exact"
 
 
+# Per-source weights the planner emits alongside the retrieval mode (context
+# source registry spec §C — docs/superpowers/specs/2026-07-27-context-source-
+# registry-design.md). 1.0 is "consult normally"; above boosts, below demotes.
+#
+# The default is to CONSULT. Skipping a source (weight 0) buys latency and a
+# saved round trip, never pack precision -- the pack budget already filters an
+# irrelevant candidate out. The errors are asymmetric: consulting a useless
+# source costs a few hundred milliseconds the ranker discards, while wrongly
+# skipping one removes context the agent cannot know is missing. So nothing
+# here emits 0 today, and anything that ever does needs a strong signal behind
+# it plus a provenance line naming what was skipped.
+_BASE_SOURCE_WEIGHTS = {"code": 1.0, "wiki": 1.0, "memory": 1.0}
+
+# How far a signal moves a source. Deliberately small and few: this is a
+# deterministic signal table, not a model, and a table nobody can predict the
+# output of is worse than no table at all.
+_WIKI_BOOST = 0.4
+_WIKI_DEMOTION = 0.4
+_MEMORY_BOOST = 0.4
+_CODE_BOOST = 0.2
+
+
+def _source_weights(signals: Dict[str, bool]) -> Dict[str, float]:
+    """Per-source weights from the SAME signals that pick the retrieval mode.
+
+    Three rules, each tied to a signal the detector already produces:
+
+    * A concrete anchor (a path or a symbol) means the asker knows where they
+      are going — code up, wiki down. Compiled prose about a file is a poor
+      substitute for the file when you can already name the file.
+    * A conceptual question with no anchor ("how does X work", "where does Y
+      live") is exactly what an orientation page answers — wiki up.
+    * Memory language (previous, prior, regression, lesson) means the useful
+      context is what happened before, not what the code says now — memory up.
+
+    Weighting, not gating, is where the precision is: a regression wants prior
+    memory scored ABOVE code, which changes what the agent sees first. Gating
+    only changes whether a round trip happens.
+    """
+    weights = dict(_BASE_SOURCE_WEIGHTS)
+    has_anchor = signals["path"] or signals["symbol"]
+    if has_anchor:
+        weights["code"] += _CODE_BOOST
+        weights["wiki"] -= _WIKI_DEMOTION
+    if signals["question"] and not has_anchor:
+        weights["wiki"] += _WIKI_BOOST
+    if signals["memory"]:
+        weights["memory"] += _MEMORY_BOOST
+    # A denied query retrieves nothing from anywhere -- the mode already says
+    # "excluded", and the weights must not disagree with it.
+    if signals["denied"]:
+        return {name: 0.0 for name in weights}
+    return {name: round(weight, 3) for name, weight in weights.items()}
+
+
 def classify_query(query: str) -> Dict[str, Any]:
-    """Classify a query and return its retrieval mode and detected signals."""
+    """Classify a query and return its retrieval mode, signals, and source weights.
+
+    ``sources`` is additive: every existing caller reads ``retrievalMode`` and
+    ``signals`` and is unaffected by the new key.
+    """
     signals = _detect_signals(query)
-    return {"query": query, "retrievalMode": _mode_for(signals), "signals": signals}
+    return {
+        "query": query,
+        "retrievalMode": _mode_for(signals),
+        "signals": signals,
+        "sources": _source_weights(signals),
+    }

@@ -458,6 +458,63 @@ export async function pinConversationWorkspace(
   return { ok: true, sessionId: session.id };
 }
 
+export interface RepinConversationWorkspaceInput {
+  chatIdentityId: string;
+  channel: string;
+  conversationKey: string;
+  fromWorkspaceId: string;
+  toWorkspaceId: string;
+}
+
+export type RepinConversationWorkspaceResult =
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: "not_reachable" | "moved" };
+
+/**
+ * Move an already-pinned conversation to a different workspace — the
+ * `/connect` command's move path (issue #1261 PR, Task 3).
+ *
+ * The pin belongs to the CONVERSATION, not to any identity in it (see
+ * `resolveConversationWorkspace`'s doc-comment): every participant sharing
+ * (channel, conversationKey) inherits it. So the authority rule is that the
+ * requester must reach BOTH the current and target workspace — you may move a
+ * conversation between workspaces you have standing in, but you may not walk
+ * into a channel pinned to a workspace you are a stranger to and move it
+ * elsewhere. That rule is decided in `connect-command.ts` and RE-VERIFIED
+ * here, so a caller bug alone cannot bypass it — this is deliberate defence
+ * in depth, not redundancy.
+ *
+ * The UPDATE is guarded on the row's CURRENT workspace_id (in addition to
+ * channel + conversationKey), so a concurrent re-pin that landed first yields
+ * `moved` rather than silently clobbering it. Callers re-resolve once rather
+ * than retrying in a loop.
+ */
+export async function repinConversationWorkspace(
+  input: RepinConversationWorkspaceInput
+): Promise<RepinConversationWorkspaceResult> {
+  const { chatIdentityId, channel, conversationKey, fromWorkspaceId, toWorkspaceId } = input;
+
+  const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+  const reaches = (id: string) => reachable.some((workspace) => workspace.id === id);
+  if (!reaches(fromWorkspaceId) || !reaches(toWorkspaceId)) {
+    return { ok: false, reason: "not_reachable" };
+  }
+
+  const [row] = await db
+    .update(jaceSessions)
+    .set({ workspaceId: toWorkspaceId, updatedAt: new Date() })
+    .where(
+      and(
+        eq(jaceSessions.channel, channel),
+        eq(jaceSessions.conversationKey, conversationKey),
+        eq(jaceSessions.workspaceId, fromWorkspaceId)
+      )
+    )
+    .returning();
+
+  return row ? { ok: true, sessionId: row.id } : { ok: false, reason: "moved" };
+}
+
 // --- post-bind confirmation (spec §4.2, issue #1263 PR ②) -------------------
 
 /**

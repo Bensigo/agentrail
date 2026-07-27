@@ -2401,6 +2401,7 @@ export {
   bindJaceSessionWorkspace,
   resolveConversationWorkspace,
   pinConversationWorkspace,
+  repinConversationWorkspace,
   getJaceSessionByEveSessionId,
   getJaceSessionById,
   latestTelegramSessionForChatIdentity,
@@ -2420,6 +2421,8 @@ export {
   type ResolveConversationWorkspaceResult,
   type PinConversationWorkspaceInput,
   type PinConversationWorkspaceResult,
+  type RepinConversationWorkspaceInput,
+  type RepinConversationWorkspaceResult,
 } from "./jace_sessions.js";
 
 // Chat identities — the identity spine for every inbound chat message (spec

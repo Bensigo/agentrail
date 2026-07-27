@@ -532,16 +532,34 @@ const LINK_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Resolve CONSOLE_PUBLIC_URL exactly ONCE per row, trimmed with any trailing
- * slash(es) stripped. A stock deploy ships `.env.example`'s
- * `CONSOLE_PUBLIC_URL=` loaded via `env_file` in
- * deploy/docker-compose.prod.yml — an EMPTY string, not an unset var — so
- * `??` alone (nullish-only) is not enough; both call sites below (the
- * `ensureConnectLink` link-building path and the `no_workspaces` copy) must
- * treat that empty string identically, which is why they both read this ONE
- * resolved value rather than each reading `process.env` independently.
+ * slash(es) stripped. `deploy/.env.production.example` marks this REQUIRED
+ * with an empty placeholder (`CONSOLE_PUBLIC_URL=`) — an operator who copies
+ * that file to `deploy/.env` without filling it in gets an EMPTY STRING via
+ * docker-compose's `env_file` loading, not merely unset. It can ALSO be
+ * genuinely unset (deploy/.env predates this var, or the var is dropped from
+ * the environment some other way) — `??` alone (nullish-only) would not
+ * catch the empty-string case, which is why this also folds in `""` via
+ * `?? ""` before the trim; both call sites below (the `ensureConnectLink`
+ * link-building path and the `no_workspaces` copy) must treat "unset" and
+ * "empty" identically, which is why they both read this ONE resolved value
+ * rather than each reading `process.env` independently.
+ *
+ * Warns when the resolved value is empty, since this failure mode is
+ * otherwise perfectly silent: every `/connect` from an unlinked chat gets the
+ * same generic failure copy forever, with nothing in the logs pointing at
+ * the cause. Never logs the link token (there isn't one to log here — the
+ * token doesn't exist yet at this point).
  */
 function resolveConsolePublicUrl(): string {
-  return (process.env["CONSOLE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+  const resolved = (process.env["CONSOLE_PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+  if (!resolved) {
+    console.warn(
+      "[channel-dispatch] CONSOLE_PUBLIC_URL is unset/empty — /connect cannot mint " +
+        "connect links; every unlinked chat will get a generic failure reply until " +
+        "this is set (see deploy/.env.production.example)."
+    );
+  }
+  return resolved;
 }
 
 /**
@@ -574,7 +592,16 @@ async function ensureConnectLink(
       new Date(Date.now() + LINK_TOKEN_TTL_MS)
     );
     return `${base}/connect/${token}`;
-  } catch {
+  } catch (err) {
+    // Never log `token` — this is the ONLY thing that can turn into a live
+    // connect link. Log the identity + underlying error so an operator can
+    // tell "mint failed" (this) apart from "CONSOLE_PUBLIC_URL unset" (the
+    // warn in resolveConsolePublicUrl) — both render the same in-channel
+    // copy, but need different fixes (DB health vs. env config).
+    console.error(
+      `[channel-dispatch] setChatIdentityLinkToken failed for chatIdentityId=${chatIdentityId}:`,
+      err instanceof Error ? err.message : String(err)
+    );
     return undefined;
   }
 }
@@ -666,73 +693,105 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
     // not a repair path. Deterministic string match, never the model.
     const command = parseConnectCommand(payload.text);
     if (command.isCommand) {
-      // Resolved ONCE here, per `resolveConsolePublicUrl`'s doc-comment — both
-      // the link-building path below and the reply's `consoleUrl` fallback
-      // read this SAME local, never two independent `process.env` reads.
-      const consolePublicUrl = resolveConsolePublicUrl();
-      const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
-      const pinnedId = decision.kind === "pinned" ? decision.workspaceId : null;
-      const pinned = pinnedId
-        ? reachable.find((w) => w.id === pinnedId) ?? { id: pinnedId, name: null }
-        : null;
+      // Whole-block try/catch (must-fix #2, whole-branch review): every call
+      // below (listWorkspacesForChatIdentity, pinConversationWorkspace,
+      // repinConversationWorkspace, reportActualPin's re-resolve) can throw —
+      // repinConversationWorkspace explicitly re-throws non-23505 errors,
+      // pinned by its own test. Without this, any of those throws falls
+      // through to processRow's outer catch, which calls failChannelMessage
+      // and sends NOTHING to the channel — silence, exactly what /connect
+      // exists to eliminate (see the spec's Error handling section: "/connect
+      // never leaves a user with silence"). On catch: reply with a generic
+      // in-channel failure message, then COMPLETE (not fail) the row —
+      // requeuing would replay the identical failure to the user N times,
+      // and /connect is trivially retypable, so there is no retry value in
+      // failing it. `sendSystemChannelMessage` is plain HTTP to
+      // Telegram/Discord/Slack, so it is unaffected by e.g. a Postgres outage
+      // upstream — the reply gets through in exactly the case that matters
+      // most. Log the underlying error server-side; never log `identity` or
+      // any token.
+      try {
+        // Resolved ONCE here, per `resolveConsolePublicUrl`'s doc-comment — both
+        // the link-building path below and the reply's `consoleUrl` fallback
+        // read this SAME local, never two independent `process.env` reads.
+        const consolePublicUrl = resolveConsolePublicUrl();
+        const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+        const pinnedId = decision.kind === "pinned" ? decision.workspaceId : null;
+        const pinned = pinnedId
+          ? reachable.find((w) => w.id === pinnedId) ?? { id: pinnedId, name: null }
+          : null;
 
-      const action = decideConnectCommand({
-        arg: command.arg,
-        identity: { userId: identity.userId },
-        pinned,
-        reachable,
-      });
-      // What we actually tell the user. Diverges from `action` only when a
-      // write below loses a race — see the repin branch.
-      let reportAction: ConnectCommandAction = action;
+        const action = decideConnectCommand({
+          arg: command.arg,
+          identity: { userId: identity.userId },
+          pinned,
+          reachable,
+        });
+        // What we actually tell the user. Diverges from `action` only when a
+        // write below loses a race — see the repin branch.
+        let reportAction: ConnectCommandAction = action;
 
-      let linkUrl: string | undefined;
-      if (action.kind === "send_link") {
-        linkUrl = await ensureConnectLink(identity, chatIdentityId, consolePublicUrl);
-      } else if (action.kind === "pin") {
-        const pinResult = await pinConversationWorkspace({
-          chatIdentityId,
-          channel: row.channel,
-          conversationKey: row.conversationKey,
-          workspaceId: action.workspace.id,
-        });
-        // Lost a race (already_pinned_elsewhere) or unreachable: report the
-        // state that actually exists rather than echoing back the success
-        // copy for a pin that never landed.
-        if (!pinResult.ok) {
-          reportAction = await reportActualPin(chatIdentityId, row, reachable);
+        let linkUrl: string | undefined;
+        if (action.kind === "send_link") {
+          linkUrl = await ensureConnectLink(identity, chatIdentityId, consolePublicUrl);
+        } else if (action.kind === "pin") {
+          const pinResult = await pinConversationWorkspace({
+            chatIdentityId,
+            channel: row.channel,
+            conversationKey: row.conversationKey,
+            workspaceId: action.workspace.id,
+          });
+          // Lost a race (already_pinned_elsewhere) or unreachable: report the
+          // state that actually exists rather than echoing back the success
+          // copy for a pin that never landed.
+          if (!pinResult.ok) {
+            reportAction = await reportActualPin(chatIdentityId, row, reachable);
+          }
+        } else if (action.kind === "repin") {
+          const moved = await repinConversationWorkspace({
+            chatIdentityId,
+            channel: row.channel,
+            conversationKey: row.conversationKey,
+            fromWorkspaceId: action.from.id,
+            toWorkspaceId: action.to.id,
+          });
+          // Lost a race, or the authority re-check refused: re-resolve ONCE and
+          // report the state that actually exists, never retry in a loop. Same
+          // posture as pinConversationWorkspace's own race contract.
+          if (!moved.ok) {
+            reportAction = await reportActualPin(chatIdentityId, row, reachable);
+          }
         }
-      } else if (action.kind === "repin") {
-        const moved = await repinConversationWorkspace({
-          chatIdentityId,
-          channel: row.channel,
-          conversationKey: row.conversationKey,
-          fromWorkspaceId: action.from.id,
-          toWorkspaceId: action.to.id,
-        });
-        // Lost a race, or the authority re-check refused: re-resolve ONCE and
-        // report the state that actually exists, never retry in a loop. Same
-        // posture as pinConversationWorkspace's own race contract.
-        if (!moved.ok) {
-          reportAction = await reportActualPin(chatIdentityId, row, reachable);
-        }
+
+        await sendSystemChannelMessage(
+          row.channel,
+          String(payload.chatId),
+          renderConnectReply(reportAction, {
+            linkUrl,
+            // `||`, not `??` — an empty string (the stock-deploy case; see
+            // resolveConsolePublicUrl's doc-comment) must fall back the same
+            // way an unset var does, or the no_workspaces copy renders "Create
+            // one at , then send /connect again."
+            consoleUrl: consolePublicUrl || "the console",
+          }),
+          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+        );
+        await completeChannelMessage(row.id);
+        return "completed";
+      } catch (err) {
+        console.error(
+          "[channel-dispatch] /connect handling threw:",
+          err instanceof Error ? err.message : String(err)
+        );
+        await sendSystemChannelMessage(
+          row.channel,
+          String(payload.chatId),
+          "Something went wrong handling /connect. Try again in a moment.",
+          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+        );
+        await completeChannelMessage(row.id);
+        return "completed";
       }
-
-      await sendSystemChannelMessage(
-        row.channel,
-        String(payload.chatId),
-        renderConnectReply(reportAction, {
-          linkUrl,
-          // `||`, not `??` — an empty string (the stock-deploy case; see
-          // resolveConsolePublicUrl's doc-comment) must fall back the same
-          // way an unset var does, or the no_workspaces copy renders "Create
-          // one at , then send /connect again."
-          consoleUrl: consolePublicUrl || "the console",
-        }),
-        payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
-      );
-      await completeChannelMessage(row.id);
-      return "completed";
     }
 
     // --- 'ask': the reply itself may BE the workspace choice; consumed, never forwarded to Jace. ---

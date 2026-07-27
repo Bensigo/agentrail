@@ -686,6 +686,73 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
       expect(mockFail).not.toHaveBeenCalled();
     });
   });
+
+  // Final whole-branch review, must-fix #3: the spec's error table requires
+  // "mint fails (DB) -> honest failure copy; row completed, not failed" —
+  // `ensureConnectLink`'s try/catch is what implements that, but nothing
+  // rejected `setChatIdentityLinkToken` before this test, so deleting that
+  // try/catch passed the whole suite (turning this into must-fix #2's
+  // silence: the throw would escape to `processRow`'s outer catch, which
+  // fails the row and sends nothing to the channel).
+  it("setChatIdentityLinkToken rejecting (DB write fails) still sends the honest failure copy and COMPLETES the row — never fails it", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockSetChatIdentityLinkToken.mockRejectedValue(new Error("connection terminated"));
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "I couldn't create a connect link right now. Try /connect again in a moment.",
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  // Final whole-branch review, must-fix #2: ANY throw inside the '/connect'
+  // handling (listWorkspacesForChatIdentity, pinConversationWorkspace,
+  // repinConversationWorkspace, reportActualPin's re-resolve) used to fall
+  // through to processRow's outer catch, which calls failChannelMessage and
+  // sends NOTHING to the channel — silence, exactly what /connect exists to
+  // eliminate. The whole '/connect' block is now wrapped in its own
+  // try/catch that replies with a generic in-channel failure and completes
+  // (not fails) the row, since requeuing would just replay the same error
+  // N times and /connect is trivially retypable.
+  it("a throw anywhere in '/connect' handling (e.g. listWorkspacesForChatIdentity rejecting) still replies in-channel and COMPLETES the row — never silence", async () => {
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(linkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockRejectedValue(new Error("db unreachable"));
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystem).toHaveBeenCalledWith(
+      "-100123",
+      "Something went wrong handling /connect. Try again in a moment.",
+      undefined,
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("warns via console.warn when CONSOLE_PUBLIC_URL is unset, so the failure is no longer perfectly silent server-side", async () => {
+    delete process.env["CONSOLE_PUBLIC_URL"];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mockClaim.mockResolvedValueOnce(connectRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(unlinkedIdentity());
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("CONSOLE_PUBLIC_URL is unset/empty"),
+    );
+    warnSpy.mockRestore();
+  });
 });
 
 describe("dispatchQueuedChannelMessages — 'intro' kind", () => {

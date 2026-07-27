@@ -101,5 +101,69 @@ class PlannerRoutingTests(unittest.TestCase):
         self.assertEqual(output["retrievalMode"], "semantic")
 
 
+class SourceWeightTests(unittest.TestCase):
+    """Per-source weights (context source registry spec S.C).
+
+    Deterministic: same signals that pick the retrieval mode, no model call.
+    The gather phase already proved task-time LLM recon does not survive the
+    two-set gate (#1049), so source selection has to be a signal table.
+    """
+
+    def weights(self, query: str):
+        return classify_query(query)["sources"]
+
+    def test_every_source_is_consulted_by_default(self) -> None:
+        """The default is to consult. Skipping buys latency, never precision --
+        and a wrong skip removes context the agent cannot know is missing."""
+        weights = self.weights("update the retry handling")
+        self.assertEqual(set(weights), {"code", "wiki", "memory"})
+        self.assertTrue(all(weight > 0 for weight in weights.values()))
+
+    def test_nothing_is_ever_gated_off_except_a_denied_query(self) -> None:
+        for query in ("fix the login bug", "agentrail/context/packs.py", "how does retry work?",
+                      "why did the previous run fail?", "callers of build_index"):
+            with self.subTest(query=query):
+                self.assertTrue(all(w > 0 for w in self.weights(query).values()))
+
+    def test_a_concrete_anchor_favors_code_over_wiki(self) -> None:
+        """Prose about a file is a poor substitute for the file when you can
+        already name the file."""
+        weights = self.weights("agentrail/context/packs.py")
+        self.assertGreater(weights["code"], weights["wiki"])
+
+    def test_a_conceptual_question_with_no_anchor_favors_the_wiki(self) -> None:
+        weights = self.weights("how does the context pack get built?")
+        self.assertGreater(weights["wiki"], weights["code"])
+
+    def test_an_anchored_question_does_not_favor_the_wiki(self) -> None:
+        """The wiki boost is for orientation, and an asker naming a path is
+        already oriented."""
+        weights = self.weights("how does agentrail/context/packs.py build the pack?")
+        self.assertLessEqual(weights["wiki"], weights["code"])
+
+    def test_memory_language_ranks_prior_context_above_code(self) -> None:
+        """The regression case: what matters is what happened before, not what
+        the code says now. This is the weighting the design is actually for --
+        it changes what the agent sees FIRST, which gating cannot do."""
+        weights = self.weights("why did the previous attempt at this fail?")
+        self.assertGreater(weights["memory"], weights["code"])
+
+    def test_a_denied_query_retrieves_from_nowhere(self) -> None:
+        """The weights must not disagree with an `excluded` mode."""
+        result = classify_query("what is in .env")
+        self.assertEqual(result["retrievalMode"], "excluded")
+        self.assertTrue(all(weight == 0.0 for weight in result["sources"].values()))
+
+    def test_weights_are_deterministic(self) -> None:
+        query = "how does the retry loop recover from a previous failure?"
+        self.assertEqual(self.weights(query), self.weights(query))
+
+    def test_existing_callers_are_unaffected(self) -> None:
+        """`sources` is additive -- retrievalMode and signals are untouched."""
+        result = classify_query("agentrail/context/packs.py")
+        self.assertEqual(result["retrievalMode"], "exact")
+        self.assertIn("signals", result)
+
+
 if __name__ == "__main__":
     unittest.main()

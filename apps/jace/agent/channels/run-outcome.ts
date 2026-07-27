@@ -43,21 +43,22 @@
 // (see goal_outcome_dispatch.core.mjs's own "never throws" contract) — it
 // can never block or alter the platform-notify response above.
 //
-// ACK-ON-SILENCE (Important 2, feat/jace-ack-on-silence): composing either
-// hand-off above is a full model turn and routinely exceeds the 4s
-// slow-turn-ack window (agent/lib/ack-on-silence.core.mjs), so without a
-// guard the user would get an unsolicited "On it." acknowledging a message
-// they never sent. `withProactiveMarker` below stamps every `auth` this
-// route forwards with `ack-on-silence.core.mjs`'s `JACE_PROACTIVE_ATTRIBUTE`
-// so each channel's `turn.started` (reading it back via `isProactiveTurn`)
-// can skip arming the ack for exactly these Jace-initiated turns, while
-// every genuinely human-initiated `receive()` hand-off elsewhere (the
-// Discord Gateway listener, the console dispatcher, hosted-inbound.ts) is
-// unaffected, since none of THOSE callers ever set this attribute.
+// WORK ACK (Important 2, feat/jace-ack-on-silence): composing either hand-off
+// above is a full model turn, and it may well call tools to do it (a terminal
+// outcome notification can look the run up before describing it). The work ack
+// (agent/lib/ack-on-work.core.mjs) arms on exactly that signal, so without a
+// guard the user would get an unsolicited status line acknowledging a message
+// they never sent. `withProactiveMarker` below stamps every `auth` this route
+// forwards with `ack-on-work.core.mjs`'s `JACE_PROACTIVE_ATTRIBUTE` so each
+// channel's `actions.requested` (reading it back via `isProactiveTurn`) can
+// skip arming the ack for exactly these Jace-initiated turns, while every
+// genuinely human-initiated `receive()` hand-off elsewhere (the Discord Gateway
+// listener, the console dispatcher, hosted-inbound.ts) is unaffected, since
+// none of THOSE callers ever set this attribute.
 import { defineChannel, POST } from "eve/channels";
 import { normalizeRunOutcome } from "../lib/run_outcome.core.mjs";
 import { evaluateGoalOutcome, realTransport as goalEvaluateTransport } from "../lib/goal_outcome_dispatch.core.mjs";
-import { JACE_PROACTIVE_ATTRIBUTE } from "../lib/ack-on-silence.core.mjs";
+import { JACE_PROACTIVE_ATTRIBUTE } from "../lib/ack-on-work.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
@@ -74,10 +75,10 @@ const CHANNELS: Record<string, unknown> = { telegram, discord, slack, imessage }
 
 /**
  * Merge the Jace-initiated marker (Important 2) into a forwarded `auth`'s
- * `attributes` so every channel's `turn.started` can skip arming the
- * slow-turn ack for a hand-off THIS route starts — see
- * ack-on-silence.core.mjs's `isProactiveTurn` for the full rationale, and
- * each channel's `turn.started` for where this is read back out via
+ * `attributes` so every channel's `actions.requested` can skip arming the
+ * work ack for a hand-off THIS route starts — see
+ * ack-on-work.core.mjs's `isProactiveTurn` for the full rationale, and
+ * each channel's `actions.requested` for where this is read back out via
  * `ctx.session.auth`. `auth` (and `auth.attributes`) may be absent — a
  * payload with none of the goal-loop enrichment fields still needs the
  * marker to reach the session, so this always returns an object rather than

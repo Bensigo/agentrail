@@ -40,13 +40,19 @@
 // `channel.thread` (not `channel.slack`), matching Eve's own docs example —
 // `thread` owns the thread-scoped post/startTyping operations.
 //
-// The turn.started handler arms a one-shot silence ack (see
-// agent/lib/ack-on-silence.core.mjs) so a slow turn does not look dead in
-// the thread. Stopped on message.completed / turn.completed; deliberately
-// not stopped on turn.failed / session.failed — same rationale as
-// telegram.ts's header comment. Skipped entirely for a Jace-initiated turn
-// (run-outcome.ts's hand-off) — see isProactiveTurn: there is no human
-// message behind that turn to acknowledge.
+// Slack is the ONE ack-less channel, on purpose. telegram/discord/console arm
+// agent/lib/ack-on-work.core.mjs from `actions.requested` to post a short line
+// naming the work in flight; Slack does not, because eve's own default
+// `actions.requested` ALREADY does the equivalent natively and better — it sets
+// the thread typing status to `Running <toolName, ...>...`, live and per-step,
+// with no thread clutter. Overriding it to add our own message would mean
+// reproducing that default here (Slack resolves one handler per event, see
+// below), and its status text runs through `truncateTypingStatus` /
+// `stripTypingStatusMarkdown` from #public/channels/slack/limits.js — helpers
+// eve does NOT re-export from `eve/channels/slack`. Hand-copying that regex into
+// our tree buys a duplicate of a signal Slack already shows, and silently rots
+// the day eve changes it. So: leave the default alone and declare no
+// `actions.requested` handler here.
 //
 // eve's slackChannel resolves ONE handler per event — roughly
 // `events[eventName] ?? defaultEvents[eventName]` — rather than chaining
@@ -65,37 +71,22 @@
 // `receive()` path. Reproduced below rather than skipped.
 import { slackChannel } from "eve/channels/slack";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
-import {
-  createAckOnSilence,
-  ACK_TEXT,
-  isProactiveTurn,
-} from "../lib/ack-on-silence.core.mjs";
-
-const ack = createAckOnSilence();
-const convoKey = (ctx: { session?: { id?: string } }) =>
-  ctx?.session?.id ?? "slack";
 
 export default slackChannel({
   events: {
-    async "turn.started"(_data, channel, ctx) {
+    async "turn.started"(_data, channel) {
       // Reproduce eve's default turn.started (see the header comment above)
       // since declaring this handler replaces it rather than chaining over
       // it.
       channel.state.pendingToolCallMessage = null;
       channel.state.lastReasoningTypingAtMs = null;
       channel.state.lastReasoningTypingStatus = null;
-      if (!isProactiveTurn(ctx?.session?.auth)) {
-        ack.start(convoKey(ctx), () => channel.thread.post(ACK_TEXT));
-      }
       await channel.thread.startTyping("Working...");
     },
-    "turn.completed"(_data, _channel, ctx) {
-      ack.stop(convoKey(ctx));
-    },
-    async "message.completed"(data, channel, ctx) {
-      // Stop sits BELOW this guard — see telegram.ts's identical comment.
+    // No "turn.completed" handler: it existed only to disarm the ack, and eve
+    // declares no slack default for it, so nothing is shadowed by its absence.
+    async "message.completed"(data, channel) {
       if (data.finishReason === "tool-calls" || !data.message) return;
-      ack.stop(convoKey(ctx));
       const messages = splitIntoChatMessages(data.message);
       for (const [index, message] of messages.entries()) {
         if (index > 0) await channel.thread.startTyping();

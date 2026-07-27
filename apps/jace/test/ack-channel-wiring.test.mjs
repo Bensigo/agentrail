@@ -1,11 +1,11 @@
-// Structural test for the slow-turn acknowledgement wiring across channels.
+// Structural test for the work-acknowledgement wiring across channels.
 //
 // agent/channels/*.ts are Eve channel modules — `node --test` cannot import
 // them directly (no TS loader is configured for the test run, and constructing
 // a real channel would need Eve's runtime context). Following this repo's
 // convention (see discord-channel.test.mjs), ALL the real logic lives in and is
-// fully exercised by ack-on-silence.core.test.mjs; this test locks only the
-// WIRING — that each channel arms the ack on turn.started, disarms it on
+// fully exercised by ack-on-work.core.test.mjs; this test locks only the
+// WIRING — that each channel arms the ack from actions.requested, disarms it on
 // turn.completed, and places its stops BELOW the tool-calls guard — by reading
 // the source as text.
 
@@ -20,70 +20,107 @@ const read = (name) =>
     "utf8",
   );
 
-const CHANNELS = ["telegram.ts", "discord.ts", "slack.ts", "console.ts"];
+// slack.ts is deliberately NOT here: it is the one ack-less channel, because
+// eve's own default `actions.requested` already sets a native thread typing
+// status naming the running tools, and eve resolves ONE handler per event on
+// slack (declaring ours would replace that default, and its text runs through
+// helpers eve does not re-export). See slack.ts's header comment, and the
+// explicit assertions at the bottom of this file that lock that decision in.
+const CHANNELS = ["telegram.ts", "discord.ts", "console.ts"];
 
-// Minor 3 fix: slack/console key the ack by `convoKey(ctx)` directly;
-// telegram/discord instead hoist that into a local `key` (shared with the
-// typing keep-alive) and pass `key`. Asserting only `/ack\.start\(/` /
-// `/ack\.stop\(/` (as this file used to) is argument-blind: swapping
-// `ack.stop(convoKey(ctx))` for e.g. `ack.stop("slack")` would keep every
-// test here green while making every turn on that channel post "On it."
-// even on an instant reply — exactly the regression this suite exists to
-// prevent. These per-channel patterns assert the actual key argument too.
-const START_KEY_PATTERN = {
-  "telegram.ts": /ack\.start\(\s*key\s*,/,
-  "discord.ts": /ack\.start\(\s*key\s*,/,
-  "slack.ts": /ack\.start\(\s*convoKey\(ctx\)/,
-  "console.ts": /ack\.start\(\s*convoKey\(ctx\)/,
-};
+// The ack key argument is asserted, not just the call: asserting only
+// `/ack\.arm\(/` is argument-blind, and swapping `ack.arm(convoKey(ctx), ...)`
+// for e.g. `ack.arm("slack", ...)` would keep this suite green while collapsing
+// every concurrent conversation onto one ack.
+const ARM_KEY_PATTERN = /ack\.arm\(\s*convoKey\(ctx\)\s*,\s*data\.turnId\s*,/;
 const STOP_KEY_PATTERN = {
   "telegram.ts": /ack\.stop\(\s*key\s*\)/,
   "discord.ts": /ack\.stop\(\s*key\s*\)/,
-  "slack.ts": /ack\.stop\(\s*convoKey\(ctx\)\s*\)/,
   "console.ts": /ack\.stop\(\s*convoKey\(ctx\)\s*\)/,
 };
 
 for (const name of CHANNELS) {
-  test(`${name}: imports the ack module (createAckOnSilence, ACK_TEXT, isProactiveTurn) and instantiates it`, () => {
+  test(`${name}: imports the ack module (createAckOnWork, workPhraseFor, isProactiveTurn) and instantiates it`, () => {
     const code = read(name);
     const importMatch = code.match(
-      /import\s*\{([^}]*)\}\s*from\s*["']\.\.\/lib\/ack-on-silence\.core\.mjs["']/,
+      /import\s*\{([^}]*)\}\s*from\s*["']\.\.\/lib\/ack-on-work\.core\.mjs["']/,
     );
-    assert.ok(importMatch, `${name}: must import from ack-on-silence.core.mjs`);
-    assert.match(importMatch[1], /createAckOnSilence/);
-    assert.match(importMatch[1], /ACK_TEXT/);
+    assert.ok(importMatch, `${name}: must import from ack-on-work.core.mjs`);
+    assert.match(importMatch[1], /createAckOnWork/);
+    assert.match(importMatch[1], /workPhraseFor/);
     assert.match(importMatch[1], /isProactiveTurn/);
-    assert.match(code, /const\s+ack\s*=\s*createAckOnSilence\(/);
+    assert.match(code, /const\s+ack\s*=\s*createAckOnWork\(/);
   });
 
-  // Bounded slices, not a fixed-width scan (Minor 4 fix). A fixed
-  // `code.slice(idx, idx + N)` window is brittle to unrelated edits growing
-  // the handler body past N chars (measured headroom before this fix: 284
-  // used out of 400 for telegram, 309 of 400 for discord) — a comment line
-  // added anywhere in the window trips a misleading "does not arm the ack"
-  // failure. Bounding by the NEXT handler's key (as the tool-calls-guard
-  // test below already does) has no such ceiling.
-  test(`${name}: arms the ack in turn.started (skipping a Jace-initiated turn) and disarms it in turn.completed`, () => {
+  test(`${name}: arms the ack from actions.requested, NOT from turn.started`, () => {
+    // The whole point of the change. Arming from turn.started fires on every
+    // turn — including a turn whose entire output is a clarifying question,
+    // where an "on it" is not merely noise but false.
     const code = read(name);
     const turnStarted = code.slice(
       code.indexOf('"turn.started"'),
-      code.indexOf('"turn.completed"'),
+      code.indexOf('"actions.requested"'),
     );
-    assert.match(turnStarted, START_KEY_PATTERN[name]);
-    // Important 2: run-outcome.ts's Jace-initiated hand-offs (terminal run
-    // outcome / goal-loop message) mark their forwarded auth with
-    // JACE_PROACTIVE_ATTRIBUTE; every channel must consult isProactiveTurn
-    // BEFORE arming the ack so that mark suppresses it — composing that
-    // reply is a full model turn that routinely exceeds the ack window, and
-    // there's no human message behind it to acknowledge.
-    const guardIdx = turnStarted.indexOf("isProactiveTurn(");
-    const armIdx = turnStarted.search(START_KEY_PATTERN[name]);
-    assert.ok(guardIdx !== -1, `${name}: turn.started must consult isProactiveTurn`);
-    assert.ok(
-      guardIdx < armIdx,
-      `${name}: isProactiveTurn must be consulted BEFORE ack.start arms the ack`,
+    assert.doesNotMatch(
+      turnStarted,
+      /ack\.arm\(/,
+      `${name}: turn.started must NOT arm the ack`,
     );
 
+    const actionsRequested = code.slice(
+      code.indexOf('"actions.requested"'),
+      code.indexOf('"turn.completed"'),
+    );
+    assert.match(actionsRequested, ARM_KEY_PATTERN);
+  });
+
+  test(`${name}: derives its copy from the payload, never a fixed string`, () => {
+    const code = read(name);
+    const actionsRequested = code.slice(
+      code.indexOf('"actions.requested"'),
+      code.indexOf('"turn.completed"'),
+    );
+    // The phrase must come from workPhraseFor(data.actions) — a hardcoded
+    // literal here would reintroduce the "On it." that fired on every turn.
+    assert.match(actionsRequested, /workPhraseFor\(\s*data\.actions\s*\)/);
+    assert.doesNotMatch(actionsRequested, /["']On it/);
+  });
+
+  test(`${name}: stays silent when the payload yields no phrase`, () => {
+    // A load-skill-only or smalltalk-only batch must not arm a timer at all.
+    const code = read(name);
+    const actionsRequested = code.slice(
+      code.indexOf('"actions.requested"'),
+      code.indexOf('"turn.completed"'),
+    );
+    const guard = actionsRequested.search(/if\s*\(\s*!phrase\s*\)\s*return/);
+    const arm = actionsRequested.search(ARM_KEY_PATTERN);
+    assert.ok(guard !== -1, `${name}: must bail out when workPhraseFor returns null`);
+    assert.ok(guard < arm, `${name}: the empty-phrase guard must precede ack.arm`);
+  });
+
+  test(`${name}: consults isProactiveTurn BEFORE arming`, () => {
+    // run-outcome.ts's Jace-initiated hand-offs (terminal run outcome /
+    // goal-loop message) mark their forwarded auth with
+    // JACE_PROACTIVE_ATTRIBUTE. Those turns CALL TOOLS too, so actions.requested
+    // does not filter them out by itself — the guard is still load-bearing, and
+    // there is no human message behind them to acknowledge.
+    const code = read(name);
+    const actionsRequested = code.slice(
+      code.indexOf('"actions.requested"'),
+      code.indexOf('"turn.completed"'),
+    );
+    const guardIdx = actionsRequested.indexOf("isProactiveTurn(");
+    const armIdx = actionsRequested.search(ARM_KEY_PATTERN);
+    assert.ok(guardIdx !== -1, `${name}: actions.requested must consult isProactiveTurn`);
+    assert.ok(
+      guardIdx < armIdx,
+      `${name}: isProactiveTurn must be consulted BEFORE ack.arm arms the ack`,
+    );
+  });
+
+  test(`${name}: disarms the ack in turn.completed`, () => {
+    const code = read(name);
     const turnCompleted = code.slice(
       code.indexOf('"turn.completed"'),
       code.indexOf('"message.completed"'),
@@ -103,13 +140,12 @@ for (const name of CHANNELS) {
     assert.ok(stop !== -1, "message.completed must stop the ack");
     assert.ok(stop > guard, "ack.stop must come AFTER the tool-calls guard");
   });
+}
 
-  // Minor 7: this non-override is load-bearing (overriding would clobber
-  // eve's own error message and drop its error id — see each channel's own
-  // header comment / the ack module's header comment for the rationale).
-  // discord-channel.test.mjs and telegram-channel.test.mjs already asserted
-  // this individually; folded into the shared four-channel loop here so
-  // slack.ts and console.ts are covered too.
+// This non-override is load-bearing on EVERY channel including slack
+// (overriding would clobber eve's own error message and drop its error id —
+// see each channel's own header comment / the ack module's header comment).
+for (const name of [...CHANNELS, "slack.ts"]) {
   test(`${name}: does NOT override turn.failed / session.failed (keeps Eve's error posts)`, () => {
     const code = read(name);
     assert.doesNotMatch(code, /["']turn\.failed["']/);
@@ -117,7 +153,7 @@ for (const name of CHANNELS) {
   });
 }
 
-test("telegram + discord: typing.stop also moved below the tool-calls guard", () => {
+test("telegram + discord: typing.stop also sits below the tool-calls guard", () => {
   for (const name of ["telegram.ts", "discord.ts"]) {
     const body = read(name).slice(read(name).indexOf('"message.completed"'));
     const guard = body.indexOf('finishReason === "tool-calls"');
@@ -128,14 +164,17 @@ test("telegram + discord: typing.stop also moved below the tool-calls guard", ()
 
 test("telegram: the ack posts via channel.telegram.post", () => {
   const code = read("telegram.ts");
-  const turnStarted = code.slice(code.indexOf('"turn.started"'), code.indexOf('"turn.completed"'));
-  assert.match(turnStarted, /channel\.telegram\.post\(\s*ACK_TEXT\s*\)/);
+  const actionsRequested = code.slice(
+    code.indexOf('"actions.requested"'),
+    code.indexOf('"turn.completed"'),
+  );
+  assert.match(actionsRequested, /channel\.telegram\.post\(\s*phrase\s*\)/);
 });
 
 test("discord: the ack is delivered via deliverDiscordBubble, not a bare channel.post", () => {
   const code = read("discord.ts");
-  const turnStarted = code.slice(
-    code.indexOf('"turn.started"'),
+  const actionsRequested = code.slice(
+    code.indexOf('"actions.requested"'),
     code.indexOf('"turn.completed"'),
   );
 
@@ -143,12 +182,12 @@ test("discord: the ack is delivered via deliverDiscordBubble, not a bare channel
   // followup path. channel.discord.post() alone needs View Channel + Send
   // Messages on this specific channel and dies with a swallowed 50001 in
   // private channels — that was the production bug fixed in #1463.
-  assert.match(turnStarted, /deliverDiscordBubble\(/);
-  assert.match(turnStarted, /content:\s*ACK_TEXT/);
-  assert.match(turnStarted, /attributes:\s*resolveSessionAuthAttributes\(/);
-  assert.match(turnStarted, /postFollowup:\s*followupTransport/);
+  assert.match(actionsRequested, /deliverDiscordBubble\(/);
+  assert.match(actionsRequested, /content:\s*phrase/);
+  assert.match(actionsRequested, /attributes:\s*resolveSessionAuthAttributes\(/);
+  assert.match(actionsRequested, /postFollowup:\s*followupTransport/);
   // channel.discord.post may appear ONLY as the postViaBot fallback.
-  assert.match(turnStarted, /postViaBot:\s*\(\)\s*=>\s*channel\.discord\.post\(/);
+  assert.match(actionsRequested, /postViaBot:\s*\(\)\s*=>\s*channel\.discord\.post\(/);
 });
 
 test("discord: imports deliverDiscordBubble alongside deliverDiscordReply", () => {
@@ -159,23 +198,49 @@ test("discord: imports deliverDiscordBubble alongside deliverDiscordReply", () =
   );
 });
 
-test("slack: the ack posts to the thread seam", () => {
-  const code = read("slack.ts");
-  const turnStarted = code.slice(
-    code.indexOf('"turn.started"'),
-    code.indexOf('"turn.completed"'),
-  );
-  assert.match(turnStarted, /channel\.thread\.post\(\s*ACK_TEXT\s*\)/);
-});
-
 test("console: the ack posts through postConsoleChatReply, not a raw transport call", () => {
   const code = read("console.ts");
-  const turnStarted = code.slice(
-    code.indexOf('"turn.started"'),
+  const actionsRequested = code.slice(
+    code.indexOf('"actions.requested"'),
     code.indexOf('"turn.completed"'),
   );
-  assert.match(turnStarted, /postConsoleChatReply\(/);
-  assert.match(turnStarted, /text:\s*ACK_TEXT/);
-  assert.match(turnStarted, /workspaceId:\s*channel\.state\.workspaceId/);
-  assert.match(turnStarted, /conversationKey:\s*channel\.state\.conversationKey/);
+  assert.match(actionsRequested, /postConsoleChatReply\(/);
+  assert.match(actionsRequested, /text:\s*phrase/);
+  assert.match(actionsRequested, /workspaceId:\s*channel\.state\.workspaceId/);
+  assert.match(actionsRequested, /conversationKey:\s*channel\.state\.conversationKey/);
+});
+
+// --- slack: the deliberate exception ------------------------------------
+
+test("slack: declares NO actions.requested handler, leaving eve's native tool status intact", () => {
+  // eve resolves one handler per event on slack (`events[e] ?? defaultEvents[e]`),
+  // so declaring this would REPLACE a default that already sets the thread
+  // typing status to `Running <toolName>...` — the same information our ack
+  // carries, shown live and per-step without cluttering the thread. Reproducing
+  // it would mean copying `truncateTypingStatus`/`stripTypingStatusMarkdown`
+  // out of eve's #public/channels/slack/limits.js, which it does not re-export.
+  const code = read("slack.ts");
+  assert.doesNotMatch(code, /["']actions\.requested["']/);
+});
+
+test("slack: carries no ack wiring at all", () => {
+  // Matched against imports and calls only, not the whole file: slack.ts's
+  // header comment names ack-on-work.core.mjs to explain WHY it opts out, and
+  // that explanation is the thing most worth keeping.
+  const code = read("slack.ts");
+  assert.doesNotMatch(code, /^\s*import[^;]*ack-on-work\.core\.mjs/m);
+  assert.doesNotMatch(code, /createAckOnWork\(/);
+  assert.doesNotMatch(code, /ack\.(arm|stop)\(/);
+});
+
+test("slack: still reproduces eve's default turn.started, which it DOES override", () => {
+  // Unchanged by this work, and independently load-bearing: losing the state
+  // clears makes reasoning.appended wrongly suppress the first status of a new
+  // turn. See slack.ts's header comment.
+  const code = read("slack.ts");
+  const turnStarted = code.slice(code.indexOf('"turn.started"'));
+  assert.match(turnStarted, /channel\.state\.pendingToolCallMessage\s*=\s*null/);
+  assert.match(turnStarted, /channel\.state\.lastReasoningTypingAtMs\s*=\s*null/);
+  assert.match(turnStarted, /channel\.state\.lastReasoningTypingStatus\s*=\s*null/);
+  assert.match(turnStarted, /startTyping\(\s*["']Working\.\.\.["']\s*\)/);
 });

@@ -667,12 +667,18 @@ Insert after line 571:
       if (action.kind === "send_link") {
         linkUrl = await ensureConnectLink(identity, chatIdentityId);
       } else if (action.kind === "pin") {
-        await pinConversationWorkspace({
+        const pinned = await pinConversationWorkspace({
           chatIdentityId,
           channel: row.channel,
           conversationKey: row.conversationKey,
           workspaceId: action.workspace.id,
         });
+        // Never claim "Connected to X" for a pin that did not land.
+        // `not_reachable` and `already_pinned_elsewhere` both mean someone or
+        // something decided this conversation's workspace and it wasn't us.
+        if (!pinned.ok) {
+          reportAction = await reportActualPin(chatIdentityId, row, reachable);
+        }
       } else if (action.kind === "repin") {
         const moved = await repinConversationWorkspace({
           chatIdentityId,

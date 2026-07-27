@@ -42,9 +42,22 @@
 // `waitUntil` and every one of its own failure modes resolves to a no-op
 // (see goal_outcome_dispatch.core.mjs's own "never throws" contract) — it
 // can never block or alter the platform-notify response above.
+//
+// ACK-ON-SILENCE (Important 2, feat/jace-ack-on-silence): composing either
+// hand-off above is a full model turn and routinely exceeds the 4s
+// slow-turn-ack window (agent/lib/ack-on-silence.core.mjs), so without a
+// guard the user would get an unsolicited "On it." acknowledging a message
+// they never sent. `withProactiveMarker` below stamps every `auth` this
+// route forwards with `ack-on-silence.core.mjs`'s `JACE_PROACTIVE_ATTRIBUTE`
+// so each channel's `turn.started` (reading it back via `isProactiveTurn`)
+// can skip arming the ack for exactly these Jace-initiated turns, while
+// every genuinely human-initiated `receive()` hand-off elsewhere (the
+// Discord Gateway listener, the console dispatcher, hosted-inbound.ts) is
+// unaffected, since none of THOSE callers ever set this attribute.
 import { defineChannel, POST } from "eve/channels";
 import { normalizeRunOutcome } from "../lib/run_outcome.core.mjs";
 import { evaluateGoalOutcome, realTransport as goalEvaluateTransport } from "../lib/goal_outcome_dispatch.core.mjs";
+import { JACE_PROACTIVE_ATTRIBUTE } from "../lib/ack-on-silence.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
@@ -58,6 +71,33 @@ import imessage from "./imessage.js";
  * drop.
  */
 const CHANNELS: Record<string, unknown> = { telegram, discord, slack, imessage };
+
+/**
+ * Merge the Jace-initiated marker (Important 2) into a forwarded `auth`'s
+ * `attributes` so every channel's `turn.started` can skip arming the
+ * slow-turn ack for a hand-off THIS route starts — see
+ * ack-on-silence.core.mjs's `isProactiveTurn` for the full rationale, and
+ * each channel's `turn.started` for where this is read back out via
+ * `ctx.session.auth`. `auth` (and `auth.attributes`) may be absent — a
+ * payload with none of the goal-loop enrichment fields still needs the
+ * marker to reach the session, so this always returns an object rather than
+ * only merging into one that already exists.
+ */
+// Takes `object` rather than `Record<string, unknown>` because that is what
+// normalizeRunOutcome's own JSDoc declares `auth` as, and `object` is not
+// assignable to an index-signature type — typing the parameter narrowly makes
+// the call sites fail with TS2345. The single cast inside is the narrowing.
+function withProactiveMarker(auth: object | undefined): Record<string, unknown> {
+  const record = (auth ?? {}) as Record<string, unknown>;
+  const existingAttributes =
+    typeof record["attributes"] === "object" && record["attributes"] !== null
+      ? (record["attributes"] as Record<string, unknown>)
+      : {};
+  return {
+    ...record,
+    attributes: { ...existingAttributes, [JACE_PROACTIVE_ATTRIBUTE]: true },
+  };
+}
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {
@@ -107,7 +147,7 @@ export default defineChannel({
         args.receive(channel, {
           message: outcome.message,
           target: outcome.target,
-          ...(outcome.auth ? { auth: outcome.auth } : {}),
+          auth: withProactiveMarker(outcome.auth),
         }),
       );
 
@@ -136,7 +176,7 @@ export default defineChannel({
               await args.receive(channel, {
                 message: dispatch.message,
                 target: outcome.target,
-                ...(outcome.auth ? { auth: outcome.auth } : {}),
+                auth: withProactiveMarker(outcome.auth),
               });
             }
           })(),

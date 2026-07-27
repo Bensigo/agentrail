@@ -14,7 +14,7 @@
 // `args.receive(module, ...)` cross-channel hand-off every other channel
 // rides (`agent/channels/hosted-inbound.ts`'s CHANNELS map).
 //
-// Jace's reply posts back through `events["message.completed"]` below by
+// Jace's reply posts back through the message.completed handler below by
 // calling the console's OWN `POST /api/v1/runner/chat-reply` endpoint
 // (`agent/lib/console_chat_reply.core.mjs`) — an authenticated HTTP call,
 // not a direct DB write: apps/jace is deliberately EXCLUDED from this repo's
@@ -62,6 +62,15 @@
 // guide, "Cross-channel hand-off" + "Define a channel" sections).
 import { defineChannel, POST } from "eve/channels";
 import { postConsoleChatReply } from "../lib/console_chat_reply.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
+
+const ack = createAckOnSilence();
+const convoKey = (ctx: { session?: { id?: string } }) =>
+  ctx?.session?.id ?? "console";
 
 type ConsoleState = { workspaceId: string; conversationKey: string };
 
@@ -119,8 +128,30 @@ export default defineChannel<ConsoleState>({
     });
   },
   events: {
-    async "message.completed"(data, channel) {
+    "turn.started"(_data, channel, ctx) {
+      // Skipped entirely for a Jace-initiated turn — see
+      // ack-on-silence.core.mjs's isProactiveTurn. Console isn't wired into
+      // run-outcome.ts's CHANNELS map today, but the predicate is applied
+      // identically across all four ack-wired channels so this stays
+      // correct if that ever changes.
+      if (isProactiveTurn(ctx?.session?.auth)) return;
+      ack.start(convoKey(ctx), () =>
+        postConsoleChatReply({
+          workspaceId: channel.state.workspaceId,
+          conversationKey: channel.state.conversationKey,
+          text: ACK_TEXT,
+          env: process.env,
+          transport: realTransport,
+        }),
+      );
+    },
+    "turn.completed"(_data, _channel, ctx) {
+      ack.stop(convoKey(ctx));
+    },
+    async "message.completed"(data, channel, ctx) {
+      // Stop sits BELOW this guard — see telegram.ts's identical comment.
       if (data.finishReason === "tool-calls" || !data.message) return;
+      ack.stop(convoKey(ctx));
       // Unlike telegram/discord/imessage, no bubble-splitting here: console
       // chat is a scrolling dashboard thread (one row per completed turn),
       // not a cadence-sensitive chat app — chat-split.core.mjs's paragraph

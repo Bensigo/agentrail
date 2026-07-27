@@ -37,7 +37,7 @@
 // live delivery are verified against the running sidecar (#1038/#1101), behind the
 // per-workspace `jaceOwnsDiscordNotify` opt-in.
 //
-// `events["message.completed"]` overrides Eve's default handler (which posts
+// The message.completed handler overrides Eve's default handler (which posts
 // the full reply as one message, splitting only at Discord's 2000-char hard
 // limit) to instead split it into several bubbles on the model's own
 // paragraph breaks — see agent/lib/chat-split.core.mjs for why, and
@@ -93,7 +93,7 @@
 // path is visible instead of silently indistinguishable from the original
 // bug.
 //
-// `events["turn.started"]` overrides Eve's default one-shot `startTyping()`
+// The turn.started handler overrides Eve's default one-shot `startTyping()`
 // with a keep-alive (spec: docs/superpowers/specs/2026-07-26-discord-gateway-listener-design.md
 // "Reply path" — Discord expires a typing indicator after ~10s, so on a slow
 // model the chat looks dead for the rest of a 30s-2min turn). Refreshed here
@@ -114,10 +114,16 @@
 import { discordChannel } from "eve/channels/discord";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 import {
+  deliverDiscordBubble,
   deliverDiscordReply,
   resolveSessionAuthAttributes,
 } from "../lib/discord-followup.core.mjs";
 import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
+import {
+  createAckOnSilence,
+  ACK_TEXT,
+  isProactiveTurn,
+} from "../lib/ack-on-silence.core.mjs";
 
 /** Raw fetch, narrowed to the `{ status, body }` shape discord-followup.core.mjs
  * expects — mirrors every jace->external-API wrapper's own `realTransport`
@@ -145,6 +151,7 @@ async function followupTransport(
 }
 
 const typing = createTypingKeepalive({ refreshMs: 8000 });
+const ack = createAckOnSilence();
 const convoKey = (ctx: { session?: { id?: string } }) =>
   ctx?.session?.id ?? "discord";
 
@@ -156,14 +163,36 @@ export default discordChannel({
   },
   events: {
     "turn.started"(_data, channel, ctx) {
-      typing.start(convoKey(ctx), () => channel.discord.startTyping());
+      const key = convoKey(ctx);
+      typing.start(key, () => channel.discord.startTyping());
+      // Same interaction-followup path message.completed uses — a bare
+      // channel.discord.post() silently eats 50001 in private channels
+      // (the #1463 bug). Skipped entirely for a Jace-initiated turn
+      // (run-outcome.ts's hand-off) — see ack-on-silence.core.mjs's
+      // isProactiveTurn: there is no human message behind that turn to
+      // acknowledge, and composing it routinely exceeds the ack window.
+      if (!isProactiveTurn(ctx?.session?.auth)) {
+        ack.start(key, () =>
+          deliverDiscordBubble({
+            content: ACK_TEXT,
+            attributes: resolveSessionAuthAttributes(ctx?.session?.auth),
+            postFollowup: followupTransport,
+            postViaBot: () => channel.discord.post(ACK_TEXT),
+          }),
+        );
+      }
     },
     "turn.completed"(_data, _channel, ctx) {
-      typing.stop(convoKey(ctx));
+      const key = convoKey(ctx);
+      typing.stop(key);
+      ack.stop(key);
     },
     async "message.completed"(data, channel, ctx) {
-      typing.stop(convoKey(ctx));
+      // Both stops sit below the guard — see telegram.ts's identical comment.
       if (data.finishReason === "tool-calls" || !data.message) return;
+      const key = convoKey(ctx);
+      typing.stop(key);
+      ack.stop(key);
       const attributes = resolveSessionAuthAttributes(ctx?.session?.auth);
       await deliverDiscordReply({
         text: data.message,

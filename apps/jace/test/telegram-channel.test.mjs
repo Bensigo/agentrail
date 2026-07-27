@@ -44,16 +44,22 @@ test("posts the split messages and pauses typing between them", () => {
 
 test("wires the typing keep-alive: start on turn.started, stop on turn end", () => {
   // The keep-alive LOGIC is fully exercised by typing-keepalive.core.test.mjs;
-  // this locks that the channel actually drives it on the right events.
+  // this locks that the channel actually drives it on the right events —
+  // benefits both the turn.started and message.completed paths equally.
+  //
+  // turn.started now also arms the ack (Task 3), so both share one
+  // `const key = convoKey(ctx)` local instead of each calling convoKey(ctx)
+  // inline — see ack-channel-wiring.test.mjs for the ack-specific coverage.
   assert.match(
     code,
     /import\s*{\s*createTypingKeepalive\s*}\s*from\s*["']\.\.\/lib\/typing-keepalive\.core\.mjs["']/,
   );
   assert.match(code, /["']turn\.started["']/);
-  assert.match(code, /typing\.start\(convoKey\(ctx\),\s*\(\)\s*=>\s*channel\.telegram\.startTyping\(\)\)/);
+  assert.match(code, /const\s+key\s*=\s*convoKey\(ctx\)/);
+  assert.match(code, /typing\.start\(key,\s*\(\)\s*=>\s*channel\.telegram\.startTyping\(\)\)/);
   // Stops on both success paths.
   assert.match(code, /["']turn\.completed["']/);
-  assert.match(code, /typing\.stop\(convoKey\(ctx\)\)/);
+  assert.match(code, /typing\.stop\(key\)/);
 });
 
 test("does NOT override turn.failed / session.failed (keeps Eve's error posts)", () => {

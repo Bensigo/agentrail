@@ -94,9 +94,12 @@ test("delegates the full reply to deliverDiscordReply, injecting the real Eve ca
 // transport — a strictly stronger guarantee than grepping source text.
 
 test("imports the pure followup-delivery core from agent/lib", () => {
+  // deliverDiscordBubble joined this import in the ack-on-silence wiring
+  // (Task 3): the ack is a reply like any other, so it reuses the same
+  // followup-first bubble delivery deliverDiscordReply is built on.
   assert.match(
     code,
-    /import\s*\{\s*deliverDiscordReply\s*,\s*resolveSessionAuthAttributes\s*,?\s*\}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']/,
+    /import\s*\{\s*deliverDiscordBubble\s*,\s*deliverDiscordReply\s*,\s*resolveSessionAuthAttributes\s*,?\s*\}\s*from\s*["']\.\.\/lib\/discord-followup\.core\.mjs["']/,
   );
 });
 
@@ -124,15 +127,20 @@ test("wires the typing keep-alive: start on turn.started, stop on turn end", () 
   // this locks that the channel actually drives it on the right events —
   // benefits both the interaction-backed reply path and the Gateway
   // receive()-triggered path equally (both go through channel.discord.startTyping()).
+  //
+  // turn.started now also arms the ack (Task 3), so both share one
+  // `const key = convoKey(ctx)` local instead of each calling convoKey(ctx)
+  // inline — see ack-channel-wiring.test.mjs for the ack-specific coverage.
   assert.match(
     code,
     /import\s*{\s*createTypingKeepalive\s*}\s*from\s*["']\.\.\/lib\/typing-keepalive\.core\.mjs["']/,
   );
   assert.match(code, /["']turn\.started["']/);
-  assert.match(code, /typing\.start\(convoKey\(ctx\),\s*\(\)\s*=>\s*channel\.discord\.startTyping\(\)\)/);
+  assert.match(code, /const\s+key\s*=\s*convoKey\(ctx\)/);
+  assert.match(code, /typing\.start\(key,\s*\(\)\s*=>\s*channel\.discord\.startTyping\(\)\)/);
   // Stops on both success paths.
   assert.match(code, /["']turn\.completed["']/);
-  assert.match(code, /typing\.stop\(convoKey\(ctx\)\)/);
+  assert.match(code, /typing\.stop\(key\)/);
 });
 
 test("does NOT override turn.failed / session.failed (keeps Eve's error posts)", () => {

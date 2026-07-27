@@ -1961,15 +1961,26 @@ export async function enqueueOnboard(data: {
 }
 
 /**
- * Read-only lookup: the onboard-kind queue entry's current `state` and
- * `updatedAt` for a repo, if one exists. Used ONLY by the github/webhook
- * route's push-triggered recompile (`AGENTRAIL_WIKI_RECOMPILE_ON_PUSH`) for
- * its minimum-interval guard (`AGENTRAIL_WIKI_PUSH_MIN_INTERVAL_SECONDS`,
- * default 300s): `updatedAt` doubles as "when this repo's onboard row last
- * changed" regardless of what that change was (queued, running, or a
- * just-finished terminal state) — precise enough for an advisory throttle
- * that only needs to bound how often a high-push-volume repo forces a fresh
- * compile.
+ * Read-only lookup: the onboard-kind queue entry's current `state`,
+ * `updatedAt` and `body` for a repo, if one exists.
+ *
+ * Two readers, one query:
+ *
+ *  - the github/webhook route's push-triggered recompile
+ *    (`AGENTRAIL_WIKI_RECOMPILE_ON_PUSH`) uses `updatedAt` for its
+ *    minimum-interval guard (`AGENTRAIL_WIKI_PUSH_MIN_INTERVAL_SECONDS`,
+ *    default 300s): `updatedAt` doubles as "when this repo's onboard row last
+ *    changed" regardless of what that change was (queued, running, or a
+ *    just-finished terminal state) — precise enough for an advisory throttle
+ *    that only needs to bound how often a high-push-volume repo forces a
+ *    fresh compile.
+ *  - the runner-result route's onboard-completion notice
+ *    (`notifyOnboardOutcome`) uses `body` to tell a FIRST onboard from a
+ *    RECOMPILE: {@link enqueueOnboard} seeds `""` on the initial insert and
+ *    stamps {@link ONBOARD_FORCE_BODY} on every forced re-arm, and nothing
+ *    downstream rewrites it (the claim in `runner.ts` only reads it), so the
+ *    marker is still on the row when the result lands. No new column, no
+ *    migration — the distinction was already persisted.
  *
  * Deliberately NOT folded into `enqueueOnboard`'s own atomic re-arm UPDATE:
  * the guard is advisory, not a correctness boundary — that boundary is
@@ -1983,10 +1994,14 @@ export async function enqueueOnboard(data: {
 export async function findOnboardEntryStatus(
   workspaceId: string,
   repoFullName: string
-): Promise<{ state: string; updatedAt: Date } | null> {
+): Promise<{ state: string; updatedAt: Date; body: string } | null> {
   const externalId = `${ONBOARD_EXTERNAL_ID_PREFIX}${repoFullName}`;
   const rows = await db
-    .select({ state: queueEntries.state, updatedAt: queueEntries.updatedAt })
+    .select({
+      state: queueEntries.state,
+      updatedAt: queueEntries.updatedAt,
+      body: queueEntries.body,
+    })
     .from(queueEntries)
     .where(
       and(

@@ -287,25 +287,39 @@ export function answerWhyFailed(run) {
  * - An ok status is folded through buildStandup/renderStandup exactly as
  *   before, with `status.truncated` threaded into renderStandup so a
  *   truncated page is never presented as the complete picture (Part 2).
- * - `whyFailedRunId` is resolved two ways (Important 4):
- *   - Preferred: the tool wrapper (agent/tools/standup.ts) makes a SECOND,
- *     targeted `fetchWorkStatus({ ref: whyFailedRunId })` call — the
- *     route's `ref` mode resolves a run id EXACTLY and unpaginated (see
- *     `findWorkspaceWorkByRef`'s `run-id` branch in
- *     packages/db-postgres/src/queries/work_status.ts), so a failed run
- *     older than the aggregate list's page is still found. That result is
- *     passed in here as `whyFailedStatus`; when it's ok, the run is looked
- *     up in ITS (unpaginated) `runs` array. When it's itself degraded, that
- *     gap is surfaced honestly on `whyFailed` rather than silently
- *     re-interpreted as "no such run".
- *   - Fallback (no `whyFailedStatus` given — back-compat for callers that
- *     only have the aggregate `status`): search `status.runs`, the same as
- *     before this fix. This CAN miss a run outside the aggregate page — the
- *     dedicated fetch above is what actually closes that gap; this path
- *     only exists so a caller without the second fetch still gets an
- *     honest (if page-limited) answer instead of a throw.
- *   Either way the answer itself still goes through `answerWhyFailed` (AC2
- *   — never a fabricated reason).
+ * - `whyFailedRunId` is resolved via a SECOND, targeted fetch (Important 4):
+ *   the tool wrapper (agent/tools/standup.ts) makes a dedicated
+ *   `fetchWorkStatus({ ref: whyFailedRunId })` call — the route's `ref`
+ *   mode resolves a run id EXACTLY and unpaginated (see
+ *   `findWorkspaceWorkByRef`'s `run-id` branch in
+ *   packages/db-postgres/src/queries/work_status.ts), so a failed run older
+ *   than the aggregate list's page is still found. (Minor 7: the wrapper
+ *   skips the actual round-trip when the run is already in the aggregate
+ *   page, but still passes a `whyFailedStatus`-shaped result built from
+ *   that row — this function cannot tell the difference, and does not need
+ *   to.) That result is passed in here as `whyFailedStatus`, and is now
+ *   REQUIRED whenever `whyFailedRunId` is set (Minor 5) — there is no more
+ *   "search the aggregate page and hope" fallback; that page-limited search
+ *   is exactly what the dedicated lookup above was added to retire, and
+ *   leaving both paths alive meant a future second caller could silently
+ *   reinherit the bug.
+ *   - `whyFailedStatus.ok === true`: look the run up in ITS (unpaginated)
+ *     `runs` array.
+ *     - Found: answer via `answerWhyFailed` (AC2 — never a fabricated
+ *       reason).
+ *     - Not found (Important 1): this is a DIFFERENT claim than "no reason
+ *       is recorded" — it means the id itself does not resolve to any run
+ *       in this workspace. `answerWhyFailed(undefined)`'s
+ *       `WHY_FAILED_NO_SOURCE` message asserts the run exists ("the runs
+ *       table records only a status … I will not invent a reason"), which
+ *       would misrepresent a bad/mistyped run id as a real run with an
+ *       unrecorded reason. Report `{ notFound: true, known: null,
+ *       message: "…found no such run…" }` instead — a claim about the
+ *       LOOKUP, not a claim about a real run's failure detail.
+ *   - `whyFailedStatus.ok === false`: the dedicated lookup itself failed
+ *     (unreachable, unconfigured, …) — an honest gap in THIS fetch, surfaced
+ *     on `whyFailed` as `{ degraded: true, reason, message }` rather than
+ *     silently re-interpreted as "no such run" or "no reason recorded".
  *
  * @param {object} args
  * @param {{ ok: boolean, runs?: Array<object>, queueEntries?: Array<object>,
@@ -314,7 +328,11 @@ export function answerWhyFailed(run) {
  * @param {string} [args.whyFailedRunId]
  * @param {{ ok: boolean, runs?: Array<object>, degraded?: boolean,
  *           reason?: string, note?: string }} [args.whyFailedStatus]
- *   the fetchWorkStatus({ ref: whyFailedRunId }) result — ok or degraded
+ *   the fetchWorkStatus({ ref: whyFailedRunId }) result — ok or degraded.
+ *   REQUIRED whenever `whyFailedRunId` is set (Minor 5) — there is no
+ *   fallback that searches `status.runs` instead; a caller that sets
+ *   `whyFailedRunId` without this gets no `whyFailed` at all rather than a
+ *   page-limited guess.
  * @returns {object} either `status` verbatim (degraded), or
  *   `{ report, standup, whyFailed, failureReasonPolicy, truncated }`
  */
@@ -328,33 +346,39 @@ export function buildStandupOutcome({ status, whyFailedRunId, whyFailedStatus } 
   const report = renderStandup(standup, { truncated: status.truncated });
 
   let whyFailed = null;
-  if (whyFailedRunId) {
-    if (whyFailedStatus) {
-      if (whyFailedStatus.ok === true) {
-        const run = (Array.isArray(whyFailedStatus.runs) ? whyFailedStatus.runs : []).find(
-          (r) => r && r.id === whyFailedRunId,
-        );
-        whyFailed = answerWhyFailed(run);
-      } else {
-        // The dedicated ref=<runId> lookup itself failed (unreachable,
-        // unconfigured, ...) — an honest gap in THIS fetch, never
-        // downgraded to a fabricated "no such run".
-        whyFailed = {
-          hasFailureReason: false,
-          message: whyFailedStatus.note || WHY_FAILED_NO_SOURCE,
-          known: null,
-          degraded: true,
-          reason: whyFailedStatus.reason,
-        };
-      }
-    } else {
-      // Back-compat fallback: no dedicated fetch was made, so search
-      // whatever page `status.runs` happens to be. May miss a run outside
-      // that page — callers should prefer passing whyFailedStatus.
-      const run = (Array.isArray(status.runs) ? status.runs : []).find(
+  if (whyFailedRunId && whyFailedStatus) {
+    if (whyFailedStatus.ok === true) {
+      const run = (Array.isArray(whyFailedStatus.runs) ? whyFailedStatus.runs : []).find(
         (r) => r && r.id === whyFailedRunId,
       );
-      whyFailed = answerWhyFailed(run);
+      // Important 1: "no such run" and "no reason recorded" are DIFFERENT
+      // claims. answerWhyFailed(undefined) would return WHY_FAILED_NO_SOURCE,
+      // which asserts the run exists ("the runs table records only a
+      // status … I will not invent a reason") — wrong when the id itself
+      // doesn't resolve to anything in this workspace. Keep those shapes
+      // distinct instead of collapsing a lookup miss into a reason-shaped
+      // answer about a run that was never found.
+      whyFailed = run
+        ? answerWhyFailed(run)
+        : {
+            hasFailureReason: false,
+            notFound: true,
+            known: null,
+            message:
+              `I looked up run ${whyFailedRunId} in this workspace's work and ` +
+              "found no such run — I can't say why it failed, and I won't guess.",
+          };
+    } else {
+      // The dedicated ref=<runId> lookup itself failed (unreachable,
+      // unconfigured, ...) — an honest gap in THIS fetch, never
+      // downgraded to a fabricated "no such run".
+      whyFailed = {
+        hasFailureReason: false,
+        message: whyFailedStatus.note || WHY_FAILED_NO_SOURCE,
+        known: null,
+        degraded: true,
+        reason: whyFailedStatus.reason,
+      };
     }
   }
 

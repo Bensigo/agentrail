@@ -223,21 +223,43 @@ test("buildStandupOutcome on an ok status builds+renders the standup and threads
   assert.equal(outcome.whyFailed, null); // no whyFailedRunId given
 });
 
-test("buildStandupOutcome resolves whyFailedRunId against status.runs (found)", () => {
+test("buildStandupOutcome resolves whyFailedRunId via whyFailedStatus (found)", () => {
   const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
-  const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2" });
+  // Minor 5: whyFailedStatus is REQUIRED whenever whyFailedRunId is set —
+  // there is no more fallback that searches status.runs on its own.
+  const whyFailedStatus = { ok: true, runs: [RUNS.find((r) => r.id === "r2")], queueEntries: [] };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2", whyFailedStatus });
   assert.equal(outcome.whyFailed.hasFailureReason, false);
   assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
   assert.equal(outcome.whyFailed.known.id, "r2");
   assert.equal(outcome.whyFailed.known.status, "failed");
 });
 
-test("buildStandupOutcome resolves whyFailedRunId against status.runs (not found -> honest no-source, not a throw)", () => {
+// ── Important 1: "no such run" vs "no reason recorded" are DIFFERENT claims ─
+//
+// When the dedicated whyFailedStatus lookup succeeds (ok: true) but the id
+// matches no row in it, that means the run id itself doesn't resolve in this
+// workspace — a claim about the LOOKUP. answerWhyFailed(undefined)'s
+// WHY_FAILED_NO_SOURCE message asserts the OPPOSITE: that the run exists and
+// simply has no recorded reason. Collapsing the two would tell a human "no
+// failure reason is recorded for that run" about a run that was never found.
+
+test("buildStandupOutcome distinguishes 'no such run' from 'no reason recorded' (Important 1)", () => {
   const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
-  const outcome = buildStandupOutcome({ status, whyFailedRunId: "does-not-exist" });
+  // The dedicated lookup completed fine (ok: true) — it just found nothing
+  // for this id, which is a meaningful, exact-and-unpaginated "not in this
+  // workspace" result, not a partial/page-limited miss.
+  const whyFailedStatus = { ok: true, runs: [], queueEntries: [] };
+  const outcome = buildStandupOutcome({ status, whyFailedRunId: "does-not-exist", whyFailedStatus });
+
   assert.equal(outcome.whyFailed.hasFailureReason, false);
-  assert.equal(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
+  assert.equal(outcome.whyFailed.notFound, true);
   assert.equal(outcome.whyFailed.known, null);
+  assert.match(outcome.whyFailed.message, /found no such run/);
+  assert.match(outcome.whyFailed.message, /does-not-exist/);
+  // Must NOT be the "run exists but no reason recorded" message — that
+  // asserts something false about a run id that doesn't resolve at all.
+  assert.notEqual(outcome.whyFailed.message, WHY_FAILED_NO_SOURCE);
 });
 
 // ── Important 4: whyFailedRunId via a dedicated, unpaginated ref lookup ────
@@ -288,11 +310,17 @@ test("buildStandupOutcome reports a degraded whyFailedStatus fetch honestly — 
   assert.notEqual(outcome.whyFailed.hasFailureReason, true);
 });
 
-test("buildStandupOutcome still falls back to searching status.runs when no whyFailedStatus is given (back-compat)", () => {
+test("Minor 5: buildStandupOutcome does NOT fall back to searching status.runs when whyFailedRunId is set without whyFailedStatus", () => {
+  // The page-limited "search status.runs" fallback was retired — it
+  // re-implemented exactly the page-limited search the dedicated
+  // whyFailedStatus lookup exists to fix, and standup.ts always supplies
+  // whyFailedStatus (a real dedicated fetch, or one built from a row
+  // already in hand — Minor 7) whenever whyFailedRunId is set. A caller
+  // that omits the now-required whyFailedStatus gets no whyFailed at all,
+  // not a silent, page-limited guess.
   const status = { ok: true, runs: RUNS, queueEntries: QUEUE, truncated: { runs: false, queueEntries: false } };
   const outcome = buildStandupOutcome({ status, whyFailedRunId: "r2" });
-  assert.equal(outcome.whyFailed.known.id, "r2");
-  assert.equal(outcome.whyFailed.known.status, "failed");
+  assert.equal(outcome.whyFailed, null);
 });
 
 // ── standup.ts wiring: the dedicated ref=<runId> fetch actually exists ─────

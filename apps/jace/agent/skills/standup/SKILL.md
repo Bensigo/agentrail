@@ -40,25 +40,45 @@ derive every field from the columns above and nothing else.
   report only what IS known for that run (its state, cost, and PR link). Never
   invent, infer, or guess a reason — a confabulated cause is worse than an
   honest "unknown".
+- **"No such run" and "no reason recorded" are different claims — don't
+  conflate them.** If the `whyFailedRunId` lookup finds no run with that id in
+  this workspace, the result carries `notFound: true` and a message that says
+  "found no such run" — that is a claim about the ID, not about the run's
+  outcome. Relay it as given; do NOT report it as "no failure reason is
+  recorded for that run", which asserts the run exists.
 - Do not describe GitHub CI status. Dashboard/run status reflects the local
   verify gate, not GitHub CI (see CONTEXT.md); the standup speaks only to the
   columns it can read.
 
 ## Degraded read
 
-This skill's ONLY data source is `agent/lib/fetch_work_status.core.mjs`'s
-`fetchWorkStatus` — a single GET to the console. That means standup can now
-fail to read at all (it did not have this failure mode when it opened
-Postgres directly): if the console is unconfigured, unreachable, or this
-conversation has no workspace yet, the tool returns the fetch's DEGRADED
-result verbatim — `{ ok: false, degraded: true, reason, note }` — with no
-`report`, no `standup`, and no `whyFailed` key at all.
+This skill's data source is `agent/lib/fetch_work_status.core.mjs`'s
+`fetchWorkStatus` — one GET to the console, or two when answering "why did
+run X fail" (a second, dedicated `ref=<runId>` lookup for `whyFailedRunId`).
+That means standup can now fail to read at all (it did not have this failure
+mode when it opened Postgres directly) — and it can fail in two DIFFERENT
+places that read differently. Recognize both shapes; do not treat one as the
+other.
 
-Recognize that shape and report it plainly: relay the `note` as-is, and stop
-— never render an empty standup ("0 runs, 0 escalations") in its place, and
-never guess at the factory's state to fill the gap. A degraded read is an
-honest gap, not a fact, exactly like a degraded `fetch_backlog` read in the
-backlog-triage skill.
+- **The standup read itself fails.** If the console is unconfigured,
+  unreachable, or this conversation has no workspace yet, the tool returns
+  the fetch's DEGRADED result verbatim — `{ ok: false, degraded: true,
+  reason, note }` — with no `report`, no `standup`, and no `whyFailed` key at
+  all. Recognize that shape and report it plainly: relay the `note` as-is,
+  and stop — never render an empty standup ("0 runs, 0 escalations") in its
+  place, and never guess at the factory's state to fill the gap.
+- **Only the `whyFailedRunId` lookup fails.** The standup itself is real —
+  `report`/`standup` are populated — but the SECOND, dedicated fetch behind
+  `whyFailedRunId` failed. That surfaces as `whyFailed: { degraded: true,
+  reason, message }`. Relay `whyFailed.message` for that one question, and
+  still report the rest of the standup normally. Do NOT read this as "no
+  failure reason is recorded for that run" — that is the DIFFERENT, honest
+  no-source answer (`answerWhyFailed`) for a lookup that actually completed.
+  Here the lookup itself never finished, so nothing about the run's outcome
+  is known either way.
+
+A degraded read is an honest gap, not a fact, exactly like a degraded
+`fetch_backlog` read in the backlog-triage skill.
 
 ## Read-only guarantee
 

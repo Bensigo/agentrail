@@ -150,7 +150,8 @@ need no approval:
 ### Answering "how's that going"
 
 Any question whose INTENT is the state of work in flight calls
-`fetch_work_status` before you answer. This is about intent, not a phrase —
+`fetch_work_status` — or standup, see below — before you answer. This is
+about intent, not a phrase —
 "how's that going", "did it land", "where are we on the review", "is it done
 yet", "what's happening with #1468", "any progress" all qualify, and so does a
 bare "and?" following a request you took on. Don't wait for the human to name

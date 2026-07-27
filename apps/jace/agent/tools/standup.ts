@@ -100,8 +100,8 @@ export default defineTool({
       transport: realTransport,
     });
 
-    // Important 4: whyFailedRunId is resolved via a SECOND, targeted fetch
-    // with `ref: whyFailedRunId` — the route's ref mode resolves a run id
+    // Important 4: whyFailedRunId is resolved via a targeted fetch with
+    // `ref: whyFailedRunId` — the route's ref mode resolves a run id
     // EXACTLY and unpaginated (findWorkspaceWorkByRef's `run-id` branch),
     // unlike the aggregate call above, which only ever sees STANDUP_LIMIT's
     // page. Without this, a failed run older than that page would look
@@ -110,14 +110,33 @@ export default defineTool({
     // buildStandupOutcome returns a degraded `status` verbatim without ever
     // looking at whyFailedStatus, so firing this against an already-down
     // console would just be a wasted second call.
+    //
+    // Minor 7: the run is often already sitting in `status.runs` (the
+    // common case — a recent failure well inside the aggregate's
+    // STANDUP_LIMIT page). Search there FIRST and only pay for the second
+    // round-trip on a miss — two sequential 10s-timeout fetches otherwise
+    // fire on every whyFailedRunId call, so a wedged console holds the turn
+    // ~20s even when the answer was already in hand. buildStandupOutcome
+    // requires a `whyFailedStatus` whenever `whyFailedRunId` is set (Minor
+    // 5), so the in-hand case still builds one — just from the row already
+    // fetched, with the same `{ ok: true, runs: [...] }` shape a real
+    // dedicated fetch would return, so buildStandupOutcome can't tell (and
+    // doesn't need to) which happened.
     let whyFailedStatus: Awaited<ReturnType<typeof fetchWorkStatus>> | undefined;
     if (input.whyFailedRunId && status.ok === true) {
-      whyFailedStatus = await fetchWorkStatus({
-        env: process.env,
-        eveSessionId: ctx.session.id,
-        ref: input.whyFailedRunId,
-        transport: realTransport,
-      });
+      const inHand = (Array.isArray(status.runs) ? status.runs : []).find(
+        (r: { id?: string }) => r && r.id === input.whyFailedRunId,
+      );
+      whyFailedStatus = inHand
+        ? ({ ok: true, runs: [inHand], queueEntries: [] } as Awaited<
+            ReturnType<typeof fetchWorkStatus>
+          >)
+        : await fetchWorkStatus({
+            env: process.env,
+            eveSessionId: ctx.session.id,
+            ref: input.whyFailedRunId,
+            transport: realTransport,
+          });
     }
 
     // All the orchestration — degraded passthrough (never an empty standup

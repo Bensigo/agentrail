@@ -479,3 +479,40 @@ test("degraded(bad_body) when the console responds 200 with null JSON", async ()
   assert.equal(res.reason, "bad_body");
   assert.equal(res.status, 200);
 });
+
+// Minor 4 — a timeout firing mid-body-stream (AFTER `transport` already
+// resolved with a status) must not be mistaken for "the body was not valid
+// JSON". That would assert a fabricated single cause for what is actually a
+// retrieval timeout — the same class of bug just fixed for the 404 vs
+// "no workspace" ambiguity (Important 1 in fetch_work_status.core.mjs).
+
+test("Minor 4: a TimeoutError thrown from res.json() reports degraded(unreachable), not bad_body", async () => {
+  const transport = fakeTransport(() => ({
+    status: 200,
+    json: async () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      throw err;
+    },
+  }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+  assert.equal(res.degraded, true);
+  assert.equal(res.reason, "unreachable");
+  assert.equal(res.status, 200);
+  assert.doesNotMatch(res.note, /not valid JSON/);
+});
+
+test("Minor 4: an AbortError thrown from res.json() also reports degraded(unreachable), not bad_body", async () => {
+  const transport = fakeTransport(() => ({
+    status: 200,
+    json: async () => {
+      const err = new Error("The signal has been aborted");
+      err.name = "AbortError";
+      throw err;
+    },
+  }));
+  const res = await fetchWorkStatus({ env: ENV, eveSessionId: "eve-1", transport });
+  assert.equal(res.degraded, true);
+  assert.equal(res.reason, "unreachable");
+  assert.equal(res.status, 200);
+});

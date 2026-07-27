@@ -67,7 +67,10 @@ export default defineTool({
     "nothing and needs no approval. Returns a degraded result (never throws) " +
     "when the console is unconfigured, unreachable, or this conversation has " +
     "no workspace yet — that is an honest gap in THIS fetch, never a reason " +
-    "to guess at what the factory is actually doing.",
+    "to guess at what the factory is actually doing. A run's `success` " +
+    "status never proves a merge: it is only that run's OWN local verify " +
+    "gate going green, not GitHub CI, and a `prUrl` being set means a PR " +
+    "was OPENED, not merged.",
   inputSchema: z.object({
     ref: z
       .string()

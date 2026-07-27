@@ -1,10 +1,13 @@
-// Pure, dependency-free core for fetching work status (recent runs + queue
-// entries, optionally scoped to a `ref`) from the AgentRail console — the
-// read that lets Jace answer "how's that going / did it land / where are we
-// on X" from real, workspace-scoped data. No SDK, no network primitives of
-// its own: the single HTTP call is an injected `transport` seam (real
-// `fetch` in the thin tool wrapper, a fake in tests), so every branch —
-// including every degraded one — is unit-testable without a live server.
+// Pure core, free of external packages, for fetching work status (recent
+// runs + queue entries, optionally scoped to a `ref`) from the AgentRail
+// console — the read that lets Jace answer "how's that going / did it land /
+// where are we on X" from real, workspace-scoped data. No SDK, no network
+// primitives of its own: the single HTTP call is an injected `transport`
+// seam (real `fetch` in the thin tool wrapper, a fake in tests), so every
+// branch — including every degraded one — is unit-testable without a live
+// server. Its one internal import is `./sanitize-untrusted.core.mjs`'s
+// `hardenUntrusted` (see below) — the same pure, shared core
+// fetch_backlog.core.mjs uses for the same reason.
 //
 // Auth + config model: same as the sibling *.core.mjs modules across this
 // app (e.g. fetch_pr_diff.core.mjs) — Jace resolves its own console
@@ -62,8 +65,12 @@ const DEGRADED_NOTES = {
  * Resolve the console endpoint + bearer from the environment. Trims both,
  * strips a trailing slash from the base URL, and reports which var(s) are
  * missing. Deliberately duplicated verbatim from the sibling *.core.mjs
- * modules rather than shared: each core module here is pure and
- * dependency-free of the others by design.
+ * modules rather than shared — config resolution is small enough that
+ * duplicating it keeps each core free of external packages AND free of
+ * cross-core coupling for this one concern. The exception is
+ * `hardenUntrusted` (imported above from `./sanitize-untrusted.core.mjs`),
+ * same as fetch_backlog.core.mjs: that helper is genuinely shared, pure
+ * sanitization, not a policy each core should redecide for itself.
  *
  * @param {Record<string, string|undefined>} [env]
  * @returns {{ ok: true, baseUrl: string, token: string } | { ok: false, missing: string[] }}
@@ -161,10 +168,14 @@ function hardenField(value, maxLen) {
  */
 function projectRun(raw) {
   if (!raw || typeof raw !== "object") return raw;
+  // Conditional spread (Minor 8): only overwrite a key that was actually on
+  // the row. Unconditionally setting `title`/`branch` here would add those
+  // keys (as `undefined`) to a row that never had them, which is harmless
+  // today but makes a consumer's `deepStrictEqual` brittle to schema drift.
   return {
     ...raw,
-    title: hardenField(raw.title, TITLE_MAX_LEN),
-    branch: hardenField(raw.branch, BRANCH_MAX_LEN),
+    ...("title" in raw ? { title: hardenField(raw.title, TITLE_MAX_LEN) } : {}),
+    ...("branch" in raw ? { branch: hardenField(raw.branch, BRANCH_MAX_LEN) } : {}),
   };
 }
 
@@ -177,10 +188,13 @@ function projectRun(raw) {
  */
 function projectQueueEntry(raw) {
   if (!raw || typeof raw !== "object") return raw;
+  // Conditional spread (Minor 8) — see projectRun's comment above.
   return {
     ...raw,
-    title: hardenField(raw.title, TITLE_MAX_LEN),
-    parkReason: hardenField(raw.parkReason, PARK_REASON_MAX_LEN),
+    ...("title" in raw ? { title: hardenField(raw.title, TITLE_MAX_LEN) } : {}),
+    ...("parkReason" in raw
+      ? { parkReason: hardenField(raw.parkReason, PARK_REASON_MAX_LEN) }
+      : {}),
   };
 }
 
@@ -236,7 +250,17 @@ export async function fetchWorkStatus({ env = {}, eveSessionId, ref, limit, tran
   let body;
   try {
     body = await res.json();
-  } catch {
+  } catch (err) {
+    // A timeout can fire AFTER `transport` already resolved with a status —
+    // it aborts mid-body-stream, so it surfaces here as a rejected `.json()`
+    // call, not as the transport-level catch above. Left unhandled, that
+    // reads as "the body was not valid JSON" (bad_body), which asserts a
+    // fabricated single cause — the same class of bug just fixed for the 404
+    // ambiguity above. Route it back to the honest "could not be reached"
+    // note instead.
+    if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+      return degraded("unreachable", { status });
+    }
     return degraded("bad_body", { status });
   }
   if (!body || typeof body !== "object") return degraded("bad_body", { status });

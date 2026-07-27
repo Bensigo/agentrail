@@ -84,10 +84,21 @@ test("instructions.md states the resolved-but-empty rung (Important 5)", () => {
 
 test("instructions.md states the cross-repo bare-#N collision warning (Important 5)", () => {
   const src = instructions();
+  // Anchored to the load-bearing exact phrases, no `s`/dotAll flag: with the
+  // old `.*`-with-dotAll pattern, deleting the ENTIRE bullet still passed —
+  // the first alternative matched an unrelated "bare `and?`" far above, then
+  // the second reached "ANY of them" in an unrelated create_issue bullet
+  // ~350 lines later. Each assertion below only matches within this rule's
+  // own bullet.
   assert.match(
     src,
-    /bare\s*`#42`.*WRONG repo|bare.*number.*ANY of them/is,
+    /bare `#42` can match the WRONG repo/,
     "must warn that a bare issue/PR number can match the wrong repo in a multi-repo workspace",
+  );
+  assert.match(
+    src,
+    /qualify it as `owner\/repo#42`/,
+    "must tell the model to qualify a bare number as owner/repo#N before treating a match as settled",
   );
 });
 
@@ -99,7 +110,15 @@ test("instructions.md states success !== merged and does not describe GitHub CI 
     "must tie a run's success status to its OWN local verify gate",
   );
   assert.match(src, /NOT mean a PR merged/i, "must explicitly deny that success means merged");
-  assert.match(src, /not\s+.*GitHub CI|NOT mean.*GitHub CI/is, "must explicitly deny that success means GitHub CI is green");
+  // Anchored to the exact phrase, no dotAll `s` flag: the old
+  // `/not\s+.*GitHub CI|NOT mean.*GitHub CI/is` pattern's second alternative
+  // could match "NOT mean" and "GitHub CI" from two unrelated places once
+  // dotAll let `.*` cross the whole rest of the file.
+  assert.match(
+    src,
+    /does NOT mean GitHub CI\s+passed/,
+    "must explicitly deny that success means GitHub CI is green",
+  );
 });
 
 test("instructions.md states the lastLivenessAt staleness rule (Minor 7)", () => {
@@ -114,8 +133,12 @@ test("instructions.md states the lastLivenessAt staleness rule (Minor 7)", () =>
 
 test("instructions.md maps queue states to the house vocabulary and forbids raw internals (Minor 8)", () => {
   const src = instructions();
-  // \s+ tolerates a markdown line-wrap splitting a two-word label.
-  for (const term of ["Assigned", "In\\s+progress", "Blocked", "Needs\\s+you", "Shipped"]) {
+  // \s+ tolerates a markdown line-wrap splitting a two-word label. "Blocked"
+  // is anchored to its `→ Blocked` mapping arrow, not the bare word — a bare
+  // /Blocked/ also matches the unrelated "**Blocked by**" house-format
+  // section far below, so it would still "pass" with this whole bullet
+  // deleted.
+  for (const term of ["Assigned", "In\\s+progress", "→\\s*Blocked", "Needs\\s+you", "Shipped"]) {
     assert.match(src, new RegExp(term), `must map to the house word "${term}"`);
   }
   assert.match(

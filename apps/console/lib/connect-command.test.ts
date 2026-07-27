@@ -125,4 +125,21 @@ describe("decideConnectCommand", () => {
     });
     expect(JSON.stringify(action)).not.toContain("ws-foreign");
   });
+
+  it("bare /connect on an unreachable pin does not leak the workspace", () => {
+    const action = decideConnectCommand({
+      arg: "",
+      identity: { userId: "user-1" },
+      pinned: { id: "ws-foreign", name: null },
+      reachable: [WS_B],
+    });
+    expect(action).toEqual({ kind: "already_pinned", workspace: null, alternatives: [WS_B] });
+    expect(JSON.stringify(action)).not.toContain("ws-foreign");
+  });
+
+  it("whitespace-only arg behaves identically to the bare command", () => {
+    expect(
+      decideConnectCommand({ arg: "   ", identity: linked, pinned: null, reachable: [WS_A, WS_B] })
+    ).toEqual({ kind: "choose", options: [WS_A, WS_B] });
+  });
 });

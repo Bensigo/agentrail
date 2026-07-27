@@ -51,7 +51,7 @@ export type ConnectCommandAction =
   | { kind: "pin"; workspace: WorkspaceRef }
   | { kind: "repin"; from: WorkspaceRef; to: WorkspaceRef }
   | { kind: "repin_refused" }
-  | { kind: "already_pinned"; workspace: PinnedRef; alternatives: WorkspaceRef[] }
+  | { kind: "already_pinned"; workspace: WorkspaceRef | null; alternatives: WorkspaceRef[] }
   | { kind: "choose"; options: WorkspaceRef[] }
   | { kind: "unknown_workspace"; options: WorkspaceRef[] };
 
@@ -74,7 +74,8 @@ function matchWorkspace(arg: string, reachable: WorkspaceRef[]): WorkspaceRef | 
 export function decideConnectCommand(
   input: DecideConnectCommandInput
 ): ConnectCommandAction {
-  const { arg, identity, pinned, reachable } = input;
+  const { identity, pinned, reachable } = input;
+  const arg = input.arg.trim();
 
   // Account linking always comes first — the arg is meaningless until we know
   // which user this chat account belongs to.
@@ -91,14 +92,18 @@ export function decideConnectCommand(
   }
 
   const alternatives = reachable.filter((w) => w.id !== pinned.id);
+  // Resolve the current pin against `reachable` up front: this is the only
+  // safe source of a name/id pair to echo back. `pinned` itself must never be
+  // returned in an action — the requester may not have standing in it.
+  const current = reachable.find((w) => w.id === pinned.id) ?? null;
+
   if (!target || target.id === pinned.id) {
-    return { kind: "already_pinned", workspace: pinned, alternatives };
+    return { kind: "already_pinned", workspace: current, alternatives };
   }
 
   // Authority rule: you may move a conversation BETWEEN workspaces you have
   // standing in, but you may not move one out of a workspace you are a
   // stranger to. `pinned.name` is non-null exactly when it is reachable.
-  const current = reachable.find((w) => w.id === pinned.id);
   if (!current) return { kind: "repin_refused" };
 
   return { kind: "repin", from: current, to: target };

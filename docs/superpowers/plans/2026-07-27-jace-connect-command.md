@@ -562,9 +562,11 @@ export function renderConnectReply(
     case "repin_refused":
       return `This chat is already connected to a workspace you're not a member of, so I can't move it. Someone who is a member can, or you can change it in the console.`;
     case "already_pinned":
+      // `workspace` is null when the requester cannot reach the current pin —
+      // we must not name it, so the copy stays deliberately vague.
       return action.alternatives.length
-        ? `This chat is connected to ${action.workspace.name ?? "a workspace"}. To switch:\n${list(action.alternatives)}\n\nSend /connect <name>.`
-        : `This chat is connected to ${action.workspace.name ?? "a workspace"}.`;
+        ? `This chat is connected to ${action.workspace?.name ?? "a workspace"}. To switch:\n${list(action.alternatives)}\n\nSend /connect <name>.`
+        : `This chat is connected to ${action.workspace?.name ?? "a workspace"}.`;
     case "choose":
       return `Which workspace should this chat use?\n${list(action.options)}\n\nSend /connect <name>.`;
     case "unknown_workspace":
@@ -692,7 +694,8 @@ Insert after line 571:
           reportAction = nowId
             ? {
                 kind: "already_pinned",
-                workspace: reachable.find((w) => w.id === nowId) ?? { id: nowId, name: null },
+                // null when we cannot reach it — never echo an unreachable id.
+                workspace: reachable.find((w) => w.id === nowId) ?? null,
                 alternatives: reachable.filter((w) => w.id !== nowId),
               }
             : { kind: "repin_refused" };

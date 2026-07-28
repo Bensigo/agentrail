@@ -9,7 +9,7 @@ import {
   isFromBot,
   isDirectMessage,
   mentionsBot,
-  admitMessage,
+  screenMessage,
   stripBotMention,
   buildProviderMessageId,
   shapeInboundPayload,
@@ -85,115 +85,147 @@ test("mentionsBot: true iff botUserId appears in the mentions array", () => {
 });
 
 // ---------------------------------------------------------------------------
-// admitMessage — the full matrix from the spec: mention / DM / self /
-// other-bot / empty.
+// screenMessage — transport-level noise screening only. The mention rule now
+// applies ONLY when isThread is false; a known thread forwards every
+// non-noise message and lets the console (thread-engagement.ts) decide.
 // ---------------------------------------------------------------------------
 
-test("admitMessage: no botUserId yet -> never admits", () => {
-  const result = admitMessage(dmMessage(), undefined);
-  assert.equal(result.admit, false);
-  assert.match(result.reason, /bot user id not yet known/);
+test("screenMessage: no botUserId yet -> never admits", () => {
+  const result = screenMessage(dmMessage(), undefined, false);
+  assert.deepEqual(result, {
+    admit: false,
+    reason: "bot user id not yet known (gateway not ready)",
+  });
 });
 
-test("admitMessage: malformed payload (null / non-object) -> not admitted", () => {
-  assert.equal(admitMessage(null, BOT_ID).admit, false);
-  assert.equal(admitMessage(undefined, BOT_ID).admit, false);
-  assert.equal(admitMessage("nope", BOT_ID).admit, false);
+test("screenMessage: malformed payload (null / non-object) -> not admitted, regardless of isThread", () => {
+  for (const isThread of [false, true]) {
+    assert.deepEqual(screenMessage(null, BOT_ID, isThread), {
+      admit: false,
+      reason: "malformed message payload",
+    });
+    assert.equal(screenMessage(undefined, BOT_ID, isThread).admit, false);
+    assert.equal(screenMessage("nope", BOT_ID, isThread).admit, false);
+  }
 });
 
-test("admitMessage: the bot's OWN message is ignored", () => {
-  const msg = dmMessage({ author: { id: BOT_ID, username: "jace", bot: true } });
-  const result = admitMessage(msg, BOT_ID);
-  assert.equal(result.admit, false);
-  assert.match(result.reason, /bot/);
+test("screenMessage: the bot's OWN message is ignored, in a thread too (the infinite ping-pong guard)", () => {
+  for (const isThread of [false, true]) {
+    const msg = dmMessage({ author: { id: BOT_ID, username: "jace", bot: true } });
+    const result = screenMessage(msg, BOT_ID, isThread);
+    assert.equal(result.admit, false);
+    assert.match(result.reason, /bot/);
+  }
 });
 
-test("admitMessage: another bot's message is ignored, even in a DM", () => {
-  const msg = dmMessage({ author: { id: "other-bot", username: "carl-bot", bot: true } });
-  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+test("screenMessage: another bot's message is ignored, even in a DM or a thread", () => {
+  for (const isThread of [false, true]) {
+    const msg = dmMessage({ author: { id: "other-bot", username: "carl-bot", bot: true } });
+    assert.equal(screenMessage(msg, BOT_ID, isThread).admit, false);
+  }
 });
 
-test("admitMessage: empty content is ignored (DM)", () => {
-  assert.equal(admitMessage(dmMessage({ content: "" }), BOT_ID).admit, false);
-  assert.equal(admitMessage(dmMessage({ content: "   " }), BOT_ID).admit, false);
-  assert.equal(admitMessage(dmMessage({ content: undefined }), BOT_ID).admit, false);
+test("screenMessage: empty content is ignored (DM), regardless of isThread", () => {
+  for (const isThread of [false, true]) {
+    assert.equal(screenMessage(dmMessage({ content: "" }), BOT_ID, isThread).admit, false);
+    assert.equal(screenMessage(dmMessage({ content: "   " }), BOT_ID, isThread).admit, false);
+    assert.equal(screenMessage(dmMessage({ content: undefined }), BOT_ID, isThread).admit, false);
+  }
 });
 
-test("admitMessage: empty content is ignored even when it mentions the bot", () => {
+test("screenMessage: empty content is ignored even when it mentions the bot", () => {
   const msg = guildMessage({ content: "", mentions: [{ id: BOT_ID }] });
-  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+  assert.equal(screenMessage(msg, BOT_ID, false).admit, false);
 });
 
-test("admitMessage: a DM with real content is admitted", () => {
-  const result = admitMessage(dmMessage(), BOT_ID);
-  assert.equal(result.admit, true);
-  assert.match(result.reason, /direct message/);
+test("screenMessage: a DM with real content is admitted regardless of isThread", () => {
+  for (const isThread of [false, true]) {
+    const result = screenMessage(dmMessage(), BOT_ID, isThread);
+    assert.deepEqual(result, { admit: true, reason: "direct message" });
+  }
 });
 
-test("admitMessage: a guild message that mentions the bot is admitted", () => {
+test("screenMessage: a guild message that mentions the bot is admitted (isThread false)", () => {
   const msg = guildMessage({ mentions: [{ id: BOT_ID }] });
-  const result = admitMessage(msg, BOT_ID);
-  assert.equal(result.admit, true);
-  assert.match(result.reason, /mentions the bot/);
+  const result = screenMessage(msg, BOT_ID, false);
+  assert.deepEqual(result, { admit: true, reason: "mentions the bot" });
 });
 
-test("admitMessage: a guild message that does NOT mention the bot is ignored", () => {
+test("screenMessage: REJECTS an un-mentioned guild message when isThread is false", () => {
   const msg = guildMessage({ mentions: [] });
-  const result = admitMessage(msg, BOT_ID);
-  assert.equal(result.admit, false);
-  assert.match(result.reason, /without a mention/);
+  const result = screenMessage(msg, BOT_ID, false);
+  assert.deepEqual(result, {
+    admit: false,
+    reason: "guild message without a mention of the bot, outside a known thread",
+  });
 });
 
-test("admitMessage: @everyone in a guild channel is NOT treated as a bot mention", () => {
+test("screenMessage: ADMITS an un-mentioned guild message when isThread is true", () => {
+  const msg = guildMessage({ mentions: [] });
+  const result = screenMessage(msg, BOT_ID, true);
+  assert.deepEqual(result, { admit: true, reason: "message in a known thread" });
+});
+
+test("screenMessage: a mentioning message inside a known thread is still admitted, reason still credits the mention", () => {
+  const msg = guildMessage({ mentions: [{ id: BOT_ID }], content: `<@${BOT_ID}> hi` });
+  const result = screenMessage(msg, BOT_ID, true);
+  assert.deepEqual(result, { admit: true, reason: "mentions the bot" });
+});
+
+test("screenMessage: @everyone in a guild channel is NOT treated as a bot mention (outside a thread)", () => {
   // Discord does not add every member to `mentions` for an @everyone/@here
   // sweep — mention_everyone is a separate flag this listener never reads.
   const msg = guildMessage({ mentions: [], mention_everyone: true, content: "@everyone hi" });
-  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+  assert.equal(screenMessage(msg, BOT_ID, false).admit, false);
 });
 
-test("admitMessage: a role mention (not this user id) does not admit", () => {
+test("screenMessage: a role mention (not this user id) does not admit outside a thread", () => {
   const msg = guildMessage({ mentions: [{ id: "some-other-user" }], mention_roles: [BOT_ID] });
-  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+  assert.equal(screenMessage(msg, BOT_ID, false).admit, false);
 });
 
-test("admitMessage: a malformed event with no guild_id but a member object is NOT treated as a DM (fails closed, not open)", () => {
+test("screenMessage: a malformed event with no guild_id but a member object is NOT treated as a DM (fails closed, not open)", () => {
   const msg = guildMessage({ member: { nick: "x" } });
   delete msg.guild_id;
   // mentions is [] by default (from guildMessage()) -> falls through to the
   // ordinary "guild message without a mention" rejection, not silently
   // admitted as a DM.
-  const result = admitMessage(msg, BOT_ID);
+  const result = screenMessage(msg, BOT_ID, false);
   assert.equal(result.admit, false);
   assert.match(result.reason, /without a mention/);
 });
 
 // ---------------------------------------------------------------------------
-// admitMessage — I1: mention-only content (nothing left after stripping the
+// screenMessage — I1: mention-only content (nothing left after stripping the
 // bot's own mention token) must be skipped cleanly, not admitted then 400'd
-// by the console's discord-inbound route.
+// by the console's discord-inbound route. Applies inside a thread too.
 // ---------------------------------------------------------------------------
 
-test("admitMessage: a guild message that is ONLY the bot mention is NOT admitted (I1)", () => {
+test("screenMessage: a guild message that is ONLY the bot mention is NOT admitted (I1)", () => {
   const msg = guildMessage({ content: `<@${BOT_ID}>`, mentions: [{ id: BOT_ID }] });
-  const result = admitMessage(msg, BOT_ID);
-  assert.equal(result.admit, false);
-  assert.match(result.reason, /empty after stripping/);
+  const result = screenMessage(msg, BOT_ID, false);
+  assert.deepEqual(result, { admit: false, reason: "empty after stripping the bot mention" });
 });
 
-test("admitMessage: a guild message with only whitespace around the mention token is NOT admitted", () => {
+test("screenMessage: a message that is ONLY the bot mention is NOT admitted even inside a known thread", () => {
+  const msg = guildMessage({ content: `<@${BOT_ID}>`, mentions: [{ id: BOT_ID }] });
+  const result = screenMessage(msg, BOT_ID, true);
+  assert.deepEqual(result, { admit: false, reason: "empty after stripping the bot mention" });
+});
+
+test("screenMessage: a guild message with only whitespace around the mention token is NOT admitted", () => {
   const msg = guildMessage({ content: `   <@!${BOT_ID}>   `, mentions: [{ id: BOT_ID }] });
-  assert.equal(admitMessage(msg, BOT_ID).admit, false);
+  assert.equal(screenMessage(msg, BOT_ID, false).admit, false);
 });
 
-test("admitMessage: a guild mention WITH real text after it is still admitted", () => {
+test("screenMessage: a guild mention WITH real text after it is still admitted", () => {
   const msg = guildMessage({ content: `<@${BOT_ID}> hello`, mentions: [{ id: BOT_ID }] });
-  const result = admitMessage(msg, BOT_ID);
-  assert.equal(result.admit, true);
-  assert.match(result.reason, /mentions the bot/);
+  const result = screenMessage(msg, BOT_ID, false);
+  assert.deepEqual(result, { admit: true, reason: "mentions the bot" });
 });
 
-test("admitMessage: a DM is unaffected by the strip-empty check when its content has no mention token", () => {
-  const result = admitMessage(dmMessage({ content: "hello" }), BOT_ID);
+test("screenMessage: a DM is unaffected by the strip-empty check when its content has no mention token", () => {
+  const result = screenMessage(dmMessage({ content: "hello" }), BOT_ID, false);
   assert.equal(result.admit, true);
 });
 
@@ -239,14 +271,15 @@ test("buildProviderMessageId: channelId:messageId, matching the interactions doo
   assert.equal(buildProviderMessageId("998877", "int-42"), "998877:int-42");
 });
 
-test("shapeInboundPayload: builds the discord-inbound body from a guild mention", () => {
+test("shapeInboundPayload: builds the discord-inbound body from a guild mention (not a thread)", () => {
   const message = guildMessage({
     channel_id: "chan-1",
     id: "msg-1",
     author: { id: "user-1", username: "ada", global_name: "Ada", bot: false },
     content: `<@${BOT_ID}> what's the status?`,
+    mentions: [{ id: BOT_ID }],
   });
-  const payload = shapeInboundPayload({ message, botUserId: BOT_ID });
+  const payload = shapeInboundPayload({ message, botUserId: BOT_ID, isThread: false });
   assert.deepEqual(payload, {
     channelId: "chan-1",
     messageId: "msg-1",
@@ -254,15 +287,23 @@ test("shapeInboundPayload: builds the discord-inbound body from a guild mention"
     senderDisplay: "Ada",
     senderUsername: "ada",
     text: "what's the status?",
+    threadId: null,
+    mentionsBot: true,
+    mentionsOtherUsers: false,
+    repliesToMessageId: null,
+    repliesToBot: false,
   });
 });
 
 test("shapeInboundPayload: display name falls back to username, then the raw id", () => {
   const noGlobalName = guildMessage({ author: { id: "user-2", username: "ada_handle", bot: false } });
-  assert.equal(shapeInboundPayload({ message: noGlobalName, botUserId: BOT_ID }).senderDisplay, "ada_handle");
+  assert.equal(
+    shapeInboundPayload({ message: noGlobalName, botUserId: BOT_ID, isThread: false }).senderDisplay,
+    "ada_handle",
+  );
 
   const noNameAtAll = guildMessage({ author: { id: "user-3", bot: false } });
-  const shaped = shapeInboundPayload({ message: noNameAtAll, botUserId: BOT_ID });
+  const shaped = shapeInboundPayload({ message: noNameAtAll, botUserId: BOT_ID, isThread: false });
   assert.equal(shaped.senderDisplay, "user-3");
   assert.equal(shaped.senderUsername, null);
 });
@@ -271,13 +312,121 @@ test("shapeInboundPayload: display name uses ?? not || — an explicit empty str
   const emptyGlobalName = guildMessage({
     author: { id: "user-4", username: "ada_handle", global_name: "", bot: false },
   });
-  assert.equal(shapeInboundPayload({ message: emptyGlobalName, botUserId: BOT_ID }).senderDisplay, "");
+  assert.equal(
+    shapeInboundPayload({ message: emptyGlobalName, botUserId: BOT_ID, isThread: false }).senderDisplay,
+    "",
+  );
 });
 
-test("shapeInboundPayload: works on a DM message (no channel-mention token to strip)", () => {
+test("shapeInboundPayload: works on a DM message (no channel-mention token to strip, no thread)", () => {
   const message = dmMessage({ content: "hey jace" });
-  const payload = shapeInboundPayload({ message, botUserId: BOT_ID });
+  const payload = shapeInboundPayload({ message, botUserId: BOT_ID, isThread: false });
   assert.equal(payload.text, "hey jace");
+  assert.equal(payload.threadId, null);
+});
+
+// ---------------------------------------------------------------------------
+// shapeInboundPayload — new fact fields (threadId, mentionsBot,
+// mentionsOtherUsers, repliesToMessageId, repliesToBot) the console's
+// engagement rule needs, since this listener no longer decides admission on
+// its own for thread messages.
+// ---------------------------------------------------------------------------
+
+test("shapeInboundPayload: threadId is the channel id when isThread is true, else null", () => {
+  const message = guildMessage({ channel_id: "thread-42" });
+  assert.equal(shapeInboundPayload({ message, botUserId: BOT_ID, isThread: true }).threadId, "thread-42");
+  assert.equal(shapeInboundPayload({ message, botUserId: BOT_ID, isThread: false }).threadId, null);
+});
+
+test("shapeInboundPayload: mentionsBot is true only when the bot's id is in mentions", () => {
+  const withBot = guildMessage({ mentions: [{ id: BOT_ID }] });
+  assert.equal(shapeInboundPayload({ message: withBot, botUserId: BOT_ID, isThread: false }).mentionsBot, true);
+
+  const withoutBot = guildMessage({ mentions: [{ id: "someone-else" }] });
+  assert.equal(
+    shapeInboundPayload({ message: withoutBot, botUserId: BOT_ID, isThread: false }).mentionsBot,
+    false,
+  );
+
+  const noMentions = guildMessage({ mentions: [] });
+  assert.equal(
+    shapeInboundPayload({ message: noMentions, botUserId: BOT_ID, isThread: false }).mentionsBot,
+    false,
+  );
+});
+
+test("shapeInboundPayload: mentionsOtherUsers is true when mentions contains a non-bot user", () => {
+  const otherUser = guildMessage({ mentions: [{ id: "someone-else" }] });
+  assert.equal(
+    shapeInboundPayload({ message: otherUser, botUserId: BOT_ID, isThread: false }).mentionsOtherUsers,
+    true,
+  );
+
+  const botAndOther = guildMessage({ mentions: [{ id: BOT_ID }, { id: "someone-else" }] });
+  assert.equal(
+    shapeInboundPayload({ message: botAndOther, botUserId: BOT_ID, isThread: false }).mentionsOtherUsers,
+    true,
+  );
+});
+
+test("shapeInboundPayload: mentionsOtherUsers is false when mentions contains only the bot, or is empty", () => {
+  const onlyBot = guildMessage({ mentions: [{ id: BOT_ID }] });
+  assert.equal(
+    shapeInboundPayload({ message: onlyBot, botUserId: BOT_ID, isThread: false }).mentionsOtherUsers,
+    false,
+  );
+
+  const noMentions = guildMessage({ mentions: [] });
+  assert.equal(
+    shapeInboundPayload({ message: noMentions, botUserId: BOT_ID, isThread: false }).mentionsOtherUsers,
+    false,
+  );
+});
+
+test("shapeInboundPayload: repliesToMessageId reads message_reference.message_id, null when absent", () => {
+  const withReply = guildMessage({ message_reference: { message_id: "msg-999" } });
+  assert.equal(
+    shapeInboundPayload({ message: withReply, botUserId: BOT_ID, isThread: false }).repliesToMessageId,
+    "msg-999",
+  );
+
+  const withoutReply = guildMessage({});
+  assert.equal(
+    shapeInboundPayload({ message: withoutReply, botUserId: BOT_ID, isThread: false }).repliesToMessageId,
+    null,
+  );
+});
+
+test("shapeInboundPayload: repliesToBot is true only when referenced_message.author.bot === true", () => {
+  const repliesToBot = guildMessage({
+    message_reference: { message_id: "msg-999" },
+    referenced_message: { author: { id: BOT_ID, bot: true } },
+  });
+  assert.equal(
+    shapeInboundPayload({ message: repliesToBot, botUserId: BOT_ID, isThread: false }).repliesToBot,
+    true,
+  );
+
+  const repliesToHuman = guildMessage({
+    message_reference: { message_id: "msg-998" },
+    referenced_message: { author: { id: "user-2", bot: false } },
+  });
+  assert.equal(
+    shapeInboundPayload({ message: repliesToHuman, botUserId: BOT_ID, isThread: false }).repliesToBot,
+    false,
+  );
+
+  const noReferencedMessage = guildMessage({ message_reference: { message_id: "msg-997" } });
+  assert.equal(
+    shapeInboundPayload({ message: noReferencedMessage, botUserId: BOT_ID, isThread: false }).repliesToBot,
+    false,
+  );
+
+  const noReplyAtAll = guildMessage({});
+  assert.equal(
+    shapeInboundPayload({ message: noReplyAtAll, botUserId: BOT_ID, isThread: false }).repliesToBot,
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -364,6 +513,11 @@ const BASE_ARGS = {
   senderDisplay: "Ada",
   senderUsername: "ada",
   text: "hello",
+  threadId: "thread-9",
+  mentionsBot: true,
+  mentionsOtherUsers: true,
+  repliesToMessageId: "msg-0",
+  repliesToBot: true,
 };
 
 test("postDiscordInboundMessage: missing config -> ok:false, transport never called", async () => {

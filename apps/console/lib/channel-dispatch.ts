@@ -38,10 +38,15 @@ import {
   repinConversationWorkspace,
   appendJaceMessage,
   recordGuardrailEvent,
+  getThreadEngagement,
+  setThreadEngagement,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
 } from "@agentrail/db-postgres";
+// Thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-native-
+// jace-design.md) — the ONE decision function shared by Discord and Slack.
+import { decideEngagement, type ThreadInbound, type EngagementState } from "./thread-engagement";
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
@@ -216,6 +221,26 @@ interface TelegramInboxPayload {
    * telegram/discord payload never carries this.
    */
   threadTs?: string;
+  /**
+   * The thread-engagement envelope (spec: docs/superpowers/specs/2026-07-28-
+   * thread-native-jace-design.md), read by `buildThreadInbound` below to run
+   * `decideEngagement`. `threadId` is Discord-only — `discord-inbound.ts`
+   * writes it on EVERY discord row (never conditionally omitted), `string`
+   * inside a known thread, `null` outside one. Slack carries the equivalent
+   * fact as `threadTs` above instead (no separate `threadId` key — see
+   * `buildThreadInbound`'s own doc-comment for why one key does double duty
+   * there). `mentionsBot`/`mentionsOtherUsers`/`repliesToBot` are read
+   * tolerantly (only an actual `boolean` is kept) so a row from BEFORE this
+   * feature existed, or a Slack row enqueued with `SLACK_BOT_USER_ID` unset
+   * (see `connectors/slack/events/route.ts`'s own header doc), degrades to
+   * `undefined` here rather than a cast or a crash — `buildThreadInbound`
+   * then supplies the conservative default (`false`/`null`).
+   */
+  threadId?: string | null;
+  mentionsBot?: boolean;
+  mentionsOtherUsers?: boolean;
+  repliesToMessageId?: string | null;
+  repliesToBot?: boolean;
 }
 
 /**
@@ -283,7 +308,114 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   if (typeof threadTs === "string" && threadTs.trim()) {
     result.threadTs = threadTs;
   }
+  // The thread-engagement envelope — see TelegramInboxPayload's doc-comment
+  // on these fields. `threadId`/`repliesToMessageId` are `string | null`
+  // (both a real value and an explicit `null` are meaningful and kept; only
+  // a missing/malformed key resolves to `undefined`, never a cast).
+  const threadId = p["threadId"];
+  if (threadId === null || typeof threadId === "string") {
+    result.threadId = threadId;
+  }
+  if (typeof p["mentionsBot"] === "boolean") {
+    result.mentionsBot = p["mentionsBot"];
+  }
+  if (typeof p["mentionsOtherUsers"] === "boolean") {
+    result.mentionsOtherUsers = p["mentionsOtherUsers"];
+  }
+  const repliesToMessageId = p["repliesToMessageId"];
+  if (repliesToMessageId === null || typeof repliesToMessageId === "string") {
+    result.repliesToMessageId = repliesToMessageId;
+  }
+  if (typeof p["repliesToBot"] === "boolean") {
+    result.repliesToBot = p["repliesToBot"];
+  }
   return result;
+}
+
+/**
+ * Build the pure `ThreadInbound` envelope `decideEngagement` needs, from a
+ * claimed row's already-extracted payload. Discord/Slack ONLY — see this
+ * file's `processRow` call site for the channel guard.
+ *
+ * `isDM`: NEITHER door writes an explicit `isDM` key into
+ * `channel_inbox.payload` (see `discord-inbound.ts`'s and
+ * `connectors/slack/events/route.ts`'s own header comments) — each carries a
+ * different STRUCTURAL PROXY instead, and this function reads the exact same
+ * proxy each door's own admission gate already relies on:
+ *
+ *   - Discord: `threadId === null`. Per `discord-inbound.ts`'s own header
+ *     doc, "the interactions webhook always sets `mentionsBot: true` ... and
+ *     the Gateway listener's `screenMessage` only ever forwards a non-thread
+ *     message here when it is a DM or a mention" — so a `threadId === null`
+ *     row that does NOT mention the bot must be a DM. A `threadId === null`
+ *     row that DOES mention the bot short-circuits `decideEngagement`'s own
+ *     `mentionsBot` check FIRST (see thread-engagement.ts), which returns
+ *     the IDENTICAL `nextState` either way (`{ dormantSince: null,
+ *     engagedSpeakerId: inbound.senderId }`) — so mislabeling `isDM` there
+ *     is harmless; only the (unobserved) `reason` string would differ.
+ *   - Slack: `threadTs === undefined`. `resolveSlackThread` (lib/slack-
+ *     thread.ts) roots every non-DM message — even an un-threaded top-level
+ *     one — at its own `ts`, so `threadTs` is present on every enqueued
+ *     Slack row EXCEPT a genuine DM (`resolveSlackThread`'s `isDirectMessage`
+ *     branch never sets it). Slack's `repliesToMessageId`/`repliesToBot` are
+ *     hardcoded rather than read from `payload`, per the design spec: "Slack
+ *     has no in-channel reply primitive — a Slack reply IS a thread."
+ */
+function buildThreadInbound(
+  channel: "discord" | "slack",
+  payload: TelegramInboxPayload,
+  senderId: string
+): ThreadInbound {
+  if (channel === "slack") {
+    return {
+      channel,
+      isDM: payload.threadTs === undefined,
+      threadId: payload.threadTs ?? null,
+      senderId,
+      mentionsBot: payload.mentionsBot ?? false,
+      mentionsOtherUsers: payload.mentionsOtherUsers ?? false,
+      repliesToMessageId: null,
+      repliesToBot: false,
+    };
+  }
+  return {
+    channel,
+    isDM: payload.threadId === undefined || payload.threadId === null,
+    threadId: payload.threadId ?? null,
+    senderId,
+    mentionsBot: payload.mentionsBot ?? false,
+    mentionsOtherUsers: payload.mentionsOtherUsers ?? false,
+    repliesToMessageId: payload.repliesToMessageId ?? null,
+    repliesToBot: payload.repliesToBot ?? false,
+  };
+}
+
+/**
+ * Log a structured line on each engagement TRANSITION only — `entered
+ * dormant` and `reactivated` — never per skipped message (spec: "a dormant
+ * thread can absorb many messages and must not spam the logs"). A thread
+ * that stays dormant, stays engaged, or was never engaged at all produces no
+ * log line here; the timestamp column itself already records when a
+ * transition happened, so this is observability, not an audit trail.
+ */
+function logEngagementTransition(params: {
+  channel: string;
+  conversationKey: string;
+  previous: EngagementState | null;
+  next: EngagementState;
+  reason: string;
+}): void {
+  const wasDormant = params.previous?.dormantSince != null;
+  const isDormant = params.next.dormantSince != null;
+  if (!wasDormant && isDormant) {
+    console.log(
+      `[channel-dispatch] engagement: entered dormant (${params.channel}/${params.conversationKey}) — ${params.reason}`
+    );
+  } else if (wasDormant && !isDormant) {
+    console.log(
+      `[channel-dispatch] engagement: reactivated (${params.channel}/${params.conversationKey}) — ${params.reason}`
+    );
+  }
 }
 
 /** The console (#1288) inbox payload: just the member's text — no chatId,
@@ -1129,6 +1261,80 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       interactionToken: payload.interactionToken,
       applicationId: payload.applicationId,
     });
+
+    // --- thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-
+    // native-jace-design.md) — MUST run and persist BEFORE any guardrail
+    // notice can reach the channel (final whole-branch review, finding #2).
+    // The old order ran guardrails first: a bow-out message could still get
+    // "I cleansed your message..." posted into the thread on the very turn
+    // Jace was declining to speak, and the guardrail BLOCK path `return`ed
+    // before this block ever ran at all — silently skipping
+    // `setThreadEngagement`, so the dormant/engaged latch never updated on a
+    // blocked message. Moving the decision here means: a message that is NOT
+    // a turn produces zero channel output and still persists its `nextState`;
+    // a message that IS a turn falls through to the guardrail seam below
+    // completely unchanged — guardrail screening only ever runs on a message
+    // that will actually reach Eve, so its ordering relative to `runEveTurn`
+    // is untouched. Only "is this even a turn" moved earlier. Discord and
+    // Slack ONLY: telegram/console/iMessage never reach this block, so they
+    // stay byte-unchanged — no engagement lookup, no state write, no
+    // behavioral difference, and the guardrail seam right after this block
+    // runs exactly where it always has for them. (Console never reaches
+    // `processRow` at all — see `processConsoleRow`'s own doc-comment.)
+    if (row.channel === "discord" || row.channel === "slack") {
+      // Final whole-branch review, finding #1 (critical): Slack's door
+      // (connectors/slack/events/route.ts) omits the ENTIRE engagement
+      // envelope — no `mentionsBot` key at all — when `SLACK_BOT_USER_ID` is
+      // unset (see that file's own "FAIL TOWARD TODAY'S BEHAVIOR" doc). In
+      // that configuration `mentionsBot` can never resolve to `true`, so
+      // running `decideEngagement` here would trap every non-DM Slack
+      // message in `turn: false` FOREVER — permanent, silent muting, exactly
+      // the opposite of the stated invariant ("when SLACK_BOT_USER_ID is
+      // unset, Slack must behave exactly as it did before engagement
+      // existed"). `extractPayload` only ever sets `mentionsBot` on the
+      // payload when the door supplies an actual boolean (see its own
+      // doc-comment), so its absence here means "engagement is not
+      // configured for this row" — skip the decision entirely and let it run
+      // as a normal turn, same as before this feature existed. Discord's
+      // doors always write this key (never conditionally omitted — see
+      // discord-inbound.ts's own header doc), so this guard is a permanent
+      // no-op for Discord rows the current doors produce; it only matters for
+      // a pre-feature row still in flight, which degrades the same safe way.
+      const engagementConfigured = payload.mentionsBot !== undefined;
+      if (engagementConfigured) {
+        const inbound = buildThreadInbound(row.channel, payload, row.senderId);
+        const state = await getThreadEngagement({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+        });
+        const decision = decideEngagement({ inbound, state, now: new Date() });
+
+        logEngagementTransition({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          previous: state,
+          next: decision.nextState,
+          reason: decision.reason,
+        });
+
+        await setThreadEngagement({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          dormantSince: decision.nextState.dormantSince,
+          engagedSpeakerId: decision.nextState.engagedSpeakerId,
+        });
+
+        if (!decision.turn) {
+          // Engagement declined the turn — COMPLETE, not fail: the row was
+          // handled correctly, Jace simply chose to stay quiet. Requeuing
+          // would just replay the same non-decision forever. No guardrail
+          // screening, no notice, no Eve turn: nothing about a message Jace
+          // never responds to needs to reach any of those seams.
+          await completeChannelMessage(row.id);
+          return "completed";
+        }
+      }
+    }
 
     // --- input guardrails: moderation / injection / PII, before any turn ---
     // Trust tier comes straight from the identity spine resolved above: no

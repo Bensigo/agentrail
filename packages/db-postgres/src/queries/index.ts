@@ -2435,6 +2435,10 @@ export {
 // issue URL a create_issue tool call produced onto its own approved
 // approval row, which github_intake.ts's confirmed-brief lookup then
 // recognizes to admit the label-webhook redelivery straight to queued.
+// getThreadEngagement + setThreadEngagement (thread-native-jace-design spec)
+// are the persistence layer for the engagementDormantSince/engagedSpeakerId
+// latch: read/write by (channel, conversationKey) only, no workspace scope,
+// so the door can call them before any workspace is resolved.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -2451,6 +2455,8 @@ export {
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
   getSessionBriefAnchor,
+  getThreadEngagement,
+  setThreadEngagement,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   getApprovalByCallbackToken,

@@ -5,6 +5,7 @@ import { createHmac } from "crypto";
 vi.mock("@agentrail/db-postgres", () => ({
   resolveInboundChatIdentity: vi.fn(),
   enqueueChannelMessage: vi.fn(),
+  getThreadEngagement: vi.fn(),
 }));
 
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
@@ -12,12 +13,17 @@ vi.mock("../../../../../../lib/channel-dispatch", () => ({
 }));
 
 import { POST } from "./route";
-import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db-postgres";
+import {
+  resolveInboundChatIdentity,
+  enqueueChannelMessage,
+  getThreadEngagement,
+} from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
 const mockResolve = vi.mocked(resolveInboundChatIdentity);
 const mockEnqueue = vi.mocked(enqueueChannelMessage);
 const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
+const mockGetEngagement = vi.mocked(getThreadEngagement);
 mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
 
 const SIGNING_SECRET = "shhh-its-a-secret";
@@ -422,5 +428,232 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
         threadTs: "1700000000.000100",
       },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thread engagement gate (spec: docs/superpowers/specs/2026-07-28-thread-
+// native-jace-design.md). SLACK_BOT_USER_ID unset (every describe block
+// above) must stay byte-unchanged — proven by every test above passing with
+// no env var set at all. This block covers the var IS set.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK_BOT_USER_ID set)", () => {
+  const BOT_ID = "UBOT1";
+  const ORIGINAL_BOT_ID_ENV = process.env["SLACK_BOT_USER_ID"];
+
+  beforeEach(() => {
+    process.env["SLACK_BOT_USER_ID"] = BOT_ID;
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_BOT_ID_ENV === undefined) {
+      delete process.env["SLACK_BOT_USER_ID"];
+    } else {
+      process.env["SLACK_BOT_USER_ID"] = ORIGINAL_BOT_ID_ENV;
+    }
+  });
+
+  function channelMessageBody(overrides: Record<string, unknown> = {}) {
+    return messageEventBody({
+      event: {
+        channel: "C123",
+        channel_type: undefined,
+        ts: "1700000009.000900",
+        thread_ts: "1700000000.000100",
+        text: "hello",
+        ...overrides,
+      },
+    });
+  }
+
+  it("a mention (<@BOT_ID> in text) always enqueues, without ever looking up engagement state", async () => {
+    const res = await POST(req(channelMessageBody({ text: `<@${BOT_ID}> what's the status?` })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("a DM always enqueues, without ever looking up engagement state", async () => {
+    const res = await POST(req(messageEventBody({ event: { channel_type: "im", text: "hey jace" } })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("an un-mentioned thread message enqueues when the session is engaged (latch clear)", async () => {
+    mockGetEngagement.mockResolvedValue({ dormantSince: null, engagedSpeakerId: "U061F7AUR" });
+
+    const res = await POST(req(channelMessageBody()));
+
+    expect(mockGetEngagement).toHaveBeenCalledWith({
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+    });
+    expect(res.status).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("an un-mentioned thread message is dropped when the session is dormant (latch set) — never enqueues, never resolves identity", async () => {
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(req(channelMessageBody()));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, skipped: true });
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("an un-mentioned channel message with no session row at all is dropped — never enqueues", async () => {
+    mockGetEngagement.mockResolvedValue(null);
+
+    const res = await POST(req(channelMessageBody()));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, skipped: true });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  // Final whole-branch review, finding #3 (important): `/connect` must reach
+  // the dispatcher even from a thread Jace has gone quiet in (or never spoke
+  // in) — the one command whose own doc-comment promises it "never leaves a
+  // user with silence".
+  it("admits '/connect' in a DORMANT thread — never looks up engagement state, never drops it", async () => {
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(req(channelMessageBody({ text: "/connect" })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits '/connect' in a thread with NO session row at all (never-engaged) — never looks up engagement state, never drops it", async () => {
+    mockGetEngagement.mockResolvedValue(null);
+
+    const res = await POST(req(channelMessageBody({ text: "/connect" })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("still drops an ORDINARY un-mentioned dormant-thread message that merely CONTAINS the word 'connect' — '/connect' recognition is exact, not substring", async () => {
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(req(channelMessageBody({ text: "can you connect me to support?" })));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, skipped: true });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("carries mentionsBot/mentionsOtherUsers/repliesToMessageId/repliesToBot into the payload once configured", async () => {
+    await POST(
+      req(channelMessageBody({ text: `<@${BOT_ID}> hey <@U777> check this out` }))
+    );
+
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: `<@${BOT_ID}> hey <@U777> check this out`,
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+        mentionsBot: true,
+        mentionsOtherUsers: true,
+        repliesToMessageId: null,
+        repliesToBot: false,
+      },
+    });
+  });
+
+  it("mentionsOtherUsers is false when the only <@...> token is the bot's own", async () => {
+    await POST(req(channelMessageBody({ text: `<@${BOT_ID}> status?` })));
+
+    expect(mockEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ mentionsBot: true, mentionsOtherUsers: false }),
+      })
+    );
+  });
+});
+
+describe("POST /api/v1/connectors/slack/events — SLACK_BOT_USER_ID unset", () => {
+  it("enqueues unconditionally, never looks up engagement state, and never adds engagement fields to the payload — today's exact behavior", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: { channel: "C123", channel_type: undefined, ts: "1700000009.000900" },
+        })
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000009.000900",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000009.000900",
+      },
+    });
+  });
+
+  it("logs a missing-SLACK_BOT_USER_ID notice at most once per process", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    await POST(req(messageEventBody()));
+    await POST(req(messageEventBody({ event: { ts: "1700000009.000900" } })));
+
+    const missingVarWarnings = warnSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("SLACK_BOT_USER_ID")
+    );
+    expect(missingVarWarnings.length).toBeLessThanOrEqual(1);
+    warnSpy.mockRestore();
   });
 });

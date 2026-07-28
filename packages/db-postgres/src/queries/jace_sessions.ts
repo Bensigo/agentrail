@@ -712,6 +712,106 @@ export async function getSessionBriefAnchor(sessionId: string): Promise<string |
   return row?.anchoredBriefId ?? null;
 }
 
+// --- thread engagement (spec:
+// docs/superpowers/specs/2026-07-28-thread-native-jace-design.md) ----------
+//
+// Persistence for the engagement latch added to `jace_sessions` (see that
+// table's doc-comment for the full state-machine rationale: NULL
+// `engagementDormantSince` = engaged/not-a-thread, non-null = bowed out).
+// `apps/console/lib/thread-engagement.ts`'s `decideEngagement` is the pure
+// decision function these two queries bracket — it takes an `EngagementState
+// | null` and returns a `nextState`; these are how the door reads that input
+// and persists that output. This module (`packages/db-postgres`) must not
+// import from `apps/console`, so the return shape here is structurally
+// compatible with `EngagementState` but not literally that type.
+
+/**
+ * Read the engagement state for a (channel, conversationKey) thread.
+ *
+ * Returns `null` when NO `jace_sessions` row exists for this pair — the
+ * "never engaged" case `decideEngagement` treats as "no engaged session for
+ * this thread." This is DIFFERENT from a row that exists with both columns
+ * null (a session Jace has never bowed out of, or one created before this
+ * feature existed) — that case returns
+ * `{ dormantSince: null, engagedSpeakerId: null }`, a real state, not `null`.
+ * Do not collapse the two.
+ *
+ * Keyed on (channel, conversation_key) ONLY — no workspace scope — so this
+ * query can use `jace_sessions_channel_conversation_idx` exactly as it was
+ * added for: the door calls this before any workspace is resolved.
+ *
+ * NOT unique on (channel, conversationKey): the table's real uniqueness is
+ * (workspace_id, channel, conversation_key) plus the separate partial unique
+ * on (channel, conversation_key) WHERE workspace_id IS NULL, so one
+ * conversation key can legally carry an intro row alongside one or more
+ * workspace-bound rows at once (same multi-row shape
+ * `resolveConversationWorkspace` above documents for the pinned case). Reads
+ * must therefore pick ONE row deterministically rather than an arbitrary one
+ * — ordered by `lastActivityAt` descending, same most-recently-active
+ * tie-break idiom as `resolveConversationWorkspace`, so this resolves to
+ * whichever row the dispatcher is actually driving right now. Unlike
+ * `setThreadEngagement` below, this cannot update every matching row instead
+ * — a read has to return exactly one state — so ordering is the only way to
+ * make it deterministic.
+ */
+export async function getThreadEngagement(args: {
+  channel: string;
+  conversationKey: string;
+}): Promise<{ dormantSince: Date | null; engagedSpeakerId: string | null } | null> {
+  const [row] = await db
+    .select({
+      dormantSince: jaceSessions.engagementDormantSince,
+      engagedSpeakerId: jaceSessions.engagedSpeakerId,
+    })
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.channel, args.channel),
+        eq(jaceSessions.conversationKey, args.conversationKey)
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+  if (!row) return null;
+  return { dormantSince: row.dormantSince, engagedSpeakerId: row.engagedSpeakerId };
+}
+
+/**
+ * Write the engagement state for a (channel, conversationKey) thread — the
+ * write side of `decideEngagement`'s `nextState`. Updates EVERY
+ * `jace_sessions` row matching the pair (mirrors `getThreadEngagement`'s own
+ * read scope above: no workspace filter), and is a SILENT no-op when none
+ * matches — it must never throw or insert, since the door calls this on
+ * every turn regardless of whether a session row happens to exist yet.
+ *
+ * Deliberately UNordered and UNlimited, unlike `getThreadEngagement`'s single
+ * ordered row above: when a conversation key legally carries more than one
+ * row (an intro row plus a graduated one, say), engagement is a property of
+ * the THREAD, not of any one row, so every row sharing the pair must agree —
+ * updating all of them keeps them mutually consistent instead of letting one
+ * drift stale while the read picks whichever is most recently active.
+ */
+export async function setThreadEngagement(args: {
+  channel: string;
+  conversationKey: string;
+  dormantSince: Date | null;
+  engagedSpeakerId: string | null;
+}): Promise<void> {
+  await db
+    .update(jaceSessions)
+    .set({
+      engagementDormantSince: args.dormantSince,
+      engagedSpeakerId: args.engagedSpeakerId,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(jaceSessions.channel, args.channel),
+        eq(jaceSessions.conversationKey, args.conversationKey)
+      )
+    );
+}
+
 // --- approvals --------------------------------------------------------------
 
 export interface RecordApprovalRequestInput {

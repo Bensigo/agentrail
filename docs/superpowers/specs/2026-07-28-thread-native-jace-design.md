@@ -95,12 +95,18 @@ ThreadInbound {
 
 ### 2. Engagement — one shared state machine
 
-A new pure core module, `apps/jace/agent/lib/thread-engagement.core.mjs`,
-following `intent-classifier.core.mjs`'s shape: no network, no model call,
-`node --test`-able, one exported decision function.
+A new pure module, **`apps/console/lib/thread-engagement.ts`**, following
+`intent-classifier.core.mjs`'s shape — no network, no model call, one exported
+decision function — but living console-side, next to `slack-thread.ts`.
+
+(An earlier draft of this spec put it in `apps/jace/agent/lib/`. That is wrong:
+every inbound door and the dispatcher that runs this decision are console code,
+and `apps/jace` has no access to `jace_sessions`. Jace-side placement would
+mean an HTTP round trip to reach the state the decision needs.)
 
 ```
-decideEngagement({ inbound, dormantSince }) -> { turn, nextDormantSince, reason }
+decideEngagement({ inbound, state }) -> { turn, nextState, reason }
+  state = { dormantSince: Date | null, engagedSpeakerId: string | null }
 ```
 
 Engagement is **conversation state, not per-message classification**. The
@@ -109,9 +115,10 @@ heuristic answers only *"has this conversation stopped being about Jace?"*
 | Situation | Turn? | Latch |
 |---|---|---|
 | DM, or mention in a channel | yes | cleared |
-| In thread, engaged, no bow-out signal | yes | cleared |
+| In thread, engaged, from the engaged speaker, no bow-out signal | yes | cleared |
 | In thread, engaged, mentions another user (and not Jace) | no | **set** |
 | In thread, engaged, replies to a non-Jace message | no | **set** |
+| In thread, engaged, **from anyone other than the engaged speaker**, no mention of Jace | no | **set** |
 | In thread, dormant, mentions Jace | yes | cleared |
 | In thread, dormant, no mention | no | stays set |
 | No session for this thread, no mention | no | — |
@@ -120,11 +127,22 @@ heuristic answers only *"has this conversation stopped being about Jace?"*
 answered. A wrong bow-out costs the user one `@Jace`; a wrong engagement spams
 a human conversation.
 
-**Engagement is per-thread, not per-user.** Any participant's message in an
-engaged thread is a turn, whoever opened it — a thread is one conversation, and
-tracking per-speaker engagement would mean Jace answering one person and
-ignoring another in the same exchange. Attribution is unchanged: the turn is
-still attributed to its own sender's chat identity, exactly as today.
+**A thread is one-on-one by default** (owner, 2026-07-28, after testing the
+gap in prod): *"the point of a thread is for one on one communication, also
+keep the chat clean… when another user joins and mentions something not
+related, Jace ignores it unless it's been mentioned in the thread."*
+
+"Not related" is a **semantic** judgment this deterministic heuristic cannot
+make, and a per-message model call was rejected on cost and testability. The
+structural proxy is the **speaker change**: a message from anyone other than
+the thread's engaged speaker, carrying no `@Jace`, latches the thread quiet.
+Anyone can bring Jace back by mentioning it — including the newcomer.
+
+This REPLACES an earlier "engagement is per-thread, not per-user" rule in this
+spec, which would have answered exactly the newcomer the owner wants ignored.
+
+Attribution is unchanged: an admitted turn is still attributed to its own
+sender's chat identity, exactly as today.
 
 ### 3. State — persist only what cannot be derived
 
@@ -139,10 +157,22 @@ else in the system observes it. The alternative — re-fetching thread history
 from Discord/Slack per message and re-judging it — is a network call per
 message and reintroduces per-message classification.
 
+The **engaged speaker** is the second irreducible value, for the same reason.
+It looks derivable from the last admitted `channel_inbox` row, but that table
+is a work QUEUE — rows are claimed, completed, and eventually pruned — so it
+is not a durable record of who Jace last answered. Reading it would also cost
+a second query on the door's hot path. It is one more column on a row already
+being read and written.
+
 **Migration:**
 
 - `jace_sessions.engagement_dormant_since timestamptz` (nullable). Not a state
   enum; engaged is implied by row existence, dormant by the flag.
+- `jace_sessions.engaged_speaker_id text` (nullable) — the platform user id of
+  the sender whose message last engaged this thread. Compared against an
+  inbound message's sender to detect the speaker change that bows Jace out.
+  Set on every admitted turn; never read for attribution (that stays on the
+  turn's own chat identity).
 - An index on `(channel, conversation_key)`. The existing unique is
   `(workspace_id, channel, conversation_key)` — leading column `workspace_id`,
   unusable for the door's lookup — and `jace_sessions_intro_conversation_idx`
@@ -236,11 +266,18 @@ thread-name derivation and truncation; the door gate's three branches.
 
 1. `@Jace <question>` in a public channel → a thread appears on that message and
    the reply lands inside it.
-2. Two un-mentioned follow-ups in that thread are both answered.
+2. Two un-mentioned follow-ups in that thread, from the same person, are both
+   answered.
 3. A message in that thread @-mentioning another user is **not** answered.
-4. `@Jace` in that thread re-engages it.
-5. The same four in Slack.
-6. A Slack **channel** conversation resumes across turns (proving #1479's Slack
+4. A message in that thread from a **different** person, with no `@Jace`, is
+   **not** answered — the one-on-one rule.
+5. `@Jace` in that thread re-engages it, whoever sends it.
+6. The same five in Slack. Note this is a **behavior change for Slack**, not
+   just parity: PR 1 shipped Slack threading with **no mention gate at all**
+   (the door enqueues every non-bot, non-subtype `message` event and ignores
+   `app_mention`), so today Jace answers every message in every Slack channel
+   it receives events for. The engagement machine is what closes that.
+7. A Slack **channel** conversation resumes across turns (proving #1479's Slack
    half): a second thread reply reaches a Jace that remembers the first.
 
 ## Out of scope

@@ -52,11 +52,71 @@ test("requests exactly the four intents the spec names", () => {
 test("imports its decisions from the pure core, not reimplementing them here", () => {
   assert.match(
     code,
-    /import\s*{[^}]*admitMessage[^}]*}\s*from\s*["']\.\/discord_gateway\.core\.mjs["']/s,
+    /import\s*{[^}]*screenMessage[^}]*}\s*from\s*["']\.\/discord_gateway\.core\.mjs["']/s,
   );
   assert.match(code, /classifyCloseCode/);
   assert.match(code, /shapeInboundPayload/);
   assert.match(code, /postDiscordInboundMessage/);
+});
+
+test("tracks known thread ids from GUILD_CREATE/THREAD_CREATE/THREAD_DELETE/THREAD_UPDATE, passed as screenMessage's isThread", () => {
+  assert.match(code, /GatewayDispatchEvents\.GuildCreate/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadCreate/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadDelete/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadUpdate/);
+  assert.match(code, /threadIds/);
+  assert.match(code, /screenMessage\(message, state\.botUserId, isThread\)/);
+});
+
+test("THREAD_UPDATE is dispatched to a handler (revival from Discord's auto-archive is the gap this closes)", () => {
+  const dispatchMatch = code.match(/case GatewayDispatchEvents\.ThreadUpdate:[\s\S]*?return;/);
+  assert.ok(dispatchMatch, "no case for GatewayDispatchEvents.ThreadUpdate in the dispatch switch");
+});
+
+test("THREAD_UPDATE handler is wired both ways: adds the thread back when un-archived, removes it when archived", () => {
+  const fnMatch = code.match(/function updateThreadId\([\s\S]*?\n\}/);
+  assert.ok(fnMatch, "updateThreadId function not found");
+  const body = fnMatch[0];
+  assert.match(body, /archived/);
+  assert.match(body, /thread_metadata/);
+  assert.match(body, /state\.threadIds\.add\(id\)/, "must re-add the thread when it is not archived");
+  assert.match(body, /state\.threadIds\.delete\(id\)/, "must drop the thread when it is archived");
+});
+
+test("THREAD_UPDATE handler treats a missing thread_metadata as NOT archived (fails toward tracking, not toward silence)", () => {
+  const fnMatch = code.match(/function updateThreadId\([\s\S]*?\n\}/);
+  assert.ok(fnMatch, "updateThreadId function not found");
+  const body = fnMatch[0];
+  // The archived flag must be derived defensively (Boolean(...) guarding a
+  // typeof/nullish check on metadata), not a bare `thread.thread_metadata.archived`
+  // property access that would throw on a missing thread_metadata.
+  assert.doesNotMatch(
+    body,
+    /\bthread\.thread_metadata\.archived\b/,
+    "must not directly dereference thread_metadata.archived without a defensive guard",
+  );
+  assert.match(body, /metadata\s*&&\s*typeof metadata\s*===\s*["']object["']/);
+});
+
+test("does not request any additional Gateway intent beyond the four already documented (thread tracking rides the existing Guilds intent)", () => {
+  const intentMatches = code.match(/GatewayIntentBits\.\w+/g) ?? [];
+  assert.deepEqual(
+    new Set(intentMatches),
+    new Set([
+      "GatewayIntentBits.Guilds",
+      "GatewayIntentBits.GuildMessages",
+      "GatewayIntentBits.DirectMessages",
+      "GatewayIntentBits.MessageContent",
+    ]),
+  );
+});
+
+test("logs every non-admit with its reason, instead of a silent return", () => {
+  const handlerMatch = code.match(/async function handleMessageCreate\([\s\S]*?\n\}/);
+  assert.ok(handlerMatch, "handleMessageCreate function not found");
+  const body = handlerMatch[0];
+  assert.match(body, /if\s*\(!decision\.admit\)\s*{/);
+  assert.match(body, /decision\.reason/);
 });
 
 test("IDENTIFYs with an online presence", () => {

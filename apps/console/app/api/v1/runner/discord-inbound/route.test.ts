@@ -35,10 +35,27 @@ const VALID_BODY = {
   text: "what's the status?",
 };
 
+/** What the route should hand `admitDiscordChannelMessage` given VALID_BODY
+ * with none of the (optional-on-the-wire) engagement fields set — every one
+ * degrades to its safe default. */
+const EXPECTED_ADMIT_ARGS_DEFAULTS = {
+  channelId: "998877",
+  providerMessageId: "998877:msg-1",
+  senderId: "555",
+  senderDisplay: "Ada",
+  senderUsername: "ada",
+  text: "what's the status?",
+  threadId: null,
+  mentionsBot: false,
+  mentionsOtherUsers: false,
+  repliesToMessageId: null,
+  repliesToBot: false,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   process.env[ENV_KEY] = SECRET;
-  mockAdmit.mockResolvedValue({ deduped: false });
+  mockAdmit.mockResolvedValue({ deduped: false, skipped: false });
 });
 
 afterEach(() => {
@@ -107,20 +124,13 @@ describe("POST /api/v1/runner/discord-inbound", () => {
   it("happy path: builds the channelId:messageId dedupe key and calls admitDiscordChannelMessage", async () => {
     const res = await POST(req({ token: SECRET, body: VALID_BODY }));
     expect(res.status).toBe(200);
-    expect(mockAdmit).toHaveBeenCalledWith({
-      channelId: "998877",
-      providerMessageId: "998877:msg-1",
-      senderId: "555",
-      senderDisplay: "Ada",
-      senderUsername: "ada",
-      text: "what's the status?",
-    });
+    expect(mockAdmit).toHaveBeenCalledWith(EXPECTED_ADMIT_ARGS_DEFAULTS);
     const json = await res.json();
     expect(json).toEqual({ ok: true, deduped: false });
   });
 
   it("reports deduped:true straight through", async () => {
-    mockAdmit.mockResolvedValue({ deduped: true });
+    mockAdmit.mockResolvedValue({ deduped: true, skipped: false });
     const res = await POST(req({ token: SECRET, body: VALID_BODY }));
     const json = await res.json();
     expect(json).toEqual({ ok: true, deduped: true });
@@ -136,5 +146,65 @@ describe("POST /api/v1/runner/discord-inbound", () => {
     const { senderUsername, ...rest } = VALID_BODY;
     await POST(req({ token: SECRET, body: rest }));
     expect(mockAdmit).toHaveBeenCalledWith(expect.objectContaining({ senderUsername: null }));
+  });
+
+  describe("engagement envelope (spec: docs/superpowers/specs/2026-07-28-thread-native-jace-design.md)", () => {
+    it("passes threadId/mentionsBot/mentionsOtherUsers/repliesToMessageId/repliesToBot straight through when all are well-formed", async () => {
+      await POST(
+        req({
+          token: SECRET,
+          body: {
+            ...VALID_BODY,
+            threadId: "thread-42",
+            mentionsBot: true,
+            mentionsOtherUsers: true,
+            repliesToMessageId: "msg-9",
+            repliesToBot: true,
+          },
+        })
+      );
+
+      expect(mockAdmit).toHaveBeenCalledWith({
+        ...EXPECTED_ADMIT_ARGS_DEFAULTS,
+        threadId: "thread-42",
+        mentionsBot: true,
+        mentionsOtherUsers: true,
+        repliesToMessageId: "msg-9",
+        repliesToBot: true,
+      });
+    });
+
+    it("every envelope field degrades to its safe default when absent from the body", async () => {
+      await POST(req({ token: SECRET, body: VALID_BODY }));
+      expect(mockAdmit).toHaveBeenCalledWith(EXPECTED_ADMIT_ARGS_DEFAULTS);
+    });
+
+    it("degrades to safe defaults on malformed (non-string/non-boolean) envelope fields, never crashes", async () => {
+      await POST(
+        req({
+          token: SECRET,
+          body: {
+            ...VALID_BODY,
+            threadId: 12345,
+            mentionsBot: "true",
+            mentionsOtherUsers: 1,
+            repliesToMessageId: {},
+            repliesToBot: "yes",
+          },
+        })
+      );
+
+      expect(mockAdmit).toHaveBeenCalledWith(EXPECTED_ADMIT_ARGS_DEFAULTS);
+    });
+
+    it("{ ok: true, skipped: true }, no deduped key, when the engagement gate drops the message", async () => {
+      mockAdmit.mockResolvedValue({ deduped: false, skipped: true });
+      const res = await POST(req({ token: SECRET, body: VALID_BODY }));
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json).toEqual({ ok: true, skipped: true });
+      expect(json).not.toHaveProperty("deduped");
+    });
   });
 });

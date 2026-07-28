@@ -9,7 +9,12 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     await importActual<typeof import("@agentrail/db-postgres")>();
   return {
     ONBOARD_EXTERNAL_ID_PREFIX: actual.ONBOARD_EXTERNAL_ID_PREFIX,
+    // Same reason as the prefix above: ONBOARD_FORCE_BODY is the marker
+    // `enqueueOnboard` actually stamps on a forced re-arm, so the recompile
+    // suppression below is pinned against the REAL literal, not a copy.
+    ONBOARD_FORCE_BODY: actual.ONBOARD_FORCE_BODY,
     latestTelegramSessionForWorkspace: vi.fn(),
+    findOnboardEntryStatus: vi.fn(),
   };
 });
 vi.mock("../../../../../lib/telegram-system-message", () => ({
@@ -21,13 +26,27 @@ import {
   buildOnboardOutcomeMessage,
   notifyOnboardOutcome,
 } from "./onboard-notify";
-import { latestTelegramSessionForWorkspace } from "@agentrail/db-postgres";
+import {
+  findOnboardEntryStatus,
+  latestTelegramSessionForWorkspace,
+  ONBOARD_FORCE_BODY,
+} from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
 
 const mockLatestSession = vi.mocked(latestTelegramSessionForWorkspace);
+const mockFindEntry = vi.mocked(findOnboardEntryStatus);
 const mockSend = vi.mocked(sendSystemTelegramMessage);
 
 const WS = "ws-1";
+
+/** A FIRST onboard: `enqueueOnboard`'s plain insert seeds `body: ""`. */
+const FIRST_ONBOARD_ENTRY = {
+  state: "green",
+  updatedAt: new Date("2026-07-18T00:00:00Z"),
+  body: "",
+};
+/** A RECOMPILE: a forced re-arm stamps ONBOARD_FORCE_BODY on the same row. */
+const RECOMPILE_ENTRY = { ...FIRST_ONBOARD_ENTRY, body: ONBOARD_FORCE_BODY };
 
 const SESSION = {
   id: "session-1",
@@ -45,6 +64,7 @@ const SESSION = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockSend.mockResolvedValue({ ok: true } as never);
+  mockFindEntry.mockResolvedValue(FIRST_ONBOARD_ENTRY);
 });
 
 describe("onboardRepoFullName", () => {
@@ -148,6 +168,54 @@ describe("notifyOnboardOutcome", () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  it("green RECOMPILE: sends nothing (but logs) — the notice is first-onboard-only", async () => {
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockFindEntry.mockResolvedValue(RECOMPILE_ENTRY);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      await expect(
+        notifyOnboardOutcome(WS, "acme/widgets", "green")
+      ).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("acme/widgets")
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("green recompile: never even looks up a session — the suppression short-circuits first", async () => {
+    mockFindEntry.mockResolvedValue(RECOMPILE_ENTRY);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await notifyOnboardOutcome(WS, "acme/widgets", "green");
+
+    expect(mockLatestSession).not.toHaveBeenCalled();
+  });
+
+  it("a FAILED recompile still notifies — silence on a failure is the harmful direction", async () => {
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockFindEntry.mockResolvedValue(RECOMPILE_ENTRY);
+
+    await notifyOnboardOutcome(WS, "acme/widgets", "escalated-to-human");
+
+    expect(mockSend).toHaveBeenCalledWith(
+      "tg-chat-onboard",
+      buildOnboardOutcomeMessage("acme/widgets", "escalated-to-human")
+    );
+  });
+
+  it("fails OPEN: an unreadable/absent onboard row still sends the green notice", async () => {
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockFindEntry.mockResolvedValue(null);
+
+    await notifyOnboardOutcome(WS, "acme/widgets", "green");
+
+    expect(mockSend).toHaveBeenCalled();
   });
 
   it("does NOT log an error on a successful ({ok:true}) send", async () => {

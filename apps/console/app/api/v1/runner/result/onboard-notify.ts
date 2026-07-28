@@ -33,8 +33,10 @@
  * here would otherwise be invisible.
  */
 import {
+  findOnboardEntryStatus,
   latestTelegramSessionForWorkspace,
   ONBOARD_EXTERNAL_ID_PREFIX,
+  ONBOARD_FORCE_BODY,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
 import type { NotifyOutcome } from "./notify";
@@ -87,12 +89,45 @@ export function buildOnboardOutcomeMessage(
  * active Telegram session. Does nothing (logged) when the workspace has no
  * session bound — v1 ships Telegram only, matching
  * `sendSystemTelegramMessage`'s own scope.
+ *
+ * FIRST ONBOARD ONLY on green. `AGENTRAIL_WIKI_RECOMPILE_ON_PUSH` force-re-arms
+ * this same onboard row on EVERY push to the repo's default branch, so without
+ * this gate the workspace got the "repo indexed — ask me anything" invitation
+ * once per merge, forever. That copy is a welcome, not a status line: it is
+ * true exactly once, and repeating it is pure noise. The signal is
+ * `queue_entries.body` — `""` on `enqueueOnboard`'s initial insert,
+ * {@link ONBOARD_FORCE_BODY} on every forced re-arm — read back via
+ * `findOnboardEntryStatus`; see its doc-comment for why the marker is still
+ * on the row by the time the result lands.
+ *
+ * Deliberately green-only: a recompile that FAILED still notifies, because
+ * silence is the harmful direction there — an unnoticed broken wiki compile
+ * quietly serves stale pages, and the failure copy is honest about needing a
+ * human either way. Also deliberately trigger-blind: the console's manual
+ * "Recompile" button re-arms through the same `force` path and so goes quiet
+ * on success too, which is right — that click already gets its own in-console
+ * confirmation, and it is not a first onboard either.
+ *
+ * FAILS OPEN: an absent row (or one whose body we cannot read) sends the
+ * notice, matching the pre-existing behavior. A concurrent push that re-arms
+ * the row in the window between `recordRunnerResult` committing and this read
+ * can only ever suppress a notice, never fabricate one.
  */
 export async function notifyOnboardOutcome(
   workspaceId: string,
   repoFullName: string,
   outcome: NotifyOutcome
 ): Promise<void> {
+  if (outcome === "green") {
+    const entry = await findOnboardEntryStatus(workspaceId, repoFullName);
+    if (entry?.body === ONBOARD_FORCE_BODY) {
+      console.log(
+        `[runner/result] onboard-complete notice: ${repoFullName} was a recompile, not a first onboard — skipping`
+      );
+      return;
+    }
+  }
+
   const session = await latestTelegramSessionForWorkspace(workspaceId);
   if (!session) {
     console.log(

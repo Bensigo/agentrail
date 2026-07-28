@@ -11,12 +11,19 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     await importActual<typeof import("@agentrail/db-postgres")>();
   return {
     ONBOARD_EXTERNAL_ID_PREFIX: actual.ONBOARD_EXTERNAL_ID_PREFIX,
+    // Same "real value, not a copy" reasoning as the prefix above: the
+    // first-onboard-vs-recompile gate compares against the literal
+    // `enqueueOnboard` actually stamps.
+    ONBOARD_FORCE_BODY: actual.ONBOARD_FORCE_BODY,
     recordRunnerResult: vi.fn(),
     touchApiKeyLastUsed: vi.fn(),
     // #1268 PR②: onboard-notify.ts's real implementation runs in this suite
     // (NOT mocked away as a module — see the onboard-kind describe block below),
     // so its one db-postgres dependency must be mockable here too.
     latestTelegramSessionForWorkspace: vi.fn(),
+    // ...and its second one: the first-onboard-vs-recompile read that keeps a
+    // push-triggered wiki recompile from re-sending the welcome notice.
+    findOnboardEntryStatus: vi.fn(),
     // #1278 PR②: merge enforcement's two DB reads.
     getMergePermission: vi.fn(),
     getInstallationToken: vi.fn(),
@@ -66,9 +73,11 @@ import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   latestTelegramSessionForWorkspace,
+  findOnboardEntryStatus,
   getMergePermission,
   getInstallationToken,
   recordRunOutcome,
+  ONBOARD_FORCE_BODY,
 } from "@agentrail/db-postgres";
 import {
   insertFailureEvents,
@@ -116,6 +125,13 @@ beforeEach(() => {
   // ids, so the onboard branch (and these two mocks) never fire for them.
   vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null);
   vi.mocked(sendSystemTelegramMessage).mockResolvedValue({ ok: true } as never);
+  // A FIRST onboard (body ""), so the onboard tests below exercise the
+  // sending path; the recompile-suppression case has its own test.
+  vi.mocked(findOnboardEntryStatus).mockResolvedValue({
+    state: "green",
+    updatedAt: new Date("2026-07-18T00:00:00Z"),
+    body: "",
+  });
   vi.mocked(insertFailureEvents).mockResolvedValue(1);
   vi.mocked(recordRunnerResult).mockResolvedValue({
     updated: true,
@@ -397,6 +413,32 @@ describe("POST /api/v1/runner/result — onboard-kind vs issue-kind notify branc
     expect(message).toContain("acme/widgets");
     expect(message).toContain("indexed");
     expect(notifyRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("green onboard result on a RECOMPILE: sends nothing — the welcome notice is first-onboard-only", async () => {
+    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(SESSION as never);
+    // What a push-triggered (or manually clicked) recompile leaves on the row.
+    vi.mocked(findOnboardEntryStatus).mockResolvedValue({
+      state: "green",
+      updatedAt: new Date("2026-07-18T00:00:00Z"),
+      body: ONBOARD_FORCE_BODY,
+    });
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "onboard:acme/widgets",
+    } as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const res = await POST(req({ ...base, status: "green" }));
+
+      expect(res.status).toBe(202);
+      expect(sendSystemTelegramMessage).not.toHaveBeenCalled();
+      expect(notifyRunOutcome).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("escalated-to-human onboard result: honest didn't-finish copy, no PR/issue-number nonsense", async () => {

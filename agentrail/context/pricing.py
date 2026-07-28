@@ -18,7 +18,8 @@ Each entry has four keys:
 """
 from __future__ import annotations
 
-from typing import TypedDict
+import re
+from typing import Optional, TypedDict
 
 # ---------------------------------------------------------------------------
 # Price table  (all values in $/Mtok)
@@ -102,6 +103,83 @@ _MTOK = 1_000_000.0
 
 
 # ---------------------------------------------------------------------------
+# Model-id resolution — the ONE chain, for every caller of this table
+# ---------------------------------------------------------------------------
+# Real callers do not report the bare aliases PRICE_TABLE keys on. They report
+# whatever their provider calls the model:
+#
+#   claude (direct)  claude-sonnet-4-5-20250929   dated snapshot
+#   OpenRouter       anthropic/claude-haiku-4.5   provider prefix + dotted version
+#   OpenRouter       z-ai/glm-5.2                 provider prefix + dotted version
+#
+# A bare ``PRICE_TABLE.get(model)`` misses all three, and a miss is not loud:
+# ``cost_for`` returns the chars/4 fallback with ``estimate=True``, and callers
+# that (correctly) refuse to bill a real gateway call at an invented
+# sonnet-class rate then record $0 instead. That is how 23 production wiki
+# compiles of ``anthropic/claude-haiku-4.5`` — 1,431 prose pages of genuine
+# spend — all landed in the ledger as $0.00, and how the wiki's own
+# ``AGENTRAIL_WIKI_MAX_COST_USD`` ceiling never once engaged.
+#
+# ``resolve_rates`` is that missing chain, and it lives HERE, next to the table
+# it resolves against, so every consumer of the canonical table gets it (#715's
+# single-source-of-truth rule applied to the LOOKUP, not just the numbers).
+# ``run/pricing.py``'s PRICE_TABLE tier delegates to this function rather than
+# keeping a second copy.
+#
+# Normalization only ever WIDENS what an existing key matches — it never
+# invents a rate. A model whose base alias is absent from the table stays
+# unknown, and ``cost_for`` still flags it as an estimate.
+
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
+def _exact_or_dated(model: str) -> Optional[_Rates]:
+    """Exact key, then the same key with a trailing ``-YYYYMMDD`` stripped."""
+    rates = PRICE_TABLE.get(model)
+    if rates is not None:
+        return rates
+    base = _DATE_SUFFIX_RE.sub("", model)
+    if base != model:
+        return PRICE_TABLE.get(base)
+    return None
+
+
+def resolve_rates(model: str) -> Optional[_Rates]:
+    """Return the canonical ``_Rates`` for *model*, or ``None`` if unpriced.
+
+    Resolution order (each step re-runs the exact/dated lookup):
+
+    1. exact match (``claude-haiku-4-5``);
+    2. trailing date snapshot stripped (``claude-sonnet-4-5-20250929``);
+    3. AI-gateway provider prefix stripped (``anthropic/claude-sonnet-5``,
+       ``z-ai/glm-5.2``) — note ``cursor/…`` keys are IN the table verbatim and
+       so are caught by step 1 before any stripping happens;
+    4. dotted version numbers swapped for dashes, the way OpenRouter renders
+       Anthropic slugs (``claude-haiku-4.5`` → ``claude-haiku-4-5``).
+
+    Never raises; a non-string *model* resolves to ``None``.
+    """
+    if not isinstance(model, str) or not model:
+        return None
+
+    rates = _exact_or_dated(model)
+    if rates is not None:
+        return rates
+
+    if "/" in model:
+        stripped = model.rsplit("/", 1)[1]
+        rates = _exact_or_dated(stripped)
+        if rates is not None:
+            return rates
+        model = stripped
+
+    dashed = model.replace(".", "-")
+    if dashed != model:
+        return _exact_or_dated(dashed)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -118,7 +196,10 @@ def cost_for(
     Parameters
     ----------
     model:
-        Model identifier (e.g. ``"claude-sonnet-4-5"``, ``"gpt-4o"``).
+        Model identifier. Accepts the bare table alias (``"claude-sonnet-4-5"``,
+        ``"gpt-4o"``) as well as the dated and AI-gateway forms real providers
+        report (``"claude-sonnet-4-5-20250929"``, ``"anthropic/claude-haiku-4.5"``)
+        — see :func:`resolve_rates`.
     input_tokens:
         Regular (non-cached) prompt tokens.
     output_tokens:
@@ -131,13 +212,14 @@ def cost_for(
     Returns
     -------
     dict with keys:
-        ``model``        – the model string passed in
+        ``model``        – the model string passed in, verbatim (resolution is a
+                           lookup detail; the caller's own id is never rewritten)
         ``dollars``      – total USD cost (float)
         ``rates``        – the four per-Mtok rates used
         ``estimate``     – True when the model is unknown
         ``estimator``    – ``"chars/4"`` when ``estimate`` is True, else None
     """
-    rates = PRICE_TABLE.get(model)
+    rates = resolve_rates(model)
     is_estimate = rates is None
     if is_estimate:
         rates = _FALLBACK_RATE

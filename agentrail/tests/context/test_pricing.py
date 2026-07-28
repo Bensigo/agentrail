@@ -71,6 +71,47 @@ class PricingLookupTests(unittest.TestCase):
         self.assertGreater(result["dollars"], 0)
 
     # -----------------------------------------------------------------
+    # Gateway slugs (OpenRouter) — the form every hosted-fleet / wiki-prose
+    # call actually reports. Before this chain existed here, each of these
+    # missed the table, fell through to the chars/4 fallback, and the wiki
+    # compiler's `estimate` branch then recorded an honest-but-wrong $0 —
+    # 23 prod compiles of `anthropic/claude-haiku-4.5` all logged $0.00.
+    # -----------------------------------------------------------------
+
+    def test_openrouter_prefixed_dotted_haiku_resolves(self) -> None:
+        """`anthropic/claude-haiku-4.5` must price as `claude-haiku-4-5`."""
+        result = cost_for("anthropic/claude-haiku-4.5", input_tokens=1_000_000)
+        self.assertFalse(result["estimate"])
+        self.assertEqual(result["dollars"], 1.0)
+
+    def test_openrouter_prefixed_slug_matches_bare_slug(self) -> None:
+        prefixed = cost_for("anthropic/claude-sonnet-5", output_tokens=1_000_000)
+        bare = cost_for("claude-sonnet-5", output_tokens=1_000_000)
+        self.assertFalse(prefixed["estimate"])
+        self.assertEqual(prefixed["dollars"], bare["dollars"])
+
+    def test_openrouter_glm_verify_seat_resolves(self) -> None:
+        result = cost_for("z-ai/glm-5.2", input_tokens=1_000_000)
+        self.assertFalse(result["estimate"])
+        self.assertEqual(result["dollars"], 0.30)
+
+    def test_dated_snapshot_resolves_to_base_alias(self) -> None:
+        dated = cost_for("claude-sonnet-4-5-20250929", input_tokens=1_000_000)
+        base = cost_for("claude-sonnet-4-5", input_tokens=1_000_000)
+        self.assertFalse(dated["estimate"])
+        self.assertEqual(dated["dollars"], base["dollars"])
+
+    def test_resolved_slug_reports_the_id_the_caller_passed(self) -> None:
+        """Normalization is a lookup detail — never rewrite the caller's id."""
+        result = cost_for("anthropic/claude-haiku-4.5", input_tokens=1000)
+        self.assertEqual(result["model"], "anthropic/claude-haiku-4.5")
+
+    def test_unknown_prefixed_model_still_estimates(self) -> None:
+        """Normalizing must not invent rates for a genuinely unknown model."""
+        result = cost_for("someprovider/not-a-real-model", input_tokens=4_000)
+        self.assertTrue(result["estimate"])
+
+    # -----------------------------------------------------------------
     # Fallback (unknown model)
     # -----------------------------------------------------------------
 

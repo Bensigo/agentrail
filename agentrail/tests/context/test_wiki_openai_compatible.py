@@ -225,6 +225,29 @@ class GeneratePoseOpenAICompatibleTests(unittest.TestCase):
         self.assertFalse(tracker.unpriced_model)
         self.assertEqual(tracker.calls, 1)
 
+    def test_default_openrouter_model_id_prices_nonzero(self) -> None:
+        """The SHIPPED default (`anthropic/claude-haiku-4.5`) must cost real money.
+
+        This assertion is the regression guard for the production defect: the
+        gateway-spelled default missed a bare `PRICE_TABLE.get`, fell into the
+        `estimate` branch below, and 23 prod compiles of 62 prose pages each
+        all logged `cost_usd = 0` — so the console read "$0.00" forever and the
+        wiki's own cost ceiling never engaged. `pricing.resolve_rates` now
+        normalizes the provider prefix and dotted version.
+        """
+        def fake_urlopen(request, timeout=None):
+            return _FakeResponse(json.dumps(_chat_completion(_PROSE_JSON, input_tokens=1000, output_tokens=500)).encode("utf-8"))
+
+        tracker = wiki._CostTracker(ceiling=10.0)
+        cfg = ProviderConfig(mode="openai-compatible")
+        with _env("OPENROUTER_API_KEY", "k"), mock.patch.object(wiki.urllib.request, "urlopen", fake_urlopen):
+            parsed, status = wiki._generate_prose(Path("."), cfg, "openai-compatible", wiki.DEFAULT_OPENAI_COMPATIBLE_MODEL, "prompt", tracker)
+        self.assertEqual(status, "ok")
+        self.assertIsNotNone(parsed)
+        self.assertGreater(tracker.total_usd, 0.0)
+        self.assertFalse(tracker.unpriced_model)
+        self.assertEqual(tracker.calls, 1)
+
     def test_unknown_model_id_records_zero_cost_and_flags_unpriced(self) -> None:
         def fake_urlopen(request, timeout=None):
             return _FakeResponse(json.dumps(_chat_completion(_PROSE_JSON, input_tokens=1000, output_tokens=500)).encode("utf-8"))
@@ -232,9 +255,11 @@ class GeneratePoseOpenAICompatibleTests(unittest.TestCase):
         tracker = wiki._CostTracker(ceiling=10.0)
         cfg = ProviderConfig(mode="openai-compatible")
         with _env("OPENROUTER_API_KEY", "k"), mock.patch.object(wiki.urllib.request, "urlopen", fake_urlopen):
-            # "anthropic/claude-haiku-4.5" (the actual OpenRouter-spelled
-            # default) is NOT a pricing.PRICE_TABLE key.
-            parsed, status = wiki._generate_prose(Path("."), cfg, "openai-compatible", "anthropic/claude-haiku-4.5", "prompt", tracker)
+            # A model no normalization can reach: operator-supplied
+            # openai-compatible ids are arbitrary, so the honest-$0 path must
+            # survive. (It used to be reachable by the SHIPPED default too —
+            # that was the bug; see the test above.)
+            parsed, status = wiki._generate_prose(Path("."), cfg, "openai-compatible", "someprovider/not-a-real-model", "prompt", tracker)
         self.assertEqual(status, "ok")
         self.assertIsNotNone(parsed)
         self.assertEqual(tracker.total_usd, 0.0)
@@ -284,11 +309,13 @@ class EndToEndCompileWikiTests(unittest.TestCase):
         self.assertTrue(fake_call.called)
         report = result["wikiReport"]
         self.assertGreater(report["llmCalls"], 0)
-        # The real default model ("anthropic/claude-haiku-4.5") is not in
-        # pricing.PRICE_TABLE -- confirms the report is honest ($0 + flag)
-        # rather than a fabricated sonnet-class estimate, end to end.
-        self.assertTrue(report["unpricedModel"])
-        self.assertEqual(report["costUsd"], 0.0)
+        # End-to-end proof that the compile report carries REAL dollars for the
+        # shipped default model ("anthropic/claude-haiku-4.5"). This is the
+        # number the console's wiki provenance bar renders as "last compile
+        # <cost>"; it read "$0.00" on all 23 production compiles until the
+        # gateway slug resolved.
+        self.assertFalse(report["unpricedModel"])
+        self.assertGreater(report["costUsd"], 0.0)
         overview_text = (wiki.wiki_dir_for(root) / "overview.md").read_text(encoding="utf-8")
         self.assertNotIn("skeleton-only", overview_text)
         self.assertIn("Does things.", overview_text)

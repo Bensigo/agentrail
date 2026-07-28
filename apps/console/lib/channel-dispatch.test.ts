@@ -103,6 +103,16 @@ function row(overrides: Partial<ClaimedChannelInboxRow> & { payload?: unknown } 
   } as ClaimedChannelInboxRow;
 }
 
+/** The parsed hosted-inbound request body from the single Eve turn a test drove. */
+function hostedInboundBody(): {
+  channel: string;
+  message: string;
+  target: Record<string, unknown>;
+} {
+  const init = mockFetch.mock.calls[0]![1] as { body: string };
+  return JSON.parse(init.body);
+}
+
 const IDENTITY = { id: "chat-1", platform: "telegram", platformUserId: "555" } as never;
 
 beforeEach(() => {
@@ -1571,6 +1581,73 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
     expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("hosted-inbound returned 500"));
     expect(mockComplete).not.toHaveBeenCalled();
+  });
+});
+
+describe("dispatchQueuedChannelMessages — slack threadTs (#1479)", () => {
+  it("puts threadTs on the slack hosted-inbound target", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({
+          conversationKey: "C123:1700000000.000100",
+          payload: {
+            chatId: "C123",
+            text: "hello",
+            fromId: "U1",
+            threadTs: "1700000000.000100",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(hostedInboundBody().target).toEqual({
+      channelId: "C123",
+      threadTs: "1700000000.000100",
+    });
+  });
+
+  it("omits threadTs for an unthreaded slack turn (DM)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({
+          conversationKey: "D999",
+          payload: { chatId: "D999", text: "hi", fromId: "U1" },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(hostedInboundBody().target).toEqual({ channelId: "D999" });
+  });
+
+  it("never puts threadTs on a telegram target", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        row({
+          payload: {
+            chatId: -100123,
+            text: "hi",
+            threadTs: "1700000000.000100",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(hostedInboundBody().target).not.toHaveProperty("threadTs");
   });
 });
 

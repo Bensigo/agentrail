@@ -186,6 +186,14 @@ interface TelegramInboxPayload {
    */
   interactionToken?: string;
   applicationId?: string;
+  /**
+   * Slack-only (#1479's Slack half): the thread this conversation lives in.
+   * Set by the Slack door from `resolveSlackThread`. eve's Slack continuation
+   * token IS `channelId:threadTs` — with none, `slackChannel().receive` falls
+   * back to `crypto.randomUUID()` and every turn starts a new session. A
+   * telegram/discord payload never carries this.
+   */
+  threadTs?: string;
 }
 
 /**
@@ -248,6 +256,10 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   const applicationId = p["applicationId"];
   if (typeof applicationId === "string" && applicationId.trim()) {
     result.applicationId = applicationId;
+  }
+  const threadTs = p["threadTs"];
+  if (typeof threadTs === "string" && threadTs.trim()) {
+    result.threadTs = threadTs;
   }
   return result;
 }
@@ -410,6 +422,9 @@ async function runEveTurn(params: {
   channel?: string;
   chatId?: number | string;
   messageThreadId?: number | string;
+  /** Slack-only — see TelegramInboxPayload.threadTs. Ignored for every other
+   * channel, so their targets stay byte-unchanged. */
+  threadTs?: string;
   /**
    * Console (#1288): a pre-built target object, used AS-IS instead of the
    * chatId/channelId-keyed shape every external channel builds below.
@@ -458,6 +473,9 @@ async function runEveTurn(params: {
         : {}),
       ...(params.messageThreadId !== undefined
         ? { messageThreadId: params.messageThreadId }
+        : {}),
+      ...(channel === "slack" && params.threadTs !== undefined
+        ? { threadTs: params.threadTs }
         : {}),
     };
   let response: Response;
@@ -954,6 +972,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       chatId: payload.chatId,
       conversationKey: row.conversationKey,
       messageThreadId: payload.messageThreadId,
+      threadTs: payload.threadTs,
       auth,
     });
 

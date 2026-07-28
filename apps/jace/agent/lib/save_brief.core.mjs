@@ -56,6 +56,21 @@
 // failure class briefs exist to eliminate (the 2026-07-27 blog-grilling
 // session that persisted nothing).
 //
+// ANCHOR — sets or clears THIS conversation's brief anchor, the write behind
+// design spec step 2→3 ("confirm before the first write, then anchor"): once
+// the human has confirmed which brief this conversation continues, the very
+// call that (creates or) touches that brief also anchors the session to it
+// (`anchor: true`), so every later turn resolves via `fetch_briefs(mode:
+// "anchor")` instead of re-running search-and-confirm. `anchor: false` clears
+// it — step 4, "re-confirm on drift": the human says this is a different
+// idea, and there is nothing yet to write. Because that can fire with
+// NOTHING else on hand, `slug` is optional here specifically for a pure
+// `{ anchor: false }` clear with no other fields — every other call still
+// requires `slug` (enforced below, mirroring the route's own
+// `isRawPostBody`/handler split between shape and business-rule validation).
+// Omit `anchor` entirely to leave the session's anchor untouched, the common
+// case for a plain per-turn autosave once already anchored.
+//
 // `status` IS NEVER SENT. The design spec's pinned v1 contract briefly listed
 // `status?` on `save_brief`'s payload; that line was wrong (see the route's
 // own doc-comment, "`status` is rejected outright, not silently dropped", and
@@ -231,21 +246,49 @@ export function sanitizeItem(item) {
 }
 
 /**
+ * Render the pure `{ anchor: false }` clear — no slug, no brief touched at
+ * all (design spec step 4, "re-confirm on drift"). Distinct from
+ * `renderSaved` because there is no brief/items to report on this path: the
+ * whole point of this call is that Jace has NOTHING to write yet.
+ *
+ * @returns {string}
+ */
+export function renderAnchorCleared() {
+  return (
+    "Cleared this conversation's brief anchor — no brief was written or touched. " +
+    "Re-resolve with fetch_briefs (mode=\"search\" on the human's own words, or mode=\"anchor\" " +
+    "if they name an existing idea) before writing anything new."
+  );
+}
+
+/**
  * Render a success outcome into plain language, EXPLICITLY naming both
  * refusal arrays whenever either is non-empty — never leaving them to be
  * discovered only by inspecting fields a caller might not think to check.
  * Mirrors fetch_repo_wiki's posture of baking mandatory framing into the
  * rendered text itself, not just into structured fields a caller could
- * silently ignore.
+ * silently ignore. `anchor`, when present, is the anchor state THIS call
+ * left the session in (`{ briefId }` after `anchor: true`, `null` after
+ * `anchor: false` alongside a slug) — omitted entirely when the call didn't
+ * touch the anchor at all.
  *
  * @param {{ brief: Record<string, unknown>, items: Array<Record<string, unknown>>,
- *           skippedHumanAuthorityIds: string[], skippedUnknownResolvedIds: string[] }} result
+ *           skippedHumanAuthorityIds: string[], skippedUnknownResolvedIds: string[],
+ *           anchor?: { briefId: string } | null }} result
  * @returns {string}
  */
-export function renderSaved({ brief, items, skippedHumanAuthorityIds, skippedUnknownResolvedIds }) {
+export function renderSaved({ brief, items, skippedHumanAuthorityIds, skippedUnknownResolvedIds, anchor }) {
   const lines = [];
   const savedCount = Array.isArray(items) ? items.length : 0;
   lines.push(`Saved brief "${brief && brief.slug}" — ${savedCount} item(s) written.`);
+  if (anchor !== undefined) {
+    lines.push(
+      anchor
+        ? "This conversation is now anchored to this brief — later turns should resume here via " +
+            'fetch_briefs(mode="anchor") instead of searching again.'
+        : "This conversation's brief anchor was cleared alongside this write.",
+    );
+  }
   if (Array.isArray(skippedHumanAuthorityIds) && skippedHumanAuthorityIds.length) {
     lines.push(
       `REFUSED (human-locked): ${skippedHumanAuthorityIds.length} item(s) were NOT updated because a ` +
@@ -272,7 +315,9 @@ export function renderSaved({ brief, items, skippedHumanAuthorityIds, skippedUnk
  * (retrying a partially-applied write blind risks double-writing items).
  *
  *   1. unset console config           → degraded("config_missing", { missing })
- *   2. blank eveSessionId or slug     → degraded("bad_request" / "missing_slug")
+ *   2. blank eveSessionId             → degraded("bad_request")
+ *   2b. blank slug, NOT a pure         → degraded("missing_slug")
+ *       `{ anchor: false }` clear
  *   3. transport throws               → degraded("unreachable")
  *   4. status 400                     → degraded("bad_request", { message })
  *      (malformed body, `status` present — should never happen, this module
@@ -283,15 +328,22 @@ export function renderSaved({ brief, items, skippedHumanAuthorityIds, skippedUnk
  *   8. status >= 500                  → degraded("upstream_error")
  *   9. other non-2xx status           → degraded("unexpected_status", { status })
  *  10. non-JSON body                  → degraded("bad_body", { status })
- *  11. success                        → { ok:true, brief, items,
+ *  11. success, pure anchor clear     → { ok:true, anchor: null, rendered }
+ *      (a `{ anchor: false }` call with no slug — the console never touched
+ *      `upsertBrief`/`patchBriefItems`, so there is no brief/items to report)
+ *  12. success, normal write          → { ok:true, brief, items,
  *                                          skippedHumanAuthorityIds,
- *                                          skippedUnknownResolvedIds, rendered }
+ *                                          skippedUnknownResolvedIds,
+ *                                          anchor? (only when this call's
+ *                                          `anchor` was true or false),
+ *                                          rendered }
  *
- * @param {{ eveSessionId: string, slug: string, title?: string,
+ * @param {{ eveSessionId: string, slug?: string, title?: string,
  *           openQuestion?: string,
  *           grounding?: { wikiPageSlugs?: string[], memoryItemIds?: string[], commitSha?: string|null },
  *           items?: Array<{ id?: string, area: string, statement: string, evidence?: string,
  *             kind: string, state?: string, resolution?: string|null }>,
+ *           anchor?: boolean,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
@@ -303,6 +355,7 @@ export async function saveBrief({
   openQuestion,
   grounding,
   items,
+  anchor,
   env = {},
   transport,
 }) {
@@ -313,9 +366,22 @@ export async function saveBrief({
   if (!sessionId) return degraded("bad_request");
 
   const trimmedSlug = String(slug ?? "").trim();
-  if (!trimmedSlug) return degraded("missing_slug");
+  // Mirrors the route's own shape/business-rule split (isRawPostBody vs. the
+  // handler): `slug` is required for every call EXCEPT a pure
+  // `{ anchor: false }` clear with nothing else to write — that call exists
+  // precisely for the moment there is no slug on hand at all (design spec
+  // step 4, "re-confirm on drift").
+  const isPureAnchorClear =
+    anchor === false &&
+    !trimmedSlug &&
+    title === undefined &&
+    openQuestion === undefined &&
+    grounding === undefined &&
+    (items === undefined || (Array.isArray(items) && items.length === 0));
+  if (!trimmedSlug && !isPureAnchorClear) return degraded("missing_slug");
 
-  const requestBody = { eveSessionId: sessionId, slug: trimmedSlug };
+  const requestBody = { eveSessionId: sessionId };
+  if (trimmedSlug) requestBody.slug = trimmedSlug;
   if (title !== undefined) requestBody.title = title;
   if (openQuestion !== undefined) {
     requestBody.openQuestion = hardenUntrusted(openQuestion, { maxLen: 2000 });
@@ -330,6 +396,7 @@ export async function saveBrief({
   if (items !== undefined) {
     requestBody.items = (Array.isArray(items) ? items : []).map(sanitizeItem);
   }
+  if (anchor !== undefined) requestBody.anchor = anchor;
 
   const url = buildSaveBriefUrl(cfg.baseUrl);
 
@@ -381,8 +448,24 @@ export async function saveBrief({
     return degraded("bad_body", { status });
   }
 
-  if (!body || typeof body !== "object" || !body.brief) {
+  if (!body || typeof body !== "object") {
     return degraded("bad_body", { status });
+  }
+
+  // The pure `{ anchor: false }` clear (no slug) never reaches
+  // `upsertBrief`/`patchBriefItems` on the console side, so its 200 body is
+  // just `{ anchor: null }` — no `brief` key at all. Handle that shape BEFORE
+  // the "brief required" check below, or every anchor-only clear would
+  // wrongly degrade as `bad_body`.
+  if (!("brief" in body)) {
+    if (!("anchor" in body)) return degraded("bad_body", { status });
+    const result = {
+      ok: true,
+      anchor: body.anchor === null ? null : body.anchor,
+      skippedHumanAuthorityIds: [],
+      skippedUnknownResolvedIds: [],
+    };
+    return { ...result, rendered: renderAnchorCleared() };
   }
 
   // skippedUnknownResolvedIds entries are either an existing item's id (a
@@ -404,6 +487,12 @@ export async function saveBrief({
       ? body.skippedUnknownResolvedIds
       : []
     ).map((s) => hardenUntrusted(String(s), { maxLen: 300 })),
+    // `anchor` only rides here when THIS call's `raw.anchor` was true or
+    // false (the route omits the key entirely otherwise) — so its presence
+    // in `body` is itself the signal, never inferred from this module's own
+    // input alone (a defensive echo of what the console actually did, not
+    // what was merely requested).
+    ...(Object.prototype.hasOwnProperty.call(body, "anchor") ? { anchor: body.anchor } : {}),
   };
   return { ...result, rendered: renderSaved(result) };
 }

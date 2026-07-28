@@ -30,8 +30,18 @@
 // this one endpoint's URL query params, never as (or altering) the
 // destination.
 //
-// Three modes, mirroring fetch_repo_wiki's shape so there is one idiom to
-// learn across every fetch_* tool:
+// Four modes. The first three mirror fetch_repo_wiki's shape so there is one
+// idiom to learn across every fetch_* tool; `anchor` is specific to this
+// route (repo-wiki has no session-level anchor concept):
+//   anchor — the conversation→brief anchor THIS session currently carries
+//            (design spec, "Retrieval — the whole mismatch surface", step 3).
+//            CALL THIS FIRST, before `search`: if this conversation is
+//            already anchored to a brief, this one call returns the FULL
+//            brief (same shape as `get`) and there is nothing left to
+//            resolve — resume from it. `anchor: null` means this conversation
+//            has no brief anchored yet (the common case, and also what a
+//            brand-new conversation always sees) — only THEN move to `search`
+//            on the human's own words. No `slug`/`query` needed.
 //   list   — every brief for the workspace, no items (the compact index).
 //   get    — one brief by `slug`, with its full item set. A brief is meant to
 //            be read WHOLE — nothing is ever ranked or trimmed inside one
@@ -56,7 +66,7 @@ import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 export const BRIEFS_PATH = "/api/v1/runner/briefs";
 
 /** The only modes the frozen HTTP contract accepts. */
-export const MODES = Object.freeze(["list", "get", "search"]);
+export const MODES = Object.freeze(["anchor", "list", "get", "search"]);
 
 // Untrusted-content caps applied on the Jace side (defense-in-depth on top of
 // whatever the console already validated/scanned on write), matching the
@@ -372,6 +382,34 @@ export function renderBriefDetail(brief) {
 }
 
 /**
+ * Render `mode="anchor"` — the conversation's current brief anchor, or an
+ * honest "nothing anchored yet". This is what a resumed conversation should
+ * open a reply with (design spec step 3: "resume, don't restart") — call
+ * this BEFORE `search`, since an anchored conversation needs no shortlist at
+ * all.
+ *
+ * @param {{ anchor: { brief: Record<string, unknown> } | null }} args
+ * @returns {string}
+ */
+export function renderAnchor({ anchor }) {
+  if (!anchor || !anchor.brief) {
+    return [
+      UNTRUSTED_NOTICE,
+      "",
+      "This conversation has no brief anchored yet. Call fetch_briefs(mode=\"search\") on the human's own " +
+        "words next, before assuming there is no prior history for this idea.",
+    ].join("\n");
+  }
+  return [
+    UNTRUSTED_NOTICE,
+    "",
+    "This conversation is anchored to a brief — resume from it, never restart the interview:",
+    "",
+    renderBriefDetail(anchor.brief),
+  ].join("\n");
+}
+
+/**
  * Render `mode="get"` — one brief's full detail, or an honest "not found".
  *
  * @param {{ slug?: string, brief?: Record<string, unknown> }} args
@@ -423,7 +461,8 @@ export function renderSearch({ query, briefs }) {
  *      has no brief, and that is an expected outcome, not a fetch problem)
  *   8. other non-2xx status        → degraded(<mapped reason>, { status })
  *   9. non-JSON body                → degraded("bad_body"/<mapped reason>, { status })
- *  10. success                     → { ok:true, mode, briefs|brief, rendered }
+ *  10. success (mode="anchor")     → { ok:true, mode, anchor: { brief } | null, rendered }
+ *  11. success (other modes)      → { ok:true, mode, briefs|brief, rendered }
  *
  * `eveSessionId` (Eve's own opaque session id) is what the console resolves
  * the real tenant from server-side; this NEVER takes a workspaceId argument.
@@ -479,6 +518,15 @@ export async function fetchBriefs({ eveSessionId, mode, slug, query, env = {}, t
 
   const cls = classifyStatus(status);
   if (!cls.ok) return degraded(cls.reason, { status });
+
+  if (modeNorm === "anchor") {
+    const rawAnchor = body && typeof body === "object" ? body.anchor : undefined;
+    const anchor =
+      rawAnchor && typeof rawAnchor === "object" && rawAnchor.brief
+        ? { brief: projectBriefWithItems(rawAnchor.brief) }
+        : null;
+    return { ok: true, mode: modeNorm, anchor, rendered: renderAnchor({ anchor }) };
+  }
 
   if (modeNorm === "get") {
     const brief = body && typeof body === "object" ? projectBriefWithItems(body.brief) : undefined;

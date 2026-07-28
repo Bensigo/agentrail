@@ -32,6 +32,7 @@ import {
   renderBriefDetail,
   renderGet,
   renderSearch,
+  renderAnchor,
   fetchBriefs,
 } from "../agent/lib/fetch_briefs.core.mjs";
 
@@ -92,8 +93,8 @@ function brief(overrides = {}) {
 // MODES / resolveConsoleConfig
 // ---------------------------------------------------------------------------
 
-test("MODES is exactly list/get/search", () => {
-  assert.deepEqual(MODES, ["list", "get", "search"]);
+test("MODES is exactly anchor/list/get/search, anchor first (call order matters)", () => {
+  assert.deepEqual(MODES, ["anchor", "list", "get", "search"]);
 });
 
 test("resolveConsoleConfig resolves + trims + de-slashes when both vars are set", () => {
@@ -143,6 +144,18 @@ test("buildBriefsUrl carries query only for mode=search", () => {
     query: "the blog thing",
   });
   assert.doesNotMatch(listUrl, /[?&]query=/);
+});
+
+test("buildBriefsUrl mode=anchor carries only eveSessionId + mode — no slug/query even if passed", () => {
+  const url = buildBriefsUrl("https://c.example.com", EVE_SESSION_ID, {
+    mode: "anchor",
+    slug: "blog",
+    query: "the blog thing",
+  });
+  assert.equal(
+    url,
+    `https://c.example.com${BRIEFS_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}&mode=anchor`,
+  );
 });
 
 test("buildBriefsUrl NEVER carries a workspace param — the workspace is resolved server-side from eveSessionId", () => {
@@ -379,6 +392,20 @@ test("renderSearch renders every hit's full detail, in order, or an honest 'noth
   assert.match(empty, /No matching briefs\./);
 });
 
+test("renderAnchor is honest when nothing is anchored yet, and points at search next", () => {
+  const text = renderAnchor({ anchor: null });
+  assert.match(text, /no brief anchored yet/i);
+  assert.match(text, /mode="search"/);
+});
+
+test("renderAnchor renders the full anchored brief plus the resume-don't-restart framing", () => {
+  const p = projectBriefWithItems(brief());
+  const text = renderAnchor({ anchor: { brief: p } });
+  assert.match(text, new RegExp(UNTRUSTED_NOTICE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(text, /resume from it, never restart/i);
+  assert.match(text, /Add a blog \(blog\)/);
+});
+
 // ---------------------------------------------------------------------------
 // fetchBriefs — local validation guards (no wasted transport call)
 // ---------------------------------------------------------------------------
@@ -536,4 +563,45 @@ test("fetchBriefs: malformed success body (no briefs array) -> empty briefs, not
   const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "list", env: ENV, transport });
   assert.equal(res.ok, true);
   assert.deepEqual(res.briefs, []);
+});
+
+// ---------------------------------------------------------------------------
+// fetchBriefs — mode=anchor: the FIRST call in the resolution order
+// ---------------------------------------------------------------------------
+
+test("fetchBriefs: mode=anchor needs no slug/query — never blocked by missing_slug/missing_query", async () => {
+  const transport = fakeTransport(() => okResponse({ schemaVersion: 1, mode: "anchor", anchor: null }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(transport.calls.length, 1);
+});
+
+test("fetchBriefs: mode=anchor, nothing anchored -> { anchor: null }, an honest outcome not a degraded one", async () => {
+  const transport = fakeTransport(() => okResponse({ schemaVersion: 1, mode: "anchor", anchor: null }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.degraded, undefined);
+  assert.equal(res.anchor, null);
+  assert.match(res.rendered, /no brief anchored yet/i);
+});
+
+test("fetchBriefs: mode=anchor, a brief IS anchored -> returns the FULL brief, same projection as mode=get", async () => {
+  const body = {
+    schemaVersion: 1,
+    mode: "anchor",
+    anchor: { brief: brief({ items: [item()] }) },
+  };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.anchor.brief.slug, "blog");
+  assert.equal(res.anchor.brief.items.length, 1);
+  assert.match(res.rendered, /resume from it, never restart/i);
+});
+
+test("fetchBriefs: mode=anchor, session not found (404) -> degraded('not_found'), not the honest-null path", async () => {
+  const transport = fakeTransport(() => ({ status: 404, json: async () => ({ error: "Session not found" }) }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.degraded, true);
+  assert.equal(res.reason, "not_found");
 });

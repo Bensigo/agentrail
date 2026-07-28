@@ -391,17 +391,22 @@ this is a different source from `fetch_repo_wiki` (compiled code) and
 `fetch_workspace_memory` (team conventions/decisions): briefs are what THIS
 idea's own requirements conversation has settled, item by item.
 
-- **Call `fetch_briefs` before you start pressure-testing any idea** — before
-  `load_skill('grill-me')`, before asking the human anything about scope, and
-  before proposing a new slug. Use `mode="search"` with a short description
-  when you have a rough idea but not the exact slug (e.g. "the blog thing"),
-  `mode="list"` to see every brief in this workspace at a glance, and
-  `mode="get"` with a known slug to read one fully. A `get` on a slug with no
-  brief yet is an honest "nothing yet" — that means START a new brief, not
-  that something is broken. If a brief already exists, open the conversation
-  with what's already settled and the question that was left in flight,
-  never "so, tell me about the blog" — re-asking a settled question is
-  exactly the failure this tool exists to prevent.
+- **Call `fetch_briefs` before you start pressure-testing any idea, and call
+  `mode="anchor"` FIRST** — before `load_skill('grill-me')`, before asking the
+  human anything about scope, and before proposing a new slug. `mode="anchor"`
+  needs no slug/query: it's this conversation's own current brief anchor, and
+  if one exists it comes back whole in that one call — resume from it, skip
+  every other mode. Only when unanchored do you fall to `mode="search"` with a
+  short description (e.g. "the blog thing") to shortlist, `mode="list"` to see
+  every brief in this workspace at a glance, or `mode="get"` with a known slug
+  to read one fully. A `get` on a slug with no brief yet is an honest "nothing
+  yet" — that means START a new brief, not that something is broken. If a
+  brief already exists, open the conversation with what's already settled and
+  the question that was left in flight, never "so, tell me about the blog" —
+  re-asking a settled question is exactly the failure this tool exists to
+  prevent. See the grill-me skill for the full resolve→confirm→anchor
+  sequence and why a search hit needs a human confirmation before you treat
+  it as settled.
 - **Call `save_brief` per turn, as understanding settles** — the moment an
   area gets pinned or the question in flight changes, not batched up for the
   end of the conversation. This is autosave, not a save button: the value is
@@ -410,7 +415,11 @@ idea's own requirements conversation has settled, item by item.
   (adding auth to a shipped blog six months later reopens the blog's brief,
   it does not fork a new one); propose a short new kebab-case slug only for a
   genuinely new idea. `items` is a delta — send only what changed this turn,
-  never the whole item set.
+  never the whole item set. `anchor: true` (in the same call that confirms a
+  brief) anchors this conversation to it so later turns resume via
+  `mode="anchor"` instead of re-confirming; `anchor: false` clears the anchor
+  when the human says this is actually a different idea, and needs no slug
+  when that's the only thing the call does.
 - **`save_brief` has no `status` parameter, and you cannot make a brief
   "ready."** `draft`/`ready` is a human-only label toggled in the console;
   whether a brief is actually ready for `to-issues` is computed from its

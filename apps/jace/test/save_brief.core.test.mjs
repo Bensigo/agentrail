@@ -27,6 +27,7 @@ import {
   degraded,
   sanitizeItem,
   renderSaved,
+  renderAnchorCleared,
   saveBrief,
 } from "../agent/lib/save_brief.core.mjs";
 
@@ -230,6 +231,45 @@ test("renderSaved names skippedUnknownResolvedIds explicitly and explains the fi
   assert.match(text, /out-of-scope/);
 });
 
+test("renderSaved says nothing about the anchor when this call didn't touch it", () => {
+  const text = renderSaved({
+    brief: { slug: "blog" },
+    items: [],
+    skippedHumanAuthorityIds: [],
+    skippedUnknownResolvedIds: [],
+  });
+  assert.doesNotMatch(text, /anchor/i);
+});
+
+test("renderSaved names the anchor set when anchor is truthy", () => {
+  const text = renderSaved({
+    brief: { slug: "blog" },
+    items: [],
+    skippedHumanAuthorityIds: [],
+    skippedUnknownResolvedIds: [],
+    anchor: { briefId: "brief-uuid-1" },
+  });
+  assert.match(text, /now anchored to this brief/i);
+});
+
+test("renderSaved names the anchor clear when anchor is null", () => {
+  const text = renderSaved({
+    brief: { slug: "blog" },
+    items: [],
+    skippedHumanAuthorityIds: [],
+    skippedUnknownResolvedIds: [],
+    anchor: null,
+  });
+  assert.match(text, /anchor was cleared/i);
+});
+
+test("renderAnchorCleared describes a pure anchor-clear with no brief touched, and points at re-resolving", () => {
+  const text = renderAnchorCleared();
+  assert.match(text, /cleared this conversation's brief anchor/i);
+  assert.match(text, /no brief was written or touched/i);
+  assert.match(text, /fetch_briefs/);
+});
+
 test("renderSaved names BOTH refusal arrays when both are non-empty", () => {
   const text = renderSaved({
     brief: { slug: "blog" },
@@ -269,6 +309,87 @@ test("saveBrief: blank slug -> degraded('missing_slug'), transport never called"
     assert.equal(res.reason, "missing_slug");
   }
   assert.equal(transport.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// saveBrief — anchor plumbing (design spec "confirm once, then anchor" /
+// "re-confirm on drift")
+// ---------------------------------------------------------------------------
+
+test("saveBrief: a pure { anchor: false } clear with no slug is ALLOWED, not degraded('missing_slug')", async () => {
+  const transport = fakeTransport(() => ({ status: 200, json: async () => ({ anchor: null }) }));
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, anchor: false, env: ENV, transport });
+  assert.equal(res.degraded, undefined);
+  assert.equal(res.ok, true);
+  assert.equal(transport.calls.length, 1);
+  const sentBody = JSON.parse(transport.calls[0].init.body);
+  assert.deepEqual(sentBody, { eveSessionId: EVE_SESSION_ID, anchor: false });
+});
+
+test("saveBrief: { anchor: false } with content fields but no slug is STILL degraded('missing_slug') — not a pure clear", async () => {
+  const transport = fakeTransport(() => successResponse());
+  for (const extra of [{ title: "Add a blog" }, { openQuestion: "who approves?" }, { items: [{ area: "problem", statement: "x", kind: "required" }] }]) {
+    const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, anchor: false, ...extra, env: ENV, transport });
+    assert.equal(res.reason, "missing_slug", `expected missing_slug for ${JSON.stringify(extra)}`);
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("saveBrief: anchor:true still requires slug like any other write", async () => {
+  const transport = fakeTransport(() => successResponse());
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, anchor: true, env: ENV, transport });
+  assert.equal(res.reason, "missing_slug");
+  assert.equal(transport.calls.length, 0);
+});
+
+test("saveBrief: anchor rides in the POST body only when the caller actually supplied it", async () => {
+  const transport = fakeTransport(() => successResponse());
+  await saveBrief({ eveSessionId: EVE_SESSION_ID, slug: "blog", title: "Add a blog", anchor: true, env: ENV, transport });
+  const sentBody = JSON.parse(transport.calls[0].init.body);
+  assert.equal(sentBody.anchor, true);
+
+  await saveBrief({ eveSessionId: EVE_SESSION_ID, slug: "blog", title: "Add a blog", env: ENV, transport });
+  const sentBody2 = JSON.parse(transport.calls[1].init.body);
+  assert.equal("anchor" in sentBody2, false, "omitted anchor must not ride as undefined/null");
+});
+
+test("saveBrief: success on a pure anchor clear (no brief in the body) returns { ok:true, anchor: null } via renderAnchorCleared", async () => {
+  const transport = fakeTransport(() => ({ status: 200, json: async () => ({ anchor: null }) }));
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, anchor: false, env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.anchor, null);
+  assert.equal(res.brief, undefined);
+  assert.deepEqual(res.skippedHumanAuthorityIds, []);
+  assert.deepEqual(res.skippedUnknownResolvedIds, []);
+  assert.match(res.rendered, /cleared this conversation's brief anchor/i);
+});
+
+test("saveBrief: a body with neither brief nor anchor -> degraded('bad_body') rather than a silent pure-clear guess", async () => {
+  const transport = fakeTransport(() => ({ status: 200, json: async () => ({ nope: true }) }));
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, anchor: false, env: ENV, transport });
+  assert.equal(res.reason, "bad_body");
+});
+
+test("saveBrief: a normal write echoes anchor:true back in the result when the console set it", async () => {
+  const transport = fakeTransport(() =>
+    successResponse({ anchor: { briefId: "brief-uuid-1" } }),
+  );
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, slug: "blog", title: "Add a blog", anchor: true, env: ENV, transport });
+  assert.deepEqual(res.anchor, { briefId: "brief-uuid-1" });
+  assert.match(res.rendered, /now anchored to this brief/i);
+});
+
+test("saveBrief: a normal write that clears the anchor alongside content echoes anchor:null back", async () => {
+  const transport = fakeTransport(() => successResponse({ anchor: null }));
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, slug: "crm", title: "Add a CRM", anchor: false, env: ENV, transport });
+  assert.equal(res.anchor, null);
+  assert.match(res.rendered, /anchor was cleared/i);
+});
+
+test("saveBrief: a normal write that never touched the anchor has NO anchor key on the result at all", async () => {
+  const transport = fakeTransport(() => successResponse());
+  const res = await saveBrief({ eveSessionId: EVE_SESSION_ID, slug: "blog", title: "Add a blog", env: ENV, transport });
+  assert.equal("anchor" in res, false);
 });
 
 // ---------------------------------------------------------------------------

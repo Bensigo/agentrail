@@ -5,6 +5,7 @@ import { generateKeyPairSync, sign as cryptoSign } from "crypto";
 vi.mock("@agentrail/db-postgres", () => ({
   resolveInboundChatIdentity: vi.fn(),
   enqueueChannelMessage: vi.fn(),
+  getThreadEngagement: vi.fn(),
 }));
 
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
@@ -12,12 +13,17 @@ vi.mock("../../../../../../lib/channel-dispatch", () => ({
 }));
 
 import { POST } from "./route";
-import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db-postgres";
+import {
+  resolveInboundChatIdentity,
+  enqueueChannelMessage,
+  getThreadEngagement,
+} from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
 const mockResolve = vi.mocked(resolveInboundChatIdentity);
 const mockEnqueue = vi.mocked(enqueueChannelMessage);
 const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
+const mockGetEngagement = vi.mocked(getThreadEngagement);
 mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -224,10 +230,28 @@ describe("POST /api/v1/connectors/discord/webhook — APPLICATION_COMMAND (a str
         text: "hello jace",
         fromId: "555",
         fromUsername: "ada",
+        threadId: null,
+        mentionsBot: true,
+        mentionsOtherUsers: false,
+        repliesToMessageId: null,
+        repliesToBot: false,
         interactionToken: "interaction-tok-42",
         applicationId: "app-999",
       },
     });
+  });
+
+  it("an explicit /jace invocation always addresses Jace by name — never looks up engagement state", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    await POST(req(commandBody()));
+
+    expect(mockGetEngagement).not.toHaveBeenCalled();
   });
 
   it("anchors on workspaceId (not chatIdentityId) for a bound identity", async () => {

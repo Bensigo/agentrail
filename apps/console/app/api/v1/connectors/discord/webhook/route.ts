@@ -257,6 +257,17 @@ export async function POST(request: NextRequest) {
     senderDisplay: displayName,
     senderUsername: discordUser.username ?? null,
     text,
+    // An explicit `/jace` invocation IS addressing Jace by name — the one
+    // unambiguous mention signal decideEngagement treats as "always a turn"
+    // (spec: docs/superpowers/specs/2026-07-28-thread-native-jace-design.md).
+    // No thread awareness needed here: PR 2 part 1 does not have Jace open
+    // threads, and `channelId` above already resolves to a thread's own id
+    // when the command was invoked inside one, same as it always has.
+    threadId: null,
+    mentionsBot: true,
+    mentionsOtherUsers: false,
+    repliesToMessageId: null,
+    repliesToBot: false,
     // The interaction's OWN short-lived credential, so Jace can reply via the
     // followup webhook instead of a permission-bound channel post (see this
     // file's header). SECRET: travels only inbound body -> channel_inbox.payload

@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db-postgres";
+import {
+  resolveInboundChatIdentity,
+  enqueueChannelMessage,
+  getThreadEngagement,
+} from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { verifySlackSignature } from "../../../../../../lib/slack-bot";
 import { resolveSlackThread } from "../../../../../../lib/slack-thread";
@@ -37,10 +41,72 @@ import { resolveSlackThread } from "../../../../../../lib/slack-thread";
  * FAIL CLOSED: a missing `SLACK_SIGNING_SECRET` means every request is
  * rejected (401) — mirrors the Telegram/Discord webhooks' identical
  * fail-closed posture.
+ *
+ * THE ENGAGEMENT GATE (spec: docs/superpowers/specs/2026-07-28-thread-
+ * native-jace-design.md) — one indexed lookup that keeps junk out of
+ * `channel_inbox`, NOT the real decision (`channel-dispatch.ts`'s
+ * `decideEngagement` makes that one, on a claimed row):
+ *
+ *   enqueue if mentionsBot OR isDM OR (a session row exists for this
+ *   conversation AND its dormant latch is clear).
+ *
+ * Needs a Slack bot user id this console does not otherwise have — read from
+ * `SLACK_BOT_USER_ID`. `mentionsBot` = the text contains `<@SLACK_BOT_USER_ID>`;
+ * `mentionsOtherUsers` = it contains some OTHER `<@U…>` token;
+ * `repliesToMessageId` is always null (Slack has no in-channel reply
+ * primitive — a Slack reply IS a thread, already captured by `threadTs`
+ * above). `isDM` is `event.channel_type === "im"`, the same signal
+ * `resolveSlackThread` already uses.
+ *
+ * FAIL TOWARD TODAY'S BEHAVIOR, NOT TOWARD SILENCE, when `SLACK_BOT_USER_ID`
+ * is unset: verified 2026-07-28, production has NO Slack environment
+ * variables at all on either service (this door already fails closed on a
+ * missing signing secret, so Slack is entirely dark in prod today) — gating
+ * on an unresolvable mention would make Jace mute on Slack the instant
+ * someone turns Slack on without also setting this var. So an unset var
+ * enqueues UNCONDITIONALLY, exactly as before this feature existed: no
+ * engagement lookup, no new payload keys, logged once per process (see
+ * `loggedMissingSlackBotUserId` below, styled after
+ * `lib/guardrails/moderation.ts`'s missing-key notice).
  */
 
 const SIGNATURE_HEADER = "x-slack-signature";
 const TIMESTAMP_HEADER = "x-slack-request-timestamp";
+
+/** Every `<@U…>` token in a Slack message's raw text — Slack's own mention
+ * syntax, the same shape for a user or (usually) a bot. */
+const SLACK_MENTION_PATTERN = /<@([A-Z0-9]+)>/g;
+
+function extractMentionedUserIds(text: string): string[] {
+  const ids: string[] = [];
+  for (const match of text.matchAll(SLACK_MENTION_PATTERN)) {
+    if (match[1]) ids.push(match[1]);
+  }
+  return ids;
+}
+
+/** Trimmed, `undefined`/blank-safe read of `SLACK_BOT_USER_ID` — `null` when
+ * not configured, mirroring `moderation.ts`'s `resolveApiKey` shape. */
+function resolveSlackBotUserId(): string | null {
+  const raw = process.env["SLACK_BOT_USER_ID"];
+  const value = typeof raw === "string" ? raw.trim() : "";
+  return value.length > 0 ? value : null;
+}
+
+/** Logged at most once per process — see the module doc's "FAIL TOWARD
+ * TODAY'S BEHAVIOR" section on why a missing var is a log-once, not a
+ * log-per-message, condition (mirrors moderation.ts's `loggedMissingKey`). */
+let loggedMissingSlackBotUserId = false;
+
+function warnMissingSlackBotUserIdOnce(): void {
+  if (loggedMissingSlackBotUserId) return;
+  loggedMissingSlackBotUserId = true;
+  console.warn(
+    "[slack/events] SLACK_BOT_USER_ID not configured — thread engagement is disabled for this " +
+      "process; every Slack message enqueues unconditionally, matching pre-engagement behavior. " +
+      "Set the var on the console service to enable it."
+  );
+}
 
 function verifyRequest(rawBody: string, signature: string | null, timestamp: string | null): boolean {
   return verifySlackSignature({
@@ -134,6 +200,50 @@ export async function POST(request: NextRequest) {
     return json({ ok: true, ignored: true });
   }
 
+  // Thread-scoped conversation key + the thread eve must reply in. A channel
+  // message is its own conversation per THREAD (see lib/slack-thread.ts); a
+  // DM is exempt and byte-unchanged. Computed early (pure, no I/O) so the
+  // engagement gate below — and its one indexed lookup — can run BEFORE any
+  // identity resolution or enqueue, same "cheap gate first" shape the
+  // Discord doors use (lib/discord-inbound.ts).
+  const thread = resolveSlackThread({
+    channel: event.channel,
+    ts: event.ts,
+    thread_ts: event.thread_ts,
+    channel_type: event.channel_type,
+  });
+
+  // THE ENGAGEMENT GATE — see this file's header doc. `slackBotUserId` is
+  // `null` in every describe block above (SLACK_BOT_USER_ID unset in this
+  // process today, prod verified 2026-07-28): `engagement` stays `null`,
+  // every field below is skipped, and the payload/gate stay byte-identical
+  // to pre-engagement behavior.
+  const slackBotUserId = resolveSlackBotUserId();
+  let engagement: { mentionsBot: boolean; mentionsOtherUsers: boolean } | null = null;
+
+  if (slackBotUserId) {
+    const mentionedIds = extractMentionedUserIds(event.text);
+    const mentionsBot = mentionedIds.includes(slackBotUserId);
+    const mentionsOtherUsers = mentionedIds.some((id) => id !== slackBotUserId);
+    const isDM = event.channel_type === "im";
+    engagement = { mentionsBot, mentionsOtherUsers };
+
+    if (!mentionsBot && !isDM) {
+      const state = await getThreadEngagement({
+        channel: "slack",
+        conversationKey: thread.conversationKey,
+      });
+      const admitted = state !== null && state.dormantSince === null;
+      if (!admitted) {
+        // Dropped before any identity resolution or `channel_inbox` row —
+        // not an error, see this file's header doc.
+        return json({ ok: true, skipped: true });
+      }
+    }
+  } else {
+    warnMissingSlackBotUserIdOnce();
+  }
+
   // No display name: the Events API's message event carries only the raw
   // user id (`event.user`, e.g. "U061F7AUR") — resolving a real display name
   // needs a separate `users.info` Web API call, out of scope for v1's
@@ -151,16 +261,6 @@ export async function POST(request: NextRequest) {
   const anchor = identity.workspaceId
     ? { workspaceId: identity.workspaceId }
     : { chatIdentityId: identity.id };
-
-  // Thread-scoped conversation key + the thread eve must reply in. A channel
-  // message is its own conversation per THREAD (see lib/slack-thread.ts); a
-  // DM is exempt and byte-unchanged.
-  const thread = resolveSlackThread({
-    channel: event.channel,
-    ts: event.ts,
-    thread_ts: event.thread_ts,
-    channel_type: event.channel_type,
-  });
 
   const result = await enqueueChannelMessage({
     ...anchor,
@@ -191,6 +291,20 @@ export async function POST(request: NextRequest) {
       // payload stays byte-identical to today's. Task 3 reads this back to
       // know which thread to reply in.
       ...(thread.threadTs !== undefined ? { threadTs: thread.threadTs } : {}),
+      // The engagement envelope — omitted ENTIRELY (never written as
+      // `undefined`) when SLACK_BOT_USER_ID is unset, so the payload stays
+      // byte-identical to pre-engagement behavior (see this file's header
+      // doc's "FAIL TOWARD TODAY'S BEHAVIOR" section).
+      ...(engagement !== null
+        ? {
+            mentionsBot: engagement.mentionsBot,
+            mentionsOtherUsers: engagement.mentionsOtherUsers,
+            // Slack has no in-channel reply primitive — a Slack reply IS a
+            // thread, already captured by `threadTs` above.
+            repliesToMessageId: null,
+            repliesToBot: false,
+          }
+        : {}),
     },
   });
 

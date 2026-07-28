@@ -79,14 +79,17 @@ Success signals are still open, pull it back explicitly: "before we get into
 ## Pressure-test, operationally
 
 "Pressure-test it" isn't checkable on its own — that's how it got skipped in
-production. Apply it as two concrete checks on every answer to a Scope or
-Success-signal question:
+production. Apply two concrete checks:
 
-1. **Does it name an object, an action, and a result?** ("a reader can view a
-   published post at `/blog/:slug`" passes; "make it good" doesn't.)
-2. **Does it actually answer what was asked?** A reply like "all of the
-   above" to "give me a couple of concrete examples" answers nothing — it
-   names no examples.
+1. **For a Scope or Success-signal answer: does it name an object, an
+   action, and a result?** ("a reader can view a published post at
+   `/blog/:slug`" passes; "make it good" doesn't.)
+2. **For every answer, to every question: does it actually answer what was
+   asked?** This one isn't scoped to Scope/Success-signals — in the observed
+   session "the general public" (Users) and "for now we can use markdown"
+   (an implementation aside, not the Scope question actually asked) were
+   both accepted flat, same as "all of the above" to "give me a couple of
+   concrete examples" (which names no examples and answers nothing).
 
 If an answer fails either check, **re-ask ONCE**, more narrowly, before
 moving on. If the second answer still doesn't land, record the gap explicitly

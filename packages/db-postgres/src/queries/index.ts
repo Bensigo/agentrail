@@ -2448,6 +2448,9 @@ export {
   getJaceSessionById,
   latestTelegramSessionForChatIdentity,
   latestTelegramSessionForWorkspace,
+  setSessionBriefAnchor,
+  clearSessionBriefAnchor,
+  getSessionBriefAnchor,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   getApprovalByCallbackToken,
@@ -2693,6 +2696,7 @@ export {
 export {
   upsertBrief,
   getBriefBySlug,
+  getBriefById,
   listBriefs,
   searchBriefs,
   patchBriefItems,

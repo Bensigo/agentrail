@@ -1,0 +1,200 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+
+// Mocked db chain, same "mock the chain, control the terminal value" idiom as
+// jace_sessions.repin.test.ts — there is no live-DB harness in this package.
+vi.mock("../db.js", () => ({
+  db: {
+    update: vi.fn(),
+    select: vi.fn(),
+  },
+}));
+
+import { db } from "../db.js";
+import { jaceSessions } from "../schema/jace_sessions.js";
+import {
+  setSessionBriefAnchor,
+  clearSessionBriefAnchor,
+  getSessionBriefAnchor,
+} from "./jace_sessions.js";
+
+const mockDb = vi.mocked(db);
+
+/** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
+function makeChain(terminalMethod: string, finalValue: unknown) {
+  const chain: Record<string, unknown> = {};
+  const methods = ["where", "set", "from", "limit"];
+  for (const m of methods) {
+    chain[m] = vi.fn(() => chain);
+  }
+  chain[terminalMethod] = vi.fn(() => Promise.resolve(finalValue));
+  return chain;
+}
+
+const dialect = new PgDialect();
+function renderCondition(condition: unknown) {
+  return dialect.sqlToQuery(condition as Parameters<typeof dialect.sqlToQuery>[0]);
+}
+
+const SESSION_ID = "session-1";
+const BRIEF_ID = "brief-1";
+const OTHER_BRIEF_ID = "brief-2";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("setSessionBriefAnchor", () => {
+  it("updates jace_sessions and returns true on the happy path", async () => {
+    const updateChain = makeChain("returning", [{ id: SESSION_ID }]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await setSessionBriefAnchor(SESSION_ID, BRIEF_ID);
+
+    expect(result).toBe(true);
+    expect(mockDb.update).toHaveBeenCalledWith(jaceSessions);
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]).toMatchObject({ anchoredBriefId: BRIEF_ID });
+    expect(setCalls[0]?.[0]?.updatedAt).toBeInstanceOf(Date);
+    // Must not disturb the table's OWN (tenant) anchor pair.
+    expect(setCalls[0]?.[0]).not.toHaveProperty("workspaceId");
+    expect(setCalls[0]?.[0]).not.toHaveProperty("chatIdentityId");
+
+    const whereArgs = (updateChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(jaceSessions.id, SESSION_ID))
+    );
+  });
+
+  it("is idempotent: setting the same brief id twice succeeds both times with the same write shape", async () => {
+    const firstChain = makeChain("returning", [{ id: SESSION_ID }]);
+    const secondChain = makeChain("returning", [{ id: SESSION_ID }]);
+    mockDb.update = vi
+      .fn()
+      .mockReturnValueOnce(firstChain as ReturnType<typeof db.update>)
+      .mockReturnValueOnce(secondChain as ReturnType<typeof db.update>);
+
+    const first = await setSessionBriefAnchor(SESSION_ID, BRIEF_ID);
+    const second = await setSessionBriefAnchor(SESSION_ID, BRIEF_ID);
+
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+    expect(
+      (firstChain.set as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.anchoredBriefId
+    ).toBe(BRIEF_ID);
+    expect(
+      (secondChain.set as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.anchoredBriefId
+    ).toBe(BRIEF_ID);
+  });
+
+  it("re-setting to a DIFFERENT brief id overwrites the anchor rather than merging", async () => {
+    const updateChain = makeChain("returning", [{ id: SESSION_ID }]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    await setSessionBriefAnchor(SESSION_ID, OTHER_BRIEF_ID);
+
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]?.anchoredBriefId).toBe(OTHER_BRIEF_ID);
+  });
+
+  it("returns false when no session matches sessionId", async () => {
+    const updateChain = makeChain("returning", []);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await setSessionBriefAnchor("does-not-exist", BRIEF_ID);
+
+    expect(result).toBe(false);
+  });
+});
+
+describe("clearSessionBriefAnchor", () => {
+  it("nulls the anchor and returns true", async () => {
+    const updateChain = makeChain("returning", [{ id: SESSION_ID }]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await clearSessionBriefAnchor(SESSION_ID);
+
+    expect(result).toBe(true);
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]?.anchoredBriefId).toBeNull();
+    expect(setCalls[0]?.[0]).not.toHaveProperty("workspaceId");
+    expect(setCalls[0]?.[0]).not.toHaveProperty("chatIdentityId");
+  });
+
+  it("clearing an already-clear anchor is a harmless idempotent no-op", async () => {
+    const firstChain = makeChain("returning", [{ id: SESSION_ID }]);
+    const secondChain = makeChain("returning", [{ id: SESSION_ID }]);
+    mockDb.update = vi
+      .fn()
+      .mockReturnValueOnce(firstChain as ReturnType<typeof db.update>)
+      .mockReturnValueOnce(secondChain as ReturnType<typeof db.update>);
+
+    const first = await clearSessionBriefAnchor(SESSION_ID);
+    const second = await clearSessionBriefAnchor(SESSION_ID);
+
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+  });
+
+  it("returns false when no session matches sessionId", async () => {
+    const updateChain = makeChain("returning", []);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await clearSessionBriefAnchor("does-not-exist");
+
+    expect(result).toBe(false);
+  });
+});
+
+describe("getSessionBriefAnchor", () => {
+  it("returns the anchored brief id when one is set", async () => {
+    const selectChain = makeChain("limit", [{ anchoredBriefId: BRIEF_ID }]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getSessionBriefAnchor(SESSION_ID);
+
+    expect(result).toBe(BRIEF_ID);
+    expect(mockDb.select).toHaveBeenCalled();
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(jaceSessions.id, SESSION_ID))
+    );
+  });
+
+  it("returns null when the session has never had an anchor set", async () => {
+    const selectChain = makeChain("limit", [{ anchoredBriefId: null }]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getSessionBriefAnchor(SESSION_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null after the anchor was explicitly cleared", async () => {
+    const selectChain = makeChain("limit", [{ anchoredBriefId: null }]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getSessionBriefAnchor(SESSION_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the anchored brief was deleted (ON DELETE SET NULL already ran at the DB level — this just reads the resulting null)", async () => {
+    const selectChain = makeChain("limit", [{ anchoredBriefId: null }]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getSessionBriefAnchor(SESSION_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when sessionId matches no row at all", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getSessionBriefAnchor("does-not-exist");
+
+    expect(result).toBeNull();
+  });
+});

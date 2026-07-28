@@ -633,6 +633,85 @@ export async function latestTelegramSessionForWorkspace(
   return row ?? null;
 }
 
+// --- brief anchor (briefs design spec, "Retrieval — the whole mismatch
+// surface", step 3) --------------------------------------------------------
+//
+// A DIFFERENT kind of anchor from the workspace/chat-identity pair above —
+// see `schema/jace_sessions.ts`'s doc-comment for the full distinction. These
+// three functions are the whole read/write surface for it: `runner/briefs`
+// calls `setSessionBriefAnchor` once the human confirms which brief a
+// conversation is about, `getSessionBriefAnchor` on every later turn so
+// grill-me can skip straight to the anchored brief instead of re-asking, and
+// `clearSessionBriefAnchor` when a later message drifts enough that the human
+// needs to be asked again (design spec step 4) or explicitly starts a new
+// idea in the same conversation.
+
+/**
+ * Anchor a Jace session to a confirmed brief. Idempotent by construction: this
+ * is a plain `UPDATE ... WHERE id = $sessionId`, never an insert racing a
+ * unique constraint, so setting the SAME `briefId` twice (or re-anchoring to
+ * a different one) is just the same statement landing on the same row twice
+ * — no special-cased no-op branch is needed, and no upstream anchor
+ * (`workspaceId`/`chatIdentityId`) is ever touched by this write.
+ *
+ * Returns `true` when `sessionId` matched a row (whether or not the anchor
+ * value actually changed), `false` when no session exists with that id — the
+ * caller (the console route) is expected to have already resolved `sessionId`
+ * from a workspace-scoped `eveSessionId` lookup, so a `false` here signals a
+ * caller bug (a stale or foreign session id) rather than a legitimate,
+ * expected outcome.
+ */
+export async function setSessionBriefAnchor(
+  sessionId: string,
+  briefId: string
+): Promise<boolean> {
+  const result = await db
+    .update(jaceSessions)
+    .set({ anchoredBriefId: briefId, updatedAt: new Date() })
+    .where(eq(jaceSessions.id, sessionId))
+    .returning({ id: jaceSessions.id });
+  return result.length > 0;
+}
+
+/**
+ * Clear a session's brief anchor (design spec step 4: re-confirm on drift,
+ * rather than ever writing to the wrong brief). Same idempotency and
+ * no-disturbance-to-other-anchors reasoning as {@link setSessionBriefAnchor}:
+ * clearing an already-clear anchor is a harmless no-op UPDATE that still
+ * returns `true` as long as the session row exists.
+ */
+export async function clearSessionBriefAnchor(sessionId: string): Promise<boolean> {
+  const result = await db
+    .update(jaceSessions)
+    .set({ anchoredBriefId: null, updatedAt: new Date() })
+    .where(eq(jaceSessions.id, sessionId))
+    .returning({ id: jaceSessions.id });
+  return result.length > 0;
+}
+
+/**
+ * Read back a session's currently anchored brief id, or `null` when the
+ * session has none anchored — either because it was never set, it was
+ * explicitly cleared ({@link clearSessionBriefAnchor}), or the anchored brief
+ * was deleted (the column's `ON DELETE SET NULL` FK handles that case at the
+ * database level; this function just reads whatever value results). Returns
+ * `null` (not a thrown error) when `sessionId` itself doesn't resolve to a
+ * row — callers that need to distinguish "no session" from "session with no
+ * anchor" should resolve the session first via `getJaceSessionById`/
+ * `getJaceSessionByEveSessionId`, which already carry `anchoredBriefId` on
+ * the row and make this standalone read unnecessary for them; this exists for
+ * callers that only have a bare `sessionId` on hand and want the anchor
+ * alone.
+ */
+export async function getSessionBriefAnchor(sessionId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ anchoredBriefId: jaceSessions.anchoredBriefId })
+    .from(jaceSessions)
+    .where(eq(jaceSessions.id, sessionId))
+    .limit(1);
+  return row?.anchoredBriefId ?? null;
+}
+
 // --- approvals --------------------------------------------------------------
 
 export interface RecordApprovalRequestInput {

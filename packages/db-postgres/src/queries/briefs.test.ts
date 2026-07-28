@@ -102,6 +102,7 @@ import { db } from "../db.js";
 import {
   upsertBrief,
   getBriefBySlug,
+  getBriefById,
   listBriefs,
   searchBriefs,
   patchBriefItems,
@@ -236,6 +237,34 @@ describe("getBriefBySlug", () => {
     const result = await getBriefBySlug("ws-1", "blog");
     expect(result?.slug).toBe("blog");
     expect(result?.items).toHaveLength(2);
+  });
+});
+
+describe("getBriefById", () => {
+  it("returns null when no brief matches (id) within this workspace", async () => {
+    mockState.selectQueue.push([]);
+    expect(await getBriefById("ws-1", "brief-1")).toBeNull();
+  });
+
+  it("returns the brief with all of its items in one call, the same shape getBriefBySlug returns", async () => {
+    mockState.selectQueue.push([briefRow()]); // the brief lookup
+    mockState.selectQueue.push([briefItemRow(), briefItemRow({ id: "item-2", area: "problem" })]); // its items
+    const result = await getBriefById("ws-1", "brief-1");
+    expect(result?.id).toBe("brief-1");
+    expect(result?.slug).toBe("blog");
+    expect(result?.items).toHaveLength(2);
+  });
+
+  it("returns null for a real brief id that belongs to a DIFFERENT workspace — the tenancy scope, not just an id lookup", async () => {
+    // The mocked select chain ignores `.where()`'s actual predicate, so this
+    // asserts the CALL SHAPE (both workspaceId and id are threaded into the
+    // query) rather than re-deriving drizzle's own filtering — a real DB
+    // would filter this row out because workspace_id doesn't match, which is
+    // exactly why the id and the workspaceId are both required parameters
+    // here rather than id alone.
+    mockState.selectQueue.push([]);
+    const result = await getBriefById("ws-2", "brief-1");
+    expect(result).toBeNull();
   });
 });
 

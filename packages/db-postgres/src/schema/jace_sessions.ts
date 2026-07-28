@@ -12,6 +12,7 @@ import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 import { chatIdentities } from "./chat_identities.js";
 import { queueEntries } from "./queue_entries.js";
+import { briefs } from "./briefs.js";
 
 /**
  * Jace session map + pending approvals (spec §4).
@@ -35,6 +36,30 @@ import { queueEntries } from "./queue_entries.js";
  * still carries it); a future disconnect-identity flow must unbind or
  * archive those sessions first rather than rely on the cascade. (The cascade
  * choice itself is spec-mandated and stays.)
+ *
+ * `anchored_brief_id` is a SECOND, UNRELATED kind of anchor — do not conflate
+ * it with `workspace_id`/`chat_identity_id` above. Those anchor a session to
+ * a TENANT (which workspace does this conversation belong to, resolved once
+ * per conversation by the door). `anchored_brief_id` anchors a session to a
+ * PRODUCT IDEA (which `briefs` row is this conversation about) — the
+ * conversation→brief anchor from the briefs design spec
+ * (docs/superpowers/specs/2026-07-28-jace-briefs-durable-idea-understanding-design.md,
+ * "Retrieval — the whole mismatch surface", step 3). It exists to spend the
+ * one reliable disambiguation signal — a human confirming "continue the Blog
+ * brief, or start something new?" — exactly ONCE per conversation rather than
+ * re-asking every turn: grill-me shortlists candidate briefs by FTS, confirms
+ * with the human before the first write, then writes the confirmed brief id
+ * here so every later turn in the SAME conversation skips straight to it
+ * (re-confirming only on drift — a later message scoring poorly against the
+ * anchored brief). A session can be workspace-anchored with no brief anchor
+ * at all (most of Jace's traffic never touches briefs, and a brief anchor is
+ * meaningless without a workspace anchor already in place — a brief cannot
+ * exist without one, see `briefs.workspaceId`), so this column is nullable
+ * and carries no CHECK pairing it with anything else. `ON DELETE SET NULL`:
+ * a deleted brief must not orphan or break the owning conversation — the
+ * session row itself is still perfectly valid, it just loses its pinned idea
+ * and the next relevant turn re-runs the shortlist+confirm flow (steps 1-2)
+ * rather than the write ever failing or the session becoming unusable.
  *
  * `jace_approvals` records each Eve `waiting` inputRequest we surfaced to the
  * channel as approve/deny buttons. `callback_token` is a short random token the
@@ -77,6 +102,14 @@ export const jaceSessions = pgTable(
     conversationKey: text("conversation_key").notNull(),
     // Null until the first turn creates the Eve session.
     eveSessionId: text("eve_session_id"),
+    // Conversation → brief anchor (briefs design spec, "Retrieval" step 3) —
+    // a DIFFERENT kind of anchor from workspaceId/chatIdentityId above; see
+    // this table's doc-comment for the full distinction. Null for the vast
+    // majority of sessions (those that never touch briefs). ON DELETE SET
+    // NULL: a deleted brief must not orphan or break a live session.
+    anchoredBriefId: uuid("anchored_brief_id").references(() => briefs.id, {
+      onDelete: "set null",
+    }),
     status: text("status").notNull().default("active"), // active|waiting|closed
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .notNull()

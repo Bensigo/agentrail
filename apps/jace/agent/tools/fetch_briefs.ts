@@ -128,10 +128,16 @@ export default defineTool({
     "out-of-scope), `state` (open/resolved), `resolution` (set once " +
     "resolved), and `authority` ('human' items were edited by a person in " +
     "the console and are locked — save_brief cannot change them, so don't " +
-    "try). `openUnknownCount` on a fetched brief tells you, at a glance, " +
-    "whether grilling this idea is still open: any `open` item with " +
-    "`kind: unknown` blocks turning the brief into issues until it's " +
-    "answered or marked out-of-scope. A brief also carries `grounding` " +
+    "try). `mode='get'` and `mode='anchor'` also return `readiness` " +
+    "(`{ ready, blockingItems }`, computed server-side by the console's own " +
+    "computeBriefReadiness — RELAYED VERBATIM, never re-derive this " +
+    "yourself by scanning items): `ready: false` means at least one `open` " +
+    "item is still `kind: unknown`, and `blockingItems` names exactly which " +
+    "ones — report those, don't just say 'not ready'. This is the ONE fact " +
+    "`to-issues` actually gates on; `readiness` being absent from a result " +
+    "means it wasn't computed for this call (an older console, or a mode " +
+    "that never carries it — list/search don't), never that the brief is " +
+    "ready — absence is not clearance. A brief also carries `grounding` " +
     "(wiki page slugs + commit stamp read while settling it) — compare that " +
     "commit against the wiki's CURRENT commit on resume; if a cited page " +
     "has since recompiled, re-read it before proposing anything new and say " +

@@ -239,10 +239,15 @@ deferred, rejected, satisfied-elsewhere), `brief_authority` (human, jace).
 `computeBriefReadiness`.
 
 **Route**: `GET /api/v1/runner/briefs?eveSessionId=&mode=list|get|search&slug=&query=`
-and `POST /api/v1/runner/briefs` with `{ eveSessionId, slug, patch }`.
+and `POST /api/v1/runner/briefs` with
+`{ eveSessionId, slug, title?, openQuestion?, grounding?, items? }` — the same
+flattened shape as `save_brief` below (no `patch` wrapper, and no `status`;
+sending `status` is rejected with a 400).
 
 **Tools**: `fetch_briefs({ mode, slug?, query? })` and
-`save_brief({ slug, title?, status?, openQuestion?, grounding?, items? })`
+`save_brief({ slug, title?, openQuestion?, grounding?, items? })` (no `status`
+— that field is console-only, set by a human, and is rejected with a 400 if
+sent)
 where each item is `{ id?, area, statement, evidence?, kind, state?, resolution? }`.
 
 Two invariants live in the ROUTE, not in any prompt: items with

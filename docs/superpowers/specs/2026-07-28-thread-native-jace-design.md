@@ -29,9 +29,26 @@ scope. Nothing in either channel's path is thread-aware. Three concrete breaks:
 
 Slack is worse than Discord, and silently: `app/api/v1/connectors/slack/events/route.ts`
 captures no `thread_ts` at all, while `agent/channels/slack.ts` already posts
-through `channel.thread.post()`. eve's Slack `receive` derives its continuation
-token as `threadTs || crypto.randomUUID()`, so today **every Slack turn gets a
-random token and no Slack conversation can resume** — the Slack half of #1479.
+through `channel.thread.post()`. Verified against the compiled runtime
+(`apps/jace/.output/server/_libs/eve.mjs`, `slackChannel().receive`):
+
+```js
+let l = c || crypto.randomUUID();          // c = target.threadTs
+return n(t.message, { continuationToken: slackContinuationToken(i, l), ... });
+```
+
+With no `threadTs`, every `receive()` mints a fresh random token, so **no Slack
+turn from the console ever resumes** — the Slack half of #1479. Worse,
+`onThreadTsChanged` then re-keys the live session to *Jace's own first reply
+ts* (`rebuildSlackContext`), which is the Discord `anchor()` bug of #1479
+wearing a Slack hat.
+
+**Consequence for scope:** eve ties Slack continuity to threading — the
+continuation token *is* `channelId:threadTs`. There is no stable session for a
+Slack DM without threading every DM reply under one anchor message, which is
+pure downside in a DM (there is no channel to keep clean). So **DM continuity
+is not fixed by capturing `thread_ts`** and is out of scope here; see Out of
+scope.
 
 ## Design
 
@@ -180,7 +197,10 @@ pin from #1479 (`HOSTED_INBOUND_PINS_CONVERSATION` in `channel-dispatch.ts`)
 becomes the thread id.
 
 Slack's `threadTs` must be threaded through `hosted_inbound.core.mjs`'s target
-normalization, which closes the Slack half of #1479 as a direct consequence.
+normalization, which closes the Slack half of #1479 **for channel messages**.
+Slack DMs keep today's behavior exactly (no `threadTs` passed, conversation
+keyed on the channel) — see the Problem section on why DM continuity cannot
+ride this change.
 
 ### 6. Fallback — preserve the 2026-07-25 private-channel fix
 
@@ -220,10 +240,16 @@ thread-name derivation and truncation; the door gate's three branches.
 3. A message in that thread @-mentioning another user is **not** answered.
 4. `@Jace` in that thread re-engages it.
 5. The same four in Slack.
-6. A Slack conversation resumes across turns (proving #1479's Slack half).
+6. A Slack **channel** conversation resumes across turns (proving #1479's Slack
+   half): a second thread reply reaches a Jace that remembers the first.
 
 ## Out of scope
 
+- **Slack DM continuity.** eve's Slack continuation token is `channelId:threadTs`,
+  so a stable DM session requires threading every DM reply under one anchor
+  message. That needs its own design (a persisted per-DM anchor ts, or an eve
+  change) and must not be guessed at here. Slack DMs keep today's behavior:
+  each turn is its own session, exactly as now — no regression, no fix.
 - Private threads (Jace must be added as a thread member first) and forum
   channels.
 - Reactions, message edits, WhatsApp/iMessage equivalents.

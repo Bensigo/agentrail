@@ -59,12 +59,43 @@ test("imports its decisions from the pure core, not reimplementing them here", (
   assert.match(code, /postDiscordInboundMessage/);
 });
 
-test("tracks known thread ids from GUILD_CREATE/THREAD_CREATE/THREAD_DELETE, passed as screenMessage's isThread", () => {
+test("tracks known thread ids from GUILD_CREATE/THREAD_CREATE/THREAD_DELETE/THREAD_UPDATE, passed as screenMessage's isThread", () => {
   assert.match(code, /GatewayDispatchEvents\.GuildCreate/);
   assert.match(code, /GatewayDispatchEvents\.ThreadCreate/);
   assert.match(code, /GatewayDispatchEvents\.ThreadDelete/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadUpdate/);
   assert.match(code, /threadIds/);
   assert.match(code, /screenMessage\(message, state\.botUserId, isThread\)/);
+});
+
+test("THREAD_UPDATE is dispatched to a handler (revival from Discord's auto-archive is the gap this closes)", () => {
+  const dispatchMatch = code.match(/case GatewayDispatchEvents\.ThreadUpdate:[\s\S]*?return;/);
+  assert.ok(dispatchMatch, "no case for GatewayDispatchEvents.ThreadUpdate in the dispatch switch");
+});
+
+test("THREAD_UPDATE handler is wired both ways: adds the thread back when un-archived, removes it when archived", () => {
+  const fnMatch = code.match(/function updateThreadId\([\s\S]*?\n\}/);
+  assert.ok(fnMatch, "updateThreadId function not found");
+  const body = fnMatch[0];
+  assert.match(body, /archived/);
+  assert.match(body, /thread_metadata/);
+  assert.match(body, /state\.threadIds\.add\(id\)/, "must re-add the thread when it is not archived");
+  assert.match(body, /state\.threadIds\.delete\(id\)/, "must drop the thread when it is archived");
+});
+
+test("THREAD_UPDATE handler treats a missing thread_metadata as NOT archived (fails toward tracking, not toward silence)", () => {
+  const fnMatch = code.match(/function updateThreadId\([\s\S]*?\n\}/);
+  assert.ok(fnMatch, "updateThreadId function not found");
+  const body = fnMatch[0];
+  // The archived flag must be derived defensively (Boolean(...) guarding a
+  // typeof/nullish check on metadata), not a bare `thread.thread_metadata.archived`
+  // property access that would throw on a missing thread_metadata.
+  assert.doesNotMatch(
+    body,
+    /\bthread\.thread_metadata\.archived\b/,
+    "must not directly dereference thread_metadata.archived without a defensive guard",
+  );
+  assert.match(body, /metadata\s*&&\s*typeof metadata\s*===\s*["']object["']/);
 });
 
 test("does not request any additional Gateway intent beyond the four already documented (thread tracking rides the existing Guilds intent)", () => {

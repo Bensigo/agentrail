@@ -139,10 +139,15 @@ const INTENTS =
  * — a MESSAGE_CREATE payload carries no channel type of its own, so
  * `screenMessage`'s `isThread` argument has to come from somewhere. Seeded
  * from each GUILD_CREATE dispatch's `threads` array (sent once per guild on
- * connect/reconnect) and kept current by THREAD_CREATE/THREAD_DELETE — no
- * extra intent needed, since GUILDS (already requested) covers all three
- * dispatch types. In-memory only: a stale entry after a missed THREAD_DELETE
- * self-heals on the next reconnect's GUILD_CREATE reseed. */
+ * connect/reconnect) and kept current by
+ * THREAD_CREATE/THREAD_DELETE/THREAD_UPDATE — no extra intent needed, since
+ * GUILDS (already requested) covers all four dispatch types. THREAD_UPDATE
+ * matters because `threads` on GUILD_CREATE lists only ACTIVE threads:
+ * Discord auto-archives idle ones, and an archived thread is absent from
+ * that list. Someone posting in an archived thread un-archives it and emits
+ * THREAD_UPDATE (not THREAD_CREATE) — without handling it, that thread would
+ * never re-enter this set. In-memory only: a stale entry after a missed
+ * THREAD_DELETE self-heals on the next reconnect's GUILD_CREATE reseed. */
 const state = {
   started: false,
   connected: false,
@@ -294,6 +299,9 @@ export async function startDiscordGateway(env = process.env) {
         case GatewayDispatchEvents.ThreadDelete:
           removeThreadId(payload.d);
           return;
+        case GatewayDispatchEvents.ThreadUpdate:
+          updateThreadId(payload.d);
+          return;
         case GatewayDispatchEvents.MessageCreate:
           void handleMessageCreate(payload.d, env).catch((handlerErr) => {
             error("MESSAGE_CREATE handling failed:", handlerErr);
@@ -353,6 +361,40 @@ function removeThreadId(thread) {
   if (typeof id !== "string") return;
   state.threadIds.delete(id);
   debug(`THREAD_DELETE: stopped tracking thread ${id} (${state.threadIds.size} total).`);
+}
+
+/**
+ * THREAD_UPDATE covers the gap GUILD_CREATE's `threads` array leaves open —
+ * that array lists only ACTIVE threads, so an auto-archived thread is
+ * already absent from it before this listener ever sees one. When someone
+ * posts in an archived thread, Discord un-archives it and emits
+ * THREAD_UPDATE (never THREAD_CREATE, since the thread already exists) — add
+ * it back on that transition. Symmetrically, drop it once Discord marks it
+ * archived again: an archived thread receives no further messages until
+ * revived, and a revival emits another THREAD_UPDATE with `archived: false`
+ * that re-adds it, so this never loses a thread permanently.
+ *
+ * `thread_metadata` is read defensively: a missing/malformed field is
+ * treated as "not archived" so an unexpected payload shape fails toward
+ * keeping the thread tracked (and therefore answering inside it), never
+ * toward silently dropping it back into the mention-gated bucket — the exact
+ * failure mode this whole feature exists to close.
+ *
+ * @param {unknown} thread raw GatewayThreadUpdateDispatchData (an APIThreadChannel)
+ */
+function updateThreadId(thread) {
+  const id = thread && typeof thread === "object" ? thread.id : undefined;
+  if (typeof id !== "string") return;
+  const metadata =
+    thread && typeof thread === "object" ? /** @type {any} */ (thread).thread_metadata : undefined;
+  const archived = Boolean(metadata && typeof metadata === "object" && metadata.archived);
+  if (archived) {
+    state.threadIds.delete(id);
+    debug(`THREAD_UPDATE: thread ${id} archived — stopped tracking (${state.threadIds.size} total).`);
+  } else {
+    state.threadIds.add(id);
+    debug(`THREAD_UPDATE: thread ${id} active — now tracking (${state.threadIds.size} total).`);
+  }
 }
 
 /**

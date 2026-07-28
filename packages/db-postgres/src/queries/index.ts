@@ -2676,6 +2676,35 @@ export {
   type UpsertWikiPagesResult,
 } from "./wiki.js";
 
+// Briefs (spec PR #1487, docs/superpowers/specs/2026-07-28-jace-briefs-durable-idea-understanding-design.md):
+// `briefs`/`brief_items`/`brief_work_links` system of record — see
+// `queries/briefs.ts` for the full design (upsert-by-slug identity, delta
+// item patching with the human-authority invariant enforced at the store,
+// FTS search mirroring `searchWikiPages`, and the implementation-readiness
+// gate). `upsertBrief`/`getBriefBySlug`/`listBriefs`/`searchBriefs` back
+// `fetch_briefs`'s three modes; `patchBriefItems`/`setBriefStatus` back
+// `save_brief`; `linkBriefWork` records what `to-issues` produced;
+// `computeBriefReadiness` is the check `to-issues` must gate on instead of
+// the human-only `status` label.
+export {
+  upsertBrief,
+  getBriefBySlug,
+  listBriefs,
+  searchBriefs,
+  patchBriefItems,
+  setBriefStatus,
+  linkBriefWork,
+  computeBriefReadiness,
+  BRIEF_SEARCH_DEFAULT_LIMIT,
+  BRIEF_SEARCH_MAX_LIMIT,
+  type UpsertBriefInput,
+  type BriefWithItems,
+  type PatchBriefItemInput,
+  type PatchBriefItemsResult,
+  type LinkBriefWorkInput,
+  type BriefReadiness,
+} from "./briefs.js";
+
 // Stripe top-up (#1415, Wave 5 / epic #1257; #1290's deferred PR ③) — the
 // idempotent-per-Stripe-event-id wallet credit path. `creditTopUpForStripeEvent`
 // is the ONLY writer of a `top_up` wallet_transactions row; the webhook route

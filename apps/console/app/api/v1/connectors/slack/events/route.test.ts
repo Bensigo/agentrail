@@ -293,3 +293,84 @@ describe("POST /api/v1/connectors/slack/events — event_callback message (a str
     expect(await res.json()).toEqual({ ok: true });
   });
 });
+
+describe("POST /api/v1/connectors/slack/events — thread-scoped channel conversations", () => {
+  beforeEach(() => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  it("keys a top-level channel message on its own thread and carries threadTs", async () => {
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000000.000100",
+          },
+        })
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+      },
+    });
+  });
+
+  it("keys an in-thread reply on the thread root, not on the reply's own ts", async () => {
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000009.000900",
+            thread_ts: "1700000000.000100",
+          },
+        })
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+      },
+    });
+  });
+
+  it("leaves a DM byte-unchanged — channel-keyed, no threadTs key at all", async () => {
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    const arg = mockEnqueue.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(arg["conversationKey"]).toBe("D0PNCRP9N");
+    expect(arg["payload"]).not.toHaveProperty("threadTs");
+  });
+});

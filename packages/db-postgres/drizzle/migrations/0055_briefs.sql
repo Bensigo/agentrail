@@ -125,6 +125,16 @@ EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+-- Postgres does not index a foreign key automatically. These three are hit
+-- by getBriefBySlug/computeBriefReadiness ("WHERE brief_id = …") and by
+-- every cascade delete off briefs/brief_items — plain b-tree, no functional
+-- expression needed (mirrors run_outcomes_workspace_id_idx, 0038).
+CREATE INDEX IF NOT EXISTS "brief_items_brief_id_idx" ON "brief_items" USING btree ("brief_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brief_work_links_brief_id_idx" ON "brief_work_links" USING btree ("brief_id");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "brief_work_links_brief_item_id_idx" ON "brief_work_links" USING btree ("brief_item_id");
+--> statement-breakpoint
 -- FTS index backing searchBriefs' websearch_to_tsquery prefilter over
 -- title alone (mirrors wiki_pages_body_md_fts_idx, 0047): the two-argument
 -- to_tsvector('english', …) form is IMMUTABLE so it can be indexed, unlike

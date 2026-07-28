@@ -253,16 +253,34 @@ export interface PatchBriefItemsResult {
   upserted: BriefItem[];
   /** Ids of existing items whose write was dropped because their `authority` is `'human'`. */
   skippedHumanAuthorityIds: string[];
+  /**
+   * Items refused because they would land as `state: 'resolved'` +
+   * `resolution: 'deferred'` while `kind` is `'unknown'` — see this
+   * function's doc-comment. Existing items report their `id`; a brand-new
+   * item (no `id` yet to report) reports its `statement` instead.
+   */
+  skippedUnknownDeferredIds: string[];
 }
 
 /**
  * DELTA upsert of individual items — never a full-brief replace. `save_brief`
  * calls this once per turn with only the items that changed; every other
- * item on the brief is left exactly as it was. A full-replace write would
- * force a full regurgitation of the brief's entire item set on every turn
- * (expensive, and every regurgitation is a chance for the model to silently
- * drop something it forgot to re-send) — the delta shape is what makes
- * autosave-per-resolved-item affordable.
+ * item on the brief is left exactly as it was — at the ITEM level (no other
+ * row is touched) and, within a touched row, at the FIELD level too: any
+ * field a caller omits from `PatchBriefItemInput` (`evidence`, `state`,
+ * `resolution`) must carry its stored value forward unchanged, never reset
+ * to a default. Getting this wrong would mean a caller fixing a typo in an
+ * already-`resolved`/`implemented` item's wording — sending only
+ * `{id, area, statement, kind}` — silently flips it back to `state: 'open'`
+ * and wipes its `resolution` and `evidence`. Delivered work would resurrect
+ * into the current phase, an `unknown`-kind item would silently re-block
+ * `computeBriefReadiness`, and `evidence` — which exists specifically so
+ * understanding survives a context compaction with its reasoning intact —
+ * would be erased by an edit that never touched it. A full-replace write
+ * would also force a full regurgitation of the brief's entire item set on
+ * every turn (expensive, and every regurgitation is a chance for the model
+ * to silently drop something it forgot to re-send); the delta-at-both-levels
+ * shape is what makes autosave-per-resolved-item affordable AND safe.
  *
  * **Human-authority invariant, enforced HERE, not by caller convention**: any
  * existing item (matched by `id`) whose `authority` is `'human'` is silently
@@ -277,6 +295,19 @@ export interface PatchBriefItemsResult {
  * re-implement it; putting it here means it is impossible to bypass short
  * of a raw SQL write.
  *
+ * **`unknown` may never be `deferred`, enforced HERE alongside its twin
+ * above** — not split across this store and the console route, which would
+ * leave one invariant unbypassable and the other a caller convention that
+ * degrades the moment a caller forgets it. "We'll figure it out later" on
+ * something still marked `unknown` is exactly the gap a builder fills by
+ * inventing an acceptance criterion; the only two exits for an `unknown` are
+ * answering it (which re-kinds it `required`/`optional`) or marking it
+ * `out-of-scope`. This applies regardless of who is writing — including a
+ * human console edit, since an `unknown` isn't a requirement yet and there
+ * is nothing to schedule — so it is checked against the EFFECTIVE post-patch
+ * value (merging any field this call omits with the item's existing stored
+ * value), not just the fields this particular call happens to mention.
+ *
  * Items without an `id` are always inserted (there is nothing existing to
  * protect), and always land with `authority: 'jace'` — the schema default —
  * since only a human console edit is ever entitled to assert `'human'`.
@@ -285,43 +316,66 @@ export async function patchBriefItems(
   briefId: string,
   items: PatchBriefItemInput[]
 ): Promise<PatchBriefItemsResult> {
-  if (items.length === 0) return { upserted: [], skippedHumanAuthorityIds: [] };
+  if (items.length === 0)
+    return { upserted: [], skippedHumanAuthorityIds: [], skippedUnknownDeferredIds: [] };
 
   return db.transaction(async (tx) => {
     const idsToCheck = items.filter((i): i is PatchBriefItemInput & { id: string } => !!i.id).map((i) => i.id);
 
-    const existing =
+    const existingRows =
       idsToCheck.length > 0
         ? await tx
-            .select({ id: briefItems.id, authority: briefItems.authority })
+            .select({
+              id: briefItems.id,
+              authority: briefItems.authority,
+              state: briefItems.state,
+              resolution: briefItems.resolution,
+            })
             .from(briefItems)
             .where(and(eq(briefItems.briefId, briefId), inArray(briefItems.id, idsToCheck)))
         : [];
-    const humanAuthorityIds = new Set(
-      existing.filter((row) => row.authority === ("human" as BriefAuthority)).map((row) => row.id)
-    );
+    const existingById = new Map(existingRows.map((row) => [row.id, row]));
 
     const upserted: BriefItem[] = [];
     const skippedHumanAuthorityIds: string[] = [];
+    const skippedUnknownDeferredIds: string[] = [];
 
     for (const item of items) {
-      if (item.id && humanAuthorityIds.has(item.id)) {
+      const existing = item.id ? existingById.get(item.id) : undefined;
+
+      if (item.id && existing?.authority === ("human" as BriefAuthority)) {
         skippedHumanAuthorityIds.push(item.id);
         continue;
       }
 
+      // Effective post-patch state/resolution: whatever this call supplies,
+      // else whatever the row already has (else the schema default, for a
+      // brand-new item) — see the doc-comment above for why this must be
+      // the MERGED value, not just what this call happens to mention.
+      const effectiveState: BriefItemState = "state" in item ? item.state! : existing?.state ?? "open";
+      const effectiveResolution: BriefItemResolution | null =
+        "resolution" in item ? item.resolution! : existing?.resolution ?? null;
+      if (item.kind === "unknown" && effectiveState === "resolved" && effectiveResolution === "deferred") {
+        skippedUnknownDeferredIds.push(item.id ?? item.statement);
+        continue;
+      }
+
       if (item.id) {
+        const set: Record<string, unknown> = {
+          area: item.area,
+          statement: item.statement,
+          kind: item.kind,
+          updatedAt: new Date(),
+        };
+        // Only touch a field this call actually supplied — an omitted
+        // `evidence`/`state`/`resolution` must survive untouched.
+        if ("evidence" in item) set.evidence = item.evidence;
+        if ("state" in item) set.state = item.state;
+        if ("resolution" in item) set.resolution = item.resolution;
+
         const [row] = await tx
           .update(briefItems)
-          .set({
-            area: item.area,
-            statement: item.statement,
-            evidence: item.evidence ?? "",
-            kind: item.kind,
-            state: item.state ?? "open",
-            resolution: item.resolution ?? null,
-            updatedAt: new Date(),
-          })
+          .set(set)
           .where(and(eq(briefItems.id, item.id), eq(briefItems.briefId, briefId)))
           .returning();
         if (row) upserted.push(row);
@@ -342,7 +396,7 @@ export async function patchBriefItems(
       }
     }
 
-    return { upserted, skippedHumanAuthorityIds };
+    return { upserted, skippedHumanAuthorityIds, skippedUnknownDeferredIds };
   });
 }
 

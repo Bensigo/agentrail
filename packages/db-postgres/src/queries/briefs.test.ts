@@ -285,8 +285,122 @@ describe("patchBriefItems", () => {
 
   it("is a no-op for an empty batch", async () => {
     const result = await patchBriefItems("brief-1", []);
-    expect(result).toEqual({ upserted: [], skippedHumanAuthorityIds: [] });
+    expect(result).toEqual({
+      upserted: [],
+      skippedHumanAuthorityIds: [],
+      skippedUnknownDeferredIds: [],
+    });
     expect(mockState.insertCalls).toEqual([]);
+  });
+
+  // Regression: the UPDATE branch used to write `evidence`/`state`/
+  // `resolution` unconditionally (`item.state ?? "open"`, etc.), so a caller
+  // patching only the fields it actually changed silently reset every field
+  // it didn't mention. Concretely: fixing the wording of an item that is
+  // already `resolved` / `implemented` — sending only
+  // `{id, area, statement, kind}` — flipped it back to `state: 'open'` and
+  // wiped its `resolution` and `evidence`. This test fails against that old
+  // code (the captured `set` used to contain `state: 'open'`,
+  // `resolution: null`, `evidence: ''`) and passes now that the UPDATE
+  // branch only includes a field in `set` when the caller's patch actually
+  // supplied it.
+  it("leaves evidence/state/resolution untouched when a patch to an existing item omits them", async () => {
+    mockState.selectQueue.push([
+      { id: "item-1", authority: "jace", state: "resolved", resolution: "implemented" },
+    ]);
+    mockState.updateReturningQueue.push([
+      briefItemRow({
+        id: "item-1",
+        statement: "single approver model (typo fixed)",
+        state: "resolved",
+        resolution: "implemented",
+        evidence: "for now since am the only one approve to publish it",
+      }),
+    ]);
+
+    await patchBriefItems("brief-1", [
+      {
+        id: "item-1",
+        area: "scope",
+        statement: "single approver model (typo fixed)",
+        kind: "required",
+      },
+    ]);
+
+    const { set } = mockState.updateCalls[0]!;
+    expect(set).not.toHaveProperty("evidence");
+    expect(set).not.toHaveProperty("state");
+    expect(set).not.toHaveProperty("resolution");
+    expect(set.statement).toBe("single approver model (typo fixed)");
+  });
+
+  it("does still overwrite evidence/state/resolution when the caller explicitly supplies them", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open", resolution: null }]);
+    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1" })]);
+
+    await patchBriefItems("brief-1", [
+      {
+        id: "item-1",
+        area: "scope",
+        statement: "single approver model",
+        kind: "required",
+        evidence: "the human's own words",
+        state: "resolved",
+        resolution: "implemented",
+      },
+    ]);
+
+    const { set } = mockState.updateCalls[0]!;
+    expect(set.evidence).toBe("the human's own words");
+    expect(set.state).toBe("resolved");
+    expect(set.resolution).toBe("implemented");
+  });
+
+  it("refuses a NEW item that lands as kind: unknown + state: resolved + resolution: deferred — an unknown is never a requirement, so there is nothing to schedule", async () => {
+    const result = await patchBriefItems("brief-1", [
+      {
+        area: "scope",
+        statement: "something nobody has answered yet",
+        kind: "unknown",
+        state: "resolved",
+        resolution: "deferred",
+      },
+    ]);
+    expect(result.skippedUnknownDeferredIds).toEqual(["something nobody has answered yet"]);
+    expect(result.upserted).toEqual([]);
+    expect(mockState.insertCalls).toEqual([]);
+  });
+
+  it("refuses an EXISTING item where this patch's kind: unknown combines with the row's own already-stored state/resolution into the forbidden shape, even though this call never touched state/resolution", async () => {
+    mockState.selectQueue.push([
+      { id: "item-1", authority: "jace", state: "resolved", resolution: "deferred" },
+    ]);
+
+    const result = await patchBriefItems("brief-1", [
+      { id: "item-1", area: "scope", statement: "re-kinded to unknown", kind: "unknown" },
+    ]);
+
+    expect(result.skippedUnknownDeferredIds).toEqual(["item-1"]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("allows kind: unknown paired with resolution: satisfied-elsewhere — the pinned contract forbids only the specific (unknown, resolved, deferred) combination, not every resolution on an unknown item", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open", resolution: null }]);
+    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1", kind: "unknown" })]);
+
+    const result = await patchBriefItems("brief-1", [
+      {
+        id: "item-1",
+        area: "scope",
+        statement: "answered via docs, not code",
+        kind: "unknown",
+        state: "resolved",
+        resolution: "satisfied-elsewhere",
+      },
+    ]);
+
+    expect(result.skippedUnknownDeferredIds).toEqual([]);
+    expect(mockState.updateCalls).toHaveLength(1);
   });
 });
 

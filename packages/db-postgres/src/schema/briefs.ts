@@ -7,6 +7,7 @@ import {
   timestamp,
   pgEnum,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { workspaces } from "./workspaces.js";
 import { repositories } from "./repositories.js";
@@ -180,33 +181,43 @@ export type NewBrief = typeof briefs.$inferInsert;
  * shipped) falls out of one row shape rather than a second reporting layer
  * over free text.
  */
-export const briefItems = pgTable("brief_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  briefId: uuid("brief_id")
-    .notNull()
-    .references(() => briefs.id, { onDelete: "cascade" }),
-  area: briefAreaEnum("area").notNull(),
-  statement: text("statement").notNull(),
-  // The human's own words that settled this item, verbatim — not the
-  // normalized `statement`. After a context compaction Jace has the brief
-  // and nothing else; a paraphrase loses the *why* and the next turn
-  // re-asks a settled question. "for now since am the only one approve to
-  // publish it" carries more on resume than "single approver model."
-  evidence: text("evidence").notNull().default(""),
-  kind: briefItemKindEnum("kind").notNull(),
-  state: briefItemStateEnum("state").notNull().default("open"),
-  // NULLABLE, set only alongside state = 'resolved'. See the comment on
-  // briefItemResolutionEnum above for why this is a separate field from
-  // `state` rather than folded into it.
-  resolution: briefItemResolutionEnum("resolution"),
-  // Who asserted this item. Defaults to 'jace' because most items originate
-  // from the grill conversation; a human console edit flips this to
-  // 'human', which is what locks the item against `patchBriefItems` (see
-  // that function's doc-comment for the enforcement, not just the label).
-  authority: briefAuthorityEnum("authority").notNull().default("jace"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const briefItems = pgTable(
+  "brief_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    briefId: uuid("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    area: briefAreaEnum("area").notNull(),
+    statement: text("statement").notNull(),
+    // The human's own words that settled this item, verbatim — not the
+    // normalized `statement`. After a context compaction Jace has the brief
+    // and nothing else; a paraphrase loses the *why* and the next turn
+    // re-asks a settled question. "for now since am the only one approve to
+    // publish it" carries more on resume than "single approver model."
+    evidence: text("evidence").notNull().default(""),
+    kind: briefItemKindEnum("kind").notNull(),
+    state: briefItemStateEnum("state").notNull().default("open"),
+    // NULLABLE, set only alongside state = 'resolved'. See the comment on
+    // briefItemResolutionEnum above for why this is a separate field from
+    // `state` rather than folded into it.
+    resolution: briefItemResolutionEnum("resolution"),
+    // Who asserted this item. Defaults to 'jace' because most items originate
+    // from the grill conversation; a human console edit flips this to
+    // 'human', which is what locks the item against `patchBriefItems` (see
+    // that function's doc-comment for the enforcement, not just the label).
+    authority: briefAuthorityEnum("authority").notNull().default("jace"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Postgres does not index a foreign key automatically. This column is
+    // hit by every cascade delete off `briefs` AND by `getBriefBySlug` /
+    // `computeBriefReadiness`'s `WHERE brief_id = …` — both on the hot path
+    // of a live grill conversation, so this is not a someday-optimize index.
+    briefIdIdx: index("brief_items_brief_id_idx").on(t.briefId),
+  })
+);
 
 export type BriefItem = typeof briefItems.$inferSelect;
 export type NewBriefItem = typeof briefItems.$inferInsert;
@@ -230,23 +241,33 @@ export type BriefWorkLinkRole = (typeof briefWorkLinkRoleEnum.enumValues)[number
  * slices at it as Parent — this table only needs to record that shape, not
  * invent a new one.
  */
-export const briefWorkLinks = pgTable("brief_work_links", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  briefId: uuid("brief_id")
-    .notNull()
-    .references(() => briefs.id, { onDelete: "cascade" }),
-  briefItemId: uuid("brief_item_id").references(() => briefItems.id, {
-    onDelete: "set null",
-  }),
-  // Not an FK to `repositories` — the linked issue may live in a repo this
-  // workspace hasn't connected as a `repositories` row (e.g. the epic-parent
-  // repo differs from a slice's target repo). Free-form "owner/name", same
-  // shape GitHub issue references use elsewhere in this codebase.
-  repo: text("repo").notNull(),
-  issueNumber: integer("issue_number").notNull(),
-  role: briefWorkLinkRoleEnum("role").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const briefWorkLinks = pgTable(
+  "brief_work_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    briefId: uuid("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    briefItemId: uuid("brief_item_id").references(() => briefItems.id, {
+      onDelete: "set null",
+    }),
+    // Not an FK to `repositories` — the linked issue may live in a repo this
+    // workspace hasn't connected as a `repositories` row (e.g. the epic-parent
+    // repo differs from a slice's target repo). Free-form "owner/name", same
+    // shape GitHub issue references use elsewhere in this codebase.
+    repo: text("repo").notNull(),
+    issueNumber: integer("issue_number").notNull(),
+    role: briefWorkLinkRoleEnum("role").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Same reasoning as `brief_items_brief_id_idx`: unindexed FKs mean both
+    // the `briefs`/`brief_items` cascade deletes AND "what shipped for this
+    // idea" lookups walk a sequential scan of this table.
+    briefIdIdx: index("brief_work_links_brief_id_idx").on(t.briefId),
+    briefItemIdIdx: index("brief_work_links_brief_item_id_idx").on(t.briefItemId),
+  })
+);
 
 export type BriefWorkLink = typeof briefWorkLinks.$inferSelect;
 export type NewBriefWorkLink = typeof briefWorkLinks.$inferInsert;

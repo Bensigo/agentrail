@@ -736,4 +736,10 @@ Expected: the two turns share one row with one `eve_session_id`. Two rows means 
 
 **Type consistency.** `resolveSlackThread` / `SlackThreadEvent` / `SlackThreadTarget` (Task 1) are used under those exact names in Task 2. The payload field is `threadTs` in Tasks 2, 3, and 4; the wire target field is `threadTs` in Tasks 3 and 4. The Slack event field is snake_case `thread_ts` at the door only (Task 2), converted at the `resolveSlackThread` boundary.
 
-**Known risk.** Task 2 changes `conversationKey` for Slack channel messages, which orphans any in-flight channel-keyed Slack session exactly once. Given no Slack channel conversation can currently resume at all, there is nothing live to orphan — but do not port this key change to Telegram, whose sessions do resume.
+**Known risk — CORRECTED after the whole-branch review.** Task 2 changes `conversationKey` for Slack channel messages. The original note here claimed "there is nothing live to orphan, since no Slack channel conversation can currently resume at all." That is true of the **eve session** and **false of the workspace pin**, which lives in `jace_sessions` and does resume today: `resolveConversationWorkspace` looks the pin up by `(channel, conversationKey)` alone, so after deploy every existing Slack channel pinned under `<channel>` is dead. Consequences by identity:
+
+- 1 reachable workspace → silent per-thread re-pin; invisible to the user, but one `jace_sessions` row per thread from now on.
+- 0 reachable → the intro/onboarding flow restarts in each new thread.
+- 2+ reachable → **was a hard loop** until the final-review fix: the workspace picker posted flat in the channel while the conversation was keyed to the thread, so the user's flat reply landed on a *new* unpinned key and got asked again forever. Fixed by threading the console's own Slack system sends (`sendSystemChannelMessage` → `sendSystemSlackMessage` → `sendSlackChannelMessage` now carry `thread_ts`).
+
+Do not port this key change to Telegram, whose sessions do resume.

@@ -18,6 +18,7 @@ import {
   MessageCircle,
   MessageSquare,
   Target,
+  FileText,
 } from "lucide-react";
 
 export interface NavItem {
@@ -107,6 +108,14 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // category as Costs/Budget (spend/model economics), so it lands here.
     { label: "Model selection", href: "model-selection", icon: Cpu },
     { label: "Memory", href: "memory", icon: Brain },
+    // Briefs (spec PR #1487/#1489) — Jace's durable, editable understanding
+    // of ONE product idea; a third compiled/elicited store alongside Memory
+    // (interaction history) and Wiki (codebase knowledge) below, same
+    // "read+edit here, not via CLI/chat" category. Never flag-gated in the
+    // nav (no rollout flag exists for this feature — it ships with the v1
+    // pinned contract), same posture as Wiki's own "never flag-gated in the
+    // nav itself" comment just below.
+    { label: "Briefs", href: "briefs", icon: FileText },
     // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
     // are compiled/advisory knowledge stores read-only from the console, the
     // Wiki about the codebase, Memory about interaction history (CONTEXT.md's

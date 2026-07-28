@@ -463,6 +463,180 @@ export async function linkBriefWork(input: LinkBriefWorkInput): Promise<BriefWor
   return row!;
 }
 
+export interface UpdateBriefItemAsHumanInput {
+  area?: BriefArea;
+  statement?: string;
+  evidence?: string;
+  kind?: BriefItemKind;
+  state?: BriefItemState;
+  resolution?: BriefItemResolution | null;
+}
+
+export interface UpdateBriefItemAsHumanResult {
+  /** The updated row, or `null` if the item doesn't exist under this brief, or the write was refused. */
+  item: BriefItem | null;
+  /** True when this call was refused because the EFFECTIVE post-patch value (merging this call's fields with whatever the row already has) would land as `kind: 'unknown'` while `state: 'resolved'` — see `patchBriefItems`' doc-comment for why that combination is never legal, for anyone. */
+  refusedUnknownResolved: boolean;
+}
+
+/**
+ * The console's human-edit write path — the counterpart `patchBriefItems`
+ * does not provide (design spec, "Human edits win, enforced at the route":
+ * an `authority: 'human'` item is locked against `patchBriefItems`, which is
+ * correct for Jace's write path, but it also means, read literally, there is
+ * no way for a HUMAN to edit that same item a second time — the first
+ * console edit sets `authority: 'human'`, and `patchBriefItems` skips every
+ * write to it forever after, including the human's own next correction).
+ * This function is that missing second write path: it is the ONLY function
+ * in this file entitled to assert `authority: 'human'`, and unlike
+ * `patchBriefItems` it is allowed to overwrite a row that is ALREADY
+ * `authority: 'human'` — overwriting a human item is the entire point of a
+ * human re-editing their own prior correction, not a bug to guard against.
+ *
+ * Two things are copied verbatim from `patchBriefItems`' update branch, on
+ * purpose, not reinvented:
+ *
+ * - **Partial-patch semantics.** `fields` only touches the columns the
+ *   caller actually supplies (checked via `"x" in fields`, not `!==
+ *   undefined`, so an explicit `resolution: null` is still honored as
+ *   "supplied"); anything omitted is left exactly as stored. Getting this
+ *   wrong here would be the identical bug `patchBriefItems`' own regression
+ *   test guards against: a human fixing a typo in `statement` alone must not
+ *   silently reset `state`/`resolution`/`evidence` to defaults.
+ * - **The unknown-may-never-resolve invariant.** A human is not exempt from
+ *   it — an `unknown` item is not a requirement yet, so there is nothing for
+ *   ANYONE to resolve, human included; the only legitimate way to clear an
+ *   `unknown` is to re-kind it first. This is checked against the EFFECTIVE
+ *   post-patch value (`fields.kind ?? existing.kind` combined with
+ *   `fields.state ?? existing.state`), exactly like `patchBriefItems`, so a
+ *   patch that only changes `kind` to `'unknown'` on a row already
+ *   `state: 'resolved'` is caught too, not just a patch that names both
+ *   fields at once.
+ *
+ * Returns `{ item: null, refusedUnknownResolved: false }` when `itemId`
+ * doesn't resolve to a row under `briefId` (wrong id, or an id from a
+ * different brief — the caller, the console route, is expected to have
+ * already resolved `briefId` from a workspace-scoped slug lookup, but this
+ * function re-checks the (`id`, `briefId`) pair itself rather than trusting
+ * the caller, the same defensive posture `patchBriefItems` takes with its
+ * own `and(eq(id), eq(briefId))` predicate).
+ */
+export async function updateBriefItemAsHuman(
+  briefId: string,
+  itemId: string,
+  fields: UpdateBriefItemAsHumanInput
+): Promise<UpdateBriefItemAsHumanResult> {
+  const [existing] = await db
+    .select({ kind: briefItems.kind, state: briefItems.state })
+    .from(briefItems)
+    .where(and(eq(briefItems.id, itemId), eq(briefItems.briefId, briefId)))
+    .limit(1);
+
+  if (!existing) return { item: null, refusedUnknownResolved: false };
+
+  // Effective post-patch value — see doc-comment above for why this must be
+  // the MERGED value, not just whatever this particular call happens to name.
+  const effectiveKind: BriefItemKind = "kind" in fields ? fields.kind! : existing.kind;
+  const effectiveState: BriefItemState = "state" in fields ? fields.state! : existing.state;
+  if (effectiveKind === "unknown" && effectiveState === "resolved") {
+    return { item: null, refusedUnknownResolved: true };
+  }
+
+  const set: Record<string, unknown> = { authority: "human", updatedAt: new Date() };
+  if ("area" in fields) set.area = fields.area;
+  if ("statement" in fields) set.statement = fields.statement;
+  if ("evidence" in fields) set.evidence = fields.evidence;
+  if ("kind" in fields) set.kind = fields.kind;
+  if ("state" in fields) set.state = fields.state;
+  if ("resolution" in fields) set.resolution = fields.resolution;
+
+  const [row] = await db
+    .update(briefItems)
+    .set(set)
+    .where(and(eq(briefItems.id, itemId), eq(briefItems.briefId, briefId)))
+    .returning();
+
+  return { item: row ?? null, refusedUnknownResolved: false };
+}
+
+export interface CreateBriefItemAsHumanInput {
+  area: BriefArea;
+  statement: string;
+  evidence?: string;
+  kind: BriefItemKind;
+  state?: BriefItemState;
+  resolution?: BriefItemResolution | null;
+}
+
+export interface CreateBriefItemAsHumanResult {
+  item: BriefItem | null;
+  /** See `updateBriefItemAsHuman`'s twin field — a brand-new item can land
+   * as `kind: 'unknown'` + `state: 'resolved'` just as easily as an edited
+   * one, and the invariant is total: there is nothing to resolve on an item
+   * nobody has answered yet, whether it's new or old. */
+  refusedUnknownResolved: boolean;
+}
+
+/**
+ * Create a brand-new, human-authored item directly from the console — e.g.
+ * a human adds a constraint Jace never asked about, rather than correcting
+ * one Jace already wrote. Kept as its own function (not a third mode bolted
+ * onto `updateBriefItemAsHuman`) because "insert" and "update-in-place" have
+ * no shared row to merge against — an insert has no `existing` to check
+ * partial-patch semantics against, only the unknown-may-never-resolve gate,
+ * which is why this function's version of that check is a plain `input.kind
+ * === "unknown" && (input.state ?? "open") === "resolved"` rather than the
+ * merge `updateBriefItemAsHuman` needs.
+ */
+export async function createBriefItemAsHuman(
+  briefId: string,
+  input: CreateBriefItemAsHumanInput
+): Promise<CreateBriefItemAsHumanResult> {
+  const state: BriefItemState = input.state ?? "open";
+  if (input.kind === "unknown" && state === "resolved") {
+    return { item: null, refusedUnknownResolved: true };
+  }
+
+  const [row] = await db
+    .insert(briefItems)
+    .values({
+      briefId,
+      area: input.area,
+      statement: input.statement,
+      evidence: input.evidence ?? "",
+      kind: input.kind,
+      state,
+      resolution: input.resolution ?? null,
+      authority: "human",
+    })
+    .returning();
+
+  return { item: row ?? null, refusedUnknownResolved: false };
+}
+
+/**
+ * Delete a brief item outright — the one bypass the design spec names
+ * explicitly for the readiness gate ("Deleting the item is the only bypass,
+ * and it is visible", design spec "Readiness gate") and, more generally, how
+ * a human removes an item Jace was simply wrong to add in the first place
+ * (as opposed to `kind: 'out-of-scope'`, which keeps the item as a visible
+ * decision). Deliberately NOT restricted to `authority: 'jace'` rows: a
+ * human is entitled to delete their own prior human-authored item too (e.g.
+ * they added a duplicate), and restricting deletion by authority would just
+ * invite the same "human correction gets silently blocked" complaint this
+ * whole file exists to avoid — deletion is not a content overwrite, there is
+ * no stale content left behind to protect. Scoped to `(id, briefId)`, same
+ * defensive pair as every other item write in this file, so a caller can
+ * never delete an item belonging to a different brief.
+ */
+export async function deleteBriefItem(briefId: string, itemId: string): Promise<boolean> {
+  const rows = await db
+    .delete(briefItems)
+    .where(and(eq(briefItems.id, itemId), eq(briefItems.briefId, briefId)))
+    .returning({ id: briefItems.id });
+  return rows.length > 0;
+}
+
 export interface BriefReadiness {
   ready: boolean;
   /** The `open` + `unknown` items causing `ready: false` — so a caller (`to-issues`) can explain the refusal by naming the actual gaps, not just say "not ready". */

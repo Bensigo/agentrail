@@ -6,6 +6,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  index,
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -114,6 +115,33 @@ export const jaceSessions = pgTable(
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-native-jace-design.md).
+     *
+     * NULL = Jace is engaged in this thread (or it is not a thread at all).
+     * Non-null = Jace bowed out at this instant and stays quiet until someone
+     * mentions it again. Only the DORMANT state is stored: "never engaged" is
+     * the absence of this row, and "engaged" is this row with the latch clear,
+     * so neither needs a column. Dormant is irreducible because it is set by a
+     * message that produces NO turn and NO `channel_inbox` row — nothing else
+     * in the system observes it.
+     */
+    engagementDormantSince: timestamp("engagement_dormant_since", {
+      withTimezone: true,
+    }),
+    /**
+     * The platform user id whose message last engaged this thread. A message
+     * from anyone else, carrying no mention of Jace, is a speaker change and
+     * bows Jace out — the structural proxy for the owner's "a thread is
+     * one-on-one" rule, since "unrelated" is semantic and a per-message model
+     * call was rejected.
+     *
+     * NOT derivable: `channel_inbox` is a work QUEUE (rows are claimed,
+     * completed and pruned), so it is no durable record of who Jace last
+     * answered. Never used for attribution — that stays on the turn's own
+     * chat identity.
+     */
+    engagedSpeakerId: text("engaged_speaker_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -135,6 +163,15 @@ export const jaceSessions = pgTable(
     )
       .on(t.channel, t.conversationKey)
       .where(sql`${t.workspaceId} IS NULL`),
+    // The door's engagement gate looks up by (channel, conversation_key) with
+    // NO workspace in hand. `jace_sessions_conversation_unique` leads with
+    // workspace_id (unusable here) and `jace_sessions_intro_conversation_idx`
+    // is partial (workspace_id IS NULL), so it covers intro rows only —
+    // without this index the gate seq-scans for every graduated session.
+    channelConversationIdx: index("jace_sessions_channel_conversation_idx").on(
+      t.channel,
+      t.conversationKey
+    ),
     workspaceOrIdentityCheck: check(
       "jace_sessions_workspace_or_identity_check",
       sql`${t.workspaceId} IS NOT NULL OR ${t.chatIdentityId} IS NOT NULL`

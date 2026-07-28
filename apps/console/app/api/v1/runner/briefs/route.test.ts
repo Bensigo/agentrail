@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   getBriefBySlug: vi.fn(),
+  getBriefById: vi.fn(),
   listBriefs: vi.fn(),
   searchBriefs: vi.fn(),
   upsertBrief: vi.fn(),
@@ -16,6 +17,7 @@ import { GET, POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   getBriefBySlug,
+  getBriefById,
   listBriefs,
   searchBriefs,
   upsertBrief,
@@ -26,6 +28,7 @@ import {
 
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockGetBriefBySlug = vi.mocked(getBriefBySlug);
+const mockGetBriefById = vi.mocked(getBriefById);
 const mockListBriefs = vi.mocked(listBriefs);
 const mockSearchBriefs = vi.mocked(searchBriefs);
 const mockUpsertBrief = vi.mocked(upsertBrief);
@@ -100,6 +103,7 @@ beforeEach(() => {
     anchoredBriefId: null,
   } as never);
   mockGetBriefBySlug.mockResolvedValue(EXISTING_BRIEF as never);
+  mockGetBriefById.mockResolvedValue(EXISTING_BRIEF as never);
   mockListBriefs.mockResolvedValue([EXISTING_BRIEF] as never);
   mockSearchBriefs.mockResolvedValue([EXISTING_BRIEF] as never);
   mockUpsertBrief.mockResolvedValue(EXISTING_BRIEF as never);
@@ -255,21 +259,85 @@ describe("GET /api/v1/runner/briefs", () => {
       expect(body.anchor).toBeNull();
     });
 
-    it("returns the anchored brief id read straight off the session row (no extra query)", async () => {
+    it("skips the getBriefById lookup entirely when there's no anchor (no wasted query)", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: null,
+      } as never);
+      await GET(getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" }));
+      expect(mockGetBriefById).not.toHaveBeenCalled();
+    });
+
+    it("returns the FULL anchored brief — the same shape mode=get returns — not just an id, so resume needs no follow-up call", async () => {
       mockGetSession.mockResolvedValue({
         id: SESSION_ID,
         workspaceId: WS,
         anchoredBriefId: BRIEF_ID,
       } as never);
+      const anchoredBriefWithItems = {
+        ...EXISTING_BRIEF,
+        items: [
+          {
+            id: "item-1",
+            briefId: BRIEF_ID,
+            area: "scope",
+            statement: "single approver for now",
+            evidence: "for now since am the only one approve to publish it",
+            kind: "required",
+            state: "open",
+            resolution: null,
+            authority: "jace",
+            createdAt: new Date("2026-07-27T00:00:00Z"),
+            updatedAt: new Date("2026-07-27T00:00:00Z"),
+          },
+        ],
+      };
+      mockGetBriefById.mockResolvedValue(anchoredBriefWithItems as never);
+
       const res = await GET(
         getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
       );
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.anchor).toEqual({ briefId: BRIEF_ID });
-      // No brief-table read needed to answer "what's the anchor".
-      expect(mockGetBriefBySlug).not.toHaveBeenCalled();
-      expect(mockListBriefs).not.toHaveBeenCalled();
+      expect(mockGetBriefById).toHaveBeenCalledWith(WS, BRIEF_ID);
+      // The whole point: items, openQuestion, grounding all present WITHOUT
+      // a follow-up call — resume needs to act on this immediately.
+      expect(body.anchor.brief.slug).toBe(SLUG);
+      expect(body.anchor.brief.openQuestion).toBe("");
+      expect(body.anchor.brief.grounding).toEqual({
+        wikiPageSlugs: [],
+        memoryItemIds: [],
+        commitSha: null,
+      });
+      expect(body.anchor.brief.items).toHaveLength(1);
+      expect(body.anchor.brief.items[0].statement).toBe("single approver for now");
+    });
+
+    it("returns null (not an error) when the anchored brief no longer resolves — e.g. it was deleted", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: BRIEF_ID,
+      } as never);
+      mockGetBriefById.mockResolvedValue(null);
+      const res = await GET(
+        getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.anchor).toBeNull();
+    });
+
+    it("scopes the lookup to the caller's OWN workspace, never another tenant's", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: BRIEF_ID,
+      } as never);
+      await GET(getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" }));
+      expect(mockGetBriefById).toHaveBeenCalledWith(WS, BRIEF_ID);
+      expect(mockGetBriefById).not.toHaveBeenCalledWith(OTHER_WS, BRIEF_ID);
     });
 
     it("404s the same as every other mode when there's no session", async () => {
@@ -278,6 +346,19 @@ describe("GET /api/v1/runner/briefs", () => {
         getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
       );
       expect(res.status).toBe(404);
+    });
+
+    it("502 when getBriefById throws", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: BRIEF_ID,
+      } as never);
+      mockGetBriefById.mockRejectedValue(new Error("pg down"));
+      const res = await GET(
+        getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
+      );
+      expect(res.status).toBe(502);
     });
   });
 });
@@ -700,6 +781,85 @@ describe("POST /api/v1/runner/briefs", () => {
       mockClearAnchor.mockRejectedValue(new Error("pg down"));
       const res = await POST(postReq({ ...validBody, anchor: false }));
       expect(res.status).toBe(502);
+    });
+
+    it("clears BEFORE the upsert, not after — the write order the design spec calls for", async () => {
+      const callOrder: string[] = [];
+      mockClearAnchor.mockImplementation(async () => {
+        callOrder.push("clear");
+        return true;
+      });
+      mockUpsertBrief.mockImplementation(async () => {
+        callOrder.push("upsert");
+        return EXISTING_BRIEF as never;
+      });
+
+      await POST(postReq({ ...validBody, anchor: false }));
+
+      expect(callOrder).toEqual(["clear", "upsert"]);
+    });
+
+    describe("pure anchor: false clear — no slug at all (design spec step 4: re-confirm on drift, nothing to write yet)", () => {
+      it("200 with anchor: null from a body carrying ONLY eveSessionId and anchor: false — no slug required", async () => {
+        const res = await POST(postReq({ eveSessionId: EVE_SESSION_ID, anchor: false }));
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.anchor).toBeNull();
+        expect(mockClearAnchor).toHaveBeenCalledWith(SESSION_ID);
+      });
+
+      it("never touches upsertBrief or patchBriefItems for a slug-less clear", async () => {
+        await POST(postReq({ eveSessionId: EVE_SESSION_ID, anchor: false }));
+        expect(mockUpsertBrief).not.toHaveBeenCalled();
+        expect(mockPatchBriefItems).not.toHaveBeenCalled();
+      });
+
+      it("still resolves the session and 404s exactly like every other call when there's no session", async () => {
+        mockGetSession.mockResolvedValue(null);
+        const res = await POST(postReq({ eveSessionId: EVE_SESSION_ID, anchor: false }));
+        expect(res.status).toBe(404);
+        expect(mockClearAnchor).not.toHaveBeenCalled();
+      });
+
+      it("400 when content fields are sent alongside a slug-less anchor: false — never silently dropped", async () => {
+        const res = await POST(
+          postReq({
+            eveSessionId: EVE_SESSION_ID,
+            anchor: false,
+            items: [{ area: "problem", statement: "orphaned content", kind: "required" }],
+          })
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toMatch(/slug is required/i);
+        expect(mockClearAnchor).not.toHaveBeenCalled();
+        expect(mockUpsertBrief).not.toHaveBeenCalled();
+      });
+
+      it("400 when title is sent alongside a slug-less anchor: false", async () => {
+        const res = await POST(
+          postReq({ eveSessionId: EVE_SESSION_ID, anchor: false, title: "Orphaned" })
+        );
+        expect(res.status).toBe(400);
+        expect(mockClearAnchor).not.toHaveBeenCalled();
+      });
+
+      it("502 when clearSessionBriefAnchor throws on the slug-less path", async () => {
+        mockClearAnchor.mockRejectedValue(new Error("pg down"));
+        const res = await POST(postReq({ eveSessionId: EVE_SESSION_ID, anchor: false }));
+        expect(res.status).toBe(502);
+      });
+
+      it("re-anchoring to a different brief (anchor: true with a new slug) is unaffected — the common path still requires and uses slug", async () => {
+        const res = await POST(
+          postReq({ eveSessionId: EVE_SESSION_ID, slug: "changelog", title: "Changelog", anchor: true })
+        );
+        expect(res.status).toBe(200);
+        expect(mockUpsertBrief).toHaveBeenCalledWith(
+          expect.objectContaining({ slug: "changelog", title: "Changelog" })
+        );
+        expect(mockSetAnchor).toHaveBeenCalledWith(SESSION_ID, BRIEF_ID);
+      });
     });
   });
 });

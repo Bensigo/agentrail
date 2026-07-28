@@ -2696,6 +2696,7 @@ export {
 export {
   upsertBrief,
   getBriefBySlug,
+  getBriefById,
   listBriefs,
   searchBriefs,
   patchBriefItems,

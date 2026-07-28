@@ -150,6 +150,36 @@ export async function getBriefBySlug(
 }
 
 /**
+ * Same shape as {@link getBriefBySlug}, keyed by `id` instead of `slug` — the
+ * lookup `runner/briefs`' `mode=anchor` needs: `jace_sessions.anchoredBriefId`
+ * stores a brief ID (not a slug, since it's set from an already-resolved
+ * `Brief` row, not caller input — see `schema/jace_sessions.ts`'s anchor
+ * doc-comment), so resuming a conversation from its anchor has no slug to
+ * look up BY. Scoped to `(workspaceId, id)`, same tenancy posture as every
+ * other lookup in this file, even though in practice an anchor can only ever
+ * have been set to a brief already resolved within that same workspace (see
+ * `runner/briefs` route's own doc-comment on the anchor's tenancy boundary) —
+ * this scope is what makes that guarantee enforceable at the read site too,
+ * not just assumed from how the write path behaves. Null when no brief
+ * matches this `(workspaceId, id)` pair, e.g. the anchored brief was deleted
+ * out from under a stale anchor read racing the cascade, or `id` belongs to
+ * a different workspace entirely.
+ */
+export async function getBriefById(
+  workspaceId: string,
+  id: string
+): Promise<BriefWithItems | null> {
+  const [brief] = await db
+    .select()
+    .from(briefs)
+    .where(and(eq(briefs.workspaceId, workspaceId), eq(briefs.id, id)))
+    .limit(1);
+  if (!brief) return null;
+  const itemsByBriefId = await fetchItemsForBriefIds([brief.id]);
+  return { ...brief, items: itemsByBriefId.get(brief.id) ?? [] };
+}
+
+/**
  * The compact index — every brief for a workspace, WITHOUT items, ordered
  * most-recently-touched first. Backs `fetch_briefs(mode: "list")` and any
  * console index view; deliberately excludes items so listing a workspace's

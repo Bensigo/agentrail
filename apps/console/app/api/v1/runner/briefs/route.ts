@@ -50,11 +50,28 @@
  *            differs from the table's own workspace/chat-identity anchor
  *            pair). Needs no extra param: `getJaceSessionByEveSessionId`
  *            already returns the full session row, so its
- *            `anchoredBriefId` column is read directly off the SAME lookup
- *            every other mode already performs to resolve `workspaceId` —
- *            no second query. `{ anchor: null }` means this conversation has
- *            no brief anchored yet (the common case — most sessions never
- *            touch briefs), never an error.
+ *            `anchoredBriefId` is read directly off the SAME lookup every
+ *            other mode already performs to resolve `workspaceId` — no
+ *            second query to find OUT whether an anchor exists. When one
+ *            does, this mode returns the FULL anchored brief (`{ anchor: {
+ *            brief: BriefWithItems } }`) — the SAME shape `mode=get` returns
+ *            — not just an id: resume is the entire reason this anchor
+ *            exists, and every other mode on this route is keyed by SLUG
+ *            (`mode=get` takes a slug, `mode=search` takes a query), so a
+ *            bare brief id would leave the caller with no endpoint that
+ *            accepts it — `mode=list` plus a client-side scan for a matching
+ *            id, then a THIRD call by slug to actually get the content Jace
+ *            needs to resume (the items, the open question, the grounding).
+ *            One extra `getBriefById` fetch here removes that entire
+ *            round-trip chain. `{ anchor: null }` means this conversation
+ *            has no brief anchored yet (the common case — most sessions
+ *            never touch briefs), never an error; the SAME `null` covers the
+ *            (should-be-rare) case where the anchored brief was deleted out
+ *            from under the anchor — `getBriefById` returning nothing there
+ *            is indistinguishable from "never anchored" and needs no special
+ *            handling, since `ON DELETE SET NULL` means the FIRST read after
+ *            such a delete would already see a cleared `anchoredBriefId`
+ *            anyway.
  *
  * POST resolves the workspace, then `upsertBrief`s the brief-level fields,
  * then `patchBriefItems` for any `items` in the same call — the per-turn
@@ -65,30 +82,49 @@
  * supply one, and 400s only if there is neither a supplied title nor an
  * existing brief to inherit one from.
  *
- * **`anchor` (optional boolean) sets or clears this SESSION's brief anchor as
- * a follow-on to the SAME call's `upsertBrief`** — the write behind "confirm
- * before the first write, then don't re-ask" (design spec step 2→3): once the
- * human has confirmed which brief this conversation is about, the caller
- * anchors to it in the very call that (creates or) touches it, never as a
- * separate slug-less request. `anchor: true` anchors to THIS call's brief
- * (`brief.id`, the row `upsertBrief` just returned); `anchor: false` clears
- * any existing anchor outright; omitted (the default) leaves the anchor
- * completely untouched — a caller with nothing to say about the anchor never
- * has to think about it. Deliberately NOT a caller-supplied brief id or a
- * second `anchorSlug` field: **the only brief this route can ever anchor a
- * session to is one it just resolved through the SAME workspace-scoped
- * `slug` this call already validated** (`upsertBrief` upserts strictly within
- * `(workspaceId, slug)` — it can create a new row or touch an existing one,
- * but never in a workspace other than the caller's own resolved one). That
- * is the tenancy boundary the design spec calls out ("a brief slug that does
- * not resolve in the caller's workspace must not be anchorable") enforced
- * structurally rather than as a runtime check bolted on afterward — there is
- * no code path here that ever accepts a raw, caller-chosen brief id at all.
- * `brief.workspaceId !== workspaceId` is asserted anyway immediately before
- * anchoring (belt-and-suspenders, mirroring `repinConversationWorkspace`'s
- * own re-verified-even-though-structurally-guaranteed authority check) —
- * defense in depth against a hypothetical future store-layer bug, not a
- * check this route's own logic can actually fail today.
+ * **`anchor` (optional boolean) sets or clears this SESSION's brief anchor.**
+ * `anchor: true` anchors to THIS call's brief (`brief.id`, the row
+ * `upsertBrief` just returned) — the write behind "confirm before the first
+ * write, then don't re-ask" (design spec step 2→3): once the human has
+ * confirmed which brief this conversation is about, the caller anchors to it
+ * in the very call that (creates or) touches it, never as a separate
+ * slug-less request. Omitted (the default) leaves the anchor completely
+ * untouched — a caller with nothing to say about the anchor never has to
+ * think about it. `anchor: true` is deliberately NOT a caller-supplied brief
+ * id or a second `anchorSlug` field: **the only brief this route can ever
+ * anchor a session to is one it just resolved through the SAME
+ * workspace-scoped `slug` this call already validated** (`upsertBrief`
+ * upserts strictly within `(workspaceId, slug)` — it can create a new row or
+ * touch an existing one, but never in a workspace other than the caller's
+ * own resolved one). That is the tenancy boundary the design spec calls out
+ * ("a brief slug that does not resolve in the caller's workspace must not be
+ * anchorable") enforced structurally rather than as a runtime check bolted
+ * on afterward — there is no code path here that ever accepts a raw,
+ * caller-chosen brief id at all. `brief.workspaceId !== workspaceId` is
+ * asserted anyway immediately before anchoring (belt-and-suspenders,
+ * mirroring `repinConversationWorkspace`'s own
+ * re-verified-even-though-structurally-guaranteed authority check) — defense
+ * in depth against a hypothetical future store-layer bug, not a check this
+ * route's own logic can actually fail today.
+ *
+ * **`anchor: false` clears the anchor BEFORE any brief write is attempted,
+ * and `slug` is OPTIONAL when it is the only thing this call does.** Design
+ * spec step 4 (re-confirm on drift) fires exactly when Jace has NOTHING to
+ * write yet — the human says "actually this is a different idea" mid-
+ * conversation, and there is no slug or title on hand at all. A body of just
+ * `{ eveSessionId, anchor: false }` clears the anchor and returns
+ * `{ anchor: null }` without touching `upsertBrief`/`patchBriefItems` at all
+ * — gating the clear behind a successful brief write would force the caller
+ * to invent one just to unanchor, which is precisely the failure this
+ * capability exists to avoid. If `slug` (or `title`/`openQuestion`/
+ * `grounding`/`items`) IS present alongside `anchor: false`, the normal
+ * content write still runs (the re-anchor-to-a-different-brief case — POST a
+ * new `slug` with `anchor: true` — already worked and remains the common
+ * path; this paragraph is about the "not any brief" case specifically), but
+ * the anchor is still cleared first, before `upsertBrief` runs, not after.
+ * Sending content fields (`title`/`openQuestion`/`grounding`/non-empty
+ * `items`) WITHOUT a `slug` is rejected with a 400 rather than silently
+ * dropped — there is no brief for that content to attach to.
  *
  * **`status` is rejected outright, not silently dropped.** The design spec's
  * pinned v1 contract listed `status?` on `save_brief`'s payload — that line
@@ -128,20 +164,23 @@
  *
  * 400 — missing/blank `eveSessionId`, invalid `mode` (GET), a `get` with no
  * `slug` or a `search` with no `query` (GET), invalid JSON or a malformed
- * body (POST), `status` present in the POST body, or a POST with no title
- * and no existing brief to inherit one from. 401 — bad/missing shared
- * secret. 404 — no session, a session with no resolved workspace yet, (GET
- * mode=get) no brief at that slug, or (POST `anchor: true`) the resolved
- * brief does not belong to the caller's own workspace (see the `anchor`
- * paragraph above — unreachable through this route's own logic today, kept
- * as defense in depth). 422 — a credential-shaped value in `title`,
- * `openQuestion`, `grounding`, or an item's `statement`/`evidence`. 502 —
- * the backing store errored.
+ * body (POST), `status` present in the POST body, a POST with no title and
+ * no existing brief to inherit one from, a POST with no `slug` at all
+ * (unless the body is a pure `anchor: false` clear with no content fields —
+ * see the `anchor: false` paragraph above), or a POST with content fields but
+ * no `slug`. 401 — bad/missing shared secret. 404 — no session, a session
+ * with no resolved workspace yet, (GET mode=get) no brief at that slug, or
+ * (POST `anchor: true`) the resolved brief does not belong to the caller's
+ * own workspace (see the `anchor` paragraph above — unreachable through this
+ * route's own logic today, kept as defense in depth). 422 — a
+ * credential-shaped value in `title`, `openQuestion`, `grounding`, or an
+ * item's `statement`/`evidence`. 502 — the backing store errored.
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   getBriefBySlug,
+  getBriefById,
   listBriefs,
   searchBriefs,
   upsertBrief,
@@ -201,7 +240,12 @@ interface RawBriefItem {
 
 interface RawPostBody {
   eveSessionId: string;
-  slug: string;
+  // Optional ONLY for a pure `anchor: false` clear with no content fields —
+  // see this route's own "anchor: false" doc-comment paragraph. Every other
+  // call still requires it; that requirement is enforced in the handler
+  // (business logic), not here (shape validation), since whether `slug` is
+  // required depends on the OTHER fields present, not on its own type.
+  slug?: string;
   title?: string;
   openQuestion?: string;
   grounding?: BriefGrounding;
@@ -260,7 +304,13 @@ function isRawPostBody(v: unknown): v is RawPostBody {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
   if (typeof o.eveSessionId !== "string") return false;
-  if (typeof o.slug !== "string" || o.slug.trim().length === 0) return false;
+  // `slug` may be entirely omitted (a pure anchor: false clear); when
+  // present, it must still be a non-empty string. Whether it's REQUIRED for
+  // a given call is a business-logic decision (depends on `anchor`/content
+  // fields), checked in the handler, not here.
+  if (o.slug !== undefined && (typeof o.slug !== "string" || o.slug.trim().length === 0)) {
+    return false;
+  }
   if (o.title !== undefined && typeof o.title !== "string") return false;
   if (o.openQuestion !== undefined && typeof o.openQuestion !== "string") return false;
   if (o.grounding !== undefined && !isBriefGrounding(o.grounding)) return false;
@@ -313,18 +363,28 @@ export async function GET(request: NextRequest) {
   }
   const mode = modeParam as Mode;
 
-  if (mode === "anchor") {
-    // Read straight off the session row already fetched above —
-    // `anchoredBriefId` lives on `jace_sessions` itself, so resolving
-    // `workspaceId` and reading the anchor are the SAME lookup, not two.
-    return NextResponse.json({
-      schemaVersion: 1,
-      mode,
-      anchor: session.anchoredBriefId ? { briefId: session.anchoredBriefId } : null,
-    });
-  }
-
   try {
+    if (mode === "anchor") {
+      // `anchoredBriefId` is read straight off the session row already
+      // fetched above (no second query to find OUT whether an anchor
+      // exists) — but resume needs the CONTENT, not just an id no other
+      // mode on this route accepts (see this route's doc-comment's
+      // "anchor" GET-mode paragraph for why a bare id would leave the
+      // caller with no way to use it), so this fetches the full brief when
+      // one is anchored. Same `null` for "never anchored" and "anchored
+      // brief no longer exists" — see the doc-comment for why those two
+      // don't need to be distinguished.
+      if (!session.anchoredBriefId) {
+        return NextResponse.json({ schemaVersion: 1, mode, anchor: null });
+      }
+      const anchoredBrief = await getBriefById(workspaceId, session.anchoredBriefId);
+      return NextResponse.json({
+        schemaVersion: 1,
+        mode,
+        anchor: anchoredBrief ? { brief: anchoredBrief } : null,
+      });
+    }
+
     if (mode === "get") {
       const slug = request.nextUrl.searchParams.get("slug")?.trim() ?? "";
       if (!slug) {
@@ -386,7 +446,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Body must have eveSessionId (string), slug (non-empty string), and optional title/openQuestion (string), grounding ({wikiPageSlugs[], memoryItemIds[], commitSha}), items (array of {id?, area, statement, evidence?, kind, state?, resolution?}), anchor (boolean)",
+          "Body must have eveSessionId (string), and optional slug (non-empty string — required unless this is a pure anchor: false clear), title/openQuestion (string), grounding ({wikiPageSlugs[], memoryItemIds[], commitSha}), items (array of {id?, area, statement, evidence?, kind, state?, resolution?}), anchor (boolean)",
       },
       { status: 400 }
     );
@@ -403,8 +463,47 @@ export async function POST(request: NextRequest) {
   }
   const workspaceId = session.workspaceId;
 
-  const slug = raw.slug.trim();
+  const slugRaw = raw.slug?.trim() ?? "";
   const items = raw.items ?? [];
+
+  // Pure anchor-clear (design spec step 4 — re-confirm on drift): this fires
+  // exactly when Jace has NOTHING to write yet, e.g. the human says
+  // "actually this is a different idea" mid-conversation with no slug/title
+  // on hand at all. A body of just `{ eveSessionId, anchor: false }` clears
+  // the anchor and returns without ever touching `upsertBrief`/
+  // `patchBriefItems` — gating the clear behind a successful brief write
+  // would force the caller to invent one just to unanchor, which is exactly
+  // the failure this capability exists to avoid. Content fields sent
+  // WITHOUT a slug are rejected rather than silently dropped — there is no
+  // brief for them to attach to.
+  if (raw.anchor === false && !slugRaw) {
+    if (
+      raw.title !== undefined ||
+      raw.openQuestion !== undefined ||
+      raw.grounding !== undefined ||
+      items.length > 0
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "slug is required to write brief content — omit title/openQuestion/grounding/items to only clear the anchor",
+        },
+        { status: 400 }
+      );
+    }
+    try {
+      await clearSessionBriefAnchor(session.id);
+    } catch (err) {
+      console.error("[runner/briefs] anchor clear failed:", err);
+      return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });
+    }
+    return NextResponse.json({ anchor: null }, { status: 200 });
+  }
+
+  if (!slugRaw) {
+    return NextResponse.json({ error: "slug is required" }, { status: 400 });
+  }
+  const slug = slugRaw;
 
   // Write-side secret scan (mirrors ingest/memory-items, issue #1032): "Memory
   // content is injected verbatim into agent prompts, so a credential
@@ -469,6 +568,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // `anchor: false` clears BEFORE the upsert below, same ordering as the
+    // pure slug-less clear path above (never depend on a successful brief
+    // write to unanchor) — this branch is reached only when `slug` IS
+    // present (the slug-less case already returned above), i.e. "clear the
+    // anchor while ALSO writing to some other brief this turn."
+    if (raw.anchor === false) {
+      await clearSessionBriefAnchor(session.id);
+    }
+
     // `title` is required to CREATE a brief but omittable on a later call
     // that only touches items/openQuestion — inherit the existing title
     // rather than treating "omitted" as "clear it".
@@ -514,8 +622,7 @@ export async function POST(request: NextRequest) {
       await setSessionBriefAnchor(session.id, brief.id);
       anchor = { briefId: brief.id };
     } else if (raw.anchor === false) {
-      await clearSessionBriefAnchor(session.id);
-      anchor = null;
+      anchor = null; // already cleared above, before the upsert
     }
 
     return NextResponse.json(

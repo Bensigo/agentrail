@@ -7,6 +7,12 @@ import {
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { verifySlackSignature } from "../../../../../../lib/slack-bot";
 import { resolveSlackThread } from "../../../../../../lib/slack-thread";
+// Final whole-branch review, finding #3: `/connect` must reach the
+// dispatcher's own command interception (channel-dispatch.ts's `processRow`)
+// even from a dormant or never-engaged thread — reusing the SAME recognizer
+// the dispatcher uses rather than hand-rolling a second, driftable definition
+// of what `/connect` looks like.
+import { parseConnectCommand } from "../../../../../../lib/connect-command";
 
 /**
  * Shared Slack Events API webhook — the Slack half of the hosted Jace door
@@ -68,6 +74,17 @@ import { resolveSlackThread } from "../../../../../../lib/slack-thread";
  * engagement lookup, no new payload keys, logged once per process (see
  * `loggedMissingSlackBotUserId` below, styled after
  * `lib/guardrails/moderation.ts`'s missing-key notice).
+ *
+ * `/connect` IS THE ONE EXCEPTION (final whole-branch review, finding #3): it
+ * is admitted regardless of mention/DM/engagement state, exactly like a
+ * mention would be — see `connect-command.ts`'s own doc-comment, which
+ * promises `/connect` "never leaves a user with silence". A user typing it in
+ * a dormant or never-engaged thread must still reach `channel-dispatch.ts`'s
+ * command interception, which runs BEFORE workspace resolution and consumes
+ * the command without ever forwarding it to Jace. Recognition reuses
+ * `parseConnectCommand` verbatim (no second definition of what `/connect`
+ * looks like), so this gate and the dispatcher's own interception can never
+ * drift apart on what counts as the command.
  */
 
 const SIGNATURE_HEADER = "x-slack-signature";
@@ -228,7 +245,9 @@ export async function POST(request: NextRequest) {
     const isDM = event.channel_type === "im";
     engagement = { mentionsBot, mentionsOtherUsers };
 
-    if (!mentionsBot && !isDM) {
+    // /connect always gets through — see this file's header doc.
+    // /connect always gets through — see this file's header doc.
+    if (!mentionsBot && !isDM && !parseConnectCommand(event.text).isCommand) {
       const state = await getThreadEngagement({
         channel: "slack",
         conversationKey: thread.conversationKey,

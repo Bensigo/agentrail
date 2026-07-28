@@ -199,6 +199,55 @@ describe("admitDiscordChannelMessage", () => {
       expect(result).toEqual({ deduped: false, skipped: true });
       expect(mockEnqueue).not.toHaveBeenCalled();
     });
+
+    // Final whole-branch review, finding #3 (important): `/connect` must
+    // reach the dispatcher even from a thread Jace has gone quiet in (or
+    // never spoke in) — the one command whose own doc-comment promises it
+    // "never leaves a user with silence".
+    it("admits '/connect' in a DORMANT thread — never looks up engagement state, never drops it", async () => {
+      mockGetEngagement.mockResolvedValue({
+        dormantSince: new Date("2026-07-28T12:00:00Z"),
+        engagedSpeakerId: "555",
+      });
+
+      const result = await admitDiscordChannelMessage(
+        baseMessage({ threadId: "thread-1", mentionsBot: false, text: "/connect" })
+      );
+
+      expect(result).toEqual({ deduped: false, skipped: false });
+      expect(mockGetEngagement).not.toHaveBeenCalled();
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationKey: "thread-1" })
+      );
+    });
+
+    it("admits '/connect' in a thread with NO session row at all (never-engaged) — never looks up engagement state, never drops it", async () => {
+      mockGetEngagement.mockResolvedValue(null);
+
+      const result = await admitDiscordChannelMessage(
+        baseMessage({ threadId: "thread-1", mentionsBot: false, text: "/connect" })
+      );
+
+      expect(result).toEqual({ deduped: false, skipped: false });
+      expect(mockGetEngagement).not.toHaveBeenCalled();
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationKey: "thread-1" })
+      );
+    });
+
+    it("still drops an ORDINARY un-mentioned dormant-thread message that merely CONTAINS the word 'connect' — '/connect' recognition is exact, not substring", async () => {
+      mockGetEngagement.mockResolvedValue({
+        dormantSince: new Date("2026-07-28T12:00:00Z"),
+        engagedSpeakerId: "555",
+      });
+
+      const result = await admitDiscordChannelMessage(
+        baseMessage({ threadId: "thread-1", mentionsBot: false, text: "can you connect me to support?" })
+      );
+
+      expect(result).toEqual({ deduped: false, skipped: true });
+      expect(mockEnqueue).not.toHaveBeenCalled();
+    });
   });
 
   // --- envelope fields land in the stored payload ---

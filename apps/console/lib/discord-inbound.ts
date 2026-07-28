@@ -4,6 +4,12 @@ import {
   getThreadEngagement,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "./channel-dispatch";
+// Final whole-branch review, finding #3: `/connect` must reach the
+// dispatcher's own command interception (channel-dispatch.ts's `processRow`)
+// even from a dormant or never-engaged thread — reusing the SAME recognizer
+// the dispatcher uses rather than hand-rolling a second, driftable definition
+// of what `/connect` looks like. See `admitsPastEngagementGate` below.
+import { parseConnectCommand } from "./connect-command";
 
 /**
  * The ONE Discord inbound pipeline (issue — discord Gateway listener,
@@ -55,6 +61,18 @@ import { dispatchQueuedChannelMessages } from "./channel-dispatch";
  * is still null at read time), so the dispatcher can observe and persist
  * that transition — one skipped row per dormancy episode, not one per
  * ignored message thereafter.
+ *
+ * `/connect` is the one exception to all of the above (final whole-branch
+ * review, finding #3): it is admitted regardless of mention/thread/dormancy
+ * state, same as a mention would be. `/connect`'s own doc-comment
+ * (connect-command.ts) promises it "never leaves a user with silence" — a
+ * user typing it in a thread Jace has gone quiet in (or never spoke in) must
+ * still reach `channel-dispatch.ts`'s command interception, which runs
+ * BEFORE workspace resolution and consumes the command without ever
+ * forwarding it to Jace. Recognition reuses `parseConnectCommand` verbatim
+ * (no second definition of what `/connect` looks like), so this gate and the
+ * dispatcher's own interception can never drift apart on what counts as the
+ * command.
  */
 export interface DiscordInboundMessage {
   channelId: string;
@@ -104,9 +122,12 @@ export interface DiscordInboundResult {
 async function admitsPastEngagementGate(args: {
   threadId: string | null;
   mentionsBot: boolean;
+  text: string;
 }): Promise<boolean> {
   if (args.mentionsBot) return true;
   if (args.threadId === null) return true;
+  // /connect always gets through — see this file's header doc.
+  if (parseConnectCommand(args.text).isCommand) return true;
   const state = await getThreadEngagement({ channel: "discord", conversationKey: args.threadId });
   return state !== null && state.dormantSince === null;
 }
@@ -117,6 +138,7 @@ export async function admitDiscordChannelMessage(
   const admitted = await admitsPastEngagementGate({
     threadId: message.threadId,
     mentionsBot: message.mentionsBot,
+    text: message.text,
   });
   if (!admitted) {
     return { deduped: false, skipped: true };

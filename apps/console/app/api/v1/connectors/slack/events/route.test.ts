@@ -527,6 +527,46 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
+  // Final whole-branch review, finding #3 (important): `/connect` must reach
+  // the dispatcher even from a thread Jace has gone quiet in (or never spoke
+  // in) — the one command whose own doc-comment promises it "never leaves a
+  // user with silence".
+  it("admits '/connect' in a DORMANT thread — never looks up engagement state, never drops it", async () => {
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(req(channelMessageBody({ text: "/connect" })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits '/connect' in a thread with NO session row at all (never-engaged) — never looks up engagement state, never drops it", async () => {
+    mockGetEngagement.mockResolvedValue(null);
+
+    const res = await POST(req(channelMessageBody({ text: "/connect" })));
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("still drops an ORDINARY un-mentioned dormant-thread message that merely CONTAINS the word 'connect' — '/connect' recognition is exact, not substring", async () => {
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(req(channelMessageBody({ text: "can you connect me to support?" })));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, skipped: true });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
   it("carries mentionsBot/mentionsOtherUsers/repliesToMessageId/repliesToBot into the payload once configured", async () => {
     await POST(
       req(channelMessageBody({ text: `<@${BOT_ID}> hey <@U777> check this out` }))

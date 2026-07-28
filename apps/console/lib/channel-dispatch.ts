@@ -1262,6 +1262,80 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       applicationId: payload.applicationId,
     });
 
+    // --- thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-
+    // native-jace-design.md) — MUST run and persist BEFORE any guardrail
+    // notice can reach the channel (final whole-branch review, finding #2).
+    // The old order ran guardrails first: a bow-out message could still get
+    // "I cleansed your message..." posted into the thread on the very turn
+    // Jace was declining to speak, and the guardrail BLOCK path `return`ed
+    // before this block ever ran at all — silently skipping
+    // `setThreadEngagement`, so the dormant/engaged latch never updated on a
+    // blocked message. Moving the decision here means: a message that is NOT
+    // a turn produces zero channel output and still persists its `nextState`;
+    // a message that IS a turn falls through to the guardrail seam below
+    // completely unchanged — guardrail screening only ever runs on a message
+    // that will actually reach Eve, so its ordering relative to `runEveTurn`
+    // is untouched. Only "is this even a turn" moved earlier. Discord and
+    // Slack ONLY: telegram/console/iMessage never reach this block, so they
+    // stay byte-unchanged — no engagement lookup, no state write, no
+    // behavioral difference, and the guardrail seam right after this block
+    // runs exactly where it always has for them. (Console never reaches
+    // `processRow` at all — see `processConsoleRow`'s own doc-comment.)
+    if (row.channel === "discord" || row.channel === "slack") {
+      // Final whole-branch review, finding #1 (critical): Slack's door
+      // (connectors/slack/events/route.ts) omits the ENTIRE engagement
+      // envelope — no `mentionsBot` key at all — when `SLACK_BOT_USER_ID` is
+      // unset (see that file's own "FAIL TOWARD TODAY'S BEHAVIOR" doc). In
+      // that configuration `mentionsBot` can never resolve to `true`, so
+      // running `decideEngagement` here would trap every non-DM Slack
+      // message in `turn: false` FOREVER — permanent, silent muting, exactly
+      // the opposite of the stated invariant ("when SLACK_BOT_USER_ID is
+      // unset, Slack must behave exactly as it did before engagement
+      // existed"). `extractPayload` only ever sets `mentionsBot` on the
+      // payload when the door supplies an actual boolean (see its own
+      // doc-comment), so its absence here means "engagement is not
+      // configured for this row" — skip the decision entirely and let it run
+      // as a normal turn, same as before this feature existed. Discord's
+      // doors always write this key (never conditionally omitted — see
+      // discord-inbound.ts's own header doc), so this guard is a permanent
+      // no-op for Discord rows the current doors produce; it only matters for
+      // a pre-feature row still in flight, which degrades the same safe way.
+      const engagementConfigured = payload.mentionsBot !== undefined;
+      if (engagementConfigured) {
+        const inbound = buildThreadInbound(row.channel, payload, row.senderId);
+        const state = await getThreadEngagement({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+        });
+        const decision = decideEngagement({ inbound, state, now: new Date() });
+
+        logEngagementTransition({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          previous: state,
+          next: decision.nextState,
+          reason: decision.reason,
+        });
+
+        await setThreadEngagement({
+          channel: row.channel,
+          conversationKey: row.conversationKey,
+          dormantSince: decision.nextState.dormantSince,
+          engagedSpeakerId: decision.nextState.engagedSpeakerId,
+        });
+
+        if (!decision.turn) {
+          // Engagement declined the turn — COMPLETE, not fail: the row was
+          // handled correctly, Jace simply chose to stay quiet. Requeuing
+          // would just replay the same non-decision forever. No guardrail
+          // screening, no notice, no Eve turn: nothing about a message Jace
+          // never responds to needs to reach any of those seams.
+          await completeChannelMessage(row.id);
+          return "completed";
+        }
+      }
+    }
+
     // --- input guardrails: moderation / injection / PII, before any turn ---
     // Trust tier comes straight from the identity spine resolved above: no
     // workspace resolved means the 'intro' path — a stranger DMing the shared
@@ -1302,46 +1376,6 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
         payload.threadTs
       );
-    }
-
-    // --- thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-
-    // native-jace-design.md) — runs AFTER the guardrail seam above (a safety
-    // floor that must run on everything admitted) and BEFORE the Eve turn
-    // below (engagement then decides whether Jace speaks at all). Discord and
-    // Slack ONLY: telegram/console/iMessage never reach this block, so they
-    // stay byte-unchanged — no engagement lookup, no state write, no
-    // behavioral difference. (Console never reaches `processRow` at all —
-    // see `processConsoleRow`'s own doc-comment.)
-    if (row.channel === "discord" || row.channel === "slack") {
-      const inbound = buildThreadInbound(row.channel, payload, row.senderId);
-      const state = await getThreadEngagement({
-        channel: row.channel,
-        conversationKey: row.conversationKey,
-      });
-      const decision = decideEngagement({ inbound, state, now: new Date() });
-
-      logEngagementTransition({
-        channel: row.channel,
-        conversationKey: row.conversationKey,
-        previous: state,
-        next: decision.nextState,
-        reason: decision.reason,
-      });
-
-      await setThreadEngagement({
-        channel: row.channel,
-        conversationKey: row.conversationKey,
-        dormantSince: decision.nextState.dormantSince,
-        engagedSpeakerId: decision.nextState.engagedSpeakerId,
-      });
-
-      if (!decision.turn) {
-        // Engagement declined the turn — COMPLETE, not fail: the row was
-        // handled correctly, Jace simply chose to stay quiet. Requeuing
-        // would just replay the same non-decision forever.
-        await completeChannelMessage(row.id);
-        return "completed";
-      }
     }
 
     // The turn runs on the CLEANSED text, never `payload.text`.

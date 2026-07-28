@@ -288,7 +288,7 @@ describe("patchBriefItems", () => {
     expect(result).toEqual({
       upserted: [],
       skippedHumanAuthorityIds: [],
-      skippedUnknownDeferredIds: [],
+      skippedUnknownResolvedIds: [],
     });
     expect(mockState.insertCalls).toEqual([]);
   });
@@ -356,7 +356,13 @@ describe("patchBriefItems", () => {
     expect(set.resolution).toBe("implemented");
   });
 
-  it("refuses a NEW item that lands as kind: unknown + state: resolved + resolution: deferred — an unknown is never a requirement, so there is nothing to schedule", async () => {
+  // The rule is TOTAL over `state`, not keyed to `resolution: 'deferred'`
+  // specifically: an `unknown` item is not a requirement yet, so there is
+  // nothing to RESOLVE by any means. Every resolution value must be refused
+  // the same way — `deferred`, `rejected`, `satisfied-elsewhere`, even
+  // `implemented` — because each one is only coherent once the `kind` has
+  // already changed away from `unknown`.
+  it("refuses a NEW item that lands as kind: unknown + state: resolved (resolution: deferred) — an unknown is not a requirement yet, so there is nothing to resolve", async () => {
     const result = await patchBriefItems("brief-1", [
       {
         area: "scope",
@@ -366,27 +372,24 @@ describe("patchBriefItems", () => {
         resolution: "deferred",
       },
     ]);
-    expect(result.skippedUnknownDeferredIds).toEqual(["something nobody has answered yet"]);
+    expect(result.skippedUnknownResolvedIds).toEqual(["something nobody has answered yet"]);
     expect(result.upserted).toEqual([]);
     expect(mockState.insertCalls).toEqual([]);
   });
 
-  it("refuses an EXISTING item where this patch's kind: unknown combines with the row's own already-stored state/resolution into the forbidden shape, even though this call never touched state/resolution", async () => {
-    mockState.selectQueue.push([
-      { id: "item-1", authority: "jace", state: "resolved", resolution: "deferred" },
-    ]);
+  it("refuses an EXISTING item where this patch's kind: unknown combines with the row's own already-stored state: resolved, even though this call never touched state", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "resolved" }]);
 
     const result = await patchBriefItems("brief-1", [
       { id: "item-1", area: "scope", statement: "re-kinded to unknown", kind: "unknown" },
     ]);
 
-    expect(result.skippedUnknownDeferredIds).toEqual(["item-1"]);
+    expect(result.skippedUnknownResolvedIds).toEqual(["item-1"]);
     expect(mockState.updateCalls).toEqual([]);
   });
 
-  it("allows kind: unknown paired with resolution: satisfied-elsewhere — the pinned contract forbids only the specific (unknown, resolved, deferred) combination, not every resolution on an unknown item", async () => {
-    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open", resolution: null }]);
-    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1", kind: "unknown" })]);
+  it("refuses kind: unknown + resolution: satisfied-elsewhere — learning the answer means the kind should have changed first, not the resolution", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open" }]);
 
     const result = await patchBriefItems("brief-1", [
       {
@@ -399,8 +402,53 @@ describe("patchBriefItems", () => {
       },
     ]);
 
-    expect(result.skippedUnknownDeferredIds).toEqual([]);
+    expect(result.skippedUnknownResolvedIds).toEqual(["item-1"]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("refuses kind: unknown + resolution: rejected — 'rejected' is out-of-scope wearing a different hat, so the kind must change to out-of-scope, not the resolution", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open" }]);
+
+    const result = await patchBriefItems("brief-1", [
+      {
+        id: "item-1",
+        area: "scope",
+        statement: "decided against it",
+        kind: "unknown",
+        state: "resolved",
+        resolution: "rejected",
+      },
+    ]);
+
+    expect(result.skippedUnknownResolvedIds).toEqual(["item-1"]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  // The path that must NOT break: an unknown gets legitimately answered
+  // (kind flips to required/optional) and THEN resolves normally in the same
+  // or a later patch. Once `kind` is no longer `unknown`, `state: 'resolved'`
+  // is exactly the shape `computeBriefReadiness` expects to see.
+  it("allows an item to go from unknown to answered-and-resolved once its kind changes away from unknown", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", state: "open" }]);
+    mockState.updateReturningQueue.push([
+      briefItemRow({ id: "item-1", kind: "required", state: "resolved", resolution: "implemented" }),
+    ]);
+
+    const result = await patchBriefItems("brief-1", [
+      {
+        id: "item-1",
+        area: "scope",
+        statement: "single approver model",
+        kind: "required",
+        state: "resolved",
+        resolution: "implemented",
+      },
+    ]);
+
+    expect(result.skippedUnknownResolvedIds).toEqual([]);
     expect(mockState.updateCalls).toHaveLength(1);
+    expect(result.upserted[0]!.kind).toBe("required");
+    expect(result.upserted[0]!.state).toBe("resolved");
   });
 });
 

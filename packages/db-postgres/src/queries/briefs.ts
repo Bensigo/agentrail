@@ -254,12 +254,12 @@ export interface PatchBriefItemsResult {
   /** Ids of existing items whose write was dropped because their `authority` is `'human'`. */
   skippedHumanAuthorityIds: string[];
   /**
-   * Items refused because they would land as `state: 'resolved'` +
-   * `resolution: 'deferred'` while `kind` is `'unknown'` — see this
+   * Items refused because they would land as `kind: 'unknown'` while
+   * `state: 'resolved'` (with any resolution, or none) — see this
    * function's doc-comment. Existing items report their `id`; a brand-new
    * item (no `id` yet to report) reports its `statement` instead.
    */
-  skippedUnknownDeferredIds: string[];
+  skippedUnknownResolvedIds: string[];
 }
 
 /**
@@ -295,18 +295,31 @@ export interface PatchBriefItemsResult {
  * re-implement it; putting it here means it is impossible to bypass short
  * of a raw SQL write.
  *
- * **`unknown` may never be `deferred`, enforced HERE alongside its twin
- * above** — not split across this store and the console route, which would
- * leave one invariant unbypassable and the other a caller convention that
- * degrades the moment a caller forgets it. "We'll figure it out later" on
- * something still marked `unknown` is exactly the gap a builder fills by
- * inventing an acceptance criterion; the only two exits for an `unknown` are
- * answering it (which re-kinds it `required`/`optional`) or marking it
- * `out-of-scope`. This applies regardless of who is writing — including a
- * human console edit, since an `unknown` isn't a requirement yet and there
- * is nothing to schedule — so it is checked against the EFFECTIVE post-patch
- * value (merging any field this call omits with the item's existing stored
- * value), not just the fields this particular call happens to mention.
+ * **An `unknown` item may never be `resolved`, enforced HERE alongside its
+ * human-authority twin above** — not split across this store and the
+ * console route, which would leave one invariant unbypassable and the other
+ * a caller convention that degrades the moment a caller forgets it. The
+ * rule is deliberately total, not a list of forbidden resolutions: an
+ * `unknown` is not a requirement yet, so there is nothing to RESOLVE —
+ * resolving one is only ever possible by first changing its `kind`. Every
+ * specific case collapses under that lens rather than needing its own
+ * carve-out — you cannot mark something `implemented` you never answered;
+ * if it turned out to be `satisfied-elsewhere` then you learned the answer,
+ * so the `kind` should have changed to `required`/`optional` before it
+ * resolved; `rejected` is `out-of-scope` wearing a different hat. The only
+ * two legitimate exits for an `unknown` are answering it (which re-kinds it
+ * `required`/`optional`, after which it can resolve normally) or marking it
+ * `out-of-scope` (which needs no resolution at all). Phrasing the guard as
+ * "kind = unknown forbids state = resolved", not "kind = unknown forbids
+ * resolution = X", also means a future sixth resolution value is covered
+ * for free — nobody has to remember to add it to a forbidden list.
+ *
+ * This applies regardless of who is writing — including a human console
+ * edit — so it is checked against the EFFECTIVE post-patch value (merging
+ * any field this call omits with the item's existing stored value), not
+ * just the fields this particular call happens to mention: a patch that
+ * only changes `kind` to `unknown` on a row already `resolved` from an
+ * earlier write must be caught too.
  *
  * Items without an `id` are always inserted (there is nothing existing to
  * protect), and always land with `authority: 'jace'` — the schema default —
@@ -317,7 +330,7 @@ export async function patchBriefItems(
   items: PatchBriefItemInput[]
 ): Promise<PatchBriefItemsResult> {
   if (items.length === 0)
-    return { upserted: [], skippedHumanAuthorityIds: [], skippedUnknownDeferredIds: [] };
+    return { upserted: [], skippedHumanAuthorityIds: [], skippedUnknownResolvedIds: [] };
 
   return db.transaction(async (tx) => {
     const idsToCheck = items.filter((i): i is PatchBriefItemInput & { id: string } => !!i.id).map((i) => i.id);
@@ -329,7 +342,6 @@ export async function patchBriefItems(
               id: briefItems.id,
               authority: briefItems.authority,
               state: briefItems.state,
-              resolution: briefItems.resolution,
             })
             .from(briefItems)
             .where(and(eq(briefItems.briefId, briefId), inArray(briefItems.id, idsToCheck)))
@@ -338,7 +350,7 @@ export async function patchBriefItems(
 
     const upserted: BriefItem[] = [];
     const skippedHumanAuthorityIds: string[] = [];
-    const skippedUnknownDeferredIds: string[] = [];
+    const skippedUnknownResolvedIds: string[] = [];
 
     for (const item of items) {
       const existing = item.id ? existingById.get(item.id) : undefined;
@@ -348,15 +360,15 @@ export async function patchBriefItems(
         continue;
       }
 
-      // Effective post-patch state/resolution: whatever this call supplies,
-      // else whatever the row already has (else the schema default, for a
+      // Effective post-patch state: whatever this call supplies, else
+      // whatever the row already has (else the schema default, for a
       // brand-new item) — see the doc-comment above for why this must be
-      // the MERGED value, not just what this call happens to mention.
+      // the MERGED value, not just what this call happens to mention. The
+      // rule is total over `state`, not keyed to any particular
+      // `resolution` — an `unknown` has nothing to resolve, full stop.
       const effectiveState: BriefItemState = "state" in item ? item.state! : existing?.state ?? "open";
-      const effectiveResolution: BriefItemResolution | null =
-        "resolution" in item ? item.resolution! : existing?.resolution ?? null;
-      if (item.kind === "unknown" && effectiveState === "resolved" && effectiveResolution === "deferred") {
-        skippedUnknownDeferredIds.push(item.id ?? item.statement);
+      if (item.kind === "unknown" && effectiveState === "resolved") {
+        skippedUnknownResolvedIds.push(item.id ?? item.statement);
         continue;
       }
 
@@ -396,7 +408,7 @@ export async function patchBriefItems(
       }
     }
 
-    return { upserted, skippedHumanAuthorityIds, skippedUnknownDeferredIds };
+    return { upserted, skippedHumanAuthorityIds, skippedUnknownResolvedIds };
   });
 }
 

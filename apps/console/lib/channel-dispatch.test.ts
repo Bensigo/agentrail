@@ -23,6 +23,11 @@ vi.mock("@agentrail/db-postgres", () => ({
   // guardrails-design.md): the audit writer, and the console notice seam.
   recordGuardrailEvent: vi.fn(),
   appendJaceMessage: vi.fn(),
+  // Thread engagement (Task 6, spec: docs/superpowers/specs/2026-07-28-
+  // thread-native-jace-design.md): the dispatcher's own read/write of the
+  // latch, discord/slack only.
+  getThreadEngagement: vi.fn(),
+  setThreadEngagement: vi.fn(),
 }));
 
 // Stub ONLY the network-performing send; keep the REAL pure message
@@ -65,6 +70,8 @@ import {
   repinConversationWorkspace,
   recordGuardrailEvent,
   appendJaceMessage,
+  getThreadEngagement,
+  setThreadEngagement,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
@@ -90,6 +97,8 @@ const mockSetChatIdentityLinkToken = vi.mocked(setChatIdentityLinkToken);
 const mockRepin = vi.mocked(repinConversationWorkspace);
 const mockRecordGuardrailEvent = vi.mocked(recordGuardrailEvent);
 const mockAppendJaceMessage = vi.mocked(appendJaceMessage);
+const mockGetThreadEngagement = vi.mocked(getThreadEngagement);
+const mockSetThreadEngagement = vi.mocked(setThreadEngagement);
 
 const mockFetch = vi.fn();
 
@@ -153,6 +162,15 @@ beforeEach(() => {
   // Eve hosted-inbound call.
   mockRecordGuardrailEvent.mockResolvedValue({ recorded: true });
   mockAppendJaceMessage.mockResolvedValue({ id: "msg-1" } as never);
+  // Thread engagement: harmless default for the overwhelming majority of
+  // discord/slack tests that don't care about it — "no session row exists
+  // yet" combined with every existing fixture's payload carrying no
+  // threadId/threadTs (so `buildThreadInbound` derives `isDM: true`) means
+  // `decideEngagement` always returns `turn: true` for them, matching
+  // pre-Task-6 behavior exactly. See the "thread engagement" describe block
+  // below for the tests that override this.
+  mockGetThreadEngagement.mockResolvedValue(null);
+  mockSetThreadEngagement.mockResolvedValue(undefined);
 });
 
 describe("dispatchQueuedChannelMessages — loop shape", () => {
@@ -1697,6 +1715,13 @@ describe("dispatchQueuedChannelMessages — slack threadTs (#1479)", () => {
             text: "hello",
             fromId: "U1",
             threadTs: "1700000000.000100",
+            // Task 6: this row is now subject to the thread-engagement gate
+            // (no session exists for this thread — see the beforeEach
+            // default). `mentionsBot: true` makes this a legitimate turn
+            // (an explicit mention) so the test still exercises what it's
+            // actually about — the target's threadTs plumbing — rather than
+            // being incidentally blocked by the unrelated engagement gate.
+            mentionsBot: true,
           },
         })
       )
@@ -2001,5 +2026,263 @@ describe("dispatchQueuedChannelMessages — input guardrails", () => {
     // The turn still runs, on cleansed text.
     const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
     expect(body.message).toContain("[redacted:card]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thread engagement (Task 6, spec: docs/superpowers/specs/2026-07-28-
+// thread-native-jace-design.md) — the dispatcher runs `decideEngagement`
+// AFTER the input-guardrail seam and BEFORE `runEveTurn`, discord/slack ONLY.
+// Every fixture above this block uses a payload with no `threadId`/`threadTs`
+// key, which `buildThreadInbound` reads as `isDM: true` (the same proxy
+// `discord-inbound.ts`'s own gate uses, documented at length there) — so
+// those pre-existing tests are unaffected: a DM always gets a turn no matter
+// what `getThreadEngagement` returns.
+// ---------------------------------------------------------------------------
+describe("dispatchQueuedChannelMessages — thread engagement (Task 6)", () => {
+  const ENGAGED_BY_555 = { dormantSince: null, engagedSpeakerId: "555" };
+
+  beforeEach(() => {
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-engagement-1" } as never);
+  });
+
+  it("a bow-out (different sender, no mention, in an engaged thread) completes the row WITHOUT an Eve turn, and persists a non-null dormantSince", async () => {
+    mockGetThreadEngagement.mockResolvedValue(ENGAGED_BY_555);
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: {
+            chatId: "thread-1",
+            text: "anyway, about my vacation...",
+            threadId: "thread-1",
+            mentionsBot: false,
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "thread-1",
+    });
+    expect(mockSetThreadEngagement).toHaveBeenCalledTimes(1);
+    const call = mockSetThreadEngagement.mock.calls[0]![0];
+    expect(call).toMatchObject({
+      channel: "discord",
+      conversationKey: "thread-1",
+      engagedSpeakerId: "555",
+    });
+    expect(call.dormantSince).toBeInstanceOf(Date);
+    expect(call.dormantSince).not.toBeNull();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(mockFail).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("an engaged-speaker follow-up (same sender, no mention, in an engaged thread) DOES reach runEveTurn, and re-persists the still-engaged state", async () => {
+    mockGetThreadEngagement.mockResolvedValue(ENGAGED_BY_555);
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "555",
+          payload: {
+            chatId: "thread-1",
+            text: "what about the second option",
+            threadId: "thread-1",
+            mentionsBot: false,
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "thread-1",
+      dormantSince: null,
+      engagedSpeakerId: "555",
+    });
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("a mention on a dormant thread reactivates it (to the mentioner) and reaches runEveTurn", async () => {
+    const dormantSince = new Date("2026-07-28T12:00:00.000Z");
+    mockGetThreadEngagement.mockResolvedValue({ dormantSince, engagedSpeakerId: "555" });
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: {
+            chatId: "thread-1",
+            text: "hey @jace, are you still there?",
+            threadId: "thread-1",
+            mentionsBot: true,
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "thread-1",
+      dormantSince: null,
+      engagedSpeakerId: "666",
+    });
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("no session yet, no mention, in a thread: no turn, and the persisted state stays null/null (never-engaged, not dormant)", async () => {
+    mockGetThreadEngagement.mockResolvedValue(null);
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: {
+            chatId: "thread-1",
+            text: "hi everyone",
+            threadId: "thread-1",
+            mentionsBot: false,
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "thread-1",
+      dormantSince: null,
+      engagedSpeakerId: null,
+    });
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("logs exactly one 'entered dormant' line on the bow-out transition", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    mockGetThreadEngagement.mockResolvedValue(ENGAGED_BY_555);
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: { chatId: "thread-1", text: "off topic", threadId: "thread-1", mentionsBot: false },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const dormantLines = logSpy.mock.calls.filter((c) => String(c[0]).includes("entered dormant"));
+    expect(dormantLines).toHaveLength(1);
+    logSpy.mockRestore();
+  });
+
+  it("logs exactly one 'reactivated' line when a mention brings a dormant thread back", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const dormantSince = new Date("2026-07-28T12:00:00.000Z");
+    mockGetThreadEngagement.mockResolvedValue({ dormantSince, engagedSpeakerId: "555" });
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: { chatId: "thread-1", text: "@jace back please", threadId: "thread-1", mentionsBot: true },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const reactivatedLines = logSpy.mock.calls.filter((c) => String(c[0]).includes("reactivated"));
+    expect(reactivatedLines).toHaveLength(1);
+    logSpy.mockRestore();
+  });
+
+  it("never logs a transition line for a dormant thread absorbing another un-mentioned message (stays dormant — not a transition, and must not spam the logs)", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const dormantSince = new Date("2026-07-28T12:00:00.000Z");
+    mockGetThreadEngagement.mockResolvedValue({ dormantSince, engagedSpeakerId: "555" });
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "thread-1",
+          senderId: "666",
+          payload: { chatId: "thread-1", text: "still off topic", threadId: "thread-1", mentionsBot: false },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it("a Slack row runs the SAME engagement gate — an un-mentioned message from a different sender in an engaged thread bows out with no Eve turn", async () => {
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockGetThreadEngagement.mockResolvedValue({ dormantSince: null, engagedSpeakerId: "555" });
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({
+          conversationKey: "C123:1700000000.000100",
+          senderId: "U999",
+          payload: {
+            chatId: "C123",
+            text: "unrelated aside",
+            threadTs: "1700000000.000100",
+            mentionsBot: false,
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetThreadEngagement).toHaveBeenCalledWith({
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+    });
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      dormantSince: expect.any(Date),
+      engagedSpeakerId: "555",
+    });
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("a telegram row is completely unaffected — no engagement lookup, no state write", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hello jace" } }))
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockGetThreadEngagement).not.toHaveBeenCalled();
+    expect(mockSetThreadEngagement).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
   });
 });

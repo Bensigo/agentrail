@@ -200,6 +200,20 @@ describe("POST /api/v1/connectors/slack/events — bot-loop / noise guard", () =
     expect(res.status).toBe(200);
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
+
+  // Final whole-branch review, finding #2 (minor): a thread reply sent with
+  // Slack's "Also send to channel" checkbox carries subtype:
+  // "thread_broadcast" — a genuine human turn, not noise. It must be
+  // admitted while every OTHER subtype (edits, joins, deletions, ...) stays
+  // rejected, and a bot_id is still rejected regardless of subtype.
+  it("still ignores a thread_broadcast event that ALSO carries bot_id", async () => {
+    const res = await POST(
+      req(messageEventBody({ event: { subtype: "thread_broadcast", bot_id: "B123" } }))
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: true });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/v1/connectors/slack/events — event_callback message (a stranger DMing the app)", () => {
@@ -372,5 +386,41 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     const arg = mockEnqueue.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(arg["conversationKey"]).toBe("D0PNCRP9N");
     expect(arg["payload"]).not.toHaveProperty("threadTs");
+  });
+
+  // Final whole-branch review, finding #2 (minor): admit a thread_broadcast
+  // reply (Slack's "Also send to channel" checkbox) exactly like any other
+  // in-thread reply — same conversationKey (thread root), same threadTs.
+  it("admits a subtype: 'thread_broadcast' in-thread reply and enqueues it like a normal message", async () => {
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000009.000900",
+            thread_ts: "1700000000.000100",
+            subtype: "thread_broadcast",
+          },
+        })
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+      },
+    });
   });
 });

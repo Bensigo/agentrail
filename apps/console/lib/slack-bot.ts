@@ -72,11 +72,22 @@ export type SendResult = { ok: true } | { ok: false; error: string };
  * transport blip or a Slack-side rejection (Slack's Web API returns HTTP 200
  * with `{ ok: false, error }` on most failures, so BOTH the transport status
  * and the body's own `ok` flag are checked) surfaces as a typed failure.
+ *
+ * `threadTs`, when given, rides in as Slack's own `thread_ts` — final
+ * whole-branch review, finding #1: a channel conversation is thread-scoped
+ * (see channel-dispatch.ts's HOSTED_INBOUND_PINS_CONVERSATION doc-comment),
+ * so a console system send with no thread id would otherwise post FLAT in
+ * the channel, breaking the multi-workspace picker for anyone replying
+ * in-thread as instructed. When `threadTs` is omitted (a DM — deliberately
+ * unchanged, see slack-thread.ts), the request body carries NO `thread_ts`
+ * key at all, byte-identical to before this fix — never `thread_ts:
+ * undefined`.
  */
 export async function sendSlackChannelMessage(
   token: string,
   channel: string,
-  text: string
+  text: string,
+  threadTs?: string
 ): Promise<SendResult> {
   try {
     const res = await fetchWithTimeout(`${SLACK_API_BASE}/chat.postMessage`, {
@@ -85,7 +96,11 @@ export async function sendSlackChannelMessage(
         "Content-Type": "application/json; charset=utf-8",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ channel, text }),
+      body: JSON.stringify({
+        channel,
+        text,
+        ...(threadTs !== undefined ? { thread_ts: threadTs } : {}),
+      }),
     });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!res.ok || !body?.ok) {

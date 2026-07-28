@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
   if (
     event.type !== "message" ||
     event.bot_id ||
-    event.subtype ||
+    (event.subtype && event.subtype !== "thread_broadcast") ||
     !event.channel ||
     !event.user ||
     typeof event.text !== "string" ||
@@ -123,6 +123,14 @@ export async function POST(request: NextRequest) {
     // Not a genuine fresh human message this door understands (a
     // non-"message" event, this bot's/another bot's own post, an edit/join/
     // other subtype, or missing fields) — ack, never enqueue.
+    //
+    // `subtype === "thread_broadcast"` is the one exception (final
+    // whole-branch review, finding #2): a thread reply sent with Slack's
+    // "Also send to channel" checkbox carries that subtype but is a genuine
+    // human turn — it has the same text/user/channel/ts/thread_ts shape as
+    // any other in-thread reply, so admitting it here is enough for it to
+    // flow through the existing path unchanged. Every other subtype (edits,
+    // deletes, joins, ...) and any bot_id stay rejected.
     return json({ ok: true, ignored: true });
   }
 

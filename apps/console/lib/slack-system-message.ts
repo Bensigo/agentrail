@@ -15,14 +15,19 @@ import { sendSlackChannelMessage, type SendResult } from "./slack-bot";
  * Post a system (non-model) message to `channel` via the shared hosted app.
  * Returns a typed failure — never throws — when `SLACK_BOT_TOKEN` is unset
  * or the send itself fails.
+ *
+ * `threadTs`, when given, threads the send (final whole-branch review,
+ * finding #1) — forwarded as-is to `sendSlackChannelMessage`'s own
+ * `thread_ts`; omitted entirely for a DM, see that function's doc-comment.
  */
 export async function sendSystemSlackMessage(
   channel: string,
-  text: string
+  text: string,
+  threadTs?: string
 ): Promise<SendResult> {
   const token = process.env["SLACK_BOT_TOKEN"];
   if (!token) {
     return { ok: false, error: "SLACK_BOT_TOKEN is not configured." };
   }
-  return sendSlackChannelMessage(token, channel, text);
+  return sendSlackChannelMessage(token, channel, text, threadTs);
 }

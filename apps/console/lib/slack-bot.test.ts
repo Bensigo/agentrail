@@ -150,4 +150,31 @@ describe("sendSlackChannelMessage", () => {
 
     expect(result.ok).toBe(false);
   });
+
+  // Final whole-branch review, finding #1 (critical): console system sends
+  // (the workspace picker, /connect replies, pin confirmation) posted flat
+  // with no thread_ts, breaking the picker for any channel conversation.
+  it("includes thread_ts in the request body when a thread id is passed", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+
+    await sendSlackChannelMessage("xoxb-123", "C123", "hello", "1700000000.000100");
+
+    const init = mockFetch.mock.calls[0]?.[1] as { body: string };
+    expect(JSON.parse(init.body)).toStrictEqual({
+      channel: "C123",
+      text: "hello",
+      thread_ts: "1700000000.000100",
+    });
+  });
+
+  it("omits thread_ts entirely when no thread id is passed (byte-identical to today, a DM)", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) });
+
+    await sendSlackChannelMessage("xoxb-123", "D0PNCRP9N", "hello");
+
+    const init = mockFetch.mock.calls[0]?.[1] as { body: string };
+    const parsed = JSON.parse(init.body) as Record<string, unknown>;
+    expect(parsed).not.toHaveProperty("thread_ts");
+    expect(parsed).toStrictEqual({ channel: "D0PNCRP9N", text: "hello" });
+  });
 });

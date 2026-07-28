@@ -362,6 +362,37 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
     expect(result).toEqual({ processed: 1, failed: 0 });
   });
 
+  // Final whole-branch review, finding #1 (critical): the /connect reply is
+  // also a console system send and must thread the same way the 'ask'
+  // picker does — same conversationKey, same requirement.
+  it("a '/connect' pin reply on a THREADED slack channel row carries the thread id via sendSystemSlackMessage", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        row({
+          channel: "slack",
+          conversationKey: "C123:1700000000.000100",
+          providerMessageId: "C123:1",
+          payload: { chatId: "C123", text: "/connect", threadTs: "1700000000.000100" },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue({
+      id: "chat-connect-slack-1",
+      platform: "slack",
+      platformUserId: "U061F7AUR",
+      userId: "user-42",
+      linkToken: null,
+      linkTokenExpiresAt: null,
+    } as never);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockListWorkspacesForChatIdentity.mockResolvedValue([{ id: "ws-1", name: "Acme" }]);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-connect-slack-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("C123", "Connected to Acme.", "1700000000.000100");
+  });
+
   it("a normal (non-'/connect') message row still reaches the Eve turn (no regression)", async () => {
     mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hello jace" } })).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(linkedIdentity());
@@ -1545,7 +1576,13 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
     await dispatchQueuedChannelMessages();
 
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"));
+    // Third arg: the Slack thread id, sourced from the row's own
+    // payload.threadTs. This DM-style row (a bare channel id conversationKey,
+    // no threadTs in payload) has none — asserting `undefined` explicitly
+    // here (not omitting the arg) is deliberate: the finding this guards
+    // against is the console posting flat when it SHOULD be threaded, not
+    // the reverse, so the exact call shape matters.
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
     expect(mockSendSystem).not.toHaveBeenCalled();
     expect(mockSendSystemDiscord).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
@@ -1567,7 +1604,57 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       conversationKey: "D0PNCRP9N",
       workspaceId: "ws-1",
     });
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"));
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+  });
+
+  // Final whole-branch review, finding #1 (critical): a channel conversation
+  // is thread-scoped (conversationKey carries the thread root), so the
+  // workspace picker / pin confirmation MUST land in that thread — otherwise
+  // a member replying (as instructed) in-thread starts a NEW top-level
+  // message, which re-triggers the same unpinned 'ask', forever.
+  it("'ask' kind on a THREADED slack channel row: the workspace-choice send carries the thread id", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({
+          conversationKey: "C123:1700000000.000100",
+          payload: { chatId: "C123", text: "hey jace", threadTs: "1700000000.000100" },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "C123",
+      expect.stringContaining("Acme"),
+      "1700000000.000100"
+    );
+  });
+
+  it("'ask' kind on a THREADED slack channel row: the pin confirmation send carries the thread id", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({
+          conversationKey: "C123:1700000000.000100",
+          payload: { chatId: "C123", text: "Acme", threadTs: "1700000000.000100" },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-2" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "C123",
+      expect.stringContaining("Acme"),
+      "1700000000.000100"
+    );
   });
 
   it("a sidecar failure fails the row exactly like a telegram/discord row (channel-agnostic error handling)", async () => {

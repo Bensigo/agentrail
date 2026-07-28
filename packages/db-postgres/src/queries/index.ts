@@ -2685,7 +2685,11 @@ export {
 // `fetch_briefs`'s three modes; `patchBriefItems`/`setBriefStatus` back
 // `save_brief`; `linkBriefWork` records what `to-issues` produced;
 // `computeBriefReadiness` is the check `to-issues` must gate on instead of
-// the human-only `status` label.
+// the human-only `status` label. `updateBriefItemAsHuman`/
+// `createBriefItemAsHuman`/`deleteBriefItem` are the console's human-edit
+// write path — the gap `patchBriefItems` deliberately leaves open (it skips
+// every write to an already-`authority: 'human'` item, including a human's
+// own next correction to it).
 export {
   upsertBrief,
   getBriefBySlug,
@@ -2695,6 +2699,9 @@ export {
   setBriefStatus,
   linkBriefWork,
   computeBriefReadiness,
+  updateBriefItemAsHuman,
+  createBriefItemAsHuman,
+  deleteBriefItem,
   BRIEF_SEARCH_DEFAULT_LIMIT,
   BRIEF_SEARCH_MAX_LIMIT,
   type UpsertBriefInput,
@@ -2703,6 +2710,10 @@ export {
   type PatchBriefItemsResult,
   type LinkBriefWorkInput,
   type BriefReadiness,
+  type UpdateBriefItemAsHumanInput,
+  type UpdateBriefItemAsHumanResult,
+  type CreateBriefItemAsHumanInput,
+  type CreateBriefItemAsHumanResult,
 } from "./briefs.js";
 
 // Stripe top-up (#1415, Wave 5 / epic #1257; #1290's deferred PR ③) — the

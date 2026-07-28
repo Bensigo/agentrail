@@ -28,6 +28,8 @@ const mockState = vi.hoisted(() => ({
     opts: { target: Array<{ name: string }>; set: Record<string, unknown> };
   }>,
   updateCalls: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
+  deleteReturningQueue: [] as unknown[][],
+  deleteCalls: [] as Array<{ where: unknown }>,
   ftsRows: [] as Record<string, unknown>[],
   recentRows: [] as Record<string, unknown>[],
   txCalls: 0,
@@ -84,6 +86,14 @@ vi.mock("../db.js", () => {
         }),
       }),
     }),
+    delete: (_table: unknown) => ({
+      where: (w: unknown) => ({
+        returning: async () => {
+          mockState.deleteCalls.push({ where: w });
+          return mockState.deleteReturningQueue.shift() ?? [];
+        },
+      }),
+    }),
   };
   return { db };
 });
@@ -98,6 +108,9 @@ import {
   setBriefStatus,
   linkBriefWork,
   computeBriefReadiness,
+  updateBriefItemAsHuman,
+  createBriefItemAsHuman,
+  deleteBriefItem,
 } from "./briefs.js";
 
 const render = (q: unknown) => new PgDialect().sqlToQuery(q as never);
@@ -109,6 +122,8 @@ beforeEach(() => {
   mockState.insertCalls = [];
   mockState.onConflictCalls = [];
   mockState.updateCalls = [];
+  mockState.deleteReturningQueue = [];
+  mockState.deleteCalls = [];
   mockState.ftsRows = [];
   mockState.recentRows = [];
   mockState.txCalls = 0;
@@ -449,6 +464,159 @@ describe("patchBriefItems", () => {
     expect(mockState.updateCalls).toHaveLength(1);
     expect(result.upserted[0]!.kind).toBe("required");
     expect(result.upserted[0]!.state).toBe("resolved");
+  });
+});
+
+describe("updateBriefItemAsHuman", () => {
+  it("returns item: null, refusedUnknownResolved: false when the item doesn't exist under this brief", async () => {
+    mockState.selectQueue.push([]); // pre-check select finds nothing
+    const result = await updateBriefItemAsHuman("brief-1", "no-such-item", { statement: "x" });
+    expect(result).toEqual({ item: null, refusedUnknownResolved: false });
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("CAN overwrite a row that is already authority: 'human' — that is the whole point of this function", async () => {
+    mockState.selectQueue.push([{ kind: "required", state: "open" }]);
+    mockState.updateReturningQueue.push([
+      briefItemRow({ id: "item-1", statement: "corrected again", authority: "human" }),
+    ]);
+
+    const result = await updateBriefItemAsHuman("brief-1", "item-1", { statement: "corrected again" });
+
+    expect(result.item?.statement).toBe("corrected again");
+    expect(mockState.updateCalls[0]!.set.authority).toBe("human");
+  });
+
+  it("is a partial patch: a field omitted from `fields` is left out of the update set entirely, not defaulted", async () => {
+    mockState.selectQueue.push([{ kind: "required", state: "resolved" }]);
+    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1" })]);
+
+    await updateBriefItemAsHuman("brief-1", "item-1", { statement: "typo fixed" });
+
+    const { set } = mockState.updateCalls[0]!;
+    expect(set.statement).toBe("typo fixed");
+    expect(set).not.toHaveProperty("evidence");
+    expect(set).not.toHaveProperty("state");
+    expect(set).not.toHaveProperty("resolution");
+    expect(set).not.toHaveProperty("kind");
+    expect(set).not.toHaveProperty("area");
+  });
+
+  it("does overwrite evidence/state/resolution when the caller explicitly supplies them, including an explicit null resolution", async () => {
+    mockState.selectQueue.push([{ kind: "required", state: "resolved" }]);
+    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1" })]);
+
+    await updateBriefItemAsHuman("brief-1", "item-1", {
+      evidence: "the human's own words",
+      state: "open",
+      resolution: null,
+    });
+
+    const { set } = mockState.updateCalls[0]!;
+    expect(set.evidence).toBe("the human's own words");
+    expect(set.state).toBe("open");
+    expect(set.resolution).toBeNull();
+  });
+
+  it("refuses a patch that only changes kind to unknown on a row already state: resolved, even though this call never touches state", async () => {
+    mockState.selectQueue.push([{ kind: "required", state: "resolved" }]);
+
+    const result = await updateBriefItemAsHuman("brief-1", "item-1", { kind: "unknown" });
+
+    expect(result).toEqual({ item: null, refusedUnknownResolved: true });
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("refuses a patch that only changes state to resolved on a row already kind: unknown", async () => {
+    mockState.selectQueue.push([{ kind: "unknown", state: "open" }]);
+
+    const result = await updateBriefItemAsHuman("brief-1", "item-1", { state: "resolved" });
+
+    expect(result).toEqual({ item: null, refusedUnknownResolved: true });
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("allows kind: unknown to stay open (no resolution implied) — only the unknown+resolved combination is refused", async () => {
+    mockState.selectQueue.push([{ kind: "required", state: "open" }]);
+    mockState.updateReturningQueue.push([briefItemRow({ id: "item-1", kind: "unknown" })]);
+
+    const result = await updateBriefItemAsHuman("brief-1", "item-1", { kind: "unknown" });
+
+    expect(result.refusedUnknownResolved).toBe(false);
+    expect(mockState.updateCalls).toHaveLength(1);
+  });
+
+  it("allows an item to move from unknown to answered-and-resolved in one call once kind changes away from unknown", async () => {
+    mockState.selectQueue.push([{ kind: "unknown", state: "open" }]);
+    mockState.updateReturningQueue.push([
+      briefItemRow({ id: "item-1", kind: "required", state: "resolved", resolution: "implemented" }),
+    ]);
+
+    const result = await updateBriefItemAsHuman("brief-1", "item-1", {
+      kind: "required",
+      state: "resolved",
+      resolution: "implemented",
+    });
+
+    expect(result.refusedUnknownResolved).toBe(false);
+    expect(result.item?.state).toBe("resolved");
+  });
+});
+
+describe("createBriefItemAsHuman", () => {
+  it("inserts a new item with authority forced to 'human'", async () => {
+    mockState.insertReturningQueue.push(
+      briefItemRow({ id: "item-new", authority: "human", area: "constraints" })
+    );
+
+    const result = await createBriefItemAsHuman("brief-1", {
+      area: "constraints",
+      statement: "must run offline",
+      kind: "required",
+    });
+
+    expect(result.refusedUnknownResolved).toBe(false);
+    expect(mockState.insertCalls[0]!.values.authority).toBe("human");
+    expect(mockState.insertCalls[0]!.values.briefId).toBe("brief-1");
+  });
+
+  it("refuses a brand-new item that lands as kind: unknown + state: resolved", async () => {
+    const result = await createBriefItemAsHuman("brief-1", {
+      area: "scope",
+      statement: "nobody has answered this yet",
+      kind: "unknown",
+      state: "resolved",
+      resolution: "deferred",
+    });
+
+    expect(result).toEqual({ item: null, refusedUnknownResolved: true });
+    expect(mockState.insertCalls).toEqual([]);
+  });
+
+  it("defaults state to open and resolution to null when omitted", async () => {
+    mockState.insertReturningQueue.push(briefItemRow({ id: "item-new" }));
+    await createBriefItemAsHuman("brief-1", {
+      area: "users",
+      statement: "solo founder, no team yet",
+      kind: "optional",
+    });
+    expect(mockState.insertCalls[0]!.values.state).toBe("open");
+    expect(mockState.insertCalls[0]!.values.resolution).toBeNull();
+  });
+});
+
+describe("deleteBriefItem", () => {
+  it("returns true and deletes when the item exists under this brief", async () => {
+    mockState.deleteReturningQueue.push([{ id: "item-1" }]);
+    const result = await deleteBriefItem("brief-1", "item-1");
+    expect(result).toBe(true);
+    expect(mockState.deleteCalls).toHaveLength(1);
+  });
+
+  it("returns false when nothing matched (wrong item, or an id from a different brief)", async () => {
+    mockState.deleteReturningQueue.push([]);
+    const result = await deleteBriefItem("brief-1", "item-from-another-brief");
+    expect(result).toBe(false);
   });
 });
 

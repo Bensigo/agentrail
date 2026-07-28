@@ -50,7 +50,7 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
+  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), Briefs (spec PR #1487/#1489), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
@@ -59,6 +59,7 @@ describe("NAV_ZONES data structure", () => {
       "wallet",
       "model-selection",
       "memory",
+      "briefs",
       "wiki",
       "failures",
     ]);
@@ -136,7 +137,7 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("repos");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, briefs, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -149,6 +150,7 @@ describe("NAV_ZONES data structure", () => {
       "wallet", // #1415: prepaid wallet balance + Stripe top-up (#1290's deferred PR③)
       "approvals", // #1276: pending approvals, parked work, dead letters
       "memory",
+      "briefs", // spec PR #1487/#1489: Jace's durable, editable per-idea understanding
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
       "model-selection", // #1338 PR③: per-task-type model-outcome observe view

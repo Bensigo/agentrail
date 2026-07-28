@@ -65,11 +65,20 @@
  * caller that thinks it flipped a brief to `ready` when it did not is the
  * same failure class this whole feature exists to remove.
  *
- * **Secret scan on write**, mirroring `ingest/memory-items`: grilled text is
- * user-typed prose relayed through a model and can contain a pasted key.
- * Every `statement` and `evidence` string across the whole `items` batch is
- * scanned before anything is written; ANY finding rejects the WHOLE batch
- * (422) — never a partially-scanned write, and never silently redacted.
+ * **Secret scan on write covers every free-text field this route persists,
+ * not only items** — mirroring `ingest/memory-items`'s own reasoning
+ * ("Memory content is injected verbatim into agent prompts, so a credential
+ * persisted here can be exfiltrated to any run in the workspace"), which is
+ * about the READ-BACK path and applies regardless of which column the text
+ * sits in. Scanned: `title`, `openQuestion` (the question in flight,
+ * composed by the model from what the human just said — the most likely
+ * place a pasted key gets echoed back and then replayed on every future
+ * resume), every item's `statement`/`evidence`, and — deliberately, even
+ * though lower-risk — `grounding`'s string fields (see the scan's own
+ * inline comment for why identifiers get scanned too, not exempted). ALL of
+ * it is scanned in one batch before anything is written; ANY finding rejects
+ * the WHOLE batch (422) — never a partially-scanned write, and never
+ * silently redacted.
  *
  * **Both store-level refusals are relayed honestly, never swallowed.**
  * `patchBriefItems` reports `skippedHumanAuthorityIds` (writes dropped
@@ -85,7 +94,8 @@
  * and no existing brief to inherit one from. 401 — bad/missing shared
  * secret. 404 — no session, a session with no resolved workspace yet, or
  * (GET mode=get) no brief at that slug. 422 — a credential-shaped value in
- * an item's `statement`/`evidence`. 502 — the backing store errored.
+ * `title`, `openQuestion`, `grounding`, or an item's `statement`/`evidence`.
+ * 502 — the backing store errored.
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -337,15 +347,59 @@ export async function POST(request: NextRequest) {
   const slug = raw.slug.trim();
   const items = raw.items ?? [];
 
-  // Write-side secret scan (mirrors ingest/memory-items, issue #1032):
-  // grilled text is user-typed prose relayed through a model and can carry a
-  // pasted credential. Scan every statement + evidence across the WHOLE
-  // batch and reject it entirely on any finding — fail closed, before any
-  // write, never a partially-scanned batch.
-  const secretFindings = items.flatMap((item) => [
-    ...scanForSecrets(item.statement).findings,
-    ...(item.evidence ? scanForSecrets(item.evidence).findings : []),
-  ]);
+  // Write-side secret scan (mirrors ingest/memory-items, issue #1032): "Memory
+  // content is injected verbatim into agent prompts, so a credential
+  // persisted here can be exfiltrated to any run in the workspace" — that
+  // reasoning is about the READ-BACK path, not about which column the text
+  // happens to live in, and every free-text field this route durably writes
+  // is read back into Jace's context on resume. So this scans ALL of them,
+  // not just items:
+  //   - `statement` / `evidence` — grilled text is user-typed prose relayed
+  //     through a model and can carry a pasted credential (the original
+  //     motivating case).
+  //   - `openQuestion` — the MOST likely place for this to actually happen:
+  //     it stores the question in flight when a conversation stops, composed
+  //     by the model from what the human JUST said. A human pastes a key
+  //     mid-grill and Jace's next question echoes it back
+  //     ("you mentioned sk-live-… — is that the one to use?") — that string
+  //     would otherwise persist unscanned and get replayed into every future
+  //     resume.
+  //   - `title` — also free text, same read-back path, lower likelihood but
+  //     no reason to carve out an exception.
+  //   - `grounding.wikiPageSlugs` / `grounding.memoryItemIds` / `commitSha` —
+  //     scanned too, deliberately, even though these are meant to be
+  //     identifiers (slugs/UUIDs/commit shas) rather than human prose and the
+  //     content they POINT AT already passed its own scan at ITS write time
+  //     (memory items through ingest/memory-items; wiki pages are compiled
+  //     from repo source, not user paste). Nothing at the type level stops a
+  //     caller putting arbitrary strings in these fields, and the cost of
+  //     scanning a handful of short strings is negligible — so rather than
+  //     rely on "it's probably safe because it's structured," this route
+  //     scans it like everything else. If this ever proves too aggressive
+  //     (a legitimate slug/sha matching a pattern), narrow the scan here,
+  //     don't skip it.
+  //
+  // Every field is scanned in ONE batch and the whole write is rejected on
+  // any finding — fail closed, before any write, never a partially-scanned
+  // batch (a title/openQuestion write must not land while only the items are
+  // held back, or vice versa).
+  const groundingStrings: string[] = raw.grounding
+    ? [
+        ...raw.grounding.wikiPageSlugs,
+        ...raw.grounding.memoryItemIds,
+        ...(raw.grounding.commitSha ? [raw.grounding.commitSha] : []),
+      ]
+    : [];
+
+  const secretFindings = [
+    ...(raw.title ? scanForSecrets(raw.title).findings : []),
+    ...(raw.openQuestion ? scanForSecrets(raw.openQuestion).findings : []),
+    ...groundingStrings.flatMap((s) => scanForSecrets(s).findings),
+    ...items.flatMap((item) => [
+      ...scanForSecrets(item.statement).findings,
+      ...(item.evidence ? scanForSecrets(item.evidence).findings : []),
+    ]),
+  ];
   if (secretFindings.length > 0) {
     const reason = summarizeFindings(secretFindings);
     console.warn(`[runner/briefs] rejected batch for brief ${slug}: ${reason}`);

@@ -357,6 +357,57 @@ describe("POST /api/v1/runner/briefs", () => {
       expect(mockUpsertBrief).not.toHaveBeenCalled();
     });
 
+    it("422 and does not write when title is credential-shaped", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await POST(
+        postReq({
+          ...validBody,
+          title: "Blog project — key sk-ant-abcdef0123456789ABCDEFabcdef0123",
+        })
+      );
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toMatch(/credential-shaped/i);
+      expect(body.reason).toContain("anthropic_key");
+      expect(mockUpsertBrief).not.toHaveBeenCalled();
+      expect(mockPatchBriefItems).not.toHaveBeenCalled();
+    });
+
+    it("422 and does not write when openQuestion is credential-shaped — the most likely real case, since it's the model's own echoed-back question", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await POST(
+        postReq({
+          ...validBody,
+          openQuestion:
+            "you mentioned sk-ant-abcdef0123456789ABCDEFabcdef0123 — is that the key the blog should use?",
+        })
+      );
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.reason).toContain("anthropic_key");
+      expect(mockUpsertBrief).not.toHaveBeenCalled();
+      expect(mockPatchBriefItems).not.toHaveBeenCalled();
+    });
+
+    it("422 and does not write when a grounding string field is credential-shaped", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await POST(
+        postReq({
+          ...validBody,
+          grounding: {
+            wikiPageSlugs: ["wiki/overview"],
+            memoryItemIds: [],
+            commitSha: "token ghp_abcdef0123456789ABCDEFabcdef01234567",
+          },
+        })
+      );
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.reason).toContain("github_token");
+      expect(mockUpsertBrief).not.toHaveBeenCalled();
+      expect(mockPatchBriefItems).not.toHaveBeenCalled();
+    });
+
     it("rejects the whole batch if only one of several items is credential-shaped", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const res = await POST(

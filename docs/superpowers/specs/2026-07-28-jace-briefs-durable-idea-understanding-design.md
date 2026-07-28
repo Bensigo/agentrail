@@ -242,7 +242,9 @@ deferred, rejected, satisfied-elsewhere), `brief_authority` (human, jace).
 and `POST /api/v1/runner/briefs` with `{ eveSessionId, slug, patch }`.
 
 **Tools**: `fetch_briefs({ mode, slug?, query? })` and
-`save_brief({ slug, title?, status?, openQuestion?, grounding?, items? })`
+`save_brief({ slug, title?, openQuestion?, grounding?, items? })` (no `status`
+— that field is console-only, set by a human, and is rejected with a 400 if
+sent)
 where each item is `{ id?, area, statement, evidence?, kind, state?, resolution? }`.
 
 Two invariants live in the ROUTE, not in any prompt: items with

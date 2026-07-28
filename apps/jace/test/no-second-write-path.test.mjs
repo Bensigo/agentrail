@@ -1,14 +1,15 @@
 // AC3 — the enumerated-tools test.
 //
 // The name of this file overstates the invariant it actually enforces: it is
-// NOT "no second write path" full stop — an ungated write path exists here by
-// design (`send_connect_link`, issue #1263 PR ②), and the gated set has grown
-// to NINE (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
-// PR ②; `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289;
-// `post_pr_review`, the reviewer subagent's gated write path; and the three
+// NOT "no second write path" full stop — ungated write paths exist here by
+// design (`send_connect_link`, issue #1263 PR ②; `post_pr_review`, see
+// UNGATED_ADVISORY_WRITES below), and the gated set has grown to EIGHT
+// (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265 PR ②;
+// `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289; and the three
 // backlog-grooming writes `backlog_label` / `backlog_close` / `backlog_dedupe`,
 // issue #1291). What this test actually proves is narrower and precise: every
-// mutating tool is gated, and every ungated tool is self-scoped.
+// mutating tool is gated unless it is one of the enumerated, argued
+// exceptions, and every ungated tool's blast radius is bounded server-side.
 //
 //   - Every GATED/mutating tool — authored with `defineTool` and
 //     `approval: (ctx) => consoleGatedApproval(ctx)` (issue #1273 PR ②;
@@ -21,17 +22,36 @@
 //     state), `create_repo` (creates a real GitHub repository under the
 //     user's own account and connects it to the workspace), `update_issue`
 //     (edits an EXISTING issue's title/body — the #1345 revise loop's write
-//     path), `create_goal` (issue #1289: creates a real workspace goal
+//     path), and `create_goal` (issue #1289: creates a real workspace goal
 //     the Jace goal loop then pursues — the goal's OWN issue filing still
-//     goes through `create_issue`, never a second path into the factory),
-//     and `post_pr_review` (posts an ADVISORY, COMMENT-only PR review the
-//     `reviewer` subagent's findings inform — the console hardcodes the
-//     GitHub review event server-side, so this can never approve or
-//     request changes) — all six are the same gate class, see each tool's
-//     own file doc-comment. The set is enumerated, not open-ended: adding a
-//     SEVENTH gated tool requires deliberately editing
-//     EXPECTED_MUTATING_TOOLS below — that edit IS the human review this
-//     test exists to force, same as EXPECTED_TOOL_FILES below it.
+//     goes through `create_issue`, never a second path into the factory) —
+//     all the same gate class, see each tool's own file doc-comment. The set
+//     is enumerated, not open-ended: adding another gated tool requires
+//     deliberately editing EXPECTED_MUTATING_TOOLS below — that edit IS the
+//     human review this test exists to force, same as EXPECTED_TOOL_FILES
+//     below it.
+//   - `post_pr_review` is the ONE mutating tool deliberately left UNGATED,
+//     and it is enumerated just as tightly (UNGATED_ADVISORY_WRITES below).
+//     It was gated until 2026-07-28, when prod showed the gate did not merely
+//     add friction — it silently swallowed the action. The console delivers
+//     approval prompts on Telegram ONLY, so on a `discord` session the
+//     approval row was recorded, never shown to the owner, and the tool
+//     polled until its 30-minute TTL expired: two such rows sat `pending` and
+//     the review never landed. Handing Jace a PR to review is itself the
+//     instruction to comment on it, so the gate was removed rather than
+//     patched. Three properties carry the safety line the gate used to share,
+//     and each is ASSERTED below rather than merely claimed here:
+//       (a) advisory-only — the console hardcodes the GitHub review `event`
+//           to "COMMENT" server-side, so this can never approve or request
+//           changes on a PR;
+//       (b) server-scoped target — the console resolves the workspace from
+//           `eveSessionId` and rejects a `repo` that workspace hasn't
+//           connected, so a model-chosen repo cannot escape the tenant;
+//       (c) severity-filtered in code — only `blocker`/`major` are posted and
+//           an unlabelled comment is dropped, so "don't post noise" does not
+//           depend on the model choosing to obey a prompt.
+//     A SECOND ungated mutating tool is a policy violation until it is added
+//     there with its own argument.
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -126,7 +146,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
-  "post_pr_review.ts", // gated: posts an ADVISORY, COMMENT-only PR review (the console hardcodes the GitHub review event server-side) — same gate class as create_issue; no child_process (HTTP to the console, like create_repo/create_goal)
+  "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts", // read-only: reads recent runs + queue entries via fetch_work_status.core.mjs over the console token API (retired direct-Postgres edge); no approval, no child_process
   "update_issue.ts", // gated (issue #1345): edits an EXISTING issue's title/body in the house format — same gate class as create_issue, via the SAME consoleGatedApproval seam; shells out to `agentrail issue update` (child_process, like create_issue)
@@ -142,7 +162,8 @@ const EXPECTED_MUTATING_TOOLS = [
   "create_repo.ts",
   "update_issue.ts",
   "create_goal.ts",
-  "post_pr_review.ts",
+  // NOTE: post_pr_review.ts is deliberately ABSENT — it is the sanctioned
+  // ungated advisory write. See UNGATED_ADVISORY_WRITES below.
   // issue #1291 — the backlog-grooming write path. Each mutates ONE EXISTING
   // open issue (label / close / dedupe) and applies over HTTP to the console
   // (getInstallationToken server-side), never child_process — same gate class
@@ -152,6 +173,12 @@ const EXPECTED_MUTATING_TOOLS = [
   "backlog_close.ts",
   "backlog_dedupe.ts",
 ].sort();
+// The enumerated set of mutating tools that are deliberately UNGATED. This is
+// a ceiling as much as a floor: the test below asserts each one wires NO
+// approval, and the gated-set test above asserts nothing else slips out of the
+// gate. See this file's header for the full argument behind the one entry.
+const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts"];
+
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",
   "agent/tools/create_issue.ts",
@@ -213,6 +240,70 @@ test("every enumerated gated tool is human-gated via the console seam (defineToo
       `${file} must gate every invocation behind approval: (ctx) => consoleGatedApproval(ctx)`,
     );
   }
+});
+
+test("the enumerated ungated advisory writes wire NO approval gate at all", () => {
+  // The complement of the enumerated-gated-set test above: these tools must
+  // stay ungated on purpose, so a well-meaning re-gate (which would silently
+  // swallow the action again on every non-Telegram channel) fails here loudly.
+  for (const file of UNGATED_ADVISORY_WRITES) {
+    const src = stripComments(readFileSync(`${toolsDir}/${file}`, "utf8"));
+    assert.doesNotMatch(
+      src,
+      CONSOLE_GATED_APPROVAL_RE,
+      `${file} is deliberately ungated (see this file's header) — re-gating it ` +
+        `re-introduces the prod failure where the approval prompt is never ` +
+        `delivered on any channel but Telegram and the review silently never posts`,
+    );
+    assert.doesNotMatch(
+      src,
+      /\bapproval\s*:/,
+      `${file} must not wire any approval field`,
+    );
+  }
+});
+
+test("post_pr_review's severity filter is enforced in code, not in a prompt", () => {
+  // Property (c) from this file's header: the control that REPLACED the human
+  // gate. It lives in the pure core so it cannot be talked out of.
+  const core = readFileSync(
+    fileURLToPath(new URL("../agent/lib/post_pr_review.core.mjs", import.meta.url)),
+    "utf8",
+  );
+  assert.match(
+    stripComments(core),
+    /POSTABLE_SEVERITIES\s*=\s*\[\s*"blocker"\s*,\s*"major"\s*\]/,
+    "post_pr_review.core.mjs must post exactly blocker + major — minor/nit are dropped",
+  );
+  assert.match(
+    stripComments(core),
+    /filterPostableComments\(/,
+    "runPostPrReview must route comments through filterPostableComments before posting",
+  );
+});
+
+test("post_pr_review stays advisory + server-scoped: the console hardcodes COMMENT and validates repo ownership", () => {
+  // Properties (a) and (b) from this file's header. These live in the console
+  // route, not in Jace, precisely so an ungated Jace-side tool cannot weaken
+  // them — this asserts they are still there.
+  const routePath = fileURLToPath(
+    new URL(
+      "../../console/app/api/v1/runner/pr-review/route.ts",
+      import.meta.url,
+    ),
+  );
+  if (!existsSync(routePath)) return; // console not present in this checkout
+  const route = stripComments(readFileSync(routePath, "utf8"));
+  assert.match(
+    route,
+    /event:\s*"COMMENT"/,
+    "the console must hardcode the GitHub review event to COMMENT — an ungated tool must never be able to approve or request changes",
+  );
+  assert.match(
+    route,
+    /getRepositoryByName\(/,
+    "the console must verify the repo is connected to the session's own workspace before posting",
+  );
 });
 
 test("Eve's stock always()/once() approval gate is fully retired — no tool file references it (issue #1273 PR ②)", () => {

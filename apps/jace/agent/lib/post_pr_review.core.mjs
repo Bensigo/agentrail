@@ -1,12 +1,32 @@
 // Pure, dependency-free core for posting an advisory PR review via the
-// console (apps/console/app/api/v1/runner/pr-review, POST) — Jace's SIXTH
-// gated write action on the outside world, alongside create_issue,
-// create_workspace, create_repo, update_issue, and create_goal (see
-// agent/tools/post_pr_review.ts's doc-comment for why this carries the same
-// console-gated approval). No SDK, no network primitives of its own: the
-// single HTTP call is an injected `transport` seam (real fetch with a timeout
-// in the thin tool wrapper, a fake in tests), so every branch — success and
-// every degraded outcome — is unit-testable without a live server.
+// console (apps/console/app/api/v1/runner/pr-review, POST). No SDK, no network
+// primitives of its own: the single HTTP call is an injected `transport` seam
+// (real fetch with a timeout in the thin tool wrapper, a fake in tests), so
+// every branch — success and every degraded outcome — is unit-testable without
+// a live server.
+//
+// UNGATED, deliberately (was Jace's sixth console-gated write). Handing Jace a
+// PR to review IS the instruction to comment on it — a second "may I post
+// this?" round-trip bought nothing and, in practice, cost everything: the
+// approval prompt is delivered on Telegram only
+// (apps/console/app/api/v1/runner/approvals/route.ts's sendApprovalMessage),
+// so on every other channel the request was recorded, never shown, and the
+// tool sat polling until its 30-minute TTL expired. Observed in prod
+// 2026-07-28: two `post_pr_review` approvals on a `discord` session, both
+// still `pending`, review never posted, owner never prompted.
+//
+// What replaces the gate (BOTH still hold — the gate was never the thing
+// keeping this safe):
+//   1. ADVISORY BY CONSTRUCTION — the console hardcodes the GitHub review
+//      `event` to "COMMENT" server-side, so nothing here can approve or
+//      request changes on a PR.
+//   2. SERVER-SCOPED TARGET — the console resolves the workspace from
+//      `eveSessionId` through the jace_sessions ledger and requires `repo` to
+//      be one the workspace has actually connected, so a model-chosen repo
+//      cannot reach a repo this conversation doesn't already own.
+// Plus the severity filter below, which is new: with no human reading the
+// exact call, "only blockers and majors get posted" has to be ENFORCED here,
+// not asked for in a prompt.
 //
 // Auth + config model: same as the sibling *.core.mjs modules — Jace resolves
 // its own console endpoint + bearer from JACE_CONSOLE_BASE_URL /
@@ -20,16 +40,18 @@
 // session (see that module's doc-comment).
 //
 // `repo` / `prNumber` / `summary` / `comments` are model-supplied — the
-// reviewer subagent's findings, relayed and approved in chat. That's safe
-// because a human approves the EXACT call (console-gated approval) before
-// this ever runs, same as every other gated tool.
+// reviewer subagent's findings, relayed by root. Safe without a human in the
+// loop for the two structural reasons in this file's header (advisory-only
+// event, server-scoped repo), plus hardenUntrusted() below.
 //
 // hardenUntrusted() runs over `summary` and every comment `body` before they
 // ever leave this module: the reviewer's findings are shaped by reading
 // UNTRUSTED diff content (root wiring's own rule — a hostile PR could try to
 // seed a prompt-injection payload that rides all the way to a POSTED GITHUB
 // COMMENT a human later reads), so this mirrors create_issue's own
-// defense-in-depth backstop rather than trusting instructions.md alone.
+// defense-in-depth backstop rather than trusting instructions.md alone. This
+// matters MORE now than it did behind the gate — it is the only thing between
+// a hostile diff and posted text, with no human reading the draft first.
 //
 // Failure posture: every non-2xx status is mapped to a stable `reason` + a
 // relayable `message` — the console's OWN honest error text when the body
@@ -48,8 +70,18 @@ export const PR_REVIEW_PATH = "/api/v1/runner/pr-review";
 export const SUMMARY_MAX_LEN = 8000;
 export const COMMENT_BODY_MAX_LEN = 2000;
 
+// The ONLY severities that become posted inline comments. The reviewer's own
+// vocabulary is blocker | major | minor | nit (REVIEW_SEVERITIES in
+// agent/subagents/reviewer/lib/reviewer.core.mjs) — a PR review that
+// auto-posts should carry the things worth interrupting someone for and stay
+// quiet about the rest, so minor and nit are dropped here rather than left to
+// the model's discretion.
+export const POSTABLE_SEVERITIES = ["blocker", "major"];
+
 const REASON_MESSAGES = {
   config_missing: "the review couldn't be posted — Jace's console connection isn't configured",
+  nothing_to_post:
+    "nothing was posted — there were no blocker or major findings, and no summary to post on its own",
   bad_request: "the review couldn't be posted — the request was malformed",
   unauthorized: "the review couldn't be posted — the console rejected the request",
   not_found: "the review couldn't be posted — this PR or repo isn't reachable from this workspace",
@@ -128,6 +160,39 @@ export function failure(reason, message) {
 }
 
 /**
+ * Split model-supplied comments into the ones that may be posted (severity
+ * blocker or major) and a count of the ones dropped. This is the control that
+ * replaced the human approval gate, so it fails CLOSED: a comment whose
+ * severity is missing, null, or not one of the reviewer's four known values is
+ * DROPPED, never posted. An unlabelled comment is one we cannot prove belongs
+ * on someone's PR, and the cost of dropping it (a finding the owner still sees
+ * in chat) is far below the cost of posting it (public noise on a PR nobody
+ * approved).
+ *
+ * Tolerant on shape, strict on meaning: severity is trimmed and lowercased
+ * before matching, so "  BLOCKER " counts, but "critical" does not.
+ *
+ * @param {unknown} comments
+ * @returns {{ postable: Array<{path?: unknown, line?: unknown, body?: unknown}>, dropped: number }}
+ */
+export function filterPostableComments(comments) {
+  const list = Array.isArray(comments) ? comments : [];
+  const postable = [];
+  let dropped = 0;
+  for (const c of list) {
+    const severity = String((c && c.severity) ?? "")
+      .trim()
+      .toLowerCase();
+    if (POSTABLE_SEVERITIES.includes(severity)) {
+      postable.push(c);
+    } else {
+      dropped += 1;
+    }
+  }
+  return { postable, dropped };
+}
+
+/**
  * Sanitize the model-supplied summary + comments through hardenUntrusted()
  * before they ever leave this module — the same backstop create_issue's
  * write path applies, since the reviewer's findings are shaped by untrusted
@@ -157,14 +222,16 @@ export function sanitizeReviewInput(summary, comments) {
  *   1. unset console config              -> failure("config_missing")
  *   2. blank eveSessionId/repo, or a
  *      non-positive-integer prNumber     -> failure("bad_request")
- *   3. transport throws                  -> failure("unreachable")
- *   4. non-2xx status                    -> failure(<mapped reason>,
+ *   3. nothing left after the severity
+ *      filter AND a blank summary        -> failure("nothing_to_post")
+ *   4. transport throws                  -> failure("unreachable")
+ *   5. non-2xx status                    -> failure(<mapped reason>,
  *                                            <console's own error message,
  *                                            when present>)
- *   5. non-JSON / malformed 2xx body     -> failure("bad_body")
- *   6. success                           -> { ok: true, reviewUrl, summary,
+ *   6. non-JSON / malformed 2xx body     -> failure("bad_body")
+ *   7. success                           -> { ok: true, reviewUrl, summary,
  *                                            inlineCommentsPosted,
- *                                            foldedComments }
+ *                                            foldedComments, droppedComments }
  *
  * @param {{ eveSessionId: string, repo: string, prNumber: number,
  *           summary: string, comments: Array<{path: string, line: number, body: string}>,
@@ -191,7 +258,19 @@ export async function runPostPrReview({
     return failure("bad_request");
   }
 
-  const safe = sanitizeReviewInput(summary, comments);
+  // Severity filter FIRST, then sanitize: only what we're actually posting
+  // needs hardening, and sanitizeReviewInput's own output shape
+  // ({path, line, body}) is what drops `severity` before it reaches the
+  // console — it is an internal control, not part of that contract.
+  const { postable, dropped } = filterPostableComments(comments);
+  const safe = sanitizeReviewInput(summary, postable);
+
+  // Nothing worth posting and nothing to say: report it honestly rather than
+  // spending a call the console would 400 anyway.
+  if (safe.summary.trim().length === 0 && safe.comments.length === 0) {
+    return failure("nothing_to_post");
+  }
+
   const url = buildPrReviewUrl(cfg.baseUrl);
   const requestBody = {
     eveSessionId: sessionId,
@@ -251,5 +330,8 @@ export async function runPostPrReview({
     inlineCommentsPosted:
       typeof body.inlineCommentsPosted === "number" ? body.inlineCommentsPosted : 0,
     foldedComments: Array.isArray(body.foldedComments) ? body.foldedComments : [],
+    // How many findings were withheld for being below `major`, so root can say
+    // so plainly in chat instead of implying the whole review landed.
+    droppedComments: dropped,
   };
 }

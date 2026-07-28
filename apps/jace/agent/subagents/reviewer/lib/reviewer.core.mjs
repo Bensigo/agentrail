@@ -7,7 +7,8 @@
 // forces the model's final answer into this shape.
 //
 // The shape is PURELY ADVISORY (spec): `findings` are line-level review
-// comments root can relay and, on the owner's go, post via `post_pr_review`;
+// comments root relays and posts via `post_pr_review` (which posts only the
+// `blocker`/`major` ones — see that tool's own severity filter);
 // `issueDrafts` are house-format drafts for anything too big for a PR
 // comment, which root offers through its own gated issue-filing tool (this
 // subagent never files anything itself — the escalation prose lives in

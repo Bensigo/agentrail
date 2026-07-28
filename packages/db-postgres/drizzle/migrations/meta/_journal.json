@@ -379,6 +379,13 @@
       "when": 1785700000000,
       "tag": "0054_repositories_name_ci_index",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1785800000000,
+      "tag": "0055_briefs",
+      "breakpoints": true
     }
   ]
 }

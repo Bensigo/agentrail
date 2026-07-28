@@ -10,10 +10,12 @@ import { REVIEW_SCHEMA } from "./lib/reviewer.core.mjs";
 //
 // PURELY ADVISORY: it never posts anything to GitHub, never files issues
 // itself, and never approves or requests changes — it returns a structured
-// review (REVIEW_SCHEMA); root renders it, and on the owner's explicit go,
-// posts it via its own gated post_pr_review tool and offers each escalated
-// finding's draft through its own gated issue-filing tool — the single
-// write path per resource, unchanged.
+// review (REVIEW_SCHEMA); root renders it and posts the blocker/major
+// findings via its own post_pr_review tool, and offers each escalated
+// finding's draft through its own GATED issue-filing tool — the single
+// write path per resource, unchanged. (post_pr_review itself is ungated as
+// of 2026-07-28; its severity filter and the console's COMMENT-only,
+// workspace-scoped enforcement are what bound it. Issue filing stays gated.)
 //
 //  - Its prompt lives in this directory's instructions.md.
 //  - Its ONLY tool is the authored, read-only fetch_pr_diff (one GET to the

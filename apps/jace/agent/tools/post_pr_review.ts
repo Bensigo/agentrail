@@ -1,20 +1,30 @@
-// post_pr_review — Jace's SIXTH gated write action on the outside world,
-// alongside create_issue, create_workspace, create_repo, update_issue, and
-// create_goal (see apps/jace/test/no-second-write-path.test.mjs for the
-// enumerated set this invariant is checked against). Posts an ADVISORY
-// GitHub PR review — a summary plus optional inline line comments — via the
-// console (apps/console/app/api/v1/runner/pr-review, POST).
+// post_pr_review — posts an ADVISORY GitHub PR review (a summary plus
+// optional inline line comments) via the console
+// (apps/console/app/api/v1/runner/pr-review, POST).
 //
-// Human-gated via consoleGatedApproval — the SAME gate class as every other
-// mutating tool: every invocation records an approval request with the
-// console, which renders the input in-chat with an Approve/Deny keyboard,
-// and this only runs once that request comes back approved. The owner sees
-// the exact summary + comments before anything lands on GitHub.
+// UNGATED, and the ONE mutating tool here that is (see
+// apps/jace/test/no-second-write-path.test.mjs, which enumerates both the
+// gated set and this deliberate exception). Handing Jace a PR to review IS
+// the instruction to comment on it; a second in-chat approval bought nothing
+// and cost everything, because the console only delivers approval prompts on
+// Telegram — on Discord and every other channel the request was recorded,
+// never shown, and this tool polled until its 30-minute TTL expired.
+// (Prod, 2026-07-28: two pending `post_pr_review` approvals on a discord
+// session; the review never landed.) See post_pr_review.core.mjs's header for
+// the full argument and for what holds the safety line instead.
 //
 // ADVISORY ONLY, BY CONSTRUCTION: the console endpoint this calls hardcodes
 // the GitHub review `event` to "COMMENT" server-side — nothing this tool (or
 // the model) sends can make it APPROVE or REQUEST_CHANGES a PR. That is
-// enforced at the console, not merely a convention this tool follows.
+// enforced at the console, not merely a convention this tool follows. The
+// console likewise resolves the workspace from the session and rejects a repo
+// that workspace hasn't connected, so an ungated `repo` argument cannot reach
+// a repo this conversation doesn't already own.
+//
+// SEVERITY IS LOAD-BEARING, not decorative: the core posts `blocker` and
+// `major` comments and drops `minor`/`nit`, and a comment whose severity is
+// missing or unrecognized is dropped too. That filter is what replaced the
+// human gate, so it lives in code — never in a prompt.
 //
 // Root resolves `eveSessionId` from `ctx.session.id` directly — this is a
 // ROOT tool, so `ctx.session.id` already IS the top-level session the
@@ -25,7 +35,6 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { runPostPrReview } from "../lib/post_pr_review.core.mjs";
 
 // Stdlib `fetch` with a timeout — mirrors create_repo.ts's own realTransport
@@ -54,16 +63,17 @@ export default defineTool({
     "summary plus optional inline line comments. This can NEVER approve or " +
     "request changes on a PR — the console hardcodes the GitHub review " +
     "event to a plain comment, server-side, regardless of what is passed " +
-    "here. Always human-approved before it runs: the owner sees the exact " +
-    "summary and comments and must approve before anything is posted. Use " +
-    "this only after the `reviewer` subagent has returned findings and the " +
-    "owner has explicitly said to go ahead — never post a review the owner " +
-    "did not ask for. If GitHub can't attach a comment to the exact line " +
-    "given (the line isn't part of the diff), the console folds it into " +
-    "the summary instead so the review still lands — check the response's " +
-    "foldedComments before assuming every comment landed inline.",
-  // Always require a human approve/reject before this tool executes.
-  approval: (ctx) => consoleGatedApproval(ctx),
+    "here. Call this yourself as soon as the `reviewer` subagent returns " +
+    "findings for a PR the owner asked you to review — being handed a PR to " +
+    "review IS the go-ahead to comment on it, so do not ask first. Pass " +
+    "EVERY finding with its severity: only `blocker` and `major` are " +
+    "actually posted, and `minor`/`nit` are dropped for you, so you never " +
+    "have to filter them yourself. The response's `droppedComments` says " +
+    "how many were withheld — tell the owner that number rather than " +
+    "implying the whole review landed. If GitHub can't attach a comment to " +
+    "the exact line given (the line isn't part of the diff), the console " +
+    "folds it into the summary instead so the review still lands — check " +
+    "`foldedComments` before assuming every comment landed inline.",
   inputSchema: z.object({
     repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
     prNumber: z.number().int().positive().describe("The pull request number."),
@@ -79,11 +89,21 @@ export default defineTool({
         z.object({
           path: z.string().min(1).describe("File path the comment attaches to."),
           line: z.number().int().positive().describe("Line number in the new (RIGHT) side of the diff."),
+          severity: z
+            .enum(["blocker", "major", "minor", "nit"])
+            .describe(
+              "The reviewer finding's own severity, passed through verbatim. " +
+                "Only blocker and major are posted; minor and nit are dropped " +
+                "here, so pass every finding rather than pre-filtering.",
+            ),
           body: z.string().min(1).describe("The comment text."),
         }),
       )
       .default([])
-      .describe("Inline line comments. May be empty only when summary is non-empty."),
+      .describe(
+        "Every inline finding, with its severity. May be empty only when " +
+          "summary is non-empty.",
+      ),
   }),
   async execute(input, ctx) {
     return runPostPrReview({

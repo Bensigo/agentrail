@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agentrail.context.pricing import PRICE_TABLE, cost_for
+from agentrail.context.pricing import cost_for, resolve_rates
 from agentrail.context.retrieval import estimate_tokens
 
 
@@ -151,6 +151,10 @@ def run_retrieval_dedup(target_dir: Path, run_id: str, model: str) -> Dict[str, 
         "tokens_avoided": total_tokens,
         "cost_avoided_usd": total_cost,
         "model": model,
-        "estimate": PRICE_TABLE.get(model) is None,
+        # Same question `cost_for` answers for the per-phase block above ("did
+        # the canonical table price this model?"), so it must go through the
+        # same resolver — a bare table lookup would call a gateway slug an
+        # estimate here while the per-phase block priced it for real.
+        "estimate": resolve_rates(model) is None,
         "phases": phases,
     }

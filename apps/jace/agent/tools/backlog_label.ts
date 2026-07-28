@@ -1,8 +1,9 @@
 // backlog_label — a GATED backlog-grooming write (issue #1291, epic #1257):
 // add or remove labels on ONE existing open GitHub issue during triage. One of
 // Jace's human-gated mutating tools alongside create_issue / create_workspace /
-// create_repo / update_issue / create_goal / post_pr_review (see
-// apps/jace/test/no-second-write-path.test.mjs for the enumerated set).
+// create_repo / update_issue / create_goal (see
+// apps/jace/test/no-second-write-path.test.mjs for the enumerated set;
+// post_pr_review is the enumerated UNGATED exception, not part of this set).
 //
 // Human-gated via consoleGatedApproval — the SAME gate class as every other
 // mutating tool: every invocation records an approval request with the console,

@@ -138,6 +138,13 @@ before publishing a PRD's slices, so acceptance criteria name real units, real
 paths, and real symbols instead of structure the model invented — see "Repo
 wiki" below for how to call it and its staleness caveats.
 
+When a grilling question has a small fixed set of answers — confirm or
+correct a grounded assumption, pick one of a handful of options — use the
+`ask_question` tool with those options instead of printing markdown bullets.
+A tool-rendered choice is selectable; a markdown bullet gets pasted back
+verbatim, question mark included, and isn't a parseable answer. Keep freeform
+text for genuinely open questions.
+
 ## Verify external tech before you draft (the researcher)
 
 Never state a fact about an external library, SDK, framework, API, CLI, or cloud
@@ -297,7 +304,11 @@ deliberately distinct names.
 
 For a workspace's connected-repo ARCHITECTURE question — "how does X work",
 "where is Y", "what's the structure of this repo" — call `fetch_repo_wiki`
-FIRST. It reads the compiled, per-repo wiki (a repo overview page plus one
+FIRST. The same FIRST rule applies when you are SHAPING work for a connected
+repo, not just answering a question about one: grilling an idea (see
+grill-me), drafting a PRD, or scoping issues all mean you're about to ask the
+human things the repo may already answer, so read before you ask instead of
+after. It reads the compiled, per-repo wiki (a repo overview page plus one
 page per codebase unit, generated at onboard/index time from the
 deterministic code graph) — cheaper and more grounded than exploring from
 scratch. This is a different source from both codebase-qa (AgentRail's own
@@ -466,16 +477,30 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   with a ready-to-post suggested comment, and house-format issue drafts for
   anything too big for a single PR comment. It never posts anything, files
   nothing, and cannot approve or request changes — it only reviews.
-- **Present findings compactly.** Severity-ordered (blockers first), one
-  line per finding — `path:line — the point`, not the full `finding`/
-  `suggestedComment` prose dumped verbatim. Save the exact comment text for
-  what actually gets posted.
-- **Never post a review unprompted.** Only after the owner has seen the
-  findings and explicitly says to go ahead — "post it", "looks good, send
-  it" — call `post_pr_review` (gated, human-approved) with the summary and
-  comments. This can NEVER approve or request changes: the console
-  hardcodes the review to a plain comment server-side regardless of what
-  is sent, so don't imply to the owner that it could do either.
+- **Post the review yourself — don't ask first.** Being handed a PR to
+  review IS the go-ahead to comment on it. As soon as the `reviewer`
+  returns a `reviewed` verdict, call `post_pr_review` with the summary and
+  the findings. No approval step, no "want me to post this?" — asking is
+  how reviews used to get lost.
+- **Pass every finding, with its `severity` verbatim.** Only `blocker` and
+  `major` are actually posted; `minor` and `nit` are dropped for you inside
+  the tool, and a finding you send without a severity is dropped too. So
+  relay the reviewer's severity as-is rather than re-judging it or
+  pre-filtering the list yourself.
+- **Say what didn't get posted.** The response's `droppedComments` is how
+  many findings were withheld as minor/nit. Report the number — "posted 2
+  blockers; 3 minor findings I left off" — instead of implying the whole
+  review landed. Same for `foldedComments` (comments GitHub couldn't attach
+  to a line, folded into the summary instead).
+- **Present the findings in chat too.** Severity-ordered (blockers first),
+  one line per finding — `path:line — the point`, not the full `finding`/
+  `suggestedComment` prose dumped verbatim. The owner should see the minor
+  ones you didn't post.
+- **Posting a review can NEVER approve or request changes:** the console
+  hardcodes the review to a plain comment server-side regardless of what is
+  sent, so don't imply to the owner that it could do either.
+- **If the verdict is `degraded`, post nothing.** A review you couldn't
+  read the diff for is not a review to publish — say so in chat instead.
 - **Offer escalations separately.** For each finding the reviewer marked
   `escalate: true`, offer its paired `issueDraft` through your normal
   `create_issue` flow — its own gated approval, same as any other issue you

@@ -13,13 +13,13 @@ resolution order and ``PriceSource`` for the recorded-source vocabulary.
 from __future__ import annotations
 
 import json
-import re
 import urllib.error
 import urllib.request
 import warnings
 from typing import Any, Dict, Literal, NamedTuple, Optional, Tuple, Union
 
 from agentrail.context.pricing import PRICE_TABLE as _PRICE_TABLE
+from agentrail.context.pricing import resolve_rates as _resolve_canonical_rates
 
 
 class _Rates(NamedTuple):
@@ -164,21 +164,17 @@ def _ensure_gateway_rates_loaded() -> None:
 # ---------------------------------------------------------------------------
 # Model-id resolution.
 #
-# The real ``claude`` agents report *dated* model ids (e.g.
-# ``claude-sonnet-4-5-20250929``) while the canonical price table keys on the
-# *base* alias (``claude-sonnet-4-5``). Without normalization those dated ids
-# fall through to the unknown-model path and price at $0.0, so every eval cost
-# silently reads as a fake $0.
+# Real agents never report the bare table alias: ``claude`` reports dated ids
+# (``claude-sonnet-4-5-20250929``), OpenRouter reports provider-prefixed dotted
+# slugs (``anthropic/claude-haiku-4.5``). Without normalization every one of
+# them falls through to the unknown-model path and prices at $0.0 — a silent
+# fake-$0 ledger.
 #
-# ``_resolve_rates`` tries an exact match first (so every existing known id —
-# including the dated ids that ARE in the table, like
-# ``claude-haiku-4-5-20251001`` — prices identically), then strips a single
-# trailing ``-YYYYMMDD`` date snapshot and retries against the base alias. This
-# tolerates future dated snapshots of already-priced models without inventing
-# any new rates: a dated id can only resolve if its base alias is in the
-# canonical table.
+# That normalization chain is ``agentrail.context.pricing.resolve_rates``, next
+# to the canonical table (see ``_resolve_price_table_rates`` below for why it
+# moved there). It only ever widens what an EXISTING key matches, never invents
+# a rate: an id can resolve only if its base alias is in the canonical table.
 # ---------------------------------------------------------------------------
-_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
 
 def _resolve_rates(model: str) -> Optional[_ResolvedRates]:
@@ -247,56 +243,32 @@ def _resolve_rates(model: str) -> Optional[_ResolvedRates]:
 
 
 def _resolve_price_table_rates(model: str) -> Optional[_Rates]:
-    """Return the ``_Rates`` for *model* from ``PRICES``, tolerating a
-    trailing ``-YYYYMMDD`` and an AI-gateway prefix (tier 2 of
-    ``_resolve_rates`` above; this is the pre-#1337 resolution chain,
-    unchanged, just renamed from the old top-level ``_resolve_rates``).
+    """Return the ``_Rates`` for *model* from the canonical table (tier 2 of
+    ``_resolve_rates`` above).
 
-    Resolution order:
+    The resolution CHAIN — exact key, trailing ``-YYYYMMDD`` strip, AI-gateway
+    provider-prefix strip, dotted→dashed version — now lives beside the table
+    it resolves against, as ``agentrail.context.pricing.resolve_rates``, and
+    this delegates to it. It used to be duplicated here, which meant the
+    canonical table's OTHER consumer — ``context.pricing.cost_for``, the
+    dollar math behind wiki prose, context packs and rerank — kept doing a
+    bare exact-match lookup and priced every gateway slug at $0. One chain,
+    every caller: same reason #715 collapsed the two rate TABLES into one.
 
-    1. Exact match against ``PRICES`` (keeps every known id, dated or not,
-       pricing identically to before).
-    2. If *model* ends in a ``-YYYYMMDD`` date snapshot, strip it and match the
-       base alias (e.g. ``claude-sonnet-4-5-20250929`` → ``claude-sonnet-4-5``).
-    3. If *model* carries an AI-gateway provider prefix, strip it and re-run
-       steps 1–2 (e.g. ``anthropic/claude-sonnet-5`` → ``claude-sonnet-5``,
-       ``z-ai/glm-5.2`` → ``glm-5.2``).
-    4. If the (possibly stripped) id versions with dots the way OpenRouter
-       renders Anthropic slugs, swap dots for dashes and re-run steps 1–2
-       (e.g. ``claude-opus-4.8`` → ``claude-opus-4-8``).
-
-    Returns ``None`` when neither resolves.
+    This wrapper stays because the two modules speak different shapes: the
+    canonical table is a ``TypedDict`` with ``cached_read``/``cached_write``,
+    while this module's ``_Rates`` is a ``NamedTuple`` with ``cache``/
+    ``cache_write``. Returns ``None`` when nothing resolves.
     """
-    rates = _exact_or_dated(model)
-    if rates is not None:
-        return rates
-    # 3. AI-gateway slugs carry a provider prefix the canonical table never
-    #    keys on (OpenRouter: "anthropic/claude-sonnet-5", "z-ai/glm-5.2").
-    #    Strip everything up to the last "/" and retry — without this, every
-    #    hosted-fleet run priced as $0 (a silent cost-metering false green).
-    if "/" in model:
-        stripped = model.rsplit("/", 1)[1]
-        rates = _exact_or_dated(stripped)
-        if rates is not None:
-            return rates
-        model = stripped
-    # 4. OpenRouter versions Anthropic slugs with dots ("claude-opus-4.8")
-    #    while the canonical table uses dashes ("claude-opus-4-8").
-    dashed = model.replace(".", "-")
-    if dashed != model:
-        return _exact_or_dated(dashed)
-    return None
-
-
-def _exact_or_dated(model: str) -> Optional[_Rates]:
-    """Steps 1–2 of the chain: exact key, then trailing-date-snapshot strip."""
-    rates = PRICES.get(model)
-    if rates is not None:
-        return rates
-    base = _DATE_SUFFIX_RE.sub("", model)
-    if base != model:
-        return PRICES.get(base)
-    return None
+    canon = _resolve_canonical_rates(model)
+    if canon is None:
+        return None
+    return _Rates(
+        input=canon["input"],
+        output=canon["output"],
+        cache=canon["cached_read"],
+        cache_write=canon["cached_write"],
+    )
 
 
 def resolve_price_source(model: str) -> Optional[PriceSource]:

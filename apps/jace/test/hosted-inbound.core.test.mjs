@@ -328,3 +328,37 @@ test("a telegram payload keyed on workspaceId (console's field name) is rejected
     /`target\.chatId` is required/,
   );
 });
+
+test("forwards target.threadTs for slack", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "C123", threadTs: "1700000000.000100" },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, {
+    channelId: "C123",
+    threadTs: "1700000000.000100",
+  });
+});
+
+test("omits threadTs when absent rather than writing undefined", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "D999" },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, { channelId: "D999" });
+  assert.ok(!("threadTs" in result.target));
+});
+
+test("drops a blank threadTs", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "C123", threadTs: "   " },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, { channelId: "C123" });
+});

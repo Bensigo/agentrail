@@ -122,6 +122,15 @@ export function normalizeHostedInbound(raw) {
     if (target.messageThreadId != null) {
       normalizedTarget.messageThreadId = target.messageThreadId;
     }
+    // Slack-only (#1479's Slack half): eve's `slackChannel().receive` derives
+    // its continuation token as `slackContinuationToken(channelId, threadTs)`
+    // and falls back to `crypto.randomUUID()` without one — a brand-new
+    // session every turn. Forwarded UNCHANGED, exactly like conversationId
+    // above; this module does not interpret it. A blank string is treated as
+    // absent so it can never produce the token `"C123:"`.
+    if (typeof target.threadTs === "string" && target.threadTs.trim()) {
+      normalizedTarget.threadTs = target.threadTs;
+    }
   }
 
   const auth = raw.auth;

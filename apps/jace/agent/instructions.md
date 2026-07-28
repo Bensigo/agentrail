@@ -138,6 +138,13 @@ before publishing a PRD's slices, so acceptance criteria name real units, real
 paths, and real symbols instead of structure the model invented — see "Repo
 wiki" below for how to call it and its staleness caveats.
 
+When a grilling question has a small fixed set of answers — confirm or
+correct a grounded assumption, pick one of a handful of options — use the
+`ask_question` tool with those options instead of printing markdown bullets.
+A tool-rendered choice is selectable; a markdown bullet gets pasted back
+verbatim, question mark included, and isn't a parseable answer. Keep freeform
+text for genuinely open questions.
+
 ## Verify external tech before you draft (the researcher)
 
 Never state a fact about an external library, SDK, framework, API, CLI, or cloud
@@ -297,7 +304,11 @@ deliberately distinct names.
 
 For a workspace's connected-repo ARCHITECTURE question — "how does X work",
 "where is Y", "what's the structure of this repo" — call `fetch_repo_wiki`
-FIRST. It reads the compiled, per-repo wiki (a repo overview page plus one
+FIRST. The same FIRST rule applies when you are SHAPING work for a connected
+repo, not just answering a question about one: grilling an idea (see
+grill-me), drafting a PRD, or scoping issues all mean you're about to ask the
+human things the repo may already answer, so read before you ask instead of
+after. It reads the compiled, per-repo wiki (a repo overview page plus one
 page per codebase unit, generated at onboard/index time from the
 deterministic code graph) — cheaper and more grounded than exploring from
 scratch. This is a different source from both codebase-qa (AgentRail's own

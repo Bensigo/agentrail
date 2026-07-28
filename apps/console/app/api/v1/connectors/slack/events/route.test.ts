@@ -369,7 +369,7 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     const res = await POST(req(messageEventBody()));
 
     expect(res.status).toBe(200);
-    const arg = mockEnqueue.mock.calls[0]?.[0] as Record<string, unknown>;
+    const arg = mockEnqueue.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
     expect(arg["conversationKey"]).toBe("D0PNCRP9N");
     expect(arg["payload"]).not.toHaveProperty("threadTs");
   });

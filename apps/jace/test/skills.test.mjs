@@ -125,8 +125,13 @@ test("to-issues gates on brief readiness before publishing (Readiness gate)", ()
   const src = skillSource("to-issues");
   assert.match(
     src,
-    /openUnknownCount/,
-    "to-issues must check openUnknownCount (the readiness signal fetch_briefs surfaces) before publishing",
+    /readiness\.ready/,
+    "to-issues must check readiness.ready (relayed verbatim by fetch_briefs) before publishing",
+  );
+  assert.match(
+    src,
+    /readiness\.blockingItems/,
+    "to-issues must read readiness.blockingItems to name the actual unanswered questions",
   );
   assert.match(
     src,
@@ -137,6 +142,41 @@ test("to-issues gates on brief readiness before publishing (Readiness gate)", ()
     src,
     /computeBriefReadiness/,
     "to-issues must attribute the check to the server-computed computeBriefReadiness, not a model judgment call",
+  );
+  // The field this gate used to read no longer exists (PR #1499 deleted
+  // openUnknownCount from fetch_briefs.core.mjs and relays `readiness`
+  // verbatim instead) — a stray reference here would mean the skill still
+  // gates on a field the tool no longer produces, which fails silently open,
+  // not loudly.
+  assert.doesNotMatch(
+    src,
+    /openUnknownCount/,
+    "to-issues must NOT reference openUnknownCount — that field was removed; the gate must read readiness instead",
+  );
+});
+
+test("to-issues treats a MISSING readiness (not computed) the same as ready: false — fails closed, never open", () => {
+  const src = skillSource("to-issues");
+  // fetch_briefs relays readiness as `undefined` (never a fabricated
+  // `ready: true`) when the console it's talking to hasn't computed one yet
+  // (an older deployment, or a mode that never carries it). If the skill
+  // doesn't say what to do with an ABSENT readiness, an unverifiable gate
+  // quietly stops gating — the worst failure mode for a check whose entire
+  // job is to stop unanswered questions reaching the builder.
+  assert.match(
+    src,
+    /missing.{0,40}\(not computed\)/is,
+    "to-issues must name the 'readiness missing / not computed' case explicitly, not just ready: true/false",
+  );
+  assert.match(
+    src,
+    /same as `?ready:\s*false`?/i,
+    "to-issues must say a missing readiness is treated the same as ready: false",
+  );
+  assert.match(
+    src,
+    /fail(?:s)? closed/i,
+    "to-issues must say the gate fails closed (refuses) when it cannot verify readiness, not open",
   );
 });
 
@@ -157,7 +197,7 @@ test("to-issues names the actual blocking item(s), not a bare 'not ready'", () =
   const src = skillSource("to-issues");
   assert.match(
     src,
-    /area and\s*\n?\s*statement, never a bare "not ready"/,
+    /name each one by area and statement, never a bare "not ready"/,
     "to-issues must instruct naming each blocking item's area + statement",
   );
 });

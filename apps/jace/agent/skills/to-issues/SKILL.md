@@ -34,28 +34,47 @@ exists, is cheaper than catching it after a PR ships against a guess.
 
 **The check:** call `fetch_briefs(mode: "get", slug: <the brief's slug>)` — or
 `fetch_briefs(mode: "anchor")` if you're working from whatever brief this
-conversation is anchored to — and read the brief it returns. Its
-`openUnknownCount` mirrors the server's own gate (`computeBriefReadiness`,
-which the `runner/briefs` route computes server-side and never asks the
-caller to derive): the count of items that are `state: "open"` AND
-`kind: "unknown"`. **Do not decide readiness yourself by reading each item's
+conversation is anchored to — and read the `readiness` object it returns
+(`{ ready, blockingItems }`, relayed VERBATIM from the console's own
+`computeBriefReadiness` — never re-derived here). Use `readiness.ready` for
+the decision and `readiness.blockingItems` to name the actual unanswered
+questions. **Do not decide readiness yourself by reading each item's
 `statement` and judging whether it "seems" settled** — that is exactly the
 model-confidence failure this gate exists to close; a confident read of an
 ambiguous item is how a question that was never actually answered gets
-treated as answered. Trust the count, and trust each item's own `kind`/
-`state` fields, nothing else.
+treated as answered. Trust `readiness.ready`/`readiness.blockingItems`,
+nothing else.
 
-**If `openUnknownCount > 0`, refuse to call `create_issue`** for any work
-derived from this brief — including a slice that looks unrelated to the open
-question, since you can't be sure it's unrelated until the question is
-answered. Tell the human exactly which item(s) are blocking — area and
-statement, never a bare "not ready" — for example:
+**Treat a missing `readiness` (not computed) the same as `ready: false`.**
+`fetch_briefs` returns `readiness` as `undefined` — never a fabricated
+`ready: true` — when the console it's talking to hasn't computed one for
+this call (an older deployment, or a mode that doesn't carry it). Absence is
+not clearance. An unverifiable gate must fail closed: if you cannot confirm
+`readiness.ready === true`, refuse and say plainly that you could not verify
+readiness for this brief, rather than proceeding as if it were ready. A gate
+that silently stops gating the moment its input goes missing is the worst
+failure mode for this particular check — the whole point is to stop
+unanswered questions reaching the builder.
+
+**If `readiness.ready` is `false`, or `readiness` is missing entirely, refuse
+to call `create_issue`** for any work derived from this brief — including a
+slice that looks unrelated to the open question, since you can't be sure
+it's unrelated until the question is answered. When `blockingItems` is
+available, name each one by area and statement, never a bare "not ready" —
+for example:
 
 > This brief still has 1 open question I can't publish past:
 > - [scope] "Does the approver need to be a repo admin, or just a workspace
 >   member?"
 >
 > Answer it, or tell me to mark it out-of-scope, and I'll continue.
+
+When `readiness` is missing rather than `false` — nothing to name — say so
+instead of inventing blocking items:
+
+> I can't verify this brief is ready to publish from (the readiness check
+> didn't come back for this brief) — I won't publish from it until I can
+> confirm it, or you tell me to proceed some other way.
 
 **Both exits are legitimate; name both, every time you refuse:**
 1. **Answer it.** The human supplies the answer (or a further grilling turn

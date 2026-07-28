@@ -191,6 +191,98 @@ test("the deleted CONTEXT-FORMAT.md and ADR-FORMAT.md do not exist under grill-m
   );
 });
 
+// Regression coverage for the 2026-07-28 wiring: fetch_briefs/save_brief
+// existed (spec PR #1487, store #1489, route #1493, tools #1497) but
+// grill-me never called either — so nothing wrote a brief and a resumed
+// conversation had no durable record to resume from, only the conversation
+// itself (impossible across a compaction or a new session).
+
+test("grill-me calls fetch_briefs and save_brief — a brief actually gets written and resumed", () => {
+  const src = skillSource("grill-me");
+  assert.match(
+    src,
+    /fetch_briefs/,
+    "grill-me must call fetch_briefs to resolve an existing brief before grilling",
+  );
+  assert.match(
+    src,
+    /save_brief/,
+    "grill-me must call save_brief to autosave resolved items as the interview progresses",
+  );
+});
+
+test("grill-me no longer claims there is no persistent store behind it", () => {
+  const src = skillSource("grill-me");
+  // The pre-briefs version of this skill said exactly this at the bottom of
+  // its Output section, because at the time it was true — CONTEXT.md/docs/adr
+  // were the only (phantom) write instructions. Briefs make it false: if this
+  // string comes back, resumption instructions have regressed to "the
+  // conversation is the only record" again.
+  assert.doesNotMatch(
+    src,
+    /no\s+persistent store behind this skill/i,
+    "grill-me must not claim there is no persistent store — save_brief/fetch_briefs are that store now",
+  );
+});
+
+test("grill-me states the resolve-before-anything-else order: anchor first, search only when unanchored", () => {
+  const src = skillSource("grill-me");
+  assert.match(
+    src,
+    /mode:\s*"anchor"/,
+    "grill-me must call fetch_briefs(mode: \"anchor\") before anything else",
+  );
+  assert.match(
+    src,
+    /mode:\s*"search"/,
+    "grill-me must fall back to fetch_briefs(mode: \"search\") only when unanchored",
+  );
+});
+
+test("grill-me requires a human confirmation before treating a brief match as settled (never a silent attach)", () => {
+  const src = skillSource("grill-me");
+  assert.match(
+    src,
+    /ask_question/,
+    "grill-me's brief-confirmation step must use ask_question, not a silent attach",
+  );
+  assert.match(
+    src,
+    /anchor:\s*true/,
+    "grill-me must describe anchoring (anchor: true) on save_brief after confirmation",
+  );
+  assert.match(
+    src,
+    /anchor:\s*false/,
+    "grill-me must describe clearing the anchor (anchor: false) on drift",
+  );
+});
+
+test("grill-me instructs relaying both save_brief refusal fields", () => {
+  const src = skillSource("grill-me");
+  assert.match(src, /skippedHumanAuthorityIds/, "grill-me must instruct relaying skippedHumanAuthorityIds");
+  assert.match(src, /skippedUnknownResolvedIds/, "grill-me must instruct relaying skippedUnknownResolvedIds");
+});
+
+test("grill-me instructs grounding + re-grounding on a stale wiki commit", () => {
+  const src = skillSource("grill-me");
+  assert.match(src, /grounding/i, "grill-me must instruct recording grounding on save_brief");
+  assert.match(
+    src,
+    /re-read|re-ground/i,
+    "grill-me must instruct re-reading/re-grounding when a cited wiki page has since recompiled",
+  );
+});
+
+test("instructions.md's Briefs section names mode=anchor as the first call", () => {
+  const src = readFileSync(instructionsPath, "utf8");
+  assert.match(
+    src,
+    /mode="anchor"/,
+    "instructions.md must name mode=\"anchor\" as fetch_briefs' first-call mode",
+  );
+});
+
 test("instructions.md wires in ask_question for closed-set questions", () => {
   const src = readFileSync(instructionsPath, "utf8");
   // ask_question renders selectable options; before this change it appeared

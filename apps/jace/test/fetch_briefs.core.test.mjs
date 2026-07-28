@@ -28,10 +28,13 @@ import {
   projectBrief,
   projectBriefWithItems,
   projectBriefs,
+  projectBriefReadiness,
   renderList,
   renderBriefDetail,
+  renderReadiness,
   renderGet,
   renderSearch,
+  renderAnchor,
   fetchBriefs,
 } from "../agent/lib/fetch_briefs.core.mjs";
 
@@ -92,8 +95,8 @@ function brief(overrides = {}) {
 // MODES / resolveConsoleConfig
 // ---------------------------------------------------------------------------
 
-test("MODES is exactly list/get/search", () => {
-  assert.deepEqual(MODES, ["list", "get", "search"]);
+test("MODES is exactly anchor/list/get/search, anchor first (call order matters)", () => {
+  assert.deepEqual(MODES, ["anchor", "list", "get", "search"]);
 });
 
 test("resolveConsoleConfig resolves + trims + de-slashes when both vars are set", () => {
@@ -143,6 +146,18 @@ test("buildBriefsUrl carries query only for mode=search", () => {
     query: "the blog thing",
   });
   assert.doesNotMatch(listUrl, /[?&]query=/);
+});
+
+test("buildBriefsUrl mode=anchor carries only eveSessionId + mode — no slug/query even if passed", () => {
+  const url = buildBriefsUrl("https://c.example.com", EVE_SESSION_ID, {
+    mode: "anchor",
+    slug: "blog",
+    query: "the blog thing",
+  });
+  assert.equal(
+    url,
+    `https://c.example.com${BRIEFS_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}&mode=anchor`,
+  );
 });
 
 test("buildBriefsUrl NEVER carries a workspace param — the workspace is resolved server-side from eveSessionId", () => {
@@ -279,7 +294,7 @@ test("projectBrief hardens title/openQuestion and grounding id strings", () => {
   assert.match(p.grounding.wikiPageSlugs[0], /javascript\[:\]alert\(3\)/);
 });
 
-test("projectBriefWithItems attaches items and derives openUnknownCount from open+unknown items only", () => {
+test("projectBriefWithItems attaches every item, and carries NO client-derived readiness count", () => {
   const raw = brief({
     items: [
       item({ id: "a", state: "open", kind: "unknown" }),
@@ -290,13 +305,50 @@ test("projectBriefWithItems attaches items and derives openUnknownCount from ope
   });
   const p = projectBriefWithItems(raw);
   assert.equal(p.items.length, 4);
-  assert.equal(p.openUnknownCount, 2, "only open+unknown items count — resolved unknowns don't block");
+  // openUnknownCount was removed deliberately: it was a second, client-side
+  // implementation of the exact predicate computeBriefReadiness already owns
+  // server-side. `readiness` (projected separately, alongside — never
+  // inside — a brief) is the one true source now.
+  assert.equal("openUnknownCount" in p, false);
 });
 
 test("projectBriefWithItems tolerates a missing items array", () => {
   const p = projectBriefWithItems(brief());
   assert.deepEqual(p.items, []);
-  assert.equal(p.openUnknownCount, 0);
+});
+
+// ---------------------------------------------------------------------------
+// projectBriefReadiness — relayed verbatim from computeBriefReadiness, never
+// re-derived from a brief's own items
+// ---------------------------------------------------------------------------
+
+test("projectBriefReadiness relays ready:true with no blocking items", () => {
+  const r = projectBriefReadiness({ ready: true, blockingItems: [] });
+  assert.deepEqual(r, { ready: true, blockingItems: [] });
+});
+
+test("projectBriefReadiness relays ready:false with the full projected blocking items, not just a count", () => {
+  const r = projectBriefReadiness({
+    ready: false,
+    blockingItems: [item({ id: "a", state: "open", kind: "unknown", statement: "Who approves posts?" })],
+  });
+  assert.equal(r.ready, false);
+  assert.equal(r.blockingItems.length, 1);
+  assert.equal(r.blockingItems[0].statement, "Who approves posts?");
+});
+
+test("projectBriefReadiness hardens blockingItems' statement/evidence the same way projectBriefItem does", () => {
+  const r = projectBriefReadiness({
+    ready: false,
+    blockingItems: [item({ statement: "see javascript:alert(1) ​here" })],
+  });
+  assert.match(r.blockingItems[0].statement, /javascript\[:\]alert\(1\)/);
+});
+
+test("projectBriefReadiness returns undefined for a missing/malformed raw value — absence, not a claim of readiness", () => {
+  assert.equal(projectBriefReadiness(undefined), undefined);
+  assert.equal(projectBriefReadiness(null), undefined);
+  assert.equal(projectBriefReadiness("not an object"), undefined);
 });
 
 test("projectBriefs projects a body's briefs array, tolerant of a missing/non-array field", () => {
@@ -332,7 +384,7 @@ test("renderList handles no briefs honestly (no fabrication)", () => {
   assert.match(text, /No briefs yet for this workspace\./);
 });
 
-test("renderBriefDetail renders title/status/openQuestion, every item, the open-unknown warning, and grounding", () => {
+test("renderBriefDetail renders title/status/openQuestion, every item, and grounding — no readiness (that's a separate render)", () => {
   const p = projectBriefWithItems(
     brief({
       items: [item({ id: "a", state: "open", kind: "unknown", statement: "Who approves posts?" })],
@@ -343,15 +395,41 @@ test("renderBriefDetail renders title/status/openQuestion, every item, the open-
   assert.match(text, /Open question: Who can publish posts\?/);
   assert.match(text, /- \[problem\] unknown\/open \(jace\) — Who approves posts\?/);
   assert.match(text, /evidence: "we want a blog so customers can read updates"/);
-  assert.match(text, /1 item\(s\) are open and still kind="unknown"/);
+  assert.doesNotMatch(text, /NOT ready|Ready for to-issues/, "readiness is rendered separately, never inside renderBriefDetail");
   assert.match(text, /Grounding: 1 wiki page\(s\) cited, commit 129103aa\./);
 });
 
-test("renderBriefDetail says 'none recorded yet' when there are no items, and omits the open-unknown warning", () => {
+test("renderBriefDetail says 'none recorded yet' when there are no items", () => {
   const p = projectBriefWithItems(brief());
   const text = renderBriefDetail(p);
   assert.match(text, /Items: none recorded yet\./);
-  assert.doesNotMatch(text, /kind="unknown"/);
+});
+
+// ---------------------------------------------------------------------------
+// renderReadiness — relayed verbatim, absence is not a claim of readiness
+// ---------------------------------------------------------------------------
+
+test("renderReadiness renders nothing (empty string) when readiness is undefined — absence, not a claim", () => {
+  assert.equal(renderReadiness(undefined), "");
+});
+
+test("renderReadiness says READY plainly when ready:true", () => {
+  const text = renderReadiness({ ready: true, blockingItems: [] });
+  assert.match(text, /Ready for to-issues/);
+});
+
+test("renderReadiness names each blocking item, not just a count, when ready:false", () => {
+  const text = renderReadiness({
+    ready: false,
+    blockingItems: [
+      { area: "scope", statement: "Who approves posts?" },
+      { area: "success-signal", statement: "How do we know it shipped?" },
+    ],
+  });
+  assert.match(text, /NOT ready for to-issues — 2 open item\(s\)/);
+  assert.match(text, /- \[scope\] Who approves posts\?/);
+  assert.match(text, /- \[success-signal\] How do we know it shipped\?/);
+  assert.match(text, /out-of-scope/);
 });
 
 test("renderGet is honest when no brief matched the slug — an expected outcome, not an error", () => {
@@ -366,6 +444,15 @@ test("renderGet renders full detail plus the untrusted notice when a brief is fo
   assert.match(text, /Add a blog \(blog\)/);
 });
 
+test("renderGet appends readiness when supplied, and stays silent about it when not", () => {
+  const p = projectBriefWithItems(brief());
+  const withReadiness = renderGet({ slug: "blog", brief: p, readiness: { ready: false, blockingItems: [] } });
+  assert.match(withReadiness, /NOT ready for to-issues/);
+
+  const withoutReadiness = renderGet({ slug: "blog", brief: p });
+  assert.doesNotMatch(withoutReadiness, /ready for to-issues/i);
+});
+
 test("renderSearch renders every hit's full detail, in order, or an honest 'nothing matched'", () => {
   const briefs = [
     projectBriefWithItems(brief({ slug: "blog", title: "Add a blog" })),
@@ -377,6 +464,26 @@ test("renderSearch renders every hit's full detail, in order, or an honest 'noth
 
   const empty = renderSearch({ query: "nope", briefs: [] });
   assert.match(empty, /No matching briefs\./);
+});
+
+test("renderAnchor is honest when nothing is anchored yet, and points at search next", () => {
+  const text = renderAnchor({ anchor: null });
+  assert.match(text, /no brief anchored yet/i);
+  assert.match(text, /mode="search"/);
+});
+
+test("renderAnchor renders the full anchored brief plus the resume-don't-restart framing", () => {
+  const p = projectBriefWithItems(brief());
+  const text = renderAnchor({ anchor: { brief: p } });
+  assert.match(text, new RegExp(UNTRUSTED_NOTICE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(text, /resume from it, never restart/i);
+  assert.match(text, /Add a blog \(blog\)/);
+});
+
+test("renderAnchor appends readiness when the anchored brief carries one", () => {
+  const p = projectBriefWithItems(brief());
+  const text = renderAnchor({ anchor: { brief: p, readiness: { ready: true, blockingItems: [] } } });
+  assert.match(text, /Ready for to-issues/);
 });
 
 // ---------------------------------------------------------------------------
@@ -512,6 +619,42 @@ test("fetchBriefs: mode=get success renders the full brief and passes slug throu
   assert.match(transport.calls[0].url, /slug=blog/);
 });
 
+test("fetchBriefs: mode=get relays the route's readiness verbatim (ready:false names the blocking item)", async () => {
+  const body = {
+    schemaVersion: 1,
+    mode: "get",
+    brief: brief({ items: [item()] }),
+    readiness: {
+      ready: false,
+      blockingItems: [item({ id: "b", state: "open", kind: "unknown", statement: "Who approves posts?" })],
+    },
+  };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "get", slug: "blog", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.readiness.ready, false);
+  assert.equal(res.readiness.blockingItems.length, 1);
+  assert.equal(res.readiness.blockingItems[0].statement, "Who approves posts?");
+  assert.match(res.rendered, /NOT ready for to-issues — 1 open item\(s\)/);
+  assert.match(res.rendered, /Who approves posts\?/);
+});
+
+test("fetchBriefs: mode=get relays readiness:true straight through when the console reports the brief ready", async () => {
+  const body = { schemaVersion: 1, mode: "get", brief: brief({ items: [item()] }), readiness: { ready: true, blockingItems: [] } };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "get", slug: "blog", env: ENV, transport });
+  assert.deepEqual(res.readiness, { ready: true, blockingItems: [] });
+  assert.match(res.rendered, /Ready for to-issues/);
+});
+
+test("fetchBriefs: mode=get with NO readiness in the body (older console) -> readiness is undefined, not fabricated as ready", async () => {
+  const body = { schemaVersion: 1, mode: "get", brief: brief({ items: [item()] }) };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "get", slug: "blog", env: ENV, transport });
+  assert.equal(res.readiness, undefined);
+  assert.doesNotMatch(res.rendered, /ready for to-issues/i);
+});
+
 test("fetchBriefs: mode=search success renders every hit and passes query through the URL", async () => {
   const body = {
     schemaVersion: 1,
@@ -536,4 +679,75 @@ test("fetchBriefs: malformed success body (no briefs array) -> empty briefs, not
   const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "list", env: ENV, transport });
   assert.equal(res.ok, true);
   assert.deepEqual(res.briefs, []);
+});
+
+// ---------------------------------------------------------------------------
+// fetchBriefs — mode=anchor: the FIRST call in the resolution order
+// ---------------------------------------------------------------------------
+
+test("fetchBriefs: mode=anchor needs no slug/query — never blocked by missing_slug/missing_query", async () => {
+  const transport = fakeTransport(() => okResponse({ schemaVersion: 1, mode: "anchor", anchor: null }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(transport.calls.length, 1);
+});
+
+test("fetchBriefs: mode=anchor, nothing anchored -> { anchor: null }, an honest outcome not a degraded one", async () => {
+  const transport = fakeTransport(() => okResponse({ schemaVersion: 1, mode: "anchor", anchor: null }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.degraded, undefined);
+  assert.equal(res.anchor, null);
+  assert.match(res.rendered, /no brief anchored yet/i);
+});
+
+test("fetchBriefs: mode=anchor, a brief IS anchored -> returns the FULL brief, same projection as mode=get", async () => {
+  const body = {
+    schemaVersion: 1,
+    mode: "anchor",
+    anchor: { brief: brief({ items: [item()] }) },
+  };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.anchor.brief.slug, "blog");
+  assert.equal(res.anchor.brief.items.length, 1);
+  assert.match(res.rendered, /resume from it, never restart/i);
+});
+
+test("fetchBriefs: mode=anchor relays the route's readiness verbatim, nested under anchor, same as mode=get", async () => {
+  const body = {
+    schemaVersion: 1,
+    mode: "anchor",
+    anchor: {
+      brief: brief({ items: [item()] }),
+      readiness: {
+        ready: false,
+        blockingItems: [item({ id: "b", state: "open", kind: "unknown", statement: "Who approves posts?" })],
+      },
+    },
+  };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.ok, true);
+  assert.equal(res.anchor.readiness.ready, false);
+  assert.equal(res.anchor.readiness.blockingItems.length, 1);
+  assert.equal(res.anchor.readiness.blockingItems[0].statement, "Who approves posts?");
+  assert.match(res.rendered, /NOT ready for to-issues — 1 open item\(s\)/);
+  assert.match(res.rendered, /Who approves posts\?/);
+});
+
+test("fetchBriefs: mode=anchor with NO readiness in the body (older console) -> readiness is undefined, not fabricated as ready", async () => {
+  const body = { schemaVersion: 1, mode: "anchor", anchor: { brief: brief({ items: [item()] }) } };
+  const transport = fakeTransport(() => okResponse(body));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.anchor.readiness, undefined);
+  assert.doesNotMatch(res.rendered, /ready for to-issues/i);
+});
+
+test("fetchBriefs: mode=anchor, session not found (404) -> degraded('not_found'), not the honest-null path", async () => {
+  const transport = fakeTransport(() => ({ status: 404, json: async () => ({ error: "Session not found" }) }));
+  const res = await fetchBriefs({ eveSessionId: EVE_SESSION_ID, mode: "anchor", env: ENV, transport });
+  assert.equal(res.degraded, true);
+  assert.equal(res.reason, "not_found");
 });

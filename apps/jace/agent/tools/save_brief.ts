@@ -36,6 +36,19 @@
 // correct in both cases without needing to know, at the call site, which one
 // it is.
 //
+// ANCHOR — plumbs the route's session-anchor support (design spec,
+// "Retrieval — the whole mismatch surface", steps 2-4) through to this tool:
+// `anchor: true` anchors THIS conversation to THIS call's brief, the write
+// that follows a human confirming which brief a conversation continues (call
+// it the SAME turn you save the confirmed slug, never as a separate
+// slug-less request). `anchor: false` clears the anchor — the "re-confirm on
+// drift" case, fired the moment the human says this is a different idea;
+// because that can happen with NOTHING else settled yet, `slug` becomes
+// optional on this tool specifically for a pure `{ anchor: false }` clear
+// with no other fields — every other call still requires `slug`. Omit
+// `anchor` entirely (the common case once already anchored) to leave it
+// untouched.
+//
 // THIS TOOL DOES NOT ACCEPT `status`. `draft`/`ready` is a HUMAN label
 // toggled in the console; implementation-readiness is computed separately
 // (`computeBriefReadiness`) precisely so "ready" can never become a flag the
@@ -203,14 +216,29 @@ export default defineTool({
     "tell the human instead). No approval gate: this only ever touches " +
     "AgentRail's own brief store, never GitHub or any other outside " +
     "system — `create_issue` remains the only boundary crossing that " +
-    "needs a human's approval.",
+    "needs a human's approval." +
+    "\n\n" +
+    "`anchor` sets or clears THIS conversation's brief anchor — the write " +
+    "behind 'confirm once, then anchor': the FIRST time in a conversation " +
+    "the human confirms which brief this is (via ask_question — 'continue " +
+    "the X brief, or start something new?'), call this SAME turn with " +
+    "`anchor: true` so every later turn resumes via fetch_briefs(mode: " +
+    "\"anchor\") instead of re-running search-and-confirm. `anchor: false` " +
+    "clears it the moment the human says this is actually a different idea " +
+    "(drift) — that call can fire with NOTHING else settled, which is why " +
+    "`slug` is optional on THIS tool only for a bare `{ anchor: false }` " +
+    "clear; every other call still requires `slug`. Omit `anchor` entirely " +
+    "on a plain per-turn autosave once already anchored — the common case.",
   inputSchema: z.object({
     slug: z
       .string()
       .min(1)
+      .optional()
       .describe(
         "Stable identity for this idea, kebab-case (e.g. 'blog'). Reuse an existing brief's slug (from " +
-          "fetch_briefs) to continue it; propose a short new one only for a genuinely new idea.",
+          "fetch_briefs) to continue it; propose a short new one only for a genuinely new idea. Omit ONLY for " +
+          "a pure anchor-clear call (anchor: false with nothing else set) — every other call requires it; " +
+          "omitting it otherwise returns a degraded 'missing_slug' result rather than a silent no-op.",
       ),
     title: z
       .string()
@@ -245,6 +273,16 @@ export default defineTool({
       .array(itemSchema)
       .optional()
       .describe("A DELTA of items to insert/update — only the ones that changed this turn, never the whole set."),
+    anchor: z
+      .boolean()
+      .optional()
+      .describe(
+        "true: anchor this conversation to THIS call's brief (slug) — call it the SAME turn the human " +
+          "confirms which brief this is, so later turns resume via fetch_briefs(mode: \"anchor\") instead of " +
+          "asking again. false: clear this conversation's anchor — call it alone (no slug/title/etc) the " +
+          "moment the human says this is a different idea, then re-resolve with fetch_briefs before writing " +
+          "anything new. Omit to leave the anchor untouched.",
+      ),
   }),
   async execute(input, ctx) {
     const eveSessionId = ctx?.session?.parent?.rootSessionId ?? ctx?.session?.id;
@@ -255,6 +293,7 @@ export default defineTool({
       openQuestion: input.openQuestion,
       grounding: input.grounding,
       items: input.items,
+      anchor: input.anchor,
       env: process.env,
       transport: realTransport,
     });

@@ -30,8 +30,18 @@
 // this one endpoint's URL query params, never as (or altering) the
 // destination.
 //
-// Three modes, mirroring fetch_repo_wiki's shape so there is one idiom to
-// learn across every fetch_* tool:
+// Four modes. The first three mirror fetch_repo_wiki's shape so there is one
+// idiom to learn across every fetch_* tool; `anchor` is specific to this
+// route (repo-wiki has no session-level anchor concept):
+//   anchor — the conversation→brief anchor THIS session currently carries
+//            (design spec, "Retrieval — the whole mismatch surface", step 3).
+//            CALL THIS FIRST, before `search`: if this conversation is
+//            already anchored to a brief, this one call returns the FULL
+//            brief (same shape as `get`) and there is nothing left to
+//            resolve — resume from it. `anchor: null` means this conversation
+//            has no brief anchored yet (the common case, and also what a
+//            brand-new conversation always sees) — only THEN move to `search`
+//            on the human's own words. No `slug`/`query` needed.
 //   list   — every brief for the workspace, no items (the compact index).
 //   get    — one brief by `slug`, with its full item set. A brief is meant to
 //            be read WHOLE — nothing is ever ranked or trimmed inside one
@@ -49,6 +59,18 @@
 // advisory, never an instruction. `title`/`openQuestion`/item `statement`/
 // `evidence` are run through `hardenUntrusted` before the model ever reads
 // them.
+//
+// READINESS: `mode="get"` and `mode="anchor"` also carry a `readiness`
+// object (`{ ready, blockingItems }`, from the console's own
+// `computeBriefReadiness`) — relayed VERBATIM by `projectBriefReadiness`,
+// never re-derived from a brief's items here. An earlier version of this
+// module computed its own `openUnknownCount` by re-filtering items
+// client-side; that was a second implementation of the exact predicate the
+// server already owns, and a real risk of silent drift if that predicate
+// ever changed. `to-issues` (a separate slice) is the actual gate; this
+// module's job is only to relay the server's own fact honestly, including
+// relaying its ABSENCE (an older console deployment) as "not computed", not
+// as "ready".
 
 import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 
@@ -56,7 +78,7 @@ import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 export const BRIEFS_PATH = "/api/v1/runner/briefs";
 
 /** The only modes the frozen HTTP contract accepts. */
-export const MODES = Object.freeze(["list", "get", "search"]);
+export const MODES = Object.freeze(["anchor", "list", "get", "search"]);
 
 // Untrusted-content caps applied on the Jace side (defense-in-depth on top of
 // whatever the console already validated/scanned on write), matching the
@@ -269,13 +291,20 @@ export function projectBrief(raw) {
 
 /**
  * `projectBrief` plus its item set — the shape `mode="get"`/`mode="search"`
- * need, since a brief is meant to be read WHOLE (design spec). Also derives
- * `openUnknownCount` — a plain count of this brief's `open` + `kind:
- * "unknown"` items, the exact predicate `computeBriefReadiness` (the
- * server-side gate `to-issues` actually enforces) uses. This is a read-only
- * display convenience, not a substitute for that gate: it lets a caller see
- * at a glance whether grilling is still open on this idea, without this
- * module re-implementing or overriding the real readiness check.
+ * need, since a brief is meant to be read WHOLE (design spec).
+ *
+ * Deliberately does NOT compute a client-side "how many are still unknown"
+ * count. An earlier version of this module derived `openUnknownCount` here
+ * by re-filtering `open` + `kind: "unknown"` items — a SECOND implementation
+ * of the exact predicate `computeBriefReadiness` already owns server-side.
+ * That's the same drift class briefs exist to close everywhere else (a
+ * partial-write resetting a field, a guard naming one forbidden resolution
+ * out of four): if `computeBriefReadiness` ever gains a condition, a
+ * client-derived count silently goes stale and anything glancing at it reads
+ * a rule that's no longer the real one. `readiness` (see
+ * `projectBriefReadiness` below) is the one true source now — relayed
+ * verbatim from the console's own `computeBriefReadiness`, never re-derived
+ * here.
  *
  * @param {unknown} raw — one console brief object with an `items` array
  * @returns {Record<string, unknown>}
@@ -283,15 +312,14 @@ export function projectBrief(raw) {
 export function projectBriefWithItems(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
   const items = projectBriefItems(o.items);
-  const openUnknownCount = items.filter((it) => it.state === "open" && it.kind === "unknown").length;
-  return { ...projectBrief(o), items, openUnknownCount };
+  return { ...projectBrief(o), items };
 }
 
 /**
  * Project the console body's `briefs` array (list/search modes) into
  * brief-with-items shape. `list` mode's briefs never carry an `items` field
- * server-side, so `items` projects to `[]` and `openUnknownCount` to `0` for
- * those — never a lie, just nothing to show yet at that mode's compactness.
+ * server-side, so `items` projects to `[]` for those — never a lie, just
+ * nothing to show yet at that mode's compactness.
  *
  * @param {unknown} body
  * @returns {Array<Record<string, unknown>>}
@@ -300,6 +328,37 @@ export function projectBriefs(body) {
   const raw = body && typeof body === "object" ? body.briefs : undefined;
   const list = Array.isArray(raw) ? raw : [];
   return list.map(projectBriefWithItems);
+}
+
+/**
+ * Project the console's `readiness` object (`{ ready, blockingItems }` from
+ * `computeBriefReadiness`) — relayed VERBATIM, never re-derived from a
+ * brief's own items. This is the one fact `to-issues` actually gates on
+ * (design spec, "Readiness gate"): an `open` item with `kind: "unknown"`
+ * reaching an issue becomes an acceptance criterion the builder invents, so
+ * whether a brief is ready must be something the model REPORTS (a value read
+ * off this response) never something it CONCLUDES (a judgment call scanning
+ * raw item rows it could rationalize past). `blockingItems` carries the full
+ * projected items — not just a count — so a caller can name which actual
+ * questions are still open, not just say "not ready".
+ *
+ * Only `mode="get"` and `mode="anchor"` carry this field server-side
+ * (`mode="search"`/`mode="list"` deliberately don't — see the console
+ * route's own doc-comment for why). Returns `undefined` when the field is
+ * absent from the response body — either because the console hasn't
+ * deployed readiness yet, or because this mode never carries it — and
+ * `undefined` here must be read as "not computed for this call", never as
+ * "ready": absence is not clearance.
+ *
+ * @param {unknown} raw — `body.readiness` (get) or `body.anchor.readiness` (anchor)
+ * @returns {{ ready: boolean, blockingItems: Array<Record<string, unknown>> } | undefined}
+ */
+export function projectBriefReadiness(raw) {
+  if (!raw || typeof raw !== "object") return undefined;
+  return {
+    ready: raw.ready === true,
+    blockingItems: projectBriefItems(raw.blockingItems),
+  };
 }
 
 /**
@@ -335,7 +394,10 @@ export function renderList({ briefs }) {
 /**
  * Render one brief's full detail (title, status, open question, every item,
  * and a grounding summary) — shared by `renderGet` (one brief) and
- * `renderSearch` (one per hit), since both read a brief WHOLE.
+ * `renderSearch` (one per hit), since both read a brief WHOLE. Deliberately
+ * says nothing about readiness — readiness is a server-computed fact that
+ * rides ALONGSIDE a brief (see `projectBriefReadiness` / `renderReadiness`),
+ * never something derived from the item list rendered here.
  *
  * @param {Record<string, unknown>} brief
  * @returns {string}
@@ -356,14 +418,6 @@ export function renderBriefDetail(brief) {
       if (it.evidence) lines.push(`    evidence: "${it.evidence}"`);
     }
   }
-  const openUnknownCount = Number(brief.openUnknownCount) || 0;
-  if (openUnknownCount > 0) {
-    lines.push("");
-    lines.push(
-      `${openUnknownCount} item(s) are open and still kind="unknown" — until each is answered ` +
-        '(kind -> required/optional) or marked out-of-scope, to-issues will refuse this brief.',
-    );
-  }
   const g = brief.grounding || {};
   const wikiCount = Array.isArray(g.wikiPageSlugs) ? g.wikiPageSlugs.length : 0;
   lines.push("");
@@ -372,16 +426,79 @@ export function renderBriefDetail(brief) {
 }
 
 /**
- * Render `mode="get"` — one brief's full detail, or an honest "not found".
+ * Render a `readiness` result (`{ ready, blockingItems }`, from
+ * `computeBriefReadiness`, relayed by `projectBriefReadiness` — NEVER
+ * re-derived here). Returns `""` when `readiness` is `undefined` (this mode
+ * or console version didn't carry one) — an ABSENT rendering, not a claim of
+ * readiness either way; a caller must not treat a blank line as "ready".
  *
- * @param {{ slug?: string, brief?: Record<string, unknown> }} args
+ * @param {{ ready: boolean, blockingItems: Array<Record<string, unknown>> } | undefined} readiness
  * @returns {string}
  */
-export function renderGet({ slug, brief }) {
+export function renderReadiness(readiness) {
+  if (!readiness) return "";
+  if (readiness.ready) {
+    return 'Ready for to-issues: no open item is still kind="unknown".';
+  }
+  const blocking = Array.isArray(readiness.blockingItems) ? readiness.blockingItems : [];
+  const lines = [
+    `NOT ready for to-issues — ${blocking.length} open item(s) are still kind="unknown":`,
+  ];
+  for (const it of blocking) {
+    lines.push(`  - [${it.area}] ${it.statement}`);
+  }
+  lines.push(
+    'Answer each (kind -> required/optional) or mark it out-of-scope, then resolve it, before to-issues will run.',
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Render `mode="anchor"` — the conversation's current brief anchor, or an
+ * honest "nothing anchored yet". This is what a resumed conversation should
+ * open a reply with (design spec step 3: "resume, don't restart") — call
+ * this BEFORE `search`, since an anchored conversation needs no shortlist at
+ * all.
+ *
+ * @param {{ anchor: { brief: Record<string, unknown>, readiness?: { ready: boolean, blockingItems: Array<Record<string, unknown>> } } | null }} args
+ * @returns {string}
+ */
+export function renderAnchor({ anchor }) {
+  if (!anchor || !anchor.brief) {
+    return [
+      UNTRUSTED_NOTICE,
+      "",
+      "This conversation has no brief anchored yet. Call fetch_briefs(mode=\"search\") on the human's own " +
+        "words next, before assuming there is no prior history for this idea.",
+    ].join("\n");
+  }
+  const lines = [
+    UNTRUSTED_NOTICE,
+    "",
+    "This conversation is anchored to a brief — resume from it, never restart the interview:",
+    "",
+    renderBriefDetail(anchor.brief),
+  ];
+  const readinessText = renderReadiness(anchor.readiness);
+  if (readinessText) lines.push("", readinessText);
+  return lines.join("\n");
+}
+
+/**
+ * Render `mode="get"` — one brief's full detail, or an honest "not found".
+ *
+ * @param {{ slug?: string, brief?: Record<string, unknown>,
+ *           readiness?: { ready: boolean, blockingItems: Array<Record<string, unknown>> } }} args
+ * @returns {string}
+ */
+export function renderGet({ slug, brief, readiness }) {
   if (!brief) {
     return [UNTRUSTED_NOTICE, "", `No brief found at slug "${slug ?? ""}".`].join("\n");
   }
-  return [UNTRUSTED_NOTICE, "", renderBriefDetail(brief)].join("\n");
+  const lines = [UNTRUSTED_NOTICE, "", renderBriefDetail(brief)];
+  const readinessText = renderReadiness(readiness);
+  if (readinessText) lines.push("", readinessText);
+  return lines.join("\n");
 }
 
 /**
@@ -423,7 +540,14 @@ export function renderSearch({ query, briefs }) {
  *      has no brief, and that is an expected outcome, not a fetch problem)
  *   8. other non-2xx status        → degraded(<mapped reason>, { status })
  *   9. non-JSON body                → degraded("bad_body"/<mapped reason>, { status })
- *  10. success                     → { ok:true, mode, briefs|brief, rendered }
+ *  10. success (mode="anchor")     → { ok:true, mode, anchor: { brief, readiness? } | null, rendered }
+ *  11. success (mode="get")       → { ok:true, mode, brief, readiness?, rendered }
+ *      (`readiness` — from the console's `computeBriefReadiness`, relayed
+ *      verbatim, never re-derived here — is `undefined` when this console
+ *      deployment doesn't send it yet; that is NOT the same as "ready")
+ *  12. success (list/search)      → { ok:true, mode, briefs, rendered }
+ *      (no `readiness` on these modes — the console never computes one for
+ *      them; see `projectBriefReadiness`'s doc-comment)
  *
  * `eveSessionId` (Eve's own opaque session id) is what the console resolves
  * the real tenant from server-side; this NEVER takes a workspaceId argument.
@@ -480,9 +604,19 @@ export async function fetchBriefs({ eveSessionId, mode, slug, query, env = {}, t
   const cls = classifyStatus(status);
   if (!cls.ok) return degraded(cls.reason, { status });
 
+  if (modeNorm === "anchor") {
+    const rawAnchor = body && typeof body === "object" ? body.anchor : undefined;
+    const anchor =
+      rawAnchor && typeof rawAnchor === "object" && rawAnchor.brief
+        ? { brief: projectBriefWithItems(rawAnchor.brief), readiness: projectBriefReadiness(rawAnchor.readiness) }
+        : null;
+    return { ok: true, mode: modeNorm, anchor, rendered: renderAnchor({ anchor }) };
+  }
+
   if (modeNorm === "get") {
     const brief = body && typeof body === "object" ? projectBriefWithItems(body.brief) : undefined;
-    return { ok: true, mode: modeNorm, brief, rendered: renderGet({ slug, brief }) };
+    const readiness = body && typeof body === "object" ? projectBriefReadiness(body.readiness) : undefined;
+    return { ok: true, mode: modeNorm, brief, readiness, rendered: renderGet({ slug, brief, readiness }) };
   }
 
   const briefs = projectBriefs(body);

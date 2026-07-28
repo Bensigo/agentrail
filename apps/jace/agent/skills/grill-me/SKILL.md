@@ -10,7 +10,118 @@ requirements summary. This is a READ-ONLY conversation: you are drafting, not
 publishing. Never call `create_issue` from this skill — grilling produces a
 summary the human reviews, not an issue.
 
-## Context preflight (mandatory, before question one)
+## Brief resolution (before anything else — before preflight, before question one)
+
+A brief is the durable, server-side understanding of ONE product idea
+(`fetch_briefs` / `save_brief`; see `instructions.md`'s `## Briefs` for the
+tool contract). Grilling an idea without first checking for its brief is how
+the 2026-07-27 blog session re-asked things already settled: resolve the
+brief BEFORE doing anything else, in this exact order:
+
+1. **`fetch_briefs(mode: "anchor")` first, always, no exceptions.** This
+   costs nothing — no slug, no query, just this session's own id — and if
+   this conversation is already anchored to a brief, this ONE call returns it
+   whole. If it does, skip straight to "Resume, never restart" below: do not
+   run `search`, do not ask which idea this is, do not start the interview
+   over.
+2. **Only when unanchored (`anchor: null`)** — call `fetch_briefs(mode:
+   "search")` on the human's own words describing the idea, to shortlist
+   candidates.
+3. A strong search hit needs a human confirmation before you touch it
+   further — see "Confirm once, then anchor" immediately below. Never treat a
+   search hit as settled on its own.
+4. No hit — this is a genuinely new idea. Propose a short kebab-case slug
+   (e.g. `blog`, `crm-import`) and confirm it the same way.
+
+## Confirm once, then anchor — never silently attach
+
+Never attach a message to a brief without asking. When `search` returns a
+plausible match, use `ask_question` with a closed set: *"This sounds like
+the [Blog] brief — continue it, or start something new?"* Only once the
+human answers do you proceed:
+
+- **Confirmed** → call `save_brief` with `anchor: true` in the SAME call
+  that (creates or) touches that brief. This anchors the conversation, so
+  every later turn resolves via `fetch_briefs(mode: "anchor")` instead of
+  running search-and-confirm again.
+- **New idea** → propose the slug, confirm it the same way, then create the
+  brief with `save_brief` (still `anchor: true` on that first call).
+- **Drift mid-conversation** — the human says this is actually a different
+  idea than the one you're anchored to — call `save_brief({ anchor: false })`
+  (no slug needed for this call) to clear the anchor, then re-resolve from
+  step 2 above before writing anything new.
+
+**Why this costs a turn, and why it's worth it:** briefs are long-lived and
+REOPENED rather than forked — there is no close to bound the damage the way
+there is for an issue. A wrong silent attach merges two ideas' understanding
+permanently; the split-brief repair for that mistake doesn't exist yet (v1
+ships prevention, not repair — see the design spec's "Out of scope"). One
+question that costs a turn beats a merge that costs the idea's own history.
+
+## Resume, never restart
+
+With a brief in hand (from `mode: "anchor"` or a confirmed `search` hit),
+open with what's already settled:
+
+- Name the areas already PINNED, in the human's own words — the brief's
+  `evidence` field carries what they actually said, not your paraphrase of
+  it. Use that language back at them: *"you said 'monorepo... console has
+  auth already'"* lands; a normalized restatement of the same fact doesn't
+  carry the same weight and can drift from what was actually meant.
+- Restate the `openQuestion` that was in flight, if any, and pick up there.
+- Name which areas are still OPEN, and drive at those next.
+
+Never open with "so, tell me about the blog" when a brief already exists —
+that is exactly the failure a brief exists to prevent: the human already
+answered this, and re-asking teaches them the tool doesn't remember.
+
+## Autosave: write per resolved item, not at the end
+
+Call `save_brief` the moment something settles — an area pins, or the
+question in flight changes — never batched up for the end of the
+conversation. `items` is a DELTA: send only what changed this turn, never
+the whole item set; the console patches it in place. Update
+`openQuestion` the same way whenever what's in flight changes.
+
+**Why per-turn, not per-conversation:** this is what lets understanding
+survive a context compaction. The model can lose the conversation — its own
+memory of what was said — but the brief, once saved, does not vanish with it.
+A grill that dies mid-interview after three turns of autosave still leaves
+three pinned areas behind; a grill that plans to write everything at the end
+leaves nothing if it never reaches one.
+
+## Relay refusals — never let a silent drop look like a save
+
+`save_brief` returns two fields that are REFUSALS, not incidental detail.
+Both must be relayed to the human on the turn they appear — silence on
+either means telling someone their answer was recorded when it wasn't,
+which is worse than never having tried to save it at all:
+
+- **`skippedHumanAuthorityIds`** — a human already edited this item in the
+  console; your write was dropped, full stop. Human edits win. Tell the
+  human their version was kept — never claim you updated it.
+- **`skippedUnknownResolvedIds`** — an item can't resolve while its `kind`
+  is still `unknown`. An unknown isn't a requirement yet, so there's nothing
+  to mark resolved: answer it first (`kind` → `required`/`optional`) or mark
+  it `out-of-scope`, then resolve it in a follow-up call.
+
+## Grounding, and re-grounding when stale
+
+Record which wiki pages and memory items informed this brief, and the
+wiki's commit stamp at the time — pass `grounding: { wikiPageSlugs,
+memoryItemIds, commitSha }` on `save_brief` alongside whatever else that call
+is writing.
+
+On resume, compare stamps: same commit as what `fetch_repo_wiki` reports now
+→ continue. Any cited page has since recompiled to a newer commit →
+**re-read it before proposing anything new, and say so out loud** — "the
+wiki has moved since this brief was last grounded, let me re-check before I
+propose anything" — not a warning buried in your own reasoning. A
+three-week-old read of a repo that has since moved is exactly how a
+confident wrong proposal gets made; the stamp comparison is what catches it
+before it happens rather than after a human notices the proposal is wrong.
+
+## Context preflight (before question one, once brief resolution is done)
 
 Grilling is not itself an "architecture question," but you are about to ask
 the human things the repo may already answer — so read before you ask:
@@ -61,6 +172,8 @@ Cover, in roughly this order, and stop asking once an area is pinned:
 6. **Open questions** — what is still unresolved or assumed. Surface assumptions
    explicitly rather than silently resolving them.
 
+As each area pins, save it — see "Autosave" above. Don't wait for all six.
+
 ## Track coverage, don't drift
 
 Track which of the six areas above are PINNED (settled with a concrete
@@ -104,12 +217,13 @@ handful of options, confirm or correct a grounded assumption — call the
 A tool-rendered choice is selectable; a markdown bullet gets pasted back
 verbatim, question mark and all, and isn't a parseable answer. Keep freeform
 text for genuinely open questions ("what's the smallest slice worth shipping
-first?").
+first?"). This is also how you run brief confirmation and drift re-confirms
+above — both are closed sets.
 
 ## Sharpen the domain model as you go
 
 Grilling is also where the project's language gets sharpened — but that's a
-conversation, not a write. Jace never authors `CONTEXT.md`. Repos that
+conversation, not a file write. Jace never authors `CONTEXT.md`. Repos that
 maintain one keep maintaining it; you read it — through `fetch_repo_wiki`,
 which compiles it like everything else in the wiki — you never create or edit
 it yourself.
@@ -125,9 +239,8 @@ it yourself.
   works, check it against the wiki or workspace memory, and surface any
   contradiction you find.
 
-Fold resolved terms into the requirements summary below — under Constraints or
-Open questions, whichever fits — rather than into any file. The summary is
-the durable record of this conversation.
+Fold resolved terms into the brief — under Constraints or Open questions,
+whichever fits — via `save_brief`, same as any other resolved item.
 
 ## Verify external tech, don't assume it
 
@@ -144,7 +257,8 @@ grow out of it don't inherit a guess.
 ## Output: requirements summary
 
 When the interview has pinned enough to act on, emit a structured summary with
-these headings, in this order, filled from the conversation:
+these headings, in this order, filled from the conversation (and from the
+brief's already-pinned items, if you resumed one):
 
 ```
 ## Problem
@@ -167,11 +281,12 @@ these headings, in this order, filled from the conversation:
 - <unresolved question or explicit assumption>
 ```
 
-If the conversation resumes after a gap, restate the current pinned/open
-state at the top rather than starting the interview over — there is no
-persistent store behind this skill yet, so the conversation itself is the
-only record, and re-asking a question the human already answered is exactly
-the failure this skill exists to prevent.
+This summary is a rendering of the brief for the human to read in this
+conversation, not a second source of record — the brief, already
+autosaved throughout, is what actually survives. If the conversation resumes
+after a gap, the brief IS the resumption mechanism (see "Resume, never
+restart" above) — restate its pinned/open state at the top rather than
+starting the interview over.
 
 Keep it direct and concrete — no hype, no vague reassurance, no filler. The
 summary is the input to `to-prd` (to draft a PRD) or, for a small single slice,

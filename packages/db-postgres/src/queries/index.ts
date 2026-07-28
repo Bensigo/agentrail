@@ -2769,3 +2769,13 @@ export {
   type WorkspaceQueueEntriesResult,
   type ResolvedRefKind,
 } from "./work_status.js";
+
+// Jace input guardrails (spec: docs/superpowers/specs/2026-07-28-jace-input-
+// guardrails-design.md) — the ONLY writer of `guardrail_events`, called by
+// channel-dispatch.ts once per finding. `recordGuardrailEvent` never throws:
+// an audit write must not be able to kill the inbox drain loop.
+export {
+  recordGuardrailEvent,
+  hashContent,
+  type RecordGuardrailEventInput,
+} from "./guardrail_events.js";

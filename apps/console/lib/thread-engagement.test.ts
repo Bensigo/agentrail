@@ -130,4 +130,14 @@ describe("decideEngagement", () => {
     // out": a real bow-out would stamp dormantSince with `now`.
     expect(d.nextState.dormantSince).toBeNull();
   });
+
+  it("ignores a top-level channel message from the engaged speaker when not mentioned", () => {
+    const d = decideEngagement({
+      inbound: inbound({ threadId: null }),
+      state: ENGAGED,
+      now: NOW,
+    });
+    expect(d.turn).toBe(false);
+    expect(d.nextState).toEqual(ENGAGED);
+  });
 });

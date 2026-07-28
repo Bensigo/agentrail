@@ -121,15 +121,25 @@ const HOSTED_INBOUND_PINS_CONVERSATION: ReadonlySet<string> = new Set(["discord"
  * (#1284/#1285); this only adds the discord/slack cases alongside it (issue
  * #1364 is in flight on the same Telegram 'ask'/signup path — keeping that
  * code untouched minimizes the eventual merge conflict).
+ *
+ * `slackThreadTs` (final whole-branch review, finding #1): the Slack thread
+ * this send belongs in, sourced by every call site below from the row's own
+ * `payload.threadTs` (Slack-only — see `TelegramInboxPayload.threadTs`).
+ * Forwarded ONLY to the Slack branch; Discord's and Telegram's sends stay
+ * byte-unchanged, since a channel conversation is thread-scoped for Slack
+ * alone (a system send with no thread id posts flat in the channel, which is
+ * exactly the regression this parameter fixes — see the picker/`/connect`/
+ * pin-confirmation call sites in `processRow` below).
  */
 async function sendSystemChannelMessage(
   channel: string,
   targetId: string,
   text: string,
-  messageThreadId?: string
+  messageThreadId?: string,
+  slackThreadTs?: string
 ) {
   if (channel === "discord") return sendSystemDiscordMessage(targetId, text);
-  if (channel === "slack") return sendSystemSlackMessage(targetId, text);
+  if (channel === "slack") return sendSystemSlackMessage(targetId, text, slackThreadTs);
   return sendSystemTelegramMessage(targetId, text, messageThreadId);
 }
 
@@ -186,6 +196,14 @@ interface TelegramInboxPayload {
    */
   interactionToken?: string;
   applicationId?: string;
+  /**
+   * Slack-only (#1479's Slack half): the thread this conversation lives in.
+   * Set by the Slack door from `resolveSlackThread`. eve's Slack continuation
+   * token IS `channelId:threadTs` — with none, `slackChannel().receive` falls
+   * back to `crypto.randomUUID()` and every turn starts a new session. A
+   * telegram/discord payload never carries this.
+   */
+  threadTs?: string;
 }
 
 /**
@@ -248,6 +266,10 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   const applicationId = p["applicationId"];
   if (typeof applicationId === "string" && applicationId.trim()) {
     result.applicationId = applicationId;
+  }
+  const threadTs = p["threadTs"];
+  if (typeof threadTs === "string" && threadTs.trim()) {
+    result.threadTs = threadTs;
   }
   return result;
 }
@@ -410,6 +432,9 @@ async function runEveTurn(params: {
   channel?: string;
   chatId?: number | string;
   messageThreadId?: number | string;
+  /** Slack-only — see TelegramInboxPayload.threadTs. Ignored for every other
+   * channel, so their targets stay byte-unchanged. */
+  threadTs?: string;
   /**
    * Console (#1288): a pre-built target object, used AS-IS instead of the
    * chatId/channelId-keyed shape every external channel builds below.
@@ -458,6 +483,9 @@ async function runEveTurn(params: {
         : {}),
       ...(params.messageThreadId !== undefined
         ? { messageThreadId: params.messageThreadId }
+        : {}),
+      ...(channel === "slack" && params.threadTs !== undefined
+        ? { threadTs: params.threadTs }
         : {}),
     };
   let response: Response;
@@ -841,7 +869,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
             // one at , then send /connect again."
             consoleUrl: consolePublicUrl || "the console",
           }),
-          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+          payload.threadTs
         );
         await completeChannelMessage(row.id);
         return "completed";
@@ -854,7 +883,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           row.channel,
           String(payload.chatId),
           "Something went wrong handling /connect. Try again in a moment.",
-          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+          payload.threadTs
         );
         await completeChannelMessage(row.id);
         return "completed";
@@ -876,7 +906,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
             row.channel,
             String(payload.chatId),
             buildPinConfirmationMessage(chosen.name),
-            payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+            payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+            payload.threadTs
           );
           await completeChannelMessage(row.id);
           return "completed";
@@ -889,7 +920,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         row.channel,
         String(payload.chatId),
         buildWorkspaceChoiceMessage(decision.options),
-        payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
+        payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+        payload.threadTs
       );
       await completeChannelMessage(row.id);
       return "completed";
@@ -954,6 +986,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       chatId: payload.chatId,
       conversationKey: row.conversationKey,
       messageThreadId: payload.messageThreadId,
+      threadTs: payload.threadTs,
       auth,
     });
 

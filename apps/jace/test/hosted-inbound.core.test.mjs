@@ -328,3 +328,63 @@ test("a telegram payload keyed on workspaceId (console's field name) is rejected
     /`target\.chatId` is required/,
   );
 });
+
+test("forwards target.threadTs for slack", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "C123", threadTs: "1700000000.000100" },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, {
+    channelId: "C123",
+    threadTs: "1700000000.000100",
+  });
+});
+
+test("omits threadTs when absent rather than writing undefined", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "D999" },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, { channelId: "D999" });
+  assert.ok(!("threadTs" in result.target));
+});
+
+test("drops a blank threadTs", () => {
+  const result = normalizeHostedInbound({
+    channel: "slack",
+    message: "hello",
+    target: { channelId: "C123", threadTs: "   " },
+    auth: { workspaceId: "ws-1" },
+  });
+  assert.deepEqual(result.target, { channelId: "C123" });
+});
+
+// threadTs is Slack-only (per the inline comment above it in
+// hosted_inbound.core.mjs) — a telegram or discord target must come out
+// byte-identical to before threadTs existed, so a stray threadTs on those
+// channels must be dropped exactly like any other stray target key.
+test("drops a stray threadTs on a telegram target (Slack-only field, not forwarded elsewhere)", () => {
+  const result = normalizeHostedInbound({
+    channel: "telegram",
+    message: "hello",
+    target: { chatId: 1, threadTs: "1700000000.000100" },
+    auth: {},
+  });
+  assert.deepEqual(result.target, { chatId: 1 });
+  assert.ok(!("threadTs" in result.target));
+});
+
+test("drops a stray threadTs on a discord target (Slack-only field, not forwarded elsewhere)", () => {
+  const result = normalizeHostedInbound({
+    channel: "discord",
+    message: "hello",
+    target: { channelId: "C1", threadTs: "1700000000.000100" },
+    auth: {},
+  });
+  assert.deepEqual(result.target, { channelId: "C1" });
+  assert.ok(!("threadTs" in result.target));
+});

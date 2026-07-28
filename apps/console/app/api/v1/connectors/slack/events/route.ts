@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveInboundChatIdentity, enqueueChannelMessage } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { verifySlackSignature } from "../../../../../../lib/slack-bot";
+import { resolveSlackThread } from "../../../../../../lib/slack-thread";
 
 /**
  * Shared Slack Events API webhook — the Slack half of the hosted Jace door
@@ -59,6 +60,7 @@ interface SlackMessageEvent {
   bot_id?: string;
   subtype?: string;
   ts?: string;
+  thread_ts?: string;
 }
 
 interface SlackEventEnvelope {
@@ -112,7 +114,7 @@ export async function POST(request: NextRequest) {
   if (
     event.type !== "message" ||
     event.bot_id ||
-    event.subtype ||
+    (event.subtype && event.subtype !== "thread_broadcast") ||
     !event.channel ||
     !event.user ||
     typeof event.text !== "string" ||
@@ -121,6 +123,14 @@ export async function POST(request: NextRequest) {
     // Not a genuine fresh human message this door understands (a
     // non-"message" event, this bot's/another bot's own post, an edit/join/
     // other subtype, or missing fields) — ack, never enqueue.
+    //
+    // `subtype === "thread_broadcast"` is the one exception (final
+    // whole-branch review, finding #2): a thread reply sent with Slack's
+    // "Also send to channel" checkbox carries that subtype but is a genuine
+    // human turn — it has the same text/user/channel/ts/thread_ts shape as
+    // any other in-thread reply, so admitting it here is enough for it to
+    // flow through the existing path unchanged. Every other subtype (edits,
+    // deletes, joins, ...) and any bot_id stay rejected.
     return json({ ok: true, ignored: true });
   }
 
@@ -142,10 +152,20 @@ export async function POST(request: NextRequest) {
     ? { workspaceId: identity.workspaceId }
     : { chatIdentityId: identity.id };
 
+  // Thread-scoped conversation key + the thread eve must reply in. A channel
+  // message is its own conversation per THREAD (see lib/slack-thread.ts); a
+  // DM is exempt and byte-unchanged.
+  const thread = resolveSlackThread({
+    channel: event.channel,
+    ts: event.ts,
+    thread_ts: event.thread_ts,
+    channel_type: event.channel_type,
+  });
+
   const result = await enqueueChannelMessage({
     ...anchor,
     channel: "slack",
-    conversationKey: event.channel,
+    conversationKey: thread.conversationKey,
     kind: "message",
     senderId: event.user,
     // No senderDisplay: see the displayName comment above — event.user is a
@@ -154,7 +174,11 @@ export async function POST(request: NextRequest) {
     // Slack redelivers on a slow ack using the SAME event_id (carried via
     // X-Slack-Retry-Num) — namespaced by channel for consistency with every
     // other channel's (channel, provider_message_id) unique, though event_id
-    // is already globally unique on its own.
+    // is already globally unique on its own. Deliberately still keyed on
+    // event.channel (not thread.conversationKey): this is a redelivery
+    // dedupe key over Slack's globally-unique event_id, not a conversation
+    // key — re-keying it on the thread would let one Slack event enqueue
+    // twice for two different threads.
     providerMessageId: `${event.channel}:${body.event_id ?? event.ts}`,
     payload: {
       // Reuses the SAME field name channel-dispatch.ts's extractPayload
@@ -163,6 +187,10 @@ export async function POST(request: NextRequest) {
       chatId: event.channel,
       text: event.text,
       fromId: event.user,
+      // Slack-only; omitted (never written as `undefined`) for a DM, so a DM
+      // payload stays byte-identical to today's. Task 3 reads this back to
+      // know which thread to reply in.
+      ...(thread.threadTs !== undefined ? { threadTs: thread.threadTs } : {}),
     },
   });
 

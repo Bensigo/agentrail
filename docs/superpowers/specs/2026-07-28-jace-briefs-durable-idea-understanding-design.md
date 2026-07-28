@@ -247,8 +247,12 @@ where each item is `{ id?, area, statement, evidence?, kind, state?, resolution?
 
 Two invariants live in the ROUTE, not in any prompt: items with
 `authority: 'human'` are never overwritten by `save_brief`, and `save_brief`
-may not set `state: 'resolved'` + `resolution: 'deferred'` on an item whose
-`kind` is `unknown`.
+may not set `state: 'resolved'` on an item whose `kind` is `unknown`, with any
+resolution or none — an unknown is not a requirement yet, so there is nothing
+to resolve. Change the kind first (answered → `required`/`optional`, dropped →
+`out-of-scope`). Naming only `deferred` here would close one door in a room
+with four: the readiness gate keys on `state = 'open' AND kind = 'unknown'`, so
+ANY resolution clears it.
 
 ## Verification
 

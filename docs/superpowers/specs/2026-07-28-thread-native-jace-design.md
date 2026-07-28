@@ -95,12 +95,18 @@ ThreadInbound {
 
 ### 2. Engagement — one shared state machine
 
-A new pure core module, `apps/jace/agent/lib/thread-engagement.core.mjs`,
-following `intent-classifier.core.mjs`'s shape: no network, no model call,
-`node --test`-able, one exported decision function.
+A new pure module, **`apps/console/lib/thread-engagement.ts`**, following
+`intent-classifier.core.mjs`'s shape — no network, no model call, one exported
+decision function — but living console-side, next to `slack-thread.ts`.
+
+(An earlier draft of this spec put it in `apps/jace/agent/lib/`. That is wrong:
+every inbound door and the dispatcher that runs this decision are console code,
+and `apps/jace` has no access to `jace_sessions`. Jace-side placement would
+mean an HTTP round trip to reach the state the decision needs.)
 
 ```
-decideEngagement({ inbound, dormantSince }) -> { turn, nextDormantSince, reason }
+decideEngagement({ inbound, state }) -> { turn, nextState, reason }
+  state = { dormantSince: Date | null, engagedSpeakerId: string | null }
 ```
 
 Engagement is **conversation state, not per-message classification**. The
@@ -266,8 +272,12 @@ thread-name derivation and truncation; the door gate's three branches.
 4. A message in that thread from a **different** person, with no `@Jace`, is
    **not** answered — the one-on-one rule.
 5. `@Jace` in that thread re-engages it, whoever sends it.
-5. The same four in Slack.
-6. A Slack **channel** conversation resumes across turns (proving #1479's Slack
+6. The same five in Slack. Note this is a **behavior change for Slack**, not
+   just parity: PR 1 shipped Slack threading with **no mention gate at all**
+   (the door enqueues every non-bot, non-subtype `message` event and ignores
+   `app_mention`), so today Jace answers every message in every Slack channel
+   it receives events for. The engagement machine is what closes that.
+7. A Slack **channel** conversation resumes across turns (proving #1479's Slack
    half): a second thread reply reaches a Jace that remembers the first.
 
 ## Out of scope

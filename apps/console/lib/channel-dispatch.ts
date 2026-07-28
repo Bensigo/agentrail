@@ -36,6 +36,8 @@ import {
   listWorkspacesForChatIdentity,
   setChatIdentityLinkToken,
   repinConversationWorkspace,
+  appendJaceMessage,
+  recordGuardrailEvent,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
@@ -51,6 +53,16 @@ import {
   type WorkspaceRef,
 } from "./connect-command";
 import { renderConnectReply } from "./connect-command-copy";
+// The input-guardrail seam (spec: docs/superpowers/specs/2026-07-28-jace-
+// input-guardrails-design.md) — moderation, injection screening and PII
+// cleansing, applied to EVERY channel at this one dispatcher.
+import {
+  screenInboundMessage,
+  moderationGate,
+  blockNotice,
+  redactionNotice,
+} from "./guardrails/input-guardrails";
+import type { Finding, GuardrailTrust } from "./guardrails/types";
 
 /**
  * The NON-SECRET destination key each channel's hosted-inbound `target`
@@ -551,6 +563,114 @@ async function withReplyContextPreface(
 }
 
 /**
+ * THE INPUT-GUARDRAIL SEAM (spec: docs/superpowers/specs/2026-07-28-jace-
+ * input-guardrails-design.md).
+ *
+ * Every channel — telegram, discord, slack, console — converges on this
+ * dispatcher, so screening here covers all four with ONE seam rather than
+ * four webhook-side copies. It runs BEFORE `runEveTurn`, so a blocked message
+ * costs zero model tokens, and it runs against an already-durable
+ * `channel_inbox` row, so the audit trail survives a crash mid-screen.
+ *
+ * Returns what the caller needs to proceed and nothing else: whether the turn
+ * may run, the (possibly PII-cleansed) text it should run on, and an optional
+ * user-facing notice. It performs NO channel I/O itself — the caller sends the
+ * notice through its own channel's sender, because console (`appendJaceMessage`)
+ * and the chat channels (`sendSystemChannelMessage`) have different seams.
+ *
+ * NEVER THROWS. `recordGuardrailEvent` swallows its own write failures, and
+ * the moderation layer fails open by contract, so a guardrail problem can
+ * never fail an inbox row or kill the drain loop.
+ */
+async function applyInputGuardrails(params: {
+  text: string;
+  trust: GuardrailTrust;
+  channel: string;
+  conversationKey: string;
+  workspaceId: string | null;
+  chatIdentityId: string | null;
+}): Promise<{ allowed: boolean; text: string; notice: string | null }> {
+  const { text, trust, channel, conversationKey, workspaceId, chatIdentityId } = params;
+
+  const screened = screenInboundMessage(text, { trust });
+
+  // One audit row per FINDING, so a category can be counted independently.
+  // `normalizedText` is hashed by the query helper and never stored.
+  const audit = (
+    finding: Finding,
+    verdict: "allow" | "redact" | "block" | "error"
+  ) =>
+    recordGuardrailEvent({
+      workspaceId,
+      chatIdentityId,
+      channel,
+      conversationKey,
+      category: finding.category,
+      verdict,
+      detector: finding.detector,
+      reason: finding.reason,
+      matchTypes: [{ type: finding.type, offsets: finding.offsets }],
+      normalizedText: screened.text,
+    });
+
+  for (const finding of screened.findings) {
+    // A PII finding is always a redact; an injection finding is a block only
+    // for a stranger — for a bound member it is recorded as `allow`, which is
+    // exactly the "warn" tier (see injection.ts's trust tiers).
+    const verdict =
+      finding.category === "pii"
+        ? "redact"
+        : screened.verdict === "block"
+          ? "block"
+          : "allow";
+    await audit(finding, verdict);
+  }
+
+  if (screened.verdict === "block") {
+    return { allowed: false, text: screened.text, notice: blockNotice(screened.findings) };
+  }
+
+  // Layer 3 runs LAST and only on a message the free layers allowed, so a
+  // message already rejected for injection never costs a moderation call.
+  const moderation = await moderationGate(screened.text);
+
+  if (moderation.finding) {
+    // A finding is recorded whether or not it blocks: a non-blocking hazard
+    // (S14, see MODERATION_NON_BLOCKING_HAZARDS) still belongs in the audit
+    // trail so its rate stays visible.
+    await audit(moderation.finding, moderation.blocked ? "block" : "allow");
+    if (moderation.blocked) {
+      return {
+        allowed: false,
+        text: screened.text,
+        notice: blockNotice([moderation.finding]),
+      };
+    }
+  }
+
+  if (moderation.errorReason) {
+    // Fail-open: the turn still runs. Recorded so a silent outage is visible.
+    await recordGuardrailEvent({
+      workspaceId,
+      chatIdentityId,
+      channel,
+      conversationKey,
+      category: "moderation",
+      verdict: "error",
+      detector: "model",
+      reason: moderation.errorReason,
+      normalizedText: screened.text,
+    });
+  }
+
+  return {
+    allowed: true,
+    text: screened.text,
+    notice: screened.verdict === "redact" ? redactionNotice(screened.findings) : null,
+  };
+}
+
+/**
  * Process one claimed CONSOLE (#1288) row end to end — the authenticated
  * dashboard chat path, deliberately NOT routed through `processRow`'s
  * identity-spine machinery below ('ask'/'intro'/'single'/'pinned'): a
@@ -596,8 +716,40 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
       conversationKey: row.conversationKey,
     });
 
+    // --- input guardrails, same seam as every other channel ---
+    // Trust is always 'bound' here: a console row is an authenticated
+    // workspace member (session + membership are checked by the send endpoint
+    // before it ever enqueues), so there is no stranger tier on this path.
+    const guard = await applyInputGuardrails({
+      text: payload.text,
+      trust: "bound",
+      channel: "console",
+      conversationKey: row.conversationKey,
+      workspaceId: row.workspaceId,
+      chatIdentityId: null,
+    });
+
+    // Console has no out-of-band sender — a notice IS a chat message, written
+    // as an assistant turn exactly the way `runner/chat-reply` writes Jace's
+    // own replies, so the client's existing `after_seq` poll renders it with
+    // no new plumbing.
+    if (guard.notice) {
+      await appendJaceMessage({
+        workspaceId: row.workspaceId,
+        conversationKey: row.conversationKey,
+        role: "jace",
+        text: guard.notice,
+      });
+    }
+
+    if (!guard.allowed) {
+      // COMPLETE, not fail — requeuing would replay the block at the user.
+      await completeChannelMessage(row.id);
+      return "completed";
+    }
+
     const turn = await runEveTurn({
-      message: payload.text,
+      message: guard.text,
       channel: "console",
       auth,
       target: { workspaceId: row.workspaceId, conversationKey: row.conversationKey },
@@ -978,7 +1130,53 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       applicationId: payload.applicationId,
     });
 
-    const message = await withReplyContextPreface(workspaceId, payload);
+    // --- input guardrails: moderation / injection / PII, before any turn ---
+    // Trust tier comes straight from the identity spine resolved above: no
+    // workspace resolved means the 'intro' path — a stranger DMing the shared
+    // bot, which is exactly the threat model injection blocking targets.
+    const guard = await applyInputGuardrails({
+      text: payload.text,
+      trust: workspaceId ? "bound" : "stranger",
+      channel: row.channel,
+      conversationKey: row.conversationKey,
+      workspaceId,
+      chatIdentityId,
+    });
+
+    if (!guard.allowed) {
+      // COMPLETE, not fail: `failChannelMessage` requeues, which would replay
+      // the identical block at the user N times. The message was handled —
+      // the handling was "refused".
+      if (guard.notice) {
+        await sendSystemChannelMessage(
+          row.channel,
+          String(payload.chatId),
+          guard.notice,
+          payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+          payload.threadTs
+        );
+      }
+      await completeChannelMessage(row.id);
+      return "completed";
+    }
+
+    // Tell the user their message was cleansed — a silent redaction would
+    // leave them wondering why Jace answered a question they didn't ask.
+    if (guard.notice) {
+      await sendSystemChannelMessage(
+        row.channel,
+        String(payload.chatId),
+        guard.notice,
+        payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+        payload.threadTs
+      );
+    }
+
+    // The turn runs on the CLEANSED text, never `payload.text`.
+    const message = await withReplyContextPreface(workspaceId, {
+      ...payload,
+      text: guard.text,
+    });
 
     const turn = await runEveTurn({
       message,

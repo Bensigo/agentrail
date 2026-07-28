@@ -11,6 +11,10 @@
 //   - Only to-issues (and emit-issue-brief, the shaper) reference the gated
 //     create_issue tool — the single write path (AC3).
 //   - instructions.md wires all four skills into Jace's persona.
+//   - grill-me actually calls the repo wiki / workspace memory before it
+//     grills, never writes CONTEXT.md or docs/adr, and instructions.md wires
+//     ask_question in — the specific regressions the 2026-07-27 "blog" trace
+//     surfaced (grill-me's only tool call was load_skill itself).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -124,5 +128,78 @@ test("instructions.md wires all four skills into Jace's persona", () => {
     src,
     /grill-me and to-prd write NOTHING|write NOTHING/i,
     "instructions.md must keep drafting read-only",
+  );
+});
+
+// Regression coverage for the observed 2026-07-27 "i want to add a blog our
+// app" session: 9 turns, the ONLY tool call was load_skill('grill-me'). Two
+// distinct bugs, asserted separately below.
+
+test("grill-me calls the repo wiki and workspace memory before it grills", () => {
+  const src = skillSource("grill-me");
+  // Turn 9 asked for the tech stack two turns after the human had already
+  // said "monorepo" and "console" — info the compiled wiki already had.
+  // Nothing routed it in because grill-me never called either read tool.
+  // If a future edit drops the preflight, this must go red.
+  assert.match(
+    src,
+    /fetch_repo_wiki/,
+    "grill-me must call fetch_repo_wiki before asking the human what the repo already answers",
+  );
+  assert.match(
+    src,
+    /fetch_workspace_memory/,
+    "grill-me must call fetch_workspace_memory before asking the human what the workspace already knows",
+  );
+});
+
+test("grill-me never instructs writing CONTEXT.md or docs/adr (phantom writes)", () => {
+  const src = skillSource("grill-me");
+  // The old skill told Jace to author CONTEXT.md and docs/adr/. Both are
+  // impossible in the hosted deployment (no git checkout, per codebase_query's
+  // own tool description) — those writes landed in an ephemeral sandbox and
+  // vanished, which reads as captured when it wasn't. grill-me may still
+  // MENTION CONTEXT.md (challenging the glossary, reading it via the wiki),
+  // so this asserts on the WRITE instruction and the deleted format files,
+  // not on the bare string.
+  assert.doesNotMatch(
+    src,
+    /update `CONTEXT\.md`/i,
+    "grill-me must not instruct updating CONTEXT.md — Jace has no checkout to write it to",
+  );
+  assert.doesNotMatch(
+    src,
+    /write it in the format in/i,
+    "grill-me must not instruct writing a file in some format — that's the ADR/CONTEXT write instruction coming back",
+  );
+  assert.doesNotMatch(
+    src,
+    /CONTEXT-FORMAT|ADR-FORMAT/,
+    "grill-me must not link the deleted CONTEXT-FORMAT.md / ADR-FORMAT.md files",
+  );
+});
+
+test("the deleted CONTEXT-FORMAT.md and ADR-FORMAT.md do not exist under grill-me", () => {
+  const dir = `${skillsDir}/grill-me`;
+  assert.ok(
+    !existsSync(`${dir}/CONTEXT-FORMAT.md`),
+    "CONTEXT-FORMAT.md must stay deleted — its only job was the phantom CONTEXT.md write",
+  );
+  assert.ok(
+    !existsSync(`${dir}/ADR-FORMAT.md`),
+    "ADR-FORMAT.md must stay deleted — its only job was the phantom docs/adr write",
+  );
+});
+
+test("instructions.md wires in ask_question for closed-set questions", () => {
+  const src = readFileSync(instructionsPath, "utf8");
+  // ask_question renders selectable options; before this change it appeared
+  // 0 times in instructions.md, so grill-me printed markdown bullets instead
+  // and the human pasted a label back verbatim ("Nowhere (no public updates
+  // exist)?", question mark included) instead of giving a parseable answer.
+  assert.match(
+    src,
+    /ask_question/,
+    "instructions.md must reference the ask_question tool so it actually gets used",
   );
 });

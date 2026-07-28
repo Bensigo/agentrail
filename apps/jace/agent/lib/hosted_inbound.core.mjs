@@ -60,8 +60,9 @@ export const HOSTED_INBOUND_CHANNELS = Object.freeze([
  * - `target` must be an object carrying a non-blank value under that
  *   channel's {@link TARGET_KEY} (number or string). The normalized target is
  *   MINIMAL: only that key plus `conversationId`/`messageThreadId` when
- *   present, so no stray/secret field leaks into the session (same
- *   convention as run_outcome.core.mjs's target normalization).
+ *   present, and `threadTs` (Slack-only) when present, so no stray/secret
+ *   field leaks into the session (same convention as run_outcome.core.mjs's
+ *   target normalization).
  * - `auth` is REQUIRED (unlike run-outcome's optional auth) and must be an
  *   object — the door's whole point is carrying `chatIdentityId`/
  *   `workspaceId` attribution into the session's `auth.initiator`, so a
@@ -128,7 +129,17 @@ export function normalizeHostedInbound(raw) {
     // session every turn. Forwarded UNCHANGED, exactly like conversationId
     // above; this module does not interpret it. A blank string is treated as
     // absent so it can never produce the token `"C123:"`.
-    if (typeof target.threadTs === "string" && target.threadTs.trim()) {
+    //
+    // Unlike conversationId/messageThreadId above, this forward is gated on
+    // `channel === "slack"`: it is a defense-in-depth boundary check, not a
+    // behavior change for the other channels. Without the gate, a stray
+    // `threadTs` in a telegram/discord payload would now survive
+    // normalization instead of being dropped as before — breaking this PR's
+    // binding constraint that telegram/discord targets stay byte-identical,
+    // and making the "Slack-only" claim above false. The gate keeps this
+    // function's documented minimal-target guarantee true for every channel
+    // that doesn't ask for threadTs.
+    if (channel === "slack" && typeof target.threadTs === "string" && target.threadTs.trim()) {
       normalizedTarget.threadTs = target.threadTs;
     }
   }

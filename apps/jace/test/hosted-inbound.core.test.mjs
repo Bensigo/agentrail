@@ -362,3 +362,29 @@ test("drops a blank threadTs", () => {
   });
   assert.deepEqual(result.target, { channelId: "C123" });
 });
+
+// threadTs is Slack-only (per the inline comment above it in
+// hosted_inbound.core.mjs) — a telegram or discord target must come out
+// byte-identical to before threadTs existed, so a stray threadTs on those
+// channels must be dropped exactly like any other stray target key.
+test("drops a stray threadTs on a telegram target (Slack-only field, not forwarded elsewhere)", () => {
+  const result = normalizeHostedInbound({
+    channel: "telegram",
+    message: "hello",
+    target: { chatId: 1, threadTs: "1700000000.000100" },
+    auth: {},
+  });
+  assert.deepEqual(result.target, { chatId: 1 });
+  assert.ok(!("threadTs" in result.target));
+});
+
+test("drops a stray threadTs on a discord target (Slack-only field, not forwarded elsewhere)", () => {
+  const result = normalizeHostedInbound({
+    channel: "discord",
+    message: "hello",
+    target: { channelId: "C1", threadTs: "1700000000.000100" },
+    auth: {},
+  });
+  assert.deepEqual(result.target, { channelId: "C1" });
+  assert.ok(!("threadTs" in result.target));
+});

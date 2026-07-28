@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 // Mocked db chain, same "mock the chain, control the terminal value" idiom as
@@ -21,13 +21,19 @@ const mockDb = vi.mocked(db);
 /** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
 function makeChain(terminalMethod: string, finalValue: unknown) {
   const chain: Record<string, unknown> = {};
-  const methods = ["where", "set", "from", "limit"];
+  const methods = ["where", "set", "from", "orderBy", "limit"];
   for (const m of methods) {
     chain[m] = vi.fn(() => chain);
   }
   chain[terminalMethod] = vi.fn(() => Promise.resolve(finalValue));
   return chain;
 }
+
+// Argument-level condition assertions (see jace_sessions-workspace-telegram.test.ts
+// for the full rationale): render both the actual captured
+// where/orderBy argument and an expected one — built with the same drizzle
+// operators against the real `jaceSessions` columns — to literal
+// {sql, params} text via PgDialect.sqlToQuery, and compare THAT.
 
 const dialect = new PgDialect();
 function renderCondition(condition: unknown) {
@@ -99,6 +105,47 @@ describe("getThreadEngagement", () => {
       dormantSince: DORMANT_SINCE,
       engagedSpeakerId: SPEAKER_ID,
     });
+  });
+
+  it("resolves deterministically to the more recently active row when two rows share (channel, conversationKey) and differ in lastActivityAt", async () => {
+    // Two rows for the same pair — legal because uniqueness is scoped by
+    // workspace_id, not by (channel, conversationKey) alone (see the
+    // function's doc-comment). The mocked terminal value stands in for
+    // "whatever `ORDER BY last_activity_at DESC LIMIT 1` resolved to" — a
+    // real Postgres would place the more-recently-active row first; this
+    // fixture encodes that same expectation so the test documents which row
+    // must win.
+    const OLDER_DORMANT_SINCE = new Date("2026-07-01T00:00:00Z");
+    const moreRecentRow = {
+      dormantSince: DORMANT_SINCE,
+      engagedSpeakerId: SPEAKER_ID,
+    };
+    const staleRow = {
+      dormantSince: OLDER_DORMANT_SINCE,
+      engagedSpeakerId: "speaker-stale",
+    };
+    const selectChain = makeChain("limit", [moreRecentRow]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getThreadEngagement({
+      channel: CHANNEL,
+      conversationKey: CONVERSATION_KEY,
+    });
+
+    expect(result).toEqual(moreRecentRow);
+    expect(result).not.toEqual(staleRow);
+
+    // The mocked terminal value alone can't prove ordering happened (it
+    // returns whatever it's told to regardless of `.orderBy`), so the test's
+    // actual teeth is here: assert the query itself calls `.orderBy` with
+    // `desc(lastActivityAt)`. Drop that call from the source and this
+    // assertion fails (`orderByArgs` becomes `undefined`) even though the
+    // `.toEqual` checks above still pass.
+    const orderByArgs = (selectChain.orderBy as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(orderByArgs)).toEqual(
+      renderCondition(desc(jaceSessions.lastActivityAt))
+    );
   });
 });
 

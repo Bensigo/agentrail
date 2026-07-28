@@ -739,6 +739,20 @@ export async function getSessionBriefAnchor(sessionId: string): Promise<string |
  * Keyed on (channel, conversation_key) ONLY — no workspace scope — so this
  * query can use `jace_sessions_channel_conversation_idx` exactly as it was
  * added for: the door calls this before any workspace is resolved.
+ *
+ * NOT unique on (channel, conversationKey): the table's real uniqueness is
+ * (workspace_id, channel, conversation_key) plus the separate partial unique
+ * on (channel, conversation_key) WHERE workspace_id IS NULL, so one
+ * conversation key can legally carry an intro row alongside one or more
+ * workspace-bound rows at once (same multi-row shape
+ * `resolveConversationWorkspace` above documents for the pinned case). Reads
+ * must therefore pick ONE row deterministically rather than an arbitrary one
+ * — ordered by `lastActivityAt` descending, same most-recently-active
+ * tie-break idiom as `resolveConversationWorkspace`, so this resolves to
+ * whichever row the dispatcher is actually driving right now. Unlike
+ * `setThreadEngagement` below, this cannot update every matching row instead
+ * — a read has to return exactly one state — so ordering is the only way to
+ * make it deterministic.
  */
 export async function getThreadEngagement(args: {
   channel: string;
@@ -756,6 +770,7 @@ export async function getThreadEngagement(args: {
         eq(jaceSessions.conversationKey, args.conversationKey)
       )
     )
+    .orderBy(desc(jaceSessions.lastActivityAt))
     .limit(1);
   if (!row) return null;
   return { dormantSince: row.dormantSince, engagedSpeakerId: row.engagedSpeakerId };
@@ -768,6 +783,13 @@ export async function getThreadEngagement(args: {
  * read scope above: no workspace filter), and is a SILENT no-op when none
  * matches — it must never throw or insert, since the door calls this on
  * every turn regardless of whether a session row happens to exist yet.
+ *
+ * Deliberately UNordered and UNlimited, unlike `getThreadEngagement`'s single
+ * ordered row above: when a conversation key legally carries more than one
+ * row (an intro row plus a graduated one, say), engagement is a property of
+ * the THREAD, not of any one row, so every row sharing the pair must agree —
+ * updating all of them keeps them mutually consistent instead of letting one
+ * drift stale while the read picks whichever is most recently active.
  */
 export async function setThreadEngagement(args: {
   channel: string;

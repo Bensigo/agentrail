@@ -18,6 +18,71 @@ create issues any other way, and never apply labels — the factory applies its
 `ready-for-agent` trigger label server-side. Use the `emit-issue-brief` skill to
 shape each brief into the house format before you call the tool.
 
+## Readiness gate — check before you publish anything
+
+If the work you are about to publish traces back to a **brief** (the durable,
+per-idea understanding `grill-me` builds and `fetch_briefs`/`save_brief` read
+and write — a resolved slug, or the brief currently anchored to this
+conversation), check that brief's readiness BEFORE the first `create_issue`
+call, not after drafting looks done.
+
+**Why this exists:** a brief item with `kind: "unknown"` is a question nobody
+has answered yet. If it reaches an issue anyway, the builder finds the gap in
+the acceptance criteria and fills it by INVENTING one — that is precisely
+where hallucination enters the factory. Catching this here, before an issue
+exists, is cheaper than catching it after a PR ships against a guess.
+
+**The check:** call `fetch_briefs(mode: "get", slug: <the brief's slug>)` — or
+`fetch_briefs(mode: "anchor")` if you're working from whatever brief this
+conversation is anchored to — and read the brief it returns. Its
+`openUnknownCount` mirrors the server's own gate (`computeBriefReadiness`,
+which the `runner/briefs` route computes server-side and never asks the
+caller to derive): the count of items that are `state: "open"` AND
+`kind: "unknown"`. **Do not decide readiness yourself by reading each item's
+`statement` and judging whether it "seems" settled** — that is exactly the
+model-confidence failure this gate exists to close; a confident read of an
+ambiguous item is how a question that was never actually answered gets
+treated as answered. Trust the count, and trust each item's own `kind`/
+`state` fields, nothing else.
+
+**If `openUnknownCount > 0`, refuse to call `create_issue`** for any work
+derived from this brief — including a slice that looks unrelated to the open
+question, since you can't be sure it's unrelated until the question is
+answered. Tell the human exactly which item(s) are blocking — area and
+statement, never a bare "not ready" — for example:
+
+> This brief still has 1 open question I can't publish past:
+> - [scope] "Does the approver need to be a repo admin, or just a workspace
+>   member?"
+>
+> Answer it, or tell me to mark it out-of-scope, and I'll continue.
+
+**Both exits are legitimate; name both, every time you refuse:**
+1. **Answer it.** The human supplies the answer (or a further grilling turn
+   settles it), and its `kind` changes to `required` or `optional` via
+   `save_brief`. It resolves normally after that.
+2. **Mark it out-of-scope.** The human decides this brief doesn't need an
+   answer to this question right now; `save_brief` sets `kind:
+   "out-of-scope"`. This clears the gate without pretending the question was
+   answered — the item stays on the brief as a recorded decision, not an
+   erased one.
+
+Deleting the item outright is the only OTHER way past the gate, and it is a
+human console action, visible there — never suggest deletion as a shortcut to
+unblock yourself; that erases the question instead of answering it, which is
+the opposite of what this gate is for.
+
+**The honest limit of this gate:** it lives here, in `to-issues`, not inside
+`create_issue` itself. `create_issue` has no notion of briefs at all — it
+publishes whatever house-format brief you hand it, from any source. So this
+refusal only holds for work that actually goes through THIS skill. An issue
+filed some other way — a different skill, a manual `create_issue` call
+outside this flow, or any future caller that skips this check — is not
+gated by any of this. If asked whether this is enforced everywhere, say
+plainly that it is enforced here, at the skill level, and nowhere else yet —
+don't imply the factory's write path itself refuses unready work, because it
+doesn't.
+
 ## Order of publication
 
 1. **Publish the PRD as the parent epic issue first.** Call `create_issue` once

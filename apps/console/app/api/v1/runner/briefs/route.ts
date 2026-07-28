@@ -38,7 +38,8 @@
  *   get    — one brief by `slug` (required), with its full item set. A
  *            brief is meant to be read WHOLE — nothing is ever ranked or
  *            trimmed inside one (design spec, "Retrieval — the whole
- *            mismatch surface").
+ *            mismatch surface"). Also returns `readiness` — see the
+ *            "Readiness" paragraph below.
  *   search — FTS over brief title + item statements (`query`, required —
  *            unlike repo-wiki's search this route treats a missing query as
  *            a 400 rather than a navigational default, since `fetch_briefs`
@@ -53,10 +54,12 @@
  *            `anchoredBriefId` is read directly off the SAME lookup every
  *            other mode already performs to resolve `workspaceId` — no
  *            second query to find OUT whether an anchor exists. When one
- *            does, this mode returns the FULL anchored brief (`{ anchor: {
- *            brief: BriefWithItems } }`) — the SAME shape `mode=get` returns
- *            — not just an id: resume is the entire reason this anchor
- *            exists, and every other mode on this route is keyed by SLUG
+ *            does, this mode returns the FULL anchored brief PLUS its
+ *            `readiness` (`{ anchor: { brief: BriefWithItems, readiness:
+ *            BriefReadiness } }`) — the SAME shape `mode=get` returns,
+ *            `readiness` included — not just an id: resume is the entire
+ *            reason this anchor exists, and every other mode on this route
+ *            is keyed by SLUG
  *            (`mode=get` takes a slug, `mode=search` takes a query), so a
  *            bare brief id would leave the caller with no endpoint that
  *            accepts it — `mode=list` plus a client-side scan for a matching
@@ -72,6 +75,34 @@
  *            handling, since `ON DELETE SET NULL` means the FIRST read after
  *            such a delete would already see a cleared `anchoredBriefId`
  *            anyway.
+ *
+ * **Readiness (design spec, "Readiness gate") is computed HERE, server-side,
+ * and attached to `mode=get`'s and `mode=anchor`'s response — never left for
+ * the caller to derive.** `to-issues` is blocked while any `open` brief item
+ * has `kind: 'unknown'`: an unanswered question that reaches an issue becomes
+ * an acceptance criterion the builder INVENTS, which is precisely where
+ * hallucination enters the factory. The load-bearing choice is WHERE that
+ * check runs. If Jace derived readiness itself — reading `brief.items` and
+ * judging "does anything here still look unanswered?" — then readiness would
+ * be a model JUDGMENT, and a confident model routinely talks itself past its
+ * own judgment calls (that is the entire failure mode this gate exists to
+ * close). Computing it here, via `computeBriefReadiness`, and handing back a
+ * plain `{ ready: boolean, blockingItems: BriefItem[] }` turns the refusal
+ * into a FACT the model reports (a value read off a response), never a
+ * CONCLUSION it reaches (a scan over raw rows it could rationalize past).
+ * `blockingItems` is included, not just the boolean, so a caller can name the
+ * actual open questions rather than saying "not ready" — a human acting on
+ * the refusal needs to know WHICH item to answer, not just that something,
+ * somewhere, is unanswered.
+ *
+ * `mode=search` and `mode=list` deliberately do NOT carry `readiness` — see
+ * each mode's own inline comment in the GET handler below for why: `search`
+ * is the one-time "which brief" disambiguation step, not "is this brief
+ * ready" (ready relative to which of several hits?); `list` is deliberately
+ * the compact, item-free index (`listBriefs`'s own doc-comment), and
+ * `computeBriefReadiness` is a per-brief items query — attaching it to every
+ * row in a list would force the exact N-brief fan-out `list` exists to avoid,
+ * to serve a value nothing in that mode's own rendering shows today.
  *
  * POST resolves the workspace, then `upsertBrief`s the brief-level fields,
  * then `patchBriefItems` for any `items` in the same call — the per-turn
@@ -187,6 +218,7 @@ import {
   patchBriefItems,
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
+  computeBriefReadiness,
 } from "@agentrail/db-postgres";
 import type {
   BriefArea,
@@ -378,10 +410,20 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ schemaVersion: 1, mode, anchor: null });
       }
       const anchoredBrief = await getBriefById(workspaceId, session.anchoredBriefId);
+      // Readiness rides alongside the anchored brief for the same reason it
+      // rides alongside `mode=get`'s brief — see this route's doc-comment's
+      // "Readiness" paragraph. Skipped only when there's no brief to compute
+      // it FOR (anchor cleared out from under a stale read).
+      const anchoredReadiness = anchoredBrief
+        ? await computeBriefReadiness(anchoredBrief.id)
+        : null;
       return NextResponse.json({
         schemaVersion: 1,
         mode,
-        anchor: anchoredBrief ? { brief: anchoredBrief } : null,
+        anchor:
+          anchoredBrief && anchoredReadiness
+            ? { brief: anchoredBrief, readiness: anchoredReadiness }
+            : null,
       });
     }
 
@@ -394,7 +436,22 @@ export async function GET(request: NextRequest) {
       if (!brief) {
         return NextResponse.json({ error: `Brief ${slug} not found` }, { status: 404 });
       }
-      return NextResponse.json({ schemaVersion: 1, mode, brief });
+      // Readiness is computed HERE, server-side, from `computeBriefReadiness`
+      // — never left for the caller (Jace, or a human-facing client) to
+      // derive by scanning `brief.items` itself. See this route's doc-comment
+      // ("Readiness") for why that distinction is load-bearing: a model asked
+      // to look at a brief's items and judge for itself whether it's "ready"
+      // is exactly the kind of confident-but-wrong call this whole feature
+      // exists to prevent — an unknown that LOOKS answerable-in-context, or
+      // an ambiguous read of a borderline item, becomes the model talking
+      // itself past the gate. Handing back `{ ready, blockingItems }` as a
+      // plain fact turns the refusal into something the model REPORTS
+      // (a value it read off the response), not a conclusion it REACHES
+      // (a judgment call over raw item rows) — the same reasoning
+      // `computeBriefReadiness`'s own doc-comment gives for why this is the
+      // one check `to-issues` must never skip.
+      const readiness = await computeBriefReadiness(brief.id);
+      return NextResponse.json({ schemaVersion: 1, mode, brief, readiness });
     }
 
     if (mode === "search") {
@@ -405,11 +462,33 @@ export async function GET(request: NextRequest) {
           { status: 400 }
         );
       }
+      // Deliberately NO readiness here — see this route's doc-comment
+      // ("Readiness") for the full reasoning. Short version: `search` is the
+      // ONE-TIME disambiguation step ("which brief"), never the point where
+      // `to-issues` gates ("is THIS brief ready") — that gate fires against
+      // a single already-resolved brief (by `slug`, via `get`, or via the
+      // session anchor, via `anchor`), not a multi-hit candidate list where
+      // "ready" would have no obvious referent (ready relative to WHICH hit?).
       const briefs = await searchBriefs(workspaceId, query);
       return NextResponse.json({ schemaVersion: 1, mode, briefs });
     }
 
-    // mode === "list"
+    // mode === "list" — deliberately NO readiness per brief here, and this is
+    // a real design choice, not an oversight (see this route's doc-comment,
+    // "Readiness"): `listBriefs` is intentionally the COMPACT index —
+    // `listBriefs`'s own doc-comment says it "deliberately excludes items so
+    // listing a workspace's briefs never pulls a full N-brief × M-item join
+    // for a view that never shows item detail." `computeBriefReadiness` is a
+    // per-brief items query; adding it here would force exactly that N-brief
+    // fan-out query this mode exists to avoid, to serve a value nothing in
+    // this mode's own compact rendering shows today. The gate itself only
+    // ever needs readiness for ONE brief at a time — the one `to-issues` is
+    // about to publish from, reached via `get`/`anchor` — never "which of my
+    // N briefs are ready," so `list` has no caller that needs this value
+    // badly enough to justify the fan-out. If a future console index view
+    // wants a per-brief readiness badge, add it there deliberately (and pay
+    // the N-query cost knowingly), rather than baking it into every `list`
+    // call today.
     const briefs = await listBriefs(workspaceId);
     return NextResponse.json({ schemaVersion: 1, mode, briefs });
   } catch (err) {

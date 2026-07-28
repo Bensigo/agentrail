@@ -114,6 +114,90 @@ test("to-issues routes publication through the single gated create_issue tool (A
   );
 });
 
+// Readiness gate (design spec: docs/superpowers/specs/2026-07-28-jace-briefs-
+// durable-idea-understanding-design.md, "Readiness gate"; route slice
+// apps/console/app/api/v1/runner/briefs/route.ts). An `open` brief item with
+// `kind: "unknown"` is a question nobody answered; if it reaches an issue the
+// builder invents an acceptance criterion to fill the gap — that is where
+// hallucination enters the factory. to-issues is the one place this must be
+// enforced at the skill level (create_issue has no notion of briefs).
+test("to-issues gates on brief readiness before publishing (Readiness gate)", () => {
+  const src = skillSource("to-issues");
+  assert.match(
+    src,
+    /openUnknownCount/,
+    "to-issues must check openUnknownCount (the readiness signal fetch_briefs surfaces) before publishing",
+  );
+  assert.match(
+    src,
+    /kind:\s*"unknown"/,
+    'to-issues must name the blocking predicate — kind: "unknown" — not just say "not ready"',
+  );
+  assert.match(
+    src,
+    /computeBriefReadiness/,
+    "to-issues must attribute the check to the server-computed computeBriefReadiness, not a model judgment call",
+  );
+});
+
+test("to-issues refuses to derive readiness by reading item prose itself (server-computed, not model-derived)", () => {
+  const src = skillSource("to-issues");
+  // The load-bearing distinction: readiness must be reported (read off a
+  // count/field the server already computed), never reached (a judgment call
+  // over each item's statement) — a confident model can talk itself past its
+  // own judgment, which is exactly the failure this gate exists to close.
+  assert.match(
+    src,
+    /[Dd]o not decide readiness yourself/,
+    "to-issues must explicitly forbid the model from deciding readiness by reading item prose",
+  );
+});
+
+test("to-issues names the actual blocking item(s), not a bare 'not ready'", () => {
+  const src = skillSource("to-issues");
+  assert.match(
+    src,
+    /area and\s*\n?\s*statement, never a bare "not ready"/,
+    "to-issues must instruct naming each blocking item's area + statement",
+  );
+});
+
+test("to-issues spells out both exits for an open unknown: answer it, or mark it out-of-scope", () => {
+  const src = skillSource("to-issues");
+  assert.match(
+    src,
+    /\*\*Answer it\.\*\*/,
+    "to-issues must name 'answer it' as an exit from the readiness gate",
+  );
+  assert.match(
+    src,
+    /\*\*Mark it out-of-scope\.\*\*/,
+    "to-issues must name 'mark it out-of-scope' as the other exit from the readiness gate",
+  );
+  // Deferred must NOT be offered as an exit for an unknown — the design spec
+  // is explicit that "an unknown may never be deferred"; naming only two
+  // exits (never three) keeps the skill honest about what's actually legal.
+  assert.doesNotMatch(
+    src,
+    /mark it deferred|defer(?:red)? (?:it|the item)/i,
+    'to-issues must NOT offer "defer it" as an exit from the readiness gate — an unknown may never be deferred',
+  );
+});
+
+test("to-issues is honest that the gate is enforced at the skill level, not inside create_issue", () => {
+  const src = skillSource("to-issues");
+  assert.match(
+    src,
+    /create_issue.{0,80}has no notion of briefs/s,
+    "to-issues must state plainly that create_issue does not know briefs exist",
+  );
+  assert.match(
+    src,
+    /not\s+gated by any of this/i,
+    "to-issues must say an issue filed outside this flow is not protected by this gate",
+  );
+});
+
 test("instructions.md wires all four skills into Jace's persona", () => {
   const src = readFileSync(instructionsPath, "utf8");
   for (const name of ALL_SKILLS) {

@@ -11,6 +11,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   patchBriefItems: vi.fn(),
   setSessionBriefAnchor: vi.fn(),
   clearSessionBriefAnchor: vi.fn(),
+  computeBriefReadiness: vi.fn(),
 }));
 
 import { GET, POST } from "./route";
@@ -24,6 +25,7 @@ import {
   patchBriefItems,
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
+  computeBriefReadiness,
 } from "@agentrail/db-postgres";
 
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
@@ -35,6 +37,7 @@ const mockUpsertBrief = vi.mocked(upsertBrief);
 const mockPatchBriefItems = vi.mocked(patchBriefItems);
 const mockSetAnchor = vi.mocked(setSessionBriefAnchor);
 const mockClearAnchor = vi.mocked(clearSessionBriefAnchor);
+const mockComputeReadiness = vi.mocked(computeBriefReadiness);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const OTHER_WS = "00000000-0000-0000-0000-000000000002";
@@ -61,6 +64,24 @@ const EXISTING_BRIEF = {
   createdAt: new Date("2026-07-27T00:00:00Z"),
   updatedAt: new Date("2026-07-27T00:00:00Z"),
 };
+
+const READY: { ready: true; blockingItems: [] } = { ready: true, blockingItems: [] };
+
+const OPEN_UNKNOWN_ITEM = {
+  id: "item-unknown-1",
+  briefId: BRIEF_ID,
+  area: "scope",
+  statement: "Does the approver need to be a repo admin, or just a workspace member?",
+  evidence: "not sure yet who should be allowed to approve",
+  kind: "unknown",
+  state: "open",
+  resolution: null,
+  authority: "jace",
+  createdAt: new Date("2026-07-27T00:00:00Z"),
+  updatedAt: new Date("2026-07-27T00:00:00Z"),
+};
+
+const NOT_READY = { ready: false, blockingItems: [OPEN_UNKNOWN_ITEM] };
 
 function getReq(opts: {
   eveSessionId?: string;
@@ -114,6 +135,7 @@ beforeEach(() => {
   } as never);
   mockSetAnchor.mockResolvedValue(true as never);
   mockClearAnchor.mockResolvedValue(true as never);
+  mockComputeReadiness.mockResolvedValue(READY as never);
 });
 
 afterEach(() => {
@@ -186,6 +208,15 @@ describe("GET /api/v1/runner/briefs", () => {
       );
       expect(res.status).toBe(502);
     });
+
+    it("does not compute or attach per-brief readiness — the compact index never pulls the per-brief items query readiness needs", async () => {
+      const res = await GET(
+        getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "list" })
+      );
+      const body = await res.json();
+      expect(body.briefs[0].readiness).toBeUndefined();
+      expect(mockComputeReadiness).not.toHaveBeenCalled();
+    });
   });
 
   describe("mode=get", () => {
@@ -215,6 +246,64 @@ describe("GET /api/v1/runner/briefs", () => {
       expect(body.brief).toMatchObject({ slug: SLUG });
       expect(mockGetBriefBySlug).toHaveBeenCalledWith(WS, SLUG);
     });
+
+    describe("readiness (server-computed via computeBriefReadiness, never derived by the caller)", () => {
+      it("includes readiness: { ready: true, blockingItems: [] } when the brief has no open unknowns", async () => {
+        mockComputeReadiness.mockResolvedValue(READY as never);
+        const res = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "get", slug: SLUG })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.readiness).toEqual({ ready: true, blockingItems: [] });
+        expect(mockComputeReadiness).toHaveBeenCalledWith(BRIEF_ID);
+      });
+
+      it("includes readiness: { ready: false, blockingItems: [...] } naming the actual open+unknown item", async () => {
+        mockComputeReadiness.mockResolvedValue(NOT_READY as never);
+        const res = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "get", slug: SLUG })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.readiness.ready).toBe(false);
+        expect(body.readiness.blockingItems).toHaveLength(1);
+        expect(body.readiness.blockingItems[0]).toMatchObject({
+          id: "item-unknown-1",
+          kind: "unknown",
+          state: "open",
+          statement: OPEN_UNKNOWN_ITEM.statement,
+        });
+      });
+
+      it("becomes ready: true once the last open unknown is marked out-of-scope (the store already recomputes; the route just relays it)", async () => {
+        // Simulate the two calls a caller makes: first a get sees the brief
+        // blocked, then (after marking the item out-of-scope elsewhere) a
+        // second get sees it clear — this route never caches or short-circuits
+        // readiness between calls, it always asks the store fresh.
+        mockComputeReadiness.mockResolvedValueOnce(NOT_READY as never);
+        const first = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "get", slug: SLUG })
+        );
+        const firstBody = await first.json();
+        expect(firstBody.readiness.ready).toBe(false);
+
+        mockComputeReadiness.mockResolvedValueOnce(READY as never);
+        const second = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "get", slug: SLUG })
+        );
+        const secondBody = await second.json();
+        expect(secondBody.readiness).toEqual({ ready: true, blockingItems: [] });
+      });
+
+      it("502 when computeBriefReadiness throws", async () => {
+        mockComputeReadiness.mockRejectedValue(new Error("pg down"));
+        const res = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "get", slug: SLUG })
+        );
+        expect(res.status).toBe(502);
+      });
+    });
   });
 
   describe("mode=search", () => {
@@ -240,6 +329,15 @@ describe("GET /api/v1/runner/briefs", () => {
       expect(body.mode).toBe("search");
       expect(body.briefs).toHaveLength(1);
       expect(mockSearchBriefs).toHaveBeenCalledWith(WS, "blog");
+    });
+
+    it("does not compute or attach readiness — search is disambiguation ('which brief'), not the gate ('is this brief ready')", async () => {
+      const res = await GET(
+        getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "search", query: "blog" })
+      );
+      const body = await res.json();
+      expect(body.readiness).toBeUndefined();
+      expect(mockComputeReadiness).not.toHaveBeenCalled();
     });
   });
 
@@ -267,6 +365,16 @@ describe("GET /api/v1/runner/briefs", () => {
       } as never);
       await GET(getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" }));
       expect(mockGetBriefById).not.toHaveBeenCalled();
+    });
+
+    it("skips computeBriefReadiness too when there's no anchor (nothing to compute readiness FOR)", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: null,
+      } as never);
+      await GET(getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" }));
+      expect(mockComputeReadiness).not.toHaveBeenCalled();
     });
 
     it("returns the FULL anchored brief — the same shape mode=get returns — not just an id, so resume needs no follow-up call", async () => {
@@ -312,6 +420,45 @@ describe("GET /api/v1/runner/briefs", () => {
       });
       expect(body.anchor.brief.items).toHaveLength(1);
       expect(body.anchor.brief.items[0].statement).toBe("single approver for now");
+      // readiness rides alongside — same as mode=get, same reasoning (server-
+      // computed, never derived by scanning the items above yourself).
+      expect(body.anchor.readiness).toEqual({ ready: true, blockingItems: [] });
+      expect(mockComputeReadiness).toHaveBeenCalledWith(BRIEF_ID);
+    });
+
+    describe("readiness on the anchored brief (same server-computed contract as mode=get)", () => {
+      beforeEach(() => {
+        mockGetSession.mockResolvedValue({
+          id: SESSION_ID,
+          workspaceId: WS,
+          anchoredBriefId: BRIEF_ID,
+        } as never);
+      });
+
+      it("ready: false names the actual blocking item when the anchored brief still has an open unknown", async () => {
+        mockComputeReadiness.mockResolvedValue(NOT_READY as never);
+        const res = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.anchor.readiness.ready).toBe(false);
+        expect(body.anchor.readiness.blockingItems).toHaveLength(1);
+        expect(body.anchor.readiness.blockingItems[0]).toMatchObject({
+          id: "item-unknown-1",
+          kind: "unknown",
+          state: "open",
+        });
+      });
+
+      it("ready: true once the anchored brief's last open unknown clears", async () => {
+        mockComputeReadiness.mockResolvedValue(READY as never);
+        const res = await GET(
+          getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
+        );
+        const body = await res.json();
+        expect(body.anchor.readiness).toEqual({ ready: true, blockingItems: [] });
+      });
     });
 
     it("returns null (not an error) when the anchored brief no longer resolves — e.g. it was deleted", async () => {
@@ -327,6 +474,9 @@ describe("GET /api/v1/runner/briefs", () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.anchor).toBeNull();
+      // Nothing to compute readiness FOR when there's no brief — never a
+      // wasted call.
+      expect(mockComputeReadiness).not.toHaveBeenCalled();
     });
 
     it("scopes the lookup to the caller's OWN workspace, never another tenant's", async () => {
@@ -355,6 +505,19 @@ describe("GET /api/v1/runner/briefs", () => {
         anchoredBriefId: BRIEF_ID,
       } as never);
       mockGetBriefById.mockRejectedValue(new Error("pg down"));
+      const res = await GET(
+        getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
+      );
+      expect(res.status).toBe(502);
+    });
+
+    it("502 when computeBriefReadiness throws for the anchored brief", async () => {
+      mockGetSession.mockResolvedValue({
+        id: SESSION_ID,
+        workspaceId: WS,
+        anchoredBriefId: BRIEF_ID,
+      } as never);
+      mockComputeReadiness.mockRejectedValue(new Error("pg down"));
       const res = await GET(
         getReq({ token: SECRET, eveSessionId: EVE_SESSION_ID, mode: "anchor" })
       );

@@ -30,8 +30,10 @@
  * (`runner/approvals`, `runner/workspace-memory`, `runner/repo-wiki`,
  * `connect-link`).
  *
- * GET modes mirror `runner/repo-wiki`'s three-mode shape, so there is one
- * idiom to learn across both `fetch_*` tools:
+ * GET's first three modes mirror `runner/repo-wiki`'s three-mode shape, so
+ * there is one idiom to learn across both `fetch_*` tools; `anchor` is a
+ * fourth mode specific to this route (repo-wiki has no session-level anchor
+ * concept to expose):
  *   list   — every brief for the workspace, no items (the compact index).
  *   get    — one brief by `slug` (required), with its full item set. A
  *            brief is meant to be read WHOLE — nothing is ever ranked or
@@ -42,6 +44,17 @@
  *            a 400 rather than a navigational default, since `fetch_briefs`
  *            has `list` for that job already), falling back to the most
  *            recently touched briefs on zero hits.
+ *   anchor — the conversation→brief anchor this SESSION currently carries
+ *            (design spec, "Retrieval — the whole mismatch surface", step 3;
+ *            see `schema/jace_sessions.ts`'s doc-comment for how this anchor
+ *            differs from the table's own workspace/chat-identity anchor
+ *            pair). Needs no extra param: `getJaceSessionByEveSessionId`
+ *            already returns the full session row, so its
+ *            `anchoredBriefId` column is read directly off the SAME lookup
+ *            every other mode already performs to resolve `workspaceId` —
+ *            no second query. `{ anchor: null }` means this conversation has
+ *            no brief anchored yet (the common case — most sessions never
+ *            touch briefs), never an error.
  *
  * POST resolves the workspace, then `upsertBrief`s the brief-level fields,
  * then `patchBriefItems` for any `items` in the same call — the per-turn
@@ -51,6 +64,31 @@
  * route reads the existing brief's title forward when the caller doesn't
  * supply one, and 400s only if there is neither a supplied title nor an
  * existing brief to inherit one from.
+ *
+ * **`anchor` (optional boolean) sets or clears this SESSION's brief anchor as
+ * a follow-on to the SAME call's `upsertBrief`** — the write behind "confirm
+ * before the first write, then don't re-ask" (design spec step 2→3): once the
+ * human has confirmed which brief this conversation is about, the caller
+ * anchors to it in the very call that (creates or) touches it, never as a
+ * separate slug-less request. `anchor: true` anchors to THIS call's brief
+ * (`brief.id`, the row `upsertBrief` just returned); `anchor: false` clears
+ * any existing anchor outright; omitted (the default) leaves the anchor
+ * completely untouched — a caller with nothing to say about the anchor never
+ * has to think about it. Deliberately NOT a caller-supplied brief id or a
+ * second `anchorSlug` field: **the only brief this route can ever anchor a
+ * session to is one it just resolved through the SAME workspace-scoped
+ * `slug` this call already validated** (`upsertBrief` upserts strictly within
+ * `(workspaceId, slug)` — it can create a new row or touch an existing one,
+ * but never in a workspace other than the caller's own resolved one). That
+ * is the tenancy boundary the design spec calls out ("a brief slug that does
+ * not resolve in the caller's workspace must not be anchorable") enforced
+ * structurally rather than as a runtime check bolted on afterward — there is
+ * no code path here that ever accepts a raw, caller-chosen brief id at all.
+ * `brief.workspaceId !== workspaceId` is asserted anyway immediately before
+ * anchoring (belt-and-suspenders, mirroring `repinConversationWorkspace`'s
+ * own re-verified-even-though-structurally-guaranteed authority check) —
+ * defense in depth against a hypothetical future store-layer bug, not a
+ * check this route's own logic can actually fail today.
  *
  * **`status` is rejected outright, not silently dropped.** The design spec's
  * pinned v1 contract listed `status?` on `save_brief`'s payload — that line
@@ -92,10 +130,13 @@
  * `slug` or a `search` with no `query` (GET), invalid JSON or a malformed
  * body (POST), `status` present in the POST body, or a POST with no title
  * and no existing brief to inherit one from. 401 — bad/missing shared
- * secret. 404 — no session, a session with no resolved workspace yet, or
- * (GET mode=get) no brief at that slug. 422 — a credential-shaped value in
- * `title`, `openQuestion`, `grounding`, or an item's `statement`/`evidence`.
- * 502 — the backing store errored.
+ * secret. 404 — no session, a session with no resolved workspace yet, (GET
+ * mode=get) no brief at that slug, or (POST `anchor: true`) the resolved
+ * brief does not belong to the caller's own workspace (see the `anchor`
+ * paragraph above — unreachable through this route's own logic today, kept
+ * as defense in depth). 422 — a credential-shaped value in `title`,
+ * `openQuestion`, `grounding`, or an item's `statement`/`evidence`. 502 —
+ * the backing store errored.
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -105,6 +146,8 @@ import {
   searchBriefs,
   upsertBrief,
   patchBriefItems,
+  setSessionBriefAnchor,
+  clearSessionBriefAnchor,
 } from "@agentrail/db-postgres";
 import type {
   BriefArea,
@@ -117,7 +160,7 @@ import type {
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { scanForSecrets, summarizeFindings } from "../../../../../lib/secret-scan";
 
-const MODES = ["list", "get", "search"] as const;
+const MODES = ["list", "get", "search", "anchor"] as const;
 type Mode = (typeof MODES)[number];
 
 const BRIEF_AREAS: readonly BriefArea[] = [
@@ -163,6 +206,10 @@ interface RawPostBody {
   openQuestion?: string;
   grounding?: BriefGrounding;
   items?: RawBriefItem[];
+  // Conversation→brief anchor (see this route's own doc-comment for the full
+  // "anchor" paragraph): true anchors this session to THIS call's brief,
+  // false clears any existing anchor, omitted leaves it untouched.
+  anchor?: boolean;
 }
 
 function isBriefGrounding(v: unknown): v is BriefGrounding {
@@ -223,6 +270,7 @@ function isRawPostBody(v: unknown): v is RawPostBody {
   ) {
     return false;
   }
+  if (o.anchor !== undefined && typeof o.anchor !== "boolean") return false;
   return true;
 }
 
@@ -251,19 +299,30 @@ export async function GET(request: NextRequest) {
   }
 
   const session = await getJaceSessionByEveSessionId(eveSessionId);
-  const workspaceId = session?.workspaceId ?? null;
-  if (!workspaceId) {
+  if (!session || !session.workspaceId) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
+  const workspaceId = session.workspaceId;
 
   const modeParam = request.nextUrl.searchParams.get("mode") ?? "";
   if (!(MODES as readonly string[]).includes(modeParam)) {
     return NextResponse.json(
-      { error: "mode must be one of list, get, search" },
+      { error: "mode must be one of list, get, search, anchor" },
       { status: 400 }
     );
   }
   const mode = modeParam as Mode;
+
+  if (mode === "anchor") {
+    // Read straight off the session row already fetched above —
+    // `anchoredBriefId` lives on `jace_sessions` itself, so resolving
+    // `workspaceId` and reading the anchor are the SAME lookup, not two.
+    return NextResponse.json({
+      schemaVersion: 1,
+      mode,
+      anchor: session.anchoredBriefId ? { briefId: session.anchoredBriefId } : null,
+    });
+  }
 
   try {
     if (mode === "get") {
@@ -327,7 +386,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Body must have eveSessionId (string), slug (non-empty string), and optional title/openQuestion (string), grounding ({wikiPageSlugs[], memoryItemIds[], commitSha}), items (array of {id?, area, statement, evidence?, kind, state?, resolution?})",
+          "Body must have eveSessionId (string), slug (non-empty string), and optional title/openQuestion (string), grounding ({wikiPageSlugs[], memoryItemIds[], commitSha}), items (array of {id?, area, statement, evidence?, kind, state?, resolution?}), anchor (boolean)",
       },
       { status: 400 }
     );
@@ -339,10 +398,10 @@ export async function POST(request: NextRequest) {
   }
 
   const session = await getJaceSessionByEveSessionId(eveSessionId);
-  const workspaceId = session?.workspaceId ?? null;
-  if (!workspaceId) {
+  if (!session || !session.workspaceId) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
+  const workspaceId = session.workspaceId;
 
   const slug = raw.slug.trim();
   const items = raw.items ?? [];
@@ -436,12 +495,36 @@ export async function POST(request: NextRequest) {
     const { upserted, skippedHumanAuthorityIds, skippedUnknownResolvedIds } =
       await patchBriefItems(brief.id, items.map(toPatchInput));
 
+    // Conversation→brief anchor (see this route's doc-comment's "anchor"
+    // paragraph): a follow-on to the SAME call's upsertBrief, never a
+    // separate caller-supplied brief id.
+    let anchor: { briefId: string } | null | undefined;
+    if (raw.anchor === true) {
+      // Defense in depth only — structurally unreachable today, since
+      // `brief` was just upserted strictly within `workspaceId` above (see
+      // the doc-comment). Never anchor a session to a brief outside its own
+      // resolved workspace, even if a future store-layer change made this
+      // reachable.
+      if (brief.workspaceId !== workspaceId) {
+        return NextResponse.json(
+          { error: "Brief does not belong to this workspace" },
+          { status: 404 }
+        );
+      }
+      await setSessionBriefAnchor(session.id, brief.id);
+      anchor = { briefId: brief.id };
+    } else if (raw.anchor === false) {
+      await clearSessionBriefAnchor(session.id);
+      anchor = null;
+    }
+
     return NextResponse.json(
       {
         brief,
         items: upserted,
         skippedHumanAuthorityIds,
         skippedUnknownResolvedIds,
+        ...(anchor !== undefined ? { anchor } : {}),
       },
       { status: 200 }
     );

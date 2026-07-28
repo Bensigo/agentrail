@@ -330,6 +330,8 @@ export function buildDiscordInboundUrl(baseUrl) {
  * @param {{
  *   channelId: string, messageId: string, senderId: string,
  *   senderDisplay: string, senderUsername: string | null, text: string,
+ *   threadId: string | null, mentionsBot: boolean, mentionsOtherUsers: boolean,
+ *   repliesToMessageId: string | null, repliesToBot: boolean,
  *   env?: Record<string, string|undefined>,
  *   transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *     Promise<{ status: number, json: () => Promise<unknown> }>,
@@ -343,6 +345,11 @@ export async function postDiscordInboundMessage({
   senderDisplay,
   senderUsername,
   text,
+  threadId,
+  mentionsBot,
+  mentionsOtherUsers,
+  repliesToMessageId,
+  repliesToBot,
   env = {},
   transport,
 }) {
@@ -362,7 +369,19 @@ export async function postDiscordInboundMessage({
         "Content-Type": "application/json",
         Authorization: `Bearer ${cfg.token}`,
       },
-      body: JSON.stringify({ channelId, messageId, senderId, senderDisplay, senderUsername, text }),
+      body: JSON.stringify({
+        channelId,
+        messageId,
+        senderId,
+        senderDisplay,
+        senderUsername,
+        text,
+        threadId,
+        mentionsBot,
+        mentionsOtherUsers,
+        repliesToMessageId,
+        repliesToBot,
+      }),
     });
   } catch (err) {
     return {

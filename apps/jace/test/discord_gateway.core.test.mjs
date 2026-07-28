@@ -513,6 +513,11 @@ const BASE_ARGS = {
   senderDisplay: "Ada",
   senderUsername: "ada",
   text: "hello",
+  threadId: "thread-9",
+  mentionsBot: true,
+  mentionsOtherUsers: true,
+  repliesToMessageId: "msg-0",
+  repliesToBot: true,
 };
 
 test("postDiscordInboundMessage: missing config -> ok:false, transport never called", async () => {

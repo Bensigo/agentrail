@@ -52,6 +52,20 @@
 //           depend on the model choosing to obey a prompt.
 //     A SECOND ungated mutating tool is a policy violation until it is added
 //     there with its own argument.
+//   - `save_brief` (design: docs/superpowers/specs/2026-07-28-jace-briefs-
+//     durable-idea-understanding-design.md; spec PR #1487) is the SECOND
+//     enumerated ungated mutating tool. Its argument is different from
+//     post_pr_review's: rather than "the approval channel doesn't reach every
+//     surface", the design spec's own reasoning is "it is internal and
+//     reversible, and `create_issue` remains the only boundary crossing" —
+//     it only ever writes into AgentRail's own brief store (never GitHub, a
+//     workspace, or any other outside system), the write is a per-item DELTA
+//     the console's own route enforces invariants against (an
+//     `authority: 'human'` item is locked against every future `save_brief`
+//     call; an `unknown`-kind item can never land `resolved`), and per-turn
+//     autosave is the entire point — gating it would defeat the reason this
+//     tool exists (surviving a context compaction by externalizing
+//     understanding as it happens, not in an end-of-conversation batch).
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -70,9 +84,10 @@
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
 //      `create_issue` + `create_workspace` + `create_repo` + `update_issue` +
-//      `create_goal` (gated/mutating), `send_connect_link` (ungated but
-//      self-scoped), and `standup` / `codebase_query` /
-//      `fetch_workspace_memory` (read-only).
+//      `create_goal` (gated/mutating), `send_connect_link` + `post_pr_review`
+//      + `save_brief` (ungated but self-scoped/argued), and `standup` /
+//      `codebase_query` / `fetch_workspace_memory` / `fetch_backlog` /
+//      `fetch_repo_wiki` / `fetch_work_status` / `fetch_briefs` (read-only).
 //      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
 //      below — that edit IS the human review this test exists to force.
 //   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
@@ -143,10 +158,12 @@ const EXPECTED_TOOL_FILES = [
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
+  "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "save_brief.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own brief store only (never GitHub/a workspace/any outside system); human-authority + unknown-can't-resolve invariants enforced at the console route, not here; no child_process (HTTP to the console, like post_pr_review)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts", // read-only: reads recent runs + queue entries via fetch_work_status.core.mjs over the console token API (retired direct-Postgres edge); no approval, no child_process
   "update_issue.ts", // gated (issue #1345): edits an EXISTING issue's title/body in the house format — same gate class as create_issue, via the SAME consoleGatedApproval seam; shells out to `agentrail issue update` (child_process, like create_issue)
@@ -177,7 +194,7 @@ const EXPECTED_MUTATING_TOOLS = [
 // a ceiling as much as a floor: the test below asserts each one wires NO
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
-const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts"];
+const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts", "save_brief.ts"];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

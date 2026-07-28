@@ -50,7 +50,7 @@ export function isFromBot(author) {
  * attaches a (possibly partial) `member` object to every GUILD message and
  * never to a DM, so a malformed/corrupted event that is missing `guild_id`
  * but still carries a `member` is NOT treated as a DM. This matters because
- * `admitMessage` admits every DM unconditionally with no mention check — a
+ * `screenMessage` admits every DM unconditionally with no mention check — a
  * `guild_id == null` check alone fails OPEN on such an event (Jace would
  * answer every message in the channel); requiring `member == null` too means
  * it instead falls through to the ordinary mention check, same as any other
@@ -74,26 +74,29 @@ export function mentionsBot(mentions, botUserId) {
 }
 
 /**
- * Decide whether a raw Gateway MESSAGE_CREATE payload should become a Jace
- * turn. Admits when it mentions the bot OR is a DM; ignores the bot's own
- * messages, other bots, and empty content — exactly the spec's rule, nothing
- * extra layered on. `botUserId` is the Gateway session's own bot user id
- * (known only after READY; see discord-gateway.mjs) — with no botUserId yet
- * there is no way to tell a real mention from noise, so nothing is admitted.
+ * Screen a raw MESSAGE_CREATE for TRANSPORT-level noise only — this function
+ * no longer decides whether Jace should answer. That is the console's
+ * engagement rule (`apps/console/lib/thread-engagement.ts`), which needs
+ * conversation state this process has no access to.
  *
- * Also rejects a message that is admissible ONLY because of the bot's own
- * mention token: stripping `<@BOT_ID>` out of a guild message like "@Jace"
- * (nothing else) leaves empty text (I1) — that is the single most likely
- * first thing anyone types at the bot, and admitting it would only reach the
- * console's discord-inbound route to be rejected with `text is required`.
- * Caught here instead, so it is skipped cleanly and never enqueued.
+ * Forwarded: DMs, anything mentioning the bot, and EVERY message in a known
+ * thread (the console decides those). Still dropped here, because no state
+ * could change the answer: bot authors (including our own — the infinite
+ * ping-pong guard), malformed payloads, empty content, and a guild message
+ * that is nothing but the bot's own mention token.
  *
  * @param {{ author?: { id?: string, bot?: boolean } | null, guild_id?: string | null,
  *           member?: unknown, mentions?: Array<{ id?: string }>, content?: string }} message
- * @param {string | null | undefined} botUserId
+ * @param {string | null | undefined} botUserId the Gateway session's own bot
+ *   user id (known only after READY; see discord-gateway.mjs) — with no
+ *   botUserId yet there is no way to tell a real mention from noise, so
+ *   nothing is admitted.
+ * @param {boolean} isThread whether `channel_id` is a thread — resolved by the
+ *   socket wrapper from its live thread-id set, since a MESSAGE_CREATE payload
+ *   carries no channel type.
  * @returns {{ admit: boolean, reason: string }}
  */
-export function admitMessage(message, botUserId) {
+export function screenMessage(message, botUserId, isThread) {
   if (!botUserId) {
     return { admit: false, reason: "bot user id not yet known (gateway not ready)" };
   }
@@ -108,13 +111,35 @@ export function admitMessage(message, botUserId) {
     return { admit: false, reason: "empty content" };
   }
   const isDM = isDirectMessage(message);
-  if (!isDM && !mentionsBot(message.mentions, botUserId)) {
-    return { admit: false, reason: "guild message without a mention of the bot" };
+  const mentioned = mentionsBot(message.mentions, botUserId);
+  // The mention requirement only applies outside a known thread — inside one,
+  // the console's engagement rule decides, not this listener.
+  if (!isDM && !mentioned && !isThread) {
+    return {
+      admit: false,
+      reason: "guild message without a mention of the bot, outside a known thread",
+    };
   }
+  // Rejects a message that is admissible ONLY because of the bot's own
+  // mention token: stripping `<@BOT_ID>` out of a message like "@Jace"
+  // (nothing else) leaves empty text (I1) — that is the single most likely
+  // first thing anyone types at the bot, and admitting it would only reach
+  // the console's discord-inbound route to be rejected with `text is
+  // required`. Caught here instead, so it is skipped cleanly and never
+  // enqueued — applies inside a known thread too, since no conversation
+  // state could turn empty text into a real turn.
   if (!stripBotMention(message.content, botUserId)) {
     return { admit: false, reason: "empty after stripping the bot mention" };
   }
-  return { admit: true, reason: isDM ? "direct message" : "mentions the bot" };
+  let reason;
+  if (isDM) {
+    reason = "direct message";
+  } else if (mentioned) {
+    reason = "mentions the bot";
+  } else {
+    reason = "message in a known thread";
+  }
+  return { admit: true, reason };
 }
 
 // --- 2. Payload shaping ------------------------------------------------------
@@ -160,15 +185,29 @@ function displayNameFor(author) {
  * since the console route trusts a pre-shaped body from an authenticated
  * caller rather than re-deriving it.
  *
- * Call only on a message `admitMessage` already approved — this function
+ * Also carries the facts the console's thread-engagement rule needs to
+ * decide a thread message this listener no longer judges on its own:
+ * `threadId` (null outside a known thread), `mentionsBot`/`mentionsOtherUsers`
+ * (from the raw `mentions` array), and `repliesToMessageId`/`repliesToBot`
+ * (from Discord's `message_reference` / `referenced_message`).
+ *
+ * Call only on a message `screenMessage` already approved — this function
  * does not re-check admission.
+ *
+ * @param {{ message: Record<string, any>, botUserId: string | null | undefined,
+ *           isThread: boolean }} args
  */
-export function shapeInboundPayload({ message, botUserId }) {
+export function shapeInboundPayload({ message, botUserId, isThread }) {
   const channelId = String(message.channel_id);
   const messageId = String(message.id);
   const senderId = String(message.author.id);
   const senderUsername =
     typeof message.author.username === "string" ? message.author.username : null;
+  const mentions = Array.isArray(message.mentions) ? message.mentions : [];
+  const repliesToMessageId =
+    message.message_reference?.message_id != null
+      ? String(message.message_reference.message_id)
+      : null;
   return {
     channelId,
     messageId,
@@ -176,6 +215,11 @@ export function shapeInboundPayload({ message, botUserId }) {
     senderDisplay: displayNameFor(message.author),
     senderUsername,
     text: stripBotMention(message.content, botUserId),
+    threadId: isThread ? channelId : null,
+    mentionsBot: mentionsBot(mentions, botUserId),
+    mentionsOtherUsers: mentions.some((user) => user && user.id !== botUserId),
+    repliesToMessageId,
+    repliesToBot: message.referenced_message?.author?.bot === true,
   };
 }
 

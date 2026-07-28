@@ -52,11 +52,40 @@ test("requests exactly the four intents the spec names", () => {
 test("imports its decisions from the pure core, not reimplementing them here", () => {
   assert.match(
     code,
-    /import\s*{[^}]*admitMessage[^}]*}\s*from\s*["']\.\/discord_gateway\.core\.mjs["']/s,
+    /import\s*{[^}]*screenMessage[^}]*}\s*from\s*["']\.\/discord_gateway\.core\.mjs["']/s,
   );
   assert.match(code, /classifyCloseCode/);
   assert.match(code, /shapeInboundPayload/);
   assert.match(code, /postDiscordInboundMessage/);
+});
+
+test("tracks known thread ids from GUILD_CREATE/THREAD_CREATE/THREAD_DELETE, passed as screenMessage's isThread", () => {
+  assert.match(code, /GatewayDispatchEvents\.GuildCreate/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadCreate/);
+  assert.match(code, /GatewayDispatchEvents\.ThreadDelete/);
+  assert.match(code, /threadIds/);
+  assert.match(code, /screenMessage\(message, state\.botUserId, isThread\)/);
+});
+
+test("does not request any additional Gateway intent beyond the four already documented (thread tracking rides the existing Guilds intent)", () => {
+  const intentMatches = code.match(/GatewayIntentBits\.\w+/g) ?? [];
+  assert.deepEqual(
+    new Set(intentMatches),
+    new Set([
+      "GatewayIntentBits.Guilds",
+      "GatewayIntentBits.GuildMessages",
+      "GatewayIntentBits.DirectMessages",
+      "GatewayIntentBits.MessageContent",
+    ]),
+  );
+});
+
+test("logs every non-admit with its reason, instead of a silent return", () => {
+  const handlerMatch = code.match(/async function handleMessageCreate\([\s\S]*?\n\}/);
+  assert.ok(handlerMatch, "handleMessageCreate function not found");
+  const body = handlerMatch[0];
+  assert.match(body, /if\s*\(!decision\.admit\)\s*{/);
+  assert.match(body, /decision\.reason/);
 });
 
 test("IDENTIFYs with an online presence", () => {

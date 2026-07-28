@@ -114,7 +114,7 @@ import { REST } from "@discordjs/rest";
 import { WebSocketManager, WebSocketShardEvents } from "@discordjs/ws";
 import { GatewayDispatchEvents, GatewayIntentBits } from "discord-api-types/v10";
 import {
-  admitMessage,
+  screenMessage,
   classifyCloseCode,
   computeInitialConnectBackoffMs,
   INITIAL_CONNECT_MAX_ATTEMPTS,
@@ -133,16 +133,30 @@ const INTENTS =
 /** Module-level state — exactly one connection per process (see the
  * multi-replica note above for the cross-process story). `started` guards
  * against a second `startDiscordGateway()` call (e.g. a future second import
- * site) from ever opening a second connection within the SAME process. */
+ * site) from ever opening a second connection within the SAME process.
+ *
+ * `threadIds` is this process's live view of "which channel ids are threads"
+ * — a MESSAGE_CREATE payload carries no channel type of its own, so
+ * `screenMessage`'s `isThread` argument has to come from somewhere. Seeded
+ * from each GUILD_CREATE dispatch's `threads` array (sent once per guild on
+ * connect/reconnect) and kept current by THREAD_CREATE/THREAD_DELETE — no
+ * extra intent needed, since GUILDS (already requested) covers all three
+ * dispatch types. In-memory only: a stale entry after a missed THREAD_DELETE
+ * self-heals on the next reconnect's GUILD_CREATE reseed. */
 const state = {
   started: false,
   connected: false,
   stopped: false,
   botUserId: /** @type {string | null} */ (null),
+  threadIds: /** @type {Set<string>} */ (new Set()),
 };
 
 function log(...args) {
   console.log(LOG_PREFIX, ...args);
+}
+
+function debug(...args) {
+  console.debug(LOG_PREFIX, ...args);
 }
 
 function warn(...args) {
@@ -270,10 +284,24 @@ export async function startDiscordGateway(env = process.env) {
     });
 
     manager.on(WebSocketShardEvents.Dispatch, (payload) => {
-      if (payload.t !== GatewayDispatchEvents.MessageCreate) return;
-      void handleMessageCreate(payload.d, env).catch((handlerErr) => {
-        error("MESSAGE_CREATE handling failed:", handlerErr);
-      });
+      switch (payload.t) {
+        case GatewayDispatchEvents.GuildCreate:
+          seedThreadIds(payload.d);
+          return;
+        case GatewayDispatchEvents.ThreadCreate:
+          addThreadId(payload.d);
+          return;
+        case GatewayDispatchEvents.ThreadDelete:
+          removeThreadId(payload.d);
+          return;
+        case GatewayDispatchEvents.MessageCreate:
+          void handleMessageCreate(payload.d, env).catch((handlerErr) => {
+            error("MESSAGE_CREATE handling failed:", handlerErr);
+          });
+          return;
+        default:
+          return;
+      }
     });
 
     await connectWithRetry(manager);
@@ -287,21 +315,73 @@ export async function startDiscordGateway(env = process.env) {
 }
 
 /**
- * Handle one admitted-or-not MESSAGE_CREATE dispatch: run the pure admission
+ * Seed `state.threadIds` from a GUILD_CREATE dispatch's `threads` array —
+ * sent once per guild on every connect/reconnect, so this is also how a
+ * fresh session (or a stale entry left by a missed THREAD_DELETE) self-heals.
+ *
+ * @param {unknown} guild raw GatewayGuildCreateDispatchData
+ */
+function seedThreadIds(guild) {
+  const threads = guild && typeof guild === "object" ? guild.threads : undefined;
+  if (!Array.isArray(threads)) return;
+  let added = 0;
+  for (const thread of threads) {
+    const id = thread && typeof thread === "object" ? thread.id : undefined;
+    if (typeof id === "string") {
+      state.threadIds.add(id);
+      added += 1;
+    }
+  }
+  debug(`GUILD_CREATE: seeded ${added} thread id(s) (tracking ${state.threadIds.size} total).`);
+}
+
+/**
+ * @param {unknown} thread raw GatewayThreadCreateDispatchData (an APIThreadChannel)
+ */
+function addThreadId(thread) {
+  const id = thread && typeof thread === "object" ? thread.id : undefined;
+  if (typeof id !== "string") return;
+  state.threadIds.add(id);
+  debug(`THREAD_CREATE: now tracking thread ${id} (${state.threadIds.size} total).`);
+}
+
+/**
+ * @param {unknown} thread raw GatewayThreadDeleteDispatchData
+ */
+function removeThreadId(thread) {
+  const id = thread && typeof thread === "object" ? thread.id : undefined;
+  if (typeof id !== "string") return;
+  state.threadIds.delete(id);
+  debug(`THREAD_DELETE: stopped tracking thread ${id} (${state.threadIds.size} total).`);
+}
+
+/**
+ * Handle one admitted-or-not MESSAGE_CREATE dispatch: run the pure screening
  * rule, and only for an admitted message, shape + POST it to the console's
  * discord-inbound door — the SAME pipeline the interactions door already
  * feeds (resolveInboundChatIdentity -> enqueueChannelMessage -> dispatcher ->
  * Eve turn), just reached over HTTP since this service has no direct
  * Postgres access. Never throws past the caller's own `.catch` above.
  *
+ * Every non-admit is logged with its reason — a silent `return` here is
+ * exactly why a real thread message that should have gone through once left
+ * no trace to diagnose in production.
+ *
  * @param {unknown} message raw GatewayMessageCreateDispatchData
  * @param {Record<string, string | undefined>} env
  */
 async function handleMessageCreate(message, env) {
-  const decision = admitMessage(message, state.botUserId);
-  if (!decision.admit) return;
+  const channelId =
+    message && typeof message === "object" ? /** @type {any} */ (message).channel_id : undefined;
+  const isThread = typeof channelId === "string" && state.threadIds.has(channelId);
 
-  const payload = shapeInboundPayload({ message, botUserId: state.botUserId });
+  const decision = screenMessage(message, state.botUserId, isThread);
+  if (!decision.admit) {
+    debug(`not admitted (channel ${channelId ?? "unknown"}, isThread=${isThread}): ${decision.reason}`);
+    return;
+  }
+
+  const payload = shapeInboundPayload({ message, botUserId: state.botUserId, isThread });
   const result = await postDiscordInboundMessage({ ...payload, env, transport: fetch });
   if (!result.ok) {
     error(`discord-inbound POST failed for ${payload.channelId}:${payload.messageId}:`, result.error);

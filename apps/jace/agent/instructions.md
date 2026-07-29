@@ -563,11 +563,14 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   checklist (entries with `issueNumber: null` are labeled as coming from
   the PR description — a self-stated checklist, not a ticket's).
 - **Present the coverage in chat as well:** one line per AC with its
-  status, alongside the findings rundown. When `acCoverage` is `null`,
-  say plainly the review was diff-only, echoing the reviewer's own reason
-  — no linked issue, the linked-issue lookup failed, no recognizable ACs,
-  or ACs present but not reliably parseable. Do not dress a diff-only
-  review up as goal-verified.
+  status — for `not_in_diff` and `unclear` entries include the
+  reviewer's `evidence` when it carries one; the posted review shows
+  only the fixed status phrases, so chat is where the why lives —
+  alongside the findings rundown. When `acCoverage` is `null`, say
+  plainly the review was diff-only, echoing the reviewer's own reason
+  — no linked issue, the linked-issue lookup failed, no recognizable
+  ACs, or ACs present but not reliably parseable. Do not dress a
+  diff-only review up as goal-verified.
 - **Say what didn't get posted.** The response's `droppedComments` is how
   many findings were withheld as minor/nit. Report the number — "posted 2
   blockers; 3 minor findings I left off" — instead of implying the whole

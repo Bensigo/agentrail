@@ -3,7 +3,6 @@ import {
   getApprovalById,
   getJaceSessionByEveSessionId,
   stampPublishedIssueUrl,
-  hasInvestigationIssueLink,
   linkInvestigationIssue,
 } from "@agentrail/db-postgres";
 import type { InvestigationIssueRole } from "@agentrail/db-postgres";
@@ -116,14 +115,22 @@ const GITHUB_ISSUE_URL_CAPTURE_RE = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+
  * Parse `{owner}/{repo}` + issue number out of a canonical GitHub issue URL
  * — a capturing sibling of this file's own `GITHUB_ISSUE_URL_RE` (same
  * shape, deliberately, not independently maintained). `null` on anything
- * that doesn't match. EXPORTED, breaking from this file's usual
- * unexported-helper convention, purely so the non-matching branch has a
- * direct test: by the time a live request reaches the "stamped" case below,
- * `body.url` has ALREADY passed `GITHUB_ISSUE_URL_RE` (the same shape), so
- * this function can never actually return `null` there — the defensive
- * branch exists for `stampInvestigationIssueLink`'s own robustness (e.g.
- * against a future call site that doesn't pre-validate), not because today's
- * POST handler can produce one.
+ * that doesn't match.
+ *
+ * EXPORTED — a deliberate, narrow exception to this file's usual
+ * unexported-helper convention, justified on its own merits rather than by
+ * an external precedent: by the time a live request reaches the "stamped"
+ * case below, `body.url` has ALREADY passed `GITHUB_ISSUE_URL_RE` (the
+ * identical shape), so this function can never actually return `null`
+ * there in practice — the defensive branch exists for
+ * `stampInvestigationIssueLink`'s own robustness (e.g. against a future
+ * call site that doesn't pre-validate), not because today's POST handler
+ * can produce one. A small, pure, side-effect-free helper is the cheapest
+ * way to give that branch a direct, real test without contriving a route-
+ * level scenario that cannot actually occur. Safe to export: Next.js's App
+ * Router only treats specific named exports from a `route.ts` (the HTTP
+ * verbs, plus a few config exports) as routing-relevant — any other export,
+ * like this one, is simply ignored by the router.
  */
 export function parseGithubIssueUrl(url: string): { repo: string; issueNumber: number } | null {
   const match = url.match(GITHUB_ISSUE_URL_CAPTURE_RE);
@@ -165,17 +172,28 @@ function isStampedInvestigationLink(value: unknown): value is StampedInvestigati
  * error, anything — all just `console.warn` and return. A missing link is
  * recoverable; a failed create_issue response would not be.
  *
- * IDEMPOTENT: `stampPublishedIssueUrl`'s own `"stamped"` outcome covers BOTH
- * a fresh stamp and a same-value replay (see that function's doc-comment in
+ * IDEMPOTENT AT THE DATABASE LEVEL (Task 12 fix round 1 — review finding):
+ * `stampPublishedIssueUrl`'s own `"stamped"` outcome covers BOTH a fresh
+ * stamp and a same-value replay (see that function's doc-comment in
  * `queries/jace_sessions.ts`), so this endpoint can genuinely run twice for
- * the same approval. Guarded with `hasInvestigationIssueLink` (Task 12's own
- * tiny addition to `queries/investigations.ts`) rather than assuming
- * `stampPublishedIssueUrl`'s idempotency implies this call only ever
- * happens once — it does not.
+ * the same approval, calling `linkInvestigationIssue` with the identical
+ * `(investigationId, repo, issueNumber)` triple both times. The true
+ * guarantee lives ONE LAYER DOWN, in `linkInvestigationIssue` itself
+ * (`queries/investigations.ts`): `ON CONFLICT DO NOTHING` against the
+ * `investigation_issue_links_unique` index (migration 0061) — the SAME
+ * mechanism `stampPublishedIssueUrl` relies on for its own sibling
+ * guarantee. This function calls it UNCONDITIONALLY, with no read-check of
+ * its own beforehand — a prior fix-round revision guarded this with a
+ * SELECT-then-INSERT check (`hasInvestigationIssueLink`, since removed);
+ * that shape is NOT concurrent-safe (a TOCTOU race window between the read
+ * and the write), unlike the unique index, which Postgres enforces
+ * atomically at commit time regardless of how many callers race it.
  *
- * EXPORTED, breaking from this file's usual unexported-helper convention,
- * so the URL-non-matching branch (defensively unreachable through a live
- * POST — see `parseGithubIssueUrl`'s own doc-comment) has a direct test.
+ * EXPORTED for the same reason `parseGithubIssueUrl` above is: a small,
+ * pure-enough (mocked-DB) helper exported for direct unit coverage of the
+ * URL-non-matching branch, which a live POST cannot exercise (see that
+ * function's own doc-comment). Safe — Next.js ignores any `route.ts` export
+ * that isn't an HTTP-verb handler or a recognized config export.
  */
 export async function stampInvestigationIssueLink(
   toolInput: Record<string, unknown>,
@@ -193,8 +211,6 @@ export async function stampInvestigationIssueLink(
   }
 
   try {
-    const alreadyLinked = await hasInvestigationIssueLink(marker.id, parsed.repo, parsed.issueNumber);
-    if (alreadyLinked) return;
     await linkInvestigationIssue(marker.id, parsed.repo, parsed.issueNumber, marker.role);
   } catch (err) {
     console.warn(

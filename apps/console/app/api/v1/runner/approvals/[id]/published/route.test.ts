@@ -5,7 +5,6 @@ vi.mock("@agentrail/db-postgres", () => ({
   getApprovalById: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   stampPublishedIssueUrl: vi.fn(),
-  hasInvestigationIssueLink: vi.fn(),
   linkInvestigationIssue: vi.fn(),
 }));
 
@@ -14,14 +13,12 @@ import {
   getApprovalById,
   getJaceSessionByEveSessionId,
   stampPublishedIssueUrl,
-  hasInvestigationIssueLink,
   linkInvestigationIssue,
 } from "@agentrail/db-postgres";
 
 const mockGetById = vi.mocked(getApprovalById);
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockStamp = vi.mocked(stampPublishedIssueUrl);
-const mockHasLink = vi.mocked(hasInvestigationIssueLink);
 const mockLink = vi.mocked(linkInvestigationIssue);
 
 const NOW = new Date("2026-07-19T00:00:00.000Z");
@@ -84,7 +81,6 @@ beforeEach(() => {
   mockGetById.mockResolvedValue(MOCK_APPROVAL as never);
   mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
   mockStamp.mockResolvedValue("stamped" as never);
-  mockHasLink.mockResolvedValue(false);
   mockLink.mockResolvedValue(undefined as never);
 });
 
@@ -314,7 +310,6 @@ describe("POST /api/v1/runner/approvals/[id]/published — approved-only + idemp
     // Task 12 regression: MOCK_APPROVAL's toolInput carries no _investigation
     // marker — the common case for every issue that isn't investigation-linked
     // — so the link write must never fire.
-    expect(mockHasLink).not.toHaveBeenCalled();
     expect(mockLink).not.toHaveBeenCalled();
   });
 
@@ -356,7 +351,6 @@ describe("POST /api/v1/runner/approvals/[id]/published — Task 12 investigation
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
 
     expect(res.status).toBe(200);
-    expect(mockHasLink).toHaveBeenCalledWith("inv-1", "acme/widgets", 42);
     expect(mockLink).toHaveBeenCalledWith("inv-1", "acme/widgets", 42, "mitigative");
   });
 
@@ -371,19 +365,20 @@ describe("POST /api/v1/runner/approvals/[id]/published — Task 12 investigation
     expect(mockLink).toHaveBeenCalledWith("inv-2", "acme/widgets", 42, "preventative");
   });
 
-  it("idempotent: a second publish call for the same approval writes the link only ONCE — hasInvestigationIssueLink guards the insert", async () => {
+  it("Fix round 1 (idempotency moved to the database): a second publish call for the same approval calls linkInvestigationIssue AGAIN, with the identical (investigationId, repo, issueNumber, role) — this route no longer read-checks first (hasInvestigationIssueLink removed); the ON CONFLICT DO NOTHING that collapses two such calls to one row lives one layer down in linkInvestigationIssue itself (queries/investigations.ts) and is not observable through this mocked route test — see that function's own test suite for the shape assertion", async () => {
     mockGetById.mockResolvedValue({
       ...MOCK_APPROVAL,
       toolInput: { title: "x", _investigation: { id: "inv-1", role: "mitigative" } },
     } as never);
-    mockHasLink.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     const res1 = await POST(req({ url: REAL_URL }), params("approval-1"));
     const res2 = await POST(req({ url: REAL_URL }), params("approval-1"));
 
     expect(res1.status).toBe(200);
     expect(res2.status).toBe(200);
-    expect(mockLink).toHaveBeenCalledTimes(1);
+    expect(mockLink).toHaveBeenCalledTimes(2);
+    expect(mockLink.mock.calls[0]).toEqual(["inv-1", "acme/widgets", 42, "mitigative"]);
+    expect(mockLink.mock.calls[1]).toEqual(["inv-1", "acme/widgets", 42, "mitigative"]);
   });
 
   it("a malformed _investigation marker (missing role) is silently skipped — no link write, no throw, still 200", async () => {
@@ -410,13 +405,13 @@ describe("POST /api/v1/runner/approvals/[id]/published — Task 12 investigation
     expect(mockLink).not.toHaveBeenCalled();
   });
 
-  it("BEST-EFFORT: a store failure while checking/writing the link warns and still 200s — the issue itself was already created, never fails the request", async () => {
+  it("BEST-EFFORT: a store failure while writing the link warns and still 200s — the issue itself was already created, never fails the request", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockGetById.mockResolvedValue({
       ...MOCK_APPROVAL,
       toolInput: { title: "x", _investigation: { id: "inv-1", role: "mitigative" } },
     } as never);
-    mockHasLink.mockRejectedValue(new Error("db down"));
+    mockLink.mockRejectedValue(new Error("db down"));
 
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
 

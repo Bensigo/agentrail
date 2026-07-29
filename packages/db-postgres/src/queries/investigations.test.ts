@@ -34,6 +34,13 @@ const mockState = vi.hoisted(() => ({
     values: Record<string, unknown>;
     opts: { target: Array<{ name: string }>; set: Record<string, unknown> };
   }>,
+  // linkInvestigationIssue (Task 12 fix round 1) — INSERT ... ON CONFLICT DO
+  // NOTHING, distinct from onConflictCalls above (which is the
+  // onConflictDoUpdate shape upsertInvestigation uses).
+  onConflictDoNothingCalls: [] as Array<{
+    values: Record<string, unknown>;
+    opts: { target: Array<{ name: string }> };
+  }>,
   updateCalls: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
   deleteReturningQueue: [] as unknown[][],
   deleteCalls: [] as Array<{ where: unknown }>,
@@ -89,9 +96,28 @@ vi.mock("../db.js", () => {
               return [mockState.insertReturningQueue.shift() ?? { id: "generated-id", ...v, ...opts.set }];
             },
           }),
+          // linkInvestigationIssue (Task 12 fix round 1) — no `.returning()`,
+          // `Promise<void>`, resolved via the bare `.then()` below once
+          // recorded into its OWN queue (distinct from onConflictCalls,
+          // which is the onConflictDoUpdate shape).
+          onConflictDoNothing: (opts: { target: Array<{ name: string }> }) => {
+            let onConflictRecorded = false;
+            const recordOnConflict = () => {
+              if (!onConflictRecorded) {
+                onConflictRecorded = true;
+                mockState.onConflictDoNothingCalls.push({ values: v, opts });
+              }
+            };
+            return {
+              then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) => {
+                recordOnConflict();
+                return Promise.resolve(undefined).then(resolve, reject);
+              },
+            };
+          },
           // Bare `await db.insert(...).values(...)` with no `.returning()` —
-          // e.g. `linkInvestigations`/`linkInvestigationIssue`, which return
-          // `Promise<void>` and have no use for the inserted row.
+          // e.g. `linkInvestigations`, which returns `Promise<void>` and has
+          // no use for the inserted row.
           then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) => {
             record();
             return Promise.resolve(undefined).then(resolve, reject);
@@ -149,7 +175,6 @@ import {
   recordVerdict,
   linkInvestigations,
   linkInvestigationIssue,
-  hasInvestigationIssueLink,
   updateInvestigationItemAsHuman,
   createInvestigationItemAsHuman,
   deleteInvestigationItem,
@@ -165,6 +190,7 @@ beforeEach(() => {
   mockState.updateReturningQueue = [];
   mockState.insertCalls = [];
   mockState.onConflictCalls = [];
+  mockState.onConflictDoNothingCalls = [];
   mockState.updateCalls = [];
   mockState.deleteReturningQueue = [];
   mockState.deleteCalls = [];
@@ -796,24 +822,40 @@ describe("linkInvestigations", () => {
 describe("linkInvestigationIssue", () => {
   it("records the issue an investigation produced, with its role", async () => {
     await linkInvestigationIssue("inv-1", "acme/widgets", 42, "mitigative");
-    expect(mockState.insertCalls[0]!.values).toMatchObject({
+    expect(mockState.onConflictDoNothingCalls[0]!.values).toMatchObject({
       investigationId: "inv-1",
       repo: "acme/widgets",
       issueNumber: 42,
       role: "mitigative",
     });
   });
-});
 
-describe("hasInvestigationIssueLink", () => {
-  it("returns false when no link row matches this (investigationId, repo, issueNumber) triple", async () => {
-    mockState.selectQueue.push([]);
-    expect(await hasInvestigationIssueLink("inv-1", "acme/widgets", 42)).toBe(false);
+  // Task 12 fix round 1 (review finding): the approvals seam
+  // (POST .../approvals/[id]/published) calls this with NO read-check
+  // ahead of it — stampPublishedIssueUrl's own "stamped" outcome covers
+  // both a fresh stamp and a same-value replay, so this function can
+  // genuinely run twice for the identical (investigationId, repo,
+  // issueNumber) triple. Idempotency is now enforced by the database's
+  // unique index (migration 0061, investigation_issue_links_unique) via
+  // ON CONFLICT DO NOTHING, not an application-level SELECT-then-INSERT
+  // guard (the now-removed hasInvestigationIssueLink).
+  it("targets the (investigation_id, repo, issue_number) unique index via ON CONFLICT DO NOTHING — calling it twice with the SAME triple issues two identically-shaped calls (shape assertion only, mirroring the TOCTOU WHERE-shape test above: the mocked suite proves this code CONSTRUCTS the right ON CONFLICT target; it cannot prove Postgres's unique index actually collapses them to one row at commit time, since nothing here executes against a real database — that guarantee lives in migration 0061's CREATE UNIQUE INDEX)", async () => {
+    await linkInvestigationIssue("inv-1", "acme/widgets", 42, "mitigative");
+    await linkInvestigationIssue("inv-1", "acme/widgets", 42, "mitigative");
+
+    expect(mockState.onConflictDoNothingCalls).toHaveLength(2);
+    for (const call of mockState.onConflictDoNothingCalls) {
+      expect(call.opts.target.map((c) => c.name)).toEqual([
+        "investigation_id",
+        "repo",
+        "issue_number",
+      ]);
+    }
   });
 
-  it("returns true when a link row already exists — the approvals seam's idempotency guard (Task 12)", async () => {
-    mockState.selectQueue.push([{ id: "link-1" }]);
-    expect(await hasInvestigationIssueLink("inv-1", "acme/widgets", 42)).toBe(true);
+  it("never touches the plain-insert path (insertCalls) — this write only ever goes through the ON CONFLICT DO NOTHING branch", async () => {
+    await linkInvestigationIssue("inv-1", "acme/widgets", 42, "preventative");
+    expect(mockState.insertCalls).toEqual([]);
   });
 });
 

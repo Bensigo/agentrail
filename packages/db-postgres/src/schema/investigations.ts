@@ -345,6 +345,21 @@ export type InvestigationIssueRole = (typeof investigationIssueRoleEnum.enumValu
  * `repo` is free text, not an FK to `repositories`, for the same reason
  * `brief_work_links.repo` is: the linked issue may live in a repo this
  * workspace hasn't connected as a `repositories` row.
+ *
+ * `investigationRepoIssueUnique` (Task 12 fix round 1, migration 0061): the
+ * approval seam's own idempotency guard, same mechanism
+ * `stampPublishedIssueUrl` already relies on for the sibling
+ * `published_issue_url` column — `linkInvestigationIssue`
+ * (`queries/investigations.ts`) targets this exact index with
+ * `ON CONFLICT DO NOTHING`, so a `POST .../approvals/[id]/published` call
+ * that runs twice for the same approval (idempotent stamp replay) collapses
+ * to a single row at the DATABASE level — concurrent-safe, not a
+ * read-then-write race a SELECT-then-INSERT guard would leave open. Short,
+ * explicit index name (not the mechanical
+ * `investigation_issue_links_investigation_id_repo_issue_number_unique`,
+ * which is over Postgres's 63-byte NAMEDATALEN limit — see
+ * `investigation_links_target_investigation_id_investigations_fk`'s own
+ * shortening note in migration 0059 for the identical constraint).
  */
 export const investigationIssueLinks = pgTable(
   "investigation_issue_links",
@@ -362,6 +377,11 @@ export const investigationIssueLinks = pgTable(
     investigationIdIdx: index(
       "investigation_issue_links_investigation_id_idx"
     ).on(t.investigationId),
+    investigationRepoIssueUnique: unique("investigation_issue_links_unique").on(
+      t.investigationId,
+      t.repo,
+      t.issueNumber
+    ),
   })
 );
 

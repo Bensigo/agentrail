@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   ALL_TASK_TYPES,
   eligibleModelsForTaskType,
@@ -7,6 +7,7 @@ import {
 } from "./eligibility";
 import { CANDIDATES } from "./candidates";
 import type { TaskType } from "./classifier";
+import type { QualityProfile } from "./quality-profile";
 
 const HAIKU = "anthropic/claude-haiku-4.5";
 const SONNET = "anthropic/claude-sonnet-5";
@@ -136,5 +137,97 @@ describe("allEligibleModelSlugs: the union across every task type (#1338 PR③ �
 
   it("includes opus even though only refactor offers it", () => {
     expect(allEligibleModelSlugs()).toContain(OPUS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subscription-platform slice 2, Task 11 — the optional `allowedProfiles`
+// entitlement filter. Profile tags used below (candidates.ts's MODEL_SEATS,
+// pinned by candidates.test.ts): kimi-code/glm-5.2/qwen/haiku = standard,
+// kimi-k3/sonnet-5/opus-4.8/gpt-codex = premium, deepseek/glm-4.7 = economy.
+// ---------------------------------------------------------------------------
+describe("eligibleModelsForTaskType: allowedProfiles undefined (every pre-Task-11 caller) -- byte-identical to today", () => {
+  it("omitting the second argument entirely matches passing it explicitly as undefined", () => {
+    for (const taskType of ALL_TASK_TYPES) {
+      expect(eligibleModelsForTaskType(taskType, undefined)).toEqual(eligibleModelsForTaskType(taskType));
+    }
+  });
+
+  it("every existing pinned per-task pool assertion above already exercises the one-argument call -- this is the explicit anchor for why", () => {
+    // eligibleModelsForTaskType(taskType) with no second argument is exactly
+    // eligibleModelsForTaskType(taskType, undefined): the `allowedProfiles
+    // === undefined` branch returns the unfiltered `eligible` list, so every
+    // describe block above (ALL_TASK_TYPES, HARD OWNER RULE, pinned pools,
+    // allEligibleModelSlugs) continuing to pass unmodified IS the
+    // byte-identical proof for this requirement.
+    expect(eligibleModelsForTaskType("ui")).toEqual([KIMI_CODE, GLM_5_2, KIMI_K3, SONNET]);
+  });
+});
+
+describe("eligibleModelsForTaskType: allowedProfiles filters the pool by candidates.ts's profile tag", () => {
+  it("ui, allowed={standard}: keeps kimi-code/glm-5.2, drops premium-tagged kimi-k3/sonnet-5", () => {
+    const result = eligibleModelsForTaskType("ui", new Set<QualityProfile>(["standard"]));
+    expect(result).toEqual([KIMI_CODE, GLM_5_2]);
+  });
+
+  it("refactor, allowed={economy}: keeps only deepseek-v4-pro", () => {
+    const result = eligibleModelsForTaskType("refactor", new Set<QualityProfile>(["economy"]));
+    expect(result).toEqual([DEEPSEEK]);
+  });
+
+  it("mechanical, allowed={economy, standard}: drops nothing (mechanical's pool has no premium-tagged member)", () => {
+    const result = eligibleModelsForTaskType("mechanical", new Set<QualityProfile>(["economy", "standard"]));
+    expect(result).toEqual(eligibleModelsForTaskType("mechanical"));
+  });
+
+  it("preserves the pool's own seed-first order, independent of the allowed Set's insertion order", () => {
+    const result = eligibleModelsForTaskType(
+      "refactor",
+      new Set<QualityProfile>(["premium", "economy"]) // insertion order deliberately reversed vs. pool order
+    );
+    // Pool order is [opus-4.8(premium), glm-5.2(standard), deepseek(economy), kimi-code(standard), sonnet-5(premium)]
+    expect(result).toEqual([OPUS, DEEPSEEK, SONNET]);
+  });
+
+  it("a filter containing every profile is equivalent to no filter at all", () => {
+    const allProfiles = new Set<QualityProfile>(["economy", "standard", "premium"]);
+    for (const taskType of ALL_TASK_TYPES) {
+      expect(eligibleModelsForTaskType(taskType, allProfiles)).toEqual(eligibleModelsForTaskType(taskType));
+    }
+  });
+});
+
+describe("eligibleModelsForTaskType: fail-open -- an empty filtered pool falls back to the unfiltered eligible set", () => {
+  it("a profile the pool simply doesn't offer (ui has zero economy-tagged candidates): falls back to the full ui pool, logs once", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = eligibleModelsForTaskType("ui", new Set<QualityProfile>(["economy"]));
+
+    expect(result).toEqual([KIMI_CODE, GLM_5_2, KIMI_K3, SONNET]); // the full, unfiltered ui pool
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]?.[0]).toContain("ui");
+
+    errorSpy.mockRestore();
+  });
+
+  it("a literally empty allowed set: also falls back to the unfiltered pool rather than returning []", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = eligibleModelsForTaskType("mechanical", new Set<QualityProfile>());
+
+    expect(result).toEqual(eligibleModelsForTaskType("mechanical"));
+    expect(result.length).toBeGreaterThan(0);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+
+    errorSpy.mockRestore();
+  });
+
+  it("fail-open never brick selection: the fallback result is never empty for any real task type, however narrow the filter", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const taskType of ALL_TASK_TYPES) {
+      const result = eligibleModelsForTaskType(taskType, new Set<QualityProfile>());
+      expect(result.length).toBeGreaterThan(0);
+    }
+    errorSpy.mockRestore();
   });
 });

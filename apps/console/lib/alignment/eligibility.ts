@@ -37,7 +37,8 @@
  */
 
 import type { TaskType } from "./classifier";
-import { CANDIDATES } from "./candidates";
+import { CANDIDATES, slugsForProfiles } from "./candidates";
+import type { QualityProfile } from "./quality-profile";
 
 const HAIKU_SLUG = "anthropic/claude-haiku-4.5";
 
@@ -90,10 +91,50 @@ function candidateModelSlugs(taskType: TaskType): readonly string[] {
  * pool ({@link candidateModelSlugs}) MINUS its curated exclusions above.
  * Order follows the pool's own seed-first order — callers that need a
  * different order should sort themselves.
+ *
+ * `allowedProfiles` (subscription-platform slice 2, Task 11): an OPTIONAL
+ * entitlement filter, layered on top of {@link EXCLUDED_MODELS} rather than
+ * replacing it — a model can be excluded by curation AND out-of-profile at
+ * the same time, and either reason alone is enough to drop it.
+ * `undefined` (every caller before Task 11, and every caller after it
+ * whenever `lib/policy/feature-flags.ts`'s `subscriptionsEnforced()` kill
+ * switch is off) skips profile filtering entirely — BYTE-IDENTICAL to
+ * pre-Task-11 behavior, not merely equivalent. When supplied, the result is
+ * {@link slugsForProfiles} applied to this task type's (curation-filtered)
+ * eligible list, ordered exactly as that list already was.
+ *
+ * FAIL-OPEN: if the profile filter would leave NOTHING (an over-narrow
+ * `allowedProfiles`, or a task type whose pool simply has no member tagged
+ * with any allowed profile — see `candidates.ts`'s `MODEL_SEATS`), this
+ * returns the UNFILTERED eligible list instead of `[]`, loudly
+ * (`console.error`, once). A billing-entitlement bug (or a genuinely
+ * over-restrictive policy) must never brick model selection outright —
+ * serving a not-strictly-entitled model for one task beats returning no
+ * model at all. `lib/policy/allowed-profiles.ts`'s own module doc notes this
+ * is the layer where that gap gets absorbed, not `allowedProfilesFor` itself.
  */
-export function eligibleModelsForTaskType(taskType: TaskType): string[] {
+export function eligibleModelsForTaskType(
+  taskType: TaskType,
+  allowedProfiles?: ReadonlySet<QualityProfile>
+): string[] {
   const excluded = new Set(EXCLUDED_MODELS[taskType]);
-  return candidateModelSlugs(taskType).filter((slug) => !excluded.has(slug));
+  const eligible = candidateModelSlugs(taskType).filter((slug) => !excluded.has(slug));
+
+  if (allowedProfiles === undefined) {
+    return eligible;
+  }
+
+  const filtered = slugsForProfiles(eligible, allowedProfiles);
+  if (filtered.length > 0) {
+    return filtered;
+  }
+
+  console.error(
+    `[eligibility] the profile filter emptied the eligible pool for task type "${taskType}" ` +
+      `(allowed profiles: [${[...allowedProfiles].join(", ")}]); falling back to the unfiltered ` +
+      `eligible set rather than bricking selection.`
+  );
+  return eligible;
 }
 
 /**

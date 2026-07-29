@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { detectInjection, screenInjection, INJECTION_PATTERNS } from "./injection.js";
+import { detectInjection, screenInjection, INJECTION_PATTERNS } from "./injection";
 import corpusJson from "./fixtures/injection-corpus.json";
 
 // ---------------------------------------------------------------------------

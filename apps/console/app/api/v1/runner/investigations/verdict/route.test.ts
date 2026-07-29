@@ -150,6 +150,80 @@ describe("POST /api/v1/runner/investigations/verdict", () => {
     expect(mockGetBySlug).toHaveBeenCalledWith(WS, SLUG);
   });
 
+  describe("secret scan on mechanismSummary (Fix round 1: read-back path — GET mode=get/anchor re-serves the verdict item's body into model context on every future resume)", () => {
+    it("422 when mechanismSummary is credential-shaped, before any DB round trip", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await POST(
+        postReq({
+          eveSessionId: EVE_SESSION_ID,
+          slug: SLUG,
+          verdict: "root_caused",
+          confidence: "confirmed",
+          mechanismSummary:
+            "root cause: a leaked token ghp_abcdef0123456789ABCDEFabcdef01234567 was hardcoded in the deploy script",
+        })
+      );
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.error).toMatch(/credential-shaped/i);
+      expect(body.reason).toContain("github_token");
+      expect(mockGetBySlug).not.toHaveBeenCalled();
+      expect(mockRecordVerdict).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("does not leak the matched secret value in the 422 response", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await POST(
+        postReq({
+          ...validBody,
+          mechanismSummary: "token ghp_abcdef0123456789ABCDEFabcdef01234567 leaked in a log line",
+        })
+      );
+      const body = await res.json();
+      expect(JSON.stringify(body)).not.toContain("ghp_abcdef0123456789ABCDEFabcdef01234567");
+    });
+
+    it("a clean mechanismSummary still reaches recordVerdict", async () => {
+      const res = await POST(
+        postReq({
+          eveSessionId: EVE_SESSION_ID,
+          slug: SLUG,
+          verdict: "root_caused",
+          confidence: "confirmed",
+          mechanismSummary: "connection pool starved under load",
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(mockRecordVerdict).toHaveBeenCalledWith(
+        INVESTIGATION_ID,
+        expect.objectContaining({ mechanismSummary: "connection pool starved under load" })
+      );
+    });
+
+    it("missingEvidence is NOT scanned — it lands in the data column, not the item body", async () => {
+      const res = await POST(
+        postReq({
+          eveSessionId: EVE_SESSION_ID,
+          slug: SLUG,
+          verdict: "undetermined",
+          missingEvidence: ["metrics containing token ghp_abcdef0123456789ABCDEFabcdef01234567 for checkout"],
+        })
+      );
+      expect(res.status).toBe(200);
+      expect(mockRecordVerdict).toHaveBeenCalled();
+    });
+
+    it("an absent mechanismSummary never triggers the scan", async () => {
+      const res = await POST(postReq(validBody));
+      expect(res.status).toBe(200);
+      expect(mockRecordVerdict).toHaveBeenCalledWith(
+        INVESTIGATION_ID,
+        expect.objectContaining({ mechanismSummary: undefined })
+      );
+    });
+  });
+
   describe("fail-closed gate (recordVerdict is the sole source of truth)", () => {
     it("409 with { ok: false, blocking } on an empty/ineligible investigation", async () => {
       mockRecordVerdict.mockResolvedValue({

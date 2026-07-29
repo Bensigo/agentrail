@@ -21,6 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { AC_COVERAGE_STATUSES } from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
 
 const instructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
 const verdictsPath = fileURLToPath(
@@ -86,4 +87,30 @@ test("instructions.md still keeps the pre-existing degraded-verdict honesty rule
     /verdict is `degraded`/,
     "the new rules are additive — the degraded rule must survive them",
   );
+});
+
+const reviewerInstructionsPath = fileURLToPath(
+  new URL("../agent/subagents/reviewer/instructions.md", import.meta.url),
+);
+
+test("reviewer instructions state the coverage vocabulary in lockstep with AC_COVERAGE_STATUSES", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  for (const status of AC_COVERAGE_STATUSES) {
+    assert.ok(
+      prose.includes(`\`${status}\``),
+      `instructions must define coverage status \`${status}\``,
+    );
+  }
+});
+
+test("reviewer instructions carry both canonical null-coverage wordings", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  assert.ok(prose.includes("No recognizable acceptance criteria found"));
+  assert.ok(prose.includes("could not be reliably parsed"));
+});
+
+test("reviewer instructions pin the source order: linked-issue ACs beat the PR body's own list", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  assert.ok(/never overrides or extends/.test(prose));
+  assert.ok(/issueNumber: null/.test(prose) || /`issueNumber` of `null`/.test(prose));
 });

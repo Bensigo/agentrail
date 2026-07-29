@@ -37,7 +37,18 @@ vi.mock(
     return {
       ...actual,
       CONNECTOR_CATALOG: [
-        ...actual.CONNECTOR_CATALOG,
+        // Task 5 added a real `availability: "internal"` entry (`factory`)
+        // to the real catalog. An `internal` entry is UNCONDITIONALLY
+        // credentialed for every workspace regardless of connector rows
+        // (see `registry.ts::evidenceCapabilities`'s own doc-comment) — left
+        // in here it would silently join every "changes"/"search_events"
+        // fan-out test below as an extra provider, changing envelope counts
+        // and `degradations` arrays this file never intended to assert on.
+        // This file tests the GENERIC fan-out mechanism via the four
+        // `fakeobs*` providers only; `factory`'s own behavior is covered by
+        // `lib/evidence/factory.test.ts` and a dedicated real-catalog test
+        // in `lib/evidence/registry.test.ts`.
+        ...actual.CONNECTOR_CATALOG.filter((entry) => entry.availability !== "internal"),
         {
           kind: "fakeobs",
           type: "mcp",

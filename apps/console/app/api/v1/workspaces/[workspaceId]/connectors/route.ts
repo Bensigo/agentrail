@@ -72,7 +72,15 @@ export async function GET(
     // a credential is stored (`hasSecret`), with the folded-in trigger config.
     // The raw secret never leaves the DB layer.
     const secretConfig = (
-      kind: ConnectorConfigInput["kind"]
+      // Narrower than ConnectorConfigInput["kind"] (== ConnectorKind)
+      // deliberately: this helper's only call sites are the three
+      // secret-connected MCP kinds below, and `byProvider` is a
+      // `Map<ConnectorProvider, …>` (the DB-level enum, which does not and
+      // will never include Task 5's internal-only `"factory"` — see
+      // `runner/evidence/route.ts`'s own doc-comment on that decoupling).
+      // Widening this to the full `ConnectorKind` union would let a future
+      // caller pass `"factory"` here and mis-key `byProvider.get(...)`.
+      kind: "linear" | "figma" | "context7"
     ): ConnectorConfigInput => {
       const row = byProvider.get(kind);
       return {

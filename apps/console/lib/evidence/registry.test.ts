@@ -53,22 +53,44 @@ describe("evidenceCapabilities", () => {
   it("returns every verb as a key, even ones with zero declared providers (family-nested from day one)", () => {
     const caps = evidenceCapabilities(CONNECTOR_CATALOG, []);
     expect(Object.keys(caps).sort()).toEqual([...EVIDENCE_VERBS].sort());
+    // Task 5: `factory` (availability: "internal") is now a real catalog
+    // entry, unconditionally credentialed regardless of the (here, empty)
+    // connector rows — see the dedicated test below. It declares
+    // changes+search_events, so those two verbs are excluded from the
+    // "zero declared providers" claim this test makes; every OTHER verb
+    // still has zero providers with no connector rows supplied.
     for (const verb of EVIDENCE_VERBS) {
+      if (verb === "changes" || verb === "search_events") continue;
       expect(caps[verb]).toEqual([]);
     }
+    expect(caps.changes).toEqual(["factory"]);
+    expect(caps.search_events).toEqual(["factory"]);
   });
 
-  it("a catalog entry with no declared evidence capability contributes to no verb", () => {
-    // The real CONNECTOR_CATALOG entries carry no `evidence` field yet (Task 7
-    // populates it) — this is exactly that "declared nothing" case, using the
-    // real catalog directly.
+  it("github and linear (non-evidence catalog entries) contribute to no verb — factory (internal) is the only real entry that does", () => {
+    // github/linear carry no `evidence` field (Task 6/7 add real EXTERNAL
+    // providers) — this is that "declared nothing" case for THEM
+    // specifically, using the real catalog directly. factory (Task 5,
+    // availability: "internal") is unconditionally credentialed regardless
+    // of the connector rows passed here, so changes/search_events are
+    // excluded from the "contributes to no verb" claim — see the dedicated
+    // test below.
     const caps = evidenceCapabilities(CONNECTOR_CATALOG, [
       { provider: "github", enabled: true, hasSecret: true },
       { provider: "linear", enabled: true, hasSecret: true },
     ]);
     for (const verb of EVIDENCE_VERBS) {
+      if (verb === "changes" || verb === "search_events") continue;
       expect(caps[verb]).toEqual([]);
     }
+    expect(caps.changes).toEqual(["factory"]);
+    expect(caps.search_events).toEqual(["factory"]);
+  });
+
+  it("Task 5: factory appears in evidenceCapabilities using the REAL CONNECTOR_CATALOG, with zero connector rows at all (internal availability needs none)", () => {
+    const caps = evidenceCapabilities(CONNECTOR_CATALOG, []);
+    expect(caps.changes).toContain("factory");
+    expect(caps.search_events).toContain("factory");
   });
 
   it("excludes a declared provider with no connector row at all", () => {

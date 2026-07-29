@@ -133,6 +133,14 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { CONNECTOR_CATALOG } from "../../../../(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { adapterFor, evidenceCapabilities } from "../../../../../lib/evidence/registry";
 import { captureEvidence } from "../../../../../lib/evidence/envelope";
+// Task 5: registers the `factory` adapter into the shared registry as a side
+// effect of this import (registry.ts's own doc-comment: "T5-T7 add `import
+// './factory'` ... wherever the route needs them loaded"). This route is the
+// ONLY consumer of `adapterFor` at request time, so this is where every
+// adapter module must be imported for its self-registration to ever run
+// outside a test file that imports the adapter directly. Task 6/7 add their
+// own sibling imports here the same way.
+import "../../../../../lib/evidence/factory";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

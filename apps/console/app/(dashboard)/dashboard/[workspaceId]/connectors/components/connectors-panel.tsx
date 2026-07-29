@@ -26,12 +26,28 @@ import {
   type ConnectorView,
 } from "./connector-helpers";
 
+/**
+ * `factory` (Task 5, `availability: "internal"`) is filtered out of the grid
+ * entirely by `projectConnectors` before a `ConnectorView` ever reaches this
+ * component (see that function's own doc-comment) — this glyph is dead code,
+ * present only so `KIND_ICON`/`KIND_TINT` below (typed `Record<ConnectorKind,
+ * …>`) stay total now that `ConnectorKind` includes `"factory"`. Wraps the
+ * already-imported `Radio` rather than assigning it directly so the map
+ * entry's type is exactly `BrandIconProps`, matching every other entry,
+ * instead of relying on lucide's own (wider) prop type being structurally
+ * compatible.
+ */
+function FactoryGlyph({ size = 18, className }: BrandIconProps) {
+  return <Radio size={size} className={className} aria-hidden="true" />;
+}
+
 /** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
 const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   github: GithubBrand,
   linear: LinearBrand,
   figma: FigmaBrand,
   context7: Context7Brand,
+  factory: FactoryGlyph,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -40,6 +56,7 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   linear: "text-[#5e6ad2]",
   figma: "text-[#f24e1e]",
   context7: "text-[var(--gray-11)]",
+  factory: "text-[var(--gray-11)]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp"];

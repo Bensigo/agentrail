@@ -35,8 +35,13 @@
 
 import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
 
-/** The external tools AgentRail can connect (M038 catalog). */
-export type ConnectorKind = "github" | "linear" | "figma" | "context7";
+/**
+ * The external tools AgentRail can connect (M038 catalog), plus `factory` —
+ * Task 5's `availability: "internal"` evidence-only entry (this console's
+ * own runs/failure-events; nothing to connect, see
+ * {@link ConnectorAvailability}'s own doc-comment).
+ */
+export type ConnectorKind = "github" | "linear" | "figma" | "context7" | "factory";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -273,6 +278,28 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- internal (evidence-only; never rendered — see ConnectorAvailability's
+  // own doc-comment and projectConnectors' filter below) ------------------- //
+  {
+    kind: "factory",
+    // `type`/`connectMethod` are inert for an `internal` entry — this row is
+    // filtered out of the grid (projectConnectors) before either is ever
+    // read; the values here mirror the shape connector-helpers.test.ts's own
+    // internal-availability filter test uses (cloning an existing `mcp`/
+    // `secret` entry), not a claim that factory IS an MCP tool server.
+    type: "mcp",
+    connectMethod: "secret",
+    label: "Factory",
+    description:
+      "This console's own runs, failures, and events — no connection required.",
+    availability: "internal",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["changes", "search_events"],
+    },
+  },
 ];
 
 /** Default ingest label, matching the AFK CLI's ready label / GitHubConnector. */
@@ -425,6 +452,13 @@ export function validateConnectorCredential(
         : { ok: false, error: "Context7 keys start with ctx7sk." };
     case "github":
       // GitHub is OAuth — nothing to paste here.
+      return { ok: false, error: "This connector is not credential-based." };
+    case "factory":
+      // Internal (Task 5) — no credential exists to validate. This kind
+      // never reaches the connect flow (filtered out of the grid by
+      // projectConnectors, and never added to secret/route.ts's
+      // CREDENTIAL_PROVIDERS allowlist), but the switch must stay total
+      // over every ConnectorKind.
       return { ok: false, error: "This connector is not credential-based." };
   }
 }

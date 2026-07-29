@@ -50,6 +50,12 @@ const EXPECTED_ADMIT_ARGS_DEFAULTS = {
   mentionsOtherUsers: false,
   repliesToMessageId: null,
   repliesToBot: false,
+  // Jace-opens-threads Task 2: this route already requires messageId (see
+  // the "400 when messageId is missing" test below) and always passes the
+  // REAL Gateway message id straight through — never conditionally omitted
+  // here, unlike discord-inbound.ts's own tolerant handling of a caller that
+  // has none (the slash-command webhook door).
+  messageId: "msg-1",
 };
 
 beforeEach(() => {
@@ -146,6 +152,19 @@ describe("POST /api/v1/runner/discord-inbound", () => {
     const { senderUsername, ...rest } = VALID_BODY;
     await POST(req({ token: SECRET, body: rest }));
     expect(mockAdmit).toHaveBeenCalledWith(expect.objectContaining({ senderUsername: null }));
+  });
+
+  // Jace-opens-threads Task 2: this route is the ONLY Discord door that has a
+  // real Gateway message id — channel-dispatch.ts's thread-relocation feature
+  // needs it to create a thread from the mentioning message. A distinct value
+  // from VALID_BODY.messageId (not reusing "msg-1", which every other test's
+  // dedupe-key assertion already pins) so this specifically catches a
+  // hardcoded/dropped field, not just a coincidental match.
+  it("passes the real Gateway messageId straight through to admitDiscordChannelMessage", async () => {
+    await POST(req({ token: SECRET, body: { ...VALID_BODY, messageId: "gw-msg-999" } }));
+    expect(mockAdmit).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "gw-msg-999", providerMessageId: "998877:gw-msg-999" })
+    );
   });
 
   describe("engagement envelope (spec: docs/superpowers/specs/2026-07-28-thread-native-jace-design.md)", () => {

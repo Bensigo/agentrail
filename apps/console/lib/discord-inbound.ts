@@ -89,6 +89,21 @@ export interface DiscordInboundMessage {
   repliesToMessageId: string | null;
   repliesToBot: boolean;
   /**
+   * The Gateway's own real Discord message id (a channel-relocation
+   * prerequisite — see channel-dispatch.ts's thread-relocation gate: Discord's
+   * `POST /channels/{id}/messages/{messageId}/threads` needs a real source
+   * message). Present ONLY for the Gateway-listener door
+   * (`runner/discord-inbound/route.ts`, which already has the real Gateway
+   * message id in scope) — the `/jace` slash-command webhook door
+   * (`connectors/discord/webhook/route.ts`) never sets this: a slash-command
+   * INTERACTION has no backing channel message at all, so there is nothing
+   * true to supply, and that door is deliberately left untouched rather than
+   * synthesizing one. Carried into `channel_inbox.payload` only when present
+   * (never written as `undefined`), same convention as
+   * `interactionToken`/`applicationId` below.
+   */
+  messageId?: string;
+  /**
    * The originating interaction's own short-lived credential, present ONLY for
    * the slash-command door — a plain @mention arriving over the Gateway has no
    * interaction to follow up on, so the Gateway caller passes neither. When
@@ -191,6 +206,10 @@ export async function admitDiscordChannelMessage(
       mentionsOtherUsers: message.mentionsOtherUsers,
       repliesToMessageId: message.repliesToMessageId,
       repliesToBot: message.repliesToBot,
+      // The real Gateway message id (see DiscordInboundMessage.messageId) —
+      // omitted entirely (never written as `undefined`) when the caller is
+      // the slash-command webhook door, which has none to give.
+      ...(message.messageId !== undefined ? { messageId: message.messageId } : {}),
       // Both-or-neither (see DiscordInboundMessage.interactionToken): omit the
       // keys entirely rather than storing a half-formed credential.
       ...(message.interactionToken !== undefined &&

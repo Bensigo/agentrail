@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign as cryptoSign } from "crypto";
 import {
   verifyDiscordSignature,
   sendDiscordChannelMessage,
+  createDiscordThreadFromMessage,
   DISCORD_INTERACTION_RESPONSE,
   DISCORD_INTERACTION_TYPE,
 } from "./discord-bot";
@@ -140,6 +141,98 @@ describe("sendDiscordChannelMessage", () => {
     const result = await sendDiscordChannelMessage("tok-123", "chan-1", "hello");
 
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("createDiscordThreadFromMessage", () => {
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch);
+    mockFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts to the message-threads endpoint and returns the created thread id on 201", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ id: "msg-789", name: "how do I deploy this" }),
+    });
+
+    const result = await createDiscordThreadFromMessage(
+      "tok-secret",
+      "chan-1",
+      "msg-789",
+      "how do I deploy this"
+    );
+
+    expect(result).toStrictEqual({ ok: true, threadId: "msg-789" });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://discord.com/api/v10/channels/chan-1/messages/msg-789/threads",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bot tok-secret" }),
+        body: JSON.stringify({ name: "how do I deploy this", auto_archive_duration: 1440 }),
+      })
+    );
+  });
+
+  it("surfaces Discord's numeric status and code on a non-2xx response, without the token or URL", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ code: 50013, message: "Missing Permissions" }),
+    });
+
+    const result = await createDiscordThreadFromMessage("tok-secret", "chan-1", "msg-789", "name");
+
+    expect(result).toStrictEqual({
+      ok: false,
+      error: expect.any(String),
+      status: 403,
+      code: 50013,
+    });
+    expect((result as { error: string }).error).not.toContain("tok-secret");
+    expect((result as { error: string }).error).not.toContain("discord.com");
+  });
+
+  it("omits the code field (rather than setting it undefined) when the body has no numeric code", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    });
+
+    const result = await createDiscordThreadFromMessage("tok-secret", "chan-1", "msg-789", "name");
+
+    expect(result).toStrictEqual({ ok: false, error: expect.any(String), status: 500 });
+    expect(result).not.toHaveProperty("code");
+  });
+
+  it("treats a 2xx response with no usable id as a failure", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({}),
+    });
+
+    const result = await createDiscordThreadFromMessage("tok-secret", "chan-1", "msg-789", "name");
+
+    expect(result.ok).toBe(false);
+    expect(result).not.toHaveProperty("threadId");
+  });
+
+  it("surfaces a typed failure (never throws) when the network call rejects", async () => {
+    mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    const result = await createDiscordThreadFromMessage("tok-secret", "chan-1", "msg-789", "name");
+
+    expect(result).toStrictEqual({ ok: false, error: expect.any(String) });
+    expect(result).not.toHaveProperty("status");
+    expect(result).not.toHaveProperty("code");
   });
 });
 

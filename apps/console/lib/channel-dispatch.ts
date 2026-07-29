@@ -22,6 +22,7 @@
  */
 import { randomBytes } from "node:crypto";
 import {
+  db,
   reclaimStaleChannelMessages,
   claimNextChannelMessage,
   completeChannelMessage,
@@ -40,6 +41,7 @@ import {
   recordGuardrailEvent,
   getThreadEngagement,
   setThreadEngagement,
+  stampChannelInboxWorkspace,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
@@ -1249,6 +1251,21 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       // decision is now 'single' (pinned this turn) or 'pinned' (already was,
       // or just became so via the re-resolve above) — both carry workspaceId.
       workspaceId = (decision as { workspaceId: string }).workspaceId;
+      if (workspaceId) {
+        // Back-stamp the resolved workspace onto the channel_inbox row
+        // (spec §9 slice 0): the row's own workspace_id is only the
+        // SENDER's binding at enqueue time (NULL for a stranger the
+        // identity spine hadn't bound yet), which is exactly the population
+        // per-workspace activity counting (seat billing) needs to see.
+        // Fire-and-forget — a stamp failure is a bookkeeping gap, never a
+        // reason to fail or delay this turn.
+        void stampChannelInboxWorkspace(db, row.id, workspaceId).catch((err) => {
+          console.error(
+            `[channel-dispatch] stampChannelInboxWorkspace failed for row=${row.id}:`,
+            err instanceof Error ? err.message : String(err)
+          );
+        });
+      }
       const session = await getOrCreateJaceSession(workspaceId, row.channel, row.conversationKey);
       ledgerSessionId = session.id;
     }

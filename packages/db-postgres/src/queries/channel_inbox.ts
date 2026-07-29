@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db.js";
+import type { Db } from "../db.js";
 import type { ChannelInboxState } from "../schema/channel_inbox.js";
 
 /**
@@ -380,4 +381,39 @@ export async function requeueDeadChannelMessage(
   `)) as unknown as Array<{ id: string }>;
 
   return Array.from(rows).length > 0;
+}
+
+// --- workspace back-stamp (dispatcher side — subscription platform slice 0) --
+
+/**
+ * Back-stamp the resolved workspace onto a `channel_inbox` row once the
+ * dispatcher pins its conversation to a workspace
+ * (`resolveConversationWorkspace` in `channel-dispatch.ts`'s `processRow`).
+ *
+ * A row's own `workspace_id` is the SENDER's binding at enqueue time — NULL
+ * for exactly a stranger in a group chat the identity spine has not bound to
+ * a workspace yet (see this table's doc-comment in `schema/channel_inbox.ts`
+ * for the full "intro" rationale). That NULL population is precisely who
+ * per-workspace activity counting (seat billing) must be able to see, so
+ * once the dispatcher learns the conversation's real workspace this writes
+ * it back onto the row it came from (spec §9 slice 0).
+ *
+ * Deliberately FILL-ONLY: the `workspace_id IS NULL` guard means this can
+ * never clobber a `workspace_id` a row already carried (a sender who already
+ * had their own binding at enqueue time). Takes `db` explicitly rather than
+ * closing over the module singleton (unlike this file's other exports) so a
+ * caller can fire it without awaiting — see the call site in `processRow`,
+ * which never lets a stamp failure fail or delay the turn.
+ */
+export async function stampChannelInboxWorkspace(
+  db: Db,
+  rowId: string,
+  workspaceId: string
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE channel_inbox
+    SET workspace_id = ${workspaceId}, updated_at = now()
+    WHERE id = ${rowId}
+      AND workspace_id IS NULL
+  `);
 }

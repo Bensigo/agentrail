@@ -339,3 +339,13 @@ test("a degraded verdict must carry acCoverage: null — the diff was never read
 test("the coverage vocabulary is exactly addressed|not_in_diff|unclear", () => {
   assert.deepEqual(AC_COVERAGE_STATUSES, ["addressed", "not_in_diff", "unclear"]);
 });
+
+test("validateReview rejects a non-object acCoverage entry", () => {
+  const { ok, errors } = validateReview(reviewedReview({ acCoverage: [null] }));
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("acCoverage[0] must be an object")));
+});
+
+test("REVIEW_SCHEMA.properties.acCoverage.maxItems matches MAX_AC_COVERAGE", () => {
+  assert.equal(REVIEW_SCHEMA.properties.acCoverage.maxItems, MAX_AC_COVERAGE);
+});

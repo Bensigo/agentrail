@@ -575,3 +575,44 @@ test("coverage criterion text is hardened before it leaves (no zero-width smuggl
   assert.ok(!sent.summary.includes("@everyone"));
   assert.ok(sent.summary.includes("＠everyone"));
 });
+
+test("a coverage-only review (blank summary, no comments) still posts — composeSummaryWithCoverage feeds the nothing_to_post gate", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: "",
+    comments: [],
+    acCoverage: [acEntry()],
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(transport.calls.length, 1);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("**Acceptance criteria — issue #42:**"));
+});
+
+test("renderAcCoverage: addressed with empty evidence has no trailing em-dash", () => {
+  const block = renderAcCoverage([acEntry({ evidence: "" })]);
+  assert.ok(block.includes("- ✅ AC1: widgets persist across restarts"));
+  assert.ok(!block.includes("restarts —"));
+});
+
+test("renderAcCoverage: criterion and evidence are trimmed before rendering", () => {
+  const block = renderAcCoverage([acEntry({ criterion: "  AC1: x  ", evidence: "  y  " })]);
+  assert.ok(block.includes("- ✅ AC1: x — y"));
+});
+
+// NOTE: brief's 4th test ("Fold path visible in the transport body") is
+// deliberately NOT included here — it fails against current code, and it's a
+// real bug, not a test-authoring error. See fastfollow-report.md for the
+// full repro + root-cause analysis: composeSummaryWithCoverage's fold branch
+// (this file) checks only whether `base + FULL block` blows SUMMARY_MAX_LEN;
+// it never re-checks whether `base + countLine` ALSO fits. When base is
+// within ~80 chars of the cap (as the brief's own fixture is, by
+// construction: SUMMARY_MAX_LEN - 40), the fold's own output can still
+// exceed SUMMARY_MAX_LEN, and runPostPrReview's later sanitizeReviewInput ->
+// hardenUntrusted(maxLen: SUMMARY_MAX_LEN) truncates it — silently chopping
+// the count line's own tail (e.g. "...1 not in d…"), which defeats the
+// fold's entire purpose (a clean, short fallback instead of a corrupted
+// mid-checklist cut).

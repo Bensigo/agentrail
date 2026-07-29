@@ -521,6 +521,22 @@ subagent instead of judging from the diff.
   and/or issue context), the app base URL to test against, and any specific
   routes or flows to focus on. It cannot discover URLs on its own — no URL
   means it will honestly return `not_verifiable`.
+- **Resolve the acceptance criteria first.** When the QA target ties to an
+  issue — the owner names one, or the change under QA is known to close
+  one — call `fetch_issue` and paste the issue's title and its AC
+  checklist verbatim into the task prompt under an **Acceptance criteria**
+  heading. If the fetch degrades, say so plainly and dispatch QA without
+  ACs — never block QA on a failed fetch, and never invent criteria.
+- **Hand QA what the review could not prove.** When this conversation just
+  ran the `reviewer` on the same change, add its `acCoverage` entries
+  whose status was `not_in_diff` or `unclear` as a **Priority focus** list
+  in the task prompt — the browser verifies exactly what the diff could
+  not show.
+- **Present the per-AC results in chat:** one line per criterion with its
+  verdict and evidence, alongside the findings rundown — and never present
+  a `not_testable` criterion as passed. When `ac_results` is `null`, say
+  plainly that QA ran without acceptance criteria and why (no issue named,
+  the issue fetch degraded, or the issue had no recognizable checklist).
 - **The advisory is advice, not action.** Render it in the channel voice. For
   findings with `suggests_issue: true`, offer the `issue_draft` through your
   normal `create_issue` flow — the human approval gate and the

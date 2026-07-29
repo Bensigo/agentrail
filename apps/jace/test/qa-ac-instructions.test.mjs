@@ -46,3 +46,24 @@ test("qa instructions: a not_verifiable verdict returns ac_results null, stated 
   const prose = qaInstructions();
   assert.match(prose, /not_verifiable[\s\S]{0,300}`ac_results: null`|`ac_results: null`[\s\S]{0,300}not_verifiable/);
 });
+
+const rootInstructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
+
+function rootInstructions() {
+  return readFileSync(rootInstructionsPath, "utf8");
+}
+
+test("root instructions: fetch_issue resolves the AC checklist before dispatching qa", () => {
+  const prose = rootInstructions();
+  assert.match(prose, /fetch_issue[\s\S]{0,800}Acceptance criteria/i);
+});
+
+test("root instructions: reviewer coverage hands not_in_diff/unclear to qa as priority focus", () => {
+  const prose = rootInstructions();
+  assert.match(prose, /(not_in_diff|`not_in_diff`)[\s\S]{0,400}[Pp]riority focus|[Pp]riority focus[\s\S]{0,400}not_in_diff/);
+});
+
+test("root instructions: null ac_results reported as QA-without-ACs with the reason", () => {
+  const prose = rootInstructions();
+  assert.match(prose, /QA ran without acceptance criteria/i);
+});

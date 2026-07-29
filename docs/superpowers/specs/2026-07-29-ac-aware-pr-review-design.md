@@ -30,8 +30,8 @@ diff-honest vocabulary, a new `acCoverage` block in `REVIEW_SCHEMA`, and the
 posted GitHub review renders a compact per-AC checklist. Coverage surfaces in
 both the posted review and chat.
 
-When no linked issue yields ACs, the reviewer falls back to a checkbox AC
-list in the PR description itself — weaker (self-authored) and labeled as
+When no linked issue yields ACs, the reviewer falls back to a recognizable
+AC list in the PR description itself — weaker (self-authored) and labeled as
 such in the output, but it still catches "the PR's own checklist has
 unaddressed items" on ticketless PRs.
 
@@ -102,7 +102,7 @@ degrades to today's diff-only payload.
 
 ```js
 acCoverage: {
-  type: ["array", "null"],   // null = no ACs found anywhere
+  type: ["array", "null"],   // null = no usable ACs (two distinct cases — see below)
   maxItems: 20,
   items: {
     type: "object",
@@ -118,9 +118,19 @@ acCoverage: {
 }
 ```
 
-`null` means no ACs were found anywhere: no linked-issue ACs *and* no
-checkbox list in the PR description (including the degraded-lookup case when
-the PR body has no checklist either). The summary prose says which.
+`null` covers every no-coverage outcome, but it conflates two different
+situations, so the summary must say which one happened:
+
+- **None found** — nothing recognizable as acceptance criteria exists in any
+  source. Canonical wording: *"No recognizable acceptance criteria found."*
+- **Present but unparseable** — an acceptance-criteria section exists, but
+  yields no discrete criteria (empty numbered stubs like `1. 2. 3.`, free
+  prose). Canonical wording: *"Acceptance criteria present but could not be
+  reliably parsed."* — plus where the reviewer saw them (issue #N or the PR
+  description).
+
+The degraded-lookup case folds into whichever of the two fits what the PR
+body alone shows.
 
 `validateReview` additions, mirroring the existing posture:
 
@@ -137,19 +147,29 @@ the fold in `summary` (prompt rule, not a validator concern).
 - **Read:** the fetch result now carries `linkedIssues`. Resolve the AC
   source in order:
   1. **Linked issues** — house-format `- [ ] AC…` checkboxes under an
-     "Acceptance criteria" heading first; otherwise any checkbox list in the
-     issue body. The ticket is the authoritative goal; entries carry its
-     `issueNumber`. When linked-issue ACs exist they are *the* coverage
-     source — a PR-body checklist never overrides or extends them (grading
-     against the builder's restatement would reintroduce the circularity
-     this design removes).
+     "Acceptance criteria" heading first; otherwise any explicit list
+     structure in the issue body (checkbox, numbered, or bulleted list, or
+     table rows). Every extracted criterion must be a discrete item quoted
+     from the body — never synthesized from surrounding prose. The ticket is
+     the authoritative goal; entries carry its `issueNumber`. When
+     linked-issue ACs exist they are *the* coverage source — a PR-body
+     checklist never overrides or extends them (grading against the
+     builder's restatement would reintroduce the circularity this design
+     removes).
   2. **PR-description fallback** — when no linked issue yields ACs (none
-     linked, lookup degraded, or no parseable checkboxes), parse a checkbox
-     AC list from the PR body itself; entries carry `issueNumber: null`.
-     Self-authored, so the summary must say coverage was judged against the
-     PR's own stated ACs — weaker than a ticket, still worth walking.
-  3. **Neither source yields ACs** → `acCoverage: null` plus one summary
-     line saying so.
+     linked, lookup degraded, or nothing parseable), apply the same
+     recognition rule to the PR body itself; entries carry
+     `issueNumber: null`. Self-authored, so the summary must say coverage
+     was judged against the PR's own stated ACs — weaker than a ticket,
+     still worth walking.
+  3. **Neither source yields ACs** → `acCoverage: null`, and the summary
+     distinguishes which of the two cases it is, using the canonical
+     wordings from the contract section: nothing AC-shaped anywhere → *"No
+     recognizable acceptance criteria found."*; a criteria section exists
+     but yields no discrete items → *"Acceptance criteria present but could
+     not be reliably parsed."*, naming where it saw them. These are
+     different situations and the reader should never have to guess which
+     one happened.
 
   Checked boxes count too: `- [x]` is a claim, not evidence — parse and
   verify checked items exactly like unchecked ones, from both sources.
@@ -214,8 +234,9 @@ the fold in `summary` (prompt rule, not a validator concern).
   severities.
 - Present the per-AC rundown in chat alongside the findings list.
 - When `acCoverage` is `null`, say plainly the review was diff-only, echoing
-  whichever reason the reviewer's summary gives (no linked issue / lookup
-  degraded / no parseable ACs).
+  whichever reason the reviewer's summary gives (no linked issue, lookup
+  degraded, no recognizable ACs, or ACs present but not reliably
+  parseable).
 
 ## Testing
 

@@ -89,22 +89,31 @@
  * `{ envelopes: [], degradations: [...one entry per provider...] }`, not a
  * collapsed top-level reason).
  *
- * Per provider, exactly one of four things lands in `degradations` (or
- * nothing, if it succeeds and lands in `envelopes` instead):
+ * Per provider, exactly one of five things lands in `degradations` (or
+ * nothing, if it succeeds and lands in `envelopes` instead) — EVERY step in
+ * this per-provider pipeline is individually guarded (Fix Round 1 + its
+ * coda), on the same principle throughout: one provider's own failure, at
+ * ANY point in ITS OWN pipeline, must never take down envelopes already
+ * captured from OTHER providers earlier in the same fan-out, nor get
+ * conflated with OUR OWN infra failing (the outer 502 below, reserved for
+ * failures BEFORE the fan-out even has a provider list to iterate):
  *   1. No adapter registered for a provider the catalog/connector layer says
  *      should exist (a deploy/catalog mismatch) → `config_missing`.
- *   2. The adapter's `query()` call THROWS instead of degrading (its own
+ *   2. Resolving the provider's decrypted credential (`getConnectorSecret`)
+ *      THROWS (a DB/decrypt failure) → `unreachable` (Fix Round 1 coda) —
+ *      reuses the same reason as case 3 below rather than adding an
+ *      eleventh taxonomy entry: "couldn't reach this provider's credential"
+ *      and "couldn't reach this provider's upstream" are the same fact from
+ *      the caller's side.
+ *   3. The adapter's `query()` call THROWS instead of degrading (its own
  *      contract says it never should, but a real network call can) →
- *      `unreachable` — never a blanket 502; one misbehaving provider must not
- *      take down envelopes already captured from OTHER providers earlier in
- *      the same fan-out, nor get conflated with OUR OWN infra failing.
- *   3. The adapter's `query()` call resolves `{ ok: false, reason }` →
+ *      `unreachable`.
+ *   4. The adapter's `query()` call resolves `{ ok: false, reason }` →
  *      relayed VERBATIM, attributed to that provider.
- *   4. The adapter succeeded (raw evidence retrieved) but `captureEvidence`
+ *   5. The adapter succeeded (raw evidence retrieved) but `captureEvidence`
  *      (scrub → cap → digest → persist) THREW while turning it into a
- *      durable item → `capture_failed` — same "don't let one provider's
- *      infra hiccup destroy a sibling's already-good result" reasoning as
- *      case 2, just one step later in the pipeline.
+ *      durable item → `capture_failed` (Fix Round 1) — same reasoning as
+ *      case 2/3, just one step later in the pipeline.
  *
  * 400 — missing/blank `eveSessionId`. 401 — bad/missing shared secret. 404 —
  * no session, or a session with no resolved workspace yet. 502 — the backing
@@ -252,7 +261,24 @@ export async function GET(request: NextRequest) {
       // a member of `ConnectorProvider` at all. This cast is the one place
       // that decoupling meets a still-narrow, pre-existing signature; it is
       // safe because the query underneath is a plain string comparison.
-      const secret = await getConnectorSecret(workspaceId, provider as ConnectorProvider);
+      //
+      // FIX ROUND 1 CODA: guarded exactly like the adapter/capture calls
+      // below — a decrypt/DB throw resolving THIS provider's secret is OUR
+      // OWN infra failing, one provider earlier in the pipeline than
+      // capture_failed, and must not 502 the whole fan-out or discard
+      // envelopes already captured from sibling providers. Reuses
+      // `unreachable` rather than adding an eleventh taxonomy entry — from
+      // the caller's side, "couldn't reach this provider's credential" and
+      // "couldn't reach this provider's upstream" are the same fact (this
+      // provider is unreachable right now).
+      let secret: string | null;
+      try {
+        secret = await getConnectorSecret(workspaceId, provider as ConnectorProvider);
+      } catch (err) {
+        console.error(`[runner/evidence] getConnectorSecret threw for provider '${provider}':`, err);
+        degradations.push({ provider, reason: "unreachable" });
+        continue;
+      }
 
       // `EvidenceAdapter.query`'s contract is "never throw, degrade instead"
       // (its own return type has no throw case) — same discipline as

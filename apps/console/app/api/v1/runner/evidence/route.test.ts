@@ -13,17 +13,21 @@ vi.mock("@agentrail/db-postgres", () => ({
 // The route imports CONNECTOR_CATALOG straight off connector-helpers.ts (same
 // as production). This mock keeps every REAL catalog entry (none of which
 // declare an `evidence` capability yet — Task 7 adds the first one) and adds
-// THREE test-only fake providers, all declaring `changes`. This is the "fake
+// FOUR test-only fake providers, all declaring `changes`. This is the "fake
 // in tests" the brief's own interfaces section calls for — it proves the
 // route works against the SAME catalog shape a real provider (Task 5-7) will
-// add, with zero route changes. `fakeobs2`/`fakeobs3` exist ONLY for the Fix
-// Round 1 multi-provider fan-out tests below; NEITHER is credentialed by
-// default (see `mockGetConnectors`'s default in `beforeEach`), so every
-// pre-existing single-provider test is unaffected — they only enter a
-// fan-out when a test explicitly opts them in. `fakeobs3` is DELIBERATELY
-// never given a `registerAdapter(...)` call anywhere in this file — it
-// exists to simulate a catalog/deploy mismatch (declared+credentialed, no
-// adapter wired up) for the `config_missing` per-provider test.
+// add, with zero route changes. `fakeobs2`/`fakeobs3`/`fakeobs4` exist ONLY
+// for the Fix Round 1 multi-provider fan-out tests below; NONE is
+// credentialed by default (see `mockGetConnectors`'s default in
+// `beforeEach`), so every pre-existing single-provider test is unaffected —
+// they only enter a fan-out when a test explicitly opts them in. `fakeobs3`
+// is DELIBERATELY never given a `registerAdapter(...)` call anywhere in this
+// file — it exists to simulate a catalog/deploy mismatch (declared+
+// credentialed, no adapter wired up) for the `config_missing` per-provider
+// test. `fakeobs4` IS registered (Fix Round 1 coda: three-provider,
+// middle-one's-secret-throws test needs a THIRD provider with a real
+// adapter — fakeobs3 can't serve that role, since it never reaches the
+// getConnectorSecret call at all).
 vi.mock(
   "../../../../(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers",
   async (importOriginal) => {
@@ -58,6 +62,15 @@ vi.mock(
           connectMethod: "secret",
           label: "Fake Observability 3 (never registered)",
           description: "test-only THIRD fake provider — declared+credentialed, no adapter ever registered (config_missing repro)",
+          availability: "available",
+          capabilities: { ingest: false, postResult: false, notify: false, evidence: ["changes"] },
+        },
+        {
+          kind: "fakeobs4",
+          type: "mcp",
+          connectMethod: "secret",
+          label: "Fake Observability 4",
+          description: "test-only FOURTH fake evidence provider (Fix Round 1 coda: three-real-adapter-provider fan-out)",
           availability: "available",
           capabilities: { ingest: false, postResult: false, notify: false, evidence: ["changes"] },
         },
@@ -96,6 +109,13 @@ registerAdapter({ provider: "fakeobs", verbs: ["changes"], query: fakeQuery });
 const fakeQuery2 = vi.fn();
 registerAdapter({ provider: "fakeobs2", verbs: ["changes"], query: fakeQuery2 });
 
+// Fourth fake adapter (Fix Round 1 coda) — `fakeobs3` (declared in the
+// catalog above) is deliberately NEVER registered, so it can't serve as the
+// third "real adapter" leg of the getConnectorSecret-throws-for-the-middle-
+// provider test. Same registration discipline as fakeobs/fakeobs2.
+const fakeQuery4 = vi.fn();
+registerAdapter({ provider: "fakeobs4", verbs: ["changes"], query: fakeQuery4 });
+
 const WS = "00000000-0000-0000-0000-000000000001";
 const OTHER_WS = "00000000-0000-0000-0000-000000000002";
 const SESSION_ID = "00000000-0000-0000-0000-0000000005e5";
@@ -133,6 +153,17 @@ const ONE_PROVIDER_CONNECTOR_ROWS = [
 const BOTH_PROVIDERS_CONNECTOR_ROWS = [
   { provider: "fakeobs", enabled: true, hasSecret: true, config: {}, updatedAt: null },
   { provider: "fakeobs2", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+];
+// Three providers, all with REAL registered adapters (fakeobs3 is excluded —
+// it has no adapter at all, see its catalog-entry comment above) — for the
+// Fix Round 1 coda's getConnectorSecret-throws-for-the-middle-provider test.
+// Catalog order (fakeobs, fakeobs2, fakeobs3, fakeobs4) plus this row set
+// (which omits fakeobs3) means evidenceCapabilities yields providers in
+// EXACTLY this order: fakeobs, fakeobs2, fakeobs4 — fakeobs2 is the middle.
+const THREE_REAL_PROVIDERS_CONNECTOR_ROWS = [
+  { provider: "fakeobs", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+  { provider: "fakeobs2", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+  { provider: "fakeobs4", enabled: true, hasSecret: true, config: {}, updatedAt: null },
 ];
 
 const WINDOW_START = "2026-07-29T00:00:00Z";
@@ -198,6 +229,7 @@ beforeEach(() => {
   mockAppendEvidenceItem.mockResolvedValue({ id: "evidence-item-1" } as never);
   fakeQuery.mockResolvedValue({ ok: true, raw: "run_id=abc123 merged_pr #4 at 2026-07-29T00:30:00Z" });
   fakeQuery2.mockResolvedValue({ ok: true, raw: "fakeobs2 default raw" });
+  fakeQuery4.mockResolvedValue({ ok: true, raw: "fakeobs4 default raw" });
 });
 
 afterEach(() => {
@@ -572,6 +604,38 @@ describe("GET /api/v1/runner/evidence", () => {
         "fakeobs2",
       ]);
       expect(body.degradations).toEqual([{ provider: "fakeobs3", reason: "config_missing" }]);
+    });
+
+    it("Fix Round 1 coda: getConnectorSecret throwing for the MIDDLE of three providers degrades only that one as unreachable — the other two still succeed", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      mockGetConnectors.mockResolvedValue(THREE_REAL_PROVIDERS_CONNECTOR_ROWS as never);
+      // Keyed on the provider argument, not call order — robust regardless of
+      // fan-out iteration order (also documents WHICH provider is "the
+      // middle one": fakeobs2, per THREE_REAL_PROVIDERS_CONNECTOR_ROWS'
+      // own doc-comment on the catalog-order reasoning).
+      mockGetSecret.mockImplementation(async (_workspaceId: string, provider: string) => {
+        if (provider === "fakeobs2") {
+          throw new Error("decrypt failed for fakeobs2's stored secret");
+        }
+        return "fake-secret-token";
+      });
+      fakeQuery.mockResolvedValue({ ok: true, raw: "fakeobs raw evidence" });
+      fakeQuery4.mockResolvedValue({ ok: true, raw: "fakeobs4 raw evidence" });
+
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.envelopes).toHaveLength(2);
+      expect(body.envelopes.map((e: { provider: string }) => e.provider).sort()).toEqual([
+        "fakeobs",
+        "fakeobs4",
+      ]);
+      expect(body.degradations).toEqual([{ provider: "fakeobs2", reason: "unreachable" }]);
+      // fakeobs2's OWN adapter must never even be asked — the secret never
+      // resolved, so there is nothing to query it with.
+      expect(fakeQuery2).not.toHaveBeenCalled();
+      expect(mockAppendEvidenceItem).toHaveBeenCalledTimes(2);
     });
   });
 });

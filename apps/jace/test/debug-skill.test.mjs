@@ -120,6 +120,7 @@ test('fetch_investigations(mode: "anchor") is the first tool/subagent mention in
   const otherNames = [
     "save_investigation",
     "record_verdict",
+    "fetch_evidence_capabilities",
     "create_issue",
     "triage",
     "qa",
@@ -150,14 +151,19 @@ test("Investigation resolution: anchor first, search only when unanchored, confi
   assert.match(src, /never silently attach or fork/i);
 });
 
-test("Investigation resolution: reopen-vs-new rule pinned (undetermined->reopen, concluded->new+recurrence_of)", () => {
+test("Investigation resolution: reopen-vs-new rule KEYS ON VERDICT (undetermined->reopen, root_caused->new+recurrence_of), never on status or unverifiable fix-shipped", () => {
   const src = skillSource();
   const section = src.slice(src.indexOf("## Investigation resolution"), src.indexOf("## Witness interview"));
+  assert.match(section, /verdict/i);
   assert.match(section, /`undetermined`[\s\S]{0,60}reopen it/i);
-  assert.match(section, /`concluded`[\s\S]{0,200}recurrence_of/i);
+  assert.match(section, /`root_caused`[\s\S]{0,200}recurrence_of/i);
   assert.match(section, /links:\s*\[\{\s*targetSlug/);
   assert.match(section, /role:\s*"recurrence_of"/);
   assert.match(section, /hypothesis to test, never truth/i);
+  // The old, wrong keying must not survive: "concluded" is a status, not a
+  // verdict, and "fix shipped" is unverifiable from the conversation.
+  assert.doesNotMatch(section, /`concluded`/, "must not key the second branch on status:concluded");
+  assert.match(section, /no reliable way to verify/i, "must state plainly that fix-shipped is unverifiable here");
 });
 
 // ---------------------------------------------------------------------------
@@ -174,8 +180,16 @@ test("Witness interview: verbatim capture, first-seen, blast radius incl. NOT af
   assert.match(section, /[Bb]last radius/);
   assert.match(section, /NOT affected/);
   assert.match(section, /[Rr]eproduction|repro/i);
-  assert.match(section, /depth budget/i);
+  assert.match(section, /depth[ _]budget/i);
   assert.match(section, /evidence source/i);
+});
+
+test("Witness interview: severity->depth-budget claim is HONEST — pacing discipline root applies itself, not a server computation (Fix Round 1, FIX 4)", () => {
+  const src = skillSource();
+  const section = src.slice(src.indexOf("## Witness interview"), src.indexOf("## Stabilize check"));
+  assert.match(section, /not yet live/i);
+  assert.match(section, /defaults to\s*\n?\s*8/i);
+  assert.doesNotMatch(section, /computed server-side/i, "must not claim the depth budget is currently computed server-side from severity");
 });
 
 // ---------------------------------------------------------------------------
@@ -211,6 +225,12 @@ test("Rounds: mission envelope names question, window, capability map, ledger di
   assert.match(section, /cannot-reproduce\.md/);
 });
 
+test("Rounds: the capability map bullet names the REAL tool, fetch_evidence_capabilities (Fix Round 1, FIX 2)", () => {
+  const src = skillSource();
+  const section = src.slice(src.indexOf("## Rounds"), src.indexOf("## Verdict"));
+  assert.match(section, /fetch_evidence_capabilities/);
+});
+
 test("Rounds: ROUND_REPORT deltas — findings->finding, hypotheses adjudicated (may downgrade, never upgrade), gaps->timeline_event", () => {
   const src = skillSource();
   const section = src.slice(src.indexOf("## Rounds"), src.indexOf("## Verdict"));
@@ -224,14 +244,44 @@ test("Rounds: ROUND_REPORT deltas — findings->finding, hypotheses adjudicated 
   assert.match(section, /[Aa]utosave between rounds/);
 });
 
+test("Rounds: round_summary has a durable home — persisted as its own timeline_event note every round (FOLD-IN B)", () => {
+  const src = skillSource();
+  const section = src.slice(src.indexOf("## Rounds"), src.indexOf("## Verdict"));
+  assert.match(section, /round_summary/);
+  assert.match(section, /round_summary[\s\S]{0,60}timeline_event/);
+});
+
 test("Rounds: triage never calls save_investigation itself — only root persists", () => {
   const src = skillSource();
   const section = src.slice(src.indexOf("## Rounds"), src.indexOf("## Verdict"));
   assert.match(section, /`?triage`?\s+never\s+calls\s*`?save_investigation`?/i);
+  // Strengthened (Fix Round 1, FOLD-IN A): the positive pin above requires
+  // "triage" to be immediately followed by an optional backtick then
+  // whitespace (`` `triage` `` is how every mention in this file is
+  // formatted) before the verb, so it can never accidentally match this
+  // negative check. The negative check itself now catches three phrasings,
+  // not one: "calls" (any tense/modal, including "will call"), "persists"
+  // ("persist(s) ... via save_investigation" — the transcription-is-lossy
+  // failure mode named in the spec's own Out-of-scope section), for each of
+  // triage / the debugger / the investigators.
   assert.doesNotMatch(
     section,
-    /triage (?:should |must )?calls?\s*`?save_investigation|debugger (?:should |must )?calls?\s*`?save_investigation|investigators? (?:should |must )?calls?\s*`?save_investigation/i,
-    "must never instruct triage/the debugger/investigators to call save_investigation",
+    /(?:triage|debugger|investigators?)`?\s+(?:should\s+|must\s+|will\s+)?(?:calls?|persists?)\b[\s\S]{0,60}`?save_investigation`?/i,
+    "must never instruct triage/the debugger/investigators to call OR persist (even indirectly, e.g. 'will call'/'persists ... via') save_investigation",
+  );
+});
+
+test("the strengthened triage/save_investigation negative regex actually catches 'will call' and 'persists ... via' phrasings (not vacuous)", () => {
+  const NEGATIVE_RE =
+    /(?:triage|debugger|investigators?)`?\s+(?:should\s+|must\s+|will\s+)?(?:calls?|persists?)\b[\s\S]{0,60}`?save_investigation`?/i;
+  assert.match("the debugger will call save_investigation directly", NEGATIVE_RE);
+  assert.match("triage persists its round_summary via save_investigation", NEGATIVE_RE);
+  assert.match("investigators call save_investigation when they finish", NEGATIVE_RE);
+  // And the legitimate positive pin, verbatim from the skill, must NOT
+  // false-positive against the very check meant to forbid its opposite.
+  assert.doesNotMatch(
+    "`triage` never calls `save_investigation` or `record_verdict` itself — this adjudicate-then-persist step belongs to you alone.",
+    NEGATIVE_RE,
   );
 });
 
@@ -257,6 +307,18 @@ test("Verdict: relay eligibility verbatim, never decide it yourself, fails close
   assert.match(section, /[Dd]o not decide eligibility\s+yourself/);
   assert.match(section, /fail(?:s)? closed/i);
   assert.match(section, /same as\s*\n?\s*`?eligible:\s*false`?/i);
+});
+
+test("Verdict: names the positive path — eligible -> record_verdict root_caused with REQUIRED confidence (Fix Round 1, FIX 1)", () => {
+  const src = skillSource();
+  const section = src.slice(src.indexOf("## Verdict"), src.indexOf("## Handoff"));
+  assert.match(section, /eligible:\s*true/);
+  assert.match(section, /record_verdict/);
+  assert.match(section, /root_caused/);
+  assert.match(section, /confidence/);
+  assert.match(section, /REQUIRED for a `?root_caused`? verdict/i);
+  assert.match(section, /409/);
+  assert.match(section, /mechanismSummary/);
 });
 
 test("Verdict: an open hypothesis has exactly two exits, settle or undetermined — never a deferred third", () => {
@@ -308,6 +370,13 @@ test("Capability voice: capability-first rendering, providers as attribution onl
   assert.match(section, /always\*{0,2}\s+recorded[\s\S]{0,60}evidence gap|evidence gap[\s\S]{0,60}always/i);
 });
 
+test("Capability voice: calls fetch_evidence_capabilities once at intake, grounding the rendering in reality (Fix Round 1, FIX 2)", () => {
+  const src = skillSource();
+  const section = src.slice(src.indexOf("## Capability voice"));
+  assert.match(section, /fetch_evidence_capabilities/);
+  assert.match(section, /once at intake/i);
+});
+
 // ---------------------------------------------------------------------------
 // Provider-name discipline — enforced across the skill AND all three
 // playbooks: Sentry/Datadog/Grafana absent entirely; GitHub/Railway allowed
@@ -322,7 +391,41 @@ test("no banned observability provider names appear anywhere (Sentry/Datadog/Gra
   }
 });
 
-test("GitHub/Railway are never a sentence subject — every occurrence is preceded by an open-paren on its own line", () => {
+// Fix Round 1, FIX 5: the original check only asked "does SOME '(' appear
+// earlier on this line" (`line.lastIndexOf("(", idx) !== -1`) — which a line
+// like "(see above) GitHub is great" satisfies (there IS an earlier "("),
+// even though that paren was already CLOSED before "GitHub" and the word is
+// genuinely the sentence's subject. The fix: count "(" minus ")" in the
+// PREFIX before the mention and require it to be strictly positive — i.e.
+// the parenthetical must still be OPEN at that exact position, not merely
+// have existed earlier on the line.
+function isInsideOpenParen(line, idx) {
+  const prefix = line.slice(0, idx);
+  const opens = (prefix.match(/\(/g) || []).length;
+  const closes = (prefix.match(/\)/g) || []).length;
+  return opens - closes > 0;
+}
+
+test("isInsideOpenParen: rejects a mention after a CLOSED parenthetical — the exact bypass the old test missed", () => {
+  const bypassLine = "(see above) GitHub is great";
+  const idx = bypassLine.indexOf("GitHub");
+  assert.equal(
+    isInsideOpenParen(bypassLine, idx),
+    false,
+    "a closed paren earlier on the line must not count as 'open' at the mention",
+  );
+  // The OLD check would have wrongly passed this exact line (some earlier
+  // "(" exists), which is precisely why it needed replacing, not patching.
+  assert.notEqual(bypassLine.lastIndexOf("(", idx), -1, "sanity: the old, weaker check WOULD have passed this line");
+});
+
+test("isInsideOpenParen: accepts a mention genuinely inside a still-open parenthetical", () => {
+  const goodLine = "I can inspect deployments (GitHub, Railway).";
+  assert.equal(isInsideOpenParen(goodLine, goodLine.indexOf("GitHub")), true);
+  assert.equal(isInsideOpenParen(goodLine, goodLine.indexOf("Railway")), true);
+});
+
+test("GitHub/Railway are never a sentence subject — every occurrence sits inside a still-OPEN parenthetical on its own line", () => {
   for (const { label, src } of debugFiles()) {
     const lines = src.split("\n");
     lines.forEach((line, i) => {
@@ -330,11 +433,9 @@ test("GitHub/Railway are never a sentence subject — every occurrence is preced
         let from = 0;
         let idx;
         while ((idx = line.indexOf(provider, from)) !== -1) {
-          const openParenIdx = line.lastIndexOf("(", idx);
-          assert.notEqual(
-            openParenIdx,
-            -1,
-            `${label} line ${i + 1} mentions "${provider}" without a preceding "(" on the same line: ${line}`,
+          assert.ok(
+            isInsideOpenParen(line, idx),
+            `${label} line ${i + 1} mentions "${provider}" outside a still-open parenthetical: ${line}`,
           );
           from = idx + provider.length;
         }
@@ -422,12 +523,13 @@ test("instructions.md's Debugging section states the qa/triage boundary (\"qa va
   assert.match(section, /qa validates/i);
 });
 
-test("instructions.md's Debugging section lists all three investigation tools, one line each", () => {
+test("instructions.md's Debugging section lists all four investigation tools, one line each (fetch_evidence_capabilities added Fix Round 1, FIX 2)", () => {
   const src = readFileSync(instructionsPath, "utf8");
   const start = src.indexOf("## Debugging (fetch_investigations");
   const end = src.indexOf("## Diagnosing a failed run");
   const section = src.slice(start, end);
   assert.match(section, /fetch_investigations/);
+  assert.match(section, /fetch_evidence_capabilities/);
   assert.match(section, /save_investigation/);
   assert.match(section, /record_verdict/);
 });

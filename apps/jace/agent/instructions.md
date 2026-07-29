@@ -478,6 +478,10 @@ The tools:
 
 - **`fetch_investigations({ mode })`** — read-only; `anchor`/`list`/`get`/
   `search`. Call `mode: "anchor"` first, always, before anything else.
+- **`fetch_evidence_capabilities()`** — read-only, no parameters. The
+  workspace's evidence capability map — which verbs (changes,
+  search_events, signals, traces, probe) have a connected, credentialed
+  provider right now. Call it once at intake.
 - **`save_investigation({ ... })`** — ungated autosave delta into the
   investigation ledger; never accepts a `verdict` or `status` field.
 - **`record_verdict({ ... })`** — ungated but server-validated and

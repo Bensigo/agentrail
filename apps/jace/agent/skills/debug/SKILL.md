@@ -40,18 +40,24 @@ discredit a real, unrelated investigation's verdict by association.
    symptom — reopen it directly (below) instead of running the confirm
    dance on something that was never actually in question.
 
-**Reopen vs new, pinned — this is a rule, not a judgment call:**
+**Reopen vs new, pinned — this keys on the VERDICT `fetch_investigations`
+renders, never on `status`, and never on an unverifiable "did the fix
+actually ship":**
 
-- Prior investigation ended **`undetermined`**, and the symptom returns →
-  **reopen it**. Its missing-evidence list just got answered by the
-  symptom coming back — that's new evidence on the SAME open question, not
-  a new question.
-- Prior investigation is **`concluded`**, its fix shipped, and the symptom
-  is back → open a **NEW** investigation, and record a `recurrence_of` link
+- Prior investigation's verdict is **`undetermined`**, and the symptom
+  returns → **reopen it**. Its missing-evidence list just got answered by
+  the symptom coming back — that's new evidence on the SAME open question,
+  not a new question.
+- Prior investigation's verdict is **`root_caused`**, and the symptom is
+  back → open a **NEW** investigation, and record a `recurrence_of` link
   back to the old one via `save_investigation`'s
-  `links: [{ targetSlug: "<old-slug>", role: "recurrence_of" }]`. The link
-  is what structurally discredits the old verdict — nobody has to remember
-  to distrust it by hand. And the old verdict itself enters the new
+  `links: [{ targetSlug: "<old-slug>", role: "recurrence_of" }]`. The
+  recurrence itself is what makes the old conclusion suspect — regardless
+  of whether a fix actually shipped, was believed to have shipped, or was
+  never attempted at all; you have no reliable way to verify "did the fix
+  ship" from here, so don't gate the decision on it. The link is what
+  structurally discredits the old verdict — nobody has to remember to
+  distrust it by hand. And the old verdict itself enters the new
   investigation's ledger as a **hypothesis to test, never truth** — a
   six-month-old "it was the connection pool" earns a discriminating test
   this time around, not a free pass.
@@ -77,10 +83,14 @@ Capture:
   only "who's hit" and stopping there throws away half the signal.
 - **Reproduction**, if the human has one. A concrete repro is the cheapest
   discriminating test this investigation will ever get.
-- **Severity.** This is what sets the depth budget — computed server-side
-  from the `severity` you record, not something you set directly. A
-  `critical` symptom earns more rounds before an honest `undetermined` is
-  acceptable; a `low` one calls for a faster, cheaper pass.
+- **Severity.** Record it plainly (`low`/`medium`/`high`/`critical`) via
+  `save_investigation`, and pace how many rounds you're willing to spend
+  by it as your OWN discipline: a `critical` symptom earns more rounds
+  before an honest `undetermined` is acceptable; a `low` one calls for a
+  faster, cheaper pass. (Deriving the stored `depth_budget` from severity
+  server-side is the intended design, not yet live — today it defaults to
+  8 regardless of severity — so treat this as a pacing discipline you
+  apply yourself, not a limit the server is currently enforcing for you.)
 
 Save what settles as it settles, via `save_investigation` — the same
 per-turn autosave discipline `grill-me` uses for briefs. The moment a fact
@@ -121,8 +131,10 @@ Everything a round needs, you hand to `triage` in one dispatch:
 - **The window** — the time range every evidence query in the round is
   scoped to.
 - **The capability map** — which evidence verbs this workspace can
-  actually answer, and through which providers, from the evidence
-  discovery endpoint — never asserted from memory.
+  actually answer, and through which providers. Call
+  `fetch_evidence_capabilities` to get it — never assert one from memory
+  or an earlier turn in this same conversation; the connector mix can
+  change between calls.
 - **The ledger digest** — current hypotheses (with state), findings, and
   the most recent evidence refs, so the round correlates against what's
   already known instead of re-discovering it.
@@ -151,6 +163,12 @@ before the next round starts:
 - `evidence_gaps` → recorded as a `timeline_event` note. An honest gap is
   part of the investigation's history, not something to lose between
   rounds.
+- `round_summary` → its own `timeline_event` note too, every round — not
+  only the ones that turned up something notable. This is
+  `round_summary`'s durable home: without persisting it, a resumed
+  conversation (or a human reading the ledger in the console) has no
+  record of what a round actually did beyond whatever findings or
+  hypotheses happened to land.
 
 Autosave between rounds — the same discipline as the witness interview:
 write what a round settled before dispatching the next one, never batch
@@ -192,6 +210,16 @@ yourself** by reading the hypothesis ledger and judging whether it "seems"
 solid enough; that is exactly the model-confidence failure this gate
 exists to close. When `blocking` is non-empty, name what it actually says
 — never a bare "not eligible."
+
+**When `eligible: true`, close it out.** Call
+`record_verdict({ verdict: "root_caused", confidence: "confirmed" |
+"probable" | "circumstantial", mechanismSummary })`. `confidence` is
+REQUIRED for a `root_caused` verdict — the server 409s without it
+regardless of eligibility, so always supply one; how strong the
+supporting evidence and the refuted rivals actually are is what tells you
+which tier to pick, not a default you reach for out of habit.
+`mechanismSummary` is the plain-language "what actually happened" story,
+drawn from the supported hypothesis's own mechanism.
 
 **A missing `eligibility` (not computed) is treated the same as
 `eligible: false`.** An unverifiable gate fails closed: if you cannot
@@ -247,6 +275,11 @@ workspace memory already holds everywhere else in Jace. There is no
 model-side write path into memory, here or anywhere.
 
 ## Capability voice
+
+Call `fetch_evidence_capabilities` once at intake — before or during the
+witness interview, before the first round — so everything below is
+grounded in what this workspace actually has connected right now, not an
+assumption carried over from memory or a different conversation.
 
 Render what you can do **capability-first, provider as attribution — never
 the reverse**: "I can inspect deployments (GitHub, Railway); logs

@@ -2786,3 +2786,17 @@ export {
   hashContent,
   type RecordGuardrailEventInput,
 } from "./guardrail_events.js";
+
+// Billing account read queries (subscription-platform-design spec §3, §5;
+// see `queries/billing_accounts.ts` for the full WHY, including why these
+// take `db` as an explicit parameter and use raw SQL). getBillingAccountForWorkspace
+// is the NULL = trial-policy read a later slice's policy resolver joins
+// through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
+// derives the seat count from released_at IS NULL rows — there is no
+// mutable counter.
+export {
+  getBillingAccountForWorkspace,
+  listAccountWorkspaceIds,
+  countActiveSeats,
+  type BillingAccountRow,
+} from "./billing_accounts.js";

@@ -67,6 +67,7 @@ describe("completeConnectOwnerElect", () => {
       githubInstallationAccountType: null,
       githubInstallState: null,
       githubInstallStateExpiresAt: null,
+      billingAccountId: null,
     });
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { CANDIDATES, MODEL_SEATS } from "./candidates";
+import { CANDIDATES, MODEL_SEATS, slugsForProfiles } from "./candidates";
 import { MODEL_CATALOG } from "./catalog";
 import { ALL_TASK_TYPES } from "./eligibility";
+import type { QualityProfile } from "./quality-profile";
 
 // ---------------------------------------------------------------------------
 // #1338 PR③ — the widened candidate pool's own guard.
@@ -91,12 +92,25 @@ describe("MODEL_SEATS: every candidate slug (every task type) resolves to a regi
         const seat = MODEL_SEATS[slug];
         expect(seat, `MODEL_SEATS is missing an entry for "${slug}" (task type "${taskType}")`).toBeDefined();
         expect(seat.slug).toBe(slug);
+        // Task 9 (quality-profile tags): every reachable seat must be tagged.
+        expect(seat.profile, `MODEL_SEATS["${slug}"] (task type "${taskType}") has no profile`).toBeDefined();
       }
     });
   }
 
   it("has exactly the 10 distinct slugs the widened pool uses — nothing orphaned, nothing missing", () => {
     expect(new Set(Object.keys(MODEL_SEATS))).toEqual(new Set(ALL_CANDIDATE_SLUGS));
+  });
+
+  // Task 9: every MODEL_SEATS entry — not just the ones CANDIDATES currently
+  // reaches — must carry a profile. Belt-and-suspenders with the per-task-type
+  // check above (which only walks CANDIDATES-reachable slugs); this walks the
+  // registry's own keys directly, so a hypothetical future MODEL_SEATS entry
+  // not yet wired into any CANDIDATES pool would still be caught.
+  it("every MODEL_SEATS entry (not just CANDIDATES-reachable ones) has a profile", () => {
+    for (const [slug, seat] of Object.entries(MODEL_SEATS)) {
+      expect(seat.profile, `MODEL_SEATS["${slug}"] has no profile`).toBeDefined();
+    }
   });
 });
 
@@ -114,9 +128,26 @@ describe("MODEL_SEATS: never a $0 hazard — every seat has real, positive, fini
 });
 
 describe("MODEL_SEATS: deliberate reuse vs. deliberate divergence from MODEL_CATALOG (documented in candidates.ts's module doc)", () => {
-  it("opus-4.8 and haiku-4.5 REUSE MODEL_CATALOG's own seat objects verbatim (same rate, nothing to drift)", () => {
-    expect(MODEL_SEATS["anthropic/claude-opus-4.8"]).toBe(MODEL_CATALOG.refactor);
-    expect(MODEL_SEATS["anthropic/claude-haiku-4.5"]).toBe(MODEL_CATALOG.mechanical);
+  // Task 9 (quality-profile tags) added a `profile` field that MODEL_CATALOG's
+  // own ModelSeat objects don't carry, so these two entries can no longer be
+  // literal aliases of MODEL_CATALOG.refactor/.mechanical (a CandidateSeat
+  // needs `profile` from somewhere) — they're built via
+  // `{ ...MODEL_CATALOG.X, profile: "..." }` instead. Rates and display
+  // fields still mirror MODEL_CATALOG exactly; only reference identity was
+  // traded away, and only because of the new field. This test used to assert
+  // `.toBe` (same object); it now asserts the same thing field-by-field.
+  it("opus-4.8 and haiku-4.5 mirror MODEL_CATALOG's own seat rates exactly (same numbers, nothing to drift)", () => {
+    const opus = MODEL_SEATS["anthropic/claude-opus-4.8"];
+    expect(opus.slug).toBe(MODEL_CATALOG.refactor.slug);
+    expect(opus.displayName).toBe(MODEL_CATALOG.refactor.displayName);
+    expect(opus.inUsdPerMTok).toBe(MODEL_CATALOG.refactor.inUsdPerMTok);
+    expect(opus.outUsdPerMTok).toBe(MODEL_CATALOG.refactor.outUsdPerMTok);
+
+    const haiku = MODEL_SEATS["anthropic/claude-haiku-4.5"];
+    expect(haiku.slug).toBe(MODEL_CATALOG.mechanical.slug);
+    expect(haiku.displayName).toBe(MODEL_CATALOG.mechanical.displayName);
+    expect(haiku.inUsdPerMTok).toBe(MODEL_CATALOG.mechanical.inUsdPerMTok);
+    expect(haiku.outUsdPerMTok).toBe(MODEL_CATALOG.mechanical.outUsdPerMTok);
   });
 
   it("sonnet-5 is a DIFFERENT object from MODEL_CATALOG.ui, at a different (live vs. sticker) rate — intentional, not drift", () => {
@@ -135,5 +166,113 @@ describe("MODEL_SEATS: deliberate reuse vs. deliberate divergence from MODEL_CAT
     expect(MODEL_CATALOG.refactor.slug).toBe("anthropic/claude-opus-4.8");
     expect(MODEL_CATALOG.mechanical.slug).toBe("anthropic/claude-haiku-4.5");
     expect(MODEL_CATALOG.general.slug).toBe("anthropic/claude-sonnet-5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subscription-platform slice 2, Task 9 — quality-profile tags.
+//
+// `MODEL_SEATS` entries now also carry a `profile: QualityProfile`
+// (economy/standard/premium, `./quality-profile.ts`) so a LATER task can
+// filter model selection down to a workspace's entitled profiles. This
+// suite pins the exact assignment (a reviewable judgment call — the full
+// slug/tier/cost/profile table is in this task's PR body) and guards the
+// pure `slugsForProfiles` filter helper. No selection behavior changes here
+// — `eligibility.ts`/`seeds.ts`/`selector.ts` don't read `.profile` yet.
+// ---------------------------------------------------------------------------
+
+describe("MODEL_SEATS: quality-profile tag (subscription-platform slice 2, Task 9)", () => {
+  it("every entry has a profile that is economy, standard, or premium", () => {
+    const validProfiles: QualityProfile[] = ["economy", "standard", "premium"];
+    for (const [slug, seat] of Object.entries(MODEL_SEATS)) {
+      expect(validProfiles, `MODEL_SEATS["${slug}"].profile is not a valid QualityProfile`).toContain(
+        seat.profile
+      );
+    }
+  });
+
+  it("every CANDIDATES slug (every task type) resolves to a seat with a profile — nothing reachable from the pool is untagged", () => {
+    for (const taskType of ALL_TASK_TYPES) {
+      for (const slug of CANDIDATES[taskType]) {
+        expect(MODEL_SEATS[slug]?.profile, `MODEL_SEATS["${slug}"] (task type "${taskType}") has no profile`).toBeDefined();
+      }
+    }
+  });
+
+  it("pins the exact owner-reviewable assignment (cost-tier split — see candidates.ts's module doc for the methodology, PR body for the review table)", () => {
+    const profileBySlug: Record<string, QualityProfile> = {};
+    for (const [slug, seat] of Object.entries(MODEL_SEATS)) {
+      profileBySlug[slug] = seat.profile;
+    }
+    expect(profileBySlug).toEqual({
+      "moonshotai/kimi-k2.7-code": "standard",
+      "z-ai/glm-5.2": "standard",
+      "moonshotai/kimi-k3": "premium",
+      "anthropic/claude-sonnet-5": "premium",
+      "anthropic/claude-opus-4.8": "premium",
+      "deepseek/deepseek-v4-pro": "economy",
+      "z-ai/glm-4.7": "economy",
+      "qwen/qwen3-coder-plus": "standard",
+      "anthropic/claude-haiku-4.5": "standard",
+      "openai/gpt-5.1-codex": "premium",
+    });
+  });
+
+  it("counts: 2 economy / 4 standard / 4 premium", () => {
+    const counts: Record<QualityProfile, number> = { economy: 0, standard: 0, premium: 0 };
+    for (const seat of Object.values(MODEL_SEATS)) {
+      counts[seat.profile]++;
+    }
+    expect(counts).toEqual({ economy: 2, standard: 4, premium: 4 });
+  });
+});
+
+describe("slugsForProfiles: pure filter over MODEL_SEATS, preserves input order", () => {
+  it("keeps only slugs whose MODEL_SEATS profile is in the allowed set", () => {
+    const result = slugsForProfiles(
+      ["z-ai/glm-4.7", "anthropic/claude-opus-4.8", "z-ai/glm-5.2"],
+      new Set<QualityProfile>(["economy"])
+    );
+    expect(result).toEqual(["z-ai/glm-4.7"]);
+  });
+
+  it("preserves the input order of the slugs it keeps (never re-sorts, e.g. by MODEL_SEATS declaration order)", () => {
+    // Input order deliberately does NOT match MODEL_SEATS's own declaration
+    // order (gpt-5.1-codex is declared last there, kimi-k3 near the top) —
+    // if this function ever started sorting by declaration order instead of
+    // preserving input order, this assertion would catch it.
+    const result = slugsForProfiles(
+      ["openai/gpt-5.1-codex", "z-ai/glm-4.7", "anthropic/claude-haiku-4.5", "moonshotai/kimi-k3"],
+      new Set<QualityProfile>(["standard", "premium"])
+    );
+    expect(result).toEqual(["openai/gpt-5.1-codex", "anthropic/claude-haiku-4.5", "moonshotai/kimi-k3"]);
+  });
+
+  it("returns [] for an empty allowed set, even when every slug is a real, tagged seat", () => {
+    const result = slugsForProfiles(
+      ["z-ai/glm-4.7", "anthropic/claude-opus-4.8"],
+      new Set<QualityProfile>()
+    );
+    expect(result).toEqual([]);
+  });
+
+  it("returns [] for empty input slugs regardless of allowed", () => {
+    const result = slugsForProfiles([], new Set<QualityProfile>(["economy", "standard", "premium"]));
+    expect(result).toEqual([]);
+  });
+
+  it("filters out a slug with no MODEL_SEATS entry rather than throwing", () => {
+    const result = slugsForProfiles(
+      ["not-a-real-slug", "z-ai/glm-4.7"],
+      new Set<QualityProfile>(["economy", "standard", "premium"])
+    );
+    expect(result).toEqual(["z-ai/glm-4.7"]);
+  });
+
+  it("does not mutate its input slugs array", () => {
+    const input = ["z-ai/glm-4.7", "anthropic/claude-opus-4.8"];
+    const snapshot = [...input];
+    slugsForProfiles(input, new Set<QualityProfile>(["economy"]));
+    expect(input).toEqual(snapshot);
   });
 });

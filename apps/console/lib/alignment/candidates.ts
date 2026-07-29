@@ -39,9 +39,12 @@
  * — see `resolve-price.ts` and `agentrail/run/pricing.py::_resolve_rates`).
  *
  * The OPPOSITE case — `anthropic/claude-opus-4.8` and `anthropic/claude-haiku-4.5`
- * — reuse `MODEL_CATALOG`'s own seat objects verbatim below: their rates here
- * happen to equal the sticker/PRICE_TABLE rate already, so there is nothing to
- * duplicate or let drift apart.
+ * — mirror `MODEL_CATALOG`'s own seat rates verbatim below (spread, not
+ * aliased — see {@link CandidateSeat}'s doc comment for why this pool's
+ * entries can no longer literally BE `MODEL_CATALOG.refactor`/`.mechanical`
+ * now that each carries its own `profile`): their rates here happen to equal
+ * the sticker/PRICE_TABLE rate already, so there is nothing to duplicate or
+ * let drift apart.
  *
  * `z-ai/glm-5.2` carries a THIRD independent static number in this codebase:
  * `agentrail/context/pricing.py::PRICE_TABLE`'s own `'glm-5.2'` entry
@@ -63,6 +66,25 @@
 import type { ModelSeat } from "./catalog";
 import { MODEL_CATALOG } from "./catalog";
 import type { TaskType } from "./classifier";
+import type { QualityProfile } from "./quality-profile";
+
+/**
+ * A {@link ModelSeat} widened with this pool's own quality-profile tag
+ * (subscription-platform slice 2, Task 9). Deliberately local to this file
+ * rather than added to `catalog.ts`'s shared `ModelSeat` interface: that
+ * type also backs `MODEL_CATALOG` (the flag-OFF static default), which this
+ * module's own doc comment already requires stay byte-identical to its
+ * pre-#1338 values — widening the shared interface would force a `profile`
+ * onto `MODEL_CATALOG`'s seats too, entangling the flag-off default catalog
+ * with a concept (billing-plan-entitled quality tiers) that has nothing to
+ * do with it. `profile` is REASONING LEVEL, never a specific model — see
+ * `quality-profile.ts`'s own module doc for the full rationale and the
+ * import-direction rule this pool must keep respecting (never import from
+ * `lib/policy/`; `import-direction.test.ts` guards it).
+ */
+export interface CandidateSeat extends ModelSeat {
+  profile: QualityProfile;
+}
 
 /**
  * Every distinct EXECUTE-candidate slug this pool can offer, keyed by slug —
@@ -75,25 +97,57 @@ import type { TaskType } from "./classifier";
  * 2026-07-20 — see this module's own doc comment for why a couple of these
  * deliberately differ from another static number elsewhere in the repo for
  * the SAME slug (sonnet-5, glm-5.2).
+ *
+ * QUALITY-PROFILE TAGGING (subscription-platform slice 2, Task 9) — every
+ * entry also carries a `profile: QualityProfile` (economy/standard/premium,
+ * `./quality-profile.ts`), consumed by a LATER task's entitlement filter
+ * ({@link slugsForProfiles} below does the mechanical filtering; that later
+ * task wires a workspace's billing plan to an allowed-profiles set). Split
+ * by cost, in two passes over blended (in + out) $/MTok:
+ *   1. cheap-tier vs. strong-tier: the largest relative gap in the full
+ *      10-seat spread falls between claude-haiku-4.5 ($6.00 blended) and
+ *      gpt-5.1-codex ($11.25 blended) — a ~87% jump, versus every other
+ *      adjacent gap in the sorted list being under 65%. The six seats at or
+ *      below that gap are cheap-tier; the four above it are strong-tier.
+ *   2. economy vs. standard, WITHIN cheap-tier only: the same
+ *      largest-relative-gap heuristic applied again, this time to the
+ *      6-seat cheap-tier subset, falls between glm-4.7 ($2.15 blended) and
+ *      qwen3-coder-plus ($3.90 blended) — a ~81% jump. The two seats at or
+ *      below that gap (deepseek-v4-pro, glm-4.7 — also, not coincidentally,
+ *      `CANDIDATES.mechanical`'s two cheapest members) are "economy"; the
+ *      remaining four cheap-tier seats are "standard".
+ * All four strong-tier seats become "premium" — none is "priced like a
+ * cheap one" (gpt-5.1-codex has the lowest INPUT rate of the four, $1.25,
+ * but its $10.00 OUTPUT rate ties claude-sonnet-5's, and output dominates
+ * typical usage cost, so it stays premium rather than the "standard"
+ * exception).
+ *
+ * Mechanism (this field + `slugsForProfiles`) is settled; the specific
+ * per-model assignment above is a reviewable judgment call — full
+ * slug/tier/cost/profile table is in this task's PR body for review.
+ * `candidates.test.ts` pins the exact assignment.
  */
-export const MODEL_SEATS: Record<string, ModelSeat> = {
+export const MODEL_SEATS: Record<string, CandidateSeat> = {
   "moonshotai/kimi-k2.7-code": {
     slug: "moonshotai/kimi-k2.7-code",
     displayName: "Kimi K2.7 Code",
     inUsdPerMTok: 0.85,
     outUsdPerMTok: 3.8,
+    profile: "standard",
   },
   "z-ai/glm-5.2": {
     slug: "z-ai/glm-5.2",
     displayName: "GLM 5.2",
     inUsdPerMTok: 0.98,
     outUsdPerMTok: 3.07,
+    profile: "standard",
   },
   "moonshotai/kimi-k3": {
     slug: "moonshotai/kimi-k3",
     displayName: "Kimi K3",
     inUsdPerMTok: 3.0,
     outUsdPerMTok: 15.0,
+    profile: "premium",
   },
   // Deliberately NOT MODEL_CATALOG.ui — see module doc's "PRICING NOTE".
   "anthropic/claude-sonnet-5": {
@@ -101,34 +155,42 @@ export const MODEL_SEATS: Record<string, ModelSeat> = {
     displayName: "Claude Sonnet 5",
     inUsdPerMTok: 2.0,
     outUsdPerMTok: 10.0,
+    profile: "premium",
   },
-  // Same rate as MODEL_CATALOG.refactor — reused verbatim, nothing to drift.
-  "anthropic/claude-opus-4.8": MODEL_CATALOG.refactor,
+  // Same rate as MODEL_CATALOG.refactor — spread (not aliased) so this seat
+  // can carry its own `profile`; see the CandidateSeat doc comment above for
+  // why the shared ModelSeat type itself stays untouched.
+  "anthropic/claude-opus-4.8": { ...MODEL_CATALOG.refactor, profile: "premium" },
   "deepseek/deepseek-v4-pro": {
     slug: "deepseek/deepseek-v4-pro",
     displayName: "DeepSeek V4 Pro",
     inUsdPerMTok: 0.43,
     outUsdPerMTok: 0.87,
+    profile: "economy",
   },
   "z-ai/glm-4.7": {
     slug: "z-ai/glm-4.7",
     displayName: "GLM 4.7",
     inUsdPerMTok: 0.4,
     outUsdPerMTok: 1.75,
+    profile: "economy",
   },
   "qwen/qwen3-coder-plus": {
     slug: "qwen/qwen3-coder-plus",
     displayName: "Qwen3 Coder Plus",
     inUsdPerMTok: 0.65,
     outUsdPerMTok: 3.25,
+    profile: "standard",
   },
-  // Same rate as MODEL_CATALOG.mechanical — reused verbatim, nothing to drift.
-  "anthropic/claude-haiku-4.5": MODEL_CATALOG.mechanical,
+  // Same rate as MODEL_CATALOG.mechanical — spread (not aliased), same
+  // reason as opus-4.8 above.
+  "anthropic/claude-haiku-4.5": { ...MODEL_CATALOG.mechanical, profile: "standard" },
   "openai/gpt-5.1-codex": {
     slug: "openai/gpt-5.1-codex",
     displayName: "GPT-5.1 Codex",
     inUsdPerMTok: 1.25,
     outUsdPerMTok: 10.0,
+    profile: "premium",
   },
 };
 
@@ -189,3 +251,30 @@ export const CANDIDATES: Record<TaskType, readonly string[]> = {
     "anthropic/claude-sonnet-5",
   ],
 };
+
+/**
+ * Filters `slugs` down to those whose {@link MODEL_SEATS} entry's `profile`
+ * is a member of `allowed` — pure, no side effects, preserves `slugs`' own
+ * order (never re-sorts, e.g. by `MODEL_SEATS` declaration order). A slug
+ * with no `MODEL_SEATS` entry has no profile to match and is filtered OUT,
+ * same as an empty `allowed` set trivially filters everything out.
+ *
+ * This is the mechanical half of subscription-platform slice 2's
+ * entitlement filter — the OTHER half (resolving a workspace's billing plan
+ * to its allowed {@link QualityProfile} set, `lib/policy/plan-policies.ts`)
+ * is a LATER task's job. This function stays selection-inert on purpose: it
+ * filters a slug list it's handed, it never reads eligibility/selector
+ * state, calls into `lib/policy/`, or decides anything beyond "is this
+ * slug's tag in the allowed set" — see `import-direction.test.ts` for the
+ * guard that keeps this file from ever importing `lib/policy/` at all.
+ */
+export function slugsForProfiles(
+  slugs: readonly string[],
+  allowed: ReadonlySet<QualityProfile>
+): string[] {
+  if (allowed.size === 0) return [];
+  return slugs.filter((slug) => {
+    const seat = MODEL_SEATS[slug];
+    return seat !== undefined && allowed.has(seat.profile);
+  });
+}

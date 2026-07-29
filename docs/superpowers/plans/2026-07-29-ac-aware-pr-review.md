@@ -20,7 +20,7 @@
 - Untouched invariants: POST side of the console route, `requireJaceConsoleSecret` auth, `eveSessionId` tenant resolution, diff caps, the severity filter (`POSTABLE_SEVERITIES`), the server-side `event: "COMMENT"` hardcode, and the reviewer's one-read-tool posture (no new tools anywhere).
 - All model-supplied text that reaches GitHub goes through `hardenUntrusted()` (it already does — coverage must join the summary BEFORE sanitization, not after).
 - Coverage status vocabulary, everywhere, is exactly: `addressed`, `not_in_diff`, `unclear`.
-- Canonical null-coverage wordings (verbatim, both in prompts): `No recognizable acceptance criteria found.` and `Acceptance criteria present but could not be reliably parsed.`
+- Canonical null-coverage wordings (verbatim in the reviewer's prompt — the reviewer's `summary` carries them; root echoes the reviewer's reason rather than embedding the sentences, per spec §6): `No recognizable acceptance criteria found.` and `Acceptance criteria present but could not be reliably parsed.`
 - Test commands: jace = `pnpm -C apps/jace test` (runs `node --test test/*.test.mjs`); console single file = `pnpm -C apps/console exec vitest run app/api/v1/runner/pr-review/route.test.ts`.
 - Commit after each green task, house style (`feat(scope): …` / `test(scope): …`), ending the message with:
   `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`

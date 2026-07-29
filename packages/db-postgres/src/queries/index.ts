@@ -2814,7 +2814,10 @@ export {
 // `updateInvestigationItemAsHuman`/`createInvestigationItemAsHuman`/
 // `deleteInvestigationItem` are the console's human-edit write path — the gap
 // `patchInvestigationItems` deliberately leaves open, mirroring
-// `updateBriefItemAsHuman`'s own reasoning.
+// `updateBriefItemAsHuman`'s own reasoning. `confirmVerdictAsHuman` (Task 13)
+// is the console-only human confirmation gate on the LATEST verdict item —
+// see its own doc-comment for why it does NOT reuse
+// `updateInvestigationItemAsHuman` (it must not flip `authority`).
 export {
   upsertInvestigation,
   getInvestigationBySlug,
@@ -2825,6 +2828,7 @@ export {
   appendEvidenceItem,
   computeVerdictEligibility,
   recordVerdict,
+  confirmVerdictAsHuman,
   linkInvestigations,
   linkInvestigationIssue,
   updateInvestigationItemAsHuman,
@@ -2841,6 +2845,7 @@ export {
   type AppendEvidenceItemInput,
   type RecordVerdictInput,
   type RecordVerdictResult,
+  type ConfirmVerdictAsHumanResult,
   type UpdateInvestigationItemAsHumanInput,
   type UpdateInvestigationItemAsHumanResult,
   type CreateInvestigationItemAsHumanInput,

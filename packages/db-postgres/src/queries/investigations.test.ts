@@ -173,6 +173,7 @@ import {
   appendEvidenceItem,
   computeVerdictEligibility,
   recordVerdict,
+  confirmVerdictAsHuman,
   linkInvestigations,
   linkInvestigationIssue,
   updateInvestigationItemAsHuman,
@@ -799,6 +800,59 @@ describe("recordVerdict", () => {
     expect(result).toEqual({ ok: false, blocking: ["investigation not found"] });
     expect(mockState.insertCalls).toEqual([]);
     expect(mockState.updateCalls).toEqual([]);
+  });
+});
+
+describe("confirmVerdictAsHuman", () => {
+  it("returns { ok: false, reason: 'no_verdict' } when the investigation has no verdict item yet", async () => {
+    mockState.selectQueue.push([]); // latest-verdict lookup finds nothing
+    const result = await confirmVerdictAsHuman("inv-1");
+    expect(result).toEqual({ ok: false, reason: "no_verdict" });
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("sets data.humanConfirmed = true on the latest verdict item, preserving its other data fields", async () => {
+    mockState.selectQueue.push([
+      investigationItemRow({
+        id: "verdict-2",
+        kind: "verdict",
+        data: { confidence: "probable", missingEvidence: [] },
+      }),
+    ]);
+    mockState.updateReturningQueue.push([
+      investigationItemRow({
+        id: "verdict-2",
+        kind: "verdict",
+        data: { confidence: "probable", missingEvidence: [], humanConfirmed: true },
+      }),
+    ]);
+
+    const result = await confirmVerdictAsHuman("inv-1");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.item.id).toBe("verdict-2");
+      expect(result.item.data).toEqual({ confidence: "probable", missingEvidence: [], humanConfirmed: true });
+    }
+    expect(mockState.updateCalls[0]!.set.data).toEqual({
+      confidence: "probable",
+      missingEvidence: [],
+      humanConfirmed: true,
+    });
+    // Never flips authority — see this function's own doc-comment.
+    expect(mockState.updateCalls[0]!.set).not.toHaveProperty("authority");
+  });
+
+  it("does NOT reuse updateInvestigationItemAsHuman's guards — targets the item by id directly, so a verdict item (never kind:'evidence'/'hypothesis') is always writable here", async () => {
+    mockState.selectQueue.push([investigationItemRow({ id: "verdict-1", kind: "verdict", data: {} })]);
+    mockState.updateReturningQueue.push([
+      investigationItemRow({ id: "verdict-1", kind: "verdict", data: { humanConfirmed: true } }),
+    ]);
+    const result = await confirmVerdictAsHuman("inv-1");
+    expect(result).toEqual({
+      ok: true,
+      item: investigationItemRow({ id: "verdict-1", kind: "verdict", data: { humanConfirmed: true } }),
+    });
   });
 });
 

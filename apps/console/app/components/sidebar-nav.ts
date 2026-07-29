@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Target,
   FileText,
+  SearchCode,
 } from "lucide-react";
 
 export interface NavItem {
@@ -116,6 +117,14 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // pinned contract), same posture as Wiki's own "never flag-gated in the
     // nav itself" comment just below.
     { label: "Briefs", href: "briefs", icon: FileText },
+    // Investigations (debugging design spec, spec PR #1501) — Jace's
+    // durable, server-side record of ONE production incident; sibling of
+    // Briefs (both are compiled/elicited, human-editable console stores,
+    // not read-only evidence), placed directly next to it for that reason.
+    // This is also where the human confirmation/promotion gate lives
+    // (`confirmVerdictAsHuman`/lesson-candidate promotion, Task 13) — never
+    // flag-gated in the nav, same posture as Briefs/Wiki just above/below.
+    { label: "Investigations", href: "investigations", icon: SearchCode },
     // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
     // are compiled/advisory knowledge stores read-only from the console, the
     // Wiki about the codebase, Memory about interaction history (CONTEXT.md's

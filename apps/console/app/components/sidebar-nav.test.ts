@@ -50,7 +50,7 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), Briefs (spec PR #1487/#1489), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
+  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), Briefs (spec PR #1487/#1489), Investigations (spec PR #1501), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
@@ -60,6 +60,7 @@ describe("NAV_ZONES data structure", () => {
       "model-selection",
       "memory",
       "briefs",
+      "investigations",
       "wiki",
       "failures",
     ]);
@@ -137,7 +138,7 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("repos");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, briefs, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, briefs, investigations, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -151,6 +152,7 @@ describe("NAV_ZONES data structure", () => {
       "approvals", // #1276: pending approvals, parked work, dead letters
       "memory",
       "briefs", // spec PR #1487/#1489: Jace's durable, editable per-idea understanding
+      "investigations", // spec PR #1501 (Task 13): the durable production-incident record + human confirm/promote gates
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
       "model-selection", // #1338 PR③: per-task-type model-outcome observe view

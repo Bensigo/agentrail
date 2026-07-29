@@ -687,6 +687,57 @@ export async function recordVerdict(
   });
 }
 
+export type ConfirmVerdictAsHumanResult =
+  | { ok: true; item: InvestigationItem }
+  | { ok: false; reason: "no_verdict" };
+
+/**
+ * Console-only human confirmation gate (Task 13 — the knowledge loop and
+ * calibration read `data.humanConfirmed`; Jace never sets this itself, and
+ * no `record_verdict`/`save_investigation` schema field can reach it — see
+ * that Jace tool's schema, which carries no `humanConfirmed` key at all).
+ * Targets the LATEST `kind: 'verdict'` item — "latest" = max `created_at`
+ * among this investigation's verdict items. `recordVerdict` is APPEND-ONLY
+ * (see its own doc-comment), so a reopened-then-reconcluded investigation
+ * can have more than one; only the most recent is what a human reading the
+ * detail page today is confirming.
+ *
+ * Deliberately NOT routed through `updateInvestigationItemAsHuman` — this
+ * does NOT flip `authority` to `'human'`. The verdict's authorship (who
+ * recorded the mechanism/confidence) stays whoever `recordVerdict` was
+ * called for; "a human has confirmed this reads true" is an orthogonal fact
+ * layered into `data`, not a claim of having authored the verdict text.
+ * Both structural guards (`updateInvestigationItemAsHuman` enforces them)
+ * are moot here regardless: a verdict item is never `kind: 'evidence'` and
+ * never `kind: 'hypothesis'`, so neither the evidence-immutability nor the
+ * hypothesis-evidence-gating check could ever fire for this write.
+ *
+ * No `kind: 'verdict'` item exists yet -> `{ ok: false, reason: "no_verdict" }`
+ * (the confirm route maps this to 409 — nothing to confirm).
+ */
+export async function confirmVerdictAsHuman(investigationId: string): Promise<ConfirmVerdictAsHumanResult> {
+  const [latest] = await db
+    .select()
+    .from(investigationItems)
+    .where(and(eq(investigationItems.investigationId, investigationId), eq(investigationItems.kind, "verdict")))
+    .orderBy(desc(investigationItems.createdAt))
+    .limit(1);
+  if (!latest) {
+    return { ok: false, reason: "no_verdict" };
+  }
+
+  const [row] = await db
+    .update(investigationItems)
+    .set({
+      data: { ...(latest.data as Record<string, unknown>), humanConfirmed: true },
+      updatedAt: new Date(),
+    })
+    .where(eq(investigationItems.id, latest.id))
+    .returning();
+
+  return { ok: true, item: row! };
+}
+
 /** Record an investigation-to-investigation edge (`recurrence_of`/`related`) — see `investigation_links`' schema doc-comment for the reopen-vs-new mechanism this backs. */
 export async function linkInvestigations(
   investigationId: string,

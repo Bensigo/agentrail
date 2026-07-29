@@ -120,6 +120,10 @@ export async function POST(request: NextRequest) {
       mentionsOtherUsers,
       repliesToMessageId,
       repliesToBot,
+      // The real Gateway message id — see DiscordInboundMessage.messageId's
+      // own doc-comment. Always present here: this route already 400s above
+      // when `messageId` is missing/blank, unlike every other envelope field.
+      messageId,
     });
     if (result.skipped) {
       // The engagement gate dropped this message before it ever became a

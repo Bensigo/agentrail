@@ -50,6 +50,11 @@ import { decideEngagement, type ThreadInbound, type EngagementState } from "./th
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
+// Jace-opens-threads Task 2: relocate a Discord channel mention into its own
+// thread — the mechanics built in Task 1 (createDiscordThreadFromMessage
+// never throws; deriveThreadName is pure text shaping).
+import { createDiscordThreadFromMessage } from "./discord-bot";
+import { deriveThreadName } from "./discord-thread-name";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
 import {
   parseConnectCommand,
@@ -241,6 +246,20 @@ interface TelegramInboxPayload {
   mentionsOtherUsers?: boolean;
   repliesToMessageId?: string | null;
   repliesToBot?: boolean;
+  /**
+   * The real Discord message id this row's turn arrived as (Jace-opens-
+   * threads Task 2) — the source message the "relocate a channel mention
+   * into its own thread" feature below needs for
+   * `createDiscordThreadFromMessage`. Discord-only, and only present for the
+   * Gateway-listener door: `discord-inbound.ts`'s `DiscordInboundMessage.messageId`
+   * doc-comment explains why the `/jace` slash-command webhook door never
+   * sets it (a slash-command interaction has no backing channel message) —
+   * that absence is exactly what excludes that door from relocation, rather
+   * than any thread/DM check. Also legitimately absent on any row enqueued
+   * before this field existed; the relocation gate below treats a missing
+   * `messageId` as "do not relocate", never as a reason to fail the row.
+   */
+  messageId?: string;
 }
 
 /**
@@ -303,6 +322,13 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   const applicationId = p["applicationId"];
   if (typeof applicationId === "string" && applicationId.trim()) {
     result.applicationId = applicationId;
+  }
+  // Discord-only (see TelegramInboxPayload.messageId's doc-comment) — same
+  // tolerant, omit-if-malformed extraction as interactionToken/applicationId
+  // above.
+  const messageId = p["messageId"];
+  if (typeof messageId === "string" && messageId.trim()) {
+    result.messageId = messageId;
   }
   const threadTs = p["threadTs"];
   if (typeof threadTs === "string" && threadTs.trim()) {
@@ -1281,6 +1307,15 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
     // behavioral difference, and the guardrail seam right after this block
     // runs exactly where it always has for them. (Console never reaches
     // `processRow` at all — see `processConsoleRow`'s own doc-comment.)
+    //
+    // `engagementSaidTurn` (Jace-opens-threads Task 2): captured here for the
+    // Discord thread-relocation gate below, which needs to know whether THIS
+    // block actually decided "turn" — the `decision` above is a NEW binding
+    // scoped to this if-block (shadowing the outer resolveConversationWorkspace
+    // `decision`), so it isn't visible past the closing brace. Stays `false`
+    // when engagement was never configured (no decision was made at all): "no
+    // decision" does not count as "the engagement decision said turn".
+    let engagementSaidTurn = false;
     if (row.channel === "discord" || row.channel === "slack") {
       // Final whole-branch review, finding #1 (critical): Slack's door
       // (connectors/slack/events/route.ts) omits the ENTIRE engagement
@@ -1333,6 +1368,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           await completeChannelMessage(row.id);
           return "completed";
         }
+        engagementSaidTurn = true;
       }
     }
 
@@ -1384,14 +1420,153 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       text: guard.text,
     });
 
+    // --- Discord thread relocation (Jace-opens-threads Task 2; scope
+    // widened, with the coordinator's authorization, to also thread a real
+    // `messageId` through discord-inbound.ts + its Gateway-listener route —
+    // see TelegramInboxPayload.messageId's doc-comment above for why
+    // `channel_inbox.payload` never carried one before this) — a channel
+    // mention gets answered inside its own NEW thread, so the channel stays
+    // clean and the thread needs no further mentions. ALL of these must
+    // hold, or the turn proceeds exactly as today, unrelocated:
+    //
+    //   1. row.channel === "discord"
+    //   2. the engagement decision above said this is a turn (`engagementSaidTurn`)
+    //   3. NOT already in a thread (payload.threadId absent/null)
+    //   4. it is not a DM
+    //   5. DISCORD_BOT_TOKEN is configured
+    //   6. payload.messageId is present
+    //   7. workspaceId is resolved (non-null) — `getOrCreateJaceSession`
+    //      below requires one; an 'intro' (pre-workspace) conversation has no
+    //      workspace-anchored row to redirect, so it is simply not relocated
+    //
+    // On condition 4 — `buildThreadInbound`'s own `isDM` field ABOVE
+    // deliberately mislabels a real channel mention as a DM too (see its own
+    // doc-comment): harmless there because `decideEngagement`'s mentionsBot
+    // branch short-circuits either way, so the mislabel never changes the
+    // outcome. That imprecision is NOT safe to reuse here — relocating an
+    // actual DM would hand Discord's thread-create endpoint a DM message id,
+    // and Discord DMs cannot have threads at all. `discord-inbound.ts`'s own
+    // header doc guarantees the precise fact instead: a `threadId === null`
+    // row that does NOT mention the bot must be a DM (`screenMessage` only
+    // ever forwards a non-thread, non-mention message here when it is one) —
+    // so `payload.mentionsBot === true` (combined with `threadId === null`)
+    // is the correct "not a DM" proxy for this specific gate.
+    //
+    // On condition 6 — the `/jace` slash-command webhook door
+    // (`connectors/discord/webhook/route.ts`) never sets `messageId`: a
+    // slash-command INTERACTION has no backing channel message for Discord's
+    // `POST /channels/{id}/messages/{messageId}/threads` to target, so there
+    // is nothing true to supply, and that door is deliberately left
+    // untouched rather than synthesizing one. Its absence is what correctly
+    // excludes every slash-command invocation from relocation — including one
+    // sent as a bot-DM, which this feature must never try to thread either —
+    // rather than any thread/DM check having to know about slash commands at
+    // all.
+    // HONEST LIMITATION (self-review finding, recorded rather than hidden):
+    // `engagementSaidTurn` is currently PROVABLY REDUNDANT with the
+    // `threadId === null` + `mentionsBot === true` pair below, given
+    // `buildThreadInbound`'s own imprecise `isDM` proxy above (`isDM:
+    // threadId === null`, regardless of `mentionsBot`) — whenever `threadId
+    // === null` and the engagement envelope is configured at all,
+    // `decideEngagement` short-circuits to `turn: true` on the `isDM` branch
+    // BEFORE it ever inspects `mentionsBot`. So today, no payload can satisfy
+    // conditions 3+4 below while `engagementSaidTurn` is false; a mutation
+    // deleting this line leaves the test suite green. It is kept anyway,
+    // deliberately: it is the literal condition the brief specifies, and it
+    // is NOT a no-op forever — it is the correct guard the day the known
+    // FOLLOW-UP gap (progress.md: "put an explicit isDM on the wire") is
+    // fixed, at which point a real per-message isDM signal could diverge
+    // from `mentionsBot` in ways it cannot today.
+    let turnChatId: number | string = payload.chatId;
+    let turnConversationKey = row.conversationKey;
+    let turnAuth = auth;
+
+    const eligibleForThreadRelocation =
+      row.channel === "discord" &&
+      engagementSaidTurn &&
+      (payload.threadId === undefined || payload.threadId === null) &&
+      payload.mentionsBot === true &&
+      typeof payload.messageId === "string" &&
+      payload.messageId.length > 0 &&
+      workspaceId !== null;
+
+    if (eligibleForThreadRelocation) {
+      const discordBotToken = process.env["DISCORD_BOT_TOKEN"];
+      if (!discordBotToken) {
+        // No token configured: fall through unrelocated, exactly as today.
+        // Never a fail — the user still gets their answer, in the channel.
+        console.error(
+          `[channel-dispatch] discord thread relocation skipped for row ${row.id}: DISCORD_BOT_TOKEN is not configured`
+        );
+      } else {
+        const created = await createDiscordThreadFromMessage(
+          discordBotToken,
+          String(payload.chatId),
+          payload.messageId as string,
+          deriveThreadName(guard.text)
+        );
+        if (created.ok) {
+          const threadId = created.threadId;
+          // Step 2 — THE CORRECTNESS CRUX: resolve the ledger session under
+          // the THREAD's key, not the channel-keyed one, and bind the Eve
+          // session to THAT row (`ledgerSessionId` is what `bindEveSession`
+          // below uses). Writing this under the channel key while the reply
+          // goes to the thread would mean the very next message in the
+          // thread finds no session at all — a brand-new conversation with
+          // no memory, demanding another mention.
+          const threadSession = await getOrCreateJaceSession(
+            workspaceId as string,
+            "discord",
+            threadId
+          );
+          ledgerSessionId = threadSession.id;
+          // Step 3: persist engagement for the THREAD's key, so the very
+          // next un-mentioned message in it is a turn — no re-mention needed.
+          await setThreadEngagement({
+            channel: "discord",
+            conversationKey: threadId,
+            dormantSince: null,
+            engagedSpeakerId: row.senderId,
+          });
+          // Step 4: the turn itself is addressed to, and keyed on, the thread.
+          turnChatId = threadId;
+          turnConversationKey = threadId;
+          // Step 5: strip the interaction credential for THIS turn. A
+          // Discord interaction followup cannot target a thread — if the
+          // credential survived, `deliverDiscordReply` would prefer the
+          // followup path and post the answer into the CHANNEL while the
+          // conversation has moved to the thread, a split-brain conversation.
+          const {
+            interactionToken: _relocatedInteractionToken,
+            applicationId: _relocatedApplicationId,
+            ...strippedAttributes
+          } = (auth["attributes"] as Record<string, unknown>) ?? {};
+          turnAuth = { ...auth, attributes: strippedAttributes };
+        } else {
+          // On failure: log the numeric status + Discord's numeric code only
+          // — never the token, never the URL — then fall through
+          // UNRELOCATED, exactly as today: original chatId, original
+          // conversationKey, credential intact. The user still gets their
+          // answer, in the channel. CREATE_PUBLIC_THREADS is NOT confirmed
+          // granted in production, so this fallback is load-bearing, not
+          // theoretical.
+          console.error(
+            `[channel-dispatch] discord thread creation failed for row ${row.id}` +
+              (created.status !== undefined ? ` status=${created.status}` : "") +
+              (created.code !== undefined ? ` code=${created.code}` : "")
+          );
+        }
+      }
+    }
+
     const turn = await runEveTurn({
       message,
       channel: row.channel,
-      chatId: payload.chatId,
-      conversationKey: row.conversationKey,
+      chatId: turnChatId,
+      conversationKey: turnConversationKey,
       messageThreadId: payload.messageThreadId,
       threadTs: payload.threadTs,
-      auth,
+      auth: turnAuth,
     });
 
     if (!turn.ok) {

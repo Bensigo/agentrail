@@ -5,7 +5,7 @@
 // subagent convention: a full agent root that inherits nothing from its
 // parent or from root).
 //
-// Five things are pinned here, mirroring the house pattern for a subagent's
+// Six things are pinned here, mirroring the house pattern for a subagent's
 // own regression suite (test/debugger-schema.test.mjs for the schema shape,
 // test/debugger-instructions.test.mjs for instruction-file content,
 // test/triage-read-only.test.mjs for sentinel completeness):
@@ -15,7 +15,15 @@
 //      claim-bearing array) validated against real fixtures.
 //   2. Both investigators' tools/ directories strip the ENTIRE default
 //      harness (10 disableTool() sentinels) and author EXACTLY the two
-//      read-only evidence-verb tools (fetch_changes, search_events).
+//      read-only evidence-verb tools (fetch_changes, search_events). No file
+//      in either investigator's ENTIRE tree (not just tools/) imports a
+//      database client — the replacement coverage for what
+//      test/triage-read-only.test.mjs's own write-path/DB-client scan used
+//      to provide here, before that test's sourceFiles() was deliberately
+//      scoped to skip `subagents/` (see that file's own comment). The other
+//      write-capability vectors (an approval gate, the create_issue-shaped
+//      write path, child_process/execFile) stay independently covered by
+//      test/no-second-write-path.test.mjs's own recursive scans.
 //   3. Both instructions.md files: mission-scoped ("ONE question"), an
 //      Untrusted content section, and the literal absence of any
 //      "Sentry"/"Datadog"/"Grafana" string (they have no v1 role in
@@ -270,6 +278,48 @@ function investigatorDir(name) {
   return fileURLToPath(new URL(`../agent/subagents/triage/subagents/${name}`, import.meta.url));
 }
 
+// Strip `//` and `/* */` comments before matching against source — same
+// idiom test/triage-read-only.test.mjs and test/no-second-write-path.test.mjs
+// already use, so prose that DOCUMENTS a decision (e.g. naming
+// HAIKU_GATEWAY_MODEL_ID to explain why an agent does NOT use it) isn't read
+// as a real reference. None of these files put "//" or "/*" inside a
+// string/template literal, so this plain strip is safe here.
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+
+// Recursive source-file walker, mirroring test/triage-read-only.test.mjs's
+// own `sourceFiles` — used below to scan each investigator's ENTIRE tree
+// (not just its top-level tools/) for a database-client import. This is the
+// replacement for coverage that test/triage-read-only.test.mjs's own
+// "no file under triage references a write path or a database client" test
+// used to provide for these two directories: that test's `sourceFiles()`
+// scans triageDir recursively, but now deliberately SKIPS the `subagents/`
+// directory (Task 10 review fix) so it stops misattributing change's/
+// anomaly's own authored tools to triage's tool count. That skip removes
+// four write-capability vectors' coverage of change/anomaly at once; three
+// of the four stay independently enforced by
+// test/no-second-write-path.test.mjs's own recursive scans (an approval
+// gate — always()/once() or consoleGatedApproval — the create_issue-shaped
+// write path, and child_process/execFile). The DB-client vector was NOT
+// covered anywhere else, so it is asserted here instead, per-investigator.
+const SOURCE_RE = /\.(ts|mjs|js)$/;
+function sourceFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...sourceFiles(full));
+    else if (SOURCE_RE.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+// Mirrors triage-read-only.test.mjs:219 exactly — same regex, same
+// "must not import a database client" message. Jace subagents read evidence
+// over HTTP only; there is no ClickHouse client in Jace, and no subagent
+// ever holds a direct postgres client.
+const DB_CLIENT_RE = /from\s+["']postgres["']|from\s+["']@clickhouse\/client|clickhouse-client|createClient\(/i;
+
 for (const name of INVESTIGATORS) {
   const dir = investigatorDir(name);
 
@@ -354,6 +404,14 @@ for (const name of INVESTIGATORS) {
       `${name} must declare no connections — its only outbound reach is the configured console evidence route`,
     );
   });
+
+  test(`${name}: no file references a database client`, () => {
+    for (const file of sourceFiles(dir)) {
+      const src = stripComments(readFileSync(file, "utf8"));
+      const rel = file.replace(`${dir}/`, `${name}/`);
+      assert.doesNotMatch(src, DB_CLIENT_RE, `${rel} must not import a database client`);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -413,22 +471,15 @@ test("anomaly/instructions.md: names normal_surfaces and first_deviation — who
   assert.match(src, /NOT affected is evidence/i);
 });
 
-// Strip `//` and `/* */` comments before matching HAIKU_GATEWAY_MODEL_ID —
-// same idiom test/triage-read-only.test.mjs and test/no-second-write-path.test.mjs
-// already use. Both agent.ts files legitimately NAME HAIKU_GATEWAY_MODEL_ID in
-// prose (explaining, by contrast, why THIS agent does not use it, the way
-// triage's sibling does) — that is documentation, not a real import/usage, so
-// a raw string search would false-positive on the very sentence that
-// justifies the pinned decision. None of these files put "//" or "/*" inside
-// a string/template literal, so this plain strip is safe here.
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-}
-
 // ---------------------------------------------------------------------------
 // 5. agent.ts content pins (both investigators) — outputSchema wired, and
 // NO haiku-class model override (Global Constraints/task brief: investigators
-// use the default gateway model; "do not pre-optimize").
+// use the default gateway model; "do not pre-optimize"). Reuses stripComments
+// from section 3 above — both agent.ts files legitimately NAME
+// HAIKU_GATEWAY_MODEL_ID in prose (explaining, by contrast, why THIS agent
+// does not use it, the way triage's sibling does), so a raw string search
+// would false-positive on the very sentence that justifies the pinned
+// decision.
 // ---------------------------------------------------------------------------
 
 test("change/agent.ts: outputSchema is CHANGE_SCHEMA, no haiku override, description opens with the pinned phrase", () => {

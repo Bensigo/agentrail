@@ -23,6 +23,9 @@ import {
   filterPostableComments,
   sanitizeReviewInput,
   runPostPrReview,
+  renderAcCoverage,
+  coverageCounts,
+  composeSummaryWithCoverage,
 } from "../agent/lib/post_pr_review.core.mjs";
 
 const ENV = {
@@ -59,6 +62,18 @@ function successBody(overrides = {}) {
     summary: "Looks good overall.",
     inlineCommentsPosted: 1,
     foldedComments: [],
+    ...overrides,
+  };
+}
+
+// A well-formed acCoverage entry (Task 3's REVIEW_SCHEMA shape), for the
+// renderAcCoverage / coverageCounts / composeSummaryWithCoverage tests below.
+function acEntry(overrides = {}) {
+  return {
+    issueNumber: 42,
+    criterion: "AC1: widgets persist across restarts",
+    status: "addressed",
+    evidence: "persistence write added in src/store.ts",
     ...overrides,
   };
 }
@@ -446,4 +461,117 @@ test("failure(nothing_to_post) when the summary is blank and every comment was f
   assert.equal(result.reason, "nothing_to_post");
   assert.match(result.message, /blocker|major/i);
   assert.equal(transport.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// renderAcCoverage / coverageCounts / composeSummaryWithCoverage — the
+// per-AC coverage checklist rendered into the posted summary
+// ---------------------------------------------------------------------------
+
+test("renderAcCoverage: issue groups sort ascending, PR-description group renders last", () => {
+  const block = renderAcCoverage([
+    acEntry({ issueNumber: null, criterion: "AC3: self-stated", status: "unclear", evidence: "" }),
+    acEntry({ issueNumber: 43, criterion: "AC2: flag surfaced", status: "not_in_diff", evidence: "" }),
+    acEntry(),
+  ]);
+  const idx42 = block.indexOf("**Acceptance criteria — issue #42:**");
+  const idx43 = block.indexOf("**Acceptance criteria — issue #43:**");
+  const idxPr = block.indexOf("**Acceptance criteria — from the PR description:**");
+  assert.ok(idx42 !== -1 && idx43 !== -1 && idxPr !== -1);
+  assert.ok(idx42 < idx43 && idx43 < idxPr);
+  assert.ok(block.includes("- ✅ AC1: widgets persist across restarts — persistence write added in src/store.ts"));
+  assert.ok(block.includes("- ❌ AC2: flag surfaced — not visibly addressed in this diff"));
+  assert.ok(block.includes("- ❓ AC3: self-stated — can't tell from the diff"));
+});
+
+test("renderAcCoverage: empty, null, and malformed-entry inputs render nothing", () => {
+  assert.equal(renderAcCoverage(null), "");
+  assert.equal(renderAcCoverage([]), "");
+  assert.equal(renderAcCoverage([{ status: "bogus", criterion: "x" }, { criterion: "" }]), "");
+});
+
+test("composeSummaryWithCoverage appends the block under the summary", () => {
+  const out = composeSummaryWithCoverage("Solid PR overall.", [acEntry()]);
+  assert.ok(out.startsWith("Solid PR overall."));
+  assert.ok(out.includes("**Acceptance criteria — issue #42:**"));
+});
+
+test("composeSummaryWithCoverage folds to the count line when the block would blow SUMMARY_MAX_LEN", () => {
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 40);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const out = composeSummaryWithCoverage(bigSummary, entries);
+  assert.ok(!out.includes("**Acceptance criteria"));
+  assert.ok(out.includes("AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat."));
+});
+
+test("runPostPrReview sends the composed summary (with the coverage block) to the console", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/r", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+  }));
+  const result = await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "Solid PR overall.",
+    comments: [],
+    acCoverage: [acEntry()],
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("**Acceptance criteria — issue #42:**"));
+  assert.ok(sent.summary.includes("✅"));
+});
+
+test("omitting acCoverage leaves the posted body byte-identical to today's", async () => {
+  const respond = async () => ({
+    status: 201,
+    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+  });
+  const t1 = fakeTransport(respond);
+  const t2 = fakeTransport(respond);
+  const args = {
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "Solid PR overall.",
+    comments: [],
+    env: ENV,
+  };
+  await runPostPrReview({ ...args, transport: t1 });
+  await runPostPrReview({ ...args, acCoverage: null, transport: t2 });
+  assert.equal(t1.calls[0].init.body, t2.calls[0].init.body);
+});
+
+test("coverage criterion text is hardened before it leaves (no zero-width smuggling, @everyone defanged)", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+  }));
+  await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "ok",
+    comments: [],
+    acCoverage: [acEntry({ criterion: "AC1: do​thing @everyone" })],
+    env: ENV,
+    transport,
+  });
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // hardenUntrusted DELETES zero-width space (U+200B) outright — it's not
+  // replaced with anything, so the raw code point must not survive.
+  assert.ok(!sent.summary.includes("​"));
+  // hardenUntrusted defangs mass mentions by swapping the ASCII "@" for a
+  // fullwidth "＠" (U+FF20) — "@everyone" becomes "＠everyone", so the
+  // literal ASCII string must no longer appear, though the (now-inert) word
+  // "everyone" still does.
+  assert.ok(!sent.summary.includes("@everyone"));
+  assert.ok(sent.summary.includes("＠everyone"));
 });

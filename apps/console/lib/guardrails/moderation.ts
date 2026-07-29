@@ -50,7 +50,7 @@
  * the await entirely (and the log-once for a missing key) when layer 3 is
  * simply off for this process.
  */
-import type { Finding } from "./types.js";
+import type { Finding } from "./types";
 
 export interface ModerationDeps {
   fetch?: typeof globalThis.fetch;

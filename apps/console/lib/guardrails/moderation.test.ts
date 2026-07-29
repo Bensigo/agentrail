@@ -6,7 +6,7 @@
  * assertion pass for the wrong reason if this file forgot to inject its own).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { moderateInbound, isModerationConfigured } from "./moderation.js";
+import { moderateInbound, isModerationConfigured } from "./moderation";
 
 const API_KEY = "sk-or-v1-totally-fake-test-key-should-never-leak";
 
@@ -234,7 +234,7 @@ describe("moderateInbound: never rejects, for any input", () => {
         {
           apiKey: API_KEY,
           fetch: vi.fn(async () => {
-            // eslint-disable-next-line @typescript-eslint/no-throw-literal
+            // eslint-disable-next-line no-throw-literal
             throw "raw string throw, not an Error instance";
           }) as unknown as typeof fetch,
         },

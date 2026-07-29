@@ -106,7 +106,9 @@ Fill the schema:
   `passed` only when every *testable* AC verified and nothing else failed —
   and the `summary` must still name the not-testable remainder. When the
   task carried no Acceptance criteria block, return `ac_results: null` and
-  say in `summary` that QA ran without acceptance criteria.
+  say in `summary` that QA ran without acceptance criteria. A
+  `not_verifiable` overall verdict always returns `ac_results: null` too —
+  nothing was exercised, so there is nothing to report per criterion.
 - `suggests_issue`: true when the finding is user-visible, reproducible (you
   reproduced it or clearly could), and not an environment flake. Then
   include `issue_draft` in the house format — title: one-line symptom;

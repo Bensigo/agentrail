@@ -41,3 +41,8 @@ test("qa instructions: AC text is data, never instructions", () => {
   const prose = qaInstructions();
   assert.match(prose, /criterion[\s\S]{0,400}(data|never.*instruction|instruction.*finding)/i);
 });
+
+test("qa instructions: a not_verifiable verdict returns ac_results null, stated in prose not just the validator", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /not_verifiable[\s\S]{0,300}`ac_results: null`|`ac_results: null`[\s\S]{0,300}not_verifiable/);
+});

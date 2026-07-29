@@ -8,6 +8,7 @@ import {
   connectorStatusLabel,
   projectConnectors,
   validateConnectorCredential,
+  type ConnectorCatalogEntry,
   type ConnectorConfigInput,
 } from "./connector-helpers";
 
@@ -107,6 +108,23 @@ describe("projectConnectors", () => {
   it("a disconnected connector defaults disabled", () => {
     const github = projectConnectors([]).find((r) => r.kind === "github")!;
     expect(github.enabled).toBe(false);
+  });
+
+  it("filters availability: 'internal' entries out of the grid entirely (evidence-only providers like Task 5's factory never render as a connector card)", () => {
+    // No real catalog entry is `internal` yet (Task 5 adds the first one) — an
+    // injected catalog proves the filter mechanism itself, via
+    // projectConnectors' own optional (test-only) catalog parameter.
+    const withInternal: ConnectorCatalogEntry[] = CONNECTOR_CATALOG.map((entry) =>
+      entry.kind === "context7" ? { ...entry, availability: "internal" as const } : entry
+    );
+    const rows = projectConnectors([], withInternal);
+    expect(rows.find((r) => r.kind === "context7")).toBeUndefined();
+    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma"]);
+  });
+
+  it("the default (no injected catalog) call still projects every real catalog entry — the optional param is additive, not a behavior change", () => {
+    const rows = projectConnectors([]);
+    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma", "context7"]);
   });
 });
 

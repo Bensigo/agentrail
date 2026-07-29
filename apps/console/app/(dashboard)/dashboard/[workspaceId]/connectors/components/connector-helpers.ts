@@ -33,6 +33,8 @@
  * input-contract gate's job, server-side).
  */
 
+import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
+
 /** The external tools AgentRail can connect (M038 catalog). */
 export type ConnectorKind = "github" | "linear" | "figma" | "context7";
 
@@ -54,8 +56,17 @@ export type ConnectorType = "issue-source" | "mcp";
  */
 export type ConnectorConnectMethod = "oauth" | "secret";
 
-/** Whether an adapter is implemented today, vs. planned in a follow-up. */
-export type ConnectorAvailability = "available" | "planned";
+/**
+ * Whether an adapter is implemented today, vs. planned in a follow-up, vs.
+ * `"internal"` — a capability-only entry over this console's OWN data (Task
+ * 5's `factory` evidence adapter: runs/failure-events, nothing to connect).
+ * An `internal` entry exists in the catalog purely so `evidenceCapabilities`
+ * (`lib/evidence/registry.ts`) can find its declared evidence verbs; it is
+ * filtered OUT of the connectors page grid ({@link projectConnectors}) — a
+ * card with no connect flow and nothing to show status for would only
+ * confuse the surface it's not meant to appear on.
+ */
+export type ConnectorAvailability = "available" | "planned" | "internal";
 
 /** A connector's connection state on this workspace. */
 export type ConnectorStatus = "connected" | "disconnected";
@@ -70,6 +81,15 @@ export interface ConnectorCapabilities {
   notify: boolean;
   /** Exposes MCP tools / context to a run. */
   tools?: boolean;
+  /**
+   * The evidence verbs (debugging design spec) this connector can answer
+   * once connected — read by `evidenceCapabilities` (`lib/evidence/registry.ts`)
+   * to derive, per workspace, which providers can answer which question-shape.
+   * Absent for every connector that isn't also an evidence source (this task
+   * adds the field; no existing catalog entry populates it yet — Task 7 adds
+   * the first real one).
+   */
+  evidence?: EvidenceVerb[];
 }
 
 /** Per-provider connect metadata the card renders (label, placeholder, how-to). */
@@ -286,51 +306,62 @@ function isConnected(
  * rows the surface renders. Pure and total: a kind with no config is
  * `disconnected`; only an `available` connector that is actually connected per
  * its connect method shows `connected`.
+ *
+ * `availability: "internal"` entries (Task 5's `factory` evidence adapter) are
+ * filtered OUT here — they exist in the catalog purely for
+ * `evidenceCapabilities` to find, never to render as a card on this page (see
+ * {@link ConnectorAvailability}'s doc-comment). `catalog` defaults to the real
+ * {@link CONNECTOR_CATALOG} — the optional param exists only so a test can
+ * inject a synthetic `internal` entry before Task 5 adds a real one; every
+ * production call site keeps calling `projectConnectors(configs)` unchanged.
  */
 export function projectConnectors(
-  configs: ConnectorConfigInput[]
+  configs: ConnectorConfigInput[],
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
 ): ConnectorView[] {
   const byKind = new Map<ConnectorKind, ConnectorConfigInput>();
   for (const c of configs) byKind.set(c.kind, c);
 
-  return CONNECTOR_CATALOG.map((entry) => {
-    const cfg = byKind.get(entry.kind);
+  return catalog
+    .filter((entry) => entry.availability !== "internal")
+    .map((entry) => {
+      const cfg = byKind.get(entry.kind);
 
-    const connected =
-      entry.availability === "available" && isConnected(entry, cfg);
-    const status: ConnectorStatus = connected ? "connected" : "disconnected";
+      const connected =
+        entry.availability === "available" && isConnected(entry, cfg);
+      const status: ConnectorStatus = connected ? "connected" : "disconnected";
 
-    // A notify-only / tools-only connector has no ingest label; only ingest
-    // does.
-    const ingestLabel =
-      status === "connected" && entry.capabilities.ingest
-        ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
-        : null;
+      // A notify-only / tools-only connector has no ingest label; only ingest
+      // does.
+      const ingestLabel =
+        status === "connected" && entry.capabilities.ingest
+          ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
+          : null;
 
-    // Display target: oauth → the stored target (repo); everything else → none.
-    const target = entry.connectMethod === "oauth" ? cfg?.target ?? null : null;
+      // Display target: oauth → the stored target (repo); everything else → none.
+      const target = entry.connectMethod === "oauth" ? cfg?.target ?? null : null;
 
-    return {
-      kind: entry.kind,
-      type: entry.type,
-      connectMethod: entry.connectMethod,
-      label: entry.label,
-      description: entry.description,
-      availability: entry.availability,
-      status,
-      capabilities: entry.capabilities,
-      ingestLabel,
-      target,
-      connect: entry.connect ?? null,
-      appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
-      // Heartbeat trigger config the card manages (folded in #816). Defaults when
-      // no connector row exists: a connector defaults enabled once connected.
-      enabled: cfg?.enabled ?? connected,
-      triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
-      pollIntervalSeconds:
-        cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
-    };
-  });
+      return {
+        kind: entry.kind,
+        type: entry.type,
+        connectMethod: entry.connectMethod,
+        label: entry.label,
+        description: entry.description,
+        availability: entry.availability,
+        status,
+        capabilities: entry.capabilities,
+        ingestLabel,
+        target,
+        connect: entry.connect ?? null,
+        appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
+        // Heartbeat trigger config the card manages (folded in #816). Defaults when
+        // no connector row exists: a connector defaults enabled once connected.
+        enabled: cfg?.enabled ?? connected,
+        triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
+        pollIntervalSeconds:
+          cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
+      };
+    });
 }
 
 /** The connectors counted as actively driving the heartbeat (connected + enabled). */

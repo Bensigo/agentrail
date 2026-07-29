@@ -704,3 +704,44 @@ three refusal classes), `appendEvidenceItem` (route-only writer),
   artifact writer; granting the debugger `save_investigation` is a named,
   contained relaxation if round-report transcription proves lossy (all
   invariants live in the route).
+
+## As built (v1) — deviations from this spec
+
+Recorded 2026-07-29 at implementation completion (13 tasks, PRs #1503–#1524;
+each task adversarially reviewed with fix rounds; final whole-branch review:
+READY-WITH-CONDITIONS). The pinned sections above are preserved as designed;
+these are the deltas reality forced, each with its reason:
+
+- **Migration slots: 0059/0060/0063, not 0058/0059.** Slot 0058 was claimed
+  by #1500 (thread engagement) after this spec pinned it; the store landed as
+  0059_investigations + 0060_jace_sessions_investigation_anchor. Review round
+  T12 added 0063_investigation_issue_links_unique (a unique index making the
+  issue-link write idempotent at the database level) — numbered 0063 because
+  the concurrent billing arc live-applied 0061/0062 first. First-come
+  precedent both times; each migration header documents its renumber.
+- **Playbooks live under the ROOT debug skill (`skills/debug/references/`),
+  not `subagents/triage/skills/`.** The debugger's `load_skill` is
+  deliberately stripped by its sentinels, so per-subagent skills would be
+  unloadable; root embeds the playbook extract into each mission envelope —
+  which is what the Coordination section always specified. `defineDynamic`
+  per-workspace playbooks remain the later path, now root-side.
+- **The `intent:debugging` trace tag was dropped from v1.** The intent
+  classifier is deliberately binary (chit-chat/capable), and no skill-load
+  signal exists at the instrumentation seam. The `investigation_verdict`
+  score carries the observability; the tag can return with a mechanism.
+- **`depth_budget` is stored but not yet severity-derived** — every
+  investigation gets the column default (8). The debug skill instructs
+  severity-paced discipline honestly; the server-side derivation is a
+  tracked follow-up, and the schema doc-comment is corrected with it.
+- **A fourth root tool exists: `fetch_evidence_capabilities`.** The spec's
+  three-tool list left the capability map unreachable from root (caught in
+  T11 review); the tool renders capability-first ("I can inspect deployments
+  (github, railway, factory)") and is read-only.
+- **Verdict route returns `investigationId`** on 200 so the Langfuse score's
+  `metadata.investigation_id` is the durable id, not the renamable slug.
+- **Known follow-ups filed at completion:** a read path + console rendering
+  for `investigation_links`/`investigation_issue_links` (the recurrence
+  "renders the old verdict as suspect" bullet is unmet until then);
+  severity→depth-budget derivation; the factory adapter's createdAt-ranged
+  run query + wedged-run horizon edge; an admin unclaim affordance for the
+  promote crash window; assorted test hygiene.

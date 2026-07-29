@@ -707,7 +707,7 @@ export async function linkInvestigations(
  * outcome covers BOTH a fresh stamp and an idempotent replay of the exact
  * same url — see that function's doc-comment in `queries/jace_sessions.ts`)
  * with no read-check ahead of this call. `ON CONFLICT DO NOTHING` targets
- * `investigation_issue_links_unique` (migration 0061,
+ * `investigation_issue_links_unique` (migration 0063,
  * `(investigation_id, repo, issue_number)`) — the SAME mechanism
  * `stampPublishedIssueUrl` itself relies on for `published_issue_url`'s own
  * idempotent-replay guarantee, applied here to a plain unique index instead

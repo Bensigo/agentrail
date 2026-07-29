@@ -1,0 +1,49 @@
+-- Investigation issue-link idempotency (debugging design spec, spec PR
+-- #1501; Task 12 fix round 1 — review finding: the approval seam's link
+-- write needs to be ATOMICALLY idempotent, not merely guarded by an
+-- application-level SELECT-then-INSERT check, which leaves a TOCTOU race
+-- window open under concurrent/retried publish calls).
+--
+-- `stampPublishedIssueUrl` (jace_approvals.published_issue_url) already
+-- solves this identical problem at the database level — a guarded UPDATE
+-- whose idempotent-replay contract callers rely on. This migration gives
+-- `investigation_issue_links` the same guarantee for the SAME reason:
+-- `POST /api/v1/runner/approvals/[id]/published` can genuinely run twice
+-- for one approval (that endpoint's own idempotent-stamp-replay contract),
+-- and each run calls `linkInvestigationIssue`
+-- (`packages/db-postgres/src/queries/investigations.ts`) unconditionally —
+-- no read-check first. The unique index below is what makes the SECOND
+-- call's `INSERT ... ON CONFLICT DO NOTHING` a true no-op, concurrent-safe,
+-- rather than a race between a SELECT and a later INSERT.
+--
+-- Hand-authored, NOT `drizzle-kit generate`d — same posture as every
+-- migration since 0004 in this checkout (idempotent statement shape:
+-- `CREATE UNIQUE INDEX IF NOT EXISTS`, safe to re-run).
+--
+-- MIGRATION SLOT: journal idx 62 / file 0063. Fix-round addition (Task 12
+-- review, on top of the already-landed 0059/0060 pair) — assigned file-slot
+-- 0061 in-plan (the next free slot after `0060_jace_sessions_investigation_
+-- anchor.sql`, following THIS branch's own history). RENUMBERED to 0063
+-- because `feat/sub-s1-billing-schema` — a fully independent, unrelated
+-- (billing/seats) branch/worktree with no ancestor/descendant relationship
+-- to this one — live-applied `0061_counting_indexes.sql` and
+-- `0062_billing_accounts.sql` to the SAME shared local dev Postgres FIRST.
+-- Per this checkout's own reservation-collision precedent (see
+-- `0059_investigations.sql`'s own "MIGRATION SLOT" note, which documents
+-- the identical 0058→0059 renumber for the identical reason: an
+-- already-applied migration's slot is permanent, first-come, never
+-- renumbered — the LATER claimant takes the next free file-number instead).
+-- Do not renumber this file again without the same live-precedence check.
+--
+-- The journal idx above (62) is THIS branch's own next-sequential slot
+-- (immediately after 0060's idx 61) — unlike the file-number collision this
+-- note is about, idx is a per-branch bookkeeping detail, not itself
+-- claimed by the billing branch's own (separate) journal. It will still
+-- need reconciling against whatever else has landed on `main` by the time
+-- either branch actually merges — standard stacked-slot flow, same as
+-- every other migration in this checkout: whichever arc merges SECOND
+-- renumbers its own idx (and, if still colliding by then, its file-number)
+-- to the real next-free slot at that time.
+CREATE UNIQUE INDEX IF NOT EXISTS "investigation_issue_links_unique"
+  ON "investigation_issue_links"
+  USING btree ("investigation_id", "repo", "issue_number");

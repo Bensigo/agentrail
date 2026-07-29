@@ -346,7 +346,9 @@ export type InvestigationIssueRole = (typeof investigationIssueRoleEnum.enumValu
  * `brief_work_links.repo` is: the linked issue may live in a repo this
  * workspace hasn't connected as a `repositories` row.
  *
- * `investigationRepoIssueUnique` (Task 12 fix round 1, migration 0061): the
+ * `investigationRepoIssueUnique` (Task 12 fix round 1, migration 0063 —
+ * originally assigned 0061, renumbered because `feat/sub-s1-billing-schema`
+ * live-applied 0061/0062 first; see that migration file's own header): the
  * approval seam's own idempotency guard, same mechanism
  * `stampPublishedIssueUrl` already relies on for the sibling
  * `published_issue_url` column — `linkInvestigationIssue`

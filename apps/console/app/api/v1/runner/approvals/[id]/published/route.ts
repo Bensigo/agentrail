@@ -180,7 +180,7 @@ function isStampedInvestigationLink(value: unknown): value is StampedInvestigati
  * `(investigationId, repo, issueNumber)` triple both times. The true
  * guarantee lives ONE LAYER DOWN, in `linkInvestigationIssue` itself
  * (`queries/investigations.ts`): `ON CONFLICT DO NOTHING` against the
- * `investigation_issue_links_unique` index (migration 0061) — the SAME
+ * `investigation_issue_links_unique` index (migration 0063) — the SAME
  * mechanism `stampPublishedIssueUrl` relies on for its own sibling
  * guarantee. This function calls it UNCONDITIONALLY, with no read-check of
  * its own beforehand — a prior fix-round revision guarded this with a

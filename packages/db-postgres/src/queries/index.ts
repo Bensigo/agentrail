@@ -2806,7 +2806,7 @@ export {
 // `linkInvestigationIssue` record recurrence edges and handoff results —
 // `linkInvestigationIssue` (Task 12, fix round 1) is idempotent at the
 // DATABASE level (`ON CONFLICT DO NOTHING` against the
-// `investigation_issue_links_unique` index, migration 0061), the same
+// `investigation_issue_links_unique` index, migration 0063), the same
 // mechanism `stampPublishedIssueUrl` relies on for its own sibling
 // idempotent-replay guarantee — `POST .../approvals/[id]/published` can
 // genuinely call this twice for the same approval with no read-check ahead

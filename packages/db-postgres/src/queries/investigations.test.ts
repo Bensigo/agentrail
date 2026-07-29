@@ -836,10 +836,10 @@ describe("linkInvestigationIssue", () => {
   // both a fresh stamp and a same-value replay, so this function can
   // genuinely run twice for the identical (investigationId, repo,
   // issueNumber) triple. Idempotency is now enforced by the database's
-  // unique index (migration 0061, investigation_issue_links_unique) via
+  // unique index (migration 0063, investigation_issue_links_unique) via
   // ON CONFLICT DO NOTHING, not an application-level SELECT-then-INSERT
   // guard (the now-removed hasInvestigationIssueLink).
-  it("targets the (investigation_id, repo, issue_number) unique index via ON CONFLICT DO NOTHING — calling it twice with the SAME triple issues two identically-shaped calls (shape assertion only, mirroring the TOCTOU WHERE-shape test above: the mocked suite proves this code CONSTRUCTS the right ON CONFLICT target; it cannot prove Postgres's unique index actually collapses them to one row at commit time, since nothing here executes against a real database — that guarantee lives in migration 0061's CREATE UNIQUE INDEX)", async () => {
+  it("targets the (investigation_id, repo, issue_number) unique index via ON CONFLICT DO NOTHING — calling it twice with the SAME triple issues two identically-shaped calls (shape assertion only, mirroring the TOCTOU WHERE-shape test above: the mocked suite proves this code CONSTRUCTS the right ON CONFLICT target; it cannot prove Postgres's unique index actually collapses them to one row at commit time, since nothing here executes against a real database — that guarantee lives in migration 0063's CREATE UNIQUE INDEX)", async () => {
     await linkInvestigationIssue("inv-1", "acme/widgets", 42, "mitigative");
     await linkInvestigationIssue("inv-1", "acme/widgets", 42, "mitigative");
 

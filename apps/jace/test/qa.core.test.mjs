@@ -10,6 +10,8 @@ import {
   QA_VERDICTS,
   QA_SURFACES,
   QA_SEVERITIES,
+  AC_RESULT_VERDICTS,
+  MAX_AC_RESULTS,
   validateAdvisory,
 } from "../agent/subagents/qa/lib/qa.core.mjs";
 
@@ -39,6 +41,7 @@ function validAdvisory(overrides = {}) {
       { surface: "api", target: "GET /api/health", result: "200 ok" },
     ],
     findings: [validFinding()],
+    ac_results: null,
     not_verifiable_reason: null,
     evidence_refs: [
       "snapshot of /settings after Save click",
@@ -49,12 +52,20 @@ function validAdvisory(overrides = {}) {
   };
 }
 
-test("QA_SCHEMA is a closed object schema with the six contract fields", () => {
+test("QA_SCHEMA is a closed object schema with the seven contract fields", () => {
   assert.equal(QA_SCHEMA.type, "object");
   assert.equal(QA_SCHEMA.additionalProperties, false);
   assert.deepEqual(
     [...QA_SCHEMA.required].sort(),
-    ["evidence_refs", "findings", "not_verifiable_reason", "summary", "tested", "verdict"],
+    [
+      "ac_results",
+      "evidence_refs",
+      "findings",
+      "not_verifiable_reason",
+      "summary",
+      "tested",
+      "verdict",
+    ],
   );
   assert.deepEqual(QA_SCHEMA.properties.verdict.enum, QA_VERDICTS);
   assert.deepEqual(QA_SCHEMA.properties.tested.items.properties.surface.enum, QA_SURFACES);
@@ -176,4 +187,83 @@ test("rejects malformed tested entries", () => {
     validAdvisory({ tested: [{ surface: "cli", target: "", result: "" }] }),
   );
   assert.equal(result.ok, false);
+});
+
+function acResult(overrides = {}) {
+  return {
+    criterion: "AC1: widgets persist across restarts",
+    verdict: "verified",
+    evidence: "snapshot of /widgets after reload — the widget is still there",
+    ...overrides,
+  };
+}
+
+test("an advisory with per-AC results validates", () => {
+  const advisory = validAdvisory({
+    ac_results: [
+      acResult(),
+      acResult({ criterion: "AC2: export works", verdict: "failed", evidence: "network: GET /api/export -> 500" }),
+      acResult({ criterion: "AC3: module refactored", verdict: "not_testable", evidence: "internal code change — not observable from the browser" }),
+    ],
+  });
+  const { ok, errors } = validateAdvisory(advisory);
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("ac_results: null validates (no ACs were provided)", () => {
+  const { ok } = validateAdvisory(validAdvisory({ ac_results: null }));
+  assert.equal(ok, true);
+});
+
+test("a missing ac_results key is rejected — the field is required", () => {
+  const advisory = validAdvisory();
+  delete advisory.ac_results;
+  const { ok, errors } = validateAdvisory(advisory);
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("ac_results")));
+});
+
+test("an unknown AC verdict is rejected", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({ ac_results: [acResult({ verdict: "passed" })] }),
+  );
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("verdict")));
+});
+
+test("criterion and evidence must be non-empty strings; entries must be objects", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({ ac_results: [acResult({ criterion: "", evidence: 7 }), null] }),
+  );
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("ac_results[0].criterion")));
+  assert.ok(errors.some((e) => e.includes("ac_results[0].evidence")));
+  assert.ok(errors.some((e) => e.includes("ac_results[1] must be an object")));
+});
+
+test(`ac_results is capped at ${MAX_AC_RESULTS} entries, in schema and validator`, () => {
+  assert.equal(QA_SCHEMA.properties.ac_results.maxItems, MAX_AC_RESULTS);
+  const entries = Array.from({ length: MAX_AC_RESULTS + 1 }, (_, i) =>
+    acResult({ criterion: `AC${i + 1}: thing ${i + 1}` }),
+  );
+  const { ok, errors } = validateAdvisory(validAdvisory({ ac_results: entries }));
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes(`${MAX_AC_RESULTS}`)));
+});
+
+test("a not_verifiable advisory must carry ac_results: null — nothing was exercised", () => {
+  const advisory = validAdvisory({
+    verdict: "not_verifiable",
+    findings: [],
+    not_verifiable_reason: "no app base URL provided",
+    ac_results: [acResult()],
+  });
+  const { ok, errors } = validateAdvisory(advisory);
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("ac_results")));
+});
+
+test("the AC verdict vocabulary is exactly verified|failed|not_testable", () => {
+  assert.deepEqual(AC_RESULT_VERDICTS, ["verified", "failed", "not_testable"]);
 });

@@ -39,19 +39,30 @@ import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
  * The external tools AgentRail can connect (M038 catalog), plus `factory` —
  * Task 5's `availability: "internal"` evidence-only entry (this console's
  * own runs/failure-events; nothing to connect, see
- * {@link ConnectorAvailability}'s own doc-comment).
+ * {@link ConnectorAvailability}'s own doc-comment) — and `railway` (Task 7),
+ * the first EXTERNAL evidence-only-role connector: deployments + logs for
+ * the debugging investigator, over the workspace's Railway account/team
+ * token.
  */
-export type ConnectorKind = "github" | "linear" | "figma" | "context7" | "factory";
+export type ConnectorKind =
+  | "github"
+  | "linear"
+  | "figma"
+  | "context7"
+  | "factory"
+  | "railway";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
  * by ROLE: `issue-source` (GitHub, Linear — feed the Issue Queue), `mcp`
- * (Figma, Context7 — tools only). (#1292 renamed the former connect-mechanism
- * `https` group to the role-based `issue-source`, and moved Linear into it
- * from `mcp`. Gateways-page T4 removed the third group, `channel` — chat
- * channels live on their own Gateways surface now, see the module doc-comment.)
+ * (Figma, Context7 — tools only), `observability` (Task 7: Railway — evidence
+ * for debugging investigations, no ingest). (#1292 renamed the former
+ * connect-mechanism `https` group to the role-based `issue-source`, and moved
+ * Linear into it from `mcp`. Gateways-page T4 removed the third group,
+ * `channel` — chat channels live on their own Gateways surface now, see the
+ * module doc-comment.)
  */
-export type ConnectorType = "issue-source" | "mcp";
+export type ConnectorType = "issue-source" | "mcp" | "observability";
 
 /**
  * How a connector's catalog entry is classified for its connect flow:
@@ -109,6 +120,19 @@ export interface ConnectorConnectMeta {
   helpUrl: string;
   /** Short, ordered "how to create the app / key" steps. */
   setupSteps: string[];
+  /**
+   * Task 7: a SECOND, non-secret config field the connect form should
+   * render alongside the credential input (Railway's project id — the
+   * token alone does not scope which project the debugging investigator
+   * reads deployments/logs from). Saved via the connectors PUT (config
+   * path), NOT the secret route — see `ConnectorConfigInput.railwayProjectId`'s
+   * own doc-comment. Entry-declared and generic so the NEXT provider
+   * needing one is catalog-only: `connectors-panel.tsx`'s `SecretManage`
+   * renders this off `connect.extraConfigField` alone, with no
+   * per-provider branch of its own. Absent for every provider that needs
+   * only the credential itself (every one before Task 7).
+   */
+  extraConfigField?: { key: string; label: string; placeholder: string };
 }
 
 /** Static catalog entry for a connector kind. */
@@ -137,8 +161,16 @@ export interface ConnectorConfigInput {
    * `connected` is already true. Defaults false when absent.
    */
   appInstalled?: boolean;
-  /** Secret connectors (Linear, Figma, Context7): a credential is stored. */
+  /** Secret connectors (Linear, Figma, Context7, Railway): a credential is stored. */
   hasSecret?: boolean;
+  /**
+   * Task 7: Railway's non-secret companion field (the workspace's Railway
+   * project id), read from the `railway` connector row's
+   * `config.railwayProjectId` — see `ConnectorConnectMeta.extraConfigField`'s
+   * own doc-comment for the generic form this drives. Absent/null for every
+   * other kind.
+   */
+  railwayProjectId?: string | null;
   /** The label a connector ingests issues by (GitHub: the AFK ready label). */
   ingestLabel?: string | null;
   /** Repo / project the connector is bound to, for display (GitHub OAuth). */
@@ -193,6 +225,11 @@ export const CONNECTOR_TYPE_META: Record<
     label: "MCP",
     description:
       "Model-Context-Protocol tool servers — codebase-level. Adding an API key writes the server into your repo's MCP config (.mcp.json) at run time, so the coding agent can call its tools during a run.",
+  },
+  observability: {
+    label: "Observability",
+    description:
+      "Give the debugging investigator evidence about what shipped and what the logs say — deployments and log search, read-only, never used for ingest.",
   },
 };
 
@@ -286,6 +323,45 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Click “Create API Key”, name it “AgentRail”, and copy the ctx7sk… value (shown once).",
         "Paste it here and connect.",
       ],
+    },
+  },
+  // -- observability (Task 7, debugging design spec) ------------------------ //
+  {
+    kind: "railway",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Railway",
+    description:
+      "Give the debugging investigator visibility into your Railway project's deployments and logs.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The first EXTERNAL credentialed evidence provider (Task 5's factory
+      // is internal; Task 6's github is oauth) — proves "add a provider =
+      // catalog entry + adapter + credential pair" end to end. See
+      // `lib/evidence/railway.ts`.
+      evidence: ["changes", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Railway API token",
+      credentialPlaceholder: "00000000-0000-0000-0000-000000000000",
+      credentialHint: "A Railway Account or Team token — a UUID, created at railway.com/account/tokens.",
+      helpUrl: "https://docs.railway.com/reference/public-api",
+      setupSteps: [
+        "Open Railway → your avatar → Account Settings → Tokens (railway.com/account/tokens).",
+        "Click “Create Token”, name it “AgentRail”, and copy the token (shown once).",
+        "Open your Railway project → Settings to find the project id, then paste both the token and the project id here and connect.",
+      ],
+      // Generic second field (see ConnectorConnectMeta.extraConfigField's own
+      // doc-comment) — the token alone doesn't scope which project the
+      // investigator reads from.
+      extraConfigField: {
+        key: "railwayProjectId",
+        label: "Railway project ID",
+        placeholder: "your Railway project id",
+      },
     },
   },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
@@ -437,6 +513,16 @@ export function capabilitySummary(caps: ConnectorCapabilities): string {
 export type CredentialCheck = { ok: true } | { ok: false; error: string };
 
 /**
+ * Generic UUID SHAPE (8-4-4-4-12 hex), not RFC4122-version-specific — Railway
+ * does not publicly document which UUID version its Account/Team tokens use
+ * (confirmed shape only: displayed as a UUID at railway.com/account/tokens),
+ * so this validates the shape, not a specific version's bit pattern. Matches
+ * this function's own "cheap format gate, not a claim of cryptographic
+ * correctness" spirit for every other provider below.
+ */
+const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * Validate a connector's credential for connect. `secret` is the API key /
  * token. Returns `{ok:true}` or a human error. OAuth (GitHub) has no
  * credential to validate here.
@@ -460,6 +546,11 @@ export function validateConnectorCredential(
       return /^ctx7sk[-_]/.test(s)
         ? { ok: true }
         : { ok: false, error: "Context7 keys start with ctx7sk." };
+    case "railway":
+      // Task 7: Railway Account/Team tokens are UUIDs.
+      return UUID_SHAPE_RE.test(s)
+        ? { ok: true }
+        : { ok: false, error: "Railway tokens are UUIDs." };
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

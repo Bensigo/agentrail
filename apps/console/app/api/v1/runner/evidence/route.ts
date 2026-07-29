@@ -143,6 +143,8 @@ import { captureEvidence } from "../../../../../lib/evidence/envelope";
 import "../../../../../lib/evidence/factory";
 // Task 6: same self-registration idiom for the `github` adapter.
 import "../../../../../lib/evidence/github";
+// Task 7: same self-registration idiom for the `railway` adapter.
+import "../../../../../lib/evidence/railway";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

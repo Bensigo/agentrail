@@ -47,6 +47,14 @@ export const connectorProviderEnum = [
   // SEPARATE `github` provider row, so disabling `jace` cannot affect it.
   // (Free-text column, so this is a TS-union addition only — no migration.)
   "jace",
+  // observability — Task 7 (debugging design spec): railway, the first
+  // EXTERNAL credentialed evidence provider (`lib/evidence/railway.ts`).
+  // Stores a per-workspace account/team token in `secret` exactly like
+  // linear/figma/context7 above; its non-secret companion field is
+  // `config.railwayProjectId` (see {@link ConnectorConfig.railwayProjectId}).
+  // Same precedent as `jace`: a free-text column, so this is a TS-union
+  // addition only — no migration.
+  "railway",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 
@@ -186,6 +194,21 @@ export interface ConnectorConfig {
    * (blocked on the deployed sidecar, #1038). See `jaceOwnsIMessageNotify`.
    */
   imessageNotify?: boolean;
+  /**
+   * Railway evidence connector (Task 7, debugging design spec): the
+   * workspace's Railway project id, scoping `lib/evidence/railway.ts`'s
+   * `deployments`/`deploymentLogs` GraphQL queries. Non-secret display
+   * field — the account/team token is the secret (this column's sibling).
+   * Saved via the connectors PUT (config path,
+   * `api/v1/workspaces/[workspaceId]/connectors/route.ts`), NOT the secret
+   * route — the connect card's expanded form posts token and project id to
+   * two different routes on connect (`connectors-panel.tsx`'s
+   * `SecretManage`). Absent until the workspace connects Railway; the
+   * railway adapter degrades `config_missing` when absent (its own
+   * doc-comment explains why that reason, not `bad_request`). Absent for
+   * every other provider.
+   */
+  railwayProjectId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

@@ -152,6 +152,25 @@ export function validateConnectorUpdate(
       out.imessageNotify = cfg.imessageNotify;
     }
 
+    // Railway evidence connector (Task 7): the workspace's Railway project
+    // id, saved via this same PATCH route alongside (not instead of) the
+    // secret PUT — see the schema doc-comment on
+    // ConnectorConfig.railwayProjectId. Same validation shape as chatId
+    // above (trim, non-empty, bounded length).
+    if (cfg.railwayProjectId !== undefined) {
+      if (typeof cfg.railwayProjectId !== "string") {
+        return { ok: false, error: "railwayProjectId must be a string" };
+      }
+      const trimmed = cfg.railwayProjectId.trim();
+      if (trimmed.length === 0) {
+        return { ok: false, error: "railwayProjectId must not be empty" };
+      }
+      if (trimmed.length > 64) {
+        return { ok: false, error: "railwayProjectId must be at most 64 characters" };
+      }
+      out.railwayProjectId = trimmed;
+    }
+
     value.config = out;
   }
 
@@ -211,6 +230,10 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     ...(stored?.inviteTeamSkippedAt
       ? { inviteTeamSkippedAt: stored.inviteTeamSkippedAt }
       : {}),
+    // Railway evidence connector (Task 7) — preserved across merges so a
+    // later config patch (e.g. re-saving the token) never strips the
+    // project id, same reasoning as chatId/channelId above.
+    ...(stored?.railwayProjectId ? { railwayProjectId: stored.railwayProjectId } : {}),
   };
 }
 

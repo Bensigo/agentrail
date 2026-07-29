@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
@@ -49,9 +49,9 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
       { params: params() }
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: "provider must be one of linear, figma, context7",
-    });
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/^provider must be one of /);
+    expect(body.error).not.toContain("telegram");
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
@@ -64,9 +64,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
       { params: params() }
     );
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: "provider must be one of linear, figma, context7",
-    });
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/^provider must be one of /);
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
@@ -75,9 +74,137 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
       params: params(),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: "provider must be one of linear, figma, context7",
-    });
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/^provider must be one of /);
     expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  // Task 7 (debugging design spec) — THE BEHAVIOR-DRIVING CHANGE:
+  // CREDENTIAL_PROVIDERS is now DERIVED from CONNECTOR_CATALOG's
+  // `connectMethod: "secret"` entries, not a hand-enumerated literal.
+  it("still rejects github — it is connectMethod: 'oauth' in the catalog, never a credential-based entry", async () => {
+    const res = await PUT(putReq({ provider: "github", secret: "ghp_x" }), {
+      params: params(),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/^provider must be one of /);
+    expect(body.error).not.toContain("github");
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("accepts railway at the allowlist gate — a non-UUID token still fails, but at the FORMAT gate (proves it passed the allowlist, not that it was rejected by it)", async () => {
+    const res = await PUT(putReq({ provider: "railway", secret: "not-a-uuid" }), {
+      params: params(),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    // NOT the allowlist-rejection message — the UUID-format message instead.
+    expect(body.error).not.toMatch(/^provider must be one of /);
+    expect(body.error).toBe("Railway tokens are UUIDs.");
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("the derived allowlist includes every real catalog kind so the error message stays accurate (linear, figma, context7, railway)", async () => {
+    const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
+      params: params(),
+    });
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("linear");
+    expect(body.error).toContain("figma");
+    expect(body.error).toContain("context7");
+    expect(body.error).toContain("railway");
+  });
+
+  // Disclosed nuance (see route.ts's own doc-comment): `factory`
+  // (availability: "internal") is ALSO connectMethod: "secret" in the
+  // catalog, so it technically clears THIS gate too — but it is still
+  // rejected one gate later, by validateConnectorCredential's own
+  // `case "factory"` (no real credential exists to validate). Never a
+  // behavior regression: factory never reaches the connect form at all
+  // (filtered out of the grid by projectConnectors).
+  it("factory clears the allowlist gate but is still rejected by the credential-format gate, never reaching setConnectorSecret", async () => {
+    const res = await PUT(putReq({ provider: "factory", secret: "anything" }), {
+      params: params(),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).not.toMatch(/^provider must be one of /);
+    expect(body.error).toBe("This connector is not credential-based.");
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Full railway connect flow — both gates run for real here (this route
+ * doesn't mock `./verify`), so the live-verify HTTP call is exercised via a
+ * `global.fetch` swap, the same idiom `verify.test.ts` uses.
+ */
+describe("PUT /connectors/secret — railway, full flow (Task 7)", () => {
+  const originalFetch = global.fetch;
+  const RAILWAY_TOKEN = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT railway accepted end to end: valid UUID + a live verify that succeeds → 200 connected:true, setConnectorSecret called with the trimmed token", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { me: { name: "Ada", email: "ada@example.com" } } }),
+    })) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "railway",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: true,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "railway", secret: `  ${RAILWAY_TOKEN}  ` }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "railway", RAILWAY_TOKEN);
+  });
+
+  it("PUT railway with a well-formed UUID but a live verify that Railway rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "railway", secret: RAILWAY_TOKEN }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Railway rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT railway with secret:null disconnects without ever calling verify/fetch", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "railway",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "railway", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "railway", null);
   });
 });

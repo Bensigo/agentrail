@@ -14,6 +14,7 @@ import {
   LinearBrand,
   FigmaBrand,
   Context7Brand,
+  RailwayBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -48,6 +49,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   figma: FigmaBrand,
   context7: Context7Brand,
   factory: FactoryGlyph,
+  railway: RailwayBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -57,9 +59,12 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   figma: "text-[#f24e1e]",
   context7: "text-[var(--gray-11)]",
   factory: "text-[var(--gray-11)]",
+  // Railway's mark is monochrome (like GitHub's) — the gray var, not a
+  // literal brand hex (Task 7 could not confirm one against public docs).
+  railway: "text-[var(--gray-12)]",
 };
 
-const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp"];
+const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
 
 // --------------------------------------------------------------------------- //
 // Trigger controls (#816) — folded into each connected ingest connector card.
@@ -253,9 +258,16 @@ function SecretManage({
 }) {
   const isConnected = connector.status === "connected";
   const [secret, setSecret] = useState("");
+  // Task 7: a generic second field, driven entirely by the catalog entry's
+  // `connect.extraConfigField` (Railway's project id today) — this component
+  // never hardcodes which provider needs one, so the NEXT provider needing a
+  // second field is catalog-only. See connector-helpers.ts's own doc-comment
+  // on ConnectorConnectMeta.extraConfigField.
+  const [extraValue, setExtraValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const meta = connector.connect;
+  const extraField = meta?.extraConfigField;
 
   const save = useCallback(
     async (body: { secret: string | null }) => {
@@ -274,7 +286,32 @@ function SecretManage({
           const b = await res.json().catch(() => ({}));
           throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
         }
+
+        // The extra field (when the catalog entry declares one) saves via
+        // the connectors CONFIG route, not this secret route — and only once
+        // the credential itself is accepted, so a rejected token never
+        // leaves an orphaned config value behind. Never attempted on a
+        // disconnect (`body.secret === null`).
+        if (body.secret !== null && extraField) {
+          const configRes = await fetch(
+            `/api/v1/workspaces/${workspaceId}/connectors`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                provider: connector.kind,
+                [extraField.key]: extraValue.trim(),
+              }),
+            }
+          );
+          if (!configRes.ok) {
+            const b = await configRes.json().catch(() => ({}));
+            throw new Error((b as { error?: string }).error ?? `HTTP ${configRes.status}`);
+          }
+        }
+
         setSecret("");
+        setExtraValue("");
         onChanged();
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Failed to save");
@@ -282,7 +319,7 @@ function SecretManage({
         setSaving(false);
       }
     },
-    [workspaceId, connector.kind, onChanged]
+    [workspaceId, connector.kind, extraField, extraValue, onChanged]
   );
 
   if (isConnected) {
@@ -309,6 +346,8 @@ function SecretManage({
     );
   }
 
+  const extraValueMissing = Boolean(extraField) && extraValue.trim().length === 0;
+
   return (
     <form
       onSubmit={(e) => {
@@ -316,6 +355,10 @@ function SecretManage({
         const check = validateConnectorCredential(connector.kind, secret);
         if (!check.ok) {
           setErr(check.error);
+          return;
+        }
+        if (extraField && extraValueMissing) {
+          setErr(`${extraField.label} is required.`);
           return;
         }
         save({ secret: secret.trim() });
@@ -335,9 +378,21 @@ function SecretManage({
       {meta?.credentialHint && (
         <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
       )}
+      {extraField && (
+        <input
+          aria-label={extraField.label}
+          type="text"
+          autoComplete="off"
+          placeholder={extraField.placeholder}
+          value={extraValue}
+          disabled={!canManage}
+          onChange={(e) => setExtraValue(e.target.value)}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      )}
       <button
         type="submit"
-        disabled={!canManage || saving || secret.trim().length === 0}
+        disabled={!canManage || saving || secret.trim().length === 0 || extraValueMissing}
         className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
       >
         {saving ? "Connecting…" : "Connect"}

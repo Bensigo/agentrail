@@ -6,6 +6,7 @@ import {
   type ConnectorProvider,
 } from "@agentrail/db-postgres";
 import {
+  CONNECTOR_CATALOG,
   validateConnectorCredential,
   type ConnectorKind,
 } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
@@ -25,14 +26,25 @@ import { verifyConnectorCredential } from "./verify";
  * dedicated webhook route is deleted for the same reason.
  *
  * Body: `{ provider, secret }`. A null / empty `secret` disconnects.
+ *
+ * Task 7 (debugging design spec, spec PR #1501) — THE BEHAVIOR-DRIVING
+ * CHANGE: the allowlist below is now DERIVED from `CONNECTOR_CATALOG`
+ * (every `connectMethod: "secret"` entry) instead of a hand-enumerated
+ * literal. This is the proof that "add a provider = catalog entry + adapter
+ * + credential pair" — Railway's catalog entry alone is what makes this
+ * route accept it; no second hand-list to remember. (One accepted, disclosed
+ * nuance: `factory`, Task 5's `availability: "internal"` entry, is ALSO
+ * `connectMethod: "secret"` and therefore technically passes THIS gate too —
+ * it is still rejected one gate later, by `validateConnectorCredential`'s
+ * own `case "factory"`, which has no real credential to validate. Not a
+ * behavior regression — factory never reaches the connect FORM in the first
+ * place (`projectConnectors` filters `availability: "internal"` out of the
+ * grid) — but worth naming since the derivation is now generic rather than
+ * a hand-picked list that happened to exclude it.)
  */
-
-/** Providers this route manages — the credential-based ones only. */
-const CREDENTIAL_PROVIDERS = new Set<ConnectorProvider>([
-  "linear",
-  "figma",
-  "context7",
-]);
+const CREDENTIAL_PROVIDERS = new Set(
+  CONNECTOR_CATALOG.filter((e) => e.connectMethod === "secret").map((e) => e.kind)
+);
 
 export async function PUT(
   request: NextRequest,
@@ -65,10 +77,10 @@ export async function PUT(
   const provider = body.provider;
   if (
     typeof provider !== "string" ||
-    !CREDENTIAL_PROVIDERS.has(provider as ConnectorProvider)
+    !CREDENTIAL_PROVIDERS.has(provider as ConnectorKind)
   ) {
     return NextResponse.json(
-      { error: "provider must be one of linear, figma, context7" },
+      { error: `provider must be one of ${Array.from(CREDENTIAL_PROVIDERS).join(", ")}` },
       { status: 400 }
     );
   }

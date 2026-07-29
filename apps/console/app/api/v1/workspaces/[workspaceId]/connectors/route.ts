@@ -68,19 +68,23 @@ export async function GET(
     // module doc-comment above for why this is an OR, not a replacement.
     const githubConnected = githubInstallation !== null || repos.length > 0;
 
-    // Project a credential (mcp) connector from its stored row: connected iff
-    // a credential is stored (`hasSecret`), with the folded-in trigger config.
-    // The raw secret never leaves the DB layer.
+    // Project a credential (mcp/observability) connector from its stored
+    // row: connected iff a credential is stored (`hasSecret`), with the
+    // folded-in trigger config. The raw secret never leaves the DB layer.
     const secretConfig = (
       // Narrower than ConnectorConfigInput["kind"] (== ConnectorKind)
-      // deliberately: this helper's only call sites are the three
-      // secret-connected MCP kinds below, and `byProvider` is a
-      // `Map<ConnectorProvider, …>` (the DB-level enum, which does not and
-      // will never include Task 5's internal-only `"factory"` — see
-      // `runner/evidence/route.ts`'s own doc-comment on that decoupling).
-      // Widening this to the full `ConnectorKind` union would let a future
-      // caller pass `"factory"` here and mis-key `byProvider.get(...)`.
-      kind: "linear" | "figma" | "context7"
+      // deliberately: this helper's call sites are the credential-connected
+      // kinds below, and `byProvider` is a `Map<ConnectorProvider, …>` (the
+      // DB-level enum, which does not and will never include Task 5's
+      // internal-only `"factory"` — see `runner/evidence/route.ts`'s own
+      // doc-comment on that decoupling). Widening this to the full
+      // `ConnectorKind` union would let a future caller pass `"factory"`
+      // here and mis-key `byProvider.get(...)`. Task 7 widens it to include
+      // `"railway"` — now a real `ConnectorProvider` member (see
+      // `schema/connectors.ts`'s `connectorProviderEnum`), so this stays a
+      // deliberate, hand-picked list of REAL provider rows, not a blanket
+      // `ConnectorKind`.
+      kind: "linear" | "figma" | "context7" | "railway"
     ): ConnectorConfigInput => {
       const row = byProvider.get(kind);
       return {
@@ -90,6 +94,10 @@ export async function GET(
         enabled: row?.enabled,
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
+        // Task 7: harmless (always undefined→null) for linear/figma/context7
+        // rows, whose ConnectorConfig never carries this field — populated
+        // only for the railway row.
+        railwayProjectId: row?.config.railwayProjectId ?? null,
       };
     };
 
@@ -122,6 +130,12 @@ export async function GET(
       secretConfig("linear"),
       secretConfig("figma"),
       secretConfig("context7"),
+      // Observability (Task 7) — same connected-once-credentialed shape;
+      // without this row the railway card would always project
+      // disconnected regardless of a stored token (the exact hand-list gap
+      // this task's brief calls out — see secret/route.ts's own
+      // "THE BEHAVIOR-DRIVING CHANGE" doc-comment for its twin).
+      secretConfig("railway"),
     ];
     return NextResponse.json({
       connectors: projectConnectors(configs),
@@ -168,6 +182,7 @@ export async function PUT(
     enabled?: unknown;
     triggerLabel?: unknown;
     pollIntervalSeconds?: unknown;
+    railwayProjectId?: unknown;
   };
   try {
     body = await request.json();
@@ -189,6 +204,10 @@ export async function PUT(
   if (body.triggerLabel !== undefined) config.triggerLabel = body.triggerLabel;
   if (body.pollIntervalSeconds !== undefined)
     config.pollIntervalSeconds = body.pollIntervalSeconds;
+  // Task 7: the railway connect card's project-id field — see
+  // connector-helpers.ts's ConnectorConnectMeta.extraConfigField doc-comment
+  // for why this saves here (config path) rather than the secret route.
+  if (body.railwayProjectId !== undefined) config.railwayProjectId = body.railwayProjectId;
   if (Object.keys(config).length > 0)
     update.config = config as ConnectorUpdate["config"];
 

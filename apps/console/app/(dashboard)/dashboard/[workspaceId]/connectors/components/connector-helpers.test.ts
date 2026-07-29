@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CONNECTOR_CATALOG,
+  CONNECTOR_TYPE_META,
   DEFAULT_INGEST_LABEL,
   DEFAULT_POLL_INTERVAL_SECONDS,
   activeHeartbeatConnectors,
@@ -13,25 +14,28 @@ import {
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("returns one row per catalog entry, grouped issue-source → mcp", () => {
+  it("returns one row per catalog entry, grouped issue-source → mcp → observability", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([
       "github",
       "linear",
       "figma",
       "context7",
+      "railway",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
-    // Queue — Linear via its real-time webhook); only Figma / Context7 remain
+    // Queue — Linear via its real-time webhook); Figma / Context7 stay
     // tools-only `mcp`. Gateways-page T4 removed the third group, `channel`
     // (Discord / Slack / Telegram) — those now live on their own Gateways
-    // surface.
+    // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
+    // for debugging investigations, no ingest).
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
     ]);
   });
 
@@ -111,20 +115,29 @@ describe("projectConnectors", () => {
   });
 
   it("filters availability: 'internal' entries out of the grid entirely (evidence-only providers like Task 5's factory never render as a connector card)", () => {
-    // No real catalog entry is `internal` yet (Task 5 adds the first one) — an
-    // injected catalog proves the filter mechanism itself, via
-    // projectConnectors' own optional (test-only) catalog parameter.
+    // Task 5's real `factory` entry is already `internal` in CONNECTOR_CATALOG
+    // (filtered below without any synthetic override) — this test additionally
+    // makes context7 internal too, via projectConnectors' own optional
+    // (test-only) catalog parameter, to prove the filter mechanism generically
+    // rather than relying on factory alone.
     const withInternal: ConnectorCatalogEntry[] = CONNECTOR_CATALOG.map((entry) =>
       entry.kind === "context7" ? { ...entry, availability: "internal" as const } : entry
     );
     const rows = projectConnectors([], withInternal);
     expect(rows.find((r) => r.kind === "context7")).toBeUndefined();
-    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma"]);
+    expect(rows.find((r) => r.kind === "factory")).toBeUndefined();
+    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma", "railway"]);
   });
 
   it("the default (no injected catalog) call still projects every real catalog entry — the optional param is additive, not a behavior change", () => {
     const rows = projectConnectors([]);
-    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma", "context7"]);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "github",
+      "linear",
+      "figma",
+      "context7",
+      "railway",
+    ]);
   });
 });
 
@@ -173,6 +186,14 @@ describe("capabilitySummary", () => {
       expect(capabilitySummary(e.capabilities)).toBe("Tools");
     }
   });
+
+  // Task 7: railway has no ingest/postResult/notify/tools — only `evidence`,
+  // which capabilitySummary doesn't render at all — so its card header must
+  // fall back to the em-dash placeholder, same as any other all-false input.
+  it("summarizes railway (evidence-only) as the em-dash placeholder — no ingest/postResult/notify/tools", () => {
+    const railway = CONNECTOR_CATALOG.find((c) => c.kind === "railway")!;
+    expect(capabilitySummary(railway.capabilities)).toBe("—");
+  });
 });
 
 describe("connector catalog — issue-source / mcp entries", () => {
@@ -217,5 +238,73 @@ describe("validateConnectorCredential", () => {
       ok: false,
       error: "This connector is not credential-based.",
     });
+  });
+
+  // Task 7: Railway tokens (Account/Team) are UUIDs — confirmed against
+  // Railway's public API docs (query { me { name email } } over
+  // https://backboard.railway.com/graphql/v2, Authorization: Bearer <token>;
+  // the token itself is displayed as a UUID at railway.com/account/tokens).
+  // A generic UUID SHAPE regex, not RFC4122-version-specific — Railway does
+  // not document which UUID version it mints, so this validates the
+  // 8-4-4-4-12 hex shape only, same "cheap format gate, not a claim of
+  // cryptographic correctness" spirit as the other credential checks here.
+  it("accepts a UUID-shaped railway token", () => {
+    expect(
+      validateConnectorCredential("railway", "3fa85f64-5717-4562-b3fc-2c963f66afa6")
+    ).toEqual({ ok: true });
+    // Case-insensitive — GraphQL/JSON tokens are not case-normalized by convention.
+    expect(
+      validateConnectorCredential("railway", "3FA85F64-5717-4562-B3FC-2C963F66AFA6")
+    ).toEqual({ ok: true });
+  });
+
+  it("rejects a non-UUID-shaped railway token", () => {
+    expect(validateConnectorCredential("railway", "not-a-uuid").ok).toBe(false);
+    expect(validateConnectorCredential("railway", "lin_api_abc123").ok).toBe(false);
+    // One character short of a valid UUID.
+    expect(
+      validateConnectorCredential("railway", "3fa85f64-5717-4562-b3fc-2c963f66afa").ok
+    ).toBe(false);
+  });
+});
+
+describe("CONNECTOR_TYPE_META — observability section (Task 7)", () => {
+  it("has a label and description for the new observability section", () => {
+    expect(CONNECTOR_TYPE_META.observability.label).toBe("Observability");
+    expect(CONNECTOR_TYPE_META.observability.description.length).toBeGreaterThan(0);
+  });
+});
+
+describe("connector catalog — railway entry (Task 7)", () => {
+  const railway = CONNECTOR_CATALOG.find((c) => c.kind === "railway")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(railway.type).toBe("observability");
+    expect(railway.connectMethod).toBe("secret");
+    expect(railway.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities changes + search_events, and no ingest/postResult/notify", () => {
+    expect(railway.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["changes", "search_events"],
+    });
+  });
+
+  it("declares an extraConfigField for the Railway project id, driving the connect form's second input", () => {
+    expect(railway.connect?.extraConfigField).toEqual({
+      key: "railwayProjectId",
+      label: expect.any(String),
+      placeholder: expect.any(String),
+    });
+  });
+
+  it("every other catalog entry declares no extraConfigField (Task 7 is the first provider needing one)", () => {
+    for (const entry of CONNECTOR_CATALOG) {
+      if (entry.kind === "railway") continue;
+      expect(entry.connect?.extraConfigField).toBeUndefined();
+    }
   });
 });

@@ -1,9 +1,12 @@
-// #1481 — instructions.md's "Reviewing a pull request" section IS the
-// mechanism that stops root from upgrading the reviewer's verdict into an
-// approval. Like fetch-work-status-instructions.test.mjs (whose header
-// explains the convention), this app's prose carries functional weight the
-// way code usually does: delete these rules and every other test still
-// passes, silently re-enabling the bug.
+// #1481 — root's `agent/instructions.md` "Reviewing a pull request"
+// section IS the mechanism that stops root from upgrading the reviewer's
+// verdict into an approval. The reviewer subagent's own
+// `agent/subagents/reviewer/instructions.md` carries the matching charter
+// for AC coverage, keeping it diff-honest rather than confabulated. Like
+// fetch-work-status-instructions.test.mjs (whose header explains the
+// convention), both files' prose carries functional weight the way code
+// usually does: delete a rule and every other test still passes, silently
+// re-enabling the bug it guards.
 //
 // The bug this guards, observed in prod 2026-07-27 on PR #1478: the reviewer
 // returned the on-contract `verdict: "reviewed"` with a single minor

@@ -5,18 +5,24 @@ vi.mock("@agentrail/db-postgres", () => ({
   getApprovalById: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   stampPublishedIssueUrl: vi.fn(),
+  hasInvestigationIssueLink: vi.fn(),
+  linkInvestigationIssue: vi.fn(),
 }));
 
-import { POST } from "./route";
+import { POST, parseGithubIssueUrl, stampInvestigationIssueLink } from "./route";
 import {
   getApprovalById,
   getJaceSessionByEveSessionId,
   stampPublishedIssueUrl,
+  hasInvestigationIssueLink,
+  linkInvestigationIssue,
 } from "@agentrail/db-postgres";
 
 const mockGetById = vi.mocked(getApprovalById);
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockStamp = vi.mocked(stampPublishedIssueUrl);
+const mockHasLink = vi.mocked(hasInvestigationIssueLink);
+const mockLink = vi.mocked(linkInvestigationIssue);
 
 const NOW = new Date("2026-07-19T00:00:00.000Z");
 const REAL_URL = "https://github.com/acme/widgets/issues/42";
@@ -78,6 +84,8 @@ beforeEach(() => {
   mockGetById.mockResolvedValue(MOCK_APPROVAL as never);
   mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
   mockStamp.mockResolvedValue("stamped" as never);
+  mockHasLink.mockResolvedValue(false);
+  mockLink.mockResolvedValue(undefined as never);
 });
 
 afterEach(() => {
@@ -303,6 +311,11 @@ describe("POST /api/v1/runner/approvals/[id]/published — approved-only + idemp
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true });
+    // Task 12 regression: MOCK_APPROVAL's toolInput carries no _investigation
+    // marker — the common case for every issue that isn't investigation-linked
+    // — so the link write must never fire.
+    expect(mockHasLink).not.toHaveBeenCalled();
+    expect(mockLink).not.toHaveBeenCalled();
   });
 
   it("idempotent: a second stamp with the SAME url still 200s (stampPublishedIssueUrl itself reports 'stamped' on a same-value replay)", async () => {
@@ -330,5 +343,123 @@ describe("POST /api/v1/runner/approvals/[id]/published — approved-only + idemp
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
 
     expect(res.status).toBe(409);
+  });
+});
+
+describe("POST /api/v1/runner/approvals/[id]/published — Task 12 investigation issue-link stamping (result-time)", () => {
+  it("writes an investigation_issue_links row when the just-stamped approval's toolInput carries a server-computed _investigation marker", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: { id: "inv-1", role: "mitigative" } },
+    } as never);
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res.status).toBe(200);
+    expect(mockHasLink).toHaveBeenCalledWith("inv-1", "acme/widgets", 42);
+    expect(mockLink).toHaveBeenCalledWith("inv-1", "acme/widgets", 42, "mitigative");
+  });
+
+  it("parses repo and issue number correctly, and carries the preventative role through unchanged", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: { id: "inv-2", role: "preventative" } },
+    } as never);
+
+    await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(mockLink).toHaveBeenCalledWith("inv-2", "acme/widgets", 42, "preventative");
+  });
+
+  it("idempotent: a second publish call for the same approval writes the link only ONCE — hasInvestigationIssueLink guards the insert", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: { id: "inv-1", role: "mitigative" } },
+    } as never);
+    mockHasLink.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const res1 = await POST(req({ url: REAL_URL }), params("approval-1"));
+    const res2 = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(mockLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("a malformed _investigation marker (missing role) is silently skipped — no link write, no throw, still 200", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: { id: "inv-1" } },
+    } as never);
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res.status).toBe(200);
+    expect(mockLink).not.toHaveBeenCalled();
+  });
+
+  it("a malformed _investigation marker (not an object) is silently skipped — no link write, no throw, still 200", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: "inv-1" },
+    } as never);
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res.status).toBe(200);
+    expect(mockLink).not.toHaveBeenCalled();
+  });
+
+  it("BEST-EFFORT: a store failure while checking/writing the link warns and still 200s — the issue itself was already created, never fails the request", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolInput: { title: "x", _investigation: { id: "inv-1", role: "mitigative" } },
+    } as never);
+    mockHasLink.mockRejectedValue(new Error("db down"));
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ ok: true });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+describe("parseGithubIssueUrl (Task 12) — exported for direct unit coverage of the non-matching-URL branch, which is defensively unreachable via a live POST since the outer GITHUB_ISSUE_URL_RE already gates body.url to the identical canonical shape before this endpoint ever reaches the link-write step", () => {
+  it("parses {owner}/{repo} and the issue number from the canonical shape", () => {
+    expect(parseGithubIssueUrl(REAL_URL)).toEqual({ repo: "acme/widgets", issueNumber: 42 });
+  });
+
+  it("returns null for a non-canonical shape (wrong host)", () => {
+    expect(parseGithubIssueUrl("https://example.com/acme/widgets/issues/42")).toBeNull();
+  });
+
+  it("returns null for a non-URL string", () => {
+    expect(parseGithubIssueUrl("not a url at all")).toBeNull();
+  });
+});
+
+describe("stampInvestigationIssueLink (Task 12) — exported for direct unit coverage", () => {
+  it("URL non-matching: warns and resolves without throwing, never calls linkInvestigationIssue", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      stampInvestigationIssueLink(
+        { _investigation: { id: "inv-1", role: "mitigative" } },
+        "https://example.com/not-a-github-issue-url"
+      )
+    ).resolves.toBeUndefined();
+
+    expect(warnSpy).toHaveBeenCalled();
+    expect(mockLink).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("no _investigation marker at all: resolves without throwing, never calls linkInvestigationIssue", async () => {
+    await expect(stampInvestigationIssueLink({ title: "x" }, REAL_URL)).resolves.toBeUndefined();
+    expect(mockLink).not.toHaveBeenCalled();
   });
 });

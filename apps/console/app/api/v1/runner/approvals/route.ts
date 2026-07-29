@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
+  getInvestigationById,
   recordApprovalRequest,
 } from "@agentrail/db-postgres";
+import type { InvestigationIssueRole } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
 import {
@@ -127,10 +129,20 @@ import {
  */
 async function enrichCreateIssueToolInput(
   toolInput: Record<string, unknown>,
-  workspaceId: string | null | undefined
+  workspaceId: string | null | undefined,
+  anchoredInvestigationId: string | null | undefined
 ): Promise<Record<string, unknown>> {
-  const { _brief: _ignoredCallerSuppliedBrief, ...rest } = toolInput;
+  // Both reserved keys are stripped in the SAME destructure, unconditionally,
+  // before either enrichment computation runs — see the two INJECTION GUARD
+  // paragraphs above (this one for `_brief`, Task 12's below for
+  // `_investigation`) for why neither can ever survive from caller input.
+  const {
+    _brief: _ignoredCallerSuppliedBrief,
+    _investigation: _ignoredCallerSuppliedInvestigation,
+    ...rest
+  } = toolInput;
 
+  let withBrief: Record<string, unknown>;
   try {
     const title = typeof rest["title"] === "string" ? rest["title"] : "";
     const whatToBuild =
@@ -150,13 +162,104 @@ async function enrichCreateIssueToolInput(
       acceptanceCriteria,
       ...(modelSelection ? { modelSelection } : {}),
     });
-    return { ...rest, _brief: brief };
+    withBrief = { ...rest, _brief: brief };
   } catch (err) {
     console.error(
       "[runner/approvals] composeChatBornBrief failed; recording this create_issue approval WITHOUT an alignment brief (falls back to the pre-#1274-PR② render + a later redundant alignment confirm):",
       err
     );
-    return rest;
+    withBrief = rest;
+  }
+
+  // Task 12: independent of (and unaffected by) whatever happened above —
+  // see stampInvestigationLink's own doc-comment below for the injection
+  // guard / tenant re-check / role-parsing rules.
+  return stampInvestigationLink(withBrief, workspaceId, anchoredInvestigationId);
+}
+
+/**
+ * Task 12 (debugging design spec, spec PR #1501 — investigation issue-link
+ * stamping): when `toolName === "create_issue"` AND the requesting session
+ * is anchored to an investigation (`jace_sessions.anchored_investigation_id`,
+ * read straight off the SAME session row `getJaceSessionByEveSessionId`
+ * already fetched in `POST` below — no second query to find out whether an
+ * anchor exists, mirroring `runner/investigations`' own `anchor` mode), this
+ * route ALSO enriches the stored `toolInput` with a reserved `_investigation`
+ * key: `{ id, role }`. This is the server-side half of the handoff the debug
+ * skill's "Handoff" section describes — Jace states intent via a `Role:
+ * mitigative|preventative` line in the issue draft's `requiredContext`; the
+ * RESULT half (turning this stamp into a durable `investigation_issue_links`
+ * row once the issue actually exists) lives in
+ * `POST .../approvals/[id]/published` — see that route's own doc-comment.
+ * `brief_work_links` shipped with no production caller and stayed
+ * permanently dead (see that table's own doc-comment) — this seam exists
+ * specifically so the investigation twin does not repeat that: the link is
+ * always server-computed here, never trusted as a model-asserted claim.
+ *
+ * INJECTION GUARD (same non-negotiable posture as `_brief` above — mirrored
+ * deliberately, not just similarly): any incoming `_investigation` key is
+ * unconditionally stripped before either enrichment runs, in the SAME
+ * destructure as `_brief`'s own strip (see `enrichCreateIssueToolInput`) —
+ * Jace/the model can never author this key; only this server-computed value
+ * may ever occupy it. This holds no matter WHY a stamp doesn't happen —
+ * unanchored session, cross-workspace anchor, a dangling anchor whose target
+ * no longer resolves, or an unexpected throw below — every one of those
+ * paths returns `toolInput` with NO `_investigation` key at all, never the
+ * caller's own value and never a degraded placeholder.
+ *
+ * TENANT RE-CHECK (T3/T4 precedent: `runner/investigations`' `anchor` mode
+ * and `runner/evidence`'s own anchor read do the identical check): the
+ * session's `anchoredInvestigationId` names an id, but `getInvestigationById`
+ * is NOT workspace-scoped (Task 2: "the id IS the security boundary"), so a
+ * stale or foreign anchor is only ever caught by re-checking
+ * `investigation.workspaceId === workspaceId` HERE, after the fetch. A
+ * mismatch is treated exactly like "no anchor at all" — never an error,
+ * never a partial stamp.
+ *
+ * ROLE PARSING: the debug skill's issue drafts carry an explicit
+ * `Role: mitigative` or `Role: preventative` line in `requiredContext`
+ * (`apps/jace/agent/skills/debug/SKILL.md` § Handoff), scanned by
+ * `parseIssueRoleFromRequiredContext`. Absent or malformed (no line, or a
+ * value other than exactly `mitigative`/`preventative`) defaults to
+ * `"preventative"` — the safe default: a preventative issue is a plain
+ * follow-up, while a mitigative one implies a fix-verification dispatch
+ * downstream (skill § Handoff: "after a mitigative fix ships, offer to
+ * verify it") that should only fire when that intent was actually stated.
+ */
+const ISSUE_ROLE_LINE_RE = /^Role:\s*(mitigative|preventative)\s*$/im;
+
+function parseIssueRoleFromRequiredContext(
+  requiredContext: unknown
+): InvestigationIssueRole {
+  if (typeof requiredContext !== "string") return "preventative";
+  const match = requiredContext.match(ISSUE_ROLE_LINE_RE);
+  const role = match?.[1]?.toLowerCase();
+  return role === "mitigative" || role === "preventative" ? role : "preventative";
+}
+
+async function stampInvestigationLink(
+  toolInput: Record<string, unknown>,
+  workspaceId: string | null | undefined,
+  anchoredInvestigationId: string | null | undefined
+): Promise<Record<string, unknown>> {
+  if (!anchoredInvestigationId) return toolInput;
+
+  try {
+    const anchored = await getInvestigationById(anchoredInvestigationId);
+    if (!anchored || anchored.investigation.workspaceId !== workspaceId) {
+      // Stale/foreign anchor — treated identically to "no anchor at all"
+      // (T3/T4 precedent, see this function's own doc-comment above). Never
+      // an error, never a partial stamp.
+      return toolInput;
+    }
+    const role = parseIssueRoleFromRequiredContext(toolInput["requiredContext"]);
+    return { ...toolInput, _investigation: { id: anchored.investigation.id, role } };
+  } catch (err) {
+    console.error(
+      "[runner/approvals] investigation link stamping failed; recording this create_issue approval WITHOUT an _investigation stamp (the issue itself, and any _brief enrichment, are unaffected):",
+      err
+    );
+    return toolInput;
   }
 }
 
@@ -261,9 +364,16 @@ export async function POST(request: NextRequest) {
   // session.workspaceId (#1338 PR②) may be null for an intro/chat-identity
   // -only session — enrichCreateIssueToolInput/resolveModelSelectionForBrief
   // both treat that as "no workspace to scope model-selection learning to."
+  // session.anchoredInvestigationId (Task 12) is read straight off this SAME
+  // row — see stampInvestigationLink's own doc-comment for the tenant
+  // re-check that follows.
   const toolInput =
     body.toolName === "create_issue"
-      ? await enrichCreateIssueToolInput(body.toolInput, session.workspaceId ?? undefined)
+      ? await enrichCreateIssueToolInput(
+          body.toolInput,
+          session.workspaceId ?? undefined,
+          session.anchoredInvestigationId
+        )
       : body.toolInput;
 
   const { approval, created } = await recordApprovalRequest({

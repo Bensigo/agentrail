@@ -2803,7 +2803,11 @@ export {
 // is the evidence route's own writer — the ONLY function allowed to insert
 // `kind: 'evidence'`. `computeVerdictEligibility`/`recordVerdict` back
 // `POST .../investigations/verdict`; `linkInvestigations`/
-// `linkInvestigationIssue` record recurrence edges and handoff results.
+// `linkInvestigationIssue` record recurrence edges and handoff results;
+// `hasInvestigationIssueLink` (Task 12) is the approvals seam's own
+// idempotency guard ahead of `linkInvestigationIssue`, since
+// `POST .../approvals/[id]/published` can genuinely be hit twice for the
+// same approval.
 // `updateInvestigationItemAsHuman`/`createInvestigationItemAsHuman`/
 // `deleteInvestigationItem` are the console's human-edit write path — the gap
 // `patchInvestigationItems` deliberately leaves open, mirroring
@@ -2820,6 +2824,7 @@ export {
   recordVerdict,
   linkInvestigations,
   linkInvestigationIssue,
+  hasInvestigationIssueLink,
   updateInvestigationItemAsHuman,
   createInvestigationItemAsHuman,
   deleteInvestigationItem,

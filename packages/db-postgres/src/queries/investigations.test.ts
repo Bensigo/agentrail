@@ -149,6 +149,7 @@ import {
   recordVerdict,
   linkInvestigations,
   linkInvestigationIssue,
+  hasInvestigationIssueLink,
   updateInvestigationItemAsHuman,
   createInvestigationItemAsHuman,
   deleteInvestigationItem,
@@ -801,6 +802,18 @@ describe("linkInvestigationIssue", () => {
       issueNumber: 42,
       role: "mitigative",
     });
+  });
+});
+
+describe("hasInvestigationIssueLink", () => {
+  it("returns false when no link row matches this (investigationId, repo, issueNumber) triple", async () => {
+    mockState.selectQueue.push([]);
+    expect(await hasInvestigationIssueLink("inv-1", "acme/widgets", 42)).toBe(false);
+  });
+
+  it("returns true when a link row already exists — the approvals seam's idempotency guard (Task 12)", async () => {
+    mockState.selectQueue.push([{ id: "link-1" }]);
+    expect(await hasInvestigationIssueLink("inv-1", "acme/widgets", 42)).toBe(true);
   });
 });
 

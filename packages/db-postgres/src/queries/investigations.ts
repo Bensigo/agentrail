@@ -706,6 +706,37 @@ export async function linkInvestigationIssue(
   await db.insert(investigationIssueLinks).values({ investigationId, repo, issueNumber, role });
 }
 
+/**
+ * Whether a link row already exists for this exact
+ * `(investigationId, repo, issueNumber)` triple — the idempotency guard
+ * `POST /api/v1/runner/approvals/[id]/published` (Task 12) checks before
+ * calling {@link linkInvestigationIssue}. That endpoint can genuinely be hit
+ * twice for the same approval: `stampPublishedIssueUrl`'s own "stamped"
+ * outcome covers BOTH a fresh stamp and an idempotent replay of the exact
+ * same url (see that function's doc-comment in `queries/jace_sessions.ts`),
+ * so without this check a retried publish call would insert a second,
+ * duplicate link row rather than reflecting the fact that this handoff was
+ * already recorded.
+ */
+export async function hasInvestigationIssueLink(
+  investigationId: string,
+  repo: string,
+  issueNumber: number
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: investigationIssueLinks.id })
+    .from(investigationIssueLinks)
+    .where(
+      and(
+        eq(investigationIssueLinks.investigationId, investigationId),
+        eq(investigationIssueLinks.repo, repo),
+        eq(investigationIssueLinks.issueNumber, issueNumber)
+      )
+    )
+    .limit(1);
+  return !!row;
+}
+
 export interface UpdateInvestigationItemAsHumanInput {
   kind?: InvestigationItemKind;
   body?: string;

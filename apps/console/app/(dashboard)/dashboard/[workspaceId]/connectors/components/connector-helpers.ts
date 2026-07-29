@@ -212,7 +212,17 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     description:
       "Ingest labeled issues into the Issue Queue and post run results back on the issue.",
     availability: "available",
-    capabilities: { ingest: true, postResult: true, notify: false },
+    capabilities: {
+      ingest: true,
+      postResult: true,
+      notify: false,
+      // Task 6: merged PRs + Actions workflow runs as "changes" evidence.
+      // Read by `evidenceCapabilities` (`lib/evidence/registry.ts`) — see
+      // that file's own doc-comment for why an oauth entry like this one
+      // needs its own `connectMethod === "oauth"` credentialed branch
+      // (this row never carries a stored `connectors.secret`).
+      evidence: ["changes"],
+    },
   },
   {
     kind: "linear",

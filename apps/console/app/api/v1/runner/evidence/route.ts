@@ -141,6 +141,8 @@ import { captureEvidence } from "../../../../../lib/evidence/envelope";
 // outside a test file that imports the adapter directly. Task 6/7 add their
 // own sibling imports here the same way.
 import "../../../../../lib/evidence/factory";
+// Task 6: same self-registration idiom for the `github` adapter.
+import "../../../../../lib/evidence/github";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

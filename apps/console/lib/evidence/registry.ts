@@ -40,6 +40,13 @@ export interface EvidenceCatalogEntry {
   kind: string;
   /** `"internal"` short-circuits the credentialed check entirely — see below. Absent/`"available"`/`"planned"` all go through the normal enabled+hasSecret check. */
   availability?: string;
+  /**
+   * Task 6 fix: `"oauth"` changes WHICH connector-row fields count as
+   * credentialed — see {@link evidenceCapabilities}'s own doc-comment for
+   * why. Absent/`"secret"` (every provider before Task 6) keeps the
+   * original enabled+hasSecret check untouched.
+   */
+  connectMethod?: string;
   capabilities?: {
     evidence?: EvidenceVerb[];
   };
@@ -55,11 +62,32 @@ export interface EvidenceConnectorRow {
 /**
  * Derive, per verb, which providers are BOTH declared (the catalog says this
  * provider can answer this verb) AND credentialed (the workspace has actually
- * connected it): `declared ∩ (enabled AND hasSecret)` — EXCEPT an
- * `availability: "internal"` catalog entry (Task 5's `factory`: an adapter
- * over this console's OWN data, nothing to connect), which short-circuits
- * that check entirely and is always considered credentialed, needing no
- * connector row at all.
+ * connected it): `declared ∩ (enabled AND hasSecret)` — with two exceptions:
+ *
+ *   - `availability: "internal"` (Task 5's `factory`: an adapter over this
+ *     console's OWN data, nothing to connect) short-circuits the check
+ *     entirely and is always considered credentialed, needing no connector
+ *     row at all.
+ *   - `connectMethod: "oauth"` (Task 6 fix, first exercised by `github`): an
+ *     oauth-connected provider's credential is NEVER a `connectors.secret`
+ *     value — GitHub's is a per-installation token minted fresh per call
+ *     (`getInstallationToken`, keyed off `workspaces.githubInstallationId`),
+ *     so its connector row's `hasSecret` is structurally ALWAYS `false` (no
+ *     call site ever calls `setConnectorSecret` for it — see
+ *     `github.ts`'s own doc-comment and `connector-helpers.ts`'s
+ *     `isConnected` helper, which already draws this same oauth/secret
+ *     distinction for the connectors PAGE). Under the plain `enabled AND
+ *     hasSecret` formula, an oauth provider could therefore NEVER be
+ *     credentialed, no matter how thoroughly connected — a real gap between
+ *     T4 (which only ever exercised secret-based/internal rows) and T6 (the
+ *     first EXTERNAL oauth evidence provider). The fix: for an entry whose
+ *     catalog `connectMethod` is `"oauth"`, `enabled` ALONE is the
+ *     credentialed signal (the row existing and being enabled at all only
+ *     happens once the workspace has actually connected the provider — see
+ *     the row's own `upsertConnector(..., "github", { enabled: true })` call
+ *     sites). `connectMethod: "secret"` (every provider before Task 6) and an
+ *     absent `connectMethod` both keep the ORIGINAL enabled+hasSecret check
+ *     untouched — this is a minimal, additive branch, not a rewrite.
  *
  * The result ALWAYS carries every {@link EvidenceVerb} as a key, even ones
  * with zero providers (`caps.probe` is `[]`, not absent) — "family-nested
@@ -83,7 +111,10 @@ export function evidenceCapabilities(
 
     const row = rowByProvider.get(entry.kind);
     const credentialed =
-      entry.availability === "internal" || Boolean(row?.enabled && row?.hasSecret);
+      entry.availability === "internal" ||
+      (entry.connectMethod === "oauth"
+        ? Boolean(row?.enabled)
+        : Boolean(row?.enabled && row?.hasSecret));
     if (!credentialed) continue;
 
     for (const verb of declaredVerbs) {

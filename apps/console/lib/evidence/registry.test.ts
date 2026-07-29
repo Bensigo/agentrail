@@ -67,23 +67,24 @@ describe("evidenceCapabilities", () => {
     expect(caps.search_events).toEqual(["factory"]);
   });
 
-  it("github and linear (non-evidence catalog entries) contribute to no verb — factory (internal) is the only real entry that does", () => {
-    // github/linear carry no `evidence` field (Task 6/7 add real EXTERNAL
-    // providers) — this is that "declared nothing" case for THEM
-    // specifically, using the real catalog directly. factory (Task 5,
-    // availability: "internal") is unconditionally credentialed regardless
-    // of the connector rows passed here, so changes/search_events are
-    // excluded from the "contributes to no verb" claim — see the dedicated
-    // test below.
+  it("linear (non-evidence catalog entry) contributes to no verb; github (Task 6) now contributes to 'changes' — factory (internal) covers changes/search_events regardless", () => {
+    // linear carries no `evidence` field (Task 7 adds it) — this is the
+    // "declared nothing" case for it specifically, using the real catalog
+    // directly. github NOW declares `evidence: ["changes"]` (Task 6) — its
+    // row here is `enabled: true, hasSecret: false`, the SHAPE an oauth
+    // connector row actually has (see the oauth-credentialed describe block
+    // below for why `hasSecret` is structurally always false for it).
+    // factory (Task 5, availability: "internal") is unconditionally
+    // credentialed regardless of the connector rows passed here.
     const caps = evidenceCapabilities(CONNECTOR_CATALOG, [
-      { provider: "github", enabled: true, hasSecret: true },
+      { provider: "github", enabled: true, hasSecret: false },
       { provider: "linear", enabled: true, hasSecret: true },
     ]);
     for (const verb of EVIDENCE_VERBS) {
       if (verb === "changes" || verb === "search_events") continue;
       expect(caps[verb]).toEqual([]);
     }
-    expect(caps.changes).toEqual(["factory"]);
+    expect(caps.changes.slice().sort()).toEqual(["factory", "github"]);
     expect(caps.search_events).toEqual(["factory"]);
   });
 
@@ -148,6 +149,74 @@ describe("evidenceCapabilities", () => {
       [{ provider: "factory", enabled: false, hasSecret: false }]
     );
     expect(caps.changes).toContain("factory");
+  });
+});
+
+/**
+ * Task 6 fix: `evidenceCapabilities` previously required `hasSecret` for
+ * EVERY non-internal provider (`Boolean(row?.enabled && row?.hasSecret)`).
+ * An oauth-connected provider's credential is never a `connectors.secret`
+ * value (github's is a per-installation token minted fresh per call — see
+ * `github.ts`'s own doc-comment and `github-app-token.ts`), so its connector
+ * row's `hasSecret` is structurally ALWAYS false: under the old formula,
+ * github could never have been credentialed no matter how connected the
+ * workspace was — a real gap between T4 (only ever exercised secret-based/
+ * internal rows) and T6 (the first EXTERNAL oauth evidence provider). These
+ * tests pin the minimal fix: a catalog entry's `connectMethod === "oauth"`
+ * makes `enabled` ALONE the credentialed signal; every other entry
+ * (`connectMethod: "secret"` or absent) keeps the original check untouched.
+ */
+describe("evidenceCapabilities — oauth-connected providers (Task 6 fix)", () => {
+  it("an oauth entry is credentialed by `enabled` alone — hasSecret:false does not exclude it", () => {
+    const caps = evidenceCapabilities(
+      [{ kind: "oauth-provider", connectMethod: "oauth", capabilities: { evidence: ["changes"] } }],
+      [{ provider: "oauth-provider", enabled: true, hasSecret: false }]
+    );
+    expect(caps.changes).toEqual(["oauth-provider"]);
+  });
+
+  it("an oauth entry is excluded when its row is disabled, even with hasSecret:true", () => {
+    const caps = evidenceCapabilities(
+      [{ kind: "oauth-provider", connectMethod: "oauth", capabilities: { evidence: ["changes"] } }],
+      [{ provider: "oauth-provider", enabled: false, hasSecret: true }]
+    );
+    expect(caps.changes).toEqual([]);
+  });
+
+  it("an oauth entry is excluded with no connector row at all (never connected)", () => {
+    const caps = evidenceCapabilities(
+      [{ kind: "oauth-provider", connectMethod: "oauth", capabilities: { evidence: ["changes"] } }],
+      []
+    );
+    expect(caps.changes).toEqual([]);
+  });
+
+  it("a non-oauth entry (connectMethod absent) is UNCHANGED by the fix — still requires hasSecret", () => {
+    const caps = evidenceCapabilities(
+      [{ kind: "secret-provider", capabilities: { evidence: ["changes"] } }],
+      [{ provider: "secret-provider", enabled: true, hasSecret: false }]
+    );
+    expect(caps.changes).toEqual([]);
+  });
+
+  it("a non-oauth entry (connectMethod: 'secret' explicitly) is UNCHANGED by the fix", () => {
+    const caps = evidenceCapabilities(
+      [{ kind: "secret-provider", connectMethod: "secret", capabilities: { evidence: ["changes"] } }],
+      [{ provider: "secret-provider", enabled: true, hasSecret: false }]
+    );
+    expect(caps.changes).toEqual([]);
+  });
+
+  it("github — using the REAL CONNECTOR_CATALOG — appears under 'changes' once connected (enabled), with the realistic no-stored-secret row shape", () => {
+    const caps = evidenceCapabilities(CONNECTOR_CATALOG, [
+      { provider: "github", enabled: true, hasSecret: false },
+    ]);
+    expect(caps.changes).toContain("github");
+  });
+
+  it("github — using the REAL CONNECTOR_CATALOG — is excluded when disconnected (no row)", () => {
+    const caps = evidenceCapabilities(CONNECTOR_CATALOG, []);
+    expect(caps.changes).not.toContain("github");
   });
 });
 

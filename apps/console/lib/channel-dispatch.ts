@@ -201,6 +201,16 @@ export interface DispatchResult {
 interface TelegramInboxPayload {
   chatId: number | string;
   text: string;
+  /**
+   * Telegram-only: the raw `chat.type` Telegram sends
+   * (`private|group|supergroup|channel` — see the webhook route's own
+   * `TelegramChat` doc-comment), written byte-unchanged under this same key
+   * by the webhook door (`telegram/webhook/route.ts`). Read by
+   * `conversationKind` below; Slack/Discord/console derive their own
+   * group-vs-DM fact from a different proxy (see that function's own
+   * doc-comment) and never carry this key.
+   */
+  chatType?: string;
   messageThreadId?: number | string;
   /** #1277 — set by the webhook route when this message replies to a
    * parseable run-outcome notification. See `withReplyContextPreface`. */
@@ -292,6 +302,13 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   const result: TelegramInboxPayload = { chatId, text };
   if (typeof messageThreadId === "number" || typeof messageThreadId === "string") {
     result.messageThreadId = messageThreadId;
+  }
+  // Telegram's chat.type passthrough — see TelegramInboxPayload's own
+  // doc-comment on `chatType`. Read tolerantly, same posture as every other
+  // optional field here: a row enqueued before this field existed just comes
+  // back `undefined`, never a cast or a crash.
+  if (typeof p["chatType"] === "string") {
+    result.chatType = p["chatType"];
   }
   const replyContext = extractReplyContext(p["replyContext"]);
   if (replyContext) result.replyContext = replyContext;
@@ -390,6 +407,53 @@ function buildThreadInbound(
     repliesToMessageId: payload.repliesToMessageId ?? null,
     repliesToBot: payload.repliesToBot ?? false,
   };
+}
+
+/**
+ * Hoists group-vs-DM to a first-class fact at this dispatch seam (spec §9
+ * slice 0) — a later slice's per-person seat gate needs to know whether a
+ * conversation is a group or a DM, and today that fact is buried inside
+ * each channel's own admission-gate proxy, re-derived ad hoc wherever it's
+ * needed. Pure, no I/O.
+ *
+ * Telegram: `payload.chatType` is the raw `chat.type` Telegram sends
+ * (`private|group|supergroup|channel`, see `TelegramInboxPayload`'s own
+ * doc-comment) — `group`/`supergroup`/`channel` -> "group", `private` or a
+ * missing/unrecognized value -> "dm" (conservative default, same posture as
+ * this file's other tolerant-extraction fields).
+ *
+ * Slack/Discord: mirrors `buildThreadInbound`'s existing `isDM` VERBATIM
+ * (see that function's own doc-comment for the structural-proxy rationale
+ * behind each check) rather than inventing a second rule that could drift
+ * from the one `decideEngagement` already runs on.
+ *
+ * Console: always "dm" — see `ConsoleInboxPayload`'s own doc-comment (no
+ * chatId; the row's own resolved workspaceId + conversationKey IS the
+ * destination, and there is no group concept on this channel). Any other/
+ * future channel value also falls to "dm" — the same conservative default
+ * as an unrecognized Telegram chatType.
+ */
+export function conversationKind(
+  channel: string,
+  payload: TelegramInboxPayload
+): "dm" | "group" {
+  if (channel === "telegram") {
+    switch (payload.chatType) {
+      case "group":
+      case "supergroup":
+      case "channel":
+        return "group";
+      default:
+        return "dm";
+    }
+  }
+  if (channel === "slack") {
+    return payload.threadTs === undefined ? "dm" : "group";
+  }
+  if (channel === "discord") {
+    return payload.threadId === undefined || payload.threadId === null ? "dm" : "group";
+  }
+  return "dm";
 }
 
 /**
@@ -1278,6 +1342,13 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       interactionToken: payload.interactionToken,
       applicationId: payload.applicationId,
     });
+
+    // Group-vs-DM, hoisted to a first-class fact (spec §9 slice 0) — see
+    // `conversationKind`'s own doc-comment. Nothing reads this yet (a later
+    // slice's per-person seat gate does); computed here, ahead of the
+    // engagement block below, so that slice has one place to read it rather
+    // than re-deriving it.
+    const conversationKindForRow = conversationKind(row.channel, payload);
 
     // --- thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-
     // native-jace-design.md) — MUST run and persist BEFORE any guardrail

@@ -114,3 +114,15 @@ test("reviewer instructions pin the source order: linked-issue ACs beat the PR b
   assert.ok(/never overrides or extends/.test(prose));
   assert.ok(/issueNumber: null/.test(prose) || /`issueNumber` of `null`/.test(prose));
 });
+
+test("root instructions: acCoverage is relayed verbatim to post_pr_review, never re-judged", () => {
+  const prose = instructions();
+  assert.ok(prose.includes("acCoverage"));
+  assert.ok(/acCoverage[^.]*verbatim/i.test(prose));
+});
+
+test("root instructions: null coverage is reported as a diff-only review, echoing the reviewer's reason", () => {
+  const prose = instructions();
+  assert.ok(/diff-only/.test(prose));
+  assert.ok(/no recognizable ACs|not reliably parseable/i.test(prose));
+});

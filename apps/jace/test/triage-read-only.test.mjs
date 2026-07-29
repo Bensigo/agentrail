@@ -60,9 +60,24 @@ const SOURCE_RE = /\.(ts|mjs|js)$/;
 // as no-second-write-path.test.mjs's own EXPECTED_TOOL_FILES ceiling-and-floor.
 const AUTHORED_TOOLS = ["fetch_run_evidence.ts", "fetch_changes.ts", "search_events.ts"].sort();
 
+// Skips `subagents/` — Task 10 (debugging design spec:
+// docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md; spec PR
+// #1501) nests two more agent roots under triageDir
+// (agent/subagents/triage/subagents/{change,anomaly}/), and Eve's own
+// nested-declared-subagent convention is that each is a FULL agent root
+// that inherits NOTHING from triage — its own agent.ts/instructions.md/
+// lib/tools, governed by its own isolation/read-only guarantees. Without
+// this skip, a recursive scan rooted at triageDir would also pick up
+// change's and anomaly's authored fetch_changes.ts/search_events.ts (they
+// legitimately call defineTool too, just like triage's own copies) and
+// misattribute them to TRIAGE's tool count — the two nested investigators'
+// own equivalent invariants (exactly their two read-only tools, the
+// harness fully stripped, no write path) are asserted independently by
+// test/investigator-schemas.test.mjs, not here.
 function sourceFiles(dir) {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name === "subagents") continue;
     const full = `${dir}/${entry.name}`;
     if (entry.isDirectory()) out.push(...sourceFiles(full));
     else if (SOURCE_RE.test(entry.name)) out.push(full);

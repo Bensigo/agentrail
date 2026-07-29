@@ -54,29 +54,56 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *     (https://docs.railway.com/guides/manage-deployments,
  *     https://docs.railway.com/integrations/api/api-cookbook)
  *   - `deploymentLogs(deploymentId: String!, limit: Int)` returns
- *     `{ timestamp, message, severity }` per line. `filter`/`startDate`/
- *     `endDate` are ALSO documented as accepted, but their exact GraphQL
- *     scalar TYPE NAMES are never shown in any fetched example (only
- *     `deploymentId: String!` and `limit: Int` have confirmed type
- *     annotations) — declaring a wrong `$var: Type` for an untyped-per-docs
- *     argument would make the WHOLE query fail GraphQL validation, not just
- *     that one field, so this adapter deliberately omits them and does
- *     100% client-side filtering instead (window + `q.query` substring),
- *     mirroring `factory.ts`/`github.ts`'s own "transparency: match against
- *     the SAME text the caller receives" philosophy — one degree more
- *     cautious here because the type-safety risk of a wrong scalar name is
- *     categorically worse than a wrong runtime filter string.
+ *     `{ timestamp, message, severity }` per line. `filter: String`,
+ *     `startDate: DateTime`, `endDate: DateTime` (ISO-8601) are ALSO
+ *     documented and accepted — re-confirmed against
+ *     https://docs.railway.com/guides/manage-deployments during Fix Round 1
+ *     review (the initial submission could not find a worked example
+ *     showing these three arguments' scalar TYPE NAMES specifically, and
+ *     conservatively omitted them; the doc's `deploymentLogs` section does
+ *     document them). `startDate`/`endDate` are now wired as real GraphQL
+ *     variables (server-side window filtering — Fix Round 1, FIX 1a) below.
+ *     `filter` is DELIBERATELY still NOT wired: its exact matching semantics
+ *     (plain substring? case-sensitive? a structured query language?) remain
+ *     unconfirmed, and the pinned behavior contract for `search_events` is
+ *     specifically "q.query substring, case-insensitive" — a behavior this
+ *     adapter fully controls client-side already (see `querySearchEvents`)
+ *     and would risk narrowing incorrectly by delegating to an
+ *     unconfirmed-semantics server-side filter. `startDate`/`endDate` carry
+ *     no such semantic ambiguity (an ISO-8601 range is unambiguous), so they
+ *     are wired; `filter` is not — asymmetric treatment, deliberately.
  *     (https://docs.railway.com/guides/manage-deployments,
  *     https://docs.railway.com/integrations/api/api-cookbook)
  *   - A companion `environmentLogs(environmentId: String!, filter: String)`
  *     query also exists (https://docs.railway.com/guides/manage-environments)
  *     but requires an `environmentId` this connector's config does not
  *     store (only `railwayProjectId`) — v1 uses `deploymentLogs` per
- *     deployment-in-window instead (see "search_events" below), which needs
- *     no new stored id and naturally reuses the same "deployments in
- *     window" fetch `changes` already performs.
+ *     candidate deployment instead (see "SEARCH_EVENTS CANDIDATE SELECTION"
+ *     below), which needs no new stored id and reuses the same underlying
+ *     `deployments` fetch `changes` performs (`fetchProjectDeployments`) —
+ *     though the two verbs now select a DIFFERENT subset of that shared
+ *     fetch's results (see below); they are no longer identical candidate
+ *     sets as of Fix Round 1.
  *   - `me { name email }` (verify.ts's live-verify query) — see that file's
  *     own doc-comment; not used here.
+ *
+ * SEARCH_EVENTS CANDIDATE SELECTION (Fix Round 1, FIX 1c — pinned): a
+ * deployment's `createdAt` is when it STARTED, not when it stopped serving —
+ * a long-lived, still-running deployment created well BEFORE `windowStart`
+ * was still emitting logs throughout the whole window, and a naive
+ * "deployments created within [windowStart, windowEnd]" filter (correct for
+ * `changes`, which answers "what deployment EVENTS happened in this
+ * window") silently EXCLUDES it for `search_events` (which answers "what do
+ * the logs say happened in this window") — the common stable-service case
+ * would return the dishonest-looking "(no matching log lines)" even though
+ * the service was up and logging the whole time. Fixed: `search_events`'s
+ * candidate set is `changesCandidates` (deployments created IN the window)
+ * PLUS the single most recent deployment created AT OR BEFORE
+ * `windowStart` (the one actually serving when the window opens) — see
+ * `searchEventsCandidates`. `changes` is UNCHANGED (`changesCandidates`
+ * alone) — a deployment that merely happened to be running through the
+ * window, without itself being created or ending in it, is not a "change"
+ * that occurred in the window.
  *
  * meta.commitHash (the `commit=` field in "changes" below): the docs' own
  * "Fetch single deployment" example confirms `meta` as a bare, queryable
@@ -129,6 +156,18 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * mirrors `github.ts`'s per-repo marker discipline exactly, because this is
  * the one place railway.ts has multiple independent sub-fetches within a
  * single verb call (per the task's own pinned wording).
+ *
+ * Fix round 1 (coordinator review): (1) `startDate`/`endDate` wired as real
+ * `deploymentLogs` GraphQL variables — server-side window filtering (FIX
+ * 1a). (2) a belt-and-braces CLIENT-SIDE re-filter on each returned log
+ * line's own `timestamp` against `[windowStart, windowEnd]` in
+ * `fetchDeploymentLogs` — same "this adapter has already been wrong once
+ * about an unconfirmed API shape" doctrine `github.ts`'s FIX 3 established:
+ * never trust a server-side filter argument alone when double-checking the
+ * already-fetched result is nearly free (FIX 1b). (3) `search_events`'
+ * candidate selection now includes the deployment serving at window start,
+ * not just ones created inside the window — see "SEARCH_EVENTS CANDIDATE
+ * SELECTION" above (FIX 1c).
  */
 
 const RAILWAY_API = "https://backboard.railway.com/graphql/v2";
@@ -179,9 +218,13 @@ const DEPLOYMENTS_QUERY = `
   }
 `;
 
+// Fix Round 1, FIX 1a: startDate/endDate wired as real GraphQL variables —
+// server-side window filtering, re-confirmed against
+// docs.railway.com/guides/manage-deployments during review. `filter` stays
+// client-side only — see this module's own doc-comment for why.
 const DEPLOYMENT_LOGS_QUERY = `
-  query deploymentLogs($deploymentId: String!, $limit: Int) {
-    deploymentLogs(deploymentId: $deploymentId, limit: $limit) {
+  query deploymentLogs($deploymentId: String!, $limit: Int, $startDate: DateTime, $endDate: DateTime) {
+    deploymentLogs(deploymentId: $deploymentId, limit: $limit, startDate: $startDate, endDate: $endDate) {
       timestamp
       message
       severity
@@ -282,15 +325,16 @@ interface RailwayDeployment {
   commit: string;
 }
 
-/** The project's deployments whose `createdAt` falls in
- * `[windowStart, windowEnd]` (inclusive both ends), most-recent-first.
- * Shared by both verbs — `search_events` fetches logs FOR the deployments
- * this returns (see this module's own doc-comment, "search_events"). */
-async function deploymentsInWindow(
+/** Fetches AND parses the project's candidate deployments (bounded by
+ * {@link DEPLOYMENTS_FETCH_LIMIT}), most-recent-first — NOT window-filtered.
+ * Both verbs derive their own candidate SELECTION from this one shared
+ * fetch (see {@link changesCandidates} / {@link searchEventsCandidates}
+ * below) — as of Fix Round 1, selection differs by verb (see this module's
+ * own doc-comment, "SEARCH_EVENTS CANDIDATE SELECTION"), so the filtering
+ * itself no longer lives here. */
+async function fetchProjectDeployments(
   token: string,
-  projectId: string,
-  windowStart: string,
-  windowEnd: string
+  projectId: string
 ): Promise<{ ok: true; deployments: RailwayDeployment[] } | { ok: false; reason: EvidenceDegradationReason }> {
   const result = await railwayQuery<{
     deployments: { edges: Array<{ node: RailwayDeploymentNode } | null> | null } | null;
@@ -298,8 +342,6 @@ async function deploymentsInWindow(
   if (!result.ok) return result;
 
   const edges = result.data.deployments?.edges ?? [];
-  const startMs = new Date(windowStart).getTime();
-  const endMs = new Date(windowEnd).getTime();
 
   const deployments: RailwayDeployment[] = [];
   for (const edge of edges) {
@@ -308,7 +350,7 @@ async function deploymentsInWindow(
     const createdAtRaw = typeof node.createdAt === "string" ? node.createdAt : null;
     if (!createdAtRaw) continue;
     const createdAtMs = new Date(createdAtRaw).getTime();
-    if (Number.isNaN(createdAtMs) || createdAtMs < startMs || createdAtMs > endMs) continue;
+    if (Number.isNaN(createdAtMs)) continue;
 
     deployments.push({
       id: typeof node.id === "string" ? node.id : "-",
@@ -325,6 +367,51 @@ async function deploymentsInWindow(
   return { ok: true, deployments };
 }
 
+/** `changes`' candidate set: deployments CREATED within
+ * `[windowStart, windowEnd]` (inclusive both ends), most-recent-first — a
+ * deployment that merely happened to be running through the window,
+ * without itself being created (or, per this v1, ended) in it, is not a
+ * "change" that occurred in the window. UNCHANGED by Fix Round 1. */
+function changesCandidates(
+  all: RailwayDeployment[],
+  windowStart: string,
+  windowEnd: string
+): RailwayDeployment[] {
+  const startMs = new Date(windowStart).getTime();
+  const endMs = new Date(windowEnd).getTime();
+  return all.filter((d) => d.createdAtMs >= startMs && d.createdAtMs <= endMs);
+}
+
+/** `search_events`' candidate set (Fix Round 1, FIX 1c — pinned; see this
+ * module's own doc-comment, "SEARCH_EVENTS CANDIDATE SELECTION"):
+ * {@link changesCandidates} PLUS the single most recent deployment created
+ * AT OR BEFORE `windowStart` — the one actually serving (and logging) when
+ * the window opens. Deduped by id (the serving-at-start deployment can
+ * already be in-window when its own `createdAt` lands exactly at
+ * `windowStart`, since `changesCandidates`' lower bound is inclusive).
+ * Most-recent-first, same as every other candidate list in this module. */
+function searchEventsCandidates(
+  all: RailwayDeployment[],
+  windowStart: string,
+  windowEnd: string
+): RailwayDeployment[] {
+  const startMs = new Date(windowStart).getTime();
+  const inWindow = changesCandidates(all, windowStart, windowEnd);
+
+  let servingAtStart: RailwayDeployment | null = null;
+  for (const d of all) {
+    if (d.createdAtMs <= startMs && (!servingAtStart || d.createdAtMs > servingAtStart.createdAtMs)) {
+      servingAtStart = d;
+    }
+  }
+
+  const merged =
+    servingAtStart && !inWindow.some((d) => d.id === servingAtStart!.id)
+      ? [...inWindow, servingAtStart]
+      : inWindow;
+  return merged.sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+
 /** `deployment {id} status={status} at={iso} commit={sha|-} env={name|-}` —
  * pinned field order. `env` is always `-` in v1 — see this module's own
  * doc-comment ("ENV FIELD — KNOWN v1 GAP"). */
@@ -333,9 +420,10 @@ function renderChangeLine(d: RailwayDeployment): string {
 }
 
 async function queryChanges(token: string, projectId: string, q: EvidenceQuery): Promise<AdapterResult> {
-  const result = await deploymentsInWindow(token, projectId, q.windowStart, q.windowEnd);
+  const result = await fetchProjectDeployments(token, projectId);
   if (!result.ok) return result;
-  if (result.deployments.length === 0) {
+  const candidates = changesCandidates(result.deployments, q.windowStart, q.windowEnd);
+  if (candidates.length === 0) {
     return { ok: true, raw: NO_DEPLOYMENTS_MARKER };
   }
 
@@ -343,7 +431,7 @@ async function queryChanges(token: string, projectId: string, q: EvidenceQuery):
   // down to a bare "" that bypasses the honest-empty marker above — mirrors
   // factory.ts/github.ts's identical clamp.
   const limit = Math.max(1, q.limit ?? CHANGES_DEFAULT_LIMIT);
-  const limited = result.deployments.slice(0, limit);
+  const limited = candidates.slice(0, limit);
   return { ok: true, raw: limited.map(renderChangeLine).join("\n") };
 }
 
@@ -364,14 +452,28 @@ type DeploymentLogsOutcome = { ok: true; lines: RenderedLogLine[] } | { ok: fals
  * see this module's own doc-comment, "FAILURE HANDLING"). `deployment_log
  * deployment={id} at={iso} severity={severity|-} message={message}` —
  * this adapter's own line format (not pinned by the task brief beyond
- * "filtered by q.query substring case-insensitive, chronological"). */
-async function fetchDeploymentLogs(token: string, deploymentId: string): Promise<DeploymentLogsOutcome> {
+ * "filtered by q.query substring case-insensitive, chronological"). Sends
+ * `startDate`/`endDate` server-side (Fix Round 1, FIX 1a) AND re-filters
+ * each returned line's own `timestamp` against the SAME window client-side
+ * (FIX 1b) — belt-and-braces, never trusting the server-side filter alone
+ * (see this module's own doc-comment, "Fix round 1"). */
+async function fetchDeploymentLogs(
+  token: string,
+  deploymentId: string,
+  windowStart: string,
+  windowEnd: string
+): Promise<DeploymentLogsOutcome> {
   let result: Awaited<ReturnType<typeof railwayQuery<{ deploymentLogs: RailwayLogEntry[] | null }>>>;
   try {
     result = await railwayQuery<{ deploymentLogs: RailwayLogEntry[] | null }>(
       token,
       DEPLOYMENT_LOGS_QUERY,
-      { deploymentId, limit: SEARCH_EVENTS_LOGS_PER_DEPLOYMENT }
+      {
+        deploymentId,
+        limit: SEARCH_EVENTS_LOGS_PER_DEPLOYMENT,
+        startDate: windowStart,
+        endDate: windowEnd,
+      }
     );
   } catch {
     return { ok: false, marker: `(deployment ${deploymentId}: railway unreachable)` };
@@ -380,6 +482,9 @@ async function fetchDeploymentLogs(token: string, deploymentId: string): Promise
     return { ok: false, marker: `(deployment ${deploymentId}: railway ${result.reason})` };
   }
 
+  const startMs = new Date(windowStart).getTime();
+  const endMs = new Date(windowEnd).getTime();
+
   const entries = Array.isArray(result.data.deploymentLogs) ? result.data.deploymentLogs : [];
   const lines: RenderedLogLine[] = [];
   for (const entry of entries) {
@@ -387,6 +492,10 @@ async function fetchDeploymentLogs(token: string, deploymentId: string): Promise
     if (!ts) continue;
     const atMs = new Date(ts).getTime();
     if (Number.isNaN(atMs)) continue;
+    // Client-side re-filter (belt-and-braces, FIX 1b) — inclusive bounds,
+    // independent of whatever the server-side startDate/endDate actually
+    // did with this line.
+    if (atMs < startMs || atMs > endMs) continue;
     const severity = typeof entry?.severity === "string" && entry.severity ? entry.severity : "-";
     const message = singleLine(typeof entry?.message === "string" ? entry.message : "");
     lines.push({
@@ -408,22 +517,31 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 async function querySearchEvents(token: string, projectId: string, q: EvidenceQuery): Promise<AdapterResult> {
-  const result = await deploymentsInWindow(token, projectId, q.windowStart, q.windowEnd);
+  const result = await fetchProjectDeployments(token, projectId);
   if (!result.ok) return result;
-  if (result.deployments.length === 0) {
+  const candidates = searchEventsCandidates(result.deployments, q.windowStart, q.windowEnd);
+  if (candidates.length === 0) {
     return { ok: true, raw: NO_MATCHING_LOGS_MARKER };
   }
 
   // Bounds the fan-out — see this module's own doc-comment
-  // (SEARCH_EVENTS_MAX_DEPLOYMENTS). `deploymentsInWindow` already sorts
-  // most-recent-first, so this keeps the MOST RECENT in-window deployments.
-  const targetDeployments = result.deployments.slice(0, SEARCH_EVENTS_MAX_DEPLOYMENTS);
+  // (SEARCH_EVENTS_MAX_DEPLOYMENTS). `searchEventsCandidates` already sorts
+  // most-recent-first, so this keeps the MOST RECENT candidates (which, per
+  // Fix Round 1 FIX 1c, may include the deployment serving at window start
+  // even if it is not the most recent by createdAt among the window-created
+  // ones — the sort is still by createdAt across the WHOLE merged set, so
+  // "most recent" here means most-recently-created, not "most likely to
+  // matter"; this is an accepted, disclosed v1 bound like
+  // SEARCH_EVENTS_MAX_DEPLOYMENTS itself).
+  const targetDeployments = candidates.slice(0, SEARCH_EVENTS_MAX_DEPLOYMENTS);
 
   const allLines: RenderedLogLine[] = [];
   const markers: string[] = [];
   let successCount = 0;
   for (const batch of chunk(targetDeployments, SEARCH_EVENTS_BATCH_SIZE)) {
-    const outcomes = await Promise.all(batch.map((d) => fetchDeploymentLogs(token, d.id)));
+    const outcomes = await Promise.all(
+      batch.map((d) => fetchDeploymentLogs(token, d.id, q.windowStart, q.windowEnd))
+    );
     for (const outcome of outcomes) {
       if (outcome.ok) {
         successCount += 1;

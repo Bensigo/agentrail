@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real catalog kind so the error message stays accurate (linear, figma, context7, railway)", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -114,23 +114,31 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("figma");
     expect(body.error).toContain("context7");
     expect(body.error).toContain("railway");
+    // Fix Round 1, FIX 4 — see below for the dedicated test.
+    expect(body.error).not.toContain("factory");
   });
 
-  // Disclosed nuance (see route.ts's own doc-comment): `factory`
-  // (availability: "internal") is ALSO connectMethod: "secret" in the
-  // catalog, so it technically clears THIS gate too — but it is still
-  // rejected one gate later, by validateConnectorCredential's own
-  // `case "factory"` (no real credential exists to validate). Never a
-  // behavior regression: factory never reaches the connect form at all
-  // (filtered out of the grid by projectConnectors).
-  it("factory clears the allowlist gate but is still rejected by the credential-format gate, never reaching setConnectorSecret", async () => {
+  // Fix Round 1, FIX 4 (structural guard — see route.ts's own doc-comment):
+  // the allowlist derivation now ALSO filters `availability !== "internal"`,
+  // so `factory` (Task 5, availability: "internal") is excluded from
+  // CREDENTIAL_PROVIDERS itself — the allowlist rejects it BEFORE
+  // `validateConnectorCredential` (the format gate) is ever reached, proven
+  // by asserting the response is the ALLOWLIST's own rejection message, not
+  // the format gate's "This connector is not credential-based." text. This
+  // holds regardless of what any credential validator would say about
+  // "factory" — even if one were ever added, this gate would still reject
+  // it first. Never a behavior regression either way: factory never reaches
+  // the connect form at all (filtered out of the grid by
+  // projectConnectors).
+  it("factory (availability: 'internal') is excluded from the allowlist itself — structural, not just the format gate's fallback", async () => {
     const res = await PUT(putReq({ provider: "factory", secret: "anything" }), {
       params: params(),
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    expect(body.error).not.toMatch(/^provider must be one of /);
-    expect(body.error).toBe("This connector is not credential-based.");
+    // The ALLOWLIST'S rejection message, not the format gate's.
+    expect(body.error).toMatch(/^provider must be one of /);
+    expect(body.error).not.toBe("This connector is not credential-based.");
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 });

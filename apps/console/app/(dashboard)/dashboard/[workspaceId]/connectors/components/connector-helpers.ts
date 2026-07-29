@@ -451,8 +451,20 @@ export function projectConnectors(
           ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
           : null;
 
-      // Display target: oauth → the stored target (repo); everything else → none.
-      const target = entry.connectMethod === "oauth" ? cfg?.target ?? null : null;
+      // Display target: oauth → the stored target (repo); a secret-connected
+      // entry that DECLARES an extraConfigField → its stored value
+      // (Railway's project id — Fix Round 1, FIX 3, mirroring how GitHub's
+      // target renders: same field, same generic render slot in
+      // `SecretManage`'s connected-state summary, no new UI code); every
+      // other kind → none. Gated on `extraConfigField` presence (not just
+      // "any secret-connected kind") so a future provider WITHOUT one never
+      // accidentally surfaces an unrelated stored value here.
+      const target =
+        entry.connectMethod === "oauth"
+          ? cfg?.target ?? null
+          : entry.connect?.extraConfigField
+            ? cfg?.railwayProjectId ?? null
+            : null;
 
       return {
         kind: entry.kind,
@@ -555,11 +567,18 @@ export function validateConnectorCredential(
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };
     case "factory":
-      // Internal (Task 5) — no credential exists to validate. This kind
-      // never reaches the connect flow (filtered out of the grid by
-      // projectConnectors, and never added to secret/route.ts's
-      // CREDENTIAL_PROVIDERS allowlist), but the switch must stay total
-      // over every ConnectorKind.
+      // Internal (Task 5) — no credential exists to validate. Never reaches
+      // the connect flow in practice through TWO independent gates: (1)
+      // `projectConnectors` filters `availability: "internal"` entries out
+      // of the grid entirely, so there is no card to submit from; (2)
+      // secret/route.ts's CREDENTIAL_PROVIDERS allowlist (catalog-derived,
+      // Task 7) itself excludes `availability: "internal"` entries
+      // structurally (Fix Round 1, FIX 4) — the allowlist rejects "factory"
+      // before this function is ever called through the route. THIS case is
+      // this function's own defense in depth regardless: the switch must
+      // stay total over every ConnectorKind, and this is the format gate's
+      // own operative rejection for a direct caller (this module's own
+      // tests included) that reaches it anyway, bypassing the route.
       return { ok: false, error: "This connector is not credential-based." };
   }
 }

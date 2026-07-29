@@ -32,18 +32,28 @@ import { verifyConnectorCredential } from "./verify";
  * (every `connectMethod: "secret"` entry) instead of a hand-enumerated
  * literal. This is the proof that "add a provider = catalog entry + adapter
  * + credential pair" — Railway's catalog entry alone is what makes this
- * route accept it; no second hand-list to remember. (One accepted, disclosed
- * nuance: `factory`, Task 5's `availability: "internal"` entry, is ALSO
- * `connectMethod: "secret"` and therefore technically passes THIS gate too —
- * it is still rejected one gate later, by `validateConnectorCredential`'s
- * own `case "factory"`, which has no real credential to validate. Not a
- * behavior regression — factory never reaches the connect FORM in the first
- * place (`projectConnectors` filters `availability: "internal"` out of the
- * grid) — but worth naming since the derivation is now generic rather than
- * a hand-picked list that happened to exclude it.)
+ * route accept it; no second hand-list to remember.
+ *
+ * Fix Round 1, FIX 4: the derivation ALSO excludes `availability:
+ * "internal"` entries — structurally, not incidentally. The initial
+ * submission filtered on `connectMethod === "secret"` alone, which let
+ * `factory` (Task 5's `availability: "internal"` entry — ALSO
+ * `connectMethod: "secret"`) technically clear this gate too; it was still
+ * rejected one gate later by `validateConnectorCredential`'s own `case
+ * "factory"` (no real credential exists to validate), so this was never a
+ * live security hole, but it meant the allowlist's own correctness relied
+ * on that second gate rather than being self-evidently correct. Now
+ * `availability !== "internal"` is part of THIS gate's own filter — an
+ * internal-only entry (this one, or any future one) can never reach
+ * `setConnectorSecret` regardless of what any credential validator would
+ * say about it, proven by a dedicated test
+ * (`secret/route.test.ts`, "factory is excluded from the allowlist
+ * itself").
  */
 const CREDENTIAL_PROVIDERS = new Set(
-  CONNECTOR_CATALOG.filter((e) => e.connectMethod === "secret").map((e) => e.kind)
+  CONNECTOR_CATALOG.filter(
+    (e) => e.connectMethod === "secret" && e.availability !== "internal"
+  ).map((e) => e.kind)
 );
 
 export async function PUT(

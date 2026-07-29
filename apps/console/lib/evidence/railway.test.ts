@@ -713,3 +713,280 @@ describe("railwayAdapter — search_events: per-deployment failure isolation", (
     expect(queriedDeploymentIds.size).toBe(20);
   });
 });
+
+// -----------------------------------------------------------------------
+// Fix Round 1 (coordinator review).
+// -----------------------------------------------------------------------
+
+// FIX 1c: candidate selection must include the deployment serving at
+// window start, not just ones CREATED inside the window — the common
+// "stable, long-lived service" case. Would FAIL under the pre-fix code
+// (its `deploymentsInWindow` window-filtered by createdAt alone, for BOTH
+// verbs).
+describe("railwayAdapter — FIX 1c: search_events includes the deployment serving at window start", () => {
+  it("a deployment created well BEFORE windowStart, still serving through the window, has its in-window logs returned", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: {
+          data: {
+            deployments: { edges: [{ node: deploymentNode({ id: "long-lived", createdAt: "2026-07-20T00:00:00.000Z" }) }] },
+          },
+        },
+      }),
+      deploymentLogs: () => ({
+        status: 200,
+        body: {
+          data: {
+            deploymentLogs: [{ timestamp: "2026-07-29T14:00:00.000Z", severity: "info", message: "still serving" }],
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({
+      ok: true,
+      raw: "deployment_log deployment=long-lived at=2026-07-29T14:00:00.000Z severity=info message=still serving",
+    });
+  });
+
+  it("changes does NOT include that same long-lived pre-window deployment — the special inclusion is search_events-only", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: {
+          data: {
+            deployments: { edges: [{ node: deploymentNode({ id: "long-lived", createdAt: "2026-07-20T00:00:00.000Z" }) }] },
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "changes" }), TOKEN);
+    expect(res).toEqual({ ok: true, raw: "(no deployments in window)" });
+  });
+
+  it("includes only the SINGLE most recent pre-window deployment, not every deployment created before windowStart", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: {
+          data: {
+            deployments: {
+              edges: [
+                { node: deploymentNode({ id: "older", createdAt: "2026-07-10T00:00:00.000Z" }) },
+                { node: deploymentNode({ id: "most-recent-before-start", createdAt: "2026-07-20T00:00:00.000Z" }) },
+              ],
+            },
+          },
+        },
+      }),
+      deploymentLogs: (deploymentId) => ({
+        status: 200,
+        body: {
+          data: {
+            deploymentLogs: [{ timestamp: "2026-07-29T14:00:00.000Z", severity: "info", message: `from ${deploymentId}` }],
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("from most-recent-before-start");
+    expect(res.raw).not.toContain("from older");
+  });
+
+  it("a deployment created exactly AT windowStart is not double-counted (already in-window; not also treated as the separate serving-at-start pick)", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: { data: { deployments: { edges: [{ node: deploymentNode({ id: "at-start", createdAt: WINDOW_START }) }] } } },
+      }),
+      deploymentLogs: () => ({
+        status: 200,
+        body: { data: { deploymentLogs: [{ timestamp: "2026-07-29T14:00:00.000Z", severity: "info", message: "one line" }] } },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    // Exactly one log line — the deployment was queried once, not twice.
+    expect(res.raw.split("\n")).toHaveLength(1);
+  });
+
+  it("no pre-window deployment exists at all — search_events falls back to in-window candidates alone (empty here)", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: {
+          data: {
+            deployments: { edges: [{ node: deploymentNode({ id: "after", createdAt: "2026-07-30T00:00:01.000Z" }) }] },
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({ ok: true, raw: "(no matching log lines)" });
+  });
+});
+
+// FIX 1a + 1b: startDate/endDate wired as real GraphQL variables on
+// deploymentLogs, AND a belt-and-braces client-side re-filter on each
+// returned line's own timestamp (never trust the server-side filter
+// alone — the mocks below simulate an "uncooperative" server that returns
+// out-of-window lines regardless of the variables it received).
+describe("railwayAdapter — FIX 1a: deploymentLogs carries startDate/endDate as real variables", () => {
+  it("sends startDate/endDate as variables (not string-interpolated into the query text)", async () => {
+    let capturedVariables: Record<string, unknown> | undefined;
+    let capturedQuery = "";
+    global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      const { query, variables } = parseBody(init);
+      if (query.includes("deploymentLogs")) {
+        capturedVariables = variables;
+        capturedQuery = query;
+        return railwayHttpResponse(200, { data: { deploymentLogs: [] } });
+      }
+      return railwayHttpResponse(200, {
+        data: { deployments: { edges: [{ node: deploymentNode({ id: "dep-1" }) }] } },
+      });
+    }) as unknown as typeof fetch;
+
+    await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+
+    expect(capturedVariables).toMatchObject({
+      deploymentId: "dep-1",
+      startDate: WINDOW_START,
+      endDate: WINDOW_END,
+    });
+    expect(capturedQuery).toContain("$startDate: DateTime");
+    expect(capturedQuery).toContain("$endDate: DateTime");
+    // Not string-interpolated — the literal date value never appears in the
+    // query TEXT itself, only in the separate variables object.
+    expect(capturedQuery).not.toContain(WINDOW_START);
+  });
+});
+
+describe("railwayAdapter — FIX 1b: client-side re-filter on deploymentLogs (belt-and-braces)", () => {
+  it("drops a log line whose OWN timestamp falls after windowEnd, even though the mock 'returns' it regardless of the startDate/endDate it was sent", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: { data: { deployments: { edges: [{ node: deploymentNode({ id: "dep-1" }) }] } } },
+      }),
+      deploymentLogs: () => ({
+        status: 200,
+        body: {
+          data: {
+            deploymentLogs: [
+              { timestamp: "2026-07-29T12:00:00.000Z", severity: "info", message: "in window" },
+              { timestamp: "2026-07-30T05:00:00.000Z", severity: "info", message: "leaked from outside window" },
+            ],
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("in window");
+    expect(res.raw).not.toContain("leaked from outside window");
+  });
+
+  it("drops a log line whose timestamp falls before windowStart too (inclusive-bounds re-filter, not just an upper check)", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: { data: { deployments: { edges: [{ node: deploymentNode({ id: "dep-1" }) }] } } },
+      }),
+      deploymentLogs: () => ({
+        status: 200,
+        body: {
+          data: {
+            deploymentLogs: [
+              { timestamp: "2026-07-28T23:00:00.000Z", severity: "info", message: "leaked from before window" },
+              { timestamp: "2026-07-29T12:00:00.000Z", severity: "info", message: "in window" },
+            ],
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("in window");
+    expect(res.raw).not.toContain("leaked from before window");
+  });
+
+  it("keeps a log line exactly at the window bounds (inclusive)", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: { data: { deployments: { edges: [{ node: deploymentNode({ id: "dep-1" }) }] } } },
+      }),
+      deploymentLogs: () => ({
+        status: 200,
+        body: {
+          data: {
+            deploymentLogs: [
+              { timestamp: WINDOW_START, severity: "info", message: "at-start" },
+              { timestamp: WINDOW_END, severity: "info", message: "at-end" },
+            ],
+          },
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("at-start");
+    expect(res.raw).toContain("at-end");
+  });
+
+  it("a leaked out-of-window line and an in-window marker-worthy failure compose correctly (re-filter + per-deployment isolation together)", async () => {
+    global.fetch = routeFetch({
+      deployments: () => ({
+        status: 200,
+        body: {
+          data: {
+            deployments: {
+              edges: [
+                { node: deploymentNode({ id: "dep-broken" }) },
+                { node: deploymentNode({ id: "dep-leaky" }) },
+              ],
+            },
+          },
+        },
+      }),
+      deploymentLogs: (deploymentId) =>
+        deploymentId === "dep-broken"
+          ? { status: 500, body: {} }
+          : {
+              status: 200,
+              body: {
+                data: {
+                  deploymentLogs: [
+                    { timestamp: "2026-07-29T12:00:00.000Z", severity: "info", message: "kept" },
+                    { timestamp: "2026-07-30T05:00:00.000Z", severity: "info", message: "leaked" },
+                  ],
+                },
+              },
+            },
+    }) as unknown as typeof fetch;
+
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("(deployment dep-broken: railway upstream_error)");
+    expect(res.raw).toContain("kept");
+    expect(res.raw).not.toContain("leaked\n");
+    expect(res.raw).not.toContain("message=leaked");
+  });
+});

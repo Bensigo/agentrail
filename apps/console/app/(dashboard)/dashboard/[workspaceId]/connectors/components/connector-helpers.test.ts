@@ -308,3 +308,40 @@ describe("connector catalog — railway entry (Task 7)", () => {
     }
   });
 });
+
+// Fix Round 1, FIX 3: railwayProjectId forwarded through projectConnectors
+// into ConnectorView.target — mirrors how GitHub's target renders (same
+// field, same generic render slot in SecretManage's connected-state
+// summary; connectors-panel.tsx needed no new code).
+describe("projectConnectors — railway's target (Fix Round 1, FIX 3)", () => {
+  it("shows railway's stored project id as its target once connected", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: true, railwayProjectId: "proj-abc" },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.status).toBe("connected");
+    expect(railway.target).toBe("proj-abc");
+  });
+
+  it("railway's target is null when connected but no project id is stored yet", () => {
+    const railway = projectConnectors([{ kind: "railway", hasSecret: true }]).find(
+      (r) => r.kind === "railway"
+    )!;
+    expect(railway.status).toBe("connected");
+    expect(railway.target).toBeNull();
+  });
+
+  it("railway's target still surfaces from stored config even while disconnected — mirrors oauth's target, which is likewise independent of `status` in this function", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: false, railwayProjectId: "proj-abc" },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.status).toBe("disconnected");
+    expect(railway.target).toBe("proj-abc");
+  });
+
+  it("a kind with no declared extraConfigField never surfaces railwayProjectId as its target, even if the field is (incorrectly) present in its config", () => {
+    const linear = projectConnectors([
+      { kind: "linear", hasSecret: true, railwayProjectId: "should-not-leak" },
+    ]).find((r) => r.kind === "linear")!;
+    expect(linear.target).toBeNull();
+  });
+});

@@ -22,8 +22,8 @@ AgentRail/Jace moves from usage billing (prepaid wallet, per-task charging at to
 
 ```
 Company → Billing Account → Subscription Plan → AI Policy
-  → Task Planner → Routing Context → Quality Profile
-  → Candidate Pool → Ranking Engine (#1338) → OpenRouter
+  → Task Planner → Routing Context (AI budget · capacity · task complexity)
+  → Quality Profile → Candidate Pool → Ranking Engine (#1338) → OpenRouter
   → Best Available Model → Engineering Outcome
 ```
 
@@ -100,14 +100,18 @@ type AiPolicy = {
     allowDowngrade: boolean;           // ranking may drop within entitlement to protect margin
   };
 
-  budgets: {
-    perTaskLeashUsd: number;           // feeds the existing budget_leash
-    monthlyCogsAlertUsd: number;       // founder alert line, never customer-facing
+  economics: {
+    monthlyAiBudgetUsd: number;        // internal AI spend target for this plan — never customer-facing
+    currentSpendUsd: number;           // hydrated by the resolver from cost telemetry, this period
+    remainingBudgetUsd: number;        // max(0, budget − spend)
+    maxTaskCostUsd: number;            // hard per-task cap — feeds the existing budget_leash
   };
 };
 ```
 
-`resolvePolicyForWorkspace(workspaceId)` → account → plan constants, with `policy_overrides` merged **inside the resolver** for enterprise — overrides are resolver *input*, and the resolved `AiPolicy` is flat and final. Billing disappears at this line: every gate in §6 and the whole routing stack receive an `AiPolicy` and nothing else — no plan names, no merge logic, no Stripe state.
+**The customer-facing unit is capacity/tasks; the internal operating unit is AI spend. They are separate by design** — capacity answers "how much work did the customer receive?", the AI budget answers "how much did that work cost us?". The budget exists for margin protection, routing decisions, cost monitoring, and capacity calibration; customers never see it.
+
+`resolvePolicyForWorkspace(workspaceId)` → account → plan constants, with `policy_overrides` merged **inside the resolver** for enterprise — overrides are resolver *input*, and the resolved `AiPolicy` is flat and final. `monthlyAiBudgetUsd` and `maxTaskCostUsd` are plan constants; `currentSpendUsd`/`remainingBudgetUsd` are **hydrated by the resolver on every call** from the period's cost telemetry (the §8 aggregation) — the same fresh-read-no-caching posture as the flag columns, so downstream still receives exactly one object. If the spend query is unavailable, the resolver hydrates a full remaining budget and flags it: routing degrades to budget-unaware, and nothing customer-facing ever blocks on telemetry (§6's fail-open rule). Billing disappears at this line: every gate in §6 and the whole routing stack receive an `AiPolicy` and nothing else — no plan names, no merge logic, no Stripe state.
 
 ## 4. Task-level, policy-aware routing
 
@@ -126,16 +130,17 @@ Task → Planner → Execution profile → AI Policy (entitlement)
      → Quality Profile → Candidate Pool → Ranking Engine (#1338) → OpenRouter
 ```
 
-The **planner** builds an execution profile at admission from signals the alignment estimator already computes: task type, expected complexity, repository size, expected context size, historical success on similar work. Selection receives it as a routing context — the router's *only* window into commercial terms is the policy:
+The **planner** builds an execution profile at admission from signals the alignment estimator already computes: task type, expected complexity, repository size, expected context size, task importance, historical success on similar work. Selection receives it as a routing context — the router's *only* window into commercial terms is the policy, and the policy's `economics` block is how the company's budget state reaches ranking:
 
 ```ts
 type RoutingContext = {
   taskType: string;
   taskComplexity: "low" | "medium" | "high";
+  taskImportance: "routine" | "important";   // planner-set, from brief/goal context
   repositorySize: number;
   estimatedContextTokens: number;
   historicalPerformance: ModelOutcomeStats;  // per (task_type, model), already collected for #1338
-  aiPolicy: AiPolicy;                        // never a plan name
+  aiPolicy: AiPolicy;                        // never a plan name; economics carries live budget state
 };
 ```
 
@@ -147,13 +152,21 @@ type RoutingContext = {
 | **Standard** | PR reviews, bug fixes, everyday engineering | all plans |
 | **Premium** | architecture, distributed systems, large refactors, difficult debugging | Growth, Enterprise |
 
-Each profile maps to a **candidate pool** — every currently eligible model for that band. The **existing #1338 loop remains the single ranking engine** over the pool, weighing historical success, eval performance, latency, context window, and cost. Design constraints, so this lands as an extension rather than a rewrite:
+Each profile maps to a **candidate pool** — every currently eligible model for that band. The **existing #1338 loop remains the single ranking engine** over the pool, weighing success probability, expected cost, remaining company AI budget, task importance, and historical performance (plus latency and context window). The ranking objective, stated once:
+
+```
+Best model = highest probability of successful completion
+             while staying within the company's AI budget
+```
+
+— never "most powerful model available". Design constraints, so this lands as an extension rather than a rewrite:
 
 1. **#1338 is the ranking engine.** Profiles partition `candidates.ts` into pools, not a second selection mechanism; the learning loop (PR③ widen+observe, flag OFF) runs unchanged inside each pool. The existing cheap/strong routing `tier` evolves into the three profiles rather than coexisting with them. Pool membership stays governed by the candidates registry and its standing rules: pools stay diverse (GLM, Kimi, etc.), Claude is a baseline not a default, and planning-tier models stay out of execute pools.
-2. **Cost-aware inside the pool.** When a cheaper premium-pool candidate delivers nearly the same success probability as the most expensive one, it wins — that is `routing.allowDowngrade` doing its job for margin. Escalation above `routing.defaultProfile` happens only when classification says premium reasoning materially improves the outcome (`routing.allowEscalation`) — a Growth customer does not get the most expensive model per request.
-3. **Premium-classified task on Starter** runs at Standard (best entitled model) and is tagged `profile_downgraded` internally. We measure the outcome delta before deciding whether Starter ever gets a premium-burst allowance — measurement first, knob later.
-4. **Attempt escalation stays within entitlement.** The existing retry-escalation ladder keeps working, but climbs only through profiles the policy allows.
-5. **Model churn on OpenRouter changes pool membership only.** Marketing copy, plan definitions, and policies never change with it.
+2. **Budget-aware inside the pool.** When a cheaper entitled candidate delivers nearly the same success probability as the most expensive one — say 92% at $0.80 against 96% at $4.00 — the cheaper one wins on a Starter-sized budget; a Growth-sized budget may accept the expensive candidate early in the period (`routing.allowDowngrade` doing its job for margin). Escalation above `routing.defaultProfile` happens only when classification says premium reasoning materially improves the outcome (`routing.allowEscalation`) — no plan gets the most expensive model per request.
+3. **The budget is dynamic and the pressure is automatic.** `economics.remainingBudgetUsd` shifts ranking over the month: early period, premium candidates are affordable; late period, ranking prefers cheaper candidates unless premium materially improves success probability. Natural margin protection, no manual intervention. If remaining budget reaches zero, routing clamps to the cheapest entitled candidates and pages us — **budget exhaustion is never a customer-facing block** (capacity in §6 is the only customer boundary; `economics.maxTaskCostUsd` bounds the worst case per task in the meantime).
+4. **Premium-classified task on Starter** runs at Standard (best entitled model) and is tagged `profile_downgraded` internally. We measure the outcome delta before deciding whether Starter ever gets a premium-burst allowance — measurement first, knob later.
+5. **Attempt escalation stays within entitlement.** The existing retry-escalation ladder keeps working, but climbs only through profiles the policy allows.
+6. **Model churn on OpenRouter changes pool membership only.** Marketing copy, plan definitions, and policies never change with it.
 
 ## 5. Seats and identity
 
@@ -176,6 +189,8 @@ Four gates, one resolver (§3), all behind a single kill-switch (`BILLING_SUBSCR
 3. **Invite gate** — the console invites route refuses invites beyond `seatLimit` with the upgrade CTA.
 4. **Routing gate** — the profile entitlement filter of §4, inside model selection.
 
+The internal AI budget is deliberately **not** a fifth gate: hitting it changes routing behavior (§4 constraint 3) and pages us, never the customer. Capacity and budget are independent boundaries — 350 cheap tasks exhaust capacity first; 150 very expensive tasks exhaust budget first — and both signals feed §8's calibration.
+
 **Prompt cooldown:** upgrade prompts fire at most once per `(billing_account, conversation)` per day, via the CAS pattern of `markBudgetExhaustedNotified` (`packages/db-postgres/src/queries/workspace_budget.ts:103-118`) on a small `upgrade_prompt_events` table — which doubles as the audit trail of who hit which wall when (calibration input for §8).
 
 **Known delivery traps to fix in the same slice** (an unseen prompt is a silent block):
@@ -194,14 +209,14 @@ Four gates, one resolver (§3), all behind a single kill-switch (`BILLING_SUBSCR
 - The digest's fourth card — "Cost this week" (`apps/console/components/digest-panel.tsx:137-151`) — becomes the **plan card**: seats used X/Y, monthly capacity used (as a fraction, not dollars), renewal date, upgrade CTA. The other three cards (Shipped, In progress, Needs you) already tell the value story.
 - Add a cumulative **"shipped all-time"** strip per workspace (per-workspace variant of `countRunOutcomes`, `packages/db-postgres/src/queries/run_outcomes.ts:98-119` — today it's global and feeds only the landing page). Candidate for the same slice: finally render the built-but-unmounted `HealthRatesPanel` (`apps/console/components/health-rates-panel.tsx:25`, zero call sites) as the reviews/accept-rate value surface.
 - **Costs, Budget, and Wallet leave the customer sidebar** (`apps/console/app/components/sidebar-nav.ts:95-105`). A "Plan & billing" item in the Settings zone replaces them: current plan, seats list with release, capacity meter, Stripe customer-portal link.
-- **The approval message drops its dollar line.** "Approving sets this run's budget: ~$X.XX" (`apps/console/lib/approval-message.ts:270`, console mirror `approvals-helpers.ts:110,170-172`, landing demo `_conversation-demo.tsx:133`) reads like a charge under a subscription. The dollar leash survives internally (`budget_leash`, seeded from `policy.budgets.perTaskLeashUsd`); the customer-facing line becomes scope ("a small task", "a large task").
+- **The approval message drops its dollar line.** "Approving sets this run's budget: ~$X.XX" (`apps/console/lib/approval-message.ts:270`, console mirror `approvals-helpers.ts:110,170-172`, landing demo `_conversation-demo.tsx:133`) reads like a charge under a subscription. The dollar leash survives internally (`budget_leash`, seeded from `policy.economics.maxTaskCostUsd`); the customer-facing line becomes scope ("a small task", "a large task").
 - **Trial:** 14 days, no card, Growth-level policy — sell the best experience, then let the plan choice be a downgrade decision. `trial_ends_at` on the account; expiry gates new tasks (not chat) onto the plan-picker.
 
 ## 8. Internal ops — cost becomes telemetry
 
-Nothing about cost measurement is deleted; it changes audience:
+Nothing about cost measurement is deleted; it changes audience. Cost tracking moves from customer billing into an **internal intelligence signal for routing** — which is why the wallet/budget infrastructure fits this design instead of fighting it:
 
-- **Margin meter:** per-account monthly model spend (`aggregateWorkspaceCosts` summed over the account's workspaces) vs. plan price. `budgets.monthlyCogsAlertUsd` (launch priors: $60 Starter, $150 Growth — 75% of MRR) pages us, never the customer. The per-task `budget_leash` remains the hard per-run cap, so worst-case per-task burn is bounded even inside the capacity grant.
+- **AI budget per plan:** `economics.monthlyAiBudgetUsd` — launch priors **$70 Starter, $150 Growth**, custom for Enterprise. The per-account monthly spend (`aggregateWorkspaceCosts` summed over the account's workspaces) hydrates `currentSpendUsd`/`remainingBudgetUsd` at every policy resolution, drives the §4 budget-aware ranking, and pages us as spend approaches the target — never the customer. `economics.maxTaskCostUsd` seeds the existing per-task `budget_leash`, so worst-case per-task burn stays bounded even inside the capacity grant.
 - **Calibration loop:** monthly, from the margin meter + `upgrade_prompt_events`: adjust capacity grants, profile pools, and leash defaults. This is where 350/1,000 stop being priors.
 - **Routing efficiency:** the #1338 observe loop, unchanged, now also read as "are premium tasks worth premium cost" via the `profile_downgraded` tag.
 - The Costs/Budget/Wallet pages and the wallet charge machinery stay code-live but internal-only (reachable by us; slated as the seed of a staff console — out of scope here). The wallet is also the natural **overage mechanism** if fair use ever needs teeth; keeping it dormant preserves that option.
@@ -246,5 +261,5 @@ SSO and self-hosting productization; overage billing (wallet stays dormant); per
 
 ## 12. Open questions
 
-1. **Launch capacity numbers** — ≈350/≈1,000 tasks are priors; confirm or adjust before slice 7 locks the pricing page. Default: ship as written, calibrate monthly.
+1. **Launch economics** — capacity ≈350/≈1,000 tasks and AI budget targets $70/$150 are priors; confirm or adjust before slice 7 locks the pricing page. (Note the $70 target leaves ~$10/mo gross margin on Starter before infrastructure — the calibration loop owns tightening this.) Default: ship as written, calibrate monthly.
 2. **Trial policy level** — spec says Growth-level for 14 days. Default: as written.

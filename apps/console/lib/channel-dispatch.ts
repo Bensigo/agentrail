@@ -1439,18 +1439,28 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
     //      below requires one; an 'intro' (pre-workspace) conversation has no
     //      workspace-anchored row to redirect, so it is simply not relocated
     //
-    // On condition 4 — `buildThreadInbound`'s own `isDM` field ABOVE
-    // deliberately mislabels a real channel mention as a DM too (see its own
-    // doc-comment): harmless there because `decideEngagement`'s mentionsBot
-    // branch short-circuits either way, so the mislabel never changes the
-    // outcome. That imprecision is NOT safe to reuse here — relocating an
-    // actual DM would hand Discord's thread-create endpoint a DM message id,
-    // and Discord DMs cannot have threads at all. `discord-inbound.ts`'s own
-    // header doc guarantees the precise fact instead: a `threadId === null`
-    // row that does NOT mention the bot must be a DM (`screenMessage` only
-    // ever forwards a non-thread, non-mention message here when it is one) —
-    // so `payload.mentionsBot === true` (combined with `threadId === null`)
-    // is the correct "not a DM" proxy for this specific gate.
+    // On condition 4 — this is NOT a DM check, despite appearances. A user
+    // typing `@Jace <question>` INSIDE a DM produces exactly this same shape:
+    // the Gateway reads Discord's raw `mentions` array off the message, and a
+    // DM mention of the bot is present in it just like a channel mention is —
+    // so `payload.mentionsBot === true` is true, and `payload.threadId` is
+    // null, for a DM mention too. `buildThreadInbound`'s own `isDM` field
+    // ABOVE mislabels this same shape as `isDM: true` (see its own
+    // doc-comment) — harmless there only because `decideEngagement`'s
+    // mentionsBot branch short-circuits either way. Nothing upstream of this
+    // gate can actually distinguish a channel mention from a DM mention.
+    //
+    // What makes a DM mention safe here is NOT this gate — it is what
+    // happens after it: a DM mention reaches `createDiscordThreadFromMessage`
+    // below with a DM channel id, Discord rejects thread-create against a DM
+    // (DMs cannot have threads at all), and the ordinary failure branch runs
+    // — unrelocated, answered in the channel (the DM), exactly as before
+    // this feature existed. The cost is one wasted API call and one error
+    // log line per DM mention; there is no split-conversation risk, because
+    // a DM has no separate thread for the reply to land in instead. A future
+    // reader must NOT treat `payload.mentionsBot === true` combined with
+    // `threadId === null` as proof of "not a DM" — it is not; the
+    // rejection-and-fallback below is the actual safety net.
     //
     // On condition 6 — the `/jace` slash-command webhook door
     // (`connectors/discord/webhook/route.ts`) never sets `messageId`: a
@@ -1505,8 +1515,21 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           payload.messageId as string,
           deriveThreadName(guard.text)
         );
-        if (created.ok) {
-          const threadId = created.threadId;
+        // Discord returns `code: 160004` ("A thread has already been created
+        // for this message") when a retry lands after attempt 1 already
+        // created the thread — e.g. the console restarts mid-turn (a Railway
+        // deploy) and `reclaimStaleChannelMessages` requeues the row past the
+        // stale-processing window, so attempt 2's create call finds the
+        // thread already there. Treat this as SUCCESS, not failure: Discord
+        // guarantees a thread's id equals its source message id, so the
+        // existing thread is exactly `payload.messageId` — relocate onto it
+        // and continue as though creation had succeeded. Falling back
+        // instead would answer THIS attempt in the channel while attempt 1's
+        // answer (and the thread's latched engagement row) already live in
+        // the thread — a conversation genuinely split across both places.
+        const alreadyExists = !created.ok && created.code === 160004;
+        if (created.ok || alreadyExists) {
+          const threadId = created.ok ? created.threadId : (payload.messageId as string);
           // Step 2 — THE CORRECTNESS CRUX: resolve the ledger session under
           // the THREAD's key, not the channel-keyed one, and bind the Eve
           // session to THAT row (`ledgerSessionId` is what `bindEveSession`

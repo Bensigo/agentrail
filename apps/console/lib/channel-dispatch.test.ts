@@ -2523,6 +2523,30 @@ describe("dispatchQueuedChannelMessages — discord thread relocation (Jace open
     expect(result).toEqual({ processed: 1, failed: 0 });
   });
 
+  it("derives the thread name from the CLEANSED text, never the raw text (finding B — a thread name is published to the whole channel sidebar)", async () => {
+    mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-pii" });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-750",
+          payload: {
+            chatId: "998877",
+            text: "my card is 4111 1111 1111 1111, can you check this charge?",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-750",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const name = mockCreateDiscordThread.mock.calls[0]?.[3];
+    expect(name).toContain("[redacted:card]");
+    expect(name).not.toContain("4111");
+  });
+
   it("resolves the ledger session and persists engagement under the THREAD's key, and BINDS the Eve session to that row (the correctness crux)", async () => {
     mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-2" });
     mockClaim
@@ -2703,6 +2727,46 @@ describe("dispatchQueuedChannelMessages — discord thread relocation (Jace open
       expect(line).not.toContain("super-secret-interaction-token");
     }
     errorSpy.mockRestore();
+  });
+
+  it("treats Discord code 160004 ('thread already created for this message') as SUCCESS and relocates onto the existing thread, rather than falling back and splitting the conversation (finding A)", async () => {
+    mockCreateDiscordThread.mockResolvedValue({
+      ok: false,
+      error: "Discord rejected the thread-create request",
+      status: 400,
+      code: 160004,
+    });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-900",
+          payload: {
+            chatId: "998877",
+            text: "is the deploy done?",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-900",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    // Discord guarantees a thread's id equals its source message id, so the
+    // existing (already-created) thread is exactly `payload.messageId` —
+    // the turn must be relocated onto it, not left in the channel.
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("msg-900");
+    expect(body.target.conversationId).toBe("msg-900");
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-relocate", "discord", "msg-900");
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "msg-900",
+      dormantSince: null,
+      engagedSpeakerId: "555",
+    });
+    expect(mockBindEveSession).toHaveBeenCalledWith("ledger-msg-900", "eve-sess-1");
   });
 
   it("falls back to the unrelocated turn when DISCORD_BOT_TOKEN is not configured, never even attempting thread creation", async () => {

@@ -8,7 +8,7 @@
  * details: a plan never knows about OpenRouter, model names, or routing
  * algorithms. `AiPolicy` is what a plan resolves to, and it is the ONLY
  * thing that crosses from billing into routing — `resolvePolicyForWorkspace`
- * (slice-2 plan Task 8, not yet built) is where billing disappears.
+ * (`resolve-policy.ts`) is where billing disappears.
  * EVERYTHING downstream of that resolver — the task planner, the
  * entitlement filter, the #1338 ranking engine — receives an `AiPolicy` and
  * is completely unaware that "starter", "growth", "trial", or "enterprise"
@@ -37,8 +37,8 @@
  *   - trial: growth's values (14-day trial sells the best experience).
  *   - enterprise: growth's values as the base — `billing_accounts.policy_overrides`
  *     jsonb specializes it per account, but that merge happens INSIDE
- *     `resolvePolicyForWorkspace` (Task 8), never here; this module supplies
- *     only the base.
+ *     `resolvePolicyForWorkspace` (`resolve-policy.ts`), never here; this
+ *     module supplies only the base.
  *
  * `economics.currentSpendUsd` and `economics.remainingBudgetUsd` are always
  * 0-and-full here — they are hydrated by the resolver from the period's cost
@@ -69,7 +69,29 @@ export type AiPolicy = {
   };
 };
 
-export const PLAN_POLICIES: Record<BillingPlan, AiPolicy> = {
+/**
+ * Recursively `Object.freeze`s every plain-object level of `value`. A
+ * shallow `Object.freeze(PLAN_POLICIES)` only locks the top-level map
+ * (`PLAN_POLICIES.starter = ...` would throw, but
+ * `PLAN_POLICIES.starter.economics.currentSpendUsd = 1` would silently
+ * succeed) — exactly the gap that would let a future resolver "hydrate
+ * economics in place" the way the module doc-comment above warns against.
+ * Deep-freezing turns that from a code-review convention into a runtime
+ * guarantee: every assignment at every nesting level throws a `TypeError`
+ * in strict mode (ES modules are always strict), so in-place mutation of
+ * `PLAN_POLICIES` is now structurally impossible, not just discouraged.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(nested);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export const PLAN_POLICIES: Record<BillingPlan, AiPolicy> = deepFreeze({
   trial: {
     seatLimit: 10,
     monthlyCapacity: 1000,
@@ -118,4 +140,4 @@ export const PLAN_POLICIES: Record<BillingPlan, AiPolicy> = {
       maxTaskCostUsd: 8,
     },
   },
-};
+});

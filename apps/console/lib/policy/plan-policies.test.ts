@@ -88,4 +88,25 @@ describe("PLAN_POLICIES", () => {
       expect(economics.remainingBudgetUsd).toBe(economics.monthlyAiBudgetUsd);
     }
   });
+
+  it("is deep-frozen: mutating any level (top, plan, or nested) throws instead of silently succeeding", () => {
+    expect(() => {
+      (PLAN_POLICIES as Record<string, unknown>).starter = "clobbered";
+    }).toThrow(TypeError);
+    expect(() => {
+      (PLAN_POLICIES.starter as { seatLimit: number }).seatLimit = 999;
+    }).toThrow(TypeError);
+    expect(() => {
+      (PLAN_POLICIES.starter.qualityProfiles as { premium: boolean }).premium = true;
+    }).toThrow(TypeError);
+    expect(() => {
+      (PLAN_POLICIES.starter.routing as { allowEscalation: boolean }).allowEscalation = true;
+    }).toThrow(TypeError);
+    expect(() => {
+      // The exact field a resolver hydrating economics IN PLACE would
+      // write to — this is the specific mutation the freeze exists to rule
+      // out structurally.
+      (PLAN_POLICIES.starter.economics as { currentSpendUsd: number }).currentSpendUsd = 999;
+    }).toThrow(TypeError);
+  });
 });

@@ -13,10 +13,17 @@ vi.mock("@agentrail/db-postgres", () => ({
 // The route imports CONNECTOR_CATALOG straight off connector-helpers.ts (same
 // as production). This mock keeps every REAL catalog entry (none of which
 // declare an `evidence` capability yet — Task 7 adds the first one) and adds
-// ONE test-only fake provider, `fakeobs`, that declares `changes`. This is
-// the "fake in tests" the brief's own interfaces section calls for — it
-// proves the route works against the SAME catalog shape a real provider
-// (Task 5-7) will add, with zero route changes.
+// THREE test-only fake providers, all declaring `changes`. This is the "fake
+// in tests" the brief's own interfaces section calls for — it proves the
+// route works against the SAME catalog shape a real provider (Task 5-7) will
+// add, with zero route changes. `fakeobs2`/`fakeobs3` exist ONLY for the Fix
+// Round 1 multi-provider fan-out tests below; NEITHER is credentialed by
+// default (see `mockGetConnectors`'s default in `beforeEach`), so every
+// pre-existing single-provider test is unaffected — they only enter a
+// fan-out when a test explicitly opts them in. `fakeobs3` is DELIBERATELY
+// never given a `registerAdapter(...)` call anywhere in this file — it
+// exists to simulate a catalog/deploy mismatch (declared+credentialed, no
+// adapter wired up) for the `config_missing` per-provider test.
 vi.mock(
   "../../../../(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers",
   async (importOriginal) => {
@@ -33,6 +40,24 @@ vi.mock(
           connectMethod: "secret",
           label: "Fake Observability",
           description: "test-only fake evidence provider",
+          availability: "available",
+          capabilities: { ingest: false, postResult: false, notify: false, evidence: ["changes"] },
+        },
+        {
+          kind: "fakeobs2",
+          type: "mcp",
+          connectMethod: "secret",
+          label: "Fake Observability 2",
+          description: "test-only SECOND fake evidence provider (multi-provider fan-out tests)",
+          availability: "available",
+          capabilities: { ingest: false, postResult: false, notify: false, evidence: ["changes"] },
+        },
+        {
+          kind: "fakeobs3",
+          type: "mcp",
+          connectMethod: "secret",
+          label: "Fake Observability 3 (never registered)",
+          description: "test-only THIRD fake provider — declared+credentialed, no adapter ever registered (config_missing repro)",
           availability: "available",
           capabilities: { ingest: false, postResult: false, notify: false, evidence: ["changes"] },
         },
@@ -62,6 +87,14 @@ const mockAppendEvidenceItem = vi.mocked(appendEvidenceItem);
 
 const fakeQuery = vi.fn();
 registerAdapter({ provider: "fakeobs", verbs: ["changes"], query: fakeQuery });
+
+// Second fake adapter — module-scoped and registered ONCE, same discipline as
+// `fakeobs` above (stable provider name, per-test-reconfigurable mock, never a
+// throwaway registration) so nothing leaks across tests. Not credentialed by
+// default (see `mockGetConnectors` below) — only the multi-provider tests
+// opt it in by overriding that mock locally.
+const fakeQuery2 = vi.fn();
+registerAdapter({ provider: "fakeobs2", verbs: ["changes"], query: fakeQuery2 });
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const OTHER_WS = "00000000-0000-0000-0000-000000000002";
@@ -93,6 +126,14 @@ const EXISTING_INVESTIGATION = {
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-shared-secret-abc123";
 const ORIGINAL_ENV = process.env[ENV_KEY];
+
+const ONE_PROVIDER_CONNECTOR_ROWS = [
+  { provider: "fakeobs", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+];
+const BOTH_PROVIDERS_CONNECTOR_ROWS = [
+  { provider: "fakeobs", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+  { provider: "fakeobs2", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+];
 
 const WINDOW_START = "2026-07-29T00:00:00Z";
 const WINDOW_END = "2026-07-29T01:00:00Z";
@@ -149,12 +190,14 @@ beforeEach(() => {
   } as never);
   mockGetAnchor.mockResolvedValue(INVESTIGATION_ID);
   mockGetById.mockResolvedValue({ investigation: EXISTING_INVESTIGATION, items: [] } as never);
-  mockGetConnectors.mockResolvedValue([
-    { provider: "fakeobs", enabled: true, hasSecret: true, config: {}, updatedAt: null },
-  ] as never);
+  // Default: only `fakeobs` is credentialed — `fakeobs2` opts in per-test via
+  // BOTH_PROVIDERS_CONNECTOR_ROWS, so every single-provider test below is
+  // unaffected by fakeobs2 merely being registered/declared in the catalog.
+  mockGetConnectors.mockResolvedValue(ONE_PROVIDER_CONNECTOR_ROWS as never);
   mockGetSecret.mockResolvedValue("fake-secret-token");
   mockAppendEvidenceItem.mockResolvedValue({ id: "evidence-item-1" } as never);
   fakeQuery.mockResolvedValue({ ok: true, raw: "run_id=abc123 merged_pr #4 at 2026-07-29T00:30:00Z" });
+  fakeQuery2.mockResolvedValue({ ok: true, raw: "fakeobs2 default raw" });
 });
 
 afterEach(() => {
@@ -314,7 +357,7 @@ describe("GET /api/v1/runner/evidence", () => {
   });
 
   describe("verb query — happy path (persistence, ref echo, data.query echo)", () => {
-    it("200 with one envelope per credentialed provider; ref === the persisted item id", async () => {
+    it("200 with one envelope per credentialed provider; ref === the persisted item id; degradations present but empty", async () => {
       const res = await GET(verbReq({ scope: "my-repo", query: "500", limit: "10" }));
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -322,6 +365,7 @@ describe("GET /api/v1/runner/evidence", () => {
       expect(body.envelopes[0].ref).toBe("evidence-item-1");
       expect(body.envelopes[0].provider).toBe("fakeobs");
       expect(body.envelopes[0].verb).toBe("changes");
+      expect(body.degradations).toEqual([]);
     });
 
     it("queries the adapter with workspaceId, the constructed EvidenceQuery, and the resolved secret", async () => {
@@ -394,12 +438,16 @@ describe("GET /api/v1/runner/evidence", () => {
     });
   });
 
-  describe("verb query — adapter degradation relay", () => {
-    it("relays the adapter's own degraded reason when the only provider fails", async () => {
+  describe("verb query — adapter degradation relay (Fix Round 1: attributed in `degradations`, no top-level collapse)", () => {
+    it("relays the adapter's own degraded reason, attributed to that provider, in `degradations` — NOT the top-level { degraded } shape", async () => {
       fakeQuery.mockResolvedValue({ ok: false, reason: "upstream_error" });
       const res = await GET(verbReq());
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ degraded: true, reason: "upstream_error" });
+      expect(body).toEqual({
+        envelopes: [],
+        degradations: [{ provider: "fakeobs", reason: "upstream_error" }],
+      });
       expect(mockAppendEvidenceItem).not.toHaveBeenCalled();
     });
 
@@ -409,14 +457,121 @@ describe("GET /api/v1/runner/evidence", () => {
       expect(mockAppendEvidenceItem).not.toHaveBeenCalled();
     });
 
-    it("an adapter that THROWS instead of degrading is treated as unreachable, not a 502 (never trust an adapter's contract blindly)", async () => {
+    it("an adapter that THROWS instead of degrading is treated as unreachable, attributed to that provider — never a 502 (never trust an adapter's contract blindly)", async () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       fakeQuery.mockRejectedValue(new Error("ECONNRESET"));
       const res = await GET(verbReq());
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ degraded: true, reason: "unreachable" });
+      expect(body).toEqual({
+        envelopes: [],
+        degradations: [{ provider: "fakeobs", reason: "unreachable" }],
+      });
       expect(mockAppendEvidenceItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("verb query — capture failure (FIX 1: captureEvidence guarded per-provider, capture_failed)", () => {
+    it("a persistence failure for the only provider degrades that provider as capture_failed — HTTP 200, never a 502", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      mockAppendEvidenceItem.mockRejectedValue(new Error("db down mid-write"));
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({
+        envelopes: [],
+        degradations: [{ provider: "fakeobs", reason: "capture_failed" }],
+      });
+    });
+  });
+
+  describe("verb query — multi-provider fan-out (FIX 2: per-provider attribution replaces first-failure-wins)", () => {
+    beforeEach(() => {
+      mockGetConnectors.mockResolvedValue(BOTH_PROVIDERS_CONNECTOR_ROWS as never);
+    });
+
+    it("(a) one provider succeeds, the other adapter-throws: 1 envelope + 1 degradation, both correctly attributed", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      fakeQuery.mockResolvedValue({ ok: true, raw: "fakeobs raw evidence" });
+      fakeQuery2.mockRejectedValue(new Error("ECONNRESET"));
+
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.envelopes).toHaveLength(1);
+      expect(body.envelopes[0].provider).toBe("fakeobs");
+      expect(body.degradations).toEqual([{ provider: "fakeobs2", reason: "unreachable" }]);
+    });
+
+    it("(b) one provider succeeds, capture fails for the other: 1 envelope + capture_failed attributed, HTTP 200", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      fakeQuery.mockResolvedValue({ ok: true, raw: "fakeobs raw evidence" });
+      fakeQuery2.mockResolvedValue({ ok: true, raw: "fakeobs2 raw evidence" });
+      // Distinguish which provider's capture fails by its OWN echoed
+      // data.provider (captureEvidence's persisted body) rather than call
+      // order — robust regardless of fan-out iteration order.
+      mockAppendEvidenceItem.mockImplementation(async (_investigationId, input) => {
+        if ((input.data as { provider?: string }).provider === "fakeobs2") {
+          throw new Error("db down for fakeobs2's write only");
+        }
+        return { id: "evidence-item-1" };
+      });
+
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.envelopes).toHaveLength(1);
+      expect(body.envelopes[0].provider).toBe("fakeobs");
+      expect(body.degradations).toEqual([{ provider: "fakeobs2", reason: "capture_failed" }]);
+    });
+
+    it("(c) both providers fail: envelopes: [] + 2 degradations, one per provider, HTTP 200 (no first-failure-wins collapse)", async () => {
+      fakeQuery.mockResolvedValue({ ok: false, reason: "upstream_error" });
+      fakeQuery2.mockResolvedValue({ ok: false, reason: "unauthorized" });
+
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.envelopes).toEqual([]);
+      expect(body.degradations).toHaveLength(2);
+      expect(body.degradations).toEqual(
+        expect.arrayContaining([
+          { provider: "fakeobs", reason: "upstream_error" },
+          { provider: "fakeobs2", reason: "unauthorized" },
+        ])
+      );
+      expect(mockAppendEvidenceItem).not.toHaveBeenCalled();
+    });
+
+    it("a provider declared+credentialed with no registered adapter degrades as config_missing, attributed to it, alongside a sibling's success", async () => {
+      fakeQuery.mockResolvedValue({ ok: true, raw: "fakeobs raw evidence" });
+      // fakeobs2 is credentialed here too, purely as the noise-provider that
+      // proves a THIRD, no-adapter provider's config_missing doesn't disturb
+      // it — give it a real result so the assertion below can tell the two
+      // apart unambiguously.
+      fakeQuery2.mockResolvedValue({ ok: true, raw: "fakeobs2 raw evidence" });
+      // fakeobs3 IS in the catalog mock (declared, credentialed via the row
+      // below) but NEVER passed to registerAdapter anywhere in this file —
+      // adapterFor("fakeobs3") returns null, exactly simulating a deploy
+      // where the catalog/connector layer outpaced the adapter rollout.
+      mockGetConnectors.mockResolvedValue([
+        ...BOTH_PROVIDERS_CONNECTOR_ROWS,
+        { provider: "fakeobs3", enabled: true, hasSecret: true, config: {}, updatedAt: null },
+      ] as never);
+
+      const res = await GET(verbReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+
+      expect(body.envelopes).toHaveLength(2);
+      expect(body.envelopes.map((e: { provider: string }) => e.provider).sort()).toEqual([
+        "fakeobs",
+        "fakeobs2",
+      ]);
+      expect(body.degradations).toEqual([{ provider: "fakeobs3", reason: "config_missing" }]);
     });
   });
 });

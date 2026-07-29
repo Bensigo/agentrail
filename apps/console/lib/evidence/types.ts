@@ -100,16 +100,38 @@ export interface EvidenceEnvelope {
 }
 
 /**
- * The closed degradation taxonomy (exact strings, pinned by the spec). Two
- * reasons are ROUTE-level (`no_provider`: nothing declared+credentialed for
- * this verb; `no_investigation`: no anchored artifact to persist evidence
- * against — evidence may not be captured off-artifact). The rest are
- * ADAPTER-level — they describe an adapter's OWN outbound call to its
- * upstream (GitHub/Railway/etc; see `EvidenceAdapter.query`'s return type
- * below), relayed verbatim up through the route to the caller, exactly like
- * `apps/jace/agent/subagents/triage/lib/fetch_run_evidence.core.mjs`'s own
- * `classifyStatus` taxonomy relays HTTP-status-derived reasons — same idea,
- * one layer further out (an adapter's upstream, not the console itself).
+ * The closed degradation taxonomy (exact strings, pinned by the spec; ten as
+ * of Fix Round 1's `capture_failed` addition). Three categories:
+ *
+ *   - REQUEST-level (`bad_request`, `no_investigation`, `no_provider`) — the
+ *     route can tell before it ever asks a provider anything: a malformed
+ *     query, no anchored artifact to persist evidence against ("evidence may
+ *     not be captured off-artifact"), or an empty declared+credentialed
+ *     provider list for the verb. These are the ONLY reasons that can appear
+ *     as the route's TOP-LEVEL `{ degraded: true, reason }` response — see
+ *     the route's own doc-comment for the full pre-fan-out/fan-out split
+ *     (`config_missing` moved OUT of this category in Fix Round 1: whether a
+ *     specific provider has a registered adapter is discovered per-provider,
+ *     inside the fan-out, not before it).
+ *   - ADAPTER-level (`unreachable`, `unauthorized`, `upstream_error`,
+ *     `unexpected_status`, `bad_body`, `config_missing`) — describe an
+ *     adapter's OWN outbound call to its upstream (GitHub/Railway/etc; see
+ *     `EvidenceAdapter.query`'s return type below) or the simple fact that no
+ *     adapter is registered for a provider the catalog/connector layer says
+ *     should exist (a deploy/catalog mismatch). Relayed verbatim, attributed
+ *     to the ONE provider they came from, exactly like
+ *     `apps/jace/agent/subagents/triage/lib/fetch_run_evidence.core.mjs`'s own
+ *     `classifyStatus` taxonomy relays HTTP-status-derived reasons — same
+ *     idea, one layer further out (an adapter's upstream, not the console
+ *     itself).
+ *   - PERSISTENCE-level (`capture_failed`) — the adapter call itself
+ *     succeeded (raw evidence WAS retrieved), but `captureEvidence`
+ *     (`envelope.ts` — scrub/cap/digest/`appendEvidenceItem`) threw while
+ *     turning it into a durable item. This is OUR OWN infra failing, not the
+ *     adapter's, but it is still attributed to the ONE provider whose result
+ *     it dropped — see the route's own doc-comment for why this does not
+ *     become a blanket 502 (a sibling provider's already-captured envelope
+ *     must not be discarded because ONE persistence write failed).
  */
 export type EvidenceDegradationReason =
   | "config_missing"
@@ -120,7 +142,8 @@ export type EvidenceDegradationReason =
   | "unauthorized"
   | "upstream_error"
   | "unexpected_status"
-  | "bad_body";
+  | "bad_body"
+  | "capture_failed";
 
 /** Every {@link EvidenceDegradationReason}, for runtime membership checks. */
 export const EVIDENCE_DEGRADATION_REASONS: readonly EvidenceDegradationReason[] = [
@@ -133,11 +156,27 @@ export const EVIDENCE_DEGRADATION_REASONS: readonly EvidenceDegradationReason[] 
   "upstream_error",
   "unexpected_status",
   "bad_body",
+  "capture_failed",
 ];
 
-/** A failed evidence request — always `degraded: true` (never a bare `false`/absent flag) so a caller can discriminate this from `{ envelopes }` by presence of the `degraded` key alone. */
+/** A failed evidence request — always `degraded: true` (never a bare `false`/absent flag) so a caller can discriminate this from `{ envelopes }` by presence of the `degraded` key alone. Used ONLY for the three request-level reasons the route can determine before any fan-out — see {@link EvidenceDegradationReason}'s own doc-comment. */
 export interface EvidenceDegradation {
   degraded: true;
+  reason: EvidenceDegradationReason;
+}
+
+/**
+ * One provider's failure within a verb query's fan-out (Fix Round 1's
+ * `{ envelopes, degradations }` contract — see the route's own doc-comment).
+ * NOT to be confused with {@link EvidenceDegradation} above: this has no
+ * `degraded` key at all — it is always an element of the response's plural
+ * `degradations` ARRAY, never the response's own top-level shape. A response
+ * carrying this array is still a SUCCESSFUL request (HTTP 200, envelopes
+ * present alongside it, however many or few); only the three request-level
+ * reasons ever make the response ITSELF `{ degraded: true, reason }`.
+ */
+export interface EvidenceProviderDegradation {
+  provider: string;
   reason: EvidenceDegradationReason;
 }
 

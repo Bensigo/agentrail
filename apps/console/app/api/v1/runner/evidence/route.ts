@@ -43,43 +43,73 @@
  * foreign-workspace anchor and no anchor at all are the same fact ("nothing
  * here to attach evidence to").
  *
- * DEGRADATION CONTRACT: past the outer auth/session-resolution gate (401 for
- * a bad/missing secret, 400 for a missing `eveSessionId`, 404 for an
- * unresolvable session — all ordinary HTTP-layer failures, unrelated to the
- * domain), every other outcome of the verb-query path is a 200 whose BODY
- * discriminates success (`{ envelopes: EvidenceEnvelope[] }`) from failure
- * (`EvidenceDegradation`, i.e. `{ degraded: true, reason }`) by the presence
- * of the `degraded` key alone — mirroring `runner/investigations`' own
- * `mode=anchor` null-collapse (a legitimate "nothing to report" is a 200, not
- * an error status) and `apps/jace/agent/subagents/triage/lib/
- * fetch_run_evidence.core.mjs`'s "never throw" precedent one layer further
- * out. `bad_request` (missing/invalid `verb`, missing/invalid
- * `windowStart`/`windowEnd`) is validated FIRST, before any DB read, so a
- * malformed request never even reaches the anchor/provider checks. A genuine
- * infrastructure failure (the backing store throwing) is still a distinct
- * 502 `{ error }` — that is OUR fault, not a fact about the investigation or
- * its providers, and callers must not confuse the two.
+ * DEGRADATION CONTRACT (Fix Round 1 — REPLACES the original single-shape
+ * design): past the outer auth/session-resolution gate (401 for a bad/missing
+ * secret, 400 for a missing `eveSessionId`, 404 for an unresolvable session —
+ * all ordinary HTTP-layer failures, unrelated to the domain), the verb-query
+ * path has TWO response shapes, and which one a caller gets depends on
+ * whether the fan-out ever started:
+ *
+ *   - PRE-FAN-OUT (nothing was asked of any provider yet): a REQUEST-level
+ *     problem — malformed `verb`/window params (`bad_request`), no anchored
+ *     investigation to attach evidence to (`no_investigation`), or an empty
+ *     declared+credentialed provider list for the verb (`no_provider`) —
+ *     returns the TOP-LEVEL `EvidenceDegradation` shape,
+ *     `{ degraded: true, reason }`, discriminated from the fan-out shape
+ *     below by the presence of the singular `degraded` key. `bad_request` is
+ *     validated FIRST, before any DB read, so a malformed request never even
+ *     reaches the anchor/provider checks. Mirrors `runner/investigations`'
+ *     own `mode=anchor` null-collapse (a legitimate "nothing to report" is a
+ *     200, not an error status) and `fetch_run_evidence.core.mjs`'s "never
+ *     throw" precedent one layer further out.
+ *   - ONCE THE FAN-OUT RUNS (at least one provider was actually asked — see
+ *     FAN-OUT below): the response is ALWAYS
+ *     `{ envelopes: EvidenceEnvelope[], degradations: EvidenceProviderDegradation[] }`
+ *     — BOTH arrays always present, either possibly empty, NEVER the
+ *     top-level `{ degraded }` shape, no matter how many (including all)
+ *     providers failed. `degradations` (plural array field) is a DIFFERENT
+ *     thing from `EvidenceDegradation`'s singular `degraded` flag — do not
+ *     conflate them; see `types.ts`'s own doc-comment on
+ *     `EvidenceProviderDegradation`.
+ *
+ * A genuine infrastructure failure (the backing store throwing — session/
+ * anchor/investigation/connector-row reads) is still a distinct 502
+ * `{ error }` in EITHER phase — that is OUR fault, not a fact about the
+ * investigation or its providers, and callers must not confuse the two.
  *
  * FAN-OUT: a verb query asks EVERY credentialed provider for that verb (the
  * whole point of the capability layer — the caller asks a QUESTION, not a
  * PROVIDER; "providers never the subject of a sentence" per the spec's
- * capability-voice framing). Each provider that succeeds contributes one
- * envelope; a provider with no registered adapter (a catalog/deploy mismatch
- * — declared but never wired up) degrades that PROVIDER as `config_missing`.
- * When at least one provider succeeds, ALL successes are returned — a
- * partial fan-out is still useful evidence, never discarded because a
- * sibling provider had a bad day. Only when EVERY attempted provider fails
- * does the route degrade the whole response, using the FIRST failure
- * encountered (providers are attempted in `evidenceCapabilities`' own
- * (catalog) order, so this is deterministic) — the closed reason set has no
- * "multiple providers failed for different reasons" shape, and Task 4 ships
- * with at most one real provider in play (the rest arrive in Tasks 5-7), so
- * this is a documented v1 choice rather than a load-bearing contract; revisit
- * if a later task's fan-out needs finer-grained per-provider reporting.
+ * capability-voice framing). The fan-out is considered to have STARTED the
+ * moment the provider list is non-empty (past the `no_provider` check) —
+ * from that point on the response is unconditionally the two-array shape
+ * above; there is no longer any "special-case the total-failure outcome back
+ * to a top-level degradation" branch (Fix Round 1 DELETES the original
+ * first-failure-wins fallback entirely — an all-providers-fail result is
+ * `{ envelopes: [], degradations: [...one entry per provider...] }`, not a
+ * collapsed top-level reason).
+ *
+ * Per provider, exactly one of four things lands in `degradations` (or
+ * nothing, if it succeeds and lands in `envelopes` instead):
+ *   1. No adapter registered for a provider the catalog/connector layer says
+ *      should exist (a deploy/catalog mismatch) → `config_missing`.
+ *   2. The adapter's `query()` call THROWS instead of degrading (its own
+ *      contract says it never should, but a real network call can) →
+ *      `unreachable` — never a blanket 502; one misbehaving provider must not
+ *      take down envelopes already captured from OTHER providers earlier in
+ *      the same fan-out, nor get conflated with OUR OWN infra failing.
+ *   3. The adapter's `query()` call resolves `{ ok: false, reason }` →
+ *      relayed VERBATIM, attributed to that provider.
+ *   4. The adapter succeeded (raw evidence retrieved) but `captureEvidence`
+ *      (scrub → cap → digest → persist) THREW while turning it into a
+ *      durable item → `capture_failed` — same "don't let one provider's
+ *      infra hiccup destroy a sibling's already-good result" reasoning as
+ *      case 2, just one step later in the pipeline.
  *
  * 400 — missing/blank `eveSessionId`. 401 — bad/missing shared secret. 404 —
  * no session, or a session with no resolved workspace yet. 502 — the backing
- * store errored. 200 — everything else, including every degradation.
+ * store errored. 200 — everything else, including every degradation (both
+ * the top-level and the per-provider shapes).
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -99,6 +129,7 @@ import {
   type EvidenceDegradation,
   type EvidenceDegradationReason,
   type EvidenceEnvelope,
+  type EvidenceProviderDegradation,
   type EvidenceQuery,
   type EvidenceVerb,
 } from "../../../../../lib/evidence/types";
@@ -191,15 +222,22 @@ export async function GET(request: NextRequest) {
       return degradedResponse("no_provider");
     }
 
+    // The fan-out has now STARTED (providers is non-empty) — from this point
+    // on the response is UNCONDITIONALLY { envelopes, degradations }, never
+    // the top-level { degraded } shape, no matter how many providers fail.
+    // See this route's own doc-comment (Fix Round 1 — DELETES the original
+    // first-failure-wins fallback entirely).
     const envelopes: EvidenceEnvelope[] = [];
-    let firstFailureReason: EvidenceDegradationReason | null = null;
+    const degradations: EvidenceProviderDegradation[] = [];
 
     for (const provider of providers) {
       const adapter = adapterFor(provider);
       if (!adapter) {
         // Declared in the catalog but no adapter registered for it — a
         // deploy/catalog mismatch, not a fact about the investigation.
-        if (!firstFailureReason) firstFailureReason = "config_missing";
+        // Attributed to THIS provider — a sibling provider with a real
+        // adapter still gets its own fair shot below.
+        degradations.push({ provider, reason: "config_missing" });
         continue;
       }
 
@@ -232,17 +270,26 @@ export async function GET(request: NextRequest) {
         result = { ok: false, reason: "unreachable" };
       }
 
-      if (result.ok) {
+      if (!result.ok) {
+        degradations.push({ provider, reason: result.reason });
+        continue;
+      }
+
+      // FIX 1: guard the persistence call exactly like the adapter call
+      // above — a capture failure is OUR OWN infra failing (envelope.ts's
+      // scrub/cap/digest/appendEvidenceItem pipeline), NOT the adapter's
+      // fault and NOT a reason to 502 the whole request or discard
+      // envelopes already captured from other providers in this same
+      // fan-out. Attributed to this provider as `capture_failed`.
+      try {
         envelopes.push(await captureEvidence(investigationId, provider, q, result.raw));
-      } else if (!firstFailureReason) {
-        firstFailureReason = result.reason;
+      } catch (err) {
+        console.error(`[runner/evidence] captureEvidence failed for provider '${provider}':`, err);
+        degradations.push({ provider, reason: "capture_failed" });
       }
     }
 
-    if (envelopes.length > 0) {
-      return NextResponse.json({ envelopes });
-    }
-    return degradedResponse(firstFailureReason ?? "upstream_error");
+    return NextResponse.json({ envelopes, degradations });
   } catch (err) {
     console.error("[runner/evidence] verb query failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

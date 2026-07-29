@@ -1,7 +1,31 @@
 import { describe, expect, it, test } from "vitest";
 import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { adapterFor, evidenceCapabilities, registerAdapter } from "./registry";
-import { EVIDENCE_VERBS } from "./types";
+import { EVIDENCE_DEGRADATION_REASONS, EVIDENCE_VERBS } from "./types";
+
+describe("EVIDENCE_DEGRADATION_REASONS taxonomy (Fix Round 1: capture_failed added)", () => {
+  it("is the exact ten-reason closed set, including capture_failed", () => {
+    expect([...EVIDENCE_DEGRADATION_REASONS].sort()).toEqual(
+      [
+        "bad_body",
+        "bad_request",
+        "capture_failed",
+        "config_missing",
+        "no_investigation",
+        "no_provider",
+        "unauthorized",
+        "unexpected_status",
+        "unreachable",
+        "upstream_error",
+      ].sort()
+    );
+    expect(EVIDENCE_DEGRADATION_REASONS).toHaveLength(10);
+  });
+
+  it("contains capture_failed exactly once", () => {
+    expect(EVIDENCE_DEGRADATION_REASONS.filter((r) => r === "capture_failed")).toHaveLength(1);
+  });
+});
 
 /**
  * This is the architecture-preserving test (Task 4 brief, Step 1, verbatim):

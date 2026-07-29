@@ -11,8 +11,23 @@ AgentRail/Jace moves from usage billing (prepaid wallet, per-task charging at to
 
 1. **Billing moves above workspaces.** A new `billing_accounts` entity owns the plan, the Stripe subscription, and the seats. Multiple workspaces share one subscription.
 2. **Access control becomes per-person.** Seats are the first per-person gate on the chat path. Today anyone who speaks in a pinned group chat gets full workspace tool access (`resolveConversationWorkspace` doc, `packages/db-postgres/src/queries/jace_sessions.ts:315-320`); seats close that hole as a side effect.
-3. **Plans define an AI policy, never model names.** The router receives a policy (allowed quality profiles, budgets, allowances) — it never sees "Starter" or "Team", and the pricing page never names an OpenRouter model.
+3. **Plans define an AI policy, never model names.** The router receives a policy (allowed quality profiles, budgets, capacity) — it never sees "Starter" or "Growth", and the pricing page never names an OpenRouter model.
 4. **Cost becomes internal.** Customers see delivered value and plan usage. The wallet, budget, and cost_events infrastructure remains as ops telemetry: model spend, margins, routing efficiency.
+
+### Principles
+
+**Subscription plans define customer entitlements, never implementation details.** Plans never know about OpenRouter, model names, or routing algorithms; they define only what a customer is entitled to receive. Billing disappears after policy resolution — everything downstream receives an `AiPolicy` and is completely unaware of Starter, Growth, or Enterprise.
+
+**Every layer knows only its neighbors**, communicating through policies and capabilities rather than implementation details:
+
+```
+Company → Billing Account → Subscription Plan → AI Policy
+  → Task Planner → Routing Context → Quality Profile
+  → Candidate Pool → Ranking Engine (#1338) → OpenRouter
+  → Best Available Model → Engineering Outcome
+```
+
+Billing never leaks into routing; model providers never leak into marketing; the router never knows plan names; the pricing page never knows model names. This is what lets billing, routing, enterprise customization, and model providers evolve independently without another redesign.
 
 Timing: the wallet flow is still behind `NEXT_PUBLIC_BILLING_VERIFIED_LIVE` (default OFF — "Preview: not charging real payments yet", `apps/console/app/(marketing)/_pricing-gate.ts:27`). No customer money has flowed. Reversing the commercial model is cheap exactly once, and it is now.
 
@@ -22,13 +37,16 @@ The product is an AI software engineer for engineering teams — not for individ
 
 | Plan | Price | Seats | Included monthly capacity | Reasoning |
 |---|---|---|---|---|
-| **Starter** | $80/mo | up to 4 | 350 engineering tasks (launch prior) | Standard |
-| **Team** | $200/mo | up to 10 | 1,000 engineering tasks (launch prior) | Premium available |
-| **Enterprise** | Contact | custom | custom | Custom policies |
+| **Starter** | $80/mo | up to 4 | ≈350 engineering tasks (launch prior) | Standard |
+| **Growth** | $200/mo | up to 10 | ≈1,000 engineering tasks (launch prior) | Premium available |
+| **Enterprise** | Contact us | custom | custom | Custom policies |
 
-- Enterprise adds: custom seat count, SSO, self-hosting, SLA, custom AI policies (model allow-lists, routing), dedicated support. v1 provisioning is manual (see §9); the pricing page ships a contact path only.
+"Growth" names the customer journey: Starter → Growth → Enterprise.
+
+- Enterprise has **no public pricing and no checkout flow — it is a conversation.** It adds: custom seat count, SSO, self-hosting, SLA, custom AI policies (model allow-lists, routing), dedicated support. v1 provisioning is manual (see §9); the pricing page ships a contact path only.
 - The seat limit is the primary commercial differentiator; reasoning level is the secondary one.
 - **An "engineering task"** = one run admitted through the runner claim seam (`apps/console/app/api/v1/runner/claim/route.ts`) — exactly the unit the wallet used to charge. Conversation with Jace is not metered and is presented as unlimited.
+- **Capacity is the internal primitive; tasks are the presentation.** Plans grant *monthly capacity units*; v1 spends exactly one unit per admitted task, so the pricing page can honestly say "≈350 engineering tasks". Weighted tasks, AI credits, or compute units later change only the unit-cost function at the admission seam — not the schema, the gates, or the pricing page.
 - Capacity numbers are **launch priors, not commitments to ourselves**: production cost data is near-zero today (prod Langfuse shows ~$0.22 total model spend over the trailing 30 days), so §8's margin meter calibrates them monthly.
 - Marketing sells outcomes, not models (§10). The anchor line: one shipped PR pays for the month.
 
@@ -46,7 +64,7 @@ Company
 
 **`billing_accounts`**
 - `id`, `name`, `created_at`, `updated_at`
-- `plan` enum: `trial | starter | team | enterprise`
+- `plan` enum: `trial | starter | growth | enterprise`
 - `stripe_customer_id`, `stripe_subscription_id`, `subscription_status` (Stripe-mirrored), `current_period_end`
 - `trial_ends_at` (14 days from creation)
 - `policy_overrides jsonb` — enterprise-only deltas merged over the plan's code-defined policy; empty for self-serve plans
@@ -59,45 +77,83 @@ Company
 - Partial unique indexes: one active (unreleased) seat per `(billing_account_id, user_id)` and per `(billing_account_id, chat_identity_id)`
 - Seat count = active rows. No mutable counter — same append-and-derive philosophy as `wallet_transactions` (`packages/db-postgres/src/schema/wallet_transactions.ts:14-38`).
 
-**Capacity counting** is also derived, not stored: count runs per account per calendar month at admission time, via `workspaces.billing_account_id` join. Needs the indexes listed in §9 slice 0.
+**Capacity counting** is also derived, not stored: sum capacity units (v1: one per admitted run) per account per calendar month at admission time, via the `workspaces.billing_account_id` join. Needs the indexes listed in §9 slice 0.
 
-### The AI policy object
+### The AI policy object — the contract between billing and routing
 
-Plans map to policies in code (one constants module, the same pattern as flag columns: fresh read at entry points, no caching — `packages/db-postgres/src/schema/workspaces.ts:82-84`):
+The policy is the central abstraction, not a bag of billing limits. Plans map to policies in code (one constants module, the same pattern as flag columns: fresh read at entry points, no caching — `packages/db-postgres/src/schema/workspaces.ts:82-84`):
 
 ```ts
 type AiPolicy = {
   seatLimit: number;
-  monthlyTaskAllowance: number;
-  profiles: Array<"economy" | "standard" | "premium">;
-  perTaskLeashDefaultUsd: number;      // feeds the existing budget_leash
-  internalCogsAlertUsd: number;        // founder alert line, never customer-facing
+  monthlyCapacity: number;             // capacity units; v1: 1 unit = 1 engineering task
+
+  qualityProfiles: {
+    economy: boolean;
+    standard: boolean;
+    premium: boolean;
+  };
+
+  routing: {
+    defaultProfile: "economy" | "standard" | "premium";
+    allowEscalation: boolean;          // classifier may raise above default when it materially helps
+    allowDowngrade: boolean;           // ranking may drop within entitlement to protect margin
+  };
+
+  budgets: {
+    perTaskLeashUsd: number;           // feeds the existing budget_leash
+    monthlyCogsAlertUsd: number;       // founder alert line, never customer-facing
+  };
 };
 ```
 
-`resolvePolicyForWorkspace(workspaceId)` → account → plan → policy (+ `policy_overrides` merge for enterprise). One resolver, used by every gate in §6. The router and the gates receive an `AiPolicy`; **nothing downstream of the resolver knows plan names.**
+`resolvePolicyForWorkspace(workspaceId)` → account → plan constants, with `policy_overrides` merged **inside the resolver** for enterprise — overrides are resolver *input*, and the resolved `AiPolicy` is flat and final. Billing disappears at this line: every gate in §6 and the whole routing stack receive an `AiPolicy` and nothing else — no plan names, no merge logic, no Stripe state.
 
-## 4. Quality profiles and policy-aware routing
+## 4. Task-level, policy-aware routing
 
-The router's question changes from "what is the best model?" to "what is the best model **this company is entitled to use** for this task?".
+Jace is not a chatbot; it is an AI software engineer. One task involves planning, repository search, reading dozens of files, multiple model calls, tool execution, and validation — so **routing happens once, when the task is admitted, not independently per prompt.** (Conversation is separate: Jace's chat model is process-bound today and out of scope here.) The routing objective is explicit: **maximize the engineering outcome while protecting margin — never "pick the strongest available model."** The strongest model is selected only when it materially increases the probability of completing the task.
 
-**Quality profiles** sit between the policy and model selection:
+Three completely independent stages, each answering one question:
 
-| Profile | Used for | Plan availability |
+| Stage | Question it answers |
+|---|---|
+| **Task classification** (planner) | What level of reasoning would produce the best engineering outcome? |
+| **Policy entitlement** | Is the company entitled to that level? |
+| **Model selection** (ranking engine) | Which available model best satisfies that profile? |
+
+```
+Task → Planner → Execution profile → AI Policy (entitlement)
+     → Quality Profile → Candidate Pool → Ranking Engine (#1338) → OpenRouter
+```
+
+The **planner** builds an execution profile at admission from signals the alignment estimator already computes: task type, expected complexity, repository size, expected context size, historical success on similar work. Selection receives it as a routing context — the router's *only* window into commercial terms is the policy:
+
+```ts
+type RoutingContext = {
+  taskType: string;
+  taskComplexity: "low" | "medium" | "high";
+  repositorySize: number;
+  estimatedContextTokens: number;
+  historicalPerformance: ModelOutcomeStats;  // per (task_type, model), already collected for #1338
+  aiPolicy: AiPolicy;                        // never a plan name
+};
+```
+
+**Quality profiles are the permanent abstraction** — stable while OpenRouter models churn underneath:
+
+| Profile | Used for | Availability |
 |---|---|---|
 | **Economy** | formatting, summaries, documentation, lightweight edits | all plans |
 | **Standard** | PR reviews, bug fixes, everyday engineering | all plans |
-| **Premium** | architecture, large refactors, difficult debugging, deep reasoning | Team, Enterprise |
+| **Premium** | architecture, distributed systems, large refactors, difficult debugging | Growth, Enterprise |
 
-Flow per task: classify task → profile (from `task_type` plus the scope signals the alignment estimator already computes) → intersect with `policy.profiles` → the **existing #1338 selection loop** picks the best model *within the entitled profile's candidate pool* from learned per-`(task_type, model)` success/cost stats.
+Each profile maps to a **candidate pool** — every currently eligible model for that band. The **existing #1338 loop remains the single ranking engine** over the pool, weighing historical success, eval performance, latency, context window, and cost. Design constraints, so this lands as an extension rather than a rewrite:
 
-Design constraints, so this lands as an extension rather than a rewrite:
-
-1. **#1338 is the router.** Profiles are a candidate-pool partition layered onto `candidates.ts`, not a second selection mechanism. The learning loop (PR③ widen+observe, flag OFF) keeps running unchanged inside each pool. The existing cheap/strong routing `tier` evolves into the three profiles rather than coexisting with them.
-2. **Candidate pools stay diverse** (GLM, Kimi, etc. — Claude is a baseline, not a default), per the standing rule on #1338. "Premium" means *best reasoning currently available on OpenRouter for that task type*, whatever that is this month.
-3. **Premium is spent where it pays.** Team does not get the most expensive model per request; the profile classifier decides when premium reasoning materially improves the outcome, and the policy only bounds what is *allowed*.
-4. **Premium-classified task on a Starter plan** runs at Standard (best entitled model) and is tagged `profile_downgraded` internally. We measure the outcome delta before deciding whether Starter ever gets a premium-burst allowance — measurement first, knob later.
-5. Model churn on OpenRouter changes pool membership only. Marketing copy, plan definitions, and policies never change with it.
+1. **#1338 is the ranking engine.** Profiles partition `candidates.ts` into pools, not a second selection mechanism; the learning loop (PR③ widen+observe, flag OFF) runs unchanged inside each pool. The existing cheap/strong routing `tier` evolves into the three profiles rather than coexisting with them. Pool membership stays governed by the candidates registry and its standing rules: pools stay diverse (GLM, Kimi, etc.), Claude is a baseline not a default, and planning-tier models stay out of execute pools.
+2. **Cost-aware inside the pool.** When a cheaper premium-pool candidate delivers nearly the same success probability as the most expensive one, it wins — that is `routing.allowDowngrade` doing its job for margin. Escalation above `routing.defaultProfile` happens only when classification says premium reasoning materially improves the outcome (`routing.allowEscalation`) — a Growth customer does not get the most expensive model per request.
+3. **Premium-classified task on Starter** runs at Standard (best entitled model) and is tagged `profile_downgraded` internally. We measure the outcome delta before deciding whether Starter ever gets a premium-burst allowance — measurement first, knob later.
+4. **Attempt escalation stays within entitlement.** The existing retry-escalation ladder keeps working, but climbs only through profiles the policy allows.
+5. **Model churn on OpenRouter changes pool membership only.** Marketing copy, plan definitions, and policies never change with it.
 
 ## 5. Seats and identity
 
@@ -116,7 +172,7 @@ Rules:
 Four gates, one resolver (§3), all behind a single kill-switch (`BILLING_SUBSCRIPTIONS_ENFORCED`, default OFF until launch). **Billing-infra errors fail open** — serve the user, log loudly. Blocking a paying team because Stripe or Postgres hiccuped is worse than a free turn.
 
 1. **Chat seat gate** — a sibling gate in `processRow`, placed after workspace resolution and the engagement gate, immediately before `applyInputGuardrails` (`apps/console/lib/channel-dispatch.ts:1343`), mirrored in `processConsoleRow` (`:855`). The thread-engagement block is the structural precedent: decide → reply via `sendSystemChannelMessage` (`:151-161`) / `appendJaceMessage` (`:869-875`) → `completeChannelMessage`, never `failChannelMessage` (failing requeues and would replay the prompt). Existing seat-holders are never affected; only a *new* unique person beyond the cap is gated.
-2. **Capacity gate** — at the runner claim route, exactly where wallet admission sits today (`apps/console/app/api/v1/runner/claim/route.ts:151-165`). At 80% of allowance: one soft notice. At 100%: new tasks pause with the upgrade prompt; running work finishes. The customer never sees dollars — capacity is expressed in tasks.
+2. **Capacity gate** — at the runner claim route, exactly where wallet admission sits today (`apps/console/app/api/v1/runner/claim/route.ts:151-165`). At 80% of monthly capacity: one soft notice. At 100%: new tasks pause with the upgrade prompt; running work finishes. The customer never sees dollars — capacity is presented as ≈ engineering tasks.
 3. **Invite gate** — the console invites route refuses invites beyond `seatLimit` with the upgrade CTA.
 4. **Routing gate** — the profile entitlement filter of §4, inside model selection.
 
@@ -131,22 +187,22 @@ Four gates, one resolver (§3), all behind a single kill-switch (`BILLING_SUBSCR
 **Upgrade messaging is product guidance, not a billing error.** One voice at every entry point (Slack, Discord, Telegram, console):
 
 - Seat limit: *"You've reached your team's seat limit. Upgrade your plan or remove an inactive member."* (+ the `/connect` linking hint when the account has unlinked identities)
-- Capacity: *"You've used your included monthly engineering capacity. Upgrade to Team for additional capacity and premium reasoning."*
+- Capacity: *"You've used your included monthly engineering capacity. Upgrade to Growth for additional capacity and premium reasoning."*
 
 **Dashboard says value, plan, and never dollars:**
 
 - The digest's fourth card — "Cost this week" (`apps/console/components/digest-panel.tsx:137-151`) — becomes the **plan card**: seats used X/Y, monthly capacity used (as a fraction, not dollars), renewal date, upgrade CTA. The other three cards (Shipped, In progress, Needs you) already tell the value story.
 - Add a cumulative **"shipped all-time"** strip per workspace (per-workspace variant of `countRunOutcomes`, `packages/db-postgres/src/queries/run_outcomes.ts:98-119` — today it's global and feeds only the landing page). Candidate for the same slice: finally render the built-but-unmounted `HealthRatesPanel` (`apps/console/components/health-rates-panel.tsx:25`, zero call sites) as the reviews/accept-rate value surface.
 - **Costs, Budget, and Wallet leave the customer sidebar** (`apps/console/app/components/sidebar-nav.ts:95-105`). A "Plan & billing" item in the Settings zone replaces them: current plan, seats list with release, capacity meter, Stripe customer-portal link.
-- **The approval message drops its dollar line.** "Approving sets this run's budget: ~$X.XX" (`apps/console/lib/approval-message.ts:270`, console mirror `approvals-helpers.ts:110,170-172`, landing demo `_conversation-demo.tsx:133`) reads like a charge under a subscription. The dollar leash survives internally (`budget_leash`, seeded from `policy.perTaskLeashDefaultUsd`); the customer-facing line becomes scope ("a small task", "a large task").
-- **Trial:** 14 days, no card, Team-level policy — sell the best experience, then let the plan choice be a downgrade decision. `trial_ends_at` on the account; expiry gates new tasks (not chat) onto the plan-picker.
+- **The approval message drops its dollar line.** "Approving sets this run's budget: ~$X.XX" (`apps/console/lib/approval-message.ts:270`, console mirror `approvals-helpers.ts:110,170-172`, landing demo `_conversation-demo.tsx:133`) reads like a charge under a subscription. The dollar leash survives internally (`budget_leash`, seeded from `policy.budgets.perTaskLeashUsd`); the customer-facing line becomes scope ("a small task", "a large task").
+- **Trial:** 14 days, no card, Growth-level policy — sell the best experience, then let the plan choice be a downgrade decision. `trial_ends_at` on the account; expiry gates new tasks (not chat) onto the plan-picker.
 
 ## 8. Internal ops — cost becomes telemetry
 
 Nothing about cost measurement is deleted; it changes audience:
 
-- **Margin meter:** per-account monthly model spend (`aggregateWorkspaceCosts` summed over the account's workspaces) vs. plan price. `policy.internalCogsAlertUsd` (launch priors: $60 Starter, $150 Team — 75% of MRR) pages us, never the customer. The per-task `budget_leash` remains the hard per-run cap, so worst-case per-task burn is bounded even inside the allowance.
-- **Calibration loop:** monthly, from the margin meter + `upgrade_prompt_events`: adjust task allowances, profile pools, and leash defaults. This is where 350/1,000 stop being priors.
+- **Margin meter:** per-account monthly model spend (`aggregateWorkspaceCosts` summed over the account's workspaces) vs. plan price. `budgets.monthlyCogsAlertUsd` (launch priors: $60 Starter, $150 Growth — 75% of MRR) pages us, never the customer. The per-task `budget_leash` remains the hard per-run cap, so worst-case per-task burn is bounded even inside the capacity grant.
+- **Calibration loop:** monthly, from the margin meter + `upgrade_prompt_events`: adjust capacity grants, profile pools, and leash defaults. This is where 350/1,000 stop being priors.
 - **Routing efficiency:** the #1338 observe loop, unchanged, now also read as "are premium tasks worth premium cost" via the `profile_downgraded` tag.
 - The Costs/Budget/Wallet pages and the wallet charge machinery stay code-live but internal-only (reachable by us; slated as the seed of a staff console — out of scope here). The wallet is also the natural **overage mechanism** if fair use ever needs teeth; keeping it dormant preserves that option.
 
@@ -156,7 +212,7 @@ PR-sized slices, in order; each lands behind the kill-switch and none flips cust
 
 - **Slice 0 — counting prerequisites.** Back-stamp the resolved workspace onto `channel_inbox` rows in `processRow` (today `workspace_id` is null for exactly the strangers we must count, and nothing ever updates it). Add indexes: `chat_identities(user_id)`, `channel_inbox(workspace_id, created_at)`. Hoist group-vs-DM to a first-class field at the seam (Telegram's `chatType` is written by the door at `telegram/webhook/route.ts:544` but never read by `extractPayload`, `channel-dispatch.ts:278-333`).
 - **Slice 1 — schema.** `billing_accounts`, `workspaces.billing_account_id`, `seats`, `upgrade_prompt_events`, backfill (one trial account per workspace). Pre-assign the migration journal slot at plan time (stacked-PR house rule; migrations absent from `_journal.json` are silently skipped).
-- **Slice 2 — policy layer.** `PLAN_POLICIES` constants, `resolvePolicyForWorkspace`, profile classification, entitlement filter into `candidates.ts`.
+- **Slice 2 — policy layer.** `PLAN_POLICIES` constants, `resolvePolicyForWorkspace`, task classification → execution profile, entitlement filter into the `candidates.ts` pools.
 - **Slice 3 — Stripe subscriptions.** Real Product/Price objects (today prices are inline `price_data`), checkout `mode: "subscription"`, webhook grows `customer.subscription.*` + `invoice.payment_failed` (the `stripe_events` dedup ledger already exists), customer portal, "Plan & billing" settings page.
 - **Slice 4 — seats.** Claim/merge/release logic, `/connect` seat-collapse, members surface with release.
 - **Slice 5 — gates.** All four §6 gates + prompts + cooldown + the two delivery-trap fixes.
@@ -176,11 +232,11 @@ PR-sized slices, in order; each lands behind the kill-switch and none flips cust
 
 ## 10. Marketing direction (for the slice-7 rewrite)
 
-Sell outcomes; never name models:
+Sell engineering capabilities; never name models:
 
-- **Starter** — an AI software engineer for teams up to 4. Fast everyday engineering: PR reviews, bug fixes, documentation. Standard reasoning.
-- **Team** — everything in Starter, plus premium reasoning for complex engineering work, better architecture support, larger monthly capacity, teams up to 10.
-- **Enterprise** — custom AI policies, custom seats, SSO, self-hosting, dedicated support.
+- **Starter** — an AI software engineer for teams up to 4 people. PR reviews, bug fixing, documentation, everyday engineering work.
+- **Growth** — everything in Starter, plus better performance on complex engineering work: architecture assistance, large refactors, higher monthly engineering capacity, teams up to 10 people.
+- **Enterprise** — contact us. Custom seat counts, custom AI policies, SSO, self-hosting, SLA, dedicated support.
 
 Underlying OpenRouter models change freely without touching this page.
 
@@ -190,6 +246,5 @@ SSO and self-hosting productization; overage billing (wallet stays dormant); per
 
 ## 12. Open questions
 
-1. **Launch capacity numbers** — 350/1,000 are priors; confirm or adjust before slice 7 locks the pricing page. Default: ship as written, calibrate monthly.
-2. **Trial policy level** — spec says Team-level for 14 days. Default: as written.
-3. **Enterprise floor** — whether the contact lane quotes a starting price. Default: no public floor at launch.
+1. **Launch capacity numbers** — ≈350/≈1,000 tasks are priors; confirm or adjust before slice 7 locks the pricing page. Default: ship as written, calibrate monthly.
+2. **Trial policy level** — spec says Growth-level for 14 days. Default: as written.

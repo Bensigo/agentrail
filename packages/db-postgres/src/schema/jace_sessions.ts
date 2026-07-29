@@ -14,6 +14,7 @@ import { workspaces } from "./workspaces.js";
 import { chatIdentities } from "./chat_identities.js";
 import { queueEntries } from "./queue_entries.js";
 import { briefs } from "./briefs.js";
+import { investigations } from "./investigations.js";
 
 /**
  * Jace session map + pending approvals (spec §4).
@@ -61,6 +62,28 @@ import { briefs } from "./briefs.js";
  * session row itself is still perfectly valid, it just loses its pinned idea
  * and the next relevant turn re-runs the shortlist+confirm flow (steps 1-2)
  * rather than the write ever failing or the session becoming unusable.
+ *
+ * `anchored_investigation_id` is a THIRD, UNRELATED kind of anchor — do not
+ * conflate it with `workspace_id`/`chat_identity_id` (tenant) or
+ * `anchored_brief_id` (product idea) above. It anchors a session to a
+ * PRODUCTION INCIDENT (which `investigations` row this conversation is
+ * about) — the conversation→investigation anchor from the debugging design
+ * spec (docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md,
+ * spec PR #1501, "Investigation artifact" section). Same one-disambiguation-
+ * signal reasoning as `anchored_brief_id`: intake runs
+ * `fetch_investigations(mode:"anchor")` first, always; on no hit it
+ * FTS-searches symptom signatures and confirms once with the human ("this
+ * sounds like INV `checkout-500s` — continue it, or new?"), then writes the
+ * confirmed investigation id here so every later turn in the SAME
+ * conversation skips straight to it, re-confirming only on drift. Nullable
+ * and uncoupled from any CHECK for the same reason `anchored_brief_id` is:
+ * most sessions never touch an investigation, and an investigation cannot
+ * exist without a workspace already anchored (`investigations.workspaceId`),
+ * so this anchor is meaningless without that one already in place. `ON
+ * DELETE SET NULL`: a deleted investigation must not orphan or break the
+ * owning conversation — the next relevant turn just re-runs the anchor
+ * confirm flow instead of the write ever failing or the session becoming
+ * unusable.
  *
  * `jace_approvals` records each Eve `waiting` inputRequest we surfaced to the
  * channel as approve/deny buttons. `callback_token` is a short random token the
@@ -111,6 +134,17 @@ export const jaceSessions = pgTable(
     anchoredBriefId: uuid("anchored_brief_id").references(() => briefs.id, {
       onDelete: "set null",
     }),
+    // Conversation → investigation anchor (debugging design spec,
+    // "Investigation artifact" section) — a THIRD, UNRELATED kind of anchor
+    // from workspaceId/chatIdentityId/anchoredBriefId above; see this
+    // table's doc-comment for the full distinction. Null for the vast
+    // majority of sessions (those that never open an investigation). ON
+    // DELETE SET NULL: a deleted investigation must not orphan or break a
+    // live session.
+    anchoredInvestigationId: uuid("anchored_investigation_id").references(
+      () => investigations.id,
+      { onDelete: "set null" }
+    ),
     status: text("status").notNull().default("active"), // active|waiting|closed
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .notNull()

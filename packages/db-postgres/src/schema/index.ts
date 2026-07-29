@@ -30,3 +30,4 @@ export * from "./stripe_events.js";
 export * from "./queue_attempts.js";
 export * from "./briefs.js";
 export * from "./guardrail_events.js";
+export * from "./investigations.js";

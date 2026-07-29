@@ -1,4 +1,4 @@
-# Investigation — triage grown to production incidents
+# Debugging — triage becomes Jace's debugging specialist
 
 Status: design. v1 cut in "Out of scope". Epic + slices to be filed via
 `to-issues` against this spec.
@@ -14,12 +14,16 @@ history, no logs, no metrics, no traces, no way to correlate a symptom with
 the change that caused it. When production breaks, the human debugs alone and
 Jace — the agent that shipped the change — has nothing to say.
 
-**This spec is not a new sibling capability.** It is what triage becomes:
-investigation of why something is failing, grown from run-scoped diagnosis to
-production incidents, with logs, deploy history, metrics, traces, recurrence,
-and a durable artifact. Investigating a failed run remains the smallest case
-of the same capability (see "One capability, two tiers"). qa stays distinct —
-qa verifies what shipped; investigation explains why something fails.
+**This spec introduces no new agent.** It turns the existing `triage`
+subagent into **Jace's debugging specialist** — the same deliberate identity
+qa holds for validation: **qa validates software; triage debugs software.**
+Run diagnosis is one *mode* of debugging, not the definition of the agent;
+everything here — durable investigations, evidence providers, hypothesis
+ledgers, discriminating tests, recurrence, qa collaboration — is what makes
+triage a full debugger. The directory/tool name `triage` is kept for wire and
+calibration continuity (verdict scores, run-outcome replies); the identity,
+description, and prompt become the debugger. Implementation evolves in
+stages for safety, but the architectural identity is debugging from day one.
 
 The trap in fixing this is integration-first thinking: bolt on Sentry, bolt on
 Datadog, and let the model freestyle over whatever comes back. The research
@@ -96,14 +100,26 @@ Console connectors        (credentials, catalog, owner/admin managed)
         ↓
 Evidence capability layer (typed verbs, adapters, envelope — console seams)
         ↓
-Investigator subagents    (mission-typed, advisory-only, isolated)
+triage — THE DEBUGGER    (mission execution: fans out nested mission
+  ├─ change/               investigators, correlates evidence, returns
+  ├─ anomaly/               structured round reports; run diagnosis is
+  └─ hypothesis/, probe/    its fast mode)                    [post-v1]
         ↓
-Root agent — investigation flow (interview, ledger, reasoning, verdict, handoff)
+Root agent               (interface + custodian: witness interview, artifact
+                          custody, verdict gate, handoff, channel voice)
         ↓
 Investigation artifact    (durable source of truth; the conversation is not)
         ↓
 Human-confirmed knowledge (episodic always; semantic only through the gate)
 ```
+
+Two-level coordination, still no workflow engine: **root decides rounds**
+(reading the ledger and the conversation), **the debugger decides within a
+round** (which nested investigators, which verbs). The conversation cannot
+live inside a one-shot subagent, so the debugger works in rounds: root hands
+it a mission — phase, window, capability map, current ledger digest,
+playbook extract — and it returns a round report; root persists, talks to
+the witness, decides the next round.
 
 Knowledge boundaries, pinned:
 
@@ -220,12 +236,12 @@ relaying anything, and every `evidence_ref` in the ledger is dereferenceable
 later — by a resumed session, another engineer, or an auditor. Evidence is
 also *re-derivable*: the ref stores the query that produced it.
 
-## Investigator subagents
+## The debugger's mission investigators
 
 Mission-typed, never source-typed. **Investigators answer questions; providers
 supply evidence.** A per-provider agent roster (Sentry agent, Datadog agent,
-…) would push cross-source correlation — the actual debugging — back into
-root and grow the roster with every integration. Four missions are the stable
+…) would push cross-source correlation — the actual debugging — back up a
+level and grow the roster with every integration. Four missions are the stable
 set; each is defined by a question whose answer-shape is fixed, so providers
 change the answer's resolution, never its shape:
 
@@ -249,26 +265,34 @@ change the answer's resolution, never its shape:
   what you observed", GET-only defaults, never credentials, never destructive
   flows) and the browser sidecar connections attach only here.
 
-All four are declared Eve subagents (`agent/subagents/<name>/`) in the
+All four are declared Eve subagents **nested inside the debugger**
+(`agent/subagents/triage/subagents/<name>/` — nesting is Eve-native) in the
 established shape: `outputSchema` task mode, `disableTool()` sentinels
 stripping the default harness, thin authored tools over shared `lib/*.core.mjs`
-cores, purely advisory. **Root's autosave is the only model-side artifact
-writer; the evidence route is the only server-side one.** Deliberately not
-investigators: the recurrence check (one FTS call), the witness interview,
-hypothesis generation, timeline assembly, and the verdict — root's
-non-delegable reasoning. The agent that never met the witness cannot own the
-conclusion.
+cores. They are advisory to their parent: they return structured findings to
+the debugger, which correlates them into one round report for root. The
+debugger itself also carries the evidence verb tools, so a narrow
+discriminating test is one verb call, no nested dispatch. **Root's autosave
+remains the only model-side artifact writer; the evidence route the only
+server-side one** — the debugger proposes ledger updates with receipts in its
+round report, root adjudicates and persists. (If transcription proves lossy
+in practice, granting the debugger `save_investigation` is a contained
+relaxation: every invariant lives in the route, not in who calls it.)
+Non-delegable to any subagent: the witness interview, anchoring, hypothesis
+adjudication, the verdict, and the gated handoff — the agent that never met
+the witness cannot own the conclusion.
 
 ## Coordination — who decides what runs
 
-**Root decides, dynamically, every dispatch.** There is no workflow engine;
-the model reasons over the process. Three layers keep that disciplined:
+**Root decides rounds; the debugger decides within a round.** There is no
+workflow engine; the model reasons over the process at both levels. Three
+layers keep that disciplined:
 
 - The **debug skill defines the grammar**: hard rules, few and checkable.
   Recurrence check before external evidence. Change sweep first once a window
   exists (cheapest, highest prior). Hypothesis-test missions only for
-  hypotheses already in the ledger. Every dispatch's mission names the
-  question, the window, and the capability map. Autosave between dispatches.
+  hypotheses already in the ledger. Every round's mission names the
+  question, the window, and the capability map. Autosave between rounds.
 - **Playbooks bias openings, never script.** Named recipes for recurring
   incident shapes ("regression-after-deploy", "latency-creep",
   "cannot-reproduce") ship as reference files under the debug skill and map
@@ -282,23 +306,28 @@ the model reasons over the process. Three layers keep that disciplined:
   killed turn, a compaction, or a channel switch resumes mid-loop from the
   artifact — resumability comes from state, not from an engine.
 
-Parallelism is Eve-native: multiple investigator calls emitted in one
-response run concurrently (fan-out is the documented batch behavior;
-`change` + `anomaly` sweep together, hypothesis tests fan out per live
-hypothesis later). Investigators sit at depth 1 of the default depth cap 3.
+Parallelism is Eve-native: the debugger emits multiple nested-investigator
+calls in one response and they run concurrently (fan-out is the documented
+batch behavior; `change` + `anomaly` sweep together, hypothesis tests fan
+out per live hypothesis later). Depths under the default cap of 3: root 0,
+debugger 1, mission investigators 2.
 
-## One capability, two tiers — what happens to triage
+## One debugger, two modes
 
-Investigation is one capability at two maturity/cost tiers, not two concepts:
+The debugger is one agent with one discipline at two cost levels — run
+diagnosis is a *mode* of debugging, not a separate concept:
 
-- **Fast tier — run diagnosis.** Today's `triage` subagent, one-shot and
-  cheap: "why did run 123 fail?" → bundle → diagnosis in seconds. **v1 does
-  not modify it.** It is live, calibrated (#1204 verdict scores), and wired
-  into run-outcome replies; the deep tier lands beside it, not through it.
-- **Deep tier — production investigation.** Everything in this spec: durable
-  artifact, evidence layer, mission investigators, verdict gates.
+- **Run mode.** Today's behavior: "why did run 123 fail?" → bundle →
+  diagnosis in seconds, still driven by `fetch_run_evidence`. **v1 keeps this
+  behavior-stable**: the output schema widens *additively* to a
+  mode-discriminated union (run-mode fields byte-identical), pinned by a
+  regression test against the verdict-score hook and the calibration joins.
+- **Deep mode.** Production investigation, executed in rounds: root hands a
+  mission, the debugger fans out its nested investigators, correlates, and
+  returns a `ROUND_REPORT` — findings, proposed hypothesis updates with
+  evidence refs, gaps, suggested next round.
 
-Three seams join the tiers in v1:
+Three seams join the modes in v1:
 
 - **The factory becomes an evidence provider.** An internal, always-on,
   credential-less `factory` adapter exposes what the failure bundle already
@@ -308,20 +337,21 @@ Three seams join the tiers in v1:
   other evidence, through the same envelope.
 - **Escalation is a typed handoff.** When a run failure recurs, looks
   production-impacting, or resists one-shot diagnosis, root offers to open an
-  investigation; the triage diagnosis enters the ledger as a cited `finding`
-  with its `evidence_refs` and provenance — the same shape as the qa handoff.
-- **Routing prose becomes tier guidance.** The instructions boundary is not
-  "triage vs debugging" but one rule: run-scoped question → fast tier;
-  recurrence, production impact, or a failed quick diagnosis → escalate to
-  the deep tier.
+  investigation; the run-mode diagnosis enters the ledger as a cited
+  `finding` with its `evidence_refs` and provenance — the same shape as the
+  qa handoff.
+- **Routing prose becomes mode guidance.** One rule: run-scoped question →
+  run mode; recurrence, production impact, or a failed quick diagnosis →
+  open an investigation and work in deep mode.
 
-**Convergence (planned, post-v1):** once investigations are proven, the fast
-tier is re-implemented as an auto-opened lightweight investigation
-(`opened_by: run-outcome`, derived slug, low severity, no witness interview —
-the bundle IS the witness statement), run diagnoses start compounding in the
-episodic layer, and the standalone `triage` subagent is re-missioned or
-retired. That step is named here so it is an evolution, not drift — but it
-touches a live calibrated path, so it waits for the deep tier to earn trust.
+**Convergence (planned, post-v1):** once deep mode is proven, run mode is
+re-plumbed onto the `factory` evidence verbs and auto-opens a lightweight
+investigation per diagnosis (`opened_by: run-outcome`, derived slug, low
+severity, no witness interview — the bundle IS the witness statement), so run
+diagnoses start compounding in the episodic layer, and the private
+`fetch_run_evidence` tool retires. Named here so it is an evolution, not
+drift — but it touches a live calibrated path, so it waits for deep mode to
+earn trust.
 
 ## Investigation artifact
 
@@ -384,9 +414,9 @@ verdict/status field outright with a 400 — verdicts travel only through
   draft's stated intent) keyed on the session's **anchored investigation** —
   server-side, never model-asserted. This wiring ships in v1 because
   `brief_work_links` proved that an unwired link table stays dead.
-- The root `instructions.md` gains an Investigation section: load the `debug`
-  skill for incident-shaped messages; tier guidance — run-scoped question →
-  fast tier (`triage`), escalating to a full investigation on recurrence,
+- The root `instructions.md` gains a Debugging section: load the `debug`
+  skill for incident-shaped messages; mode guidance — run-scoped question →
+  the debugger's run mode, escalating to a full investigation on recurrence,
   production impact, or a failed quick diagnosis; shipped change needs
   checking → qa.
 
@@ -426,10 +456,10 @@ metadata as the offline join key — the #1204/#1205 calibration pattern.
 Fix-holds / reopen-rate calibration is the later offline job; the scores land
 in v1 so it has data.
 
-## QA ↔ Investigation collaboration
+## QA ↔ Debugger collaboration
 
-Not silos, not a merger. The boundary stays crisp — **qa judges what a run
-shipped; investigation explains why something is failing** — and collaboration
+Not silos, not a merger. The boundary stays crisp — **qa validates software;
+triage debugs software** — and collaboration
 happens through root and the artifact, never agent-to-agent. Two typed
 handoffs, both riding existing machinery (qa dispatch, run-outcome channel,
 `finding` items), both v1:
@@ -455,13 +485,23 @@ schema.
 
 ## Eve/Jace fit (file-level)
 
-- Skill: `apps/jace/agent/skills/debug/SKILL.md` + `references/<playbook>.md`,
-  loaded via `load_skill` — grill-me's sibling.
-- Subagents: `apps/jace/agent/subagents/{change,anomaly}/` (v1), each with
-  `agent.ts` (description-routed, `outputSchema`), `instructions.md`,
+- Root skill: `apps/jace/agent/skills/debug/SKILL.md` — the FLOW grammar
+  (interview, anchoring, rounds, gates, mode routing, handoff), loaded via
+  `load_skill` — grill-me's sibling. The investigation DISCIPLINE and the
+  playbooks live with the specialist: `agent/subagents/triage/skills/`
+  (per-subagent skills are Eve-supported), so the debugger carries its own
+  craft.
+- The debugger: `apps/jace/agent/subagents/triage/` — identity, description,
+  and `instructions.md` rewritten to the debugging specialist; output schema
+  widened additively to a mode-discriminated union (run mode byte-stable,
+  `ROUND_REPORT` added); evidence verb tools + `fetch_run_evidence` both
+  present in v1.
+- Nested mission investigators:
+  `apps/jace/agent/subagents/triage/subagents/{change,anomaly}/` (v1), each
+  with `agent.ts` (description-routed, `outputSchema`), `instructions.md`,
   `lib/*.core.mjs` schemas + pure logic, `tools/` = verb wrappers +
-  `disableTool()` sentinels. Directory name = tool name; no collisions with
-  authored tools.
+  `disableTool()` sentinels. Directory name = tool name within the parent's
+  namespace.
 - Evidence tools send `ctx.session.parent?.rootSessionId ?? ctx.session.id` —
   the reviewer-tool seam, because child sessions have no `jace_sessions` row.
 - Console: `GET /api/v1/runner/evidence` (+ `mode=capabilities`) and
@@ -567,17 +607,22 @@ three refusal classes), `appendEvidenceItem` (route-only writer),
 
 **Jace (v1)**
 
-- `debug` skill + three playbook references; instructions.md Investigation
-  section with the tier + qa guidance.
-- Tools: `fetch_investigations`, `save_investigation`, `record_verdict`.
-- Subagents: `change`, `anomaly` — schemas `CHANGE_SCHEMA` (ranked candidates,
-  each with refs + why-relevant), `ANOMALY_SCHEMA` (deviations, signatures,
-  normal surfaces, first-deviation, all ref-cited), degraded fields
-  throughout; evidence verb tools for v1 verbs only.
+- `debug` root skill (flow grammar) + the debugger's own skills (discipline +
+  three playbooks); instructions.md Debugging section with mode + qa
+  guidance.
+- Root tools: `fetch_investigations`, `save_investigation`, `record_verdict`.
+- The debugger (`triage`): identity/prompt rewrite, mode-discriminated union
+  schema (run mode byte-stable, regression-pinned against the verdict hook
+  and calibration joins; `ROUND_REPORT` added), evidence verb tools for v1
+  verbs.
+- Nested investigators: `change`, `anomaly` — schemas `CHANGE_SCHEMA` (ranked
+  candidates, each with refs + why-relevant), `ANOMALY_SCHEMA` (deviations,
+  signatures, normal surfaces, first-deviation, all ref-cited), degraded
+  fields throughout; evidence verb tools for v1 verbs only.
 - **Discriminating tests in v1 route through narrowed `change`/`anomaly`
-  missions** ("did pool saturation move at 14:02?" is a deviation-shaped
-  question). The dedicated `hypothesis` and `probe` vessels are the first
-  post-v1 additions and change no foundations.
+  missions within a round** ("did pool saturation move at 14:02?" is a
+  deviation-shaped question). The dedicated `hypothesis` and `probe` vessels
+  are the first post-v1 additions and change no foundations.
 - Langfuse: `intent:debugging` trace tag; investigator scores via the
   existing verdict-score hook; `investigation_verdict` score on
   `record_verdict`.
@@ -621,8 +666,13 @@ three refusal classes), `appendEvidenceItem` (route-only writer),
 - A triage diagnosis escalates the same way: the diagnosis lands as a cited
   `finding`, and the `factory` provider answers `changes`/`search_events`
   for the run's window through the standard envelope.
-- The fast tier is unmodified: run-outcome replies and triage verdict
-  scoring behave byte-identically with the deep tier deployed.
+- Run mode is behavior-stable: run-outcome replies and triage verdict
+  scoring are byte-identical after the schema union lands
+  (regression-pinned).
+- A deep-mode round trip: root dispatches one mission; the debugger fans out
+  nested `change` + `anomaly` concurrently and returns one round report;
+  root persists it; every proposed hypothesis update cites evidence captured
+  during that round.
 - Langfuse: debugging traces carry the intent tag; `investigation_verdict`
   scores carry `investigation_id` as a string.
 
@@ -646,7 +696,11 @@ three refusal classes), `appendEvidenceItem` (route-only writer),
   families). Named so the discovery shape nests them; not built.
 - **Secret-key rotation** for `CONNECTOR_SECRET_KEY`. Pre-existing gap,
   tracked separately; this spec only widens what it protects.
-- **Tier convergence.** Re-implementing the fast tier as auto-opened
-  lightweight investigations and retiring/re-missioning the standalone
-  `triage` subagent waits until the deep tier has earned trust in
+- **Mode convergence.** Re-plumbing run mode onto the `factory` evidence
+  verbs, auto-opening lightweight investigations per run diagnosis, and
+  retiring `fetch_run_evidence` waits until deep mode has earned trust in
   production — it modifies a live, calibrated path.
+- **Debugger-direct ledger writes.** v1 keeps root as the sole model-side
+  artifact writer; granting the debugger `save_investigation` is a named,
+  contained relaxation if round-report transcription proves lossy (all
+  invariants live in the route).

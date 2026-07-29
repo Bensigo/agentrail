@@ -557,6 +557,17 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   the tool, and a finding you send without a severity is dropped too. So
   relay the reviewer's severity as-is rather than re-judging it or
   pre-filtering the list yourself.
+- **Relay `acCoverage` verbatim too.** Pass the reviewer's `acCoverage` to
+  `post_pr_review` exactly as returned — never re-judge, renumber, reword,
+  or trim it. The tool renders it into the posted summary as a per-AC
+  checklist (entries with `issueNumber: null` are labeled as coming from
+  the PR description — a self-stated checklist, not a ticket's).
+- **Present the coverage in chat as well:** one line per AC with its
+  status, alongside the findings rundown. When `acCoverage` is `null`,
+  say plainly the review was diff-only, echoing the reviewer's own reason
+  — no linked issue, the linked-issue lookup failed, no recognizable ACs,
+  or ACs present but not reliably parseable. Do not dress a diff-only
+  review up as goal-verified.
 - **Say what didn't get posted.** The response's `droppedComments` is how
   many findings were withheld as minor/nit. Report the number — "posted 2
   blockers; 3 minor findings I left off" — instead of implying the whole

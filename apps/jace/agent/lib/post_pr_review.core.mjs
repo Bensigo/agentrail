@@ -39,19 +39,24 @@
 // fetch_pr_diff.core.mjs, which runs inside a declared subagent's own child
 // session (see that module's doc-comment).
 //
-// `repo` / `prNumber` / `summary` / `comments` are model-supplied — the
-// reviewer subagent's findings, relayed by root. Safe without a human in the
-// loop for the two structural reasons in this file's header (advisory-only
-// event, server-scoped repo), plus hardenUntrusted() below.
+// `repo` / `prNumber` / `summary` / `comments` / `acCoverage` are
+// model-supplied — the reviewer subagent's findings and per-AC coverage
+// judgments, relayed by root verbatim. Safe without a human in the loop for
+// the two structural reasons in this file's header (advisory-only event,
+// server-scoped repo), plus hardenUntrusted() below.
 //
 // hardenUntrusted() runs over `summary` and every comment `body` before they
-// ever leave this module: the reviewer's findings are shaped by reading
+// ever leave this module: the reviewer's findings — and its acCoverage
+// judgments, both criterion text and evidence — are shaped by reading
 // UNTRUSTED diff content (root wiring's own rule — a hostile PR could try to
 // seed a prompt-injection payload that rides all the way to a POSTED GITHUB
 // COMMENT a human later reads), so this mirrors create_issue's own
 // defense-in-depth backstop rather than trusting instructions.md alone. This
 // matters MORE now than it did behind the gate — it is the only thing between
 // a hostile diff and posted text, with no human reading the draft first.
+// `acCoverage` is rendered into `summary` (composeSummaryWithCoverage, in
+// runPostPrReview below) BEFORE that hardening runs, precisely so its text
+// never skips the sanitizer.
 //
 // Failure posture: every non-2xx status is mapped to a stable `reason` + a
 // relayable `message` — the console's OWN honest error text when the body
@@ -77,6 +82,87 @@ export const COMMENT_BODY_MAX_LEN = 2000;
 // quiet about the rest, so minor and nit are dropped here rather than left to
 // the model's discretion.
 export const POSTABLE_SEVERITIES = ["blocker", "major"];
+
+// Deterministic renderers for the reviewer's acCoverage — one line per AC,
+// the status phrases fixed here (never model-supplied) so the posted text
+// can't drift from the diff-honest vocabulary the reviewer's contract pins.
+const AC_STATUS_RENDER = {
+  addressed: (c) => `- ✅ ${c.criterion}${c.evidence ? ` — ${c.evidence}` : ""}`,
+  not_in_diff: (c) => `- ❌ ${c.criterion} — not visibly addressed in this diff`,
+  unclear: (c) => `- ❓ ${c.criterion} — can't tell from the diff`,
+};
+
+/**
+ * Render the coverage checklist: issue-numbered groups ascending, then the
+ * PR-description group (issueNumber: null) last, labeled as self-stated.
+ * Malformed entries are skipped, never guessed at. Returns "" when there is
+ * nothing renderable.
+ * @param {unknown} acCoverage
+ * @returns {string}
+ */
+export function renderAcCoverage(acCoverage) {
+  if (!Array.isArray(acCoverage) || acCoverage.length === 0) return "";
+  const groups = new Map();
+  for (const entry of acCoverage) {
+    if (!entry || typeof entry !== "object") continue;
+    const render = AC_STATUS_RENDER[entry.status];
+    if (!render) continue;
+    if (typeof entry.criterion !== "string" || entry.criterion.trim().length === 0) continue;
+    const key = typeof entry.issueNumber === "number" ? entry.issueNumber : null;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(render({
+      criterion: entry.criterion.trim(),
+      evidence: typeof entry.evidence === "string" ? entry.evidence.trim() : "",
+    }));
+  }
+  if (groups.size === 0) return "";
+  const issueNumbers = [...groups.keys()].filter((k) => k !== null).sort((a, b) => a - b);
+  const parts = [];
+  for (const n of issueNumbers) {
+    parts.push(`**Acceptance criteria — issue #${n}:**\n${groups.get(n).join("\n")}`);
+  }
+  if (groups.has(null)) {
+    parts.push(`**Acceptance criteria — from the PR description:**\n${groups.get(null).join("\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Count renderable entries per status — the fold line's numbers.
+ * @param {unknown} acCoverage
+ */
+export function coverageCounts(acCoverage) {
+  const counts = { total: 0, addressed: 0, not_in_diff: 0, unclear: 0 };
+  if (!Array.isArray(acCoverage)) return counts;
+  for (const entry of acCoverage) {
+    if (!entry || typeof entry !== "object" || !AC_STATUS_RENDER[entry.status]) continue;
+    if (typeof entry.criterion !== "string" || entry.criterion.trim().length === 0) continue;
+    counts.total += 1;
+    counts[entry.status] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Append the coverage block under the summary. If the composed text would
+ * exceed SUMMARY_MAX_LEN (so hardenUntrusted would truncate mid-checklist),
+ * fold the WHOLE block to a one-line count instead — a cut-off checklist
+ * reads as a complete one, which is worse than a fold that says where the
+ * detail lives.
+ * @param {string} summary
+ * @param {unknown} acCoverage
+ * @returns {string}
+ */
+export function composeSummaryWithCoverage(summary, acCoverage) {
+  const base = String(summary ?? "");
+  const block = renderAcCoverage(acCoverage);
+  if (!block) return base;
+  const composed = base.trim().length > 0 ? `${base}\n\n${block}` : block;
+  if (composed.length <= SUMMARY_MAX_LEN) return composed;
+  const c = coverageCounts(acCoverage);
+  const countLine = `AC coverage: ${c.addressed}/${c.total} addressed, ${c.not_in_diff} not in diff, ${c.unclear} unclear — details in chat.`;
+  return base.trim().length > 0 ? `${base}\n\n${countLine}` : countLine;
+}
 
 const REASON_MESSAGES = {
   config_missing: "the review couldn't be posted — Jace's console connection isn't configured",
@@ -233,8 +319,17 @@ export function sanitizeReviewInput(summary, comments) {
  *                                            inlineCommentsPosted,
  *                                            foldedComments, droppedComments }
  *
+ * `acCoverage` (default null): the reviewer's per-AC coverage judgments,
+ * relayed by root verbatim — reviewer-relayed, untrusted-derived input, same
+ * provenance as `summary`/`comments` (see the module header). Rendered into
+ * `summary` by `composeSummaryWithCoverage` BEFORE this function's call to
+ * `sanitizeReviewInput` hardens it, so it is never posted unhardened.
+ * Omitted or null leaves the posted body byte-identical to a call that never
+ * knew about coverage at all.
+ *
  * @param {{ eveSessionId: string, repo: string, prNumber: number,
  *           summary: string, comments: Array<{path: string, line: number, body: string}>,
+ *           acCoverage?: unknown,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
@@ -245,6 +340,7 @@ export async function runPostPrReview({
   prNumber,
   summary,
   comments,
+  acCoverage = null,
   env = {},
   transport,
 }) {
@@ -261,9 +357,13 @@ export async function runPostPrReview({
   // Severity filter FIRST, then sanitize: only what we're actually posting
   // needs hardening, and sanitizeReviewInput's own output shape
   // ({path, line, body}) is what drops `severity` before it reaches the
-  // console — it is an internal control, not part of that contract.
+  // console — it is an internal control, not part of that contract. The
+  // acCoverage checklist joins the summary HERE, before sanitizeReviewInput's
+  // hardenUntrusted() call, so criterion/evidence text (untrusted-derived,
+  // same as summary/comments) rides the same sanitizer as everything else
+  // rather than reaching GitHub unhardened.
   const { postable, dropped } = filterPostableComments(comments);
-  const safe = sanitizeReviewInput(summary, postable);
+  const safe = sanitizeReviewInput(composeSummaryWithCoverage(summary, acCoverage), postable);
 
   // Nothing worth posting and nothing to say: report it honestly rather than
   // spending a call the console would 400 anyway.

@@ -1,9 +1,12 @@
-// #1481 — instructions.md's "Reviewing a pull request" section IS the
-// mechanism that stops root from upgrading the reviewer's verdict into an
-// approval. Like fetch-work-status-instructions.test.mjs (whose header
-// explains the convention), this app's prose carries functional weight the
-// way code usually does: delete these rules and every other test still
-// passes, silently re-enabling the bug.
+// #1481 — root's `agent/instructions.md` "Reviewing a pull request"
+// section IS the mechanism that stops root from upgrading the reviewer's
+// verdict into an approval. The reviewer subagent's own
+// `agent/subagents/reviewer/instructions.md` carries the matching charter
+// for AC coverage, keeping it diff-honest rather than confabulated. Like
+// fetch-work-status-instructions.test.mjs (whose header explains the
+// convention), both files' prose carries functional weight the way code
+// usually does: delete a rule and every other test still passes, silently
+// re-enabling the bug it guards.
 //
 // The bug this guards, observed in prod 2026-07-27 on PR #1478: the reviewer
 // returned the on-contract `verdict: "reviewed"` with a single minor
@@ -21,6 +24,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { AC_COVERAGE_STATUSES } from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
 
 const instructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
 const verdictsPath = fileURLToPath(
@@ -86,4 +90,42 @@ test("instructions.md still keeps the pre-existing degraded-verdict honesty rule
     /verdict is `degraded`/,
     "the new rules are additive — the degraded rule must survive them",
   );
+});
+
+const reviewerInstructionsPath = fileURLToPath(
+  new URL("../agent/subagents/reviewer/instructions.md", import.meta.url),
+);
+
+test("reviewer instructions state the coverage vocabulary in lockstep with AC_COVERAGE_STATUSES", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  for (const status of AC_COVERAGE_STATUSES) {
+    assert.ok(
+      prose.includes(`\`${status}\``),
+      `instructions must define coverage status \`${status}\``,
+    );
+  }
+});
+
+test("reviewer instructions carry both canonical null-coverage wordings", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  assert.ok(prose.includes("No recognizable acceptance criteria found"));
+  assert.ok(prose.includes("could not be reliably parsed"));
+});
+
+test("reviewer instructions pin the source order: linked-issue ACs beat the PR body's own list", () => {
+  const prose = readFileSync(reviewerInstructionsPath, "utf8");
+  assert.ok(/never overrides or extends/.test(prose));
+  assert.ok(/issueNumber: null/.test(prose) || /`issueNumber` of `null`/.test(prose));
+});
+
+test("root instructions: acCoverage is relayed verbatim to post_pr_review, never re-judged", () => {
+  const prose = instructions();
+  assert.ok(prose.includes("acCoverage"));
+  assert.ok(/acCoverage[^.]*verbatim/i.test(prose));
+});
+
+test("root instructions: null coverage is reported as a diff-only review, echoing the reviewer's reason", () => {
+  const prose = instructions();
+  assert.ok(/diff-only/.test(prose));
+  assert.ok(/no recognizable ACs|not reliably parseable/i.test(prose));
 });

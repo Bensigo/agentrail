@@ -11,6 +11,8 @@ import {
   REVIEW_VERDICTS,
   REVIEW_SEVERITIES,
   MAX_FINDINGS,
+  AC_COVERAGE_STATUSES,
+  MAX_AC_COVERAGE,
   REVIEW_SCHEMA,
   validateReview,
 } from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
@@ -23,6 +25,16 @@ function finding(overrides = {}) {
     finding: "Missing null check before dereferencing user.",
     suggestedComment: "This can throw if `user` is null — add a guard before accessing `user.name`.",
     escalate: false,
+    ...overrides,
+  };
+}
+
+function acEntry(overrides = {}) {
+  return {
+    issueNumber: 42,
+    criterion: "AC1: widgets persist across restarts",
+    status: "addressed",
+    evidence: "persistence write added in src/store.ts hunk",
     ...overrides,
   };
 }
@@ -46,6 +58,7 @@ function reviewedReview(overrides = {}) {
     findings: [finding()],
     issueDrafts: [],
     degraded: null,
+    acCoverage: null,
     ...overrides,
   };
 }
@@ -55,7 +68,10 @@ function reviewedReview(overrides = {}) {
 // ---------------------------------------------------------------------------
 
 test("REVIEW_SCHEMA declares the expected top-level required fields and enums", () => {
-  assert.deepEqual(REVIEW_SCHEMA.required.sort(), ["degraded", "findings", "issueDrafts", "summary", "verdict"].sort());
+  assert.deepEqual(
+    REVIEW_SCHEMA.required.sort(),
+    ["acCoverage", "degraded", "findings", "issueDrafts", "summary", "verdict"].sort(),
+  );
   assert.deepEqual(REVIEW_VERDICTS, ["reviewed", "degraded"]);
   assert.deepEqual(REVIEW_SEVERITIES, ["blocker", "major", "minor", "nit"]);
   assert.equal(REVIEW_SCHEMA.properties.findings.maxItems, MAX_FINDINGS);
@@ -98,6 +114,7 @@ test("validateReview accepts a well-formed 'degraded' review", () => {
     findings: [],
     issueDrafts: [],
     degraded: { reason: "not_found" },
+    acCoverage: null,
   });
   assert.deepEqual(result, { ok: true, errors: [] });
 });
@@ -251,4 +268,74 @@ test("validateReview rejects a mismatch between escalate:true findings and issue
 test("validateReview accepts zero escalations and zero issueDrafts", () => {
   const result = validateReview(reviewedReview({ findings: [finding({ escalate: false })], issueDrafts: [] }));
   assert.equal(result.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// validateReview — acCoverage (per-AC diff coverage)
+// ---------------------------------------------------------------------------
+
+test("a review with issue-sourced and PR-description-sourced coverage entries validates", () => {
+  const review = reviewedReview({
+    acCoverage: [acEntry(), acEntry({ issueNumber: null, status: "not_in_diff", evidence: "" })],
+  });
+  const { ok, errors } = validateReview(review);
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("acCoverage: null validates (no usable ACs)", () => {
+  const { ok } = validateReview(reviewedReview({ acCoverage: null }));
+  assert.equal(ok, true);
+});
+
+test("a missing acCoverage key is rejected — the field is required", () => {
+  const review = reviewedReview();
+  delete review.acCoverage;
+  const { ok, errors } = validateReview(review);
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("acCoverage")));
+});
+
+test("an unknown coverage status is rejected", () => {
+  const { ok, errors } = validateReview(reviewedReview({ acCoverage: [acEntry({ status: "unmet" })] }));
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("status")));
+});
+
+test("issueNumber must be a number or null, criterion non-empty, evidence a string", () => {
+  const bad = reviewedReview({
+    acCoverage: [acEntry({ issueNumber: "42", criterion: "", evidence: 7 })],
+  });
+  const { ok, errors } = validateReview(bad);
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("issueNumber")));
+  assert.ok(errors.some((e) => e.includes("criterion")));
+  assert.ok(errors.some((e) => e.includes("evidence")));
+});
+
+test(`acCoverage is capped at ${MAX_AC_COVERAGE} entries`, () => {
+  const entries = Array.from({ length: MAX_AC_COVERAGE + 1 }, (_, i) =>
+    acEntry({ criterion: `AC${i + 1}: thing ${i + 1}` })
+  );
+  const { ok, errors } = validateReview(reviewedReview({ acCoverage: entries }));
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes(`${MAX_AC_COVERAGE}`)));
+});
+
+test("a degraded verdict must carry acCoverage: null — the diff was never read", () => {
+  const review = {
+    verdict: "degraded",
+    summary: "Could not fetch the diff.",
+    findings: [],
+    issueDrafts: [],
+    degraded: { reason: "not_found" },
+    acCoverage: [acEntry()],
+  };
+  const { ok, errors } = validateReview(review);
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("acCoverage")));
+});
+
+test("the coverage vocabulary is exactly addressed|not_in_diff|unclear", () => {
+  assert.deepEqual(AC_COVERAGE_STATUSES, ["addressed", "not_in_diff", "unclear"]);
 });

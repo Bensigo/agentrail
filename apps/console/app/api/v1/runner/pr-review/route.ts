@@ -16,6 +16,13 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  * `reviewer` subagent's `fetch_pr_diff` tool; POST posts an advisory,
  * COMMENT-only review for the gated root `post_pr_review` tool.
  *
+ * GET also resolves the PR's closing issues via one best-effort GraphQL call
+ * (`closingIssuesReferences`), using the same installation token, filtered to
+ * same-repo references and capped (`linkedIssues`). Any failure in that
+ * lookup — network, non-2xx, malformed body — degrades to
+ * `linkedIssuesDegraded: true` with an empty `linkedIssues`; it never fails
+ * the diff fetch itself.
+ *
  * AUTH: the central `JACE_CONSOLE_TOKEN` secret via `requireJaceConsoleSecret`
  * — the SAME guard every other Jace-coordinator route uses (see that
  * helper's own doc-comment). It answers only "is the caller Jace", never
@@ -96,6 +103,21 @@ const MAX_PATCH_BYTES = 200_000;
 // product limit (GitHub itself caps this endpoint's own listing at 3000).
 const MAX_FILES_TO_SCAN = 300;
 const FILES_PER_PAGE = 100;
+
+const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
+const MAX_LINKED_ISSUES = 3;
+const MAX_ISSUE_BODY_BYTES = 8000;
+
+const CLOSING_ISSUES_QUERY = `
+query ($owner: String!, $name: String!, $prNumber: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $prNumber) {
+      closingIssuesReferences(first: ${MAX_LINKED_ISSUES}) {
+        nodes { number title body state repository { nameWithOwner } }
+      }
+    }
+  }
+}`;
 
 const REPO_FORMAT_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -337,6 +359,110 @@ function capChangedFiles(rawFiles: GithubFileEntry[]): {
   return { changedFiles, truncated, omittedPaths };
 }
 
+interface LinkedIssue {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  bodyTruncated: boolean;
+}
+
+interface GraphqlIssueNode {
+  number?: unknown;
+  title?: unknown;
+  body?: unknown;
+  state?: unknown;
+  repository?: { nameWithOwner?: unknown } | null;
+}
+
+/** Cap an issue body to MAX_ISSUE_BODY_BYTES, cutting on a UTF-8 character
+ * boundary (a mid-character cut decodes to a trailing U+FFFD, which is
+ * stripped rather than shipped). */
+function capIssueBody(body: string): { body: string; bodyTruncated: boolean } {
+  const buf = Buffer.from(body, "utf8");
+  if (buf.byteLength <= MAX_ISSUE_BODY_BYTES) return { body, bodyTruncated: false };
+  const text = buf.subarray(0, MAX_ISSUE_BODY_BYTES).toString("utf8").replace(/�+$/, "");
+  return { body: text, bodyTruncated: true };
+}
+
+/** Walk data.repository.pullRequest.closingIssuesReferences.nodes without
+ * trusting any level of the shape. Null = not a usable GraphQL result
+ * (including GitHub's 200-with-errors, null-data form). */
+function extractClosingIssueNodes(body: unknown): GraphqlIssueNode[] | null {
+  if (!body || typeof body !== "object") return null;
+  const data = (body as { data?: unknown }).data;
+  if (!data || typeof data !== "object") return null;
+  const repository = (data as { repository?: unknown }).repository;
+  if (!repository || typeof repository !== "object") return null;
+  const pullRequest = (repository as { pullRequest?: unknown }).pullRequest;
+  if (!pullRequest || typeof pullRequest !== "object") return null;
+  const refs = (pullRequest as { closingIssuesReferences?: unknown }).closingIssuesReferences;
+  if (!refs || typeof refs !== "object") return null;
+  const nodes = (refs as { nodes?: unknown }).nodes;
+  return Array.isArray(nodes) ? (nodes as GraphqlIssueNode[]) : null;
+}
+
+/**
+ * Resolve the PR's closing issues via GraphQL. Best-effort by design: every
+ * failure returns { linkedIssues: [], linkedIssuesDegraded: true } — the
+ * goal lookup must never fail the diff fetch. Cross-repo references are
+ * dropped (same-repo filter): the workspace validated only `repo`, so this
+ * seam must not surface another repo's issue content.
+ */
+async function fetchLinkedIssues(
+  repo: string,
+  prNumber: number,
+  token: string
+): Promise<{ linkedIssues: LinkedIssue[]; linkedIssuesDegraded: boolean }> {
+  const degradedResult = { linkedIssues: [] as LinkedIssue[], linkedIssuesDegraded: true };
+  const [owner, name] = repo.split("/");
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(GITHUB_GRAPHQL_URL, {
+      method: "POST",
+      headers: githubHeaders(token),
+      body: JSON.stringify({
+        query: CLOSING_ISSUES_QUERY,
+        variables: { owner, name, prNumber },
+      }),
+    });
+  } catch {
+    return degradedResult;
+  }
+  if (!res || !res.ok) return degradedResult;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return degradedResult;
+  }
+  const nodes = extractClosingIssueNodes(body);
+  if (nodes === null) return degradedResult;
+
+  const linkedIssues: LinkedIssue[] = [];
+  for (const n of nodes) {
+    if (!n || typeof n !== "object") continue;
+    const nameWithOwner =
+      n.repository && typeof n.repository.nameWithOwner === "string"
+        ? n.repository.nameWithOwner
+        : "";
+    if (nameWithOwner.toLowerCase() !== repo.toLowerCase()) continue;
+    if (typeof n.number !== "number" || !Number.isInteger(n.number)) continue;
+    const { body: cappedBody, bodyTruncated } = capIssueBody(
+      typeof n.body === "string" ? n.body : ""
+    );
+    linkedIssues.push({
+      number: n.number,
+      title: typeof n.title === "string" ? n.title : "",
+      body: cappedBody,
+      state: typeof n.state === "string" ? n.state : "",
+      bodyTruncated,
+    });
+    if (linkedIssues.length >= MAX_LINKED_ISSUES) break;
+  }
+  return { linkedIssues, linkedIssuesDegraded: false };
+}
+
 export async function GET(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
   if (authError) return authError;
@@ -385,6 +511,8 @@ export async function GET(request: NextRequest) {
 
   const { changedFiles, truncated, omittedPaths } = capChangedFiles(filesResult.files);
 
+  const { linkedIssues, linkedIssuesDegraded } = await fetchLinkedIssues(repo, prNumber, token);
+
   return NextResponse.json(
     {
       title: typeof prBody.title === "string" ? prBody.title : "",
@@ -395,6 +523,8 @@ export async function GET(request: NextRequest) {
       changedFiles,
       truncated,
       omittedPaths,
+      linkedIssues,
+      linkedIssuesDegraded,
     },
     { status: 200 }
   );

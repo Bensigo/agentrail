@@ -5,6 +5,14 @@
 // wrapper, a fake in tests), so every branch — including every degraded one
 // — is unit-testable without a live server.
 //
+// `linkedIssues` in the success shape is the goal payload the reviewer
+// grades coverage against — the PR's own diff/body describe what the
+// builder did, not what it was asked to do (spec:
+// docs/superpowers/specs/2026-07-29-ac-aware-pr-review-design.md). Both it
+// and `linkedIssuesDegraded` default when the console omits them, so an
+// older console paired with a newer Jace degrades to today's diff-only
+// payload rather than failing.
+//
 // Auth + config model: same as the sibling *.core.mjs modules across this
 // app — Jace resolves its own console endpoint + bearer from
 // JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN.
@@ -130,7 +138,8 @@ export function degraded(reason, extra = {}) {
  *   5. non-JSON body                  -> degraded("bad_body", { status })
  *   6. success                        -> { ok:true, repo, prNumber, title,
  *                                        author, baseRef, headRef, body,
- *                                        changedFiles, truncated, omittedPaths }
+ *                                        changedFiles, truncated, omittedPaths,
+ *                                        linkedIssues, linkedIssuesDegraded }
  *
  * @param {{ env?: Record<string, string|undefined>, eveSessionId: string,
  *           repo: string, prNumber: number,
@@ -184,5 +193,7 @@ export async function fetchPrDiff({ env = {}, eveSessionId, repo, prNumber, tran
     changedFiles: Array.isArray(body.changedFiles) ? body.changedFiles : [],
     truncated: body.truncated === true,
     omittedPaths: Array.isArray(body.omittedPaths) ? body.omittedPaths : [],
+    linkedIssues: Array.isArray(body.linkedIssues) ? body.linkedIssues : [],
+    linkedIssuesDegraded: body.linkedIssuesDegraded === true,
   };
 }

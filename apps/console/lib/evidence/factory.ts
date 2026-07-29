@@ -40,6 +40,14 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * the same pair `runner/work-status/route.ts` reads) for `changes`;
  * `getFailuresForRun`/`getRunEventsByRunId` (`@agentrail/db-clickhouse`, the
  * same pair `runner/failure-bundle/route.ts` reads) for `search_events`.
+ *
+ * Fix round 1 (post-implementation review): (1) ClickHouse timestamp
+ * normalization for `search_events` — see {@link parseClickHouseTimestamp}.
+ * (2) an honest "may be incomplete" caveat on the zero-match markers when
+ * the 200-run fetch horizon doesn't reach `windowStart` — see
+ * {@link runsInWindow}. (3) `limit` clamped to ≥ 1 on both verbs. (4) the
+ * `search_events` per-run fan-out is chunked to bound concurrent ClickHouse
+ * calls.
  */
 
 // `getWorkspaceRuns`'s own default recency page is 50, capped at
@@ -51,16 +59,32 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
 // that package down to two named functions; a route consumer mocks it down
 // to a different six — see `factory.test.ts` / `runner/evidence/route.test.ts`).
 // KNOWN v1 LIMIT: a window whose matching runs are all older than the most
-// recent 200 created for the workspace will under-report (see the task
-// report's Concerns section) — acceptable for a first-cut internal adapter,
-// not silently swept under the rug.
+// recent 200 created for the workspace will under-report. Unlike this
+// file's pre-review draft, this is no longer silent: see
+// {@link runsInWindow}'s `horizonUncertain` and the two `*EmptyMarker`
+// helpers below — a zero-match result says so when it might be incomplete.
+// The proper fix is a real `createdAt`-ranged Postgres query in
+// `work_status.ts`, out of scope for this task's console-only file list.
 const CANDIDATE_RUN_FETCH_LIMIT = 200;
 
 const CHANGES_DEFAULT_LIMIT = 50;
 const SEARCH_EVENTS_DEFAULT_LIMIT = 200;
 
+// Fold-in B: bounds how many runs' worth of ClickHouse calls (2 per run —
+// getFailuresForRun + getRunEventsByRunId) are ever in flight at once for
+// `search_events`. Without this, a window with up to CANDIDATE_RUN_FETCH_LIMIT
+// (200) runs would fire up to 400 concurrent requests in one burst.
+const SEARCH_EVENTS_RUN_BATCH_SIZE = 10;
+
 const NO_RUNS_IN_WINDOW = "(no runs in window)";
 const NO_MATCHING_EVENTS = "(no matching events)";
+// Fix 2: appended to a zero-match marker when the run fetch hit
+// CANDIDATE_RUN_FETCH_LIMIT and even the OLDEST run it saw is still newer
+// than `windowStart` — i.e., there may be workspace history further back
+// that this adapter never looked at, so "found nothing" is not a strong
+// claim. See `runsInWindow`'s own doc-comment.
+const HORIZON_CAVEAT =
+  " — note: only the 200 most recent runs were searched and the window extends earlier";
 
 type AdapterResult = { ok: true; raw: string } | { ok: false; reason: EvidenceDegradationReason };
 
@@ -89,23 +113,110 @@ function inWindow(at: Date, windowStart: string, windowEnd: string): boolean {
 }
 
 /**
+ * Fix round 1, FIX 1: normalizes a raw ClickHouse `DateTime64` value into a
+ * `Date`. `FailureEventRecord`/`TelemetryEventRecord` (`@agentrail/db-
+ * clickhouse`) both TYPE `occurred_at` as `Date`, but neither
+ * `getFailuresForRun` nor `getRunEventsByRunId` actually normalizes it
+ * before returning (`result.json<T>()` passes ClickHouse's raw JSON straight
+ * through) — at runtime, ClickHouse's HTTP `JSONEachRow` interface returns a
+ * `DateTime64` column as a raw, timezone-less string, e.g.
+ * `"2026-07-29 00:32:00.000"`, never a real `Date` instance and never
+ * ISO-8601 (no `T`, no `Z`). Handing that straight to `new Date(...)` gets
+ * parsed as LOCAL time by the JS engine — a real, reproducible bug (a
+ * 4-hour skew under `TZ=America/New_York`, confirmed by code review, and
+ * reproducible in this repo's own sandbox default TZ of Asia/Dubai).
+ *
+ * CANONICAL implementation: `parseClickHouseTimestamp` in
+ * `packages/db-clickhouse/src/queries.ts` (~line 1387, used internally by
+ * `getRunTelemetryHealth`/`listCostAnomalies`/etc. before THEY return a
+ * timestamp). Not exported from that package, so duplicated here rather
+ * than imported — keep in sync if the canonical one changes. Same shape:
+ * a bare `Date`/already-ISO/already-offset string passes through unchanged;
+ * otherwise the ClickHouse `"YYYY-MM-DD HH:mm:ss.SSS"` shape gets its space
+ * turned into `T` and a `Z` appended, matching `formatClickHouseDateTime`'s
+ * exact inverse (that file's write-side proof that these are stored/read as
+ * UTC, not local time).
+ */
+function parseClickHouseTimestamp(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  const raw = value.trim();
+  const normalized =
+    raw.includes("T") || /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/** Fold-in B: split `items` into fixed-size, order-preserving batches. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+interface RunsInWindowResult {
+  /** Window-filtered, most-recent-first. */
+  candidates: WorkspaceRun[];
+  /**
+   * Fix 2: true iff the underlying fetch hit {@link CANDIDATE_RUN_FETCH_LIMIT}
+   * (`getWorkspaceRuns`' own `truncated` — there is more workspace history
+   * this adapter did not fetch) AND the oldest run it DID fetch is still
+   * newer than `windowStart` — i.e., the fetch horizon never reached back
+   * far enough to rule out matches earlier in the window. Computed from the
+   * FULL fetched set (before window-filtering), since the whole point is to
+   * answer "did we even look at everything up to windowStart" independent
+   * of how many of those rows happened to land inside the window.
+   */
+  horizonUncertain: boolean;
+}
+
+/**
  * The workspace's runs whose `createdAt` falls in `[windowStart, windowEnd]`
  * (inclusive both ends), most-recent-first. `createdAt` — never null, per
  * the `runs` schema — is the window-membership field, not `startedAt`
  * (null for a still-queued run) or `finishedAt` (null until terminal): a
  * "what did the factory do in this span" question should include work
  * queued but not yet started. Bounded by
- * {@link CANDIDATE_RUN_FETCH_LIMIT} — see that constant's own doc-comment.
+ * {@link CANDIDATE_RUN_FETCH_LIMIT} — see {@link RunsInWindowResult.horizonUncertain}
+ * for how that bound is surfaced honestly rather than silently.
  */
 async function runsInWindow(
   workspaceId: string,
   windowStart: string,
   windowEnd: string
-): Promise<WorkspaceRun[]> {
-  const { rows } = await getWorkspaceRuns(workspaceId, CANDIDATE_RUN_FETCH_LIMIT);
-  return rows
+): Promise<RunsInWindowResult> {
+  const { rows, truncated } = await getWorkspaceRuns(workspaceId, CANDIDATE_RUN_FETCH_LIMIT);
+
+  const candidates = rows
     .filter((r) => inWindow(r.createdAt, windowStart, windowEnd))
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  let horizonUncertain = false;
+  if (truncated && rows.length > 0) {
+    const oldestFetchedAt = rows.reduce(
+      (min, r) => (r.createdAt.getTime() < min.getTime() ? r.createdAt : min),
+      rows[0].createdAt
+    );
+    horizonUncertain = oldestFetchedAt.getTime() > new Date(windowStart).getTime();
+  }
+
+  return { candidates, horizonUncertain };
+}
+
+/** Fix 2: the `changes` verb's zero-match marker, honest about an uncertain fetch horizon. */
+function changesEmptyMarker(horizonUncertain: boolean): string {
+  return horizonUncertain ? `(no runs found in window${HORIZON_CAVEAT})` : NO_RUNS_IN_WINDOW;
+}
+
+/** Fix 2: the `search_events` verb's zero-match marker — same caveat, its own base phrase. */
+function searchEventsEmptyMarker(horizonUncertain: boolean): string {
+  return horizonUncertain ? `(no matching events${HORIZON_CAVEAT})` : NO_MATCHING_EVENTS;
 }
 
 /**
@@ -134,9 +245,9 @@ function renderChangeLine(run: WorkspaceRun, queueById: Map<string, WorkspaceQue
 }
 
 async function queryChanges(workspaceId: string, q: EvidenceQuery): Promise<AdapterResult> {
-  const candidates = await runsInWindow(workspaceId, q.windowStart, q.windowEnd);
+  const { candidates, horizonUncertain } = await runsInWindow(workspaceId, q.windowStart, q.windowEnd);
   if (candidates.length === 0) {
-    return { ok: true, raw: NO_RUNS_IN_WINDOW };
+    return { ok: true, raw: changesEmptyMarker(horizonUncertain) };
   }
 
   // Only needed to resolve issue numbers — fetched after confirming there is
@@ -144,7 +255,12 @@ async function queryChanges(workspaceId: string, q: EvidenceQuery): Promise<Adap
   const { rows: queueRows } = await getWorkspaceQueueEntries(workspaceId, CANDIDATE_RUN_FETCH_LIMIT);
   const queueById = new Map(queueRows.map((entry) => [entry.id, entry]));
 
-  const limited = candidates.slice(0, q.limit ?? CHANGES_DEFAULT_LIMIT);
+  // Fold-in A: floor-clamped so limit:0 (or negative) can't slice candidates
+  // down to zero rows and return a bare "" that bypasses the honest-empty
+  // marker above — candidates is already known non-empty at this point, so
+  // the output must carry at least one line.
+  const limit = Math.max(1, q.limit ?? CHANGES_DEFAULT_LIMIT);
+  const limited = candidates.slice(0, limit);
   const raw = limited.map((r) => renderChangeLine(r, queueById)).join("\n");
   return { ok: true, raw };
 }
@@ -154,18 +270,24 @@ interface RenderedEvent {
   line: string;
 }
 
-/** `<iso> run=<id> failure_type=<x> phase=<y> severity=<z> message=<w>` — timestamp + run id + event text, per the pinned format. */
-function renderFailureLine(runId: string, f: FailureEventRecord): RenderedEvent {
-  const occurredAt = new Date(f.occurred_at);
+/** `<iso> run=<id> failure_type=<x> phase=<y> severity=<z> message=<w>` — timestamp + run id + event text, per the pinned format.
+ * Returns `null` (filtered out by the caller) when `occurred_at` fails to
+ * parse at all — see {@link parseClickHouseTimestamp}; not expected in
+ * practice (`occurred_at` is a NOT NULL ClickHouse column) but this must
+ * never throw on a malformed row. */
+function renderFailureLine(runId: string, f: FailureEventRecord): RenderedEvent | null {
+  const occurredAt = parseClickHouseTimestamp(f.occurred_at);
+  if (!occurredAt) return null;
   const line =
     `${occurredAt.toISOString()} run=${runId} failure_type=${singleLine(f.failure_type)} ` +
     `phase=${singleLine(f.phase)} severity=${singleLine(f.severity)} message=${singleLine(f.message)}`;
   return { occurredAt, line };
 }
 
-/** `<iso> run=<id> event_type=<x> phase=<y> severity=<z>` — same shape as {@link renderFailureLine}. */
-function renderRunEventLine(runId: string, e: TelemetryEventRecord): RenderedEvent {
-  const occurredAt = new Date(e.occurred_at);
+/** `<iso> run=<id> event_type=<x> phase=<y> severity=<z>` — same shape as {@link renderFailureLine}, same `null`-on-unparseable contract. */
+function renderRunEventLine(runId: string, e: TelemetryEventRecord): RenderedEvent | null {
+  const occurredAt = parseClickHouseTimestamp(e.occurred_at);
+  if (!occurredAt) return null;
   const line =
     `${occurredAt.toISOString()} run=${runId} event_type=${singleLine(e.event_type)} ` +
     `phase=${singleLine(e.phase)} severity=${singleLine(e.severity)}`;
@@ -173,23 +295,29 @@ function renderRunEventLine(runId: string, e: TelemetryEventRecord): RenderedEve
 }
 
 async function querySearchEvents(workspaceId: string, q: EvidenceQuery): Promise<AdapterResult> {
-  const candidates = await runsInWindow(workspaceId, q.windowStart, q.windowEnd);
+  const { candidates, horizonUncertain } = await runsInWindow(workspaceId, q.windowStart, q.windowEnd);
   if (candidates.length === 0) {
-    return { ok: true, raw: NO_MATCHING_EVENTS };
+    return { ok: true, raw: searchEventsEmptyMarker(horizonUncertain) };
   }
 
-  const perRun = await Promise.all(
-    candidates.map(async (run) => {
-      const [failures, events] = await Promise.all([
-        getFailuresForRun(workspaceId, run.id),
-        getRunEventsByRunId(workspaceId, run.id),
-      ]);
-      return [
-        ...failures.map((f) => renderFailureLine(run.id, f)),
-        ...events.map((e) => renderRunEventLine(run.id, e)),
-      ];
-    })
-  );
+  // Fold-in B: chunked, sequential batches (Promise.all WITHIN a batch) —
+  // see SEARCH_EVENTS_RUN_BATCH_SIZE's own doc-comment for why.
+  const perRun: RenderedEvent[][] = [];
+  for (const batch of chunk(candidates, SEARCH_EVENTS_RUN_BATCH_SIZE)) {
+    const batchResults = await Promise.all(
+      batch.map(async (run) => {
+        const [failures, events] = await Promise.all([
+          getFailuresForRun(workspaceId, run.id),
+          getRunEventsByRunId(workspaceId, run.id),
+        ]);
+        return [
+          ...failures.map((f) => renderFailureLine(run.id, f)),
+          ...events.map((e) => renderRunEventLine(run.id, e)),
+        ].filter((e): e is RenderedEvent => e !== null);
+      })
+    );
+    perRun.push(...batchResults);
+  }
 
   let rendered = perRun.flat();
 
@@ -205,14 +333,15 @@ async function querySearchEvents(workspaceId: string, q: EvidenceQuery): Promise
   rendered.sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
 
   if (rendered.length === 0) {
-    return { ok: true, raw: NO_MATCHING_EVENTS };
+    return { ok: true, raw: searchEventsEmptyMarker(horizonUncertain) };
   }
 
+  // Fold-in A: floor-clamped — see queryChanges' identical comment.
   // Cap keeps the MOST RECENT `limit` lines (the tail of the ascending
   // sort), not the oldest — a debugging investigator asking "what happened
   // near this symptom" is better served by recency than by an arbitrary
   // truncation from the start of the window. Output stays chronological.
-  const limit = q.limit ?? SEARCH_EVENTS_DEFAULT_LIMIT;
+  const limit = Math.max(1, q.limit ?? SEARCH_EVENTS_DEFAULT_LIMIT);
   const limited = rendered.length > limit ? rendered.slice(rendered.length - limit) : rendered;
 
   return { ok: true, raw: limited.map((e) => e.line).join("\n") };

@@ -48,13 +48,26 @@
  * prose — the same "data is not free text" exemption the save route applies
  * to item `data`.
  *
- * Response: 200 `{ ok: true }` once `recordVerdict` accepts the verdict; 409
- * `{ ok: false, blocking: [...] }` for every refusal `recordVerdict` reports
- * — ineligible for `root_caused` (with the exact blocking reasons
- * `computeVerdictEligibility` produces), `root_caused` missing `confidence`,
- * or `undetermined` with an empty `missingEvidence`. **Fail closed**: there
- * is no code path here that can produce a 200 without `recordVerdict` itself
- * having said `ok: true`.
+ * Response: 200 `{ ok: true, investigationId }` once `recordVerdict` accepts
+ * the verdict — `investigationId` is `found.investigation.id`, the uuid this
+ * handler already resolved from `slug` a few lines up, not a second lookup.
+ * **Final-review fix:** the id was missing from this body entirely (bare
+ * `{ ok: true }`), which meant `record_verdict.core.mjs`'s own id-preferring
+ * Langfuse-score logic (`body.investigationId ?? trimmedSlug`) always fell
+ * through to `slug` in practice, weakening the `investigation_verdict`
+ * score's `metadata.investigation_id` calibration join key — a slug is
+ * human-renamable (schema doc-comment: "Jace proposes it, the human can
+ * rename it in the console"), so a join keyed on it can silently break after
+ * a rename in a way a join keyed on the immutable uuid cannot. `slug` is
+ * deliberately NOT added here too — the caller already has it (it sent it),
+ * and the core's own score push separately threads it through as
+ * `metadata.slug` alongside the id, not as a second top-level response
+ * field. 409 `{ ok: false, blocking: [...] }` for every refusal
+ * `recordVerdict` reports — ineligible for `root_caused` (with the exact
+ * blocking reasons `computeVerdictEligibility` produces), `root_caused`
+ * missing `confidence`, or `undetermined` with an empty `missingEvidence`.
+ * **Fail closed**: there is no code path here that can produce a 200
+ * without `recordVerdict` itself having said `ok: true`.
  *
  * 400 — missing/blank `eveSessionId`, invalid JSON, or a malformed body
  * (missing `slug`, missing/invalid `verdict`, invalid `confidence`, or a
@@ -171,7 +184,11 @@ export async function POST(request: NextRequest) {
     if (!result.ok) {
       return NextResponse.json({ ok: false, blocking: result.blocking }, { status: 409 });
     }
-    return NextResponse.json({ ok: true }, { status: 200 });
+    // investigationId = the uuid already resolved above via getInvestigationBySlug
+    // — see this route's own doc-comment ("Final-review fix") for why this
+    // must be the id, not the slug: it is the calibration join key the
+    // Langfuse investigation_verdict score's metadata.investigation_id reads.
+    return NextResponse.json({ ok: true, investigationId: found.investigation.id }, { status: 200 });
   } catch (err) {
     console.error("[runner/investigations/verdict] write failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

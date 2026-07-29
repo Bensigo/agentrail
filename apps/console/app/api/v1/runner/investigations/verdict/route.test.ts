@@ -245,7 +245,7 @@ describe("POST /api/v1/runner/investigations/verdict", () => {
       });
     });
 
-    it("200 with { ok: true } once the eligibility fixture (supported + refuted rival) is seeded", async () => {
+    it("200 with { ok: true, investigationId } once the eligibility fixture (supported + refuted rival) is seeded", async () => {
       mockRecordVerdict.mockResolvedValue({ ok: true } as never);
       const res = await POST(
         postReq({
@@ -258,7 +258,7 @@ describe("POST /api/v1/runner/investigations/verdict", () => {
       );
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ ok: true });
+      expect(body).toEqual({ ok: true, investigationId: INVESTIGATION_ID });
       expect(mockRecordVerdict).toHaveBeenCalledWith(INVESTIGATION_ID, {
         verdict: "root_caused",
         confidence: "confirmed",
@@ -267,11 +267,24 @@ describe("POST /api/v1/runner/investigations/verdict", () => {
       });
     });
 
-    it("undetermined 200s with a non-empty missingEvidence", async () => {
+    it("undetermined 200s with a non-empty missingEvidence, and the same investigationId shape", async () => {
       const res = await POST(postReq(validBody));
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ ok: true });
+      expect(body).toEqual({ ok: true, investigationId: INVESTIGATION_ID });
+    });
+
+    // Final-review fix: the 200 body was bare { ok: true } — this left the
+    // Langfuse investigation_verdict score's metadata.investigation_id
+    // calibration join key always falling back to the (human-renamable)
+    // slug in record_verdict.core.mjs. investigationId is the SAME uuid
+    // getInvestigationBySlug already resolved, not a fresh/second lookup —
+    // this test pins that identity, not just presence of SOME id-shaped key.
+    it("investigationId in the 200 body is the exact uuid getInvestigationBySlug resolved from slug, never the slug itself", async () => {
+      const res = await POST(postReq(validBody));
+      const body = await res.json();
+      expect(body.investigationId).toBe(EXISTING_INVESTIGATION.id);
+      expect(body.investigationId).not.toBe(SLUG);
     });
 
     it("relays whatever blocking reasons recordVerdict returns verbatim, including 'investigation not found' races", async () => {

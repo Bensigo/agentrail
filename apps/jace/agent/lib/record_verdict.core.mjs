@@ -269,14 +269,21 @@ export function pushVerdictScore({ baseUrl, publicKey, secretKey, fetchImpl, bod
  *  12. non-JSON / non-ok:true 200 → degraded("bad_body")
  *  13. success (200, ok:true)     → fires exactly one Langfuse score (gated
  *      on isLangfuseConfigured; `sessionId` = the SAME eveSessionId this
- *      call sent; `metadata.investigation_id` = a STRING, preferring a
- *      response-carried id, falling back to slug — the real wire's 200
- *      body is just `{ ok: true }` today, so this is the practical path
- *      every time) WITHOUT awaiting it — the tool result resolves
- *      immediately, `{ ok: true, rendered }`, the instant the console
- *      confirms the verdict landed; the score push finishes in the
- *      background (bounded, see `pushVerdictScore`'s SCORE_PUSH_TIMEOUT_MS)
- *      and can never delay or fail this return
+ *      call sent; `metadata.investigation_id` = a STRING, PREFERRING
+ *      `body.investigationId` — the console route now always sends it
+ *      (`apps/console/.../investigations/verdict/route.ts`'s own
+ *      final-review fix: `investigationId` is the uuid the route already
+ *      resolved from `slug`, not a second lookup) — and falling back to
+ *      `slug` only as a defensive hedge (an older/misbehaving console
+ *      build, or a malformed body). `slug` is a HUMAN-RENAMABLE identity
+ *      (`investigations` schema doc-comment), so the calibration join key
+ *      should be the immutable uuid whenever the wire actually supplies
+ *      one — `slug` still rides along unconditionally as its own
+ *      `metadata.slug` field, never dropped) WITHOUT awaiting it — the tool
+ *      result resolves immediately, `{ ok: true, rendered }`, the instant
+ *      the console confirms the verdict landed; the score push finishes in
+ *      the background (bounded, see `pushVerdictScore`'s
+ *      SCORE_PUSH_TIMEOUT_MS) and can never delay or fail this return
  *
  * @param {{ eveSessionId: string, slug: string, verdict: string, confidence?: string,
  *           mechanismSummary?: string, missingEvidence?: string[],
@@ -378,10 +385,13 @@ export async function recordVerdict({
   // Fire-and-forget the Langfuse score — gated on isLangfuseConfigured, same
   // env-check three sibling modules already share (instrumentation.core.mjs).
   // `sessionId` reuses the SAME root-resolved eveSessionId this call already
-  // sent — see this module's top doc-comment. `investigation_id` prefers a
-  // response-carried id (defensive — the live route's 200 body is just
-  // `{ ok: true }` today, so this branch is a forward-compat hedge) and
-  // falls back to the slug, always coerced to a STRING.
+  // sent — see this module's top doc-comment. `investigation_id` prefers
+  // `body.investigationId` — the real wire contract today; the console
+  // route always sends it now (final-review fix) — and falls back to the
+  // slug only defensively (an unexpected/older response shape), always
+  // coerced to a STRING. A slug is human-renamable; the uuid is not, so
+  // this is a strictly better calibration join key whenever the wire
+  // supplies one.
   //
   // DELIBERATELY NOT AWAITED: this tool's result is what the model waits on
   // to continue the turn, so blocking it on a Langfuse round-trip directly
@@ -396,7 +406,7 @@ export async function recordVerdict({
   // this function returns — only the network round-trip itself happens
   // after.
   if (isLangfuseConfigured(env)) {
-    const investigationId = String(body.investigationId ?? body.id ?? trimmedSlug);
+    const investigationId = String(body.investigationId ?? trimmedSlug);
     try {
       void pushVerdictScore({
         baseUrl: env.LANGFUSE_BASE_URL,

@@ -8,8 +8,11 @@
 //   1. 409 (the server's fail-closed refusal) renders
 //      `Verdict refused — <blocking joined "; ">` and NEVER pushes a score.
 //   2. 200 pushes EXACTLY ONE score, gated on isLangfuseConfigured, with a
-//      STRING `metadata.investigation_id` (falling back to slug when the
-//      response carries no id — the real wire contract today).
+//      STRING `metadata.investigation_id` — PREFERRING the response's own
+//      `investigationId` (the real wire contract as of the final-review
+//      fix: the console route always sends the uuid it already resolved
+//      from slug), falling back to slug only defensively when the response
+//      happens to omit it.
 //   3. 422 (mechanismSummary looked credential-shaped) degrades as
 //      `content_rejected`, same as save_investigation's own secret-scan path.
 
@@ -458,7 +461,7 @@ test("recordVerdict: 200 pushes NO score when Langfuse is not configured", async
   assert.equal(fetchImpl.calls.length, 0);
 });
 
-test("recordVerdict: 200 pushes EXACTLY ONE score when Langfuse is configured, with STRING investigation_id falling back to slug", async () => {
+test("recordVerdict: 200 pushes EXACTLY ONE score when Langfuse is configured, with STRING investigation_id falling back to slug ONLY when the response omits investigationId (defensive path — not the live wire's normal shape, see the next test)", async () => {
   const transport = fakeTransport(() => okVerdictResponse({ ok: true }));
   const fetchImpl = fakeFetchImpl(() => ({ ok: true, status: 200 }));
   await recordVerdict({
@@ -477,11 +480,11 @@ test("recordVerdict: 200 pushes EXACTLY ONE score when Langfuse is configured, w
   assert.equal(sentBody.dataType, "CATEGORICAL");
   assert.equal(sentBody.sessionId, EVE_SESSION_ID, "sessionId is the root session id — the same eveSessionId this tool resolved");
   assert.equal(typeof sentBody.metadata.investigation_id, "string");
-  assert.equal(sentBody.metadata.investigation_id, "checkout-500s", "falls back to slug — the real verdict route's 200 body is just { ok: true }, no id");
+  assert.equal(sentBody.metadata.investigation_id, "checkout-500s", "falls back to slug when investigationId is absent from the response body");
   assert.equal(sentBody.metadata.slug, "checkout-500s");
 });
 
-test("recordVerdict: 200 prefers a response-carried id over the slug, still coerced to a STRING", async () => {
+test("recordVerdict: 200 prefers the response's investigationId over the slug, still coerced to a STRING — this IS the live wire contract (final-review fix: the console route always resolves + sends the uuid)", async () => {
   const transport = fakeTransport(() => okVerdictResponse({ ok: true, investigationId: 4077 }));
   const fetchImpl = fakeFetchImpl(() => ({ ok: true, status: 200 }));
   await recordVerdict({
@@ -496,6 +499,27 @@ test("recordVerdict: 200 prefers a response-carried id over the slug, still coer
   const sentBody = JSON.parse(fetchImpl.calls[0].init.body);
   assert.equal(sentBody.metadata.investigation_id, "4077");
   assert.equal(typeof sentBody.metadata.investigation_id, "string");
+  // slug still rides along unconditionally as its OWN field, never dropped
+  // in favor of the id.
+  assert.equal(sentBody.metadata.slug, "checkout-500s");
+});
+
+test("recordVerdict: a string-shaped investigationId in the response passes through unchanged (the real uuid shape — the numeric 4077 case above only proves the String() coercion is unconditional)", async () => {
+  const transport = fakeTransport(() =>
+    okVerdictResponse({ ok: true, investigationId: "9f3c9c9e-6e2a-4b7a-8e11-2f6a5b7c8d9e" }),
+  );
+  const fetchImpl = fakeFetchImpl(() => ({ ok: true, status: 200 }));
+  await recordVerdict({
+    eveSessionId: EVE_SESSION_ID,
+    slug: "checkout-500s",
+    verdict: "undetermined",
+    missingEvidence: ["x"],
+    env: LANGFUSE_ENV,
+    transport,
+    fetchImpl,
+  });
+  const sentBody = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal(sentBody.metadata.investigation_id, "9f3c9c9e-6e2a-4b7a-8e11-2f6a5b7c8d9e");
 });
 
 test("recordVerdict: a score-push failure never surfaces — the tool result is still ok:true", async () => {

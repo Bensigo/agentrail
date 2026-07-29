@@ -432,6 +432,8 @@ describe("patchInvestigationItems", () => {
       skippedHumanAuthorityIds: [],
       skippedEvidenceImmutableIds: [],
       skippedHypothesisNeedsEvidence: [],
+      skippedKindChangeIds: [],
+      unmatchedIds: [],
     });
     expect(mockState.txCalls).toBe(0);
   });
@@ -458,6 +460,98 @@ describe("patchInvestigationItems", () => {
 
     expect(result.skippedHypothesisNeedsEvidence).toEqual(["item-1"]);
     expect(mockState.updateCalls).toEqual([]);
+  });
+
+  // --- Fix round 1: kind-change bypass -------------------------------------
+  // Fixed bug: the evidence-immutable and hypothesis-evidence guards read the
+  // row's EXISTING kind, so a patch that CHANGES kind slipped both. Kind is
+  // now immutable through this path — an existing item's kind never moves,
+  // only its state does (unlike `brief_items`, where re-kinding IS the
+  // resolution mechanism).
+
+  it("refuses a kind CHANGE on an existing item — hypothesis -> evidence would otherwise convert a row into evidence out from under appendEvidenceItem's sole-writer invariant", async () => {
+    mockState.selectQueue.push([{ id: "hyp-1", authority: "jace", kind: "hypothesis", state: "open", evidenceRefs: [] }]);
+
+    const result = await patchInvestigationItems("inv-1", [{ id: "hyp-1", kind: "evidence" }]);
+
+    expect(result.skippedKindChangeIds).toEqual(["hyp-1"]);
+    // Caught by the kind-change guard specifically, not misattributed to the evidence guard.
+    expect(result.skippedEvidenceImmutableIds).toEqual([]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("refuses a kind CHANGE on an existing item — finding -> hypothesis(supported, []) would otherwise smuggle an unevidenced supported hypothesis past the evidence-gate guard", async () => {
+    mockState.selectQueue.push([{ id: "find-1", authority: "jace", kind: "finding", state: null, evidenceRefs: [] }]);
+
+    const result = await patchInvestigationItems("inv-1", [
+      { id: "find-1", kind: "hypothesis", state: "supported", evidenceRefs: [] },
+    ]);
+
+    expect(result.skippedKindChangeIds).toEqual(["find-1"]);
+    // Caught by the kind-change guard BEFORE the hypothesis-gate guard would even run.
+    expect(result.skippedHypothesisNeedsEvidence).toEqual([]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("does not refuse a patch that names the SAME kind as the existing row — only an actual CHANGE is refused", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", kind: "timeline_event", state: null, evidenceRefs: [] }]);
+    mockState.updateReturningQueue.push([investigationItemRow({ id: "item-1", kind: "timeline_event" })]);
+
+    const result = await patchInvestigationItems("inv-1", [{ id: "item-1", kind: "timeline_event", body: "updated" }]);
+
+    expect(result.skippedKindChangeIds).toEqual([]);
+    expect(result.applied).toEqual(["item-1"]);
+  });
+
+  // --- Fix round 1: TOCTOU on the UPDATE's own WHERE -----------------------
+  // Fixed bug: the pre-check SELECT is a snapshot under READ COMMITTED, not a
+  // lock. The guard that actually holds is on the UPDATE's own WHERE
+  // (ne(authority,'human') AND ne(kind,'evidence')); the pre-check is only
+  // used to CLASSIFY a zero-row UPDATE result afterward.
+
+  it("TOCTOU: pre-check found the row, but the guarded UPDATE matches zero rows (a concurrent human edit or delete landed in between) — reported as skippedHumanAuthorityIds, not silently dropped or wrongly applied", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", kind: "timeline_event", state: null, evidenceRefs: [] }]);
+    mockState.updateReturningQueue.push([]); // simulates the guarded UPDATE losing the race
+
+    const result = await patchInvestigationItems("inv-1", [{ id: "item-1", body: "updated" }]);
+
+    expect(result.skippedHumanAuthorityIds).toEqual(["item-1"]);
+    expect(result.applied).toEqual([]);
+    expect(result.unmatchedIds).toEqual([]);
+  });
+
+  it("reports an id that belongs to a DIFFERENT investigation as unmatchedIds, not a silent vanish — the pre-check SELECT (scoped to THIS investigationId) never finds it, and the guarded UPDATE (same scope) then confirms zero rows matched", async () => {
+    mockState.selectQueue.push([]); // pre-check: scoped to inv-1, this id belongs elsewhere
+    mockState.updateReturningQueue.push([]); // guarded UPDATE, same scope, also matches nothing
+
+    const result = await patchInvestigationItems("inv-1", [{ id: "item-from-another-investigation", body: "x" }]);
+
+    expect(result.unmatchedIds).toEqual(["item-from-another-investigation"]);
+    expect(result.applied).toEqual([]);
+    expect(result.skippedHumanAuthorityIds).toEqual([]);
+    expect(mockState.updateCalls).toHaveLength(1); // the UPDATE's own WHERE is the real source of truth, not the pre-check
+  });
+
+  it("reports a completely nonexistent id as unmatchedIds too", async () => {
+    mockState.selectQueue.push([]);
+    mockState.updateReturningQueue.push([]);
+
+    const result = await patchInvestigationItems("inv-1", [{ id: "no-such-item-ever", body: "x" }]);
+
+    expect(result.unmatchedIds).toEqual(["no-such-item-ever"]);
+    expect(mockState.updateCalls).toHaveLength(1);
+  });
+
+  it("the guarded UPDATE's WHERE carries the authority/kind TOCTOU re-check predicates (shape assertion only — the mocked suite proves this code CONSTRUCTS the guarded predicate with the right bound values; it cannot prove Postgres enforces them at commit time, since nothing here executes against a real database)", async () => {
+    mockState.selectQueue.push([{ id: "item-1", authority: "jace", kind: "timeline_event", state: null, evidenceRefs: [] }]);
+    mockState.updateReturningQueue.push([investigationItemRow({ id: "item-1" })]);
+
+    await patchInvestigationItems("inv-1", [{ id: "item-1", body: "updated" }]);
+
+    const whereArg = mockState.updateCalls[0]!.where;
+    const rendered = render(whereArg);
+    expect(rendered.params).toContain("human");
+    expect(rendered.params).toContain("evidence");
   });
 });
 
@@ -550,7 +644,12 @@ describe("computeVerdictEligibility", () => {
 });
 
 describe("recordVerdict", () => {
+  // Every path — including the fail-closed ones — first confirms the
+  // investigation row exists (Fix round 1, FIX 3), so every test pushes that
+  // existence-check fixture first, before any branch-specific fixture.
+
   it("root_caused fails closed when ineligible, surfacing computeVerdictEligibility's own blocking reasons", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     mockState.selectQueue.push([]); // no items -> ineligible
     const result = await recordVerdict("inv-1", { verdict: "root_caused", confidence: "probable" });
     expect(result.ok).toBe(false);
@@ -565,6 +664,7 @@ describe("recordVerdict", () => {
   });
 
   it("root_caused fails closed when eligible but confidence is missing", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     mockState.selectQueue.push([
       investigationItemRow({ id: "h1", kind: "hypothesis", state: "supported", mechanism: "conn pool starves", evidenceRefs: ["ev-1"] }),
       investigationItemRow({ id: "h2", kind: "hypothesis", state: "refuted", evidenceRefs: ["ev-1"] }),
@@ -575,6 +675,7 @@ describe("recordVerdict", () => {
   });
 
   it("root_caused succeeds when eligible AND confidence is supplied — appends a verdict item and denormalizes the investigation row", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     mockState.selectQueue.push([
       investigationItemRow({ id: "h1", kind: "hypothesis", state: "supported", mechanism: "conn pool starves", evidenceRefs: ["ev-1"] }),
       investigationItemRow({ id: "h2", kind: "hypothesis", state: "refuted", evidenceRefs: ["ev-1"] }),
@@ -597,17 +698,20 @@ describe("recordVerdict", () => {
   });
 
   it("undetermined fails closed when missingEvidence is empty (brief Step 2, test 2)", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     const result = await recordVerdict("inv-1", { verdict: "undetermined", missingEvidence: [] });
     expect(result.ok).toBe(false);
     expect(mockState.insertCalls).toEqual([]);
   });
 
   it("undetermined fails closed when missingEvidence is omitted entirely", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     const result = await recordVerdict("inv-1", { verdict: "undetermined" });
     expect(result.ok).toBe(false);
   });
 
-  it("undetermined succeeds with a non-empty missingEvidence (brief Step 2, test 2) — no eligibility check for undetermined", async () => {
+  it("undetermined succeeds with a non-empty missingEvidence (brief Step 2, test 2) — no ELIGIBILITY check for undetermined (only the existence check, shared by both branches)", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check — the only select undetermined ever does
     mockState.insertReturningQueue.push(investigationItemRow({ id: "verdict-1", kind: "verdict" }));
     mockState.updateReturningQueue.push([investigationRow({ verdict: "undetermined", status: "concluded" })]);
 
@@ -617,7 +721,7 @@ describe("recordVerdict", () => {
     });
 
     expect(result.ok).toBe(true);
-    // undetermined never reads investigation_items for eligibility — no select fixture was queued.
+    // undetermined never reads investigation_items for eligibility — only the shared existence check above.
     expect(mockState.insertCalls[0]!.values.data).toEqual({
       confidence: null,
       missingEvidence: ["metrics for checkout during window"],
@@ -625,8 +729,10 @@ describe("recordVerdict", () => {
   });
 
   it("never updates an existing verdict item — calling twice inserts two separate items", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check, call 1
     mockState.insertReturningQueue.push(investigationItemRow({ id: "verdict-1", kind: "verdict" }));
     mockState.updateReturningQueue.push([investigationRow()]);
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check, call 2
     mockState.insertReturningQueue.push(investigationItemRow({ id: "verdict-2", kind: "verdict" }));
     mockState.updateReturningQueue.push([investigationRow()]);
 
@@ -638,10 +744,34 @@ describe("recordVerdict", () => {
   });
 
   it("runs inside one transaction", async () => {
+    mockState.selectQueue.push([{ id: "inv-1" }]); // existence check
     mockState.insertReturningQueue.push(investigationItemRow());
     mockState.updateReturningQueue.push([investigationRow()]);
     await recordVerdict("inv-1", { verdict: "undetermined", missingEvidence: ["a"] });
     expect(mockState.txCalls).toBe(1);
+  });
+
+  // --- Fix round 1: recordVerdict asymmetry on a missing investigation ----
+  // Fixed bug: `undetermined` skipped straight to an INSERT and threw a raw
+  // Postgres FK violation for a nonexistent investigationId, while
+  // `root_caused` happened to fail "gracefully" only by accident (an empty
+  // items SELECT reads as ineligible, with a misleading blocking reason).
+  // Both branches now share one existence check ahead of any branch logic.
+
+  it("root_caused returns a tagged 'investigation not found' result — never reaches the eligibility check or attempts a write", async () => {
+    mockState.selectQueue.push([]); // existence check finds nothing
+    const result = await recordVerdict("no-such-investigation", { verdict: "root_caused", confidence: "confirmed" });
+    expect(result).toEqual({ ok: false, blocking: ["investigation not found"] });
+    expect(mockState.insertCalls).toEqual([]);
+    expect(mockState.updateCalls).toEqual([]);
+  });
+
+  it("undetermined returns a tagged 'investigation not found' result — previously this branch threw an unhandled FK violation instead", async () => {
+    mockState.selectQueue.push([]); // existence check finds nothing
+    const result = await recordVerdict("no-such-investigation", { verdict: "undetermined", missingEvidence: ["a"] });
+    expect(result).toEqual({ ok: false, blocking: ["investigation not found"] });
+    expect(mockState.insertCalls).toEqual([]);
+    expect(mockState.updateCalls).toEqual([]);
   });
 });
 

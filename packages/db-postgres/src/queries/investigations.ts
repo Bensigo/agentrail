@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   investigations,
@@ -30,20 +30,28 @@ import type {
  * search falling back to recency, and a per-item DELTA upsert
  * (`patchInvestigationItems`) that enforces route-level invariants at the
  * store layer rather than as a caller convention — see that function's own
- * doc-comment for the three guards it enforces and why.
+ * doc-comment for the full guard list and why.
  *
- * Three route-enforced invariants run through this whole file (Global
- * Constraints; also documented on `schema/investigations.ts`'s
- * `investigationItems` table):
+ * Route-enforced invariants run through this whole file (Global Constraints;
+ * also documented on `schema/investigations.ts`'s `investigationItems`
+ * table):
  *   1. `authority: 'human'` items are never overwritten by
- *      `patchInvestigationItems` (the model-facing save path).
- *   2. `kind: 'evidence'` items are immutable — `appendEvidenceItem` is the
+ *      `patchInvestigationItems` (the model-facing save path) — including
+ *      under a concurrent race, since this is re-checked on the UPDATE's own
+ *      WHERE, not just an earlier SELECT (see that function's TOCTOU note).
+ *   2. An existing item's `kind` is immutable through `patchInvestigationItems`
+ *      — unlike `brief_items` (where a `kind` change is the
+ *      unknown-resolution mechanism), an investigation item never changes
+ *      what it IS, only its `state`. This is also load-bearing for guard 3:
+ *      without it, a kind change could smuggle a row past the evidence
+ *      guard's existing-kind check.
+ *   3. `kind: 'evidence'` items are immutable — `appendEvidenceItem` is the
  *      ONLY function in this file allowed to INSERT one; nothing may edit or
  *      delete one except the unrestricted `deleteInvestigationItem` (the
  *      same visible-bypass doctrine `briefs.ts` uses for its own items) —
  *      see `updateInvestigationItemAsHuman`'s doc-comment for why the human
  *      console-edit path is ALSO refused here, not just the model path.
- *   3. A hypothesis may not enter `state: 'supported'` or `'refuted'`
+ *   4. A hypothesis may not enter `state: 'supported'` or `'refuted'`
  *      without ≥ 1 entry in `evidence_refs` — checked against the EFFECTIVE
  *      (merged) post-patch value everywhere it applies, exactly like
  *      `patchBriefItems`' unknown-may-never-resolve guard is.
@@ -312,12 +320,16 @@ export interface PatchInvestigationItemInput {
 export interface PatchInvestigationItemsResult {
   /** Ids of items actually inserted or updated, in call order. */
   applied: string[];
-  /** Ids of existing items whose write was dropped because their `authority` is `'human'`. */
+  /** Ids of existing items whose write was dropped because their `authority` is `'human'` — either found so by the pre-check SELECT, or lost to a concurrent human write between that SELECT and this function's own UPDATE (see this function's TOCTOU paragraph). */
   skippedHumanAuthorityIds: string[];
   /** Ids (or, for a brand-new item with no id yet, its `body`/`"new"`) refused because the touched row is — or would become — `kind: 'evidence'`. `appendEvidenceItem` is the only function allowed to write this kind. */
   skippedEvidenceImmutableIds: string[];
   /** Ids (or body/"new" for a brand-new item) refused because a hypothesis would enter `supported`/`refuted` with an empty EFFECTIVE `evidence_refs`. */
   skippedHypothesisNeedsEvidence: string[];
+  /** Ids of existing items whose patch tried to change `kind` — refused outright. Unlike `brief_items` (where a `kind` change is the unknown-resolution mechanism), an investigation item's `kind` is fixed at creation; only `state` changes. */
+  skippedKindChangeIds: string[];
+  /** Ids that named an `id` but matched no row under THIS investigation — either the id belongs to a different investigation, or it doesn't exist at all. Previously vanished silently; now always surfaced. */
+  unmatchedIds: string[];
 }
 
 /**
@@ -330,23 +342,51 @@ export interface PatchInvestigationItemsResult {
  * it was, and — for a touched row — every field the caller's patch omits
  * (checked via `"x" in item`, not `!== undefined`) survives untouched too.
  *
- * Three guards are enforced HERE, at the store, not as a caller convention —
+ * Guards are enforced HERE, at the store, not as a caller convention —
  * impossible to bypass short of a raw SQL write (mirrors `patchBriefItems`'s
  * own framing):
  *
  * 1. **Human authority.** An existing item (matched by `id`) whose
  *    `authority` is `'human'` is silently skipped — untouched, id reported in
  *    `skippedHumanAuthorityIds`.
- * 2. **Evidence immutability.** A row whose EXISTING kind is `'evidence'`, or
+ * 2. **Kind is immutable through this path.** A patch to an EXISTING item
+ *    that names a `kind` different from the row's own is refused outright
+ *    (`skippedKindChangeIds`) — unlike `brief_items`, where re-kinding is the
+ *    unknown-resolution mechanism, an investigation item's `kind` is fixed at
+ *    creation; only `state` moves it through its lifecycle. This is also
+ *    what makes guard 3 below SOUND: without it, `{id: <hypothesis>, kind:
+ *    "evidence"}` would convert a hypothesis into evidence out from under
+ *    `appendEvidenceItem`'s sole-writer invariant, and `{id: <finding>, kind:
+ *    "hypothesis", state: "supported", evidenceRefs: []}` would smuggle an
+ *    unevidenced supported hypothesis past guard 4 by arriving as a
+ *    different kind than the one the pre-check SELECT evaluated.
+ * 3. **Evidence immutability.** A row whose EXISTING kind is `'evidence'`, or
  *    a brand-new item whose `kind` is `'evidence'`, is refused outright —
  *    `appendEvidenceItem` is the ONLY writer of that kind, for creation AND
- *    mutation.
- * 3. **Hypothesis evidence-gating.** Checked against the EFFECTIVE
+ *    mutation. (Guard 2 above guarantees `existing.kind` can never legally
+ *    diverge from what this check reads.)
+ * 4. **Hypothesis evidence-gating.** Checked against the EFFECTIVE
  *    (post-patch) `state`/`evidence_refs` — merging this call's fields with
  *    whatever the row already has, exactly like `patchBriefItems`'s
  *    unknown-may-never-resolve check — so a patch that only sends
  *    `state: 'supported'` on a row whose STORED `evidence_refs` is empty is
  *    caught too, not just a patch that names both fields at once.
+ *
+ * **TOCTOU**: under READ COMMITTED, the pre-check SELECT above is a
+ * snapshot, not a lock — a concurrent write (a human console edit via
+ * `updateInvestigationItemAsHuman`, or a delete) can land in the gap between
+ * that SELECT and this function's own UPDATE. The guard that actually holds
+ * is the one on the UPDATE's own WHERE clause (`ne(authority, 'human')` AND
+ * `ne(kind, 'evidence')`), not the earlier read — this repo has a documented
+ * lesson about exactly this class of bug (EvalPlanQual CTE-guard gotcha:
+ * snapshot-only guards on an early SELECT are not enough). When the guarded
+ * UPDATE matches zero rows: if the pre-check SELECT HAD found the row, the
+ * row is reported as `skippedHumanAuthorityIds` (something changed it out
+ * from under us between the read and the write — a human edit or a delete,
+ * both treated the same: this write no longer safely applies); if the
+ * pre-check found nothing at all for that id, it is reported as
+ * `unmatchedIds` (the id belongs to a different investigation, or never
+ * existed).
  */
 export async function patchInvestigationItems(
   investigationId: string,
@@ -358,6 +398,8 @@ export async function patchInvestigationItems(
       skippedHumanAuthorityIds: [],
       skippedEvidenceImmutableIds: [],
       skippedHypothesisNeedsEvidence: [],
+      skippedKindChangeIds: [],
+      unmatchedIds: [],
     };
   }
 
@@ -387,12 +429,19 @@ export async function patchInvestigationItems(
     const skippedHumanAuthorityIds: string[] = [];
     const skippedEvidenceImmutableIds: string[] = [];
     const skippedHypothesisNeedsEvidence: string[] = [];
+    const skippedKindChangeIds: string[] = [];
+    const unmatchedIds: string[] = [];
 
     for (const item of items) {
       const existing = item.id ? byId.get(item.id) : undefined;
 
       if (item.id && existing?.authority === "human") {
         skippedHumanAuthorityIds.push(item.id);
+        continue;
+      }
+
+      if (item.id && existing && "kind" in item && item.kind !== existing.kind) {
+        skippedKindChangeIds.push(item.id);
         continue;
       }
 
@@ -426,9 +475,25 @@ export async function patchInvestigationItems(
         const [row] = await tx
           .update(investigationItems)
           .set(set)
-          .where(and(eq(investigationItems.id, item.id), eq(investigationItems.investigationId, investigationId)))
+          .where(
+            and(
+              eq(investigationItems.id, item.id),
+              eq(investigationItems.investigationId, investigationId),
+              // TOCTOU re-check — see this function's doc-comment. A row the
+              // pre-check SELECT saw as jace-authority/non-evidence may no
+              // longer be by the time this UPDATE actually runs.
+              ne(investigationItems.authority, "human"),
+              ne(investigationItems.kind, "evidence")
+            )
+          )
           .returning();
-        if (row) applied.push(row.id);
+        if (row) {
+          applied.push(row.id);
+        } else if (existing) {
+          skippedHumanAuthorityIds.push(item.id);
+        } else {
+          unmatchedIds.push(item.id);
+        }
       } else {
         const [row] = await tx
           .insert(investigationItems)
@@ -446,7 +511,14 @@ export async function patchInvestigationItems(
       }
     }
 
-    return { applied, skippedHumanAuthorityIds, skippedEvidenceImmutableIds, skippedHypothesisNeedsEvidence };
+    return {
+      applied,
+      skippedHumanAuthorityIds,
+      skippedEvidenceImmutableIds,
+      skippedHypothesisNeedsEvidence,
+      skippedKindChangeIds,
+      unmatchedIds,
+    };
   });
 }
 
@@ -547,12 +619,31 @@ export type RecordVerdictResult = { ok: true } | { ok: false; blocking: string[]
  * verdict item (`body` = `mechanismSummary ?? ""`, `data` = `{ confidence,
  * missingEvidence }`) and denormalizes `investigations.verdict`/`confidence`/
  * `status = 'concluded'` in the same transaction.
+ *
+ * Both branches confirm the investigation row exists FIRST, before any
+ * verdict-specific check — `{ ok: false, blocking: ["investigation not
+ * found"] }` when it doesn't. Without this, `root_caused` on a nonexistent
+ * id happened to fail "gracefully" only by accident (an empty items SELECT
+ * reads as ineligible, with a misleading blocking reason), while
+ * `undetermined` skipped that SELECT entirely and went straight to an
+ * INSERT that violated `investigation_items`'s FK — an unhandled Postgres
+ * error instead of a tagged result. One shared check ahead of the branch
+ * closes both.
  */
 export async function recordVerdict(
   investigationId: string,
   input: RecordVerdictInput
 ): Promise<RecordVerdictResult> {
   return db.transaction(async (tx) => {
+    const [investigationRow] = await tx
+      .select({ id: investigations.id })
+      .from(investigations)
+      .where(eq(investigations.id, investigationId))
+      .limit(1);
+    if (!investigationRow) {
+      return { ok: false as const, blocking: ["investigation not found"] };
+    }
+
     if (input.verdict === "root_caused") {
       const items = await tx
         .select()

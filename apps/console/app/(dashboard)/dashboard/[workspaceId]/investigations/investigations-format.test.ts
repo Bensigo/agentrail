@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KIND_ORDER, countOpenHypotheses, groupItemsByKind } from "./investigations-format";
+import { KIND_ORDER, countOpenHypotheses, eligibilityPillLabel, groupItemsByKind } from "./investigations-format";
 import type { InvestigationItem } from "@agentrail/db-postgres";
 
 function item(overrides: Partial<InvestigationItem> = {}): InvestigationItem {
@@ -73,5 +73,30 @@ describe("countOpenHypotheses", () => {
 
   it("ignores an open-state item of a non-hypothesis kind (state is only meaningful for hypotheses)", () => {
     expect(countOpenHypotheses([{ kind: "finding", state: "open" as never }])).toBe(0);
+  });
+});
+
+describe("eligibilityPillLabel", () => {
+  it("is the green 'Eligible' tone with no tooltip when eligible", () => {
+    const pill = eligibilityPillLabel({ eligible: true, blocking: [] });
+    expect(pill).toEqual({ tone: "eligible", label: "Eligible" });
+    expect(pill.tooltip).toBeUndefined();
+  });
+
+  it("is the amber 'Not eligible' tone, with the blocking reasons joined into the tooltip, when ineligible", () => {
+    const pill = eligibilityPillLabel({
+      eligible: false,
+      blocking: ["no supported hypothesis with mechanism and evidence", "no refuted rival hypothesis and no solePlausible finding"],
+    });
+    expect(pill.tone).toBe("ineligible");
+    expect(pill.label).toBe("Not eligible");
+    expect(pill.tooltip).toBe(
+      "no supported hypothesis with mechanism and evidence; no refuted rival hypothesis and no solePlausible finding"
+    );
+  });
+
+  it("relays blocking reasons verbatim, never re-deriving eligibility from anything else", () => {
+    const pill = eligibilityPillLabel({ eligible: false, blocking: ["single reason"] });
+    expect(pill.tooltip).toBe("single reason");
   });
 });

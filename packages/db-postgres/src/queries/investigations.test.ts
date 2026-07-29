@@ -174,6 +174,8 @@ import {
   computeVerdictEligibility,
   recordVerdict,
   confirmVerdictAsHuman,
+  claimLessonPromotion,
+  unclaimLessonPromotion,
   linkInvestigations,
   linkInvestigationIssue,
   updateInvestigationItemAsHuman,
@@ -853,6 +855,91 @@ describe("confirmVerdictAsHuman", () => {
       ok: true,
       item: investigationItemRow({ id: "verdict-1", kind: "verdict", data: { humanConfirmed: true } }),
     });
+  });
+});
+
+describe("claimLessonPromotion", () => {
+  it("issues a single conditional UPDATE guarded on id + kind:'lesson_candidate' + data->>'promotedAt' IS NULL (shape assertion only — the mocked suite proves this code CONSTRUCTS the guarded predicate; it cannot prove Postgres enforces atomicity at commit time, since nothing here executes against a real database)", async () => {
+    mockState.updateReturningQueue.push([
+      investigationItemRow({ id: "lesson-1", kind: "lesson_candidate", data: { promotedAt: "2026-07-29T00:00:00.000Z" } }),
+    ]);
+
+    await claimLessonPromotion("lesson-1");
+
+    expect(mockState.updateCalls).toHaveLength(1);
+    const { where } = mockState.updateCalls[0]!;
+    const rendered = render(where);
+    expect(rendered.params).toContain("lesson-1");
+    expect(rendered.params).toContain("lesson_candidate");
+    expect(rendered.sql).toContain("promotedAt");
+    expect(rendered.sql.toUpperCase()).toContain("IS NULL");
+  });
+
+  it("merges promotedAt into data via jsonb || in-database, never a plain JS spread — the SET clause references the data column itself, proving no prior SELECT feeds this write", async () => {
+    mockState.updateReturningQueue.push([investigationItemRow({ id: "lesson-1", kind: "lesson_candidate" })]);
+
+    await claimLessonPromotion("lesson-1");
+
+    const { set } = mockState.updateCalls[0]!;
+    expect(set).not.toHaveProperty("authority"); // never flips authority — see doc-comment
+    const setSql = render(set.data).sql;
+    expect(setSql).toContain("jsonb_build_object");
+    expect(setSql).toContain("||");
+  });
+
+  it("returns { claimed: true, item } when the conditional UPDATE matches a row", async () => {
+    const claimed = investigationItemRow({
+      id: "lesson-1",
+      kind: "lesson_candidate",
+      data: { promotedAt: "2026-07-29T00:00:00.000Z" },
+    });
+    mockState.updateReturningQueue.push([claimed]);
+
+    const result = await claimLessonPromotion("lesson-1");
+
+    expect(result).toEqual({ claimed: true, item: claimed });
+  });
+
+  it("returns { claimed: false } when the conditional UPDATE matches zero rows — a lost race, an already-promoted item, a wrong-kind item, or a nonexistent id all collapse here indistinguishably by design", async () => {
+    mockState.updateReturningQueue.push([]);
+
+    const result = await claimLessonPromotion("lesson-1");
+
+    expect(result).toEqual({ claimed: false });
+  });
+
+  it("two sequential claims of the same item: the mock's queue models 'first commits, second finds nothing' — exactly one { claimed: true }", async () => {
+    const claimed = investigationItemRow({ id: "lesson-1", kind: "lesson_candidate", data: { promotedAt: "x" } });
+    mockState.updateReturningQueue.push([claimed]); // first UPDATE finds and claims the row
+    mockState.updateReturningQueue.push([]); // second UPDATE's WHERE now matches nothing
+
+    const first = await claimLessonPromotion("lesson-1");
+    const second = await claimLessonPromotion("lesson-1");
+
+    expect(first).toEqual({ claimed: true, item: claimed });
+    expect(second).toEqual({ claimed: false });
+  });
+});
+
+describe("unclaimLessonPromotion", () => {
+  it("clears promotedAt via jsonb key-delete, guarded on id + kind:'lesson_candidate'", async () => {
+    mockState.updateReturningQueue.push([investigationItemRow({ id: "lesson-1", kind: "lesson_candidate", data: {} })]);
+
+    await unclaimLessonPromotion("lesson-1");
+
+    expect(mockState.updateCalls).toHaveLength(1);
+    const { set, where } = mockState.updateCalls[0]!;
+    const setSql = render(set.data).sql;
+    expect(setSql).toContain("-");
+    expect(setSql).toContain("promotedAt");
+    const whereRendered = render(where);
+    expect(whereRendered.params).toContain("lesson-1");
+    expect(whereRendered.params).toContain("lesson_candidate");
+  });
+
+  it("never throws when zero rows match — best effort, the item may already be gone", async () => {
+    mockState.updateReturningQueue.push([]);
+    await expect(unclaimLessonPromotion("no-such-item")).resolves.toBeUndefined();
   });
 });
 

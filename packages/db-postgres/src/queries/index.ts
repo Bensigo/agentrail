@@ -2818,6 +2818,10 @@ export {
 // is the console-only human confirmation gate on the LATEST verdict item —
 // see its own doc-comment for why it does NOT reuse
 // `updateInvestigationItemAsHuman` (it must not flip `authority`).
+// `claimLessonPromotion`/`unclaimLessonPromotion` (Task 13 Fix round 1) are
+// the atomic claim-then-insert pair backing lesson promotion — the guard
+// lives on the UPDATE's own WHERE, not an earlier read; see
+// `claimLessonPromotion`'s own doc-comment.
 export {
   upsertInvestigation,
   getInvestigationBySlug,
@@ -2829,6 +2833,8 @@ export {
   computeVerdictEligibility,
   recordVerdict,
   confirmVerdictAsHuman,
+  claimLessonPromotion,
+  unclaimLessonPromotion,
   linkInvestigations,
   linkInvestigationIssue,
   updateInvestigationItemAsHuman,
@@ -2846,6 +2852,7 @@ export {
   type RecordVerdictInput,
   type RecordVerdictResult,
   type ConfirmVerdictAsHumanResult,
+  type ClaimLessonPromotionResult,
   type UpdateInvestigationItemAsHumanInput,
   type UpdateInvestigationItemAsHumanResult,
   type CreateInvestigationItemAsHumanInput,

@@ -738,6 +738,93 @@ export async function confirmVerdictAsHuman(investigationId: string): Promise<Co
   return { ok: true, item: row! };
 }
 
+export type ClaimLessonPromotionResult =
+  | { claimed: true; item: InvestigationItem }
+  | { claimed: false };
+
+/**
+ * Atomically claims a `lesson_candidate` item for promotion into workspace
+ * memory (Task 13 Fix round 1 — replaces a check-then-act "read
+ * `data.promotedAt`, then write" with the house pattern: the guard lives on
+ * the WRITE's own WHERE, never an earlier SELECT. This arc's third instance
+ * of the same class of bug — see `patchInvestigationItems`'s TOCTOU
+ * paragraph and the EvalPlanQual CTE-guard lesson it cites: under READ
+ * COMMITTED a pre-check SELECT is only a snapshot, never a lock).
+ *
+ * ONE conditional UPDATE: `id = itemId AND kind = 'lesson_candidate' AND
+ * (data ->> 'promotedAt') IS NULL`, merging `{ promotedAt: now }` into the
+ * EXISTING `data` via jsonb `||` — never a plain JS spread, since this
+ * function deliberately never SELECTs first, so there is no `existing.data`
+ * in hand to spread against; the merge happens entirely inside the
+ * database, in the same statement as the guard. Two callers racing the same
+ * item both issue this UPDATE against the identical WHERE; Postgres
+ * serializes row-level UPDATEs, so exactly one finds a matching row and
+ * commits — the other's WHERE matches nothing (the first UPDATE already
+ * cleared `(data ->> 'promotedAt') IS NULL` before the second's snapshot),
+ * so it gets back zero rows.
+ *
+ * `claimed: false` is deliberately ambiguous between three causes (the item
+ * doesn't exist, isn't `kind: 'lesson_candidate'`, or was already promoted)
+ * — this function's only job is the atomic commit-time guard. The promote
+ * route tells those apart itself, via its OWN prior read, for an honest 400
+ * (wrong kind / foreign item) vs 409 (lost the race / already promoted).
+ *
+ * Deliberately does NOT flip `authority` to `'human'` — mirrors
+ * `confirmVerdictAsHuman`'s own reasoning just above: promotion marks a
+ * system fact ("this has been copied into memory"), not a human content
+ * edit, so it is not routed through `updateInvestigationItemAsHuman`.
+ */
+export async function claimLessonPromotion(itemId: string): Promise<ClaimLessonPromotionResult> {
+  const [row] = await db
+    .update(investigationItems)
+    .set({
+      data: sql`${investigationItems.data} || jsonb_build_object('promotedAt', ${new Date().toISOString()}::text)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(investigationItems.id, itemId),
+        eq(investigationItems.kind, "lesson_candidate"),
+        sql`(${investigationItems.data} ->> 'promotedAt') IS NULL`
+      )
+    )
+    .returning();
+  return row ? { claimed: true, item: row } : { claimed: false };
+}
+
+/**
+ * Best-effort UNDO of {@link claimLessonPromotion} — called only from the
+ * promote route's own insert-failure branch, when a claim succeeded but the
+ * subsequent `insertMemoryItems` call threw. Clears the `promotedAt` key
+ * entirely (jsonb `-` key-delete) rather than restoring a prior value,
+ * since the claim never read (and so cannot recall) whatever `data` looked
+ * like before it ran — this only ever removes the ONE key it itself sets.
+ * Re-scoped by `kind = 'lesson_candidate'` for the same defense-against-a-
+ * stale-id reason every write in this file re-checks kind. Calls
+ * `.returning()` purely to match this file's own `.update()` convention
+ * (every other write here does, for the mocked test harness's benefit —
+ * see that harness's own doc-comment) even though the caller has no use
+ * for the row.
+ *
+ * Named crash window (accepted for v1 — see the promote route's own
+ * doc-comment): if the process dies between the claim commit and this call,
+ * or this call itself fails, the item is left claimed with no memory row
+ * behind it (a human would see "Promoted" with nothing to show for it). The
+ * failure mode is a STUCK CLAIM, never a duplicate memory item — a retry
+ * from the console hits the same already-claimed state (409), not a silent
+ * second insert.
+ */
+export async function unclaimLessonPromotion(itemId: string): Promise<void> {
+  await db
+    .update(investigationItems)
+    .set({
+      data: sql`${investigationItems.data} - 'promotedAt'`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(investigationItems.id, itemId), eq(investigationItems.kind, "lesson_candidate")))
+    .returning();
+}
+
 /** Record an investigation-to-investigation edge (`recurrence_of`/`related`) — see `investigation_links`' schema doc-comment for the reopen-vs-new mechanism this backs. */
 export async function linkInvestigations(
   investigationId: string,

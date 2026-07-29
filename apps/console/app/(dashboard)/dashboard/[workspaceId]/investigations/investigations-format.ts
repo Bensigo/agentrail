@@ -121,6 +121,34 @@ export function countOpenHypotheses(items: Pick<InvestigationItem, "kind" | "sta
   return items.filter((item) => item.kind === "hypothesis" && item.state === "open").length;
 }
 
+export type EligibilityPillTone = "eligible" | "ineligible";
+
+export interface EligibilityPill {
+  tone: EligibilityPillTone;
+  label: string;
+  /** Joined blocking reasons — present only when ineligible, so a caller can pass this straight through as a DOM `title` (omitted, not empty-string, keeps `title={pill.tooltip}` from ever rendering an empty tooltip). */
+  tooltip?: string;
+}
+
+/**
+ * Pure display mapping for the index page's ALWAYS-RENDERED eligibility
+ * pill (Task 13 Fix round 1 — every row shows this, not only rows with open
+ * hypotheses; the review verdict this fixes: "the index must show
+ * eligibility for EVERY row"). Green "Eligible" / amber "Not eligible",
+ * condensed from the detail page's own banner language
+ * ("Eligible for record_verdict." / "Not eligible for record_verdict —
+ * <blocking…>"). `computeVerdictEligibility`'s own `{ eligible, blocking }`
+ * shape is relayed verbatim into the tooltip — never re-derived, same
+ * "the UI is not entitled to judge its own evidence sufficiency" posture
+ * the detail page's banner already documents.
+ */
+export function eligibilityPillLabel(eligibility: { eligible: boolean; blocking: string[] }): EligibilityPill {
+  if (eligibility.eligible) {
+    return { tone: "eligible", label: "Eligible" };
+  }
+  return { tone: "ineligible", label: "Not eligible", tooltip: eligibility.blocking.join("; ") };
+}
+
 /** `YYYY-MM-DDTHH:mm`-ish absolute stamp for a hover title — matches `briefs-format.ts`'s own `formatAbsoluteTime`. */
 export function formatAbsoluteTime(iso: string | Date): string {
   const d = typeof iso === "string" ? new Date(iso) : iso;

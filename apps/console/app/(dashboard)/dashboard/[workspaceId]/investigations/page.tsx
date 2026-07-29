@@ -5,7 +5,7 @@ import { computeVerdictEligibility, getInvestigationById, listInvestigations } f
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { PageHeader } from "../../../../components/page-header";
 import { EmptyState } from "../../../../components/empty-state";
-import { SeverityBadge, StatusBadge, VerdictBadge } from "./components/badges";
+import { EligibilityBadge, SeverityBadge, StatusBadge, VerdictBadge } from "./components/badges";
 import { countOpenHypotheses, formatRelativeTime } from "./investigations-format";
 
 /**
@@ -22,10 +22,15 @@ import { countOpenHypotheses, formatRelativeTime } from "./investigations-format
  * `Promise.all` per investigation, mirroring the briefs index's own
  * `computeBriefReadiness`-per-row shape:
  *   - `computeVerdictEligibility` — the SAME server-computed gate the detail
- *     page's banner reads, never re-derived here. Its blocking reasons
- *     surface as this row's open-hypotheses-badge tooltip, so a human
- *     scanning the list can see AT A GLANCE why a row with open threads
- *     isn't yet verdict-eligible without opening it.
+ *     page's banner reads, never re-derived here. EVERY row renders its own
+ *     always-present `EligibilityBadge` from this (green "Eligible" / amber
+ *     "Not eligible", Fix round 1 — the original cut only surfaced this as
+ *     the open-hypotheses badge's tooltip, which meant a row with ZERO open
+ *     hypotheses but still no refuted rival/solePlausible finding showed no
+ *     eligibility signal at all). The blocking reasons ALSO still feed the
+ *     open-hypotheses badge's own tooltip below, unchanged — the two badges
+ *     answer related but distinct questions ("can a verdict be recorded
+ *     right now" vs "how many open threads are there").
  *   - `getInvestigationById` — items, to compute the red "N open hypotheses"
  *     count (`state === "open" && kind === "hypothesis"`, pinned by the Task
  *     13 brief) via the pure `countOpenHypotheses` helper.
@@ -99,6 +104,7 @@ export default async function InvestigationsPage({
               <p className="font-mono text-xs text-[var(--gray-09)]">/{investigation.slug}</p>
             </div>
             <div className="flex shrink-0 items-center gap-3">
+              <EligibilityBadge eligibility={eligibility} />
               {openHypotheses > 0 && (
                 <span
                   title={!eligibility.eligible ? eligibility.blocking.join("; ") : undefined}

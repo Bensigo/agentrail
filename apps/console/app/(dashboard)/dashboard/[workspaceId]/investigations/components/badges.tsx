@@ -6,6 +6,7 @@ import type {
   InvestigationVerdict,
   VerdictConfidence,
 } from "@agentrail/db-postgres";
+import type { EligibilityPillTone } from "../investigations-format";
 import {
   AUTHORITY_LABELS,
   CONFIDENCE_LABELS,
@@ -13,6 +14,7 @@ import {
   SEVERITY_LABELS,
   STATUS_LABELS,
   VERDICT_LABELS,
+  eligibilityPillLabel,
 } from "../investigations-format";
 
 /**
@@ -89,6 +91,30 @@ const CONFIDENCE_CLASS: Record<VerdictConfidence, string> = {
 
 export function ConfidenceBadge({ confidence }: { confidence: VerdictConfidence }) {
   return <span className={CONFIDENCE_CLASS[confidence]}>{CONFIDENCE_LABELS[confidence]}</span>;
+}
+
+/**
+ * The index page's ALWAYS-RENDERED per-row eligibility pill (Task 13 Fix
+ * round 1 — every row, not only rows with open hypotheses). Green
+ * "Eligible" / amber "Not eligible", tooltip = the joined blocking reasons
+ * (via the pure `eligibilityPillLabel` helper, so the tone/label/tooltip
+ * mapping is unit-testable without a render harness — see
+ * `investigations-format.test.ts`). Distinct from `VerdictBadge` above:
+ * this reflects `computeVerdictEligibility` (can a verdict be recorded
+ * RIGHT NOW), `VerdictBadge` reflects whether one already WAS.
+ */
+const ELIGIBILITY_CLASS: Record<EligibilityPillTone, string> = {
+  eligible: `${BASE} bg-[color-mix(in_srgb,var(--green-11)_16%,transparent)] text-[var(--green-11)]`,
+  ineligible: `${BASE} bg-[color-mix(in_srgb,var(--yellow-11)_16%,transparent)] text-[var(--yellow-11)]`,
+};
+
+export function EligibilityBadge({ eligibility }: { eligibility: { eligible: boolean; blocking: string[] } }) {
+  const pill = eligibilityPillLabel(eligibility);
+  return (
+    <span className={ELIGIBILITY_CLASS[pill.tone]} title={pill.tooltip}>
+      {pill.label}
+    </span>
+  );
 }
 
 /**

@@ -603,16 +603,59 @@ test("renderAcCoverage: criterion and evidence are trimmed before rendering", ()
   assert.ok(block.includes("- ✅ AC1: x — y"));
 });
 
-// NOTE: brief's 4th test ("Fold path visible in the transport body") is
-// deliberately NOT included here — it fails against current code, and it's a
-// real bug, not a test-authoring error. See fastfollow-report.md for the
-// full repro + root-cause analysis: composeSummaryWithCoverage's fold branch
-// (this file) checks only whether `base + FULL block` blows SUMMARY_MAX_LEN;
-// it never re-checks whether `base + countLine` ALSO fits. When base is
-// within ~80 chars of the cap (as the brief's own fixture is, by
-// construction: SUMMARY_MAX_LEN - 40), the fold's own output can still
-// exceed SUMMARY_MAX_LEN, and runPostPrReview's later sanitizeReviewInput ->
-// hardenUntrusted(maxLen: SUMMARY_MAX_LEN) truncates it — silently chopping
-// the count line's own tail (e.g. "...1 not in d…"), which defeats the
-// fold's entire purpose (a clean, short fallback instead of a corrupted
-// mid-checklist cut).
+test("runPostPrReview: the coverage fold path is visible in what's actually sent over the wire", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 40);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat."));
+  assert.ok(!sent.summary.includes("**Acceptance criteria"));
+});
+
+test("runPostPrReview: a pathological base (already within a hair of the cap) still lets the count line survive whole — the base cedes its tail instead", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // Only 10 chars of headroom under SUMMARY_MAX_LEN — even the count line
+  // alone (~71 chars) cannot fit alongside the base unmodified, so this
+  // forces composeSummaryWithCoverage's base-cedes-its-tail branch.
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 10);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // The count line rides out whole — never truncated, regardless of how
+  // little room the base left for it.
+  assert.ok(sent.summary.includes("AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat."));
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The base visibly ceded its own tail instead.
+  assert.ok(sent.summary.includes("…"));
+});

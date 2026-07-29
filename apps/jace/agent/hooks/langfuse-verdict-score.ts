@@ -107,6 +107,20 @@ export function __resetScoredForTests() {
  * CATEGORICAL "blocked" / "unblocked" value so triage's score is comparable
  * across runs for the Phase 2 calibration report (item 9).
  *
+ * TASK 9 GUARD (debugging design spec: docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md;
+ * spec PR #1501): `triage` (now Jace's debugger) gained a SECOND output
+ * shape, `mode: "deep"` — a production-investigation ROUND_REPORT
+ * (agent/subagents/triage/lib/triage.core.mjs's ROUND_REPORT_SCHEMA), which
+ * has no `blocking_reason` field at all. Scoring one would read
+ * `blocking_reason` as absent and silently score "unblocked" — fabricating a
+ * RUN-DIAGNOSIS verdict for a round report, which is not one. So a parsed
+ * triage output with `mode === "deep"` returns `undefined` here (no score
+ * pushed at all, same as any other unscored subagent) BEFORE the
+ * blocking_reason read. Run-mode outputs — `mode` absent, or `mode: "run"`,
+ * both the byte-stable pre-Task-9 shape (DEBUGGER_RUN_MODE_SCHEMA) — score
+ * exactly as they did before this guard existed; the const check below only
+ * ever matches the literal string "deep".
+ *
  * Returns `undefined` for any subagent name this hook doesn't score.
  *
  * @param {string} subagentName
@@ -133,6 +147,10 @@ export function verdictValueFor(subagentName, output) {
     return { value: verdict, dataType: "CATEGORICAL" };
   }
   if (subagentName === "triage") {
+    // Task 9: a deep-mode ROUND_REPORT is not a run diagnosis — skip the
+    // triage_verdict score entirely rather than fabricate one from a field
+    // (blocking_reason) that ROUND_REPORT_SCHEMA doesn't even carry.
+    if (o.mode === "deep") return undefined;
     const blocking = typeof o.blocking_reason === "string" ? o.blocking_reason.trim() : "";
     return { value: blocking ? "blocked" : "unblocked", dataType: "CATEGORICAL" };
   }

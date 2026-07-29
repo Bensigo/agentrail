@@ -1,6 +1,13 @@
-// AC1 — the triage subagent has ZERO write capability and is isolated from the
-// factory's single write path (create_issue), while authoring exactly ONE
-// read-only tool (fetch_run_evidence).
+// AC1 — the debugger (directory/tool name still `triage` — Global
+// Constraints: the name is unchanged for wire + calibration continuity) has
+// ZERO write capability and is isolated from the factory's single write path
+// (create_issue), while authoring exactly its THREE read-only tools:
+// fetch_run_evidence (run mode's failure-bundle read) plus fetch_changes /
+// search_events (Task 9 — deep mode's evidence-verb tools, both thin
+// wrappers over the SAME shared lib/evidence_verbs.core.mjs). Widening from
+// one tool to three is Task 9's own change (the debugger now answers
+// production-investigation missions, not just run diagnoses); the read-only,
+// zero-write guarantee this file exists to prove is otherwise untouched.
 //
 // Two mechanisms make the zero-write guarantee true, and this test PROVES both:
 //
@@ -20,11 +27,15 @@
 //      sentinels (each `tools/<name>.ts` default-exports disableTool()) that
 //      strips the ENTIRE default harness. Because triage declares NO connections,
 //      the dynamic connection_search is never injected, so there is no
-//      connection_search sentinel either.
+//      connection_search sentinel either. The two new Task 9 tools sit BESIDE
+//      those sentinels in the same tools/ directory — none of the sentinels are
+//      removed or replaced.
 //
-// The ONE authored tool, fetch_run_evidence, is read-only: it sets NO approval
-// (approval gates are reserved for root's gated write tools) and
-// reaches exactly one configured console endpoint via the global fetch.
+// All THREE authored tools are read-only: none sets an `approval` field
+// (approval gates are reserved for root's gated write tools), and each
+// reaches exactly one configured console endpoint via the global fetch (the
+// failure-bundle route for fetch_run_evidence; the evidence-capability route
+// for fetch_changes/search_events).
 //
 // The complementary guarantee — that root's write surface is UNCHANGED and that
 // NO subagent authors a mutating tool — is covered by no-second-write-path.test.mjs
@@ -43,9 +54,11 @@ const triageDir = fileURLToPath(
 );
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 
-// The single authored tool. It legitimately uses defineTool, so it is EXCLUDED
-// from the sentinel-only assertions and from the defineTool write-path scan.
-const AUTHORED_TOOL = "fetch_run_evidence.ts";
+// The three authored tools. Each legitimately uses defineTool, so all three
+// are EXCLUDED from the sentinel-only assertions and from the defineTool
+// write-path scan. Adding a fourth is a deliberate edit here, same posture
+// as no-second-write-path.test.mjs's own EXPECTED_TOOL_FILES ceiling-and-floor.
+const AUTHORED_TOOLS = ["fetch_run_evidence.ts", "fetch_changes.ts", "search_events.ts"].sort();
 
 function sourceFiles(dir) {
   const out = [];
@@ -103,7 +116,7 @@ test("triage strips the ENTIRE default harness via disableTool() sentinels", () 
   const disabled = new Set();
   for (const entry of readdirSync(toolsDir)) {
     if (!entry.endsWith(".ts")) continue;
-    if (entry === AUTHORED_TOOL) continue; // the one real tool, asserted below
+    if (AUTHORED_TOOLS.includes(entry)) continue; // the real tools, asserted below
     const src = readFileSync(`${toolsDir}/${entry}`, "utf8");
     // A sentinel DISABLES — it must never DEFINE a real (capability-granting) tool.
     assert.doesNotMatch(
@@ -154,35 +167,35 @@ test("triage strips the ENTIRE default harness via disableTool() sentinels", () 
   }
 });
 
-test("triage authors exactly ONE tool — the read-only fetch_run_evidence", () => {
+test("triage authors exactly its THREE read-only tools — fetch_run_evidence, fetch_changes, search_events", () => {
   // Enumerate every source file that authors a tool (defineTool). It must be
-  // exactly the one read-only fetch_run_evidence tool, nothing else.
+  // exactly the three read-only tools, nothing else.
   const authored = sourceFiles(triageDir)
     .filter((f) => /defineTool\s*\(/.test(stripComments(readFileSync(f, "utf8"))))
     .map((f) => f.replace(`${triageDir}/`, ""))
     .sort();
   assert.deepEqual(
     authored,
-    [`tools/${AUTHORED_TOOL}`],
-    `triage must author exactly one tool (tools/${AUTHORED_TOOL}); found: ${authored.join(", ") || "(none)"}`,
+    AUTHORED_TOOLS.map((t) => `tools/${t}`).sort(),
+    `triage must author exactly its three tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
   );
 
-  // That one tool is READ-ONLY: it must NOT carry an approval gate (an
+  // Every one of the three is READ-ONLY: none may carry an approval gate (an
   // approval gate — always()/once() or consoleGatedApproval — is a write-path
   // signal reserved for root's gated write tools).
-  const toolSrc = stripComments(
-    readFileSync(`${triageDir}/tools/${AUTHORED_TOOL}`, "utf8"),
-  );
-  assert.doesNotMatch(
-    toolSrc,
-    /approval:\s*(always|once)\(|consoleGatedApproval/,
-    "the read-only fetch_run_evidence tool must not carry an approval gate (always/once or consoleGatedApproval)",
-  );
+  for (const tool of AUTHORED_TOOLS) {
+    const toolSrc = stripComments(readFileSync(`${triageDir}/tools/${tool}`, "utf8"));
+    assert.doesNotMatch(
+      toolSrc,
+      /approval:\s*(always|once)\(|consoleGatedApproval/,
+      `the read-only ${tool} tool must not carry an approval gate (always/once or consoleGatedApproval)`,
+    );
+  }
 });
 
 test("no file under triage references a write path or a database client", () => {
-  // NB: defineTool is intentionally NOT banned here — triage's one authored tool
-  // uses it read-only (asserted above). What's banned is any actual mutation /
+  // NB: defineTool is intentionally NOT banned here — triage's three authored
+  // tools use it read-only (asserted above). What's banned is any actual mutation /
   // second write path, and any direct DB client (Jace subagents read over HTTP;
   // there is NO ClickHouse client in Jace, and standup's postgres edge is root's,
   // not a subagent's).
@@ -200,7 +213,7 @@ test("no file under triage references a write path or a database client", () => 
 test("triage declares no connections directory (no MCP surface, HTTP-only reach)", () => {
   assert.ok(
     !existsSync(`${triageDir}/connections`),
-    "triage must declare no connections — its only outbound reach is the one " +
-      "configured console endpoint via fetch_run_evidence",
+    "triage must declare no connections — its only outbound reach is configured " +
+      "console endpoints via its three authored tools (fetch_run_evidence, fetch_changes, search_events)",
   );
 });

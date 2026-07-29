@@ -87,7 +87,8 @@
 //      `create_goal` (gated/mutating), `send_connect_link` + `post_pr_review`
 //      + `save_brief` (ungated but self-scoped/argued), and `standup` /
 //      `codebase_query` / `fetch_workspace_memory` / `fetch_backlog` /
-//      `fetch_repo_wiki` / `fetch_work_status` / `fetch_briefs` (read-only).
+//      `fetch_repo_wiki` / `fetch_work_status` / `fetch_briefs` / `fetch_issue`
+//      (read-only).
 //      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
 //      below — that edit IS the human review this test exists to force.
 //   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
@@ -159,6 +160,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
+  "fetch_issue.ts", // read-only (QA AC-awareness spec, docs/superpowers/specs/2026-07-29-qa-ac-awareness-design.md): reads ONE GitHub issue (number/title/body/state) over the console token API, to resolve its acceptance criteria before dispatching qa; no approval, no child_process
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process

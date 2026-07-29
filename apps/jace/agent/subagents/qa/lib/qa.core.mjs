@@ -10,6 +10,13 @@ export const QA_VERDICTS = ["passed", "issues_found", "not_verifiable"];
 export const QA_SURFACES = ["ui", "api"];
 export const QA_SEVERITIES = ["low", "medium", "high"];
 
+// Per-AC observed verdicts (spec §3): claims about BEHAVIOR QA watched, never
+// about code. `not_testable` is a first-class outcome — folding an
+// unexercisable criterion into passed/failed is exactly the confabulation
+// this contract exists to prevent.
+export const AC_RESULT_VERDICTS = ["verified", "failed", "not_testable"];
+export const MAX_AC_RESULTS = 20;
+
 export const QA_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -18,6 +25,7 @@ export const QA_SCHEMA = {
     "summary",
     "tested",
     "findings",
+    "ac_results",
     "not_verifiable_reason",
     "evidence_refs",
   ],
@@ -120,6 +128,37 @@ export const QA_SCHEMA = {
         },
       },
     },
+    ac_results: {
+      type: ["array", "null"],
+      maxItems: MAX_AC_RESULTS,
+      description:
+        "Per-acceptance-criterion observed verdicts, when the parent's task " +
+        "prompt carried an Acceptance criteria block; null when it did not. " +
+        "Always null when verdict is 'not_verifiable'.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["criterion", "verdict", "evidence"],
+        properties: {
+          criterion: { type: "string", description: "The AC text as given, trimmed." },
+          verdict: {
+            type: "string",
+            enum: AC_RESULT_VERDICTS,
+            description:
+              "verified = observed working (evidence cites the observation); " +
+              "failed = observed broken (also file a finding with repro); " +
+              "not_testable = cannot be exercised from the browser/API " +
+              "(evidence carries the concrete reason).",
+          },
+          evidence: {
+            type: "string",
+            description:
+              "verified/failed: the observation this verdict rests on (also " +
+              "in evidence_refs); not_testable: the concrete reason.",
+          },
+        },
+      },
+    },
     not_verifiable_reason: {
       type: ["string", "null"],
       description:
@@ -212,6 +251,27 @@ export function validateAdvisory(advisory) {
     });
   }
 
+  if (advisory.ac_results !== null) {
+    if (!Array.isArray(advisory.ac_results)) {
+      push("ac_results must be an array or null");
+    } else {
+      if (advisory.ac_results.length > MAX_AC_RESULTS) {
+        push(`ac_results must have at most ${MAX_AC_RESULTS} entries`);
+      }
+      advisory.ac_results.forEach((a, i) => {
+        if (a === null || typeof a !== "object" || Array.isArray(a)) {
+          push(`ac_results[${i}] must be an object`);
+          return;
+        }
+        if (!isStr(a.criterion)) push(`ac_results[${i}].criterion must be a non-empty string`);
+        if (!AC_RESULT_VERDICTS.includes(a.verdict)) {
+          push(`ac_results[${i}].verdict must be one of: ${AC_RESULT_VERDICTS.join(", ")}`);
+        }
+        if (!isStr(a.evidence)) push(`ac_results[${i}].evidence must be a non-empty string`);
+      });
+    }
+  }
+
   if (!Array.isArray(advisory.evidence_refs) || !advisory.evidence_refs.every(isStr)) {
     push("evidence_refs must be an array of non-empty strings");
   }
@@ -229,6 +289,9 @@ export function validateAdvisory(advisory) {
       push("verdict 'not_verifiable' requires a non-empty not_verifiable_reason");
     }
     if (findingsCount > 0) push("verdict 'not_verifiable' must carry zero findings");
+    if (advisory.ac_results !== null && advisory.ac_results !== undefined) {
+      push("verdict 'not_verifiable' must carry ac_results: null — nothing was exercised");
+    }
   } else if (
     advisory.not_verifiable_reason !== null &&
     advisory.not_verifiable_reason !== undefined

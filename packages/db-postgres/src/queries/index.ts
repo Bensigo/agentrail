@@ -2455,6 +2455,9 @@ export {
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
   getSessionBriefAnchor,
+  setSessionInvestigationAnchor,
+  clearSessionInvestigationAnchor,
+  getSessionInvestigationAnchor,
   getThreadEngagement,
   setThreadEngagement,
   recordApprovalRequest,
@@ -2785,3 +2788,54 @@ export {
   hashContent,
   type RecordGuardrailEventInput,
 } from "./guardrail_events.js";
+
+// Investigations (debugging design spec:
+// docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md, spec PR
+// #1501): `investigations`/`investigation_items`/`investigation_links`/
+// `investigation_issue_links` system of record — see `queries/investigations.ts`
+// for the full design (upsert-by-slug identity, delta item patching with the
+// human-authority/evidence-immutability/hypothesis-evidence-gating invariants
+// enforced at the store, FTS search mirroring `searchBriefs`, and the
+// server-computed, fail-closed verdict gate). `upsertInvestigation`/
+// `getInvestigationBySlug`/`getInvestigationById`/`listInvestigations`/
+// `searchInvestigations` back `fetch_investigations`'s modes;
+// `patchInvestigationItems` backs `save_investigation`; `appendEvidenceItem`
+// is the evidence route's own writer — the ONLY function allowed to insert
+// `kind: 'evidence'`. `computeVerdictEligibility`/`recordVerdict` back
+// `POST .../investigations/verdict`; `linkInvestigations`/
+// `linkInvestigationIssue` record recurrence edges and handoff results.
+// `updateInvestigationItemAsHuman`/`createInvestigationItemAsHuman`/
+// `deleteInvestigationItem` are the console's human-edit write path — the gap
+// `patchInvestigationItems` deliberately leaves open, mirroring
+// `updateBriefItemAsHuman`'s own reasoning.
+export {
+  upsertInvestigation,
+  getInvestigationBySlug,
+  getInvestigationById,
+  listInvestigations,
+  searchInvestigations,
+  patchInvestigationItems,
+  appendEvidenceItem,
+  computeVerdictEligibility,
+  recordVerdict,
+  linkInvestigations,
+  linkInvestigationIssue,
+  updateInvestigationItemAsHuman,
+  createInvestigationItemAsHuman,
+  deleteInvestigationItem,
+  INVESTIGATION_SEARCH_DEFAULT_LIMIT,
+  INVESTIGATION_SEARCH_MAX_LIMIT,
+  type InvestigationRow,
+  type InvestigationIndexRow,
+  type InvestigationWithItems,
+  type UpsertInvestigationInput,
+  type PatchInvestigationItemInput,
+  type PatchInvestigationItemsResult,
+  type AppendEvidenceItemInput,
+  type RecordVerdictInput,
+  type RecordVerdictResult,
+  type UpdateInvestigationItemAsHumanInput,
+  type UpdateInvestigationItemAsHumanResult,
+  type CreateInvestigationItemAsHumanInput,
+  type CreateInvestigationItemAsHumanResult,
+} from "./investigations.js";

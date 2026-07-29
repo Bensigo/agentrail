@@ -532,16 +532,24 @@ export async function saveInvestigation({
   const result = {
     ok: true,
     investigation: projectInvestigation(body.investigation),
+    // `applied` is the success list (ids the write actually landed under),
+    // not an echo of anything refused — String()-coerced only.
     applied: stringEntries(body.applied),
-    skippedHumanAuthorityIds: stringEntries(body.skippedHumanAuthorityIds),
-    // These two may carry a brand-new item's own body text (no id yet) —
-    // see patchInvestigationItems' doc-comment — so, like save_brief's
-    // skippedUnknownResolvedIds, they get the full hardenUntrusted treatment,
-    // not just String().
+    // Every refusal-shaped array below is hardened, not just String()-coerced
+    // — including skippedHumanAuthorityIds/skippedKindChangeIds/unmatchedIds,
+    // which in the CURRENT server implementation only ever carry real item
+    // ids, but nothing at the wire's type level (plain `string[]`) guarantees
+    // that stays true. skippedEvidenceImmutableIds/skippedHypothesisNeedsEvidence
+    // are the two that routinely carry a brand-new item's own body text (no
+    // id yet) — see patchInvestigationItems' doc-comment — so hardening is
+    // load-bearing there; on the other three it is defense-in-depth
+    // consistency with that same posture (mirrors how eligibility.blocking
+    // is hardened even though it is normally server-fixed text).
+    skippedHumanAuthorityIds: hardenEntries(body.skippedHumanAuthorityIds),
     skippedEvidenceImmutableIds: hardenEntries(body.skippedEvidenceImmutableIds),
     skippedHypothesisNeedsEvidence: hardenEntries(body.skippedHypothesisNeedsEvidence),
-    skippedKindChangeIds: stringEntries(body.skippedKindChangeIds),
-    unmatchedIds: stringEntries(body.unmatchedIds),
+    skippedKindChangeIds: hardenEntries(body.skippedKindChangeIds),
+    unmatchedIds: hardenEntries(body.unmatchedIds),
     // Target slugs the model itself composed this turn — same untrusted-echo
     // seam.
     skippedLinks: hardenEntries(body.skippedLinks),

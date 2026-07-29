@@ -714,6 +714,21 @@ test("saveInvestigation: skippedEvidenceImmutableIds/skippedHypothesisNeedsEvide
   assert.match(res.skippedEvidenceImmutableIds[0], /javascript\[:\]alert\(1\)/);
 });
 
+test("saveInvestigation: skippedHumanAuthorityIds/skippedKindChangeIds/unmatchedIds are ALSO hardened defensively (review round 1, FIX 3) — ids are unconstrained text at the schema level, same posture as the other refusal arrays", async () => {
+  const transport = fakeTransport(() =>
+    successResponse({
+      skippedHumanAuthorityIds: ["see javascript:alert(1) ​ here"],
+      skippedKindChangeIds: ["see javascript:alert(2) ​ here"],
+      unmatchedIds: ["see javascript:alert(3) ​ here"],
+    }),
+  );
+  const res = await saveInvestigation({ eveSessionId: EVE_SESSION_ID, slug: "checkout-500s", env: ENV, transport });
+  assert.match(res.skippedHumanAuthorityIds[0], /javascript\[:\]alert\(1\)/);
+  assert.match(res.skippedKindChangeIds[0], /javascript\[:\]alert\(2\)/);
+  assert.match(res.unmatchedIds[0], /javascript\[:\]alert\(3\)/);
+  assert.doesNotMatch(res.skippedHumanAuthorityIds[0], /​/);
+});
+
 test("saveInvestigation: success projects the returned investigation through the same hardening fetch_investigations applies on the read side", async () => {
   const transport = fakeTransport(() =>
     successResponse({

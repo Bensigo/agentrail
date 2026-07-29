@@ -175,6 +175,16 @@ test("pushVerdictScore POSTs to {baseUrl}/api/public/scores with Basic auth of p
   assert.deepEqual(JSON.parse(seenInit.body), { sessionId: "s1", name: "investigation_verdict" });
 });
 
+test("pushVerdictScore attaches a bounded AbortSignal timeout — an unbounded background request must never accumulate", async () => {
+  let seenInit;
+  const fetchImpl = fakeFetchImpl((_url, init) => {
+    seenInit = init;
+    return { ok: true, status: 200 };
+  });
+  await pushVerdictScore({ baseUrl: "https://langfuse.example.com", publicKey: "pk", secretKey: "sk", fetchImpl, body: {} });
+  assert.ok(seenInit.signal instanceof AbortSignal, "the request must carry an AbortSignal");
+});
+
 test("pushVerdictScore never rejects and funnels a non-ok response into a single console.warn", async () => {
   const originalWarn = console.warn;
   const warnCalls = [];
@@ -309,6 +319,7 @@ test("recordVerdict: 400 relays the console's own error message", async () => {
   const transport = fakeTransport(() => ({ status: 400, json: async () => ({ error: "confidence must be one of confirmed, probable, circumstantial" }) }));
   const res = await recordVerdict({ eveSessionId: EVE_SESSION_ID, slug: "checkout-500s", verdict: "root_caused", confidence: "bad-value", env: ENV, transport });
   assert.equal(res.reason, "bad_request");
+  assert.equal(res.message, "confidence must be one of confirmed, probable, circumstantial");
 });
 
 test("recordVerdict: 401/403 -> degraded('unauthorized')", async () => {
@@ -505,6 +516,88 @@ test("recordVerdict: a score-push failure never surfaces — the tool result is 
       fetchImpl,
     });
     assert.equal(res.ok, true);
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// recordVerdict — the score push is genuinely fire-and-forget: the tool
+// result must never wait on it (review round 1, FIX 1)
+// ---------------------------------------------------------------------------
+
+test("recordVerdict: on 200, resolves WITHOUT waiting for a slow score push — but the push is still issued", async () => {
+  const transport = fakeTransport(() => okVerdictResponse());
+  const PUSH_DELAY_MS = 400;
+  let resolvePush;
+  const pushGate = new Promise((resolve) => {
+    resolvePush = resolve;
+  });
+  const fetchImpl = fakeFetchImpl(async () => {
+    await new Promise((r) => setTimeout(r, PUSH_DELAY_MS));
+    resolvePush();
+    return { ok: true, status: 200 };
+  });
+
+  const start = Date.now();
+  const res = await recordVerdict({
+    eveSessionId: EVE_SESSION_ID,
+    slug: "checkout-500s",
+    verdict: "undetermined",
+    missingEvidence: ["x"],
+    env: LANGFUSE_ENV,
+    transport,
+    fetchImpl,
+  });
+  const elapsed = Date.now() - start;
+
+  assert.equal(res.ok, true);
+  assert.ok(
+    elapsed < PUSH_DELAY_MS / 2,
+    `recordVerdict must resolve immediately, not wait on the ${PUSH_DELAY_MS}ms score push; took ${elapsed}ms`,
+  );
+  assert.equal(fetchImpl.calls.length, 1, "the score request must still be issued synchronously, not skipped");
+
+  // Let the background push actually settle before the test ends, so it
+  // can't leak a dangling timer/assertion into a later test.
+  await pushGate;
+});
+
+test("recordVerdict: a score push that later REJECTS never affects the already-returned result (no unhandled rejection)", async () => {
+  const transport = fakeTransport(() => okVerdictResponse());
+  let rejectPush;
+  const pushSettled = new Promise((resolve) => {
+    rejectPush = resolve;
+  });
+  const fetchImpl = fakeFetchImpl(async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    rejectPush();
+    throw new Error("Langfuse is down");
+  });
+  const originalWarn = console.warn;
+  let warnCalls = 0;
+  console.warn = () => {
+    warnCalls++;
+  };
+  try {
+    const res = await recordVerdict({
+      eveSessionId: EVE_SESSION_ID,
+      slug: "checkout-500s",
+      verdict: "undetermined",
+      missingEvidence: ["x"],
+      env: LANGFUSE_ENV,
+      transport,
+      fetchImpl,
+    });
+    assert.equal(res.ok, true, "the result is already returned before the push even rejects");
+    assert.equal(res.rendered, "Verdict recorded: undetermined for investigation \"checkout-500s\".");
+
+    // Wait for the background push to actually settle, proving the
+    // rejection was swallowed into console.warn (not an unhandled
+    // rejection) rather than merely "not yet observed".
+    await pushSettled;
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(warnCalls, 1, "the swallowed failure still funnels into exactly one console.warn eventually");
   } finally {
     console.warn = originalWarn;
   }

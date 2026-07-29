@@ -44,9 +44,10 @@
 //
 // THREE OUTCOMES, three different result shapes (deliberately NOT all
 // squeezed through the generic `degraded()` helper — see `refused` below):
-//   1. 200 — `recordVerdict` (the query) accepted the verdict. Fire-and-
-//      forget exactly one Langfuse score (gated on `isLangfuseConfigured`),
-//      then return `{ ok: true, rendered }`.
+//   1. 200 — `recordVerdict` (the query) accepted the verdict. Fires exactly
+//      one Langfuse score (gated on `isLangfuseConfigured`) WITHOUT awaiting
+//      it, then immediately returns `{ ok: true, rendered }` — the score
+//      push's own network round-trip must never delay the tool's result.
 //   2. 409 — the console's OWN fail-closed refusal (ineligible for
 //      `root_caused`, missing `confidence`, or empty `missingEvidence` for
 //      `undetermined`). This is a MEANINGFUL, EXPECTED outcome — the gate
@@ -80,6 +81,13 @@ export const VERDICT_CONFIDENCES = Object.freeze(["confirmed", "probable", "circ
 const MECHANISM_SUMMARY_MAX_LEN = 2000;
 const MISSING_EVIDENCE_ENTRY_MAX_LEN = 500;
 const BLOCKING_REASON_MAX_LEN = 300;
+// The Langfuse score push is fire-and-forget (recordVerdict never awaits
+// it — see that function's own comment), but "fire-and-forget" must not
+// mean "unbounded": without a cap, a slow/hanging Langfuse endpoint would
+// leave an ever-growing pile of dangling requests/sockets across repeated
+// verdict calls in this long-lived process. Bounded independently of the
+// main verdict POST's own 10s tool-level timeout (agent/tools/record_verdict.ts).
+const SCORE_PUSH_TIMEOUT_MS = 3000;
 
 // Stable, cause-free notes for each degraded (infra-failure) outcome. `refused`
 // (409) is NOT one of these — see this module's top doc-comment for why it
@@ -206,13 +214,19 @@ export function renderVerdictSuccess({ verdict, slug }) {
 /**
  * POST one session-scoped score to Langfuse (`POST /api/public/scores`) —
  * transport + failure funnel copied VERBATIM from
- * `agent/hooks/langfuse-verdict-score.ts`'s own `pushScore`. Fire-and-forget:
- * every failure — transport rejection or a non-2xx response — funnels into
- * exactly ONE `console.warn`, and the returned promise NEVER rejects. A
- * score-push failure must never surface into the tool's own result.
+ * `agent/hooks/langfuse-verdict-score.ts`'s own `pushScore`, PLUS a bounded
+ * `AbortSignal.timeout(SCORE_PUSH_TIMEOUT_MS)` the hook's original didn't
+ * carry (added here because `recordVerdict` no longer awaits this call —
+ * see that function's own comment — so an unbounded hang would otherwise
+ * accumulate silently in the background across repeated verdict calls
+ * instead of surfacing promptly via the `console.warn` funnel). Fire-and-
+ * forget: every failure — transport rejection, timeout abort, or a non-2xx
+ * response — funnels into exactly ONE `console.warn`, and the returned
+ * promise NEVER rejects. A score-push failure must never surface into the
+ * tool's own result.
  *
  * @param {{ baseUrl: string, publicKey: string, secretKey: string,
- *           fetchImpl: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
+ *           fetchImpl: (url: string, init: { method: string, headers: Record<string,string>, body: string, signal?: AbortSignal }) =>
  *             Promise<{ ok: boolean, status: number }>,
  *           body: Record<string, unknown> }} params
  * @returns {Promise<void>}
@@ -227,6 +241,7 @@ export function pushVerdictScore({ baseUrl, publicKey, secretKey, fetchImpl, bod
       Authorization: `Basic ${token}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(SCORE_PUSH_TIMEOUT_MS),
   })
     .then((res) => {
       if (!res.ok) throw new Error(`langfuse scores POST returned HTTP ${res.status}`);
@@ -252,12 +267,16 @@ export function pushVerdictScore({ baseUrl, publicKey, secretKey, fetchImpl, bod
  *  10. status 422                 → degraded("content_rejected", { message, detail })
  *  11. status >= 500              → degraded("upstream_error")
  *  12. non-JSON / non-ok:true 200 → degraded("bad_body")
- *  13. success (200, ok:true)     → fire-and-forget exactly one Langfuse
- *      score (gated on isLangfuseConfigured; `sessionId` = the SAME
- *      eveSessionId this call sent; `metadata.investigation_id` = a STRING,
- *      preferring a response-carried id, falling back to slug — the real
- *      wire's 200 body is just `{ ok: true }` today, so this is the
- *      practical path every time), then `{ ok: true, rendered }`
+ *  13. success (200, ok:true)     → fires exactly one Langfuse score (gated
+ *      on isLangfuseConfigured; `sessionId` = the SAME eveSessionId this
+ *      call sent; `metadata.investigation_id` = a STRING, preferring a
+ *      response-carried id, falling back to slug — the real wire's 200
+ *      body is just `{ ok: true }` today, so this is the practical path
+ *      every time) WITHOUT awaiting it — the tool result resolves
+ *      immediately, `{ ok: true, rendered }`, the instant the console
+ *      confirms the verdict landed; the score push finishes in the
+ *      background (bounded, see `pushVerdictScore`'s SCORE_PUSH_TIMEOUT_MS)
+ *      and can never delay or fail this return
  *
  * @param {{ eveSessionId: string, slug: string, verdict: string, confidence?: string,
  *           mechanismSummary?: string, missingEvidence?: string[],
@@ -363,21 +382,38 @@ export async function recordVerdict({
   // response-carried id (defensive — the live route's 200 body is just
   // `{ ok: true }` today, so this branch is a forward-compat hedge) and
   // falls back to the slug, always coerced to a STRING.
+  //
+  // DELIBERATELY NOT AWAITED: this tool's result is what the model waits on
+  // to continue the turn, so blocking it on a Langfuse round-trip directly
+  // delays the user-visible response — a slow/hanging push must never do
+  // that. `pushVerdictScore`'s own promise chain already swallows every
+  // failure into a single console.warn and never rejects (and is itself
+  // bounded by SCORE_PUSH_TIMEOUT_MS), so a floating promise here is safe;
+  // the try/catch below only guards the vanishingly unlikely SYNCHRONOUS
+  // throw path (e.g. Buffer.from on a malformed key) so a Langfuse push can
+  // never make recordVerdict itself throw. `fetchImpl(...)` is still called
+  // synchronously inside `pushVerdictScore`, so the request IS issued before
+  // this function returns — only the network round-trip itself happens
+  // after.
   if (isLangfuseConfigured(env)) {
     const investigationId = String(body.investigationId ?? body.id ?? trimmedSlug);
-    await pushVerdictScore({
-      baseUrl: env.LANGFUSE_BASE_URL,
-      publicKey: env.LANGFUSE_PUBLIC_KEY,
-      secretKey: env.LANGFUSE_SECRET_KEY,
-      fetchImpl: fetchImpl ?? fetch,
-      body: {
-        sessionId,
-        name: "investigation_verdict",
-        value: verdict,
-        dataType: "CATEGORICAL",
-        metadata: { investigation_id: investigationId, slug: trimmedSlug },
-      },
-    });
+    try {
+      void pushVerdictScore({
+        baseUrl: env.LANGFUSE_BASE_URL,
+        publicKey: env.LANGFUSE_PUBLIC_KEY,
+        secretKey: env.LANGFUSE_SECRET_KEY,
+        fetchImpl: fetchImpl ?? fetch,
+        body: {
+          sessionId,
+          name: "investigation_verdict",
+          value: verdict,
+          dataType: "CATEGORICAL",
+          metadata: { investigation_id: investigationId, slug: trimmedSlug },
+        },
+      });
+    } catch {
+      // never let a Langfuse push crash the verdict result
+    }
   }
 
   return { ok: true, rendered: renderVerdictSuccess({ verdict, slug: trimmedSlug }) };

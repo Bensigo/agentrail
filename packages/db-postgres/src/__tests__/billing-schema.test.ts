@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getTableConfig } from "drizzle-orm/pg-core";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { billingPlanEnum, billingAccounts } from "../schema/billing_accounts.js";
 import { seats } from "../schema/seats.js";
 import { upgradePromptEvents } from "../schema/upgrade_prompt_events.js";
@@ -157,5 +159,100 @@ describe("workspaces schema — billing_account_id (spec §3)", () => {
     );
     expect(fk).toBeDefined();
     expect(fk!.onDelete).toBe("set null");
+  });
+});
+
+/**
+ * 0062_billing_accounts migration (spec §3, §7 "Trial"). Mirrors
+ * `counting-indexes-schema.test.ts`'s idiom: read the actual migration SQL
+ * and journal off disk rather than re-asserting the drizzle schema objects
+ * above — this is what catches drift between the hand-authored SQL and the
+ * schema files it's supposed to mirror, plus the idempotency guards no
+ * schema-object assertion can see.
+ */
+describe("0062_billing_accounts migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0062_billing_accounts.sql"
+  );
+
+  it("creates billing_accounts idempotently", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS "billing_accounts"');
+  });
+
+  it("creates seats and upgrade_prompt_events idempotently", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS "seats"');
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS "upgrade_prompt_events"');
+  });
+
+  it("guards the billing_plan enum creation against a second run", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    expect(sql).toContain(
+      'CREATE TYPE "public"."billing_plan" AS ENUM(\'trial\', \'starter\', \'growth\', \'enterprise\')'
+    );
+    expect(sql).toContain("WHEN duplicate_object THEN null");
+  });
+
+  it("creates both seats partial unique indexes, scoped to active AND non-null subject rows", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "seats_active_user_idx" ON "seats" USING btree ("billing_account_id","user_id") WHERE "seats"."released_at" IS NULL AND "seats"."user_id" IS NOT NULL'
+    );
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "seats_active_identity_idx" ON "seats" USING btree ("billing_account_id","chat_identity_id") WHERE "seats"."released_at" IS NULL AND "seats"."chat_identity_id" IS NOT NULL'
+    );
+  });
+
+  it("adds workspaces.billing_account_id idempotently, without SET NOT NULL", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    expect(sql).toContain(
+      'ALTER TABLE "workspaces" ADD COLUMN IF NOT EXISTS "billing_account_id" uuid'
+    );
+    expect(sql).not.toContain("SET NOT NULL");
+  });
+
+  it("backfills one trial billing account per workspace lacking one, via the seed-column pairing pattern", () => {
+    const sql = readFileSync(MIGRATION, "utf8");
+    // Temporary correlation column: added idempotently, dropped at the end.
+    expect(sql).toContain(
+      'ALTER TABLE "billing_accounts" ADD COLUMN IF NOT EXISTS "seed_workspace_id" uuid'
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "billing_accounts" DROP COLUMN IF EXISTS "seed_workspace_id"'
+    );
+    // The backfill insert: one trial account per un-stamped workspace, ALSO
+    // excluding a workspace that already has a pending (unlinked) seed row —
+    // required for idempotency against the INSERT's own re-execution (a
+    // resume after a crash between this INSERT committing and the pairing
+    // UPDATE below), not just against a fully completed backfill.
+    expect(sql).toMatch(
+      /INSERT INTO "billing_accounts"[\s\S]*SELECT[\s\S]*FROM "workspaces" "w"\s*\n\s*WHERE "w"\."billing_account_id" IS NULL\s*\n\s*AND NOT EXISTS \(SELECT 1 FROM "billing_accounts" "ba" WHERE "ba"\."seed_workspace_id" = "w"\."id"\)/
+    );
+    expect(sql).toContain("'trial'");
+    expect(sql).toContain("interval '14 days'");
+    // The stamping update: joins back on the seed column, re-guarded by
+    // billing_account_id IS NULL so a second run touches zero rows.
+    expect(sql).toMatch(
+      /UPDATE "workspaces"[\s\S]*SET "billing_account_id" = "ba"\."id"[\s\S]*WHERE "ba"\."seed_workspace_id" = "workspaces"\."id"[\s\S]*AND "workspaces"\."billing_account_id" IS NULL/
+    );
+  });
+
+  it("is registered in the journal at idx 63 (unjournaled migrations are silently skipped)", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0062_billing_accounts"
+    );
+    expect(entry).toBeDefined();
+    expect(entry.idx).toBe(63);
+    expect(entry.when).toBe(1786500000000);
+    expect(entry.version).toBe("7");
+    expect(entry.breakpoints).toBe(true);
   });
 });

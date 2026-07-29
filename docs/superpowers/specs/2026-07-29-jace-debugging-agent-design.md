@@ -75,6 +75,13 @@ Phases 3–6 iterate until the verdict bar is met or the depth budget is spent.
    (addresses the class). Lessons reach workspace memory only through the
    human-gated promotion flow (below), never automatically.
 
+The discipline is deliberately **model-independent**: it lives in the debug
+skill, the investigator prompts and output schemas, and the route-enforced
+gates — not in model choice. (The strongest empirical datapoint in the prior
+art: the same model jumped a full point on a 5-point RCA accuracy scale when
+handed encoded runbooks — methodology beats model tier.) Swapping the bound
+model changes fluency, never the process.
+
 ## Architecture
 
 ```
@@ -123,6 +130,32 @@ configured provider returns a typed degradation (`no_provider`), which the
 investigation records as an **evidence gap** — feeding honest `undetermined`
 verdicts and a conversational connect-nudge ("connect a metrics provider and
 I can localize this further").
+
+Placements for the wider provider set, so the mapping is never invented
+per-provider later: deployments and CI/CD (GitHub Actions, Vercel, Railway)
+→ `changes` (+ `search_events` for run/build logs); errors (Sentry) →
+`search_events` + `signals`; edge/network (Cloudflare) → `signals` +
+`search_events`; metrics (Datadog, Grafana, Prometheus) → `signals`; LLM
+traces (Langfuse) → `traces` (+ `signals`).
+
+### Capability-first self-model
+
+Jace never thinks "I have a Datadog connector"; it thinks "I can inspect
+metrics." Pinned as a rendering rule, not a hope: the capability map handed
+to root (and echoed to the user at intake) is **capability-first, provider
+as parenthetical attribution** — "I can inspect deployments (GitHub,
+Railway); logs (Railway); metrics (none — see gaps)". The map also includes
+Jace's **native capabilities** so the self-model is complete: comparing
+historical incidents (recurrence search over investigations) and creating
+engineering issues (`create_issue`) appear alongside connector-derived
+verbs. Chat voice follows the same rule; provider names appear only as
+attribution on evidence, never as the subject of a sentence.
+
+**Nudge discipline:** a capability gap is voiced at most twice — once in the
+intake capability summary, and once when it concretely blocks a step
+("cannot localize latency without metrics — connect Grafana or Datadog and
+this narrows fast"). Always recorded as an evidence gap on the artifact;
+never repeated beyond those two moments.
 
 ### The capability declaration becomes behavior-driving
 
@@ -313,7 +346,20 @@ verdict/status field outright with a 400 — verdicts travel only through
   → triage; shipped change needs checking → qa; production misbehaving →
   debug.
 
-## Knowledge growth — two speeds, one gate
+## Knowledge growth — three layers, two speeds, one gate
+
+Debugging is designed as a **compounding capability** over three deliberately
+distinct knowledge layers, each with a pinned consult-point and growth rule:
+
+| layer | what | consulted | grows by |
+|---|---|---|---|
+| **Structural** | repo wiki + architecture (system model) | intake preflight; `change` investigator's relevance-ranking | wiki compilation (existing; unchanged here) |
+| **Semantic** | confirmed lessons in workspace memory | intake preflight (`fetch_workspace_memory`) | human-gated promotion ONLY (below) |
+| **Episodic** | every investigation, searchable, permanent | recurrence check; refuted-hypothesis and test-recipe transfer | automatically, per investigation |
+
+None substitutes for another: the wiki explains how the system is built,
+memory holds what the team has confirmed to be true, and investigations hold
+what actually happened. An investigation naturally touches all three.
 
 **Episodic (automatic, safe by construction).** Every investigation compounds
 retrieval-side with zero ceremony: recurrence FTS finds it; refuted
@@ -335,6 +381,33 @@ scored through the existing verdict-score hook; `record_verdict` pushes an
 metadata as the offline join key — the #1204/#1205 calibration pattern.
 Fix-holds / reopen-rate calibration is the later offline job; the scores land
 in v1 so it has data.
+
+## QA ↔ Debugging collaboration
+
+Not silos, not a merger. The boundary stays crisp — **qa judges what a run
+shipped; debugging explains why production misbehaves** — and collaboration
+happens through root and the artifact, never agent-to-agent. Two typed
+handoffs, both riding existing machinery (qa dispatch, run-outcome channel,
+`finding` items), both v1:
+
+- **QA finding → investigation.** A qa advisory surfacing a production
+  defect can seed an investigation: root offers to investigate, and the
+  advisory enters the ledger as a `finding` item carrying the advisory's
+  `evidence_refs` and Langfuse `callId` provenance in `data` — citable by
+  hypotheses like any other item. The witness interview starts pre-populated
+  with observed behavior instead of from zero.
+- **Fix verification → investigation.** When a `mitigative` issue's fix
+  ships (the run-outcome notification already reaches the anchored
+  conversation), root dispatches qa with the investigation's discriminating
+  test as the verification target ("confirm checkout no longer 500s under
+  X"). The qa verdict lands on the investigation as a `finding`: pass →
+  fix-verified; fail → the investigation stays open and the failed
+  verification is new evidence. This is what makes fix-holds calibration
+  measurable rather than aspirational.
+
+Tool sharing is config, not coupling: the post-v1 `probe` investigator uses
+the same browser sidecar connections as qa with a different mission and
+schema.
 
 ## Eve/Jace fit (file-level)
 
@@ -490,6 +563,12 @@ three refusal classes), `appendEvidenceItem` (route-only writer),
   artifact and voiced as a connect-nudge.
 - An evidence query from a session with no anchored investigation is refused
   with `no_investigation` and captures nothing.
+- The intake capability summary reads capability-first ("I can inspect
+  deployments (GitHub, Railway)"); no chat rendering ever leads with a
+  provider name.
+- A qa advisory seeds an investigation as a cited `finding`; after a
+  mitigative fix ships, the qa verification verdict is recorded on the
+  investigation, and a failed verification leaves it open.
 - Langfuse: debugging traces carry the intent tag; `investigation_verdict`
   scores carry `investigation_id` as a string.
 

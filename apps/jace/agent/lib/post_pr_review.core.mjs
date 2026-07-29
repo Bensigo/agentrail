@@ -149,6 +149,15 @@ export function coverageCounts(acCoverage) {
  * fold the WHOLE block to a one-line count instead — a cut-off checklist
  * reads as a complete one, which is worse than a fold that says where the
  * detail lives.
+ *
+ * The count line itself is a HARD GUARANTEE, never best-effort: it is the
+ * one signpost telling the reader the detail lives in chat, so a truncated
+ * count line (e.g. "...1 not in d…") would be exactly the kind of corrupted,
+ * confusing cut this fold exists to avoid — just relocated. If even
+ * `base + countLine` would still blow SUMMARY_MAX_LEN (a pathological base
+ * already sitting near the cap), the BASE cedes its own tail instead —
+ * truncated with a trailing "…" so the count line always rides out whole
+ * and the total never exceeds SUMMARY_MAX_LEN.
  * @param {string} summary
  * @param {unknown} acCoverage
  * @returns {string}
@@ -159,9 +168,18 @@ export function composeSummaryWithCoverage(summary, acCoverage) {
   if (!block) return base;
   const composed = base.trim().length > 0 ? `${base}\n\n${block}` : block;
   if (composed.length <= SUMMARY_MAX_LEN) return composed;
+
   const c = coverageCounts(acCoverage);
   const countLine = `AC coverage: ${c.addressed}/${c.total} addressed, ${c.not_in_diff} not in diff, ${c.unclear} unclear — details in chat.`;
-  return base.trim().length > 0 ? `${base}\n\n${countLine}` : countLine;
+  const sep = base.trim().length > 0 ? "\n\n" : "";
+  const fallback = `${base}${sep}${countLine}`;
+  if (fallback.length <= SUMMARY_MAX_LEN) return fallback;
+
+  // Pathological case: base alone already sits near SUMMARY_MAX_LEN, so even
+  // the folded fallback blows the cap. Cede the BASE's tail, never the count
+  // line's — the count line is the only reason this fold is legible at all.
+  const budget = Math.max(0, SUMMARY_MAX_LEN - countLine.length - sep.length - 1);
+  return `${base.slice(0, budget)}…${sep}${countLine}`;
 }
 
 const REASON_MESSAGES = {

@@ -475,6 +475,75 @@ describe("GET /api/v1/runner/pr-review", () => {
     expect(sent.variables).toEqual({ owner: "ada", name: "widgets", prNumber: 7 });
   });
 
+  it("caps an issue body on a true mid-character UTF-8 cut, stripping the replacement character", async () => {
+    // "€" is 3 UTF-8 bytes; 2667 of them = 8001 bytes, so the 8000-byte
+    // slice cuts mid-character (unlike the 2-byte "é" case above, which
+    // lands on a clean boundary).
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([issueNode({ body: "€".repeat(2667) })]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    const issue = json.linkedIssues[0];
+    expect(issue.bodyTruncated).toBe(true);
+    expect(Buffer.byteLength(issue.body, "utf8")).toBeLessThanOrEqual(8000);
+    expect(issue.body.endsWith("€")).toBe(true);
+    expect(issue.body.includes("�")).toBe(false);
+  });
+
+  it("GraphQL non-ok response (500) degrades the lookup, never the diff", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      githubJsonResponse(500, { message: "boom" }),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.changedFiles).toHaveLength(1);
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("GraphQL res.json() throw degrades the lookup, never the diff", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(prMetaResponse());
+    fetchMock.mockResolvedValueOnce(filesPage([fileEntry()]));
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("bad json");
+      },
+      text: async () => "",
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.changedFiles).toHaveLength(1);
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("caps linkedIssues at 3 client-side even when the GraphQL response names more same-repo nodes", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([
+        issueNode({ number: 41 }),
+        issueNode({ number: 42 }),
+        issueNode({ number: 43 }),
+        issueNode({ number: 44 }),
+      ]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    expect(json.linkedIssues.map((i: { number: number }) => i.number)).toEqual([41, 42, 43]);
+  });
+
   it("404 'PR not found' when GitHub 404s the PR metadata call", async () => {
     mockFetchSequence(githubJsonResponse(404, { message: "Not Found" }));
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));

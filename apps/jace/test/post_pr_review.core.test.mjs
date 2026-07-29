@@ -575,3 +575,87 @@ test("coverage criterion text is hardened before it leaves (no zero-width smuggl
   assert.ok(!sent.summary.includes("@everyone"));
   assert.ok(sent.summary.includes("＠everyone"));
 });
+
+test("a coverage-only review (blank summary, no comments) still posts — composeSummaryWithCoverage feeds the nothing_to_post gate", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: "",
+    comments: [],
+    acCoverage: [acEntry()],
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(transport.calls.length, 1);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("**Acceptance criteria — issue #42:**"));
+});
+
+test("renderAcCoverage: addressed with empty evidence has no trailing em-dash", () => {
+  const block = renderAcCoverage([acEntry({ evidence: "" })]);
+  assert.ok(block.includes("- ✅ AC1: widgets persist across restarts"));
+  assert.ok(!block.includes("restarts —"));
+});
+
+test("renderAcCoverage: criterion and evidence are trimmed before rendering", () => {
+  const block = renderAcCoverage([acEntry({ criterion: "  AC1: x  ", evidence: "  y  " })]);
+  assert.ok(block.includes("- ✅ AC1: x — y"));
+});
+
+test("runPostPrReview: the coverage fold path is visible in what's actually sent over the wire", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 40);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat."));
+  assert.ok(!sent.summary.includes("**Acceptance criteria"));
+});
+
+test("runPostPrReview: a pathological base (already within a hair of the cap) still lets the count line survive whole — the base cedes its tail instead", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // Only 10 chars of headroom under SUMMARY_MAX_LEN — even the count line
+  // alone (~71 chars) cannot fit alongside the base unmodified, so this
+  // forces composeSummaryWithCoverage's base-cedes-its-tail branch.
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 10);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // The count line rides out whole — never truncated, regardless of how
+  // little room the base left for it.
+  assert.ok(sent.summary.includes("AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat."));
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The base visibly ceded its own tail instead.
+  assert.ok(sent.summary.includes("…"));
+});

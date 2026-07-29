@@ -262,8 +262,10 @@ Extend the existing suites in place — no new test files:
 
 No flags. Both version skews are safe by defaulting:
 
-- old console + new Jace → `linkedIssues` defaults `[]` → `acCoverage: null`
-  → today's review, verbatim;
+- old console + new Jace → `linkedIssues` defaults `[]` → no ticket ACs;
+  the PR-description fallback still applies, so coverage comes from the
+  PR's own checklist when it has one (`acCoverage: null` when it
+  doesn't) — the diff review itself is unchanged;
 - new console + old Jace → the extra response fields are ignored.
 
 Deploy order is irrelevant; the known fleet-deploys-before-console wrinkle

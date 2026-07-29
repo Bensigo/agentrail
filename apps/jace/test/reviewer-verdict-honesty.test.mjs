@@ -129,3 +129,14 @@ test("root instructions: null coverage is reported as a diff-only review, echoin
   assert.ok(/diff-only/.test(prose));
   assert.ok(/no recognizable ACs|not reliably parseable/i.test(prose));
 });
+
+test("root instructions: the chat coverage rundown carries the reviewer's evidence for not_in_diff/unclear entries", () => {
+  const prose = instructions();
+  // `\s+`, not a literal space — same reflow-tolerant idiom as the
+  // "review is not an audit" / "no repo access" pin above: the rule must
+  // survive a rewrap, not pin today's exact line break.
+  assert.ok(
+    /include\s+the\s+reviewer's\s+`evidence`/.test(prose),
+    "must say the chat rundown carries the reviewer's evidence for not_in_diff/unclear entries",
+  );
+});

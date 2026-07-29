@@ -66,6 +66,29 @@
 //     autosave is the entire point — gating it would defeat the reason this
 //     tool exists (surviving a context compaction by externalizing
 //     understanding as it happens, not in an end-of-conversation batch).
+//   - `save_investigation` (debugging design spec:
+//     docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md; spec
+//     PR #1501) is the THIRD enumerated ungated mutating tool — the SAME
+//     argument as `save_brief`, applied to production incidents instead of
+//     product ideas: it only ever writes into AgentRail's own investigation
+//     store, every write is a per-item DELTA the console route enforces
+//     invariants against (human-authority lock, evidence immutability —
+//     `kind: 'evidence'` items are written ONLY by the evidence capability
+//     layer, never this tool — hypothesis evidence-gating, and kind-fixed-
+//     at-creation), and it REJECTS `verdict`/`status` outright (400) so this
+//     tool can never become a side door around the verdict gate below.
+//   - `record_verdict` (same spec) is the FOURTH enumerated ungated mutating
+//     tool, and its argument is DIFFERENT from the other three: it is
+//     ungated not because the write is low-stakes, but because it is
+//     FAIL-CLOSED and SERVER-VALIDATED — `recordVerdict`
+//     (packages/db-postgres/src/queries/investigations.ts) independently
+//     re-checks eligibility (root_caused) or a non-empty missingEvidence
+//     (undetermined) inside its own transaction, so the model cannot force a
+//     verdict through by merely asserting one is warranted; a human approval
+//     gate would only ever rubber-stamp what the server already decided. On
+//     success it also fire-and-forgets a Langfuse score — the same class of
+//     side effect `agent/hooks/langfuse-verdict-score.ts` already performs
+//     automatically, ungated, for every triage/qa completion.
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -85,11 +108,13 @@
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
 //      `create_issue` + `create_workspace` + `create_repo` + `update_issue` +
 //      `create_goal` (gated/mutating), `send_connect_link` + `post_pr_review`
-//      + `save_brief` (ungated but self-scoped/argued), and `standup` /
-//      `codebase_query` / `fetch_workspace_memory` / `fetch_backlog` /
-//      `fetch_repo_wiki` / `fetch_work_status` / `fetch_briefs` (read-only).
-//      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
-//      below — that edit IS the human review this test exists to force.
+//      + `save_brief` + `save_investigation` + `record_verdict` (ungated but
+//      self-scoped/argued), and `standup` / `codebase_query` /
+//      `fetch_workspace_memory` / `fetch_backlog` / `fetch_repo_wiki` /
+//      `fetch_work_status` / `fetch_briefs` / `fetch_investigations`
+//      (read-only). Adding/removing a tool file requires updating
+//      EXPECTED_TOOL_FILES below — that edit IS the human review this test
+//      exists to force.
 //   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
 //      authored with `defineTool` and `approval: (ctx) => consoleGatedApproval(ctx)`.
 //      Every other tool sets no `approval` field. A separate negative check
@@ -159,11 +184,14 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
+  "fetch_investigations.ts", // read-only (debugging spec PR #1501): reads INVESTIGATIONS — the durable record of one production incident (anchor/list/get/search), relays verdict eligibility verbatim — over the console token API; no approval, no child_process
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
   "save_brief.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own brief store only (never GitHub/a workspace/any outside system); human-authority + unknown-can't-resolve invariants enforced at the console route, not here; no child_process (HTTP to the console, like post_pr_review)
+  "save_investigation.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own investigation store only (never GitHub/a workspace/any outside system); human-authority + evidence-immutability + hypothesis-evidence-gating + kind-fixed-at-creation invariants enforced at the console route, not here; REJECTS verdict/status outright; no child_process (HTTP to the console, like save_brief)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts", // read-only: reads recent runs + queue entries via fetch_work_status.core.mjs over the console token API (retired direct-Postgres edge); no approval, no child_process
   "update_issue.ts", // gated (issue #1345): edits an EXISTING issue's title/body in the house format — same gate class as create_issue, via the SAME consoleGatedApproval seam; shells out to `agentrail issue update` (child_process, like create_issue)
@@ -194,7 +222,7 @@ const EXPECTED_MUTATING_TOOLS = [
 // a ceiling as much as a floor: the test below asserts each one wires NO
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
-const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts", "save_brief.ts"];
+const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts", "save_brief.ts", "save_investigation.ts", "record_verdict.ts"];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

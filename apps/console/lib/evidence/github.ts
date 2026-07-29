@@ -61,15 +61,26 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * zero events in window — keeps the call `ok: true`, with sibling repos'
  * markers folded into the rendered text alongside real lines.
  *
+ * A SUCCEEDING repo can STILL carry a marker (Fix Round 1, FIX 2): see
+ * {@link fetchMergedPrs}'s own doc-comment for the fetch-horizon caveat this
+ * adapter appends when its 2-page PR cap may have missed an in-window merge
+ * — a caveat is not a failure (the fetch succeeded), so it rides alongside
+ * that repo's real lines rather than replacing them, but is CAP-EXEMPT and
+ * rendered first exactly like a failure marker (see "RENDERING" below).
+ *
  * RENDERING: `merged_pr {repo}#{number} "{title}" merged_at={iso}
  * by={login}` / `actions_run {repo} {workflow_name}
- * conclusion={conclusion|in_progress} at={iso}` (pinned formats) — sorted
- * globally by each line's own timestamp, most-recent-first, THEN per-repo
- * failure markers appended after every real line, THEN the combined list
- * capped at `Math.max(1, q.limit ?? 50)` (factory.ts's own clamp, mirrored: a
- * `limit` of 0 or negative must never slice a non-empty result down to a
- * bare, empty-marker-triggering ""). Zero combined lines (every targeted
- * repo succeeded but found nothing) renders the honest empty marker,
+ * conclusion={conclusion|in_progress} at={iso}` (pinned formats) — real
+ * event lines are sorted globally by each line's own timestamp, most-
+ * recent-first, then capped at `Math.max(1, q.limit ?? 50)` (factory.ts's
+ * own clamp, mirrored: a `limit` of 0 or negative must never slice a
+ * non-empty result down to a bare, empty-marker-triggering ""). Per-repo
+ * markers (failures AND fetch-horizon caveats) are CAP-EXEMPT and rendered
+ * FIRST, ahead of the capped event lines (Fix Round 1, FIX 1): a busy
+ * repo's real lines filling the cap must never silently push a sibling
+ * repo's failure — or an honest "this answer may be incomplete" caveat —
+ * out of the response. Zero event lines AND zero markers (every targeted
+ * repo succeeded and found nothing) renders the honest empty marker,
  * `(no changes in window)`.
  *
  * TITLES ARE UNTRUSTED TEXT: capped to 120 chars here (the one adapter-side
@@ -85,17 +96,29 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * `User-Agent: agentrail-console`, `Accept: application/vnd.github+json`,
  * `Authorization: Bearer <token>`.
  *
- * GITHUB API SHAPES (verified against docs.github.com, not assumed from
- * memory): `GET /repos/{repo}/pulls` returns a bare array; each entry's
- * `number`/`title`/`merged_at`/`user.login` are the fields this adapter
- * reads, and `state=closed` includes BOTH merged and closed-without-merge
- * PRs (the latter have `merged_at: null`, filtered out below — GitHub has no
- * "merged between" filter, hence over-fetching by `sort=updated` and
- * filtering `merged_at` client-side). `GET /repos/{repo}/actions/runs`
- * wraps its array as `{ workflow_runs: [...] }`; each run's `name` is the
- * workflow's display name, `conclusion` is `null` until the run completes,
- * and `created_at` is the field the `created=<date>..<date>` range filter
- * (date-only granularity) matches against.
+ * GITHUB API SHAPES: `GET /repos/{repo}/pulls` returns a bare array; each
+ * entry's `number`/`title`/`merged_at`/`updated_at`/`user.login` are the
+ * fields this adapter reads, and `state=closed` includes BOTH merged and
+ * closed-without-merge PRs (the latter have `merged_at: null`, filtered out
+ * below — GitHub has no "merged between" filter, hence over-fetching by
+ * `sort=updated` and filtering `merged_at` client-side). `GET
+ * /repos/{repo}/actions/runs` wraps its array as `{ workflow_runs: [...] }`;
+ * each run's `name` is the workflow's display name, `conclusion` is `null`
+ * until the run completes, and `created_at` is the field the `created`
+ * range filter matches against — that filter accepts FULL ISO-8601
+ * timestamps (`created:2016-03-21T14:11:00Z..*` per GitHub's own
+ * search-qualifier docs), NOT date-only as this adapter's first draft
+ * incorrectly assumed (Fix Round 1, FIX 3 — corrected after review; see
+ * {@link fetchWorkflowRuns}'s own doc-comment).
+ *
+ * Fix round 1 (coordinator review): (1) failure/caveat markers made
+ * cap-exempt and rendered first, so a busy repo's real lines can never push
+ * a sibling repo's failure out of the response — see "RENDERING" above.
+ * (2) a per-repo fetch-horizon caveat on the PR leg, mirroring factory.ts's
+ * own horizon caveat — see {@link fetchMergedPrs}. (3) the `created` range
+ * filter now uses full ISO-8601 timestamps (the date-only claim in this
+ * adapter's first draft was wrong) plus a client-side re-filter on each
+ * run's own `created_at`, belt-and-braces — see {@link fetchWorkflowRuns}.
  */
 
 const GITHUB_API = "https://api.github.com";
@@ -139,12 +162,6 @@ function githubFetch(url: string, token: string): Promise<Response> {
   });
 }
 
-/** `YYYY-MM-DD` — the date-only granularity GitHub's `created` search
- * qualifier expects for the Actions-runs range filter. */
-function toDateOnly(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 10);
-}
-
 /** The one adapter-side title transformation the spec pins — see this
  * module's own doc-comment ("TITLES ARE UNTRUSTED TEXT") for why nothing
  * else touches the text. */
@@ -163,6 +180,9 @@ interface GithubPrEntry {
   number?: unknown;
   title?: unknown;
   merged_at?: unknown;
+  /** Fix Round 1, FIX 2 — read for the fetch-horizon caveat check; see
+   * {@link fetchMergedPrs}'s own doc-comment. */
+  updated_at?: unknown;
   user?: { login?: unknown } | null;
 }
 
@@ -176,9 +196,13 @@ type RepoLegOutcome = { ok: true; body: unknown } | { ok: false; marker: string 
 
 /** One repo's outcome for a single fetch leg (or the repo as a whole, once
  * both legs are combined by {@link fetchRepoEvidence}) — either its rendered
- * lines, or the one marker that collapses the whole repo (see this module's
- * own doc-comment, "PER-REPO FAILURE GRANULARITY"). */
-type RepoOutcome = { ok: true; lines: RenderedLine[] } | { ok: false; marker: string };
+ * lines (plus an optional fetch-horizon `caveat`, Fix Round 1 FIX 2 — see
+ * {@link fetchMergedPrs}; always `null` for the runs leg), or the one marker
+ * that collapses the whole repo (see this module's own doc-comment,
+ * "PER-REPO FAILURE GRANULARITY"). */
+type RepoOutcome =
+  | { ok: true; lines: RenderedLine[]; caveat: string | null }
+  | { ok: false; marker: string };
 
 /** One GET, translated to a per-repo failure marker on any thrown fetch
  * (network error, or the 8s `AbortSignal.timeout` firing) or non-2xx
@@ -208,6 +232,19 @@ async function getJson(repo: string, url: string, token: string): Promise<RepoLe
  * of UPDATE (a merge is itself an update) and filters `merged_at`
  * client-side, inclusive of both window bounds; a closed-but-never-merged PR
  * (`merged_at: null`) is excluded the same way.
+ *
+ * FIX ROUND 1, FIX 2 — fetch-horizon honesty (factory.ts's own horizon-
+ * caveat pattern, mirrored one layer in): the {@link PR_MAX_PAGES} cap means
+ * a repo with more than 200 PRs sorted ahead by `updated_at` can hide an
+ * in-window merge whose `updated_at` happens to be OLDER than everything
+ * this fetch saw. When BOTH pages come back full (200 items total, i.e. the
+ * loop never found a natural "last page") AND the LAST-fetched item's
+ * `updated_at` is STILL more recent than `windowStart` (the fetch never
+ * reached back far enough to rule out matches further behind), this
+ * appends a caveat line to the returned outcome. A caveat is NOT a failure
+ * — the fetch succeeded, and the caveat rides alongside whatever real lines
+ * were found — but is CAP-EXEMPT and rendered first exactly like a failure
+ * marker (see this module's own doc-comment, "RENDERING").
  */
 async function fetchMergedPrs(
   repo: string,
@@ -219,6 +256,10 @@ async function fetchMergedPrs(
   const endMs = new Date(windowEnd).getTime();
   const lines: RenderedLine[] = [];
 
+  let pagesFetched = 0;
+  let fullPageCount = 0;
+  let lastUpdatedAtMs: number | null = null;
+
   for (let page = 1; page <= PR_MAX_PAGES; page++) {
     const url =
       `${GITHUB_API}/repos/${repo}/pulls?state=closed&sort=updated&direction=desc` +
@@ -227,7 +268,20 @@ async function fetchMergedPrs(
     if (!res.ok) return res;
 
     const entries = Array.isArray(res.body) ? (res.body as GithubPrEntry[]) : [];
+    pagesFetched += 1;
+    if (entries.length === PR_PER_PAGE) fullPageCount += 1;
+
     for (const entry of entries) {
+      // Tracked for EVERY entry (not just ones that end up `lines`) — the
+      // horizon question is "how far back by update-recency did we look",
+      // independent of how many of those entries happened to be in-window
+      // merges.
+      const updatedAtRaw = typeof entry.updated_at === "string" ? entry.updated_at : null;
+      if (updatedAtRaw) {
+        const updatedAtMs = new Date(updatedAtRaw).getTime();
+        if (!Number.isNaN(updatedAtMs)) lastUpdatedAtMs = updatedAtMs;
+      }
+
       const mergedAtRaw = typeof entry.merged_at === "string" ? entry.merged_at : null;
       if (!mergedAtRaw) continue;
       const mergedAtMs = new Date(mergedAtRaw).getTime();
@@ -249,17 +303,30 @@ async function fetchMergedPrs(
     if (entries.length < PR_PER_PAGE) break; // last page
   }
 
-  return { ok: true, lines };
+  const horizonUncertain =
+    pagesFetched === PR_MAX_PAGES &&
+    fullPageCount === PR_MAX_PAGES &&
+    lastUpdatedAtMs !== null &&
+    lastUpdatedAtMs > startMs;
+  const caveat = horizonUncertain
+    ? `(repo ${repo}: note — only the 200 most recently updated PRs were searched; older in-window merges may be missing)`
+    : null;
+
+  return { ok: true, lines, caveat };
 }
 
 /**
- * Actions runs for `repo`, `created` within the window's DATE range
- * (GitHub's `created` search qualifier is date-granularity, not exact-time —
- * see {@link toDateOnly}); a single page. The pinned decision does not ask
- * for more, so this trusts the server-side filter rather than re-filtering
- * client-side the way {@link fetchMergedPrs} must (GitHub has no server-side
- * "merged between" filter for PRs, but `created` IS a real server-side
- * filter for runs).
+ * Actions runs for `repo`, `created` within `[windowStart, windowEnd]`; a
+ * single page. FIX ROUND 1, FIX 3: this adapter's first draft assumed
+ * GitHub's `created` search qualifier was date-granularity only and sent a
+ * `YYYY-MM-DD..YYYY-MM-DD` range — WRONG, confirmed against GitHub's own
+ * search-qualifier docs (`created:2016-03-21T14:11:00Z..*` syntax is
+ * documented and valid), so the raw `windowStart`/`windowEnd` ISO
+ * timestamps are now sent verbatim, at full precision. A client-side
+ * re-filter on each run's own `created_at` still runs afterward
+ * (belt-and-braces — mirrors {@link fetchMergedPrs}'s inclusive-bounds
+ * check) rather than trusting the server-side filter alone; this adapter
+ * has already been wrong once about GitHub's exact filtering behavior.
  */
 async function fetchWorkflowRuns(
   repo: string,
@@ -267,7 +334,9 @@ async function fetchWorkflowRuns(
   windowStart: string,
   windowEnd: string
 ): Promise<RepoOutcome> {
-  const createdRange = `${toDateOnly(windowStart)}..${toDateOnly(windowEnd)}`;
+  const startMs = new Date(windowStart).getTime();
+  const endMs = new Date(windowEnd).getTime();
+  const createdRange = `${windowStart}..${windowEnd}`;
   const url =
     `${GITHUB_API}/repos/${repo}/actions/runs?created=${encodeURIComponent(createdRange)}` +
     `&per_page=${RUNS_PER_PAGE}`;
@@ -282,7 +351,9 @@ async function fetchWorkflowRuns(
     const createdAtRaw = typeof entry.created_at === "string" ? entry.created_at : null;
     if (!createdAtRaw) continue;
     const createdAtMs = new Date(createdAtRaw).getTime();
-    if (Number.isNaN(createdAtMs)) continue;
+    // Client-side re-filter (belt-and-braces) — inclusive bounds, same as
+    // fetchMergedPrs, even though `created` is also sent server-side.
+    if (Number.isNaN(createdAtMs) || createdAtMs < startMs || createdAtMs > endMs) continue;
 
     const name = typeof entry.name === "string" && entry.name ? entry.name : "-";
     const conclusion =
@@ -294,7 +365,7 @@ async function fetchWorkflowRuns(
     });
   }
 
-  return { ok: true, lines };
+  return { ok: true, lines, caveat: null };
 }
 
 /** Both legs concurrently; either failing collapses the WHOLE repo to one
@@ -312,7 +383,9 @@ async function fetchRepoEvidence(
   ]);
   if (!prs.ok) return prs;
   if (!runs.ok) return runs;
-  return { ok: true, lines: [...prs.lines, ...runs.lines] };
+  // runs.caveat is always null (fetchWorkflowRuns never produces one) — only
+  // prs.caveat can carry the fetch-horizon note.
+  return { ok: true, lines: [...prs.lines, ...runs.lines], caveat: prs.caveat };
 }
 
 export const githubAdapter: EvidenceAdapter = {
@@ -352,12 +425,15 @@ export const githubAdapter: EvidenceAdapter = {
     );
 
     const allLines: RenderedLine[] = [];
+    // Failure markers AND fetch-horizon caveats (Fix Round 1, FIX 2) share
+    // this one array — both are cap-exempt and rendered first, see below.
     const markers: string[] = [];
     let successCount = 0;
     for (const outcome of outcomes) {
       if (outcome.ok) {
         successCount += 1;
         allLines.push(...outcome.lines);
+        if (outcome.caveat) markers.push(outcome.caveat);
       } else {
         markers.push(outcome.marker);
       }
@@ -367,18 +443,22 @@ export const githubAdapter: EvidenceAdapter = {
       return { ok: false, reason: "upstream_error" };
     }
 
-    allLines.sort((a, b) => b.at - a.at); // most recent first, across repos and event kinds
-
-    const combined = [...allLines.map((l) => l.line), ...markers];
-    if (combined.length === 0) {
+    if (allLines.length === 0 && markers.length === 0) {
       return { ok: true, raw: NO_CHANGES_MARKER };
     }
 
-    // factory.ts's clamp, mirrored: a limit of 0/negative must never slice a
-    // non-empty result down to a bare "" that bypasses the honest empty
-    // marker above.
+    allLines.sort((a, b) => b.at - a.at); // most recent first, across repos and event kinds
+
+    // Fix Round 1, FIX 1: markers are CAP-EXEMPT and rendered FIRST — a
+    // busy repo's real lines filling the cap must never silently push a
+    // sibling repo's failure (or fetch-horizon caveat) out of the response.
+    // Only the real event lines are subject to `limit`; factory.ts's clamp
+    // is mirrored on that half alone: a limit of 0/negative must never
+    // slice a non-empty result down to a bare "" that bypasses the honest
+    // empty marker above.
     const limit = Math.max(1, q.limit ?? DEFAULT_LIMIT);
-    return { ok: true, raw: combined.slice(0, limit).join("\n") };
+    const cappedEventLines = allLines.slice(0, limit).map((l) => l.line);
+    return { ok: true, raw: [...markers, ...cappedEventLines].join("\n") };
   },
 };
 

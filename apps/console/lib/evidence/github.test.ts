@@ -379,6 +379,109 @@ describe("githubAdapter — per-repo failure isolation", () => {
   });
 });
 
+// FIX ROUND 1, FIX 2: a repo whose 2-page PR fetch might have missed an
+// in-window merge (both pages full, and the last-fetched item's updated_at
+// is still after windowStart) gets an honest fetch-horizon caveat, folded
+// into the SAME cap-exempt marker mechanism as a hard failure — but the
+// fetch itself still succeeded, so it rides alongside real lines rather
+// than replacing them.
+describe("githubAdapter — FIX 2: PR fetch-horizon caveat (factory-style honesty)", () => {
+  function fullPrPage(pageNum: number, baseMs: number) {
+    return Array.from({ length: 100 }, (_, i) => {
+      const globalIndex = (pageNum - 1) * 100 + i;
+      return pr({
+        number: 9000 + globalIndex,
+        merged_at: null, // irrelevant to the caveat check — no real lines needed
+        updated_at: new Date(baseMs - globalIndex * 60_000).toISOString(),
+      });
+    });
+  }
+
+  it("appends a caveat when both PR pages are full and the last item's updated_at is still after windowStart", async () => {
+    const baseMs = new Date(WINDOW_END).getTime();
+    global.fetch = routeFetch({
+      "acme/widgets": {
+        pulls: (page) =>
+          page === 1 || page === 2
+            ? { status: 200, body: fullPrPage(page, baseMs) }
+            : { status: 200, body: [] },
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain(
+      "(repo acme/widgets: note — only the 200 most recently updated PRs were searched; older in-window merges may be missing)"
+    );
+  });
+
+  it("no caveat when the pages are not both full (a genuine last page was reached)", async () => {
+    global.fetch = routeFetch({
+      "acme/widgets": {
+        pulls: (page) =>
+          page === 1
+            ? { status: 200, body: [pr({ merged_at: null, updated_at: "2026-07-29T10:00:00.000Z" })] }
+            : { status: 200, body: [] },
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).not.toContain("note —");
+  });
+
+  it("no caveat when both pages are full but the last item's updated_at already reaches back to/past windowStart", async () => {
+    // Page 2's last item lands exactly at windowStart minus a hair over —
+    // construct so the boundary value is <= windowStart (fully covered).
+    const earlyBase = new Date(WINDOW_START).getTime() + 199 * 60_000;
+    global.fetch = routeFetch({
+      "acme/widgets": {
+        pulls: (page) =>
+          page === 1 || page === 2
+            ? { status: 200, body: fullPrPage(page, earlyBase) }
+            : { status: 200, body: [] },
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).not.toContain("note —");
+  });
+
+  it("the caveat is cap-exempt and survives alongside a sibling repo's real lines", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(["acme/uncertain", "acme/normal"]));
+    const baseMs = new Date(WINDOW_END).getTime();
+    global.fetch = routeFetch({
+      "acme/uncertain": {
+        pulls: (page) =>
+          page === 1 || page === 2
+            ? { status: 200, body: fullPrPage(page, baseMs) }
+            : { status: 200, body: [] },
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+      "acme/normal": {
+        pulls: (page) =>
+          page === 1
+            ? { status: 200, body: [pr({ number: 1, merged_at: "2026-07-29T10:00:00.000Z" })] }
+            : { status: 200, body: [] },
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("(repo acme/uncertain: note —");
+    expect(res.raw).toContain("merged_pr acme/normal#1");
+  });
+});
+
 describe("githubAdapter — all repos failing", () => {
   it("degrades to upstream_error when every targeted repo's GitHub call fails", async () => {
     mockGetConnector.mockResolvedValue(connectorRow(["acme/a", "acme/b"]));
@@ -529,6 +632,56 @@ describe("githubAdapter — line cap", () => {
   });
 });
 
+// FIX ROUND 1, FIX 1 (Critical): markers must survive the line cap. Before
+// this fix, markers were appended AFTER real lines and the whole combined
+// array was sliced to `limit` — a busy repo's real lines could silently
+// push a sibling repo's failure marker out of the rendered output.
+describe("githubAdapter — FIX 1: failure markers are cap-exempt and rendered first", () => {
+  it("a busy repo's real lines never push a sibling repo's failure marker out of the response", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(["acme/busy", "acme/broken"]));
+    const many = Array.from({ length: 60 }, (_, i) =>
+      pr({ number: i, merged_at: new Date(new Date(WINDOW_START).getTime() + i * 1000).toISOString() })
+    );
+    global.fetch = routeFetch({
+      "acme/busy": {
+        pulls: (page) => (page === 1 ? { status: 200, body: many } : { status: 200, body: [] }),
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+      "acme/broken": {
+        pulls: () => ({ status: 500, body: {} }),
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    const lines = res.raw.split("\n");
+    // Marker first.
+    expect(lines[0]).toBe("(repo acme/broken: github 500)");
+    // Exactly 50 real lines (the default cap) still present.
+    const realLines = lines.filter((l) => l.startsWith("merged_pr") || l.startsWith("actions_run"));
+    expect(realLines).toHaveLength(50);
+    expect(lines).toHaveLength(51);
+  });
+
+  it("the empty-plus-marker case is unchanged: a single marker with zero real lines renders as just that marker", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(["acme/flaky", "acme/widgets"]));
+    global.fetch = routeFetch({
+      "acme/flaky": { throwOnPulls: true },
+      "acme/widgets": {
+        pulls: () => ({ status: 200, body: [] }),
+        runs: () => ({ status: 200, body: { workflow_runs: [] } }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(WS, q(), null);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toBe("(repo acme/flaky: github unreachable)");
+  });
+});
+
 describe("githubAdapter — honest empty marker", () => {
   it("renders '(no changes in window)' when every repo succeeds but nothing is in window", async () => {
     global.fetch = routeFetch({
@@ -565,7 +718,11 @@ describe("githubAdapter — request hygiene", () => {
     expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("queries workflow runs with created=<date>..<date> at date-only granularity", async () => {
+  // FIX ROUND 1, FIX 3: GitHub's `created` search qualifier supports full
+  // ISO-8601 timestamp precision (`created:2016-03-21T14:11:00Z..*`), not
+  // date-only as this adapter's first draft incorrectly assumed — the
+  // request now carries the raw windowStart/windowEnd verbatim.
+  it("queries workflow runs with created=<full-iso>..<full-iso>, not date-only", async () => {
     const fetchMock = routeFetch({
       "acme/widgets": {
         pulls: () => ({ status: 200, body: [] }),
@@ -581,7 +738,10 @@ describe("githubAdapter — request hygiene", () => {
     );
 
     const runsCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/actions/runs"));
-    expect(String(runsCall![0])).toContain("created=2026-07-01..2026-07-29");
+    const url = String(runsCall![0]);
+    expect(url).toContain(encodeURIComponent("2026-07-01T08:30:00.000Z..2026-07-29T23:00:00.000Z"));
+    // Not the old date-only shape.
+    expect(url).not.toContain("created=2026-07-01..2026-07-29");
   });
 
   it("hits state=closed&sort=updated&direction=desc for the pulls endpoint", async () => {
@@ -600,5 +760,68 @@ describe("githubAdapter — request hygiene", () => {
     expect(url).toContain("state=closed");
     expect(url).toContain("sort=updated");
     expect(url).toContain("direction=desc");
+  });
+});
+
+// FIX ROUND 1, FIX 3: belt-and-braces client-side re-filter on each run's
+// own created_at, independent of the (corrected, full-precision) server-side
+// `created` filter — this adapter has already been wrong once about
+// GitHub's exact filtering behavior, so it does not trust the server alone.
+describe("githubAdapter — FIX 3: client-side re-filter on workflow runs", () => {
+  it("drops a same-day run outside an intraday window, even though the (mocked) server 'returned' it", async () => {
+    global.fetch = routeFetch({
+      "acme/widgets": {
+        pulls: () => ({ status: 200, body: [] }),
+        runs: () => ({
+          status: 200,
+          body: {
+            workflow_runs: [
+              // Same calendar date as the window, but outside its precise
+              // intraday bounds — simulates the server returning something
+              // the client must still filter out itself.
+              run({ name: "late-night-job", created_at: "2026-07-29T22:00:00.000Z" }),
+              run({ name: "on-time-job", created_at: "2026-07-29T12:00:00.000Z" }),
+            ],
+          },
+        }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(
+      WS,
+      q({ windowStart: "2026-07-29T08:00:00.000Z", windowEnd: "2026-07-29T18:00:00.000Z" }),
+      null
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("on-time-job");
+    expect(res.raw).not.toContain("late-night-job");
+  });
+
+  it("keeps a run exactly at the intraday window bounds (inclusive)", async () => {
+    global.fetch = routeFetch({
+      "acme/widgets": {
+        pulls: () => ({ status: 200, body: [] }),
+        runs: () => ({
+          status: 200,
+          body: {
+            workflow_runs: [
+              run({ name: "at-start", created_at: "2026-07-29T08:00:00.000Z" }),
+              run({ name: "at-end", created_at: "2026-07-29T18:00:00.000Z" }),
+            ],
+          },
+        }),
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await githubAdapter.query(
+      WS,
+      q({ windowStart: "2026-07-29T08:00:00.000Z", windowEnd: "2026-07-29T18:00:00.000Z" }),
+      null
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("at-start");
+    expect(res.raw).toContain("at-end");
   });
 });

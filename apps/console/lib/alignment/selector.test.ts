@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   selectExecuteModel,
   describeModelSelection,
@@ -10,6 +10,7 @@ import { MODEL_CATALOG } from "./catalog";
 import { seedModel } from "./seeds";
 import { eligibleModelsForTaskType } from "./eligibility";
 import type { TaskType } from "./classifier";
+import type { QualityProfile } from "./quality-profile";
 import type { ModelOutcomeStatsRow } from "@agentrail/db-postgres";
 
 // #1338 PR③ widened pool — see candidates.ts's CANDIDATES for the full,
@@ -325,5 +326,101 @@ describe("DEFAULT_MIN_RUNS / DEFAULT_EXPLORATION_RATE: the documented defaults",
 
   it("EXPLORATION_RATE defaults to 10%", () => {
     expect(DEFAULT_EXPLORATION_RATE).toBe(0.1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subscription-platform slice 2, Task 11 — SelectExecuteModelOptions gains
+// `allowedProfiles`, passed straight through to eligibleModelsForTaskType.
+// No other selector logic changes: exploit/exploration run unchanged inside
+// whatever pool that filter produces. Profile tags (candidates.ts's
+// MODEL_SEATS): kimi-code/glm-5.2 = standard, kimi-k3/sonnet-5 = premium (ui
+// pool has zero economy-tagged members).
+// ---------------------------------------------------------------------------
+describe("selectExecuteModel: allowedProfiles (subscription-platform slice 2, Task 11)", () => {
+  it("passing allowedProfiles: undefined explicitly is identical to omitting the option entirely", async () => {
+    const withExplicitUndefined = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      fetchStats: fetchStatsReturning([]),
+      allowedProfiles: undefined,
+    });
+    const omitted = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      fetchStats: fetchStatsReturning([]),
+    });
+    expect(withExplicitUndefined).toEqual(omitted);
+  });
+
+  it("narrows the exploit pool: allowed={standard} on 'ui' ignores a premium-tagged model's stats entirely, even an adversarial stellar record", async () => {
+    const result = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: new Set<QualityProfile>(["standard"]),
+      fetchStats: fetchStatsReturning([
+        row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }), // seed, in-pool
+        // Adversarial: premium-tagged, outside the allowed set, must never win.
+        row({ executeModel: KIMI_K3, runCount: 50, successCount: 50, successRate: 1.0, costPerSuccess: 0.01 }),
+      ]),
+    });
+    expect([KIMI_CODE, GLM_5_2]).toContain(result.model.slug);
+  });
+
+  it("exploration also stays within the profile-filtered pool, never returning an excluded premium model", async () => {
+    const result = await selectExecuteModel("ui", "ws-1", {
+      random: ALWAYS_EXPLORE,
+      explorationRate: 1,
+      allowedProfiles: new Set<QualityProfile>(["standard"]),
+      fetchStats: fetchStatsReturning([]),
+    });
+    expect([KIMI_CODE, GLM_5_2]).toContain(result.model.slug);
+    expect(result.reason).toBe("exploring");
+  });
+
+  it("fail-open: a filter that empties the pool (ui has no economy-tagged candidate) falls back to the FULL unfiltered pool and logs once", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: new Set<QualityProfile>(["economy"]),
+      fetchStats: fetchStatsReturning([]),
+    });
+
+    expect(result.model.slug).toBe(KIMI_CODE); // seed, drawn from the fallback full pool
+    expect(result.reason).toBe("seed");
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+
+    errorSpy.mockRestore();
+  });
+
+  it("a filter containing every profile is equivalent to no filter at all", async () => {
+    const allProfiles = new Set<QualityProfile>(["economy", "standard", "premium"]);
+    const filtered = await selectExecuteModel("general", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: allProfiles,
+      fetchStats: fetchStatsReturning([]),
+    });
+    const unfiltered = await selectExecuteModel("general", "ws-1", {
+      random: NEVER_EXPLORE,
+      fetchStats: fetchStatsReturning([]),
+    });
+    expect(filtered).toEqual(unfiltered);
+  });
+
+  it("a narrowed filter can change which model wins best-from-data, versus the same stats unfiltered", async () => {
+    const stats = fetchStatsReturning([
+      row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }), // ui's seed
+      row({ executeModel: SONNET, runCount: DEFAULT_MIN_RUNS, successCount: DEFAULT_MIN_RUNS, successRate: 1.0 }), // premium, best rate
+    ]);
+
+    const unfiltered = await selectExecuteModel("ui", "ws-1", { random: NEVER_EXPLORE, fetchStats: stats });
+    expect(unfiltered.model.slug).toBe(SONNET);
+    expect(unfiltered.reason).toBe("best-from-data");
+
+    const filtered = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: new Set<QualityProfile>(["standard"]), // excludes sonnet-5 (premium)
+      fetchStats: stats,
+    });
+    expect(filtered.model.slug).toBe(KIMI_CODE); // sonnet-5's data is invisible under the filter -> stays on the seed
+    expect(filtered.reason).toBe("seed");
   });
 });

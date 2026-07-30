@@ -720,6 +720,132 @@ describe("verifyConnectorCredential('prometheus', ...)", () => {
 });
 
 /**
+ * Task P6: grafana verify — a SINGLE endpoint (`GET /api/org`, confirmed the
+ * one of the two candidates — /api/org vs /api/user — that actually accepts
+ * a service account token), unlike prometheus's three-leg fallback chain
+ * above. `secret` is a SINGLE field (no composite split), accepting EITHER a
+ * glsa_-prefixed service account token or a legacy eyJ-prefixed API key —
+ * both use the IDENTICAL Bearer scheme, so unlike prometheus's own
+ * bearer-vs-Basic heuristic there is nothing to disambiguate here.
+ */
+describe("verifyConnectorCredential('grafana', ...)", () => {
+  const URL_BASE = "https://grafana.internal:3000";
+  // FIXTURE, deliberately non-realistic: built from an obviously-fake body
+  // ("TESTFIXTURE"/repeated digits, or — for the eyJ… legacy-key shape
+  // below — the base64 of a nonsense JSON object) specifically so GitHub
+  // push protection's secret scanner never flags it. Do NOT "fix" these to
+  // look more like a real token/key — that is what gets them flagged.
+  const TOKEN = "glsa_TESTFIXTURE0000000000000000000000AB";
+
+  it("succeeds: GETs {url}/api/org with Authorization: Bearer <token>", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe(`${URL_BASE}/api/org`);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("sends the SAME Bearer scheme for a legacy eyJ-prefixed API key too", async () => {
+    let capturedInit: RequestInit | undefined;
+    // base64 of {"TEST":"fixture-not-a-key"} — NOT the {"k":...,"n":...,
+    // "id":...} shape a real legacy Grafana API key decodes to.
+    const legacyKey = "eyJURVNUIjoiZml4dHVyZS1ub3QtYS1rZXkifQ==";
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("grafana", legacyKey, undefined, { grafanaUrl: URL_BASE });
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${legacyKey}`);
+  });
+
+  it("maps a 401 to a rejection error", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Grafana rejected this token." });
+  });
+
+  it("maps a 403 to the same rejection error", async () => {
+    global.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Grafana rejected this token." });
+  });
+
+  it("surfaces a non-2xx/non-401/403 status with its own HTTP code", async () => {
+    global.fetch = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Grafana (HTTP 500)." });
+  });
+
+  it("reports an unreachable upstream with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+    expect(res).toEqual({
+      ok: false,
+      error: "Couldn't reach Grafana to verify the token — try again.",
+    });
+  });
+
+  it("fails closed with a clear error and never calls fetch when config.grafanaUrl is absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Set the Grafana base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and never calls fetch when config itself is undefined (no 4th argument at all)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("grafana", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Set the Grafana base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a non-http(s) scheme (defensive re-gate — reuses the existing resolveHttpUrl, same as langfuse/prometheus)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, {
+      grafanaUrl: "javascript:alert(1)",
+    });
+    expect(res).toEqual({ ok: false, error: "Set the Grafana base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a private/internal host (self-hosted Grafana — only the scheme is gated, never the host)", async () => {
+    global.fetch = (async () => ({ ok: true, status: 200, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("grafana", TOKEN, undefined, {
+      grafanaUrl: "http://grafana.internal:3000",
+    });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("does NOT go through splitCompositeSecret's exact-part-count model — no catalog secretParts declared for this kind", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("grafana", TOKEN, undefined, { grafanaUrl: URL_BASE });
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

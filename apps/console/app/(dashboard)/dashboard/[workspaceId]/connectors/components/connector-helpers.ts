@@ -55,7 +55,13 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * Evidence Providers Wave 2), the fourth Wave-2 provider: RED/USE-shaped
  * instant-query signals over a per-workspace SINGLE secret (bearer token OR
  * `user:pass` for Basic auth, disambiguated at read time — no declared
- * composite split), scoped by a base-URL extra config.
+ * composite split), scoped by a base-URL extra config — and `grafana`
+ * (Task P6, Evidence Providers Wave 2), the fifth Wave-2 provider:
+ * Grafana-managed alert state changes + annotations as `search_events`
+ * (PIVOTED from the plan's believed `signals`-via-datasource-proxy shape —
+ * see `lib/evidence/grafana.ts`'s own doc-comment, "PIVOT DECISION," for the
+ * doc-verify trail) over a per-workspace SINGLE service-account-token
+ * secret, scoped by a base-URL extra config.
  */
 export type ConnectorKind =
   | "github"
@@ -67,7 +73,8 @@ export type ConnectorKind =
   | "langfuse"
   | "sentry"
   | "datadog"
-  | "prometheus";
+  | "prometheus"
+  | "grafana";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -657,6 +664,57 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P6, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "grafana",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Grafana",
+    description:
+      "Give the debugging investigator visibility into your Grafana alert state changes and annotations.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The fifth Wave-2 evidence provider (Task P6) — PIVOTED from the
+      // plan's believed `signals` (datasource-proxy query via
+      // /api/ds/query) to `search_events` over Grafana-managed alert state
+      // changes + annotations (GET /api/annotations) — see
+      // `lib/evidence/grafana.ts`'s own doc-comment ("PIVOT DECISION") for
+      // the full doc-verify trail behind this switch.
+      evidence: ["search_events"],
+    },
+    connect: {
+      credentialLabel: "Grafana service account token",
+      credentialPlaceholder: "glsa_…",
+      credentialHint:
+        "A Grafana service account token — starts with glsa_. A legacy API key (starts with eyJ, deprecated but still accepted by Grafana) also works. Viewer role is enough — this connector only reads alert and annotation events.",
+      helpUrl: "https://grafana.com/docs/grafana/latest/administration/service-accounts/",
+      setupSteps: [
+        "Open Grafana → Administration → Users and access → Service accounts, and create one (Viewer role is enough for read-only evidence).",
+        "Add a service account token to it and copy the glsa_… value (shown once).",
+        "Paste it here, along with your Grafana base URL (e.g. https://grafana.example.com), and connect — AgentRail reads GET /api/annotations for alert and annotation events.",
+      ],
+      // Task P6: a SINGLE secret field (NOT composite — like prometheus
+      // above, unlike langfuse/datadog). Both accepted token shapes (glsa_
+      // service-account tokens and legacy eyJ… API keys) use the IDENTICAL
+      // Authorization: Bearer scheme, so — unlike prometheus's
+      // bearer-vs-Basic heuristic — no read-time disambiguation is needed
+      // here at all; the format gate in `validateConnectorCredential`'s own
+      // hand-written `case "grafana"` below just accepts either documented
+      // prefix. See `lib/evidence/grafana.ts`'s own doc-comment for the
+      // doc-verify trail behind both prefixes.
+      extraConfigFields: [
+        {
+          key: "grafanaUrl",
+          label: "Grafana base URL",
+          placeholder: "https://grafana.example.com",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -1030,6 +1088,22 @@ export function validateConnectorCredential(
       }
       return { ok: true };
     }
+    case "grafana":
+      // Task P6: a SINGLE secret, EITHER a service-account token (`glsa_`
+      // prefix, confirmed current — see `lib/evidence/grafana.ts`'s own
+      // doc-comment) OR a legacy API key (`eyJ` prefix, confirmed
+      // deprecated but still functioning per Grafana's own migration docs:
+      // "will continue working as before"). Unlike prometheus's
+      // shape-agnostic whitespace/length gate above, both Grafana token
+      // generations DO have confirmed, documented prefixes — mirrors
+      // sentry's simpler prefix-only gate rather than prometheus's own
+      // wider one.
+      return s.startsWith("glsa_") || s.startsWith("eyJ")
+        ? { ok: true }
+        : {
+            ok: false,
+            error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
+          };
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

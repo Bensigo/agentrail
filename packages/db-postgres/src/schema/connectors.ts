@@ -96,6 +96,18 @@ export const connectorProviderEnum = [
   // `railway`/`langfuse`/`sentry`/`datadog`: a free-text column, so this is
   // a TS-union addition only — no migration.
   "prometheus",
+  // observability — Task P6 (Evidence Providers Wave 2): grafana, the fifth
+  // Wave-2 provider (`apps/console/lib/evidence/grafana.ts`). Stores a
+  // SINGLE service-account-token (or legacy API key) secret in `secret` —
+  // no `secretParts`/`secretPartPatterns` on this provider's catalog entry,
+  // same single-secret shape as `prometheus` above. Its non-secret
+  // companion field is `config.grafanaUrl` (already added by Task P0 — see
+  // {@link ConnectorConfig.grafanaUrl}). PIVOTED from the plan's believed
+  // `signals` (datasource-proxy query) to `search_events`
+  // (alerts+annotations) — see that adapter's own doc-comment for the full
+  // doc-verify trail. Same precedent as every provider above: a free-text
+  // column, so this is a TS-union addition only — no migration.
+  "grafana",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

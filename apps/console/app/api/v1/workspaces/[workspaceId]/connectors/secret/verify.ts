@@ -18,7 +18,9 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * — GraphQL `me`), Langfuse (Task P2 — `GET /api/public/projects`), Sentry
  * (Task P3 — `GET /api/0/projects/{org}/{project}/`), Datadog (Task P4 —
  * `GET /api/v2/validate_keys`), Prometheus (Task P5 — a documented fallback
- * chain: buildinfo → `/-/ready` → a trivial instant query). Context7 stays
+ * chain: buildinfo → `/-/ready` → a trivial instant query), Grafana (Task P6
+ * — `GET /api/org`, confirmed the one endpoint of the two candidates that
+ * actually accepts a service account token). Context7 stays
  * format-only here — it has no stable side-effect-free check; its
  * format gate already rejects malformed values. Discord/Slack/Telegram are
  * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
@@ -542,6 +544,57 @@ async function verifyPrometheus(
 }
 
 /**
+ * GRAFANA (Task P6, Evidence Providers Wave 2): confirmed against Grafana's
+ * own docs during implementation (this task's mandatory first step), not
+ * trusted from memory — see `lib/evidence/grafana.ts`'s own doc-comment for
+ * the full doc-verify trail (auth token formats, the PIVOT away from
+ * datasource-proxy `signals`, the `/api/annotations` shape). This module's
+ * own concern is narrower: which of the two candidate verify endpoints the
+ * task's mandatory first step asked to confirm actually works with a
+ * service account token.
+ *   - `GET /api/user` — confirmed to REJECT service account tokens outright
+ *     (that endpoint requires Basic auth or a Grafana SERVER admin, a
+ *     privilege level service accounts structurally cannot hold — they are
+ *     scoped to one org and one org role).
+ *   - `GET /api/org` — confirmed to WORK with service account tokens (every
+ *     organization-level action, including this one, is reachable with a
+ *     service account token per Grafana's own docs).
+ *   `/api/org` is therefore the one this function calls; `/api/user` is not
+ * used anywhere in this codebase. `url` (not yet a persisted connector row)
+ * is where `config.grafanaUrl` comes from here — the SAME "not yet
+ * persisted" ordering gap every Wave-2 provider's live-verify hits (see
+ * "LANGFUSE HOST — THE ORDERING GAP" above), re-gated via the EXISTING
+ * {@link resolveHttpUrl} (this value has not passed `validateUrlConfigString`
+ * yet at this point in the flow). Status-code-only gating (no body-shape
+ * parsing) — a plain REST GET, mirroring `verifyFigma`'s identical
+ * simplicity, since (unlike Linear/Railway's GraphQL calls) there is no
+ * `{errors:[...]}`-on-200 shape to additionally guard against here.
+ */
+async function verifyGrafana(
+  token: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  const url = resolveHttpUrl(config?.grafanaUrl);
+  if (!url) {
+    return { ok: false, error: "Set the Grafana base URL before connecting." };
+  }
+  try {
+    const res = await fetchWithTimeout(`${url}/api/org`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Grafana rejected this token." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Grafana (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Grafana to verify the token — try again." };
+  }
+}
+
+/**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
  * `{ok:true}` here — its format gate is the guarantee.
@@ -604,6 +657,11 @@ export async function verifyConnectorCredential(
       // secret; `verifyPrometheus` runs its OWN colon-presence heuristic on
       // it, mirroring `lib/evidence/prometheus.ts`'s adapter-side read.
       return verifyPrometheus(first, config);
+    case "grafana":
+      // No declared secretParts (single field, like prometheus above) — the
+      // split-before-dispatch step above is a harmless passthrough for this
+      // kind, so `first` IS the full trimmed secret.
+      return verifyGrafana(first, config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

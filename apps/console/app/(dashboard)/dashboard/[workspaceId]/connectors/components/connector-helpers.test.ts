@@ -28,6 +28,7 @@ describe("projectConnectors", () => {
       "sentry",
       "datadog",
       "prometheus",
+      "grafana",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -36,13 +37,14 @@ describe("projectConnectors", () => {
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
     // for debugging investigations, no ingest); Task P2 adds langfuse, Task
-    // P3 adds sentry, Task P4 adds datadog, and Task P5 adds prometheus to
-    // the SAME `observability` group.
+    // P3 adds sentry, Task P4 adds datadog, Task P5 adds prometheus, and
+    // Task P6 adds grafana to the SAME `observability` group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
       "observability",
@@ -147,6 +149,7 @@ describe("projectConnectors", () => {
       "sentry",
       "datadog",
       "prometheus",
+      "grafana",
     ]);
   });
 
@@ -162,6 +165,7 @@ describe("projectConnectors", () => {
       "sentry",
       "datadog",
       "prometheus",
+      "grafana",
     ]);
   });
 });
@@ -409,14 +413,15 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), and prometheus (base URL, Task P5) are the only five so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), prometheus (base URL, Task P5), and grafana (base URL, Task P6) are the only six so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
       if (
         entry.kind === "railway" ||
         entry.kind === "langfuse" ||
         entry.kind === "sentry" ||
         entry.kind === "datadog" ||
-        entry.kind === "prometheus"
+        entry.kind === "prometheus" ||
+        entry.kind === "grafana"
       )
         continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
@@ -719,6 +724,75 @@ describe("validateConnectorCredential — prometheus (Task P5)", () => {
   });
 });
 
+describe("connector catalog — grafana entry (Task P6)", () => {
+  const grafana = CONNECTOR_CATALOG.find((c) => c.kind === "grafana")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(grafana.type).toBe("observability");
+    expect(grafana.connectMethod).toBe("secret");
+    expect(grafana.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities search_events ONLY, and no ingest/postResult/notify — the pivot away from the plan's believed signals", () => {
+    expect(grafana.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["search_events"],
+    });
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a SINGLE-part credential, like prometheus, unlike langfuse's/datadog's composite pairs", () => {
+    expect(grafana.connect?.secretParts).toBeUndefined();
+    expect(grafana.connect?.secretPartPatterns).toBeUndefined();
+  });
+
+  it("declares a required grafanaUrl extraConfigFields entry", () => {
+    expect(grafana.connect?.extraConfigFields).toEqual([
+      {
+        key: "grafanaUrl",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
+// FIXTURE, deliberately non-realistic (every credential literal below):
+// built from an obviously-fake body ("TESTFIXTURE"/repeated digits, or —
+// for the eyJ… legacy-key shape — the base64 of a nonsense JSON object)
+// specifically so GitHub push protection's secret scanner never flags it.
+// Do NOT "fix" these to look more like a real token/key — that is what
+// gets them flagged.
+describe("validateConnectorCredential — grafana (Task P6)", () => {
+  it("accepts a glsa_-prefixed service account token", () => {
+    expect(validateConnectorCredential("grafana", "glsa_TESTFIXTURE0000000000000000000000AB")).toEqual({
+      ok: true,
+    });
+  });
+
+  it("accepts a legacy eyJ-prefixed API key", () => {
+    // base64 of {"TEST":"fixture-not-a-key"} — NOT the {"k":...,"n":...,
+    // "id":...} shape a real legacy Grafana API key decodes to.
+    expect(
+      validateConnectorCredential("grafana", "eyJURVNUIjoiZml4dHVyZS1ub3QtYS1rZXkifQ==")
+    ).toEqual({ ok: true });
+  });
+
+  it("rejects a credential matching neither documented prefix", () => {
+    const res = validateConnectorCredential("grafana", "not-a-real-token");
+    expect(res).toEqual({
+      ok: false,
+      error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
+    });
+  });
+
+  it("rejects an empty credential before ever reaching the grafana-specific check", () => {
+    expect(validateConnectorCredential("grafana", "   ").ok).toBe(false);
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -739,6 +813,10 @@ describe("extraConfigFieldKeys (Task P0)", () => {
 
   it("includes datadog's declared key from the real catalog (Task P4)", () => {
     expect(extraConfigFieldKeys().has("datadogSite")).toBe(true);
+  });
+
+  it("includes grafana's declared key from the real catalog (Task P6)", () => {
+    expect(extraConfigFieldKeys().has("grafanaUrl")).toBe(true);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {

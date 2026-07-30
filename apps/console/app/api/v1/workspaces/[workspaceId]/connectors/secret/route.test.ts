@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus, grafana) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -122,6 +122,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("datadog");
     // Task P5.
     expect(body.error).toContain("prometheus");
+    // Task P6.
+    expect(body.error).toContain("grafana");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -710,5 +712,149 @@ describe("PUT /connectors/secret — prometheus, full flow + extra-config pass-t
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "prometheus", null);
+  });
+});
+
+/**
+ * Full grafana connect flow (Task P6) — both gates run for real (this route
+ * doesn't mock `./verify`), so the live-verify HTTP call is exercised via a
+ * `global.fetch` swap, same idiom as the railway/langfuse/sentry/datadog/
+ * prometheus blocks above. ALSO proves the extra-config pass-through
+ * mechanism generalizes to a SIXTH provider (`grafanaUrl`) riding alongside
+ * `secret` in the SAME PUT body, with no grafana-specific code in this
+ * route. Like prometheus above (unlike datadog/langfuse), `secret` is a
+ * SINGLE field (no composite split) — the "malformed secret" case here is
+ * the format gate's own prefix check, not a wrong part count.
+ */
+describe("PUT /connectors/secret — grafana, full flow + extra-config pass-through (Task P6)", () => {
+  const originalFetch = global.fetch;
+  // FIXTURE, deliberately non-realistic: built from an obviously-fake body
+  // ("TESTFIXTURE"/repeated digits, or — for the eyJ… legacy-key shape
+  // below — the base64 of a nonsense JSON object) specifically so GitHub
+  // push protection's secret scanner never flags it. Do NOT "fix" these to
+  // look more like a real token/key — that is what gets them flagged.
+  const GRAFANA_SECRET = "glsa_TESTFIXTURE0000000000000000000000AB";
+  const GRAFANA_URL = "https://grafana.internal:3000";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT grafana accepted end to end: secret + grafanaUrl in the SAME body + a live verify that succeeds (/api/org) → 200 connected:true, setConnectorSecret called with the trimmed secret (url NOT part of it)", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "grafana",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, grafanaUrl: GRAFANA_URL },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "grafana", secret: `  ${GRAFANA_SECRET}  `, grafanaUrl: GRAFANA_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(capturedUrl).toBe(`${GRAFANA_URL}/api/org`);
+    // The route itself never persists grafanaUrl — only the trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "grafana", GRAFANA_SECRET);
+  });
+
+  it("PUT grafana with NO grafanaUrl in the body → 400 with verify's own URL-missing error, setConnectorSecret never called (proves the pass-through, not a hardcoded route branch)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "grafana", secret: GRAFANA_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set the Grafana base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT grafana with a well-formed secret but a live verify Grafana rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "grafana", secret: GRAFANA_SECRET, grafanaUrl: GRAFANA_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Grafana rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT grafana with a credential matching neither documented prefix fails at the FORMAT gate — never calls fetch, never reads grafanaUrl", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "grafana", secret: "not-a-real-token", grafanaUrl: GRAFANA_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT grafana accepts a legacy eyJ-prefixed API key too — same single field, same Bearer scheme", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    // base64 of {"TEST":"fixture-not-a-key"} — NOT the {"k":...,"n":...,
+    // "id":...} shape a real legacy Grafana API key decodes to.
+    const legacyKey = "eyJURVNUIjoiZml4dHVyZS1ub3QtYS1rZXkifQ==";
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "grafana",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, grafanaUrl: GRAFANA_URL },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "grafana", secret: legacyKey, grafanaUrl: GRAFANA_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${legacyKey}`);
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "grafana", legacyKey);
+  });
+
+  it("PUT grafana with secret:null disconnects without ever calling verify/fetch, and without needing grafanaUrl in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "grafana",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "grafana", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "grafana", null);
   });
 });

@@ -19,6 +19,7 @@ import {
   SentryBrand,
   DatadogBrand,
   PrometheusBrand,
+  GrafanaBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -59,6 +60,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   sentry: SentryBrand,
   datadog: DatadogBrand,
   prometheus: PrometheusBrand,
+  grafana: GrafanaBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -85,6 +87,10 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // against simple-icons' own data) — same "real mark exists, so a real hex
   // is pinned" precedent as Sentry/Datadog above.
   prometheus: "text-[#e6522c]",
+  // Task P6: Grafana's real brand orange (#F46800, confirmed against
+  // simple-icons' own data) — same "real mark exists, so a real hex is
+  // pinned" precedent as Sentry/Datadog/Prometheus above.
+  grafana: "text-[#f46800]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

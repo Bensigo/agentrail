@@ -290,6 +290,35 @@ describe("createSubscriptionCheckoutSessionAction", () => {
     expect(sessionsCreate).not.toHaveBeenCalled();
   });
 
+  // --- already-subscribed guard (final whole-slice review, Critical): an
+  // account with a live Stripe subscription must go through the customer
+  // portal to change plans, never start a SECOND, independent subscription
+  // via this action — checked before any Stripe call, including the
+  // ensure-customer step below. ---------------------------------------------
+
+  it("rejects when the account already has a Stripe subscription, never calls Stripe", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const account = makeAccount({ stripeSubscriptionId: "sub_existing_1" });
+    const fetchAccount = vi.fn(async () => account);
+    const bindCustomer = vi.fn(async () => undefined);
+    const { stripe, customersCreate, sessionsCreate } = makeStripeFake();
+
+    const result = await createSubscriptionCheckoutSessionAction(WORKSPACE_ID, "growth", {
+      stripe,
+      fetchAccount: fetchAccount as never,
+      bindCustomer: bindCustomer as never,
+    });
+
+    expectError(
+      result,
+      "This workspace already has a subscription. Use Manage billing to change plans."
+    );
+    expect(customersCreate).not.toHaveBeenCalled();
+    expect(sessionsCreate).not.toHaveBeenCalled();
+    expect(bindCustomer).not.toHaveBeenCalled();
+  });
+
   // --- ensure-customer step: the ONE write this action may make -----------
 
   it("creates and binds a Stripe customer when the account has none, then uses it for checkout", async () => {

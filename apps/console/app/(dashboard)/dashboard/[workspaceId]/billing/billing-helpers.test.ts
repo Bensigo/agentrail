@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canStartCheckout,
   planLabel,
   renewalLabel,
   seatLimitForPlan,
@@ -97,5 +98,15 @@ describe("STATUS_CHIP_TONE_CLASSNAME", () => {
       expect(STATUS_CHIP_TONE_CLASSNAME[tone]).toEqual(expect.any(String));
       expect(STATUS_CHIP_TONE_CLASSNAME[tone].length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("canStartCheckout", () => {
+  it("allows checkout when the account has no Stripe subscription yet", () => {
+    expect(canStartCheckout({ stripeSubscriptionId: null })).toBe(true);
+  });
+
+  it("blocks starting a second checkout once the account already has a subscription (final whole-slice review, Critical: an already-subscribed account could otherwise start a SECOND, independent Stripe subscription)", () => {
+    expect(canStartCheckout({ stripeSubscriptionId: "sub_x" })).toBe(false);
   });
 });

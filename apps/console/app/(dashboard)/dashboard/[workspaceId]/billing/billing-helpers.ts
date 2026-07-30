@@ -175,3 +175,36 @@ export const STATUS_CHIP_TONE_CLASSNAME: Record<SubscriptionStatusTone, string> 
     "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30",
   critical: "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
 };
+
+/**
+ * True only when the workspace has no live Stripe subscription yet — the
+ * gate for whether the Plan & billing page may offer the self-serve
+ * checkout buttons at all.
+ *
+ * Final whole-slice review, Critical: nothing previously stopped an
+ * already-subscribed billing account from starting a SECOND, independent
+ * Stripe subscription — `billing/page.tsx` rendered `CheckoutButtons`
+ * whenever Stripe was configured, with no dependence on the account's
+ * subscription state, and `createSubscriptionCheckoutSessionAction` never
+ * read `stripeSubscriptionId` before calling
+ * `stripe.checkout.sessions.create`. A Starter customer clicking "Growth"
+ * got TWO live subscriptions, and since `applySubscriptionStateForStripeEvent`
+ * (the webhook) is last-write-wins, one kept billing invisibly. Once a
+ * workspace has a subscription, plan changes go through the Stripe customer
+ * portal instead (`createPortalSessionAction`) — Stripe's own portal already
+ * handles upgrade/downgrade/cancel for an existing subscription, so this app
+ * doesn't reimplement that as a second checkout.
+ *
+ * This is the UI-hiding half only. `createSubscriptionCheckoutSessionAction`
+ * (`actions.ts`) re-checks the same field server-side, independent of this
+ * function and of whatever the page renders — UI hiding alone is not
+ * enforcement.
+ *
+ * Takes a minimal inline shape rather than the full `BillingAccountRow` —
+ * this is the one field the decision turns on, same "narrowest input type"
+ * posture as this file's other helpers (`renewalLabel` takes a bare
+ * `Date | null`, not the whole row).
+ */
+export function canStartCheckout(account: { stripeSubscriptionId: string | null }): boolean {
+  return account.stripeSubscriptionId === null;
+}

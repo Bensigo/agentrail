@@ -144,6 +144,23 @@ export async function createSubscriptionCheckoutSessionAction(
     return { ok: false, error: "This workspace doesn't have a billing account yet." };
   }
 
+  // Final whole-slice review, Critical: without this check, an
+  // already-subscribed account could start a SECOND, independent Stripe
+  // subscription by clicking a different plan's checkout button rather than
+  // changing the existing one — `applySubscriptionStateForStripeEvent` (the
+  // webhook) is last-write-wins, so one subscription would end up billing
+  // invisibly. Plan changes go through the Stripe customer portal instead
+  // (`createPortalSessionAction` below), already wired on this page's
+  // "Manage billing" button. Checked here, server-side and independent of
+  // `canStartCheckout` in `billing-helpers.ts` (which only hides the UI),
+  // BEFORE any Stripe call — including the ensure-customer step next.
+  if (account.stripeSubscriptionId) {
+    return {
+      ok: false,
+      error: "This workspace already has a subscription. Use Manage billing to change plans.",
+    };
+  }
+
   // Ensure a Stripe customer exists — the ONE write this action may make
   // (see this module's top doc-comment). `bindStripeCustomer` is fill-only
   // (`WHERE stripe_customer_id IS NULL`), so a second checkout attempt

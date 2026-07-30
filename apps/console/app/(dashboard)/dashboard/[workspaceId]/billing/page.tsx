@@ -6,6 +6,7 @@ import { PageHeader } from "../../../../components/page-header";
 import { CheckoutButtons } from "./components/checkout-buttons";
 import { ManageBillingButton } from "./components/manage-billing-button";
 import {
+  canStartCheckout,
   planLabel,
   renewalLabel,
   seatLimitForPlan,
@@ -110,7 +111,23 @@ export default async function BillingPage({
           <p className="text-sm text-[var(--gray-11)]">Seats: {seatsLabel(seatsUsed, seatLimit)}</p>
         </div>
 
-        {billingConfigured && <CheckoutButtons workspaceId={workspaceId} canManage={canManage} />}
+        {/* Final whole-slice review, Critical: an already-subscribed account
+            must not be offered a second, independent checkout — no account
+            (never checked out) keeps today's behavior via the
+            `{ stripeSubscriptionId: null }` fallback; `canStartCheckout`'s
+            own doc-comment (`billing-helpers.ts`) has the full finding.
+            `createSubscriptionCheckoutSessionAction` re-checks the same
+            field server-side — this is the UI-hiding half only. */}
+        {billingConfigured &&
+          canStartCheckout(account ?? { stripeSubscriptionId: null }) && (
+            <CheckoutButtons workspaceId={workspaceId} canManage={canManage} />
+          )}
+
+        {account && !canStartCheckout(account) && (
+          <p className="text-sm text-[var(--gray-09)]">
+            Plan changes and cancellation are handled through Manage billing.
+          </p>
+        )}
 
         {account?.stripeCustomerId && (
           <ManageBillingButton workspaceId={workspaceId} canManage={canManage} />

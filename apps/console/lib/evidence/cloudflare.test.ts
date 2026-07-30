@@ -259,7 +259,7 @@ describe("cloudflareAdapter — GraphQL query documents are CONSTANTS, zoneTag/t
     expect(capturedQueries[0]).not.toContain("totally different");
   });
 
-  it("zoneTag, the window (inside filter), and limit ALL ride as GraphQL variables — never inlined into the query text (signals)", async () => {
+  it("Fix Round 1: zoneTag, the window bounds, the error threshold, and limit ALL ride as FLAT LEAF-value GraphQL variables — never inlined into the query text, and never nested inside a whole-object $filter variable (signals)", async () => {
     let capturedQueryText = "";
     let capturedVariables: Record<string, unknown> = {};
     global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
@@ -271,16 +271,24 @@ describe("cloudflareAdapter — GraphQL query documents are CONSTANTS, zoneTag/t
 
     await cloudflareAdapter.query(WS, q(), SECRET);
 
-    expect(capturedVariables.zoneTag).toBe(ZONE_ID);
-    expect(typeof capturedVariables.limit).toBe("number");
-    expect((capturedVariables.filter as Record<string, unknown>).datetime_geq).toBe(WINDOW_START);
-    expect((capturedVariables.filter as Record<string, unknown>).datetime_leq).toBe(WINDOW_END);
-    expect((capturedVariables.errorFilter as Record<string, unknown>).edgeResponseStatus_geq).toBe(500);
+    expect(capturedVariables).toEqual({
+      zoneTag: ZONE_ID,
+      windowStart: WINDOW_START,
+      windowEnd: WINDOW_END,
+      errorStatus: 500,
+      limit: expect.any(Number),
+    });
     expect(capturedQueryText).not.toContain(ZONE_ID);
     expect(capturedQueryText).not.toContain(WINDOW_START);
+    // Fix Round 1's whole point: no `$filter`-shaped variable of any kind —
+    // the filter SHAPE is inlined in the document itself (see
+    // CLOUDFLARE_SIGNALS_QUERY's own doc-comment).
+    expect(capturedVariables).not.toHaveProperty("filter");
+    expect(capturedVariables).not.toHaveProperty("errorFilter");
+    expect(capturedQueryText).not.toMatch(/\$filter\b/);
   });
 
-  it("zoneTag and the window (inside filter) ride as GraphQL variables — never inlined into the query text (search_events)", async () => {
+  it("Fix Round 1: zoneTag and the window bounds ride as FLAT LEAF-value GraphQL variables — never inlined into the query text, never nested inside a whole-object $filter variable (search_events)", async () => {
     let capturedQueryText = "";
     let capturedVariables: Record<string, unknown> = {};
     global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
@@ -292,11 +300,32 @@ describe("cloudflareAdapter — GraphQL query documents are CONSTANTS, zoneTag/t
 
     await cloudflareAdapter.query(WS, searchQuery(), SECRET);
 
-    expect(capturedVariables.zoneTag).toBe(ZONE_ID);
-    expect((capturedVariables.filter as Record<string, unknown>).datetime_geq).toBe(WINDOW_START);
-    expect((capturedVariables.filter as Record<string, unknown>).datetime_leq).toBe(WINDOW_END);
+    expect(capturedVariables).toEqual({
+      zoneTag: ZONE_ID,
+      windowStart: WINDOW_START,
+      windowEnd: WINDOW_END,
+      limit: expect.any(Number),
+    });
     expect(capturedQueryText).not.toContain(ZONE_ID);
     expect(capturedQueryText).not.toContain(WINDOW_START);
+    expect(capturedVariables).not.toHaveProperty("filter");
+    expect(capturedQueryText).not.toMatch(/\$filter\b/);
+  });
+
+  it("Fix Round 1: the query documents declare only schema-confirmed leaf scalar types — string/Time/uint16/uint64 — never the fabricated 'filter' scalar or the GraphQL-spec 'Int'", () => {
+    expect(CLOUDFLARE_SIGNALS_QUERY).toContain("$zoneTag: string");
+    expect(CLOUDFLARE_SIGNALS_QUERY).toContain("$windowStart: Time");
+    expect(CLOUDFLARE_SIGNALS_QUERY).toContain("$windowEnd: Time");
+    expect(CLOUDFLARE_SIGNALS_QUERY).toContain("$errorStatus: uint16");
+    expect(CLOUDFLARE_SIGNALS_QUERY).toContain("$limit: uint64");
+    expect(CLOUDFLARE_SEARCH_EVENTS_QUERY).toContain("$zoneTag: string");
+    expect(CLOUDFLARE_SEARCH_EVENTS_QUERY).toContain("$windowStart: Time");
+    expect(CLOUDFLARE_SEARCH_EVENTS_QUERY).toContain("$windowEnd: Time");
+    expect(CLOUDFLARE_SEARCH_EVENTS_QUERY).toContain("$limit: uint64");
+    for (const doc of [CLOUDFLARE_SIGNALS_QUERY, CLOUDFLARE_SEARCH_EVENTS_QUERY]) {
+      expect(doc).not.toContain(": filter");
+      expect(doc).not.toContain(": Int");
+    }
   });
 });
 

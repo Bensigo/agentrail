@@ -67,3 +67,88 @@ describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
     });
   });
 });
+
+/**
+ * Evidence Providers Wave 2 (Task P0): the ten non-secret companion fields
+ * added to `ConnectorConfig` all at once so P2-P8 never touch this package
+ * again (mirrors `railwayProjectId` above, Task 7). Every field shares the
+ * exact same "string, trim, non-empty, ≤256 chars" shape via the internal
+ * `validateSimpleConfigString` helper — exercised generically over the
+ * whole field list rather than eleven near-duplicate describe blocks, plus
+ * a couple of named spot-checks proving the right key gets written.
+ */
+describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fields (Task P0)", () => {
+  const WAVE2_FIELDS = [
+    "langfuseHost",
+    "sentryOrg",
+    "sentryProject",
+    "datadogSite",
+    "prometheusUrl",
+    "grafanaUrl",
+    "vercelTeamId",
+    "vercelProjectId",
+    "cloudflareZoneId",
+    "cloudflareAccountId",
+  ] as const;
+
+  it.each(WAVE2_FIELDS)("accepts and trims a well-formed %s", (field) => {
+    const res = validateConnectorUpdate({ config: { [field]: `  value-${field}  ` } });
+    expect(res).toEqual({ ok: true, value: { config: { [field]: `value-${field}` } } });
+  });
+
+  it.each(WAVE2_FIELDS)("rejects a non-string %s", (field) => {
+    const res = validateConnectorUpdate({ config: { [field]: 123 as unknown as string } });
+    expect(res).toEqual({ ok: false, error: `${field} must be a string` });
+  });
+
+  it.each(WAVE2_FIELDS)("rejects an empty (whitespace-only) %s", (field) => {
+    const res = validateConnectorUpdate({ config: { [field]: "   " } });
+    expect(res).toEqual({ ok: false, error: `${field} must not be empty` });
+  });
+
+  it.each(WAVE2_FIELDS)("rejects a %s over 256 characters", (field) => {
+    const res = validateConnectorUpdate({ config: { [field]: "x".repeat(257) } });
+    expect(res).toEqual({ ok: false, error: `${field} must be at most 256 characters` });
+  });
+
+  it.each(WAVE2_FIELDS)("accepts a %s at exactly 256 characters (boundary)", (field) => {
+    const res = validateConnectorUpdate({ config: { [field]: "x".repeat(256) } });
+    expect(res.ok).toBe(true);
+  });
+
+  it.each(WAVE2_FIELDS)("leaves %s out of the normalized value when absent (no accidental default)", (field) => {
+    const res = validateConnectorUpdate({ config: { triggerLabel: "afk" } });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.config).not.toHaveProperty(field);
+  });
+
+  it("composes two Wave 2 fields together in the same update (Langfuse's two companions)", () => {
+    const res = validateConnectorUpdate({
+      config: { sentryOrg: "acme", sentryProject: "web" },
+    });
+    expect(res).toEqual({
+      ok: true,
+      value: { config: { sentryOrg: "acme", sentryProject: "web" } },
+    });
+  });
+
+  it("composes a Wave 2 field with railwayProjectId and triggerLabel — no cross-field interference", () => {
+    const res = validateConnectorUpdate({
+      config: {
+        triggerLabel: "ready-for-agent",
+        railwayProjectId: "proj-abc",
+        langfuseHost: "https://cloud.langfuse.com",
+      },
+    });
+    expect(res).toEqual({
+      ok: true,
+      value: {
+        config: {
+          triggerLabel: "ready-for-agent",
+          railwayProjectId: "proj-abc",
+          langfuseHost: "https://cloud.langfuse.com",
+        },
+      },
+    });
+  });
+});

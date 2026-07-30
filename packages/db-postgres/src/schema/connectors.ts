@@ -209,6 +209,45 @@ export interface ConnectorConfig {
    * every other provider.
    */
   railwayProjectId?: string;
+  // Evidence Providers Wave 2 (Task P0, `.superpowers/sdd/plan-providers.md`)
+  // — non-secret companion fields for the wave's seven providers, ALL added
+  // at once here so P2–P8 never touch this schema package again. Each
+  // mirrors `railwayProjectId` above (Task 7): optional string, saved via
+  // the connectors PUT (config path — now generic, see
+  // `connector-helpers.ts`'s `ConnectorConnectMeta.extraConfigFields` and
+  // `extraConfigFieldKeys`), never a secret (the provider's actual
+  // credential lives in `connectors.secret`, possibly composite — see
+  // `apps/console/lib/evidence/composite-secret.ts`). Every field is absent
+  // until its provider's connect form is used; no provider task after P0
+  // needs to add a new field here.
+  /** Langfuse: base URL for the workspace's Langfuse deployment/region
+   * (`https://cloud.langfuse.com`, `https://jp.cloud.langfuse.com`, or a
+   * self-host origin). */
+  langfuseHost?: string;
+  /** Sentry: the organization slug the workspace's project(s) live under. */
+  sentryOrg?: string;
+  /** Sentry: the project slug within {@link sentryOrg}. */
+  sentryProject?: string;
+  /** Datadog: the account's site (`datadoghq.com`, `us3.datadoghq.com`,
+   * `us5.datadoghq.com`, `datadoghq.eu`, …). */
+  datadogSite?: string;
+  /** Prometheus: the base URL of the workspace's Prometheus (or
+   * Prometheus-compatible) query endpoint. */
+  prometheusUrl?: string;
+  /** Grafana: the base URL of the workspace's Grafana instance. */
+  grafanaUrl?: string;
+  /** Vercel: the team id scoping the workspace's deployments (optional — a
+   * personal-account Vercel project has none). */
+  vercelTeamId?: string;
+  /** Vercel: the project id the debugging investigator reads deployments
+   * from. */
+  vercelProjectId?: string;
+  /** Cloudflare: the zone id scoping the workspace's analytics/security
+   * queries. */
+  cloudflareZoneId?: string;
+  /** Cloudflare: the account id (needed alongside the zone id for some
+   * GraphQL analytics queries). */
+  cloudflareAccountId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

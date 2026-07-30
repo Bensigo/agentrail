@@ -7,7 +7,9 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   connectorStatusLabel,
+  extraConfigFieldKeys,
   projectConnectors,
+  projectExtraConfigValues,
   validateConnectorCredential,
   type ConnectorCatalogEntry,
   type ConnectorConfigInput,
@@ -268,6 +270,83 @@ describe("validateConnectorCredential", () => {
   });
 });
 
+// Task P0: the generic composite-secret validation path — a catalog entry
+// declaring `secretParts` (+ optionally `secretPartPatterns`) is validated
+// WITHOUT a hand-written switch case. Exercised via a synthetic catalog
+// (mirroring the `internal`-entry-filter test's injection pattern above) so
+// this is proven generically, without a second real composite provider (P0
+// adds none — that's P2-P8's job).
+describe("validateConnectorCredential — composite secrets (generic secretParts/secretPartPatterns, Task P0)", () => {
+  const compositeEntry: ConnectorCatalogEntry = {
+    kind: "context7",
+    type: "mcp",
+    connectMethod: "secret",
+    label: "Composite Test",
+    description: "test",
+    availability: "available",
+    capabilities: { ingest: false, postResult: false, notify: false },
+    connect: {
+      credentialLabel: "test",
+      credentialPlaceholder: "test",
+      credentialHint: "test",
+      helpUrl: "https://example.com",
+      setupSteps: [],
+      secretParts: [{ name: "Public key" }, { name: "Secret key" }],
+      secretPartPatterns: ["^pk-", "^sk-"],
+    },
+  };
+  const catalog = [compositeEntry];
+
+  it("accepts a well-formed composite secret matching both part patterns", () => {
+    expect(validateConnectorCredential("context7", "pk-abc:sk-def", catalog)).toEqual({
+      ok: true,
+    });
+  });
+
+  it("rejects when the first part fails its pattern, naming that part", () => {
+    const res = validateConnectorCredential("context7", "xx-abc:sk-def", catalog);
+    expect(res).toEqual({ ok: false, error: "Public key has an unexpected format." });
+  });
+
+  it("rejects when the second part fails its pattern, naming that part", () => {
+    const res = validateConnectorCredential("context7", "pk-abc:xx-def", catalog);
+    expect(res).toEqual({ ok: false, error: "Secret key has an unexpected format." });
+  });
+
+  it("propagates a splitCompositeSecret count error (wrong number of parts)", () => {
+    const res = validateConnectorCredential("context7", "only-one-part", catalog);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+  });
+
+  it("accepts any well-split content when secretParts is declared but secretPartPatterns is absent (count/non-empty only)", () => {
+    const noPatterns: ConnectorCatalogEntry = {
+      ...compositeEntry,
+      connect: { ...compositeEntry.connect!, secretPartPatterns: undefined },
+    };
+    expect(
+      validateConnectorCredential("context7", "anything:whatever", [noPatterns])
+    ).toEqual({ ok: true });
+  });
+
+  it("skips per-part validation for an index missing from a sparse secretPartPatterns array", () => {
+    const sparse: ConnectorCatalogEntry = {
+      ...compositeEntry,
+      connect: { ...compositeEntry.connect!, secretPartPatterns: ["^pk-"] }, // no pattern for part 2
+    };
+    expect(
+      validateConnectorCredential("context7", "pk-abc:literally-anything", [sparse])
+    ).toEqual({ ok: true });
+  });
+
+  it("existing single-pattern providers stay on their hand-written case — unaffected, real catalog default param", () => {
+    // Uses the DEFAULT (real) catalog — proves the generic path is a no-op
+    // for every provider shipped before this wave (none declares secretParts).
+    expect(validateConnectorCredential("linear", "lin_api_abc123")).toEqual({ ok: true });
+    expect(validateConnectorCredential("linear", "nope").ok).toBe(false);
+  });
+});
+
 describe("CONNECTOR_TYPE_META — observability section (Task 7)", () => {
   it("has a label and description for the new observability section", () => {
     expect(CONNECTOR_TYPE_META.observability.label).toBe("Observability");
@@ -293,19 +372,136 @@ describe("connector catalog — railway entry (Task 7)", () => {
     });
   });
 
-  it("declares an extraConfigField for the Railway project id, driving the connect form's second input", () => {
-    expect(railway.connect?.extraConfigField).toEqual({
-      key: "railwayProjectId",
-      label: expect.any(String),
-      placeholder: expect.any(String),
+  // Task P0: extraConfigField (singular object) → extraConfigFields (array).
+  // Railway's entry is the array shape's first user — behavior-identical to
+  // the single-field shape it replaces (asserted throughout this file via
+  // `projectConnectors`'s target derivation and connectors/route.test.ts).
+  it("declares extraConfigFields (array shape) for the Railway project id, driving the connect form's second input", () => {
+    expect(railway.connect?.extraConfigFields).toEqual([
+      {
+        key: "railwayProjectId",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+      },
+    ]);
+  });
+
+  it("every other catalog entry declares no extraConfigFields (railway is still the only provider needing one before Wave 2's providers land)", () => {
+    for (const entry of CONNECTOR_CATALOG) {
+      if (entry.kind === "railway") continue;
+      expect(entry.connect?.extraConfigFields).toBeUndefined();
+    }
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a single-part credential, unaffected by the composite-secret generalization", () => {
+    expect(railway.connect?.secretParts).toBeUndefined();
+    expect(railway.connect?.secretPartPatterns).toBeUndefined();
+  });
+});
+
+describe("extraConfigFieldKeys (Task P0)", () => {
+  it("includes railway's declared key from the real catalog", () => {
+    expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
+  });
+
+  it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {
+    const synthetic = [
+      { connect: { extraConfigFields: [{ key: "fakeHost", label: "x", placeholder: "x" }] } },
+      {
+        connect: {
+          extraConfigFields: [
+            { key: "fakeOrg", label: "x", placeholder: "x" },
+            { key: "fakeProject", label: "x", placeholder: "x" },
+          ],
+        },
+      },
+      { connect: undefined }, // an oauth-style entry with no connect metadata at all
+      {}, // an entry with connect but no extraConfigFields (single-secret provider)
+    ];
+    const keys = extraConfigFieldKeys(synthetic);
+    expect(keys).toEqual(new Set(["fakeHost", "fakeOrg", "fakeProject"]));
+  });
+
+  it("the default (no injected catalog) call reflects the real catalog only", () => {
+    const keys = extraConfigFieldKeys();
+    expect(keys.has("fakeHost")).toBe(false);
+  });
+});
+
+describe("projectExtraConfigValues (Task P0)", () => {
+  it("returns an empty bag for an entry with no declared fields", () => {
+    expect(projectExtraConfigValues({}, { anything: "x" })).toEqual({});
+  });
+
+  it("projects a single declared field's stored value", () => {
+    const entry = { connect: { extraConfigFields: [{ key: "railwayProjectId", label: "x", placeholder: "x" }] } };
+    expect(projectExtraConfigValues(entry, { railwayProjectId: "proj-abc" })).toEqual({
+      railwayProjectId: "proj-abc",
     });
   });
 
-  it("every other catalog entry declares no extraConfigField (Task 7 is the first provider needing one)", () => {
-    for (const entry of CONNECTOR_CATALOG) {
-      if (entry.kind === "railway") continue;
-      expect(entry.connect?.extraConfigField).toBeUndefined();
-    }
+  it("generalizes to N declared fields, each read independently", () => {
+    const entry = {
+      connect: {
+        extraConfigFields: [
+          { key: "sentryOrg", label: "x", placeholder: "x" },
+          { key: "sentryProject", label: "x", placeholder: "x" },
+        ],
+      },
+    };
+    expect(
+      projectExtraConfigValues(entry, { sentryOrg: "acme", sentryProject: "web" })
+    ).toEqual({ sentryOrg: "acme", sentryProject: "web" });
+  });
+
+  it("projects null for a declared field absent from the stored config", () => {
+    const entry = { connect: { extraConfigFields: [{ key: "railwayProjectId", label: "x", placeholder: "x" }] } };
+    expect(projectExtraConfigValues(entry, undefined)).toEqual({ railwayProjectId: null });
+    expect(projectExtraConfigValues(entry, {})).toEqual({ railwayProjectId: null });
+  });
+
+  it("projects null (not the raw value) for a declared field whose stored value isn't a string", () => {
+    const entry = { connect: { extraConfigFields: [{ key: "railwayProjectId", label: "x", placeholder: "x" }] } };
+    expect(projectExtraConfigValues(entry, { railwayProjectId: 123 })).toEqual({
+      railwayProjectId: null,
+    });
+  });
+});
+
+// Task P0: proves `projectConnectors`'s target derivation generalizes to N
+// extraConfigFields (not just railway's single field) via a synthetic
+// catalog override — the same test-injection pattern the `internal`-entry
+// filter test above already uses.
+describe("projectConnectors — target derivation generalizes to N extraConfigFields (Task P0)", () => {
+  const syntheticCatalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG.map((entry) =>
+    entry.kind === "railway"
+      ? {
+          ...entry,
+          connect: {
+            ...entry.connect!,
+            extraConfigFields: [
+              { key: "fieldA", label: "Field A", placeholder: "a" },
+              { key: "fieldB", label: "Field B", placeholder: "b" },
+            ],
+          },
+        }
+      : entry
+  );
+
+  it("uses the FIRST declared field's value when an entry declares more than one", () => {
+    const rows = projectConnectors(
+      [{ kind: "railway", hasSecret: true, fieldA: "value-a", fieldB: "value-b" }],
+      syntheticCatalog
+    );
+    expect(rows.find((r) => r.kind === "railway")!.target).toBe("value-a");
+  });
+
+  it("is null when the first field has no stored value, even if a later field does", () => {
+    const rows = projectConnectors(
+      [{ kind: "railway", hasSecret: true, fieldB: "value-b" }],
+      syntheticCatalog
+    );
+    expect(rows.find((r) => r.kind === "railway")!.target).toBeNull();
   });
 });
 
@@ -338,7 +534,7 @@ describe("projectConnectors — railway's target (Fix Round 1, FIX 3)", () => {
     expect(railway.target).toBe("proj-abc");
   });
 
-  it("a kind with no declared extraConfigField never surfaces railwayProjectId as its target, even if the field is (incorrectly) present in its config", () => {
+  it("a kind with no declared extraConfigFields never surfaces railwayProjectId as its target, even if the field is (incorrectly) present in its config", () => {
     const linear = projectConnectors([
       { kind: "linear", hasSecret: true, railwayProjectId: "should-not-leak" },
     ]).find((r) => r.kind === "linear")!;

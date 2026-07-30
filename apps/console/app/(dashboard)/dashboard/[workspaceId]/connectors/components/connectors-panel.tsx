@@ -22,6 +22,7 @@ import {
   capabilitySummary,
   CONNECTOR_TYPE_META,
   validateConnectorCredential,
+  type ConnectorConnectMeta,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
@@ -245,6 +246,15 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
 // context7). Posts the credential to the write-only /connectors/secret route;
 // the value is never read back.
 // --------------------------------------------------------------------------- //
+
+// Module-level (not per-render) empty-array fallbacks for `secretParts` /
+// `extraConfigFields` when a catalog entry declares neither — reusing the
+// SAME reference on every render (rather than a fresh `?? []` literal each
+// time) keeps `save`'s useCallback dependency array referentially stable for
+// every provider that predates this wave (react-hooks/exhaustive-deps).
+const NO_SECRET_PARTS: NonNullable<ConnectorConnectMeta["secretParts"]> = [];
+const NO_EXTRA_FIELDS: NonNullable<ConnectorConnectMeta["extraConfigFields"]> = [];
+
 function SecretManage({
   connector,
   workspaceId,
@@ -257,17 +267,29 @@ function SecretManage({
   onChanged: () => void;
 }) {
   const isConnected = connector.status === "connected";
+  const meta = connector.connect;
+
+  // Task P0: composite secrets — a catalog entry declaring `secretParts`
+  // renders ONE password input PER PART instead of the single credential
+  // input; the parts are joined `partA:partB` right before the PUT (see
+  // `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment).
+  // Absent (every provider before this wave) → `secretParts` is `[]` and
+  // the original single-input rendering below is completely unaffected.
+  const secretParts = meta?.secretParts ?? NO_SECRET_PARTS;
+  const isComposite = secretParts.length > 0;
   const [secret, setSecret] = useState("");
-  // Task 7: a generic second field, driven entirely by the catalog entry's
-  // `connect.extraConfigField` (Railway's project id today) — this component
-  // never hardcodes which provider needs one, so the NEXT provider needing a
-  // second field is catalog-only. See connector-helpers.ts's own doc-comment
-  // on ConnectorConnectMeta.extraConfigField.
-  const [extraValue, setExtraValue] = useState("");
+  const [partValues, setPartValues] = useState<string[]>(() => secretParts.map(() => ""));
+
+  // Task P0 (generalizes Task 7's single `extraValue` string): N generic
+  // extra config fields, driven entirely by the catalog entry's
+  // `connect.extraConfigFields` — this component never hardcodes which
+  // provider needs one or how many, so the NEXT provider needing extra
+  // fields is catalog-only. See connector-helpers.ts's own doc-comment on
+  // ConnectorConnectMeta.extraConfigFields.
+  const extraFields = meta?.extraConfigFields ?? NO_EXTRA_FIELDS;
+  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const meta = connector.connect;
-  const extraField = meta?.extraConfigField;
 
   const save = useCallback(
     async (body: { secret: string | null }) => {
@@ -287,12 +309,17 @@ function SecretManage({
           throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
         }
 
-        // The extra field (when the catalog entry declares one) saves via
+        // The extra fields (when the catalog entry declares any) save via
         // the connectors CONFIG route, not this secret route — and only once
         // the credential itself is accepted, so a rejected token never
         // leaves an orphaned config value behind. Never attempted on a
-        // disconnect (`body.secret === null`).
-        if (body.secret !== null && extraField) {
+        // disconnect (`body.secret === null`). Only non-empty values are
+        // sent, so an optional field left blank never overwrites a
+        // previously-stored one with an empty string.
+        const configEntries = extraFields
+          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
+          .filter(([, v]) => v.length > 0);
+        if (body.secret !== null && configEntries.length > 0) {
           const configRes = await fetch(
             `/api/v1/workspaces/${workspaceId}/connectors`,
             {
@@ -300,7 +327,7 @@ function SecretManage({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 provider: connector.kind,
-                [extraField.key]: extraValue.trim(),
+                ...Object.fromEntries(configEntries),
               }),
             }
           );
@@ -311,7 +338,8 @@ function SecretManage({
         }
 
         setSecret("");
-        setExtraValue("");
+        setPartValues(secretParts.map(() => ""));
+        setExtraValues({});
         onChanged();
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Failed to save");
@@ -319,7 +347,7 @@ function SecretManage({
         setSaving(false);
       }
     },
-    [workspaceId, connector.kind, extraField, extraValue, onChanged]
+    [workspaceId, connector.kind, extraFields, extraValues, secretParts, onChanged]
   );
 
   if (isConnected) {
@@ -346,53 +374,109 @@ function SecretManage({
     );
   }
 
-  const extraValueMissing = Boolean(extraField) && extraValue.trim().length === 0;
+  const missingRequiredExtra = extraFields.find(
+    (f) => f.required !== false && (extraValues[f.key] ?? "").trim().length === 0
+  );
 
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        const check = validateConnectorCredential(connector.kind, secret);
+
+        // Task P0: a composite provider joins its N part inputs into the
+        // single `partA:partB` string right here, client-side, before any
+        // validation runs — see composite-secret.ts's own doc-comment on
+        // why a raw part must never contain the `:` delimiter.
+        let credential: string;
+        if (isComposite) {
+          const emptyIdx = partValues.findIndex((v) => v.trim().length === 0);
+          if (emptyIdx !== -1) {
+            setErr(`${secretParts[emptyIdx].name} is required.`);
+            return;
+          }
+          const colonIdx = partValues.findIndex((v) => v.includes(":"));
+          if (colonIdx !== -1) {
+            setErr(`${secretParts[colonIdx].name} must not contain ":".`);
+            return;
+          }
+          credential = partValues.map((v) => v.trim()).join(":");
+        } else {
+          credential = secret;
+        }
+
+        const check = validateConnectorCredential(connector.kind, credential);
         if (!check.ok) {
           setErr(check.error);
           return;
         }
-        if (extraField && extraValueMissing) {
-          setErr(`${extraField.label} is required.`);
+        if (missingRequiredExtra) {
+          setErr(`${missingRequiredExtra.label} is required.`);
           return;
         }
-        save({ secret: secret.trim() });
+        save({ secret: credential.trim() });
       }}
       className="flex flex-col gap-2"
     >
-      <input
-        aria-label={meta?.credentialLabel ?? "Credential"}
-        type="password"
-        autoComplete="off"
-        placeholder={meta?.credentialPlaceholder}
-        value={secret}
-        disabled={!canManage}
-        onChange={(e) => setSecret(e.target.value)}
-        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-      />
-      {meta?.credentialHint && (
-        <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
-      )}
-      {extraField && (
+      {isComposite ? (
+        secretParts.map((part, i) => (
+          <input
+            key={part.name}
+            aria-label={part.name}
+            type="password"
+            autoComplete="off"
+            placeholder={part.name}
+            value={partValues[i] ?? ""}
+            disabled={!canManage}
+            onChange={(e) =>
+              setPartValues((prev) => {
+                const next = [...prev];
+                next[i] = e.target.value;
+                return next;
+              })
+            }
+            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+          />
+        ))
+      ) : (
         <input
-          aria-label={extraField.label}
-          type="text"
+          aria-label={meta?.credentialLabel ?? "Credential"}
+          type="password"
           autoComplete="off"
-          placeholder={extraField.placeholder}
-          value={extraValue}
+          placeholder={meta?.credentialPlaceholder}
+          value={secret}
           disabled={!canManage}
-          onChange={(e) => setExtraValue(e.target.value)}
+          onChange={(e) => setSecret(e.target.value)}
           className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
         />
       )}
+      {meta?.credentialHint && (
+        <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
+      )}
+      {extraFields.map((field) => (
+        <input
+          key={field.key}
+          aria-label={field.label}
+          type="text"
+          autoComplete="off"
+          placeholder={field.placeholder}
+          value={extraValues[field.key] ?? ""}
+          disabled={!canManage}
+          onChange={(e) =>
+            setExtraValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+          }
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      ))}
       <button
         type="submit"
-        disabled={!canManage || saving || secret.trim().length === 0 || extraValueMissing}
+        disabled={
+          !canManage ||
+          saving ||
+          (isComposite
+            ? partValues.some((v) => v.trim().length === 0)
+            : secret.trim().length === 0) ||
+          Boolean(missingRequiredExtra)
+        }
         className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
       >
         {saving ? "Connecting…" : "Connect"}

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { verifyConnectorCredential } from "./verify";
+import type { ConnectorCatalogEntry } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 
 /**
  * Task 7 (debugging design spec): `verify.ts` had no dedicated test file
@@ -110,5 +111,58 @@ describe("verifyConnectorCredential('railway', ...)", () => {
     expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(
       "Bearer 3fa85f64-5717-4562-b3fc-2c963f66afa6"
     );
+  });
+});
+
+/**
+ * Task P0: `verifyConnectorCredential` splits `secret` via
+ * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
+ * here with a synthetic composite catalog entry (P0 adds no real composite
+ * provider). A malformed composite secret is rejected before any network
+ * call is attempted.
+ */
+describe("verifyConnectorCredential — generic split-before-dispatch (Task P0)", () => {
+  const compositeEntry: ConnectorCatalogEntry = {
+    kind: "context7",
+    type: "mcp",
+    connectMethod: "secret",
+    label: "Composite Test",
+    description: "test",
+    availability: "available",
+    capabilities: { ingest: false, postResult: false, notify: false },
+    connect: {
+      credentialLabel: "test",
+      credentialPlaceholder: "test",
+      credentialHint: "test",
+      helpUrl: "https://example.com",
+      setupSteps: [],
+      secretParts: [{ name: "Public key" }, { name: "Secret key" }],
+    },
+  };
+
+  it("rejects a malformed composite secret (wrong part count) WITHOUT ever calling fetch", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("context7", "only-one-part", [compositeEntry]);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a well-formed composite secret with no matching case falls through to the harmless default (context7's own case, since P0 adds no real composite provider)", async () => {
+    const res = await verifyConnectorCredential("context7", "pk-abc:sk-def", [compositeEntry]);
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("single-part providers are unaffected by the split — the default (real) catalog still verifies railway exactly as before", async () => {
+    global.fetch = (async () =>
+      railwayResponse(200, { data: { me: { email: "a@b.com" } } })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential(
+      "railway",
+      "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+    );
+    expect(res).toEqual({ ok: true });
   });
 });

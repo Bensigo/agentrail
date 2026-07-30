@@ -1,4 +1,9 @@
-import type { ConnectorKind } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import {
+  CONNECTOR_CATALOG,
+  type ConnectorCatalogEntry,
+  type ConnectorKind,
+} from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { splitCompositeSecret } from "../../../../../../../lib/evidence/composite-secret";
 
 /**
  * Live credential verification (server-only) — "don't save a wrong key".
@@ -136,18 +141,46 @@ async function verifyRailway(token: string): Promise<VerifyResult> {
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
  * `{ok:true}` here — its format gate is the guarantee.
+ *
+ * Task P0: `secret` is split into its parts ONCE, generically, off the
+ * catalog entry's declared `connect.secretParts` (see
+ * `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment) before
+ * dispatching — so a FUTURE provider's own case (P2-P8) receives
+ * `split.parts` directly instead of re-deriving the split itself. Every kind
+ * below predates this wave and is single-part, so `splitCompositeSecret`'s
+ * passthrough makes `split.parts[0] === secret.trim()` for all of them —
+ * behavior-identical to before this generalization. `catalog` defaults to
+ * the real {@link CONNECTOR_CATALOG} — the optional param exists so a test
+ * can prove the split-before-dispatch mechanism with a synthetic composite
+ * entry, without a second real composite provider in the catalog (P0 adds
+ * none).
  */
 export async function verifyConnectorCredential(
   kind: ConnectorKind,
-  secret: string
+  secret: string,
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
 ): Promise<VerifyResult> {
+  const trimmed = secret.trim();
+
+  const entry = catalog.find((e) => e.kind === kind);
+  const split = splitCompositeSecret(entry?.connect ?? {}, trimmed);
+  if (!split.ok) {
+    // Defensive only — validateConnectorCredential (secret/route.ts's Gate
+    // 1) already rejects a malformed composite secret before this
+    // live-verify gate ever runs in the real route; this path exists so the
+    // function stays correct if ever called directly (as this module's own
+    // tests do).
+    return { ok: false, error: split.error };
+  }
+  const first = split.parts[0];
+
   switch (kind) {
     case "linear":
-      return verifyLinear(secret.trim());
+      return verifyLinear(first);
     case "figma":
-      return verifyFigma(secret.trim());
+      return verifyFigma(first);
     case "railway":
-      return verifyRailway(secret.trim());
+      return verifyRailway(first);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };
@@ -155,6 +188,9 @@ export async function verifyConnectorCredential(
       // github (oauth) and the channel kinds (discord/slack/telegram — no
       // longer credential-based) never legitimately reach this function
       // through the route's allowlist; total and harmless if they ever do.
+      // A future composite provider with no case yet added here (shouldn't
+      // happen — P2-P8 each add their own case) would also fall through to
+      // this harmless default rather than silently "verifying" nothing.
       return { ok: true };
   }
 }

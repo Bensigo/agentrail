@@ -34,6 +34,7 @@
  */
 
 import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
+import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-secret";
 
 /**
  * The external tools AgentRail can connect (M038 catalog), plus `factory` —
@@ -121,18 +122,56 @@ export interface ConnectorConnectMeta {
   /** Short, ordered "how to create the app / key" steps. */
   setupSteps: string[];
   /**
-   * Task 7: a SECOND, non-secret config field the connect form should
-   * render alongside the credential input (Railway's project id — the
-   * token alone does not scope which project the debugging investigator
-   * reads deployments/logs from). Saved via the connectors PUT (config
-   * path), NOT the secret route — see `ConnectorConfigInput.railwayProjectId`'s
-   * own doc-comment. Entry-declared and generic so the NEXT provider
-   * needing one is catalog-only: `connectors-panel.tsx`'s `SecretManage`
-   * renders this off `connect.extraConfigField` alone, with no
-   * per-provider branch of its own. Absent for every provider that needs
-   * only the credential itself (every one before Task 7).
+   * Task P0 (generalizes Task 7's single `extraConfigField`, a
+   * reviewer-flagged nit — the target derivation used to hardcode
+   * `railwayProjectId`): the non-secret config fields the connect form
+   * renders alongside the credential input, IN ORDER (Railway declares one
+   * — its project id; the wave's other providers, P2-P8, declare one or
+   * more — org, site, host, ids). Saved via the connectors PUT (config
+   * path), NOT the secret route — the accept-list there is derived from
+   * every catalog entry's declared keys generically (`extraConfigFieldKeys`
+   * below), never hand-listed. `connectors-panel.tsx`'s `SecretManage`
+   * renders N inputs off this array alone; `projectConnectors` derives a
+   * connected card's displayed `target` from the FIRST declared field's
+   * value (`firstExtraConfigValue`), also generically. Absent for every
+   * provider that needs only the credential itself.
    */
-  extraConfigField?: { key: string; label: string; placeholder: string };
+  extraConfigFields?: Array<{
+    key: string;
+    label: string;
+    placeholder: string;
+    /** Defaults to required (true) when absent — matches Railway's
+     * original always-required single field. Set `false` for an optional
+     * companion field. */
+    required?: boolean;
+  }>;
+  /**
+   * Task P0: composite-secret display metadata — an entry declaring this
+   * stores a TWO-OR-MORE-PART credential (Langfuse `pk-lf-…:sk-lf-…`,
+   * Datadog `apiKey:appKey`, …) in the single `connectors.secret` column,
+   * joined by `:` (see `apps/console/lib/evidence/composite-secret.ts`'s
+   * own doc-comment for the full contract). `connectors-panel.tsx`'s
+   * `SecretManage` renders one password input PER declared part instead of
+   * the single credential input; the parts are joined client-side right
+   * before the PUT. Absent (every provider before this wave) → the
+   * original single-input behavior, unaffected.
+   */
+  secretParts?: Array<{ name: string }>;
+  /**
+   * Task P0: optional per-part validation, index-aligned with
+   * {@link secretParts} — a RegExp SOURCE string (not a RegExp instance, so
+   * catalog entries stay plain data) tested against each split part by
+   * `validateConnectorCredential`'s generic composite path. A missing
+   * entry at an index skips validation for that part (count/non-empty is
+   * still enforced by `splitCompositeSecret`). This is what lets a NEW
+   * composite (or even single-part) provider add its own credential-shape
+   * check WITHOUT a hand-written switch case in `validateConnectorCredential`
+   * — declare `secretParts` + `secretPartPatterns` and the generic path
+   * handles it. The four providers that predate this wave
+   * (linear/figma/context7/railway) declare neither and keep their
+   * original hand-written `switch` cases, unaffected.
+   */
+  secretPartPatterns?: string[];
 }
 
 /** Static catalog entry for a connector kind. */
@@ -163,14 +202,6 @@ export interface ConnectorConfigInput {
   appInstalled?: boolean;
   /** Secret connectors (Linear, Figma, Context7, Railway): a credential is stored. */
   hasSecret?: boolean;
-  /**
-   * Task 7: Railway's non-secret companion field (the workspace's Railway
-   * project id), read from the `railway` connector row's
-   * `config.railwayProjectId` — see `ConnectorConnectMeta.extraConfigField`'s
-   * own doc-comment for the generic form this drives. Absent/null for every
-   * other kind.
-   */
-  railwayProjectId?: string | null;
   /** The label a connector ingests issues by (GitHub: the AFK ready label). */
   ingestLabel?: string | null;
   /** Repo / project the connector is bound to, for display (GitHub OAuth). */
@@ -182,6 +213,19 @@ export interface ConnectorConfigInput {
   enabled?: boolean;
   triggerLabel?: string | null;
   pollIntervalSeconds?: number | null;
+  /**
+   * Task P0 (generalizes Task 7's single hand-typed `railwayProjectId`
+   * field): a generic bag for a catalog entry's declared
+   * `extraConfigFields` values, keyed by each field's `key` (e.g.
+   * `railwayProjectId`, and — once P2-P8 land — `langfuseHost`,
+   * `sentryOrg`, …). `projectConnectors` reads a provider's fields off THIS
+   * index generically (`cfg?.[fields[0].key]`, see `firstExtraConfigValue`)
+   * to derive `ConnectorView.target` — no provider-specific field needed
+   * here, ever again. The connectors GET route populates it via
+   * `projectExtraConfigValues`. Absent/undefined for a key the workspace
+   * hasn't stored, or that no catalog entry declares.
+   */
+  [key: string]: unknown;
 }
 
 /** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
@@ -354,14 +398,19 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Click “Create Token”, name it “AgentRail”, and copy the token (shown once).",
         "Open your Railway project → Settings to find the project id, then paste both the token and the project id here and connect.",
       ],
-      // Generic second field (see ConnectorConnectMeta.extraConfigField's own
-      // doc-comment) — the token alone doesn't scope which project the
-      // investigator reads from.
-      extraConfigField: {
-        key: "railwayProjectId",
-        label: "Railway project ID",
-        placeholder: "your Railway project id",
-      },
+      // Generic extra field (Task P0: array shape — see
+      // ConnectorConnectMeta.extraConfigFields's own doc-comment) — the
+      // token alone doesn't scope which project the investigator reads
+      // from. Railway is the array shape's first (and, before this wave,
+      // only) user; behavior-identical to the single-field shape it
+      // replaces.
+      extraConfigFields: [
+        {
+          key: "railwayProjectId",
+          label: "Railway project ID",
+          placeholder: "your Railway project id",
+        },
+      ],
     },
   },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
@@ -395,6 +444,77 @@ export const DEFAULT_INGEST_LABEL = "ready-for-agent";
 export function catalogEntry(kind: ConnectorKind): ConnectorCatalogEntry {
   // Safe: every ConnectorKind has exactly one catalog entry.
   return CONNECTOR_CATALOG.find((e) => e.kind === kind)!;
+}
+
+// --------------------------------------------------------------------------- //
+// Generic `extraConfigFields` machinery (Task P0). These three pieces are what
+// let P2-P8 add a provider needing one or more non-secret config companions
+// (org, site, host, ids) as a CATALOG ENTRY ONLY — no route, no component
+// branch, per provider. Each takes a minimal structural param (not the full
+// `ConnectorCatalogEntry`) so a test can prove genericity with a synthetic
+// multi-field fixture instead of needing a second real provider in the
+// catalog.
+// --------------------------------------------------------------------------- //
+
+/** Minimal shape the `extraConfigFields` helpers need from a catalog entry —
+ * looser than {@link ConnectorCatalogEntry} so a test can pass a fully
+ * synthetic array without constructing every other catalog field. */
+export interface ExtraConfigFieldsCarrier {
+  connect?: { extraConfigFields?: ConnectorConnectMeta["extraConfigFields"] };
+}
+
+/**
+ * Every non-secret config key ANY catalog entry declares via
+ * `connect.extraConfigFields` — the connectors PUT route
+ * (`api/v1/workspaces/[workspaceId]/connectors/route.ts`) accepts any key in
+ * this set generically instead of hand-listing each provider's field name
+ * (Task 7's `railwayProjectId` was the last hand-listed one). `catalog`
+ * defaults to the real {@link CONNECTOR_CATALOG}.
+ */
+export function extraConfigFieldKeys(
+  catalog: ExtraConfigFieldsCarrier[] = CONNECTOR_CATALOG
+): Set<string> {
+  return new Set(
+    catalog.flatMap((entry) => entry.connect?.extraConfigFields?.map((f) => f.key) ?? [])
+  );
+}
+
+/**
+ * A catalog entry's declared `extraConfigFields` VALUES, read off a raw
+ * stored config object and keyed the same way — the generic replacement for
+ * Task 7's single hand-written `railwayProjectId: row?.config.railwayProjectId
+ * ?? null` line in the connectors GET route. A declared field absent from
+ * `config` (or present but not a string) projects as `null`; an entry with
+ * no declared fields projects an empty bag. `config` is intentionally a
+ * loose `Record<string, unknown>` (not the DB-only `ConnectorConfig` type)
+ * so this pure-model module never has to import `packages/db-postgres`.
+ */
+export function projectExtraConfigValues(
+  entry: ExtraConfigFieldsCarrier,
+  config: Record<string, unknown> | undefined
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const field of entry.connect?.extraConfigFields ?? []) {
+    const v = config?.[field.key];
+    out[field.key] = typeof v === "string" ? v : null;
+  }
+  return out;
+}
+
+/**
+ * The value of a catalog entry's FIRST declared `extraConfigFields` entry,
+ * read off an already-projected `ConnectorConfigInput` bag — used by
+ * `projectConnectors` to derive `ConnectorView.target` generically (see that
+ * function's own doc-comment). No declared fields → null.
+ */
+function firstExtraConfigValue(
+  entry: ExtraConfigFieldsCarrier,
+  cfg: ConnectorConfigInput | undefined
+): string | null {
+  const fields = entry.connect?.extraConfigFields;
+  if (!fields || fields.length === 0) return null;
+  const value = cfg?.[fields[0].key];
+  return typeof value === "string" ? value : null;
 }
 
 /**
@@ -452,19 +572,19 @@ export function projectConnectors(
           : null;
 
       // Display target: oauth → the stored target (repo); a secret-connected
-      // entry that DECLARES an extraConfigField → its stored value
-      // (Railway's project id — Fix Round 1, FIX 3, mirroring how GitHub's
-      // target renders: same field, same generic render slot in
-      // `SecretManage`'s connected-state summary, no new UI code); every
-      // other kind → none. Gated on `extraConfigField` presence (not just
-      // "any secret-connected kind") so a future provider WITHOUT one never
-      // accidentally surfaces an unrelated stored value here.
+      // entry that declares extraConfigFields → the FIRST declared field's
+      // stored value (Task P0 — generalizes Fix Round 1 FIX 3's
+      // Railway-specific `cfg?.railwayProjectId`, the reviewer-flagged
+      // hardcoding this task fixes; same generic render slot in
+      // `SecretManage`'s connected-state summary, no new UI code needed per
+      // provider); every other kind → none. `firstExtraConfigValue` reads
+      // generically off `cfg`'s bag, so a future provider WITHOUT any
+      // declared field never accidentally surfaces an unrelated stored
+      // value here.
       const target =
         entry.connectMethod === "oauth"
           ? cfg?.target ?? null
-          : entry.connect?.extraConfigField
-            ? cfg?.railwayProjectId ?? null
-            : null;
+          : firstExtraConfigValue(entry, cfg);
 
       return {
         kind: entry.kind,
@@ -536,15 +656,54 @@ const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 /**
  * Validate a connector's credential for connect. `secret` is the API key /
- * token. Returns `{ok:true}` or a human error. OAuth (GitHub) has no
- * credential to validate here.
+ * token (single-secret providers) or the client-joined `partA:partB`
+ * composite (see `apps/console/lib/evidence/composite-secret.ts`). Returns
+ * `{ok:true}` or a human error. OAuth (GitHub) has no credential to
+ * validate here.
+ *
+ * Task P0: a catalog entry declaring `connect.secretParts` is validated
+ * GENERICALLY — split via `splitCompositeSecret`, then each part checked
+ * against the index-aligned `connect.secretPartPatterns` (a part with no
+ * pattern at its index is accepted on count/non-empty alone). This is the
+ * mechanism that lets a NEW provider (single- or multi-part) validate its
+ * credential shape as CATALOG DATA, with no switch case added here. The
+ * four providers below that predate this wave declare neither
+ * `secretParts` nor `secretPartPatterns` and keep their original
+ * hand-written cases, unaffected. `catalog` defaults to the real
+ * {@link CONNECTOR_CATALOG} — the optional param exists so a test can
+ * prove the generic path with a synthetic entry, without a second real
+ * composite provider in the catalog (P0 adds none).
  */
 export function validateConnectorCredential(
   kind: ConnectorKind,
-  secret: string
+  secret: string,
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
 ): CredentialCheck {
   const s = secret.trim();
   if (s.length === 0) return { ok: false, error: "A credential is required." };
+
+  const entry = catalog.find((e) => e.kind === kind);
+  const connectMeta = entry?.connect;
+  const partSpecs = connectMeta?.secretParts ?? [];
+  if (connectMeta && partSpecs.length > 0) {
+    const split = splitCompositeSecret(connectMeta, s);
+    if (!split.ok) return { ok: false, error: split.error };
+    const patterns = connectMeta.secretPartPatterns;
+    if (patterns) {
+      for (let i = 0; i < split.parts.length; i++) {
+        const pattern = patterns[i];
+        if (!pattern) continue;
+        if (!new RegExp(pattern).test(split.parts[i])) {
+          return {
+            ok: false,
+            error: `${partSpecs[i].name} has an unexpected format.`,
+          };
+        }
+      }
+    }
+    return { ok: true };
+  }
+
   switch (kind) {
     case "linear":
       return s.startsWith("lin_api_")

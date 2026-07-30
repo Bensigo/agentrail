@@ -30,6 +30,35 @@ export function isConnectorProvider(value: unknown): value is ConnectorProvider 
 }
 
 /**
+ * Shared validation for a simple optional string config field — the same
+ * "must be a string, trim, non-empty, bounded length" shape `railwayProjectId`
+ * established (Task 7) below, reused for Evidence Providers Wave 2's ten
+ * non-secret companion fields (Task P0 — `langfuseHost`, `sentryOrg`, …) so
+ * eleven near-identical blocks don't each hand-roll the same three checks.
+ * `maxLength` defaults to 256 — generous enough for the URL-shaped fields
+ * (`langfuseHost`, `prometheusUrl`, `grafanaUrl`) alongside the short
+ * id/name-shaped ones (`sentryOrg`, `datadogSite`, …); none of these values
+ * are ever rendered back at length, only stored and read by an adapter.
+ */
+function validateSimpleConfigString(
+  value: unknown,
+  fieldName: string,
+  maxLength = 256
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof value !== "string") {
+    return { ok: false, error: `${fieldName} must be a string` };
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: `${fieldName} must not be empty` };
+  }
+  if (trimmed.length > maxLength) {
+    return { ok: false, error: `${fieldName} must be at most ${maxLength} characters` };
+  }
+  return { ok: true, value: trimmed };
+}
+
+/**
  * Validate a connector update. Pure — no I/O. Returns the normalized fields to
  * persist, or an error message. The route and the read model both rely on this
  * being the single source of truth for what is a legal connector config.
@@ -171,6 +200,63 @@ export function validateConnectorUpdate(
       out.railwayProjectId = trimmed;
     }
 
+    // Evidence Providers Wave 2 (Task P0): the wave's ten non-secret
+    // companion fields, added ALL AT ONCE so P2-P8 never touch this
+    // package again — see the schema doc-comment on each field
+    // (`schema/connectors.ts`'s `ConnectorConfig`). Same
+    // trim/non-empty/bounded-length shape as `railwayProjectId` above, via
+    // the shared `validateSimpleConfigString` helper.
+    if (cfg.langfuseHost !== undefined) {
+      const r = validateSimpleConfigString(cfg.langfuseHost, "langfuseHost");
+      if (!r.ok) return r;
+      out.langfuseHost = r.value;
+    }
+    if (cfg.sentryOrg !== undefined) {
+      const r = validateSimpleConfigString(cfg.sentryOrg, "sentryOrg");
+      if (!r.ok) return r;
+      out.sentryOrg = r.value;
+    }
+    if (cfg.sentryProject !== undefined) {
+      const r = validateSimpleConfigString(cfg.sentryProject, "sentryProject");
+      if (!r.ok) return r;
+      out.sentryProject = r.value;
+    }
+    if (cfg.datadogSite !== undefined) {
+      const r = validateSimpleConfigString(cfg.datadogSite, "datadogSite");
+      if (!r.ok) return r;
+      out.datadogSite = r.value;
+    }
+    if (cfg.prometheusUrl !== undefined) {
+      const r = validateSimpleConfigString(cfg.prometheusUrl, "prometheusUrl");
+      if (!r.ok) return r;
+      out.prometheusUrl = r.value;
+    }
+    if (cfg.grafanaUrl !== undefined) {
+      const r = validateSimpleConfigString(cfg.grafanaUrl, "grafanaUrl");
+      if (!r.ok) return r;
+      out.grafanaUrl = r.value;
+    }
+    if (cfg.vercelTeamId !== undefined) {
+      const r = validateSimpleConfigString(cfg.vercelTeamId, "vercelTeamId");
+      if (!r.ok) return r;
+      out.vercelTeamId = r.value;
+    }
+    if (cfg.vercelProjectId !== undefined) {
+      const r = validateSimpleConfigString(cfg.vercelProjectId, "vercelProjectId");
+      if (!r.ok) return r;
+      out.vercelProjectId = r.value;
+    }
+    if (cfg.cloudflareZoneId !== undefined) {
+      const r = validateSimpleConfigString(cfg.cloudflareZoneId, "cloudflareZoneId");
+      if (!r.ok) return r;
+      out.cloudflareZoneId = r.value;
+    }
+    if (cfg.cloudflareAccountId !== undefined) {
+      const r = validateSimpleConfigString(cfg.cloudflareAccountId, "cloudflareAccountId");
+      if (!r.ok) return r;
+      out.cloudflareAccountId = r.value;
+    }
+
     value.config = out;
   }
 
@@ -234,6 +320,23 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     // later config patch (e.g. re-saving the token) never strips the
     // project id, same reasoning as chatId/channelId above.
     ...(stored?.railwayProjectId ? { railwayProjectId: stored.railwayProjectId } : {}),
+    // Evidence Providers Wave 2 (Task P0) — the wave's ten non-secret
+    // companion fields, preserved across merges for the same reason as
+    // railwayProjectId above: a later, unrelated config patch (e.g.
+    // re-saving the secret, or a trigger-label edit) must never silently
+    // strip a value the workspace already saved.
+    ...(stored?.langfuseHost ? { langfuseHost: stored.langfuseHost } : {}),
+    ...(stored?.sentryOrg ? { sentryOrg: stored.sentryOrg } : {}),
+    ...(stored?.sentryProject ? { sentryProject: stored.sentryProject } : {}),
+    ...(stored?.datadogSite ? { datadogSite: stored.datadogSite } : {}),
+    ...(stored?.prometheusUrl ? { prometheusUrl: stored.prometheusUrl } : {}),
+    ...(stored?.grafanaUrl ? { grafanaUrl: stored.grafanaUrl } : {}),
+    ...(stored?.vercelTeamId ? { vercelTeamId: stored.vercelTeamId } : {}),
+    ...(stored?.vercelProjectId ? { vercelProjectId: stored.vercelProjectId } : {}),
+    ...(stored?.cloudflareZoneId ? { cloudflareZoneId: stored.cloudflareZoneId } : {}),
+    ...(stored?.cloudflareAccountId
+      ? { cloudflareAccountId: stored.cloudflareAccountId }
+      : {}),
   };
 }
 

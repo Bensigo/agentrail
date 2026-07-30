@@ -565,3 +565,91 @@ describe("completeConfig preserves the onboarding skip flags (three-step rebuild
     expect(view.config.webhookSecret).toBe("abc123");
   });
 });
+
+// completeConfig is exercised through getConnectors (it runs on every projected
+// row). Evidence Providers Wave 2 (Task P0): a representative subset of the
+// ten new companion fields (not all ten — the preservation mechanism is one
+// shared spread-per-key pattern, identical for every field) proves they
+// survive projection and survive a later unrelated merge, exactly like
+// railwayProjectId (Task 7) already does above.
+describe("completeConfig preserves Evidence Providers Wave 2 companion fields (Task P0)", () => {
+  it("carries langfuseHost + sentryOrg + sentryProject through the read projection", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "linear", // any provider row; the field itself is provider-agnostic storage
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            langfuseHost: "https://cloud.langfuse.com",
+            sentryOrg: "acme",
+            sentryProject: "web",
+          },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    expect(rows[0].config.langfuseHost).toBe("https://cloud.langfuse.com");
+    expect(rows[0].config.sentryOrg).toBe("acme");
+    expect(rows[0].config.sentryProject).toBe("web");
+  });
+
+  it("omits every Wave 2 field entirely when absent (no accidental default)", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "linear",
+          enabled: true,
+          config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    for (const field of [
+      "langfuseHost",
+      "sentryOrg",
+      "sentryProject",
+      "datadogSite",
+      "prometheusUrl",
+      "grafanaUrl",
+      "vercelTeamId",
+      "vercelProjectId",
+      "cloudflareZoneId",
+      "cloudflareAccountId",
+    ] as const) {
+      expect(rows[0].config).not.toHaveProperty(field);
+    }
+  });
+
+  it("a later merge (e.g. re-saving the secret's trigger label) does not drop a previously-set Wave 2 field", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectLimitChain([
+        {
+          provider: "linear",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            datadogSite: "datadoghq.eu",
+          },
+          updatedAt: new Date("2026-07-30T00:00:00.000Z"),
+        },
+      ]) as never
+    );
+    mockDb.insert.mockReturnValue(makeInsertChain() as never);
+
+    const view = await upsertConnector("ws-1", "linear", {
+      config: { triggerLabel: "afk" },
+    });
+
+    expect(view.config.datadogSite).toBe("datadoghq.eu");
+    expect(view.config.triggerLabel).toBe("afk");
+  });
+});

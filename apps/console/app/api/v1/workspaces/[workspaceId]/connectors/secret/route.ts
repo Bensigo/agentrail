@@ -25,7 +25,15 @@ import { verifyConnectorCredential } from "./verify";
  * here — so none of the three is in this route's allowlist. Discord's former
  * dedicated webhook route is deleted for the same reason.
  *
- * Body: `{ provider, secret }`. A null / empty `secret` disconnects.
+ * Body: `{ provider, secret }`. A null / empty `secret` disconnects. For a
+ * composite-secret provider (Task P0, `connect.secretParts` — Langfuse
+ * `pk-lf-…:sk-lf-…`, Datadog `apiKey:appKey`, …) `secret` is the CLIENT-JOINED
+ * `partA:partB` string; this route stores it whole in the single
+ * `connectors.secret` column exactly like a single-part credential — the
+ * splitting only happens downstream, in `validateConnectorCredential` and
+ * `verifyConnectorCredential` (both consume
+ * `apps/console/lib/evidence/composite-secret.ts`'s `splitCompositeSecret`).
+ * This route itself needs no composite-aware branch.
  *
  * Task 7 (debugging design spec, spec PR #1501) — THE BEHAVIOR-DRIVING
  * CHANGE: the allowlist below is now DERIVED from `CONNECTOR_CATALOG`

@@ -25,11 +25,20 @@ export const upgradePromptEvents = pgTable(
     billingAccountId: uuid("billing_account_id")
       .notNull()
       .references(() => billingAccounts.id, { onDelete: "cascade" }),
-    // 'seat_limit' | 'capacity' — the two upgrade-prompt walls of spec §6/§7.
+    // 'seat_limit' | 'capacity' | 'capacity_warning' — spec §6/§7's upgrade
+    // prompt walls. 'seat_limit' and 'capacity' are the hard-block prompts;
+    // 'capacity_warning' is the 80%-of-monthly-capacity soft notice (spec
+    // §6 point 2), which cools down monthly rather than daily — see
+    // `periodKey` below.
     kind: text("kind").notNull(),
     conversationKey: text("conversation_key").notNull(),
     channel: text("channel").notNull(),
-    // 'YYYY-MM-DD' — the CAS cooldown key (one prompt/conversation/day).
+    // The CAS cooldown key, UTC: 'YYYY-MM-DD' for the daily-cooldown kinds
+    // ('seat_limit', 'capacity' — one prompt/conversation/day), or 'YYYY-MM'
+    // for the monthly-cooldown 'capacity_warning' (one prompt/conversation/
+    // month). The unique index below is granularity-agnostic — it just
+    // dedups on whatever string this column holds — so kind alone decides
+    // which format a given row uses.
     periodKey: text("period_key").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

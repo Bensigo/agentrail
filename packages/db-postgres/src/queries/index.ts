@@ -2541,6 +2541,11 @@ export {
 // are the persistence layer for the engagementDormantSince/engagedSpeakerId
 // latch: read/write by (channel, conversationKey) only, no workspace scope,
 // so the door can call them before any workspace is resolved.
+// latestChatSessionForWorkspace (subscription-platform-design spec §6, slice
+// 5 Task 1) generalizes latestTelegramSessionForWorkspace from one channel to
+// telegram/discord/slack — the capacity gate's delivery-destination lookup,
+// since that gate (unlike the inline chat seat gate) fires from the runner
+// claim route with no chat turn in flight to reply into directly.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -2554,6 +2559,8 @@ export {
   getJaceSessionById,
   latestTelegramSessionForChatIdentity,
   latestTelegramSessionForWorkspace,
+  latestChatSessionForWorkspace,
+  type LatestChatSession,
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
   getSessionBriefAnchor,
@@ -2945,7 +2952,10 @@ export {
 // labels never a raw UUID. getSeatAccountId (slice 4 Task 5) is the
 // ownership-check primitive releaseSeatAction (console billing/actions.ts)
 // uses to confirm a seat id belongs to the caller's own workspace before
-// releasing it.
+// releasing it. hasActiveSeat + countActiveIdentitySeats (slice 5 Task 1,
+// spec §6) are the gate reads: the former is the chat seat gate's admission
+// check (an existing seat-holder is never blocked), the latter feeds the
+// seat-limit prompt's /connect hint.
 export {
   claimSeat,
   releaseSeat,
@@ -2953,6 +2963,25 @@ export {
   collapseIdentitySeatsForUser,
   listActiveSeatsWithHolders,
   getSeatAccountId,
+  hasActiveSeat,
+  countActiveIdentitySeats,
   type SeatSubject,
   type SeatWithHolder,
 } from "./seats.js";
+
+// Upgrade-prompt CAS dedup (subscription-platform-design spec §6
+// "Enforcement seams" — "Prompt cooldown", slice 5 Task 1; see
+// `queries/upgrade_prompts.ts` for the full WHY). recordUpgradePromptOnce is
+// the insert-based twin of markBudgetExhaustedNotified
+// (workspace_budget.ts) — every gate that wants to fire an upgrade nudge
+// calls this first and delivers the prompt iff it returns true, so two
+// concurrent blocked turns in the same conversation can never both prompt.
+export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
+
+// Billing-account-wide capacity count (subscription-platform-design spec §6
+// point 2, §9's "one capacity unit per admitted run"; slice 5 Task 1; see
+// `queries/capacity.ts` for the full WHY, including the ::int cast and
+// ISO-string-not-Date idioms). countAccountRunsStartedInWindow is the
+// capacity gate's read: runs claimed (not completed), across every
+// workspace on the account, in a caller-supplied half-open window.
+export { countAccountRunsStartedInWindow } from "./capacity.js";

@@ -184,18 +184,34 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * cannot recover (it only re-filters what Sentry actually returned).
  * {@link quoteSearchText} wraps `q.query` in Sentry's documented
  * QUOTED-VALUE syntax before it ever reaches the `query` param — confirmed
- * grammar: `quoted_value = '"' ('\"' / [^"])* '"'` (i.e. the ONLY
- * recognized in-quotes escape unit is `\"`, an embedded literal quote; a
- * bare backslash otherwise carries no special meaning). This adapter
- * escapes backslashes THEN quotes — the conventional order, so a
- * user-typed literal `\"` round-trips as itself — which is the correct,
- * standard choice even though the grammar's own lack of a dedicated
- * backslash-escape production leaves ONE narrow, INHERITED edge case
- * unresolved: a value ending in an odd number of trailing backslashes
- * immediately before the closing quote can still combine with that
- * delimiter and misparse. That is a limitation of Sentry's own grammar
- * (no dedicated `\\` production), not of this function, and not a shape
- * any realistic error title/message hits. Every `q.query` is quoted
+ * grammar: `quoted_value = '"' ('\"' / [^"])* '"'`. Fix Round 1 CODA
+ * (confirm-pass regression, found AFTER the first fix round shipped): the
+ * grammar's `unescape` step — what the PARSER does to the matched text,
+ * the half that actually matters for round-tripping — strips ONLY `\"`
+ * pairs back to a literal `"`; it has NO `\\`-to-`\` production at all. A
+ * bare backslash therefore passes through UNTOUCHED, both on the wire and
+ * after unescaping. The first fix round's `quoteSearchText` DOUBLED every
+ * backslash before escaping quotes (the conventional algorithm for a
+ * grammar that DOES define `\\` as "one literal backslash") — WRONG for
+ * THIS grammar specifically: doubling turns a real path/message like
+ * `C:\path\to\file` into wire text `C:\\path\\to\\file`, which Sentry's
+ * unescape leaves doubled (no rule strips it back down), so the search
+ * silently looks for a string that will essentially never appear in real
+ * data — the exact false-negative failure class this whole fold exists to
+ * prevent. Corrected: {@link quoteSearchText} escapes ONLY literal `"`
+ * characters (`\"`) and leaves every bare backslash exactly as typed — no
+ * doubling, no other transform. This still leaves ONE narrow, INHERITED
+ * edge case unresolved (a limitation of Sentry's own grammar, not this
+ * function): a value ending in an ODD number of trailing backslashes
+ * immediately before the closing quote can combine with that delimiter
+ * and misparse — not a shape any realistic error title/message hits, and
+ * not fixable client-side without a grammar the server doesn't actually
+ * implement. Round-trip-tested in `sentry.test.ts` (Fix Round 1 coda)
+ * against a simulated unescape (`\" → "`, global, nothing else) for colon
+ * text, embedded quotes, a backslash path, and a mixed case — pinning the
+ * SEMANTICS Sentry's real parser implements, not merely this function's
+ * own output shape (the gap that let the backslash-doubling bug pass the
+ * first review round). Every `q.query` is quoted
  * ALWAYS, even a plain single word with nothing to escape — uniformity
  * over conditional logic (coordinator's own pinned choice), so the
  * server-side query text has exactly one shape to reason about. `signals`
@@ -352,14 +368,19 @@ function renderEventLine(idText: string, level: string, title: string, countText
 }
 
 /** Wraps free text in Sentry's documented quoted-value syntax before it
- * rides in the `query` param — see the module doc-comment ("QUOTING") for
- * the confirmed grammar, why backslashes are escaped before quotes, and
- * the one inherited edge case this cannot close. Called unconditionally on
- * every non-empty `q.query` (Fix Round 1, FOLD 1) — never conditionally,
- * so the server-side query text has one shape regardless of whether the
- * text happens to contain a colon today. */
+ * rides in the `query` param — see the module doc-comment ("QUOTING",
+ * Fix Round 1 CODA) for the confirmed grammar and unescape rule. Escapes
+ * ONLY literal `"` characters (`\"`) — a bare backslash is left EXACTLY as
+ * typed, never doubled: Sentry's own unescape has no `\\`-to-`\`
+ * production, so doubling would leave every backslash permanently doubled
+ * after the server unescapes, corrupting real paths/messages like
+ * `C:\path\to\file` into a search for text that will essentially never
+ * appear in real data (the regression the coda fixed). Called
+ * unconditionally on every non-empty `q.query` (Fix Round 1, FOLD 1) —
+ * never conditionally, so the server-side query text has one shape
+ * regardless of whether the text happens to contain a colon today. */
 function quoteSearchText(text: string): string {
-  const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const escaped = text.replace(/"/g, '\\"');
   return `"${escaped}"`;
 }
 

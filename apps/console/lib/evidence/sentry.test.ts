@@ -461,7 +461,7 @@ describe("sentryAdapter — search_events: q.query dual filter (server-side para
     expect(captured!.searchParams.get("query")).toBe('"say \\"hi\\""');
   });
 
-  it("escapes an embedded backslash in q.query (doubled, ahead of quote-escaping — the conventional order)", async () => {
+  it("leaves an embedded backslash in q.query UNTOUCHED — never doubled (Fix Round 1 CODA: Sentry's unescape has no \\\\-to-\\ production, so doubling would corrupt real paths/messages after the server unescapes)", async () => {
     let captured: URL | null = null;
     global.fetch = routeFetch({
       issues: (url) => {
@@ -471,7 +471,8 @@ describe("sentryAdapter — search_events: q.query dual filter (server-side para
     }) as unknown as typeof fetch;
 
     await sentryAdapter.query(WS, q({ query: "C:\\path\\to\\file" }), TOKEN);
-    expect(captured!.searchParams.get("query")).toBe('"C:\\\\path\\\\to\\\\file"');
+    // Only quote-wrapped — no backslash escaping at all.
+    expect(captured!.searchParams.get("query")).toBe('"C:\\path\\to\\file"');
   });
 
   it("sends an explicit empty query string when q.query is absent (never omitted — overrides Sentry's own is:unresolved default; NOT quoted — there is no free text to quote)", async () => {
@@ -523,6 +524,62 @@ describe("sentryAdapter — search_events: q.query dual filter (server-side para
     }) as unknown as typeof fetch;
     const res = await sentryAdapter.query(WS, q({ query: "nonexistent-term" }), TOKEN);
     expect(res).toEqual({ ok: true, raw: "(no matching events)" });
+  });
+});
+
+/**
+ * Fix Round 1 CODA (confirm-pass regression): the FOLD 1 review round only
+ * asserted quoteSearchText's OWN output shape (`.toBe('"...quoted..."')`)
+ * — it never decoded that output back through Sentry's own grammar, so a
+ * wrong escaping algorithm (backslash-doubling, which Sentry's grammar
+ * does not define) passed the first review round anyway, because a
+ * doubled-backslash STRING is still a well-formed-LOOKING quoted value —
+ * it just silently means something different once the server unescapes
+ * it. This describe block pins the SEMANTICS instead: a small
+ * `simulateSentryUnescape` mirrors what Sentry's own parser does to a
+ * matched `quoted_value` (confirmed grammar, `src/sentry/api/
+ * event_search.py`: strip every `\"` pair back to a literal `"`; nothing
+ * else has any special meaning — a bare backslash passes through
+ * untouched) and asserts `quoteSearchText`'s wire output, run back through
+ * THAT decoder, recovers the exact original text — for every category the
+ * coordinator named: colon text, embedded quotes, a backslash path, and a
+ * mixed case.
+ */
+describe("sentryAdapter — search_events: quoteSearchText round-trips through Sentry's OWN documented unescape (Fix Round 1 CODA)", () => {
+  /** Mirrors Sentry's own confirmed unescape rule exactly — strips every
+   * `\"` pair back to `"`, globally (a quoted_value's grammar repeats the
+   * escape unit zero-or-more times, so more than one embedded quote needs
+   * a global replace — the coordinator's own single-replace illustration
+   * would silently under-test any input with more than one). Takes the
+   * WIRE value with its outer wrapping quotes still attached (exactly
+   * what the `query` search param actually contains) and strips those
+   * outer delimiters the same way the grammar's own `'"' ... '"'` rule
+   * does — they are never part of the decoded value itself. */
+  function simulateSentryUnescape(wireValue: string): string {
+    const inner = wireValue.slice(1, -1);
+    return inner.replace(/\\"/g, '"');
+  }
+
+  async function wireQueryFor(query: string): Promise<string> {
+    let captured: URL | null = null;
+    global.fetch = routeFetch({
+      issues: (url) => {
+        captured = url;
+        return { status: 200, body: [] };
+      },
+    }) as unknown as typeof fetch;
+    await sentryAdapter.query(WS, q({ query }), TOKEN);
+    return captured!.searchParams.get("query")!;
+  }
+
+  it.each([
+    ["colon text", "TypeError: x is undefined"],
+    ["embedded quotes", 'say "hi"'],
+    ["backslash path", "C:\\path\\to\\file"],
+    ["mixed backslash + quote", 'C:\\path\\to "file.txt"'],
+  ])("round-trips %s unchanged: original → quoteSearchText → wire → simulateSentryUnescape → original", async (_label, original) => {
+    const wire = await wireQueryFor(original);
+    expect(simulateSentryUnescape(wire)).toBe(original);
   });
 });
 

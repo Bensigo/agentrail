@@ -191,6 +191,30 @@ describe("getBillingAccountForWorkspace", () => {
         Date.UTC(2026, 7, 19, 14, 5, 34, 525)
       );
     });
+
+    /**
+     * Regression coverage for review round 1's second finding: the
+     * normalizer fixed the separator and the bare offset but passed a
+     * 6-digit microsecond fraction straight through to `new Date(...)`,
+     * silently depending on the engine's own leniency to make sense of a
+     * fraction longer than the 3-digit ECMA-262 grammar allows — exactly
+     * the un-guaranteed behavior this function's own doc-comment says it
+     * exists to avoid. The fix truncates to milliseconds BEFORE parsing;
+     * this pins the exact resulting epoch through that now-fully-normalized
+     * path (not just "does not throw").
+     */
+    it("truncates a 6-digit microsecond fraction to milliseconds before parsing, not relying on the engine's own leniency for the extra digits", async () => {
+      const rawWireRow = {
+        ...RAW_ACCOUNT_ROW,
+        trial_ends_at: "2026-08-12 00:00:00.654321+00",
+      };
+      const db = mockDbCapturing(captured, [rawWireRow]);
+
+      const result = await getBillingAccountForWorkspace(db, "ws-1");
+
+      expect(result?.trialEndsAt).toBeInstanceOf(Date);
+      expect(result?.trialEndsAt.getTime()).toBe(Date.UTC(2026, 7, 12, 0, 0, 0, 654));
+    });
   });
 });
 

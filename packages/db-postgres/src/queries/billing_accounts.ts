@@ -80,7 +80,8 @@ export type BillingAccountRow = typeof billingAccounts.$inferSelect;
  */
 function normalizePostgresTimestampText(raw: string): string {
   const isoSeparator = raw.replace(" ", "T");
-  return /[+-]\d{2}$/.test(isoSeparator) ? `${isoSeparator}:00` : isoSeparator;
+  const truncatedFraction = isoSeparator.replace(/\.(\d{3})\d*/, ".$1");
+  return /[+-]\d{2}$/.test(truncatedFraction) ? `${truncatedFraction}:00` : truncatedFraction;
 }
 
 /**

@@ -2878,9 +2878,13 @@ export {
 // state. getBillingAccountByStripeCustomerId is the webhook's fallback
 // account lookup only (metadata resolves first, always); bindStripeCustomer
 // has two callers — the subscription checkout action (billing/actions.ts,
-// Task 3) and that same webhook route.
+// Task 3) and that same webhook route. getBillingAccountIdForWorkspace
+// (slice 4 Task 2) is the id-only sibling of getBillingAccountForWorkspace —
+// the chat-turn seat-claim hook's read (channel-dispatch.ts's
+// claimSeatForServedTurn).
 export {
   getBillingAccountForWorkspace,
+  getBillingAccountIdForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
   bindStripeCustomer,

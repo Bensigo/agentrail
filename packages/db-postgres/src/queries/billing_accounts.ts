@@ -38,6 +38,11 @@ import { billingAccounts } from "../schema/billing_accounts.js";
  * isn't touched by this module. The original three reads keep their one
  * consumer: a later slice's policy resolver (`resolvePolicyForWorkspace`),
  * reading through `getBillingAccountForWorkspace` exactly as before.
+ * Slice 4 ("Seats and identity", spec §5) adds one more read below,
+ * `getBillingAccountIdForWorkspace` — the id-only sibling of
+ * `getBillingAccountForWorkspace` the per-turn seat-claim hook
+ * (`apps/console/lib/channel-dispatch.ts`'s `claimSeatForServedTurn`) reads
+ * instead of the full row; see that function's own doc-comment for the why.
  *
  * `db` is an explicit parameter on every function below, not the imported
  * `db` singleton most of `queries/index.ts` closes over — the same
@@ -186,6 +191,41 @@ export async function getBillingAccountForWorkspace(
     createdAt: toDate(row.created_at),
     updatedAt: toDate(row.updated_at),
   };
+}
+
+/**
+ * The billing account id a workspace belongs to — an id-only sibling of
+ * {@link getBillingAccountForWorkspace} for callers that only ever need the
+ * id, not the full row. The one caller today is the chat-turn seat-claim
+ * hook (spec §5 rule 1, slice 4 Task 2: `claimSeatForServedTurn`,
+ * `apps/console/lib/channel-dispatch.ts`) — a fire-and-forget hook that runs
+ * on every served turn across four channels, so fetching and immediately
+ * discarding `plan`/Stripe ids/`policy_overrides`/timestamps per turn (and
+ * paying `getBillingAccountForWorkspace`'s timestamp-coercion cost for
+ * fields never read) would be pure waste; the same `INNER JOIN
+ * workspaces.billing_account_id` shape, just a one-column `SELECT`.
+ *
+ * Same null contract as `getBillingAccountForWorkspace` — see that
+ * function's own doc-comment for the full rationale: null both when the
+ * workspace doesn't exist and when it exists but its `billing_account_id`
+ * is still NULL (no backfill/checkout has run for it yet, i.e. a
+ * "transitional" workspace); never throws. The seat-claim hook's contract
+ * is to skip the claim silently on null, not to distinguish the two cases.
+ */
+export async function getBillingAccountIdForWorkspace(
+  db: Db,
+  workspaceId: string
+): Promise<string | null> {
+  const rows = (await db.execute(sql`
+    SELECT ba.id
+    FROM billing_accounts ba
+    INNER JOIN workspaces w ON w.billing_account_id = ba.id
+    WHERE w.id = ${workspaceId}
+    LIMIT 1
+  `)) as unknown as Array<{ id: string }>;
+
+  const row = Array.from(rows)[0];
+  return row ? row.id : null;
 }
 
 /**

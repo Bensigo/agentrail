@@ -14,6 +14,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
  */
 import {
   getBillingAccountForWorkspace,
+  getBillingAccountIdForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
   bindStripeCustomer,
@@ -215,6 +216,48 @@ describe("getBillingAccountForWorkspace", () => {
       expect(result?.trialEndsAt).toBeInstanceOf(Date);
       expect(result?.trialEndsAt.getTime()).toBe(Date.UTC(2026, 7, 12, 0, 0, 0, 654));
     });
+  });
+});
+
+describe("getBillingAccountIdForWorkspace", () => {
+  it("joins billing_accounts through workspaces.billing_account_id, selecting only the id", async () => {
+    const db = mockDbCapturing(captured, [{ id: "acct-1" }]);
+
+    await getBillingAccountIdForWorkspace(db, "ws-1");
+
+    expect(captured).toHaveLength(1);
+    const sql = render(captured[0]);
+    expect(sql).toMatch(/from\s+billing_accounts/i);
+    expect(sql).toMatch(/join\s+workspaces/i);
+    expect(sql).toMatch(/billing_account_id/i);
+  });
+
+  it("scopes the join to the given workspace id, bound not interpolated", async () => {
+    const db = mockDbCapturing(captured, [{ id: "acct-1" }]);
+
+    await getBillingAccountIdForWorkspace(db, "ws-1");
+
+    const sql = render(captured[0]);
+    const params = renderParams(captured[0]);
+    expect(sql).toMatch(/where.*\bw\.id\s*=/is);
+    expect(params).toContain("ws-1");
+    expect(sql).not.toContain("ws-1");
+  });
+
+  it("returns the billing account id", async () => {
+    const db = mockDbCapturing(captured, [{ id: "acct-1" }]);
+
+    const result = await getBillingAccountIdForWorkspace(db, "ws-1");
+
+    expect(result).toBe("acct-1");
+  });
+
+  it("returns null — never throws — when the workspace has no billing account (unknown workspace or NULL billing_account_id)", async () => {
+    const db = mockDbCapturing(captured, []); // INNER JOIN yields zero rows either way
+
+    await expect(
+      getBillingAccountIdForWorkspace(db, "ws-orphan")
+    ).resolves.toBeNull();
   });
 });
 

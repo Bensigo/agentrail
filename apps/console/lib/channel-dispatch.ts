@@ -42,9 +42,14 @@ import {
   getThreadEngagement,
   setThreadEngagement,
   stampChannelInboxWorkspace,
+  // Seat claiming (spec §5 rule 1, slice 4 Task 2) — see
+  // `claimSeatForServedTurn`'s own doc-comment below for the full wiring.
+  getBillingAccountIdForWorkspace,
+  claimSeat,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
+  type SeatSubject,
 } from "@agentrail/db-postgres";
 // Thread engagement (spec: docs/superpowers/specs/2026-07-28-thread-native-
 // jace-design.md) — the ONE decision function shared by Discord and Slack.
@@ -509,6 +514,130 @@ export function conversationKind(
     return payload.threadId === undefined || payload.threadId === null ? "dm" : "group";
   }
   return "dm";
+}
+
+/** The three chat channels this dispatcher's seat-claim hook recognizes —
+ * `row.channel`/`payload`'s own type is a plain DB `string`, not a literal
+ * union (see `ClaimedChannelInboxRow`), so `decideSeatClaimForServedTurn`
+ * below narrows through this type guard rather than an unchecked cast.
+ * `processRow` never reaches this helper for "console" (its own early
+ * return dispatches those to `processConsoleRow` instead — see that
+ * function's own doc-comment), so in practice this is always true by the
+ * time it's called; the guard exists for defensiveness against a future/
+ * unexpected `channel` value, not a case this dispatcher expects to hit. */
+function isChatSeatClaimChannel(channel: string): channel is "telegram" | "discord" | "slack" {
+  return channel === "telegram" || channel === "discord" || channel === "slack";
+}
+
+/**
+ * Seat-claim decision for a served CHAT turn (spec §5 rule 1: "a seat is
+ * claimed automatically the first time a person … is served a chat turn in
+ * a conversation pinned to one of the account's workspaces. Messages Jace
+ * was never going to answer … claim nothing" —
+ * `docs/superpowers/specs/2026-07-29-subscription-platform-design.md`).
+ * Pure, no I/O, so it's unit-testable without the dispatch harness
+ * (`channel-dispatch-seat-claim.test.ts`) — see `claimSeatForServedTurn`
+ * below for the impure, DB-backed continuation (resolving the billing
+ * account id and the actual `claimSeat` write).
+ *
+ * `processRow`'s ONE call site passes this `workspaceId` and `channel`
+ * straight from its own already-resolved locals, taken AFTER the
+ * thread-engagement gate has already decided this row IS a real turn (a
+ * message the gate filters completes-and-returns before ever reaching this
+ * point — see that block's own doc-comment) — so every call into this
+ * function is, by construction, already past the "was this even going to
+ * be answered" question. This function only decides the remaining two
+ * questions: is there a workspace to attribute the seat to yet, and who is
+ * the subject.
+ *
+ * Returns `null` (skip, no claim) when:
+ * - `workspaceId` is `null` — the 'intro' path, a stranger whose
+ *   conversation isn't pinned to any workspace yet. Spec §5 rule 1 requires
+ *   a conversation "pinned to one of the account's workspaces"; an intro
+ *   turn has no account to attribute a seat to, full stop, regardless of
+ *   whether Jace replies to it.
+ * - `channel` isn't one of the three recognized chat channels
+ *   (`isChatSeatClaimChannel` above) — defensive only, see that guard's own
+ *   doc-comment.
+ *
+ * Subject selection matches `SeatSubject`'s own exactly-one-of contract
+ * (`packages/db-postgres/src/queries/seats.ts`): a chat identity already
+ * linked to a console account (`identity.userId` set) claims the USER seat
+ * directly, so the same person DMing Jace on a platform they've `/connect`ed
+ * claims the identical seat a console session would rather than a redundant
+ * identity-seat; an unlinked identity claims by `chatIdentityId` instead,
+ * and `/connect` is what later collapses that into a user-seat
+ * (`collapseIdentitySeatsForUser`, same module).
+ */
+export function decideSeatClaimForServedTurn(params: {
+  workspaceId: string | null;
+  channel: string;
+  identity: { userId: string | null; chatIdentityId: string };
+}): { workspaceId: string; subject: SeatSubject; claimedVia: "telegram" | "discord" | "slack" } | null {
+  if (!params.workspaceId) return null;
+  if (!isChatSeatClaimChannel(params.channel)) return null;
+
+  const subject: SeatSubject = params.identity.userId
+    ? { userId: params.identity.userId }
+    : { chatIdentityId: params.identity.chatIdentityId };
+
+  return { workspaceId: params.workspaceId, subject, claimedVia: params.channel };
+}
+
+/**
+ * Fire-and-forget seat claim for a served turn (spec §5 rule 1) — the
+ * impure, DB-backed continuation of `decideSeatClaimForServedTurn` above.
+ * SHARED by both call sites: `processRow` (chat channels, gated through
+ * that decision helper) and `processConsoleRow` (console, whose subject is
+ * always `{userId: row.senderId}` with no skip condition to decide — a
+ * console row's `workspaceId` is already guaranteed non-null by the checks
+ * above that call site, and there is no engagement gate on that path to
+ * filter anything out — see `processConsoleRow`'s own doc-comment).
+ *
+ * Claiming is UNCONDITIONAL data collection (slice 4 plan: "pre-populating
+ * the seat ledger before enforcement … grandfathers existing teams") — NO
+ * feature-flag read anywhere in this function or either caller. Enforcement
+ * (caps, upgrade prompts) is a later slice's job, reading the rows this
+ * writes; gating the WRITE itself behind a flag would leave that later
+ * enforcement flipping on to an empty ledger and immediately over-blocking
+ * every existing team's already-active people.
+ *
+ * NEVER awaited by either call site (both call this bare, no `await`/`void`
+ * needed AT the call site — see below for why) — a slow or failing claim
+ * must never delay or fail the turn it rides in on. This function itself
+ * swallows its entire promise chain via the trailing `.catch`, so nothing
+ * about it can become an unhandled rejection either; `void` is applied
+ * HERE, once, rather than duplicated at every call site.
+ *
+ * Resolves `billingAccountId` via `getBillingAccountIdForWorkspace` and
+ * skips SILENTLY when it's `null` — a "transitional" workspace (no
+ * backfill/checkout has bound it to a billing account yet; same null
+ * contract `getBillingAccountForWorkspace`'s own doc-comment describes) has
+ * nothing to attribute a seat to. That is an expected, ordinary state
+ * during rollout, not an error worth logging — only a genuine failure
+ * (thrown by either query) reaches the `.catch` below, logged with a
+ * namespaced prefix so it's greppable without being confused for a turn
+ * failure.
+ */
+function claimSeatForServedTurn(params: {
+  workspaceId: string;
+  subject: SeatSubject;
+  claimedVia: "console" | "telegram" | "discord" | "slack";
+}): void {
+  void (async () => {
+    const billingAccountId = await getBillingAccountIdForWorkspace(db, params.workspaceId);
+    if (!billingAccountId) return;
+    await claimSeat(db, {
+      billingAccountId,
+      subject: params.subject,
+      claimedVia: params.claimedVia,
+    });
+  })().catch((err) => {
+    console.error(
+      `[channel-dispatch] claimSeatForServedTurn failed (workspace=${params.workspaceId}, channel=${params.claimedVia}):`,
+      err instanceof Error ? err.message : String(err)
+    );
+  });
 }
 
 /**
@@ -985,6 +1114,21 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
       workspaceId: row.workspaceId,
       userId: row.senderId,
       conversationKey: row.conversationKey,
+    });
+
+    // --- seat claim (spec §5 rule 1, slice 4 Task 2): a console row is
+    // ALWAYS a served turn once the checks above pass — an authenticated
+    // workspace member sending a message, with no engagement gate on this
+    // path to filter anything out (see this function's own doc-comment) —
+    // so, unlike processRow, there is no skip decision to make here.
+    // row.senderId IS the console user id directly (no separate chat-
+    // identity lookup on this path). Fire-and-forget, shared wrapper — see
+    // claimSeatForServedTurn's own doc-comment for the no-await/no-flag
+    // contract.
+    claimSeatForServedTurn({
+      workspaceId: row.workspaceId,
+      subject: { userId: row.senderId },
+      claimedVia: "console",
     });
 
     // --- input guardrails, same seam as every other channel ---
@@ -1510,6 +1654,26 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         }
         engagementSaidTurn = true;
       }
+    }
+
+    // --- seat claim (spec §5 rule 1, slice 4 Task 2): only a SERVED turn
+    // claims a seat. Deliberately placed HERE — after the engagement block
+    // above (which already completed-and-returned for anything it filtered
+    // out, so every path reaching this line IS being served) and after
+    // `workspaceId` is resolved to whatever it actually is this turn — NOT
+    // in the slice-0 back-stamp block earlier (`stampChannelInboxWorkspace`):
+    // that one runs PRE-engagement and would claim a seat for every lurker
+    // whose messages Jace goes on to ignore. `decideSeatClaimForServedTurn`
+    // is pure (skips null-workspaceId itself, the 'intro' path); the actual
+    // claim below is fire-and-forget — see claimSeatForServedTurn's own
+    // doc-comment for the no-await/no-flag contract.
+    const seatClaim = decideSeatClaimForServedTurn({
+      workspaceId,
+      channel: row.channel,
+      identity: { userId: identity.userId, chatIdentityId },
+    });
+    if (seatClaim) {
+      claimSeatForServedTurn(seatClaim);
     }
 
     // --- input guardrails: moderation / injection / PII, before any turn ---

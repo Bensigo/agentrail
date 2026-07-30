@@ -83,6 +83,7 @@ import { countAccountRunsStartedInWindow } from "../queries/capacity.js";
 import { latestChatSessionForWorkspace } from "../queries/jace_sessions.js";
 import type { Db } from "../db.js";
 import { upgradePromptEvents } from "../schema/upgrade_prompt_events.js";
+import { jaceSessions } from "../schema/jace_sessions.js";
 
 const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 const renderParams = (q: unknown) => new PgDialect().sqlToQuery(q as never).params;
@@ -394,6 +395,17 @@ describe("countAccountRunsStartedInWindow", () => {
     expect(sql).toMatch(/workspace_id/i);
   });
 
+  it("joins on the correct, correctly-directed predicate — w.id = r.workspace_id as ONE unit, not independently-satisfiable fragments (a wrong pairing like w.billing_account_id = r.workspace_id must fail this)", async () => {
+    const db = mockDbCapturing(captured, [{ count: 0 }]);
+    await countAccountRunsStartedInWindow(db, {
+      billingAccountId: "acct-1",
+      fromIso: "2026-07-01T00:00:00.000Z",
+      toIso: "2026-08-01T00:00:00.000Z",
+    });
+    const sql = render(captured[0]);
+    expect(sql).toMatch(/on\s+w\.id\s*=\s*r\.workspace_id/i);
+  });
+
   it("scopes by billing_account_id (through the workspaces join), not a single workspace", async () => {
     const db = mockDbCapturing(captured, [{ count: 0 }]);
     await countAccountRunsStartedInWindow(db, {
@@ -516,6 +528,16 @@ describe("latestChatSessionForWorkspace", () => {
     await latestChatSessionForWorkspace("ws-1");
     const selection = chatSessionMockState.capturedSelect as Record<string, unknown>;
     expect(Object.keys(selection).sort()).toEqual(["channel", "conversationKey"]);
+  });
+
+  it("maps each selected key to the CORRECT column — column identity by reference, not just key names (a swapped channel<->conversationKey mapping must fail this)", async () => {
+    await latestChatSessionForWorkspace("ws-1");
+    const selection = chatSessionMockState.capturedSelect as {
+      channel: unknown;
+      conversationKey: unknown;
+    };
+    expect(selection.channel).toBe(jaceSessions.channel);
+    expect(selection.conversationKey).toBe(jaceSessions.conversationKey);
   });
 
   it("returns null when the workspace has no telegram/discord/slack session", async () => {

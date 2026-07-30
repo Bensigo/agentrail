@@ -17,9 +17,11 @@
  * credits the wallet) and AC2 (billing-enabled admission + completion
  * charge) are BOTH browser-verified on prod — see the issue's own
  * "Verification evidence" section. Until then, the landing's existing
- * "Pay for what you use" step description (page.tsx, section 6b) stays as
- * the only billing-adjacent copy: it describes a future model in plain
- * steps without claiming it is live today, so it needs no gate. This flag
+ * "One subscription for your whole team" step description (page.tsx,
+ * section 6b — retitled by the copy truth-up, subscription-platform slice
+ * 3 Task 7) stays as the only billing-adjacent copy: it describes the plan
+ * model in plain steps without claiming exact numbers are live today, so
+ * it needs no gate. This flag
  * only gates the NEW claim this PR adds: a link to the real numbers on
  * `/pricing`, which — unlike the step description — asserts "this is what
  * you will actually pay right now."

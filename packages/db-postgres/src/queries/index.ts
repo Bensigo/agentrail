@@ -19,6 +19,7 @@ import {
   evalArmMetrics,
   chatIdentities,
   fleetKeyRotations,
+  billingAccounts,
 } from "../schema/index.js";
 import type { EvalArmMetric } from "../schema/index.js";
 import type {
@@ -1451,6 +1452,31 @@ export async function createWorkspace(data: {
       userId: data.userId,
       role: "owner",
     });
+
+    // Trial billing account at creation (subscription-platform spec §9,
+    // slice 3 Task 6) — closes the NEW-workspace gap the 0062 migration's
+    // backfill left standing for existing rows (see that migration and
+    // schema/billing_accounts.ts for the full design): every workspace now
+    // gets an account the moment it exists, so the policy resolver's
+    // NULL-means-trial path is a transitional state for a workspace created
+    // from here on, not a permanent one. `workspace` was just inserted THIS
+    // transaction, so `billingAccountId` is always null at this point — the
+    // WHERE-guard on the stamp below mirrors `completeOwnerElectWorkspace`'s
+    // identical guard for idempotency-shape parity, not because a real race
+    // is possible against a row id no other transaction can see yet.
+    if (workspace.billingAccountId === null) {
+      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      const [account] = await tx
+        .insert(billingAccounts)
+        .values({ name: workspace.name, plan: "trial", trialEndsAt })
+        .returning();
+      await tx
+        .update(workspaces)
+        .set({ billingAccountId: account!.id })
+        .where(and(eq(workspaces.id, workspace.id), isNull(workspaces.billingAccountId)));
+      workspace.billingAccountId = account!.id;
+    }
+
     return workspace;
   });
 }
@@ -1535,23 +1561,69 @@ export async function createWorkspaceOwnerElect(data: {
  * SECURITY: `userId` must be the server-derived session user from the bind
  * flow (`session.user.id` in `/connect/[token]/page.tsx`), never
  * model/input-supplied — this inserts a real ownership grant.
+ *
+ * Slice 3 Task 6 (subscription-platform spec §9) adds a second, independent
+ * write to this SAME transaction: a trial `billing_accounts` row, created
+ * and stamped onto the workspace whenever its `billing_account_id` is still
+ * NULL — see that write, below, for the full guard rationale. Short version:
+ * it runs regardless of whether THIS call's ownership grant above actually
+ * completed, because this function can be called against a workspace that
+ * already has an owner (or already has a billing account) via some other
+ * path — same reasoning as the `NOT EXISTS` guard's own "any workspace, not
+ * just a genuine owner-elect one" scope above.
  */
 export async function completeOwnerElectWorkspace(data: {
   workspaceId: string;
   userId: string;
 }): Promise<{ completed: boolean }> {
-  const rows = (await db.execute(sql`
-    INSERT INTO workspace_memberships (user_id, workspace_id, role)
-    SELECT ${data.userId}, ${data.workspaceId}, 'owner'
-    WHERE NOT EXISTS (
-      SELECT 1 FROM workspace_memberships
-      WHERE workspace_id = ${data.workspaceId} AND role = 'owner'
-    )
-    ON CONFLICT (user_id, workspace_id) DO NOTHING
-    RETURNING user_id
-  `)) as unknown as Array<{ user_id: string }>;
+  return db.transaction(async (tx) => {
+    const rows = (await tx.execute(sql`
+      INSERT INTO workspace_memberships (user_id, workspace_id, role)
+      SELECT ${data.userId}, ${data.workspaceId}, 'owner'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM workspace_memberships
+        WHERE workspace_id = ${data.workspaceId} AND role = 'owner'
+      )
+      ON CONFLICT (user_id, workspace_id) DO NOTHING
+      RETURNING user_id
+    `)) as unknown as Array<{ user_id: string }>;
 
-  return { completed: Array.from(rows).length > 0 };
+    // Trial billing account, closing the same NEW-workspace gap as
+    // createWorkspace (see that function's own doc-comment) — this path
+    // covers the chat-first owner-elect flow (createWorkspaceOwnerElect
+    // creates the workspace with NO account; this is where it gets one).
+    // ONE atomic statement, mirroring the 0062 backfill's INSERT-then-UPDATE
+    // shape collapsed into a single CTE: that migration needs a
+    // `seed_workspace_id` correlation column because it processes MANY
+    // workspaces in one bulk INSERT...SELECT and has to pair each new row
+    // back to its source; this handles exactly one workspace per call, so
+    // `RETURNING id` -> `FROM inserted` already correlates the two writes
+    // without one. The `billing_account_id IS NULL` guard is repeated on
+    // the outer UPDATE's own WHERE against `workspaces`, not left solely
+    // inside the `inserted` CTE: under READ COMMITTED a CTE qualifier is
+    // evaluated once at the statement snapshot and is NOT re-checked when
+    // the UPDATE finally locks the row — Postgres's EvalPlanQual only
+    // re-checks quals on the UPDATE's own target relation. Repeating the
+    // guard there is what makes this genuinely safe against a workspace
+    // that picks up a billing account some other way in the same instant
+    // (e.g. a racing call into this same function for the same workspace),
+    // not merely idempotent against a simple sequential retry.
+    await tx.execute(sql`
+      WITH inserted AS (
+        INSERT INTO billing_accounts (name, plan, trial_ends_at)
+        SELECT w.name, 'trial', now() + interval '14 days'
+        FROM workspaces w
+        WHERE w.id = ${data.workspaceId} AND w.billing_account_id IS NULL
+        RETURNING id
+      )
+      UPDATE workspaces
+      SET billing_account_id = inserted.id
+      FROM inserted
+      WHERE workspaces.id = ${data.workspaceId} AND workspaces.billing_account_id IS NULL
+    `);
+
+    return { completed: Array.from(rows).length > 0 };
+  });
 }
 
 export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
@@ -2736,8 +2808,14 @@ export {
   creditTopUpForStripeEvent,
   recordIgnoredStripeEvent,
   hasProcessedStripeEvent,
+  applySubscriptionStateForStripeEvent,
+  recordPastDueForStripeEvent,
   type CreditTopUpForStripeEventInput,
   type CreditTopUpForStripeEventResult,
+  type ApplySubscriptionStateForStripeEventInput,
+  type ApplySubscriptionStateForStripeEventResult,
+  type RecordPastDueForStripeEventInput,
+  type RecordPastDueForStripeEventResult,
 } from "./stripe_events.js";
 // #1389 — the per-attempt log a queue entry accumulates across its retry
 // lifecycle (timestamp, tier, outcome, error summary). Written by
@@ -2787,16 +2865,25 @@ export {
   type RecordGuardrailEventInput,
 } from "./guardrail_events.js";
 
-// Billing account read queries (subscription-platform-design spec §3, §5;
+// Billing account queries (subscription-platform-design spec §3, §5, §9;
 // see `queries/billing_accounts.ts` for the full WHY, including why these
 // take `db` as an explicit parameter and use raw SQL). getBillingAccountForWorkspace
 // is the NULL = trial-policy read a later slice's policy resolver joins
 // through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
 // derives the seat count from released_at IS NULL rows — there is no
-// mutable counter.
+// mutable counter. bindStripeCustomer and getBillingAccountByStripeCustomerId
+// (slice 3) are the Stripe write/lookup side that lives here — the actual
+// subscription-state write is applySubscriptionStateForStripeEvent
+// (queries/stripe_events.ts), the webhook route's SOLE writer of that
+// state. getBillingAccountByStripeCustomerId is the webhook's fallback
+// account lookup only (metadata resolves first, always); bindStripeCustomer
+// has two callers — the subscription checkout action (billing/actions.ts,
+// Task 3) and that same webhook route.
 export {
   getBillingAccountForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
+  bindStripeCustomer,
+  getBillingAccountByStripeCustomerId,
   type BillingAccountRow,
 } from "./billing_accounts.js";

@@ -2787,16 +2787,21 @@ export {
   type RecordGuardrailEventInput,
 } from "./guardrail_events.js";
 
-// Billing account read queries (subscription-platform-design spec §3, §5;
+// Billing account queries (subscription-platform-design spec §3, §5, §9;
 // see `queries/billing_accounts.ts` for the full WHY, including why these
 // take `db` as an explicit parameter and use raw SQL). getBillingAccountForWorkspace
 // is the NULL = trial-policy read a later slice's policy resolver joins
 // through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
 // derives the seat count from released_at IS NULL rows — there is no
-// mutable counter.
+// mutable counter. bindStripeCustomer, getBillingAccountByStripeCustomerId,
+// and applySubscriptionState (slice 3) are the Stripe write side — the
+// webhook route (a later task) is their only caller.
 export {
   getBillingAccountForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
+  bindStripeCustomer,
+  getBillingAccountByStripeCustomerId,
+  applySubscriptionState,
   type BillingAccountRow,
 } from "./billing_accounts.js";

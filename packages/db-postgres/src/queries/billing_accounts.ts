@@ -3,14 +3,30 @@ import type { Db } from "../db.js";
 import { billingAccounts } from "../schema/billing_accounts.js";
 
 /**
- * Billing account read queries (spec
+ * Billing account queries (spec
  * docs/superpowers/specs/2026-07-29-subscription-platform-design.md §3
- * "Platform architecture", §5 "Seats and identity"; see
- * `schema/billing_accounts.ts` and `schema/seats.ts` for the table shapes
- * and the WHY behind the design). This is the read side only — slice 1 ships
- * no writers here beyond the 0062 migration's own trial backfill. A later
- * slice's policy resolver (`resolvePolicyForWorkspace`) is this module's one
- * consumer, and reads through these three functions exactly as named here.
+ * "Platform architecture", §5 "Seats and identity", §9 "Migration and
+ * rollout"; see `schema/billing_accounts.ts` and `schema/seats.ts` for the
+ * table shapes and the WHY behind the design). Slice 1 shipped the read side
+ * only (no writers beyond the 0062 migration's own trial backfill); slice 3
+ * ("Stripe subscriptions", spec §9) adds the write side below —
+ * `bindStripeCustomer`, `applySubscriptionState`, and the
+ * `getBillingAccountByStripeCustomerId` lookup that keys them off a Stripe
+ * event payload's `customer` field. The Stripe webhook route (a later
+ * slice-3 task) is the ONLY caller of all three: it reads through
+ * `getBillingAccountByStripeCustomerId` to resolve which account a
+ * payload's `customer` field means, then writes through `bindStripeCustomer`
+ * and `applySubscriptionState` — both safe under redelivery/out-of-order
+ * arrival on their own terms: `bindStripeCustomer` is a fill-only UPDATE
+ * (never clobbers a value already set), `applySubscriptionState` is a plain
+ * last-write-wins UPDATE (no compare-and-swap against event ordering — see
+ * its own doc-comment). This is independent of `stripe_events`
+ * (`schema/stripe_events.ts`), the
+ * redelivery-of-the-SAME-event dedup ledger the existing wallet top-up flow
+ * uses — that solves a different problem (never process one event twice) and
+ * isn't touched by this module. The original three reads keep their one
+ * consumer: a later slice's policy resolver (`resolvePolicyForWorkspace`),
+ * reading through `getBillingAccountForWorkspace` exactly as before.
  *
  * `db` is an explicit parameter on every function below, not the imported
  * `db` singleton most of `queries/index.ts` closes over — the same
@@ -20,21 +36,20 @@ import { billingAccounts } from "../schema/billing_accounts.js";
  * captured-SQL mock straight to the call site with no
  * `vi.mock("../db.js")` module interception required.
  *
- * All three queries are raw `db.execute(sql\`...\`)`, not the Drizzle
- * builder chain — deliberately, not by default. `stampChannelInboxWorkspace`
- * is the only existing precedent for this explicit-`db`-param shape, and it
- * is raw SQL; matching it keeps that one precedent consistent, and (per its
- * sibling `claimNextChannelMessage`'s own note) keeps this module testable
- * with the same "capture the SQL object passed to `db.execute`, render it
- * with drizzle's `PgDialect`" technique this package's suite already uses
- * (`stamp-channel-inbox-workspace.test.ts`, `runner-result-sql.test.ts`) —
- * the builder chain never calls `db.execute` itself, so it can't be
- * captured and rendered the same way, and the brief's own coverage bar
- * (prove the join, prove the `released_at IS NULL` filter) is a rendered-SQL
- * assertion. Raw `db.execute` returns snake_case columns (the driver
- * doesn't apply Drizzle's schema mapping to raw SQL), so
- * `getBillingAccountForWorkspace` normalizes its row to camelCase before
- * returning — the same pattern `claimNextChannelMessage` uses.
+ * Every query in this module is raw `db.execute(sql\`...\`)`, not the
+ * Drizzle builder chain — deliberately, not by default.
+ * `stampChannelInboxWorkspace` is the original precedent for this
+ * explicit-`db`-param shape, and it is raw SQL; matching it keeps that
+ * precedent consistent, and (per its sibling `claimNextChannelMessage`'s own
+ * note) keeps this module testable with the same "capture the SQL object
+ * passed to `db.execute`, render it with drizzle's `PgDialect`" technique
+ * this package's suite already uses (`stamp-channel-inbox-workspace.test.ts`,
+ * `runner-result-sql.test.ts`) — the builder chain never calls `db.execute`
+ * itself, so it can't be captured and rendered the same way. Raw
+ * `db.execute` returns snake_case columns (the driver doesn't apply
+ * Drizzle's schema mapping to raw SQL), so both `getBillingAccountForWorkspace`
+ * and `getBillingAccountByStripeCustomerId` normalize their row to camelCase
+ * before returning — the same pattern `claimNextChannelMessage` uses.
  */
 
 export type BillingAccountRow = typeof billingAccounts.$inferSelect;
@@ -149,4 +164,157 @@ export async function countActiveSeats(
 
   const row = Array.from(rows)[0];
   return Number(row?.count ?? 0);
+}
+
+// --- Stripe writes (slice 3 — subscription-platform spec §9) --------------
+
+/**
+ * Bind a billing account to its Stripe customer, once.
+ *
+ * The Stripe webhook route (a later slice-3 task) is this function's only
+ * caller — see this module's top doc-comment. Deliberately FILL-ONLY — the
+ * `stripe_customer_id IS NULL` guard means this can never clobber a customer
+ * id an account already carries, the same pattern `channel_inbox.ts`'s
+ * `stampChannelInboxWorkspace` establishes (see that function's own
+ * doc-comment for the general rationale). Here specifically: Stripe does not
+ * guarantee webhook delivery exactly-once or in order, so the same
+ * subscription's events can call this more than once with the same customer
+ * id — the guard makes every call after the first a safe no-op instead of a
+ * redundant write, and forecloses the one way a redelivered or out-of-order
+ * event could ever overwrite the correct, already-bound id with a wrong one.
+ * `getBillingAccountByStripeCustomerId` below is how the webhook re-derives
+ * the account from that id on every subsequent event, so a clobbered bind
+ * would silently orphan that lookup path for whichever customer id got
+ * overwritten.
+ *
+ * No-ops (0 rows affected, no error) when the account is unknown or already
+ * has a `stripe_customer_id` bound — the caller has no result to branch on,
+ * matching `stampChannelInboxWorkspace`'s own fire-and-forget contract.
+ */
+export async function bindStripeCustomer(
+  db: Db,
+  billingAccountId: string,
+  stripeCustomerId: string
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE billing_accounts
+    SET stripe_customer_id = ${stripeCustomerId}, updated_at = now()
+    WHERE id = ${billingAccountId}
+      AND stripe_customer_id IS NULL
+  `);
+}
+
+/**
+ * The billing account bound to a given Stripe customer id, or `null` when no
+ * account has been bound to it (yet, or ever). This is the Stripe webhook
+ * route's (a later slice-3 task) primary lookup: a subscription event
+ * payload carries `customer`, not a `billing_accounts.id`, so the webhook
+ * resolves this FIRST and keys `applySubscriptionState` below off the
+ * returned row's `id` — never off anything the event payload claims about
+ * the account directly.
+ *
+ * Same raw-`db.execute` + snake_case-to-camelCase normalization as
+ * `getBillingAccountForWorkspace` above; see this module's top doc-comment
+ * for why raw SQL over the builder chain.
+ */
+export async function getBillingAccountByStripeCustomerId(
+  db: Db,
+  stripeCustomerId: string
+): Promise<BillingAccountRow | null> {
+  const rows = (await db.execute(sql`
+    SELECT
+      id,
+      name,
+      plan,
+      stripe_customer_id,
+      stripe_subscription_id,
+      subscription_status,
+      current_period_end,
+      trial_ends_at,
+      policy_overrides,
+      created_at,
+      updated_at
+    FROM billing_accounts
+    WHERE stripe_customer_id = ${stripeCustomerId}
+    LIMIT 1
+  `)) as unknown as Array<{
+    id: string;
+    name: string;
+    plan: BillingAccountRow["plan"];
+    stripe_customer_id: string | null;
+    stripe_subscription_id: string | null;
+    subscription_status: string | null;
+    current_period_end: Date | null;
+    trial_ends_at: Date;
+    policy_overrides: Record<string, unknown>;
+    created_at: Date;
+    updated_at: Date;
+  }>;
+
+  const row = Array.from(rows)[0];
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    name: row.name,
+    plan: row.plan,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    subscriptionStatus: row.subscription_status,
+    currentPeriodEnd: row.current_period_end,
+    trialEndsAt: row.trial_ends_at,
+    policyOverrides: row.policy_overrides,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Apply a Stripe-sourced subscription state onto a billing account in ONE
+ * UPDATE — the write side of a `customer.subscription.*` webhook event (a
+ * later slice-3 task). Sets exactly five columns: `plan`,
+ * `subscription_status`, `stripe_subscription_id`, `current_period_end`, and
+ * `updated_at` — nothing else on the row (notably not `stripe_customer_id`,
+ * which `bindStripeCustomer` above owns exclusively and fill-only).
+ *
+ * Deliberately LAST-WRITE-WINS, not compare-and-swap against event
+ * ordering: Stripe does not guarantee webhook delivery order, and this
+ * function does no timestamp/sequence comparison before writing — whichever
+ * event the webhook processes most recently simply overwrites whatever was
+ * there. (Redelivery of the SAME event is a different problem, solved for
+ * the existing top-up flow by the `stripe_events` ledger — see this
+ * module's top doc-comment — and is not this function's job.) The spec
+ * accepts this as good enough for v1: a rare out-of-order pair of Stripe
+ * events converges to whichever arrived last, not necessarily the
+ * logically-latest one.
+ *
+ * `stripeSubscriptionId` and `currentPeriodEnd` are nullable in the type and
+ * write actual SQL NULL when passed `null` (a canceled subscription clears
+ * both) — never coalesced or skipped, so a cancellation genuinely clears the
+ * column rather than leaving a stale value behind.
+ *
+ * No-ops (0 rows affected, no error) when `billingAccountId` doesn't match
+ * any row — the caller (the webhook route) has no result to branch on, same
+ * fire-and-forget contract as `bindStripeCustomer` above.
+ */
+export async function applySubscriptionState(
+  db: Db,
+  args: {
+    billingAccountId: string;
+    plan: "trial" | "starter" | "growth" | "enterprise";
+    subscriptionStatus: string;
+    stripeSubscriptionId: string | null;
+    currentPeriodEnd: Date | null;
+  }
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE billing_accounts
+    SET
+      plan = ${args.plan},
+      subscription_status = ${args.subscriptionStatus},
+      stripe_subscription_id = ${args.stripeSubscriptionId},
+      current_period_end = ${args.currentPeriodEnd},
+      updated_at = now()
+    WHERE id = ${args.billingAccountId}
+  `);
 }

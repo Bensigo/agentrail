@@ -15,7 +15,9 @@ import { getSession, getMembership } from "../../../../../lib/cached";
 import { headers } from "next/headers";
 import {
   createSubscriptionCheckoutSessionAction,
+  createPortalSessionAction,
   type CreateSubscriptionCheckoutResult,
+  type CreatePortalSessionResult,
 } from "./actions";
 import type { PaidPlan } from "../../../../../lib/billing/stripe-plans";
 
@@ -111,6 +113,8 @@ function makeStripeFake(
     checkoutUrl?: string | null;
     customersCreateImpl?: () => Promise<{ id: string }>;
     sessionsCreateImpl?: () => Promise<{ url: string | null }>;
+    portalUrl?: string;
+    portalSessionsCreateImpl?: () => Promise<{ url: string }>;
   } = {}
 ) {
   const customersCreate = vi.fn(
@@ -125,14 +129,24 @@ function makeStripeFake(
             : overrides.checkoutUrl,
       }))
   );
+  const portalSessionsCreate = vi.fn(
+    overrides.portalSessionsCreateImpl ??
+      (async () => ({
+        url: overrides.portalUrl ?? "https://billing.stripe.com/session/portal_1",
+      }))
+  );
   const stripe = {
     customers: { create: customersCreate },
     checkout: { sessions: { create: sessionsCreate } },
+    billingPortal: { sessions: { create: portalSessionsCreate } },
   } as unknown as Stripe;
-  return { stripe, customersCreate, sessionsCreate };
+  return { stripe, customersCreate, sessionsCreate, portalSessionsCreate };
 }
 
-function expectError(result: CreateSubscriptionCheckoutResult, error: string) {
+function expectError(
+  result: CreateSubscriptionCheckoutResult | CreatePortalSessionResult,
+  error: string
+) {
   expect(result).toEqual({ ok: false, error });
 }
 
@@ -437,5 +451,196 @@ describe("createSubscriptionCheckoutSessionAction", () => {
     });
 
     expectError(result, "Stripe didn't return a checkout URL.");
+  });
+});
+
+/**
+ * `createPortalSessionAction` (slice-3 plan Task 5) — same injectable-`deps`
+ * / real-`getBillingAccountForWorkspace`-import posture as
+ * `createSubscriptionCheckoutSessionAction` above (see that describe
+ * block's own top doc-comment for the full rationale); this suite reuses
+ * every fixture/fake defined above it (`mockSession`, `mockMembership`,
+ * `makeAccount`, `makeStripeFake`, `expectError`) rather than duplicating
+ * them.
+ */
+describe("createPortalSessionAction", () => {
+  it("rejects a missing workspaceId, never calls getSession", async () => {
+    const { stripe } = makeStripeFake();
+
+    const result = await createPortalSessionAction("", { stripe });
+
+    expectError(result, "Missing workspace.");
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects when not signed in", async () => {
+    mockSession(null);
+    const { stripe } = makeStripeFake();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, { stripe });
+
+    expectError(result, "Not signed in.");
+  });
+
+  it("rejects when the user has no membership on this workspace", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership(null);
+    const { stripe, portalSessionsCreate } = makeStripeFake();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, { stripe });
+
+    expect(result.ok).toBe(false);
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(["member", "viewer"] as const)(
+    "rejects a %s — owner/admin only, never reaches Stripe",
+    async (role) => {
+      mockSession(OWNER_USER_ID);
+      mockMembership(role);
+      const { stripe, portalSessionsCreate } = makeStripeFake();
+
+      const result = await createPortalSessionAction(WORKSPACE_ID, { stripe });
+
+      expectError(result, "Only an owner or admin can manage the subscription.");
+      expect(portalSessionsCreate).not.toHaveBeenCalled();
+    }
+  );
+
+  // --- billing-configured gate: Stripe itself only — deliberately NOT
+  // subscriptionBillingConfigured() (see the action's own doc-comment: the
+  // portal has no dependency on either plan's price id being set) ---------
+
+  it("rejects when STRIPE_SECRET_KEY is unset, never fetches the account", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    delete process.env["STRIPE_SECRET_KEY"];
+    const fetchAccount = vi.fn();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, {
+      fetchAccount: fetchAccount as never,
+    });
+
+    expectError(result, "Billing isn't configured for this deployment yet.");
+    expect(fetchAccount).not.toHaveBeenCalled();
+  });
+
+  // --- account resolution: never creates one here ---------------------------
+
+  it("rejects when the workspace has no billing account, never touches Stripe", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccount = vi.fn(async () => null);
+    const { stripe, portalSessionsCreate } = makeStripeFake();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, {
+      stripe,
+      fetchAccount: fetchAccount as never,
+    });
+
+    expectError(result, "This workspace doesn't have a billing account yet.");
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("a failure fetching the account returns a generic error", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccount = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const { stripe, portalSessionsCreate } = makeStripeFake();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, {
+      stripe,
+      fetchAccount: fetchAccount as never,
+    });
+
+    expectError(result, "Couldn't open billing. Try again in a moment.");
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  // --- the typed error this action adds: no stripeCustomerId means no ------
+  // portal to open, and this action never creates a customer (contrast
+  // createSubscriptionCheckoutSessionAction's ensure-customer step) --------
+
+  it("rejects with a typed error when the account has no stripeCustomerId, never calls Stripe", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const account = makeAccount({ stripeCustomerId: null });
+    const fetchAccount = vi.fn(async () => account);
+    const { stripe, portalSessionsCreate } = makeStripeFake();
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, {
+      stripe,
+      fetchAccount: fetchAccount as never,
+    });
+
+    expectError(result, "This workspace hasn't started a subscription yet.");
+    expect(portalSessionsCreate).not.toHaveBeenCalled();
+  });
+
+  // --- happy path + params ---------------------------------------------------
+
+  it.each(["owner", "admin"] as const)(
+    "creates a portal session for a workspace %s, with the account's customer id and a workspace-scoped return_url",
+    async (role) => {
+      mockSession(OWNER_USER_ID);
+      mockMembership(role);
+      const account = makeAccount({ stripeCustomerId: "cus_existing_1" });
+      const fetchAccount = vi.fn(async () => account);
+      const { stripe, portalSessionsCreate } = makeStripeFake({
+        portalUrl: "https://billing.stripe.com/session/portal_abc",
+      });
+
+      const result = await createPortalSessionAction(WORKSPACE_ID, {
+        stripe,
+        fetchAccount: fetchAccount as never,
+      });
+
+      expect(portalSessionsCreate).toHaveBeenCalledWith({
+        customer: "cus_existing_1",
+        return_url: `https://app.test.local/dashboard/${WORKSPACE_ID}/billing`,
+      });
+      expect(result).toEqual({
+        ok: true,
+        url: "https://billing.stripe.com/session/portal_abc",
+      });
+    }
+  );
+
+  it("threads an injected db through to fetchAccount", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fakeDb = { marker: "fake-db-instance" };
+    const account = makeAccount({ stripeCustomerId: "cus_existing_1" });
+    const fetchAccount = vi.fn(async () => account);
+    const { stripe } = makeStripeFake();
+
+    await createPortalSessionAction(WORKSPACE_ID, {
+      stripe,
+      db: fakeDb as never,
+      fetchAccount: fetchAccount as never,
+    });
+
+    expect(fetchAccount).toHaveBeenCalledWith(fakeDb, WORKSPACE_ID);
+  });
+
+  it("a Stripe error creating the portal session returns a generic error", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const account = makeAccount({ stripeCustomerId: "cus_existing_1" });
+    const fetchAccount = vi.fn(async () => account);
+    const { stripe } = makeStripeFake({
+      portalSessionsCreateImpl: async () => {
+        throw new Error("Stripe API down");
+      },
+    });
+
+    const result = await createPortalSessionAction(WORKSPACE_ID, {
+      stripe,
+      fetchAccount: fetchAccount as never,
+    });
+
+    expectError(result, "Couldn't open billing. Try again in a moment.");
   });
 });

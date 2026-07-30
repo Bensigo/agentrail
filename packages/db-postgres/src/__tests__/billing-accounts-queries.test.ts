@@ -108,6 +108,90 @@ describe("getBillingAccountForWorkspace", () => {
       getBillingAccountForWorkspace(db, "ws-orphan")
     ).resolves.toBeNull();
   });
+
+  /**
+   * Regression coverage for review round 1's CRITICAL finding: the prior
+   * `new Date(...)` re-wrap (and now `toDate`/`toDateOrNull`,
+   * module-private above) had zero discriminating coverage — every
+   * existing test above mocks `db.execute` with `RAW_ACCOUNT_ROW`'s
+   * ALREADY-`Date` fixture values (`trial_ends_at: new Date(...)`, etc.),
+   * so `new Date(dateInstance)` round-trips identically whether or not the
+   * fix exists and never exercises the string-input path at all. These
+   * mock the RAW WIRE-SHAPE string `db.execute` actually returns
+   * ("2026-08-19 09:05:34.525288+00" — a space separator and a bare 2-digit
+   * offset, not ISO 8601), pinning the exact resulting epoch so the
+   * normalizer itself — not just "is this a Date" — is under test.
+   */
+  describe("timestamp coercion (raw Postgres wire text -> Date)", () => {
+    it("coerces every timestamp field from raw wire-text strings into real Date instances at the exact expected epoch", async () => {
+      const rawWireRow = {
+        ...RAW_ACCOUNT_ROW,
+        current_period_end: "2026-08-19 09:05:34.525288+00",
+        trial_ends_at: "2026-08-12 00:00:00.000000+00",
+        created_at: "2026-07-29 00:00:00.000000+00",
+        updated_at: "2026-07-29 00:00:00.000000+00",
+      };
+      const db = mockDbCapturing(captured, [rawWireRow]);
+
+      const result = await getBillingAccountForWorkspace(db, "ws-1");
+
+      expect(result?.currentPeriodEnd).toBeInstanceOf(Date);
+      expect(result?.currentPeriodEnd?.getTime()).toBe(
+        Date.UTC(2026, 7, 19, 9, 5, 34, 525)
+      );
+      expect(result?.trialEndsAt).toBeInstanceOf(Date);
+      expect(result?.trialEndsAt.getTime()).toBe(Date.UTC(2026, 7, 12, 0, 0, 0, 0));
+      expect(result?.createdAt).toBeInstanceOf(Date);
+      expect(result?.createdAt.getTime()).toBe(Date.UTC(2026, 6, 29, 0, 0, 0, 0));
+      expect(result?.updatedAt).toBeInstanceOf(Date);
+      expect(result?.updatedAt.getTime()).toBe(Date.UTC(2026, 6, 29, 0, 0, 0, 0));
+    });
+
+    it("keeps current_period_end null when the raw row's value is null, rather than coercing to the Unix epoch (new Date(null) footgun)", async () => {
+      const rawWireRow = {
+        ...RAW_ACCOUNT_ROW,
+        current_period_end: null,
+        trial_ends_at: "2026-08-12 00:00:00.000000+00",
+        created_at: "2026-07-29 00:00:00.000000+00",
+        updated_at: "2026-07-29 00:00:00.000000+00",
+      };
+      const db = mockDbCapturing(captured, [rawWireRow]);
+
+      const result = await getBillingAccountForWorkspace(db, "ws-1");
+
+      expect(result?.currentPeriodEnd).toBeNull();
+    });
+
+    it("passes an already-Date value through unchanged, by reference (double-wrap safety)", async () => {
+      const alreadyDate = new Date("2026-08-19T09:05:34.525Z");
+      const rowWithDates = {
+        ...RAW_ACCOUNT_ROW,
+        current_period_end: alreadyDate,
+        trial_ends_at: alreadyDate,
+      };
+      const db = mockDbCapturing(captured, [rowWithDates]);
+
+      const result = await getBillingAccountForWorkspace(db, "ws-1");
+
+      expect(result?.currentPeriodEnd).toBe(alreadyDate);
+      expect(result?.trialEndsAt).toBe(alreadyDate);
+    });
+
+    it("normalizes a non-UTC bare 2-digit offset (e.g. -05) deterministically, not relying on engine-specific parsing of the un-normalized wire text", async () => {
+      const rawWireRow = {
+        ...RAW_ACCOUNT_ROW,
+        current_period_end: "2026-08-19 09:05:34.525288-05",
+      };
+      const db = mockDbCapturing(captured, [rawWireRow]);
+
+      const result = await getBillingAccountForWorkspace(db, "ws-1");
+
+      // -05:00 means this instant is 14:05:34.525 UTC, five hours later.
+      expect(result?.currentPeriodEnd?.getTime()).toBe(
+        Date.UTC(2026, 7, 19, 14, 5, 34, 525)
+      );
+    });
+  });
 });
 
 describe("listAccountWorkspaceIds", () => {
@@ -266,5 +350,26 @@ describe("getBillingAccountByStripeCustomerId", () => {
     await expect(
       getBillingAccountByStripeCustomerId(db, "cus_unknown")
     ).resolves.toBeNull();
+  });
+
+  // Same fix, same remap shape as getBillingAccountForWorkspace above (both
+  // call the same module-private toDate/toDateOrNull) — one discriminating
+  // case here for parity, not the full matrix already covered above.
+  it("coerces raw Postgres wire-text timestamps into real Date instances at the exact expected epoch", async () => {
+    const rawWireRow = {
+      ...RAW_ACCOUNT_ROW,
+      current_period_end: "2026-08-19 09:05:34.525288+00",
+      trial_ends_at: "2026-08-12 00:00:00.000000+00",
+    };
+    const db = mockDbCapturing(captured, [rawWireRow]);
+
+    const result = await getBillingAccountByStripeCustomerId(db, "cus_123");
+
+    expect(result?.currentPeriodEnd).toBeInstanceOf(Date);
+    expect(result?.currentPeriodEnd?.getTime()).toBe(
+      Date.UTC(2026, 7, 19, 9, 5, 34, 525)
+    );
+    expect(result?.trialEndsAt).toBeInstanceOf(Date);
+    expect(result?.trialEndsAt.getTime()).toBe(Date.UTC(2026, 7, 12, 0, 0, 0, 0));
   });
 });

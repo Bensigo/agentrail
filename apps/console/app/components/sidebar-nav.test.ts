@@ -65,12 +65,13 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Settings zone: Gateways (gateways-page T3, ABOVE Connectors), Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling)", () => {
+  it("Settings zone: Gateways (gateways-page T3, ABOVE Connectors), Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Gateways", "gateways"],
       ["Connectors", "connectors"],
       ["Team", "members"],
       ["Permissions", "permissions"],
+      ["Plan & billing", "billing"],
     ]);
   });
 
@@ -121,6 +122,12 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.items.map((i) => i.href)).toContain("permissions");
   });
 
+  it("billing is present exactly once, in the Settings zone (subscription-platform spec, slice-3 plan Task 5: plan card + checkout + Stripe customer-portal link)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs.filter((h) => h === "billing")).toHaveLength(1);
+    expect(SETTINGS_ZONE.items.map((i) => i.href)).toContain("billing");
+  });
+
   it("queue is gone from the nav; work is present exactly once (#1231 rename)", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs).not.toContain("queue");
@@ -156,6 +163,7 @@ describe("NAV_ZONES data structure", () => {
       "model-selection", // #1338 PR③: per-task-type model-outcome observe view
       "wiki", // repo wiki 6/7: read-only Engine-room Wiki view, sibling of Memory
       "gateways", // gateways-page T3: Settings-zone page for the 5 chat surfaces, above Connectors
+      "billing", // subscription-platform spec, slice-3 plan Task 5: plan card + Starter/Growth checkout + Stripe customer-portal link
       // "api-keys" intentionally excluded: removed from the nav (owner
       // ruling, 2026-07-19) — see the dedicated test below.
       // "repos" intentionally excluded: folded into wiki (owner ruling) —

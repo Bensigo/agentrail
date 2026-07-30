@@ -160,6 +160,22 @@ export const SETTINGS_ZONE: NavZone = {
     // No prior "workspace settings" page existed to fold this into; this is
     // the seed of one, sized to what's real today (v1 = one setting).
     { label: "Permissions", href: "permissions", icon: GitMerge },
+    // "Plan & billing" (subscription-platform spec, slice-3 plan Task 5) —
+    // the customer-facing plan card (plan name, subscription status,
+    // renewal date, seats used) plus Starter/Growth checkout and the Stripe
+    // customer-portal "Manage billing" link. Deliberately its own Settings-
+    // zone item, not folded into the Engine-room "Wallet" item above:
+    // Wallet is the prepaid PER-TASK balance that funds what Jace runs;
+    // this is the SUBSCRIPTION (seats, plan tier) that entitles the
+    // workspace to run Jace at all — same "billing" umbrella, different
+    // question, same split rationale as Wallet's own Budget-vs-Wallet
+    // doc-comment above. Reuses the `CreditCard` icon already on the
+    // Engine-room "Wallet" item above (line 105) — a deliberate, temporary
+    // duplicate across zones, not an oversight: slice 6 is where Wallet's
+    // own icon/placement gets revisited (this task's brief is explicit that
+    // touching existing items is out of scope here), so this item is sized
+    // for what's true today rather than pre-empting that later call.
+    { label: "Plan & billing", href: "billing", icon: CreditCard },
   ],
 };
 

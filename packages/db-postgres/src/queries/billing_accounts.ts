@@ -66,6 +66,61 @@ import { billingAccounts } from "../schema/billing_accounts.js";
 export type BillingAccountRow = typeof billingAccounts.$inferSelect;
 
 /**
+ * Postgres's raw wire text for a `timestamptz` looks like
+ * "2026-08-19 09:05:34.525288+00" — a SPACE between date and time (ISO 8601
+ * requires "T") and a bare 2-digit UTC offset with no ":00" minutes (ISO
+ * 8601 requires the full "+HH:MM", or "Z" for UTC). `new Date(...)` parsing
+ * that exact non-standard shape today is V8's own leniency, not a guarantee
+ * of the ECMA-262 Date Time String Format spec any engine has to honor —
+ * normalize to real ISO 8601 BEFORE handing it to the `Date` constructor so
+ * correctness doesn't quietly depend on engine-specific parsing. Leaves an
+ * offset that already has minutes (e.g. "+05:30") untouched — the trailing
+ * two digits there are preceded by ":", not directly by the sign, so the
+ * regex doesn't match.
+ */
+function normalizePostgresTimestampText(raw: string): string {
+  const isoSeparator = raw.replace(" ", "T");
+  return /[+-]\d{2}$/.test(isoSeparator) ? `${isoSeparator}:00` : isoSeparator;
+}
+
+/**
+ * Re-wraps a raw `db.execute(sql...)` timestamp value into a real `Date`
+ * (verified 2026-07-30, slice-3 Task 5 browser verification, then
+ * hardened per review round 1 — see `normalizePostgresTimestampText`'s own
+ * doc-comment for the full why). A raw `db.execute` result does NOT come
+ * back through postgres-js's normal type parsers the way the Drizzle query
+ * builder's own results do — every `timestamptz` column lands as Postgres's
+ * raw wire TEXT, not a `Date` instance, even though `BillingAccountRow`'s
+ * type (from `$inferSelect`) promises `Date`. Left unwrapped that's a
+ * silent type-lie: it compiles clean, and every existing caller happened to
+ * only ever WRITE these fields straight through (never call a Date-only
+ * method on them) — until `billing/billing-helpers.ts`'s `renewalLabel`
+ * called `.toLocaleDateString()` on it and threw `TypeError:
+ * ...toLocaleDateString is not a function` against the real dev DB.
+ *
+ * Accepts an already-`Date` value too (returned as-is, no re-wrap) — module
+ * private, so its only callers are the two remaps below, but staying
+ * total over both shapes means a value that already arrived as a real
+ * `Date` (a future postgres-js upgrade that DOES apply its normal parsers
+ * to `db.execute`, or a differently-sourced row in a future caller) is
+ * genuinely safe to double-pass through this function rather than a latent
+ * assumption that only holds today.
+ */
+function toDate(value: string | Date): Date {
+  return value instanceof Date ? value : new Date(normalizePostgresTimestampText(value));
+}
+
+/**
+ * `toDate`, but null-preserving — for `current_period_end`, the one
+ * nullable timestamp column. `new Date(null)` does NOT return `null`, it
+ * silently coerces to the Unix epoch (`null` -> `0` -> 1970-01-01), so this
+ * guards explicitly rather than leaving that footgun for `toDate`'s caller.
+ */
+function toDateOrNull(value: string | Date | null): Date | null {
+  return value === null ? null : toDate(value);
+}
+
+/**
  * The billing account a workspace belongs to, joined through
  * `workspaces.billing_account_id`. Returns `null` — never throws — both when
  * the workspace itself doesn't exist and when it exists but its
@@ -105,11 +160,13 @@ export async function getBillingAccountForWorkspace(
     stripe_customer_id: string | null;
     stripe_subscription_id: string | null;
     subscription_status: string | null;
-    current_period_end: Date | null;
-    trial_ends_at: Date;
+    // Raw Postgres wire text ("2026-08-19 09:05:34.525288+00"), NOT a JS
+    // `Date` — see `toDate`'s own doc-comment above for why.
+    current_period_end: string | null;
+    trial_ends_at: string;
     policy_overrides: Record<string, unknown>;
-    created_at: Date;
-    updated_at: Date;
+    created_at: string;
+    updated_at: string;
   }>;
 
   const row = Array.from(rows)[0];
@@ -122,11 +179,11 @@ export async function getBillingAccountForWorkspace(
     stripeCustomerId: row.stripe_customer_id,
     stripeSubscriptionId: row.stripe_subscription_id,
     subscriptionStatus: row.subscription_status,
-    currentPeriodEnd: row.current_period_end,
-    trialEndsAt: row.trial_ends_at,
+    currentPeriodEnd: toDateOrNull(row.current_period_end),
+    trialEndsAt: toDate(row.trial_ends_at),
     policyOverrides: row.policy_overrides,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: toDate(row.created_at),
+    updatedAt: toDate(row.updated_at),
   };
 }
 
@@ -267,11 +324,13 @@ export async function getBillingAccountByStripeCustomerId(
     stripe_customer_id: string | null;
     stripe_subscription_id: string | null;
     subscription_status: string | null;
-    current_period_end: Date | null;
-    trial_ends_at: Date;
+    // Raw Postgres wire text, NOT a JS `Date` — see `toDate`'s own
+    // doc-comment above `getBillingAccountForWorkspace` for the full why.
+    current_period_end: string | null;
+    trial_ends_at: string;
     policy_overrides: Record<string, unknown>;
-    created_at: Date;
-    updated_at: Date;
+    created_at: string;
+    updated_at: string;
   }>;
 
   const row = Array.from(rows)[0];
@@ -284,10 +343,10 @@ export async function getBillingAccountByStripeCustomerId(
     stripeCustomerId: row.stripe_customer_id,
     stripeSubscriptionId: row.stripe_subscription_id,
     subscriptionStatus: row.subscription_status,
-    currentPeriodEnd: row.current_period_end,
-    trialEndsAt: row.trial_ends_at,
+    currentPeriodEnd: toDateOrNull(row.current_period_end),
+    trialEndsAt: toDate(row.trial_ends_at),
     policyOverrides: row.policy_overrides,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: toDate(row.created_at),
+    updatedAt: toDate(row.updated_at),
   };
 }

@@ -219,3 +219,99 @@ export async function createSubscriptionCheckoutSessionAction(
 
   return { ok: true, url: checkoutUrl };
 }
+
+export type CreatePortalSessionResult =
+  | { ok: true; url: string }
+  | { ok: false; error: string };
+
+/**
+ * Stripe customer-portal session (slice-3 plan Task 5). Backs the Settings
+ * "Plan & billing" page's "Manage billing" button — hands an
+ * already-subscribed customer to Stripe's own hosted portal (payment
+ * method, invoices, cancel) instead of this app reimplementing any of that.
+ *
+ * Unlike `createSubscriptionCheckoutSessionAction` above, this NEVER creates
+ * a Stripe customer — a missing `stripeCustomerId` is a typed error, never
+ * create-on-the-fly, matching this module's own "no billing account for the
+ * workspace is a typed error" posture at the top of this file (there's
+ * nothing to manage in the portal until a checkout has run at least once).
+ *
+ * `subscriptionBillingConfigured()` is deliberately NOT the gate here
+ * (contrast the checkout action above): that check also requires both plan
+ * Price ids to be set, which the portal has no dependency on — an account
+ * that already has a `stripeCustomerId` (from an earlier checkout) must
+ * still be able to manage its existing subscription even if this
+ * deployment's price-id env later goes stale or a plan gets discontinued.
+ * The only real dependency is Stripe itself being configured
+ * (`getStripeClient()`), same gate the wallet top-up flow uses.
+ *
+ * Same owner-OR-admin `ADMIN_ROLES` authz as checkout above — managing
+ * billing (including cancellation, from inside Stripe's own portal UI) is
+ * the same admin-level trust as starting a subscription.
+ */
+export async function createPortalSessionAction(
+  workspaceId: string,
+  deps: {
+    stripe?: Stripe;
+    db?: typeof db;
+    fetchAccount?: typeof getBillingAccountForWorkspace;
+  } = {}
+): Promise<CreatePortalSessionResult> {
+  // Same "a Server Action is a real wire endpoint" runtime check as
+  // createSubscriptionCheckoutSessionAction above (#1343 minor (d)).
+  if (typeof workspaceId !== "string" || !workspaceId) {
+    return { ok: false, error: "Missing workspace." };
+  }
+
+  const session = await getSession();
+  const userId = session?.user?.id;
+  if (!userId) {
+    return { ok: false, error: "Not signed in." };
+  }
+
+  const membership = await getMembership(userId, workspaceId);
+  if (
+    !membership ||
+    !ADMIN_ROLES.includes(membership.role as (typeof ADMIN_ROLES)[number])
+  ) {
+    return { ok: false, error: "Only an owner or admin can manage the subscription." };
+  }
+
+  const stripe = deps.stripe ?? getStripeClient();
+  if (!stripe) {
+    return { ok: false, error: "Billing isn't configured for this deployment yet." };
+  }
+
+  const database = deps.db ?? db;
+  const fetchAccount = deps.fetchAccount ?? getBillingAccountForWorkspace;
+
+  let account: BillingAccountRow | null;
+  try {
+    account = await fetchAccount(database, workspaceId);
+  } catch (err) {
+    console.error("[billing] failed to fetch the billing account:", err);
+    return { ok: false, error: "Couldn't open billing. Try again in a moment." };
+  }
+  if (!account) {
+    return { ok: false, error: "This workspace doesn't have a billing account yet." };
+  }
+  if (!account.stripeCustomerId) {
+    return { ok: false, error: "This workspace hasn't started a subscription yet." };
+  }
+
+  const origin = await resolveOrigin();
+
+  let portalUrl: string;
+  try {
+    const portalSession = await stripe.billingPortal.sessions.create({
+      customer: account.stripeCustomerId,
+      return_url: `${origin}/dashboard/${workspaceId}/billing`,
+    });
+    portalUrl = portalSession.url;
+  } catch (err) {
+    console.error("[billing] failed to create Stripe billing portal session:", err);
+    return { ok: false, error: "Couldn't open billing. Try again in a moment." };
+  }
+
+  return { ok: true, url: portalUrl };
+}

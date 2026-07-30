@@ -2900,3 +2900,22 @@ export {
   type UpsertSlackInstallationInput,
   type SlackInstallation,
 } from "./slack_installations.js";
+
+// Seat lifecycle queries (subscription-platform-design spec §3, §5; see
+// `queries/seats.ts` for the full WHY, including the ON CONFLICT DO NOTHING
+// concurrency rationale and the toDate wire-text coercion). claimSeat/
+// releaseSeat/releaseUserSeatForAccount are the individual claim/release
+// primitives; collapseIdentitySeatsForUser is the /connect merge (spec §5
+// rule 3) — one transaction claiming a user-seat and releasing the
+// identity-seat for every account the identity held one in;
+// listActiveSeatsWithHolders is the settings "seats list" read, holder
+// labels never a raw UUID.
+export {
+  claimSeat,
+  releaseSeat,
+  releaseUserSeatForAccount,
+  collapseIdentitySeatsForUser,
+  listActiveSeatsWithHolders,
+  type SeatSubject,
+  type SeatWithHolder,
+} from "./seats.js";

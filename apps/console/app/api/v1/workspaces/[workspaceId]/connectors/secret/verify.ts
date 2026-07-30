@@ -55,8 +55,12 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * task's mandatory first step), not trusted from memory — see
  * `lib/evidence/cloudflare.ts`'s own doc-comment for the full doc-verify
  * trail (token-format prefixes, the GraphQL dataset names/fields, the
- * `$zoneTag: string`/`$filter: filter` custom-scalar quirk, rate limits).
- * This module's own concern is narrower: the live-verify endpoint.
+ * confirmed leaf-scalar types feeding the inlined-filter query pattern —
+ * `$zoneTag: string`, `$windowStart`/`$windowEnd: Time`, `$limit: uint64` —
+ * and the Fix Round 1 correction of an earlier fabricated `$filter: filter`
+ * citation; that module's own doc-comment, "GRAPHQL VARIABLE TYPES", is the
+ * one place the full story lives — not restated here). This module's own
+ * concern is narrower: the live-verify endpoint.
  *   - `GET https://api.cloudflare.com/client/v4/user/tokens/verify` —
  *     confirmed, current. Response: `{success, result:{id,
  *     status:"active"|"disabled"|"expired", …}, errors, messages}`.

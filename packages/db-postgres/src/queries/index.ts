@@ -2794,8 +2794,11 @@ export {
 // through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
 // derives the seat count from released_at IS NULL rows — there is no
 // mutable counter. bindStripeCustomer, getBillingAccountByStripeCustomerId,
-// and applySubscriptionState (slice 3) are the Stripe write side — the
-// webhook route (a later task) is their only caller.
+// and applySubscriptionState (slice 3) are the Stripe write side.
+// getBillingAccountByStripeCustomerId and applySubscriptionState have the
+// webhook route (a later task) as their only caller; bindStripeCustomer has
+// two — the subscription checkout action (billing/actions.ts, Task 3) and
+// that same webhook route.
 export {
   getBillingAccountForWorkspace,
   listAccountWorkspaceIds,

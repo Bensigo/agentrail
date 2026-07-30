@@ -12,15 +12,22 @@ import { billingAccounts } from "../schema/billing_accounts.js";
  * ("Stripe subscriptions", spec §9) adds the write side below —
  * `bindStripeCustomer`, `applySubscriptionState`, and the
  * `getBillingAccountByStripeCustomerId` lookup that keys them off a Stripe
- * event payload's `customer` field. The Stripe webhook route (a later
- * slice-3 task) is the ONLY caller of all three: it reads through
+ * event payload's `customer` field. `getBillingAccountByStripeCustomerId`
+ * and `applySubscriptionState` have exactly ONE caller — the Stripe webhook
+ * route (a later slice-3 task): it reads through
  * `getBillingAccountByStripeCustomerId` to resolve which account a
- * payload's `customer` field means, then writes through `bindStripeCustomer`
- * and `applySubscriptionState` — both safe under redelivery/out-of-order
- * arrival on their own terms: `bindStripeCustomer` is a fill-only UPDATE
- * (never clobbers a value already set), `applySubscriptionState` is a plain
- * last-write-wins UPDATE (no compare-and-swap against event ordering — see
- * its own doc-comment). This is independent of `stripe_events`
+ * payload's `customer` field means, then writes through
+ * `applySubscriptionState`. `bindStripeCustomer` has TWO callers instead —
+ * the subscription checkout server action (`billing/actions.ts`, Task 3:
+ * binds a fresh customer id the first time a workspace's billing account
+ * ever checks out) and that same webhook route (binds it again for any
+ * account that reaches Stripe some other way) — both safe under
+ * redelivery/out-of-order/racing arrival on their own terms:
+ * `bindStripeCustomer` is a fill-only UPDATE (never clobbers a value
+ * already set), so either caller racing the other is benign;
+ * `applySubscriptionState` is a plain last-write-wins UPDATE (no
+ * compare-and-swap against event ordering — see its own doc-comment). This
+ * is independent of `stripe_events`
  * (`schema/stripe_events.ts`), the
  * redelivery-of-the-SAME-event dedup ledger the existing wallet top-up flow
  * uses — that solves a different problem (never process one event twice) and
@@ -171,21 +178,27 @@ export async function countActiveSeats(
 /**
  * Bind a billing account to its Stripe customer, once.
  *
- * The Stripe webhook route (a later slice-3 task) is this function's only
- * caller — see this module's top doc-comment. Deliberately FILL-ONLY — the
- * `stripe_customer_id IS NULL` guard means this can never clobber a customer
- * id an account already carries, the same pattern `channel_inbox.ts`'s
- * `stampChannelInboxWorkspace` establishes (see that function's own
- * doc-comment for the general rationale). Here specifically: Stripe does not
- * guarantee webhook delivery exactly-once or in order, so the same
- * subscription's events can call this more than once with the same customer
- * id — the guard makes every call after the first a safe no-op instead of a
- * redundant write, and forecloses the one way a redelivered or out-of-order
- * event could ever overwrite the correct, already-bound id with a wrong one.
- * `getBillingAccountByStripeCustomerId` below is how the webhook re-derives
- * the account from that id on every subsequent event, so a clobbered bind
- * would silently orphan that lookup path for whichever customer id got
- * overwritten.
+ * TWO callers — see this module's top doc-comment: the subscription
+ * checkout server action (`billing/actions.ts`, Task 3) binds a fresh
+ * customer id the first time a workspace's billing account ever checks
+ * out; the Stripe webhook route (a later slice-3 task) binds it again for
+ * any account that reaches Stripe some other way. Deliberately FILL-ONLY —
+ * the `stripe_customer_id IS NULL` guard means this can never clobber a
+ * customer id an account already carries, the same pattern
+ * `channel_inbox.ts`'s `stampChannelInboxWorkspace` establishes (see that
+ * function's own doc-comment for the general rationale). Here
+ * specifically: Stripe does not guarantee webhook delivery exactly-once or
+ * in order, so the same subscription's events can call this more than once
+ * with the same customer id; the checkout action can ALSO race the webhook
+ * for the very same account (both bind attempts firing off the same fresh
+ * checkout) — the guard makes every call after the first a safe no-op
+ * instead of a redundant write, regardless of which of the two callers
+ * gets there first, and forecloses the one way a redelivered,
+ * out-of-order, or racing call could ever overwrite the correct,
+ * already-bound id with a wrong one. `getBillingAccountByStripeCustomerId`
+ * below is how the webhook re-derives the account from that id on every
+ * subsequent event, so a clobbered bind would silently orphan that lookup
+ * path for whichever customer id got overwritten.
  *
  * No-ops (0 rows affected, no error) when the account is unknown or already
  * has a `stripe_customer_id` bound — the caller has no result to branch on,

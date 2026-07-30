@@ -1,6 +1,5 @@
 import Image from "next/image";
 import Link from "next/link";
-import { FLAT_PROFIT_CENTS, FLAT_SERVER_FEE_CENTS } from "@agentrail/db-postgres";
 import { LIGHT_SURFACE } from "../../../lib/light-surface";
 import { isPricingClaimLive } from "../_pricing-gate";
 
@@ -9,29 +8,70 @@ export const metadata = {
   description: "What it costs to have Jace work on your codebase.",
 };
 
-function formatFlatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 const STEPS = [
-  "Top up your balance.",
-  "Approve a task. The estimate you approve is the budget cap.",
-  "You're charged when the task is done, at the real price below.",
+  "Pick a plan: Starter, Growth, or Enterprise.",
+  "Talk to Jace on Telegram, Slack, or Discord.",
+  "Approve the work. It ships as a pull request.",
+];
+
+type Tier = {
+  name: string;
+  price: string;
+  seats: string;
+  included: string;
+};
+
+/**
+ * Subscription-platform spec §2 commercial packaging (`docs/superpowers/
+ * specs/2026-07-29-subscription-platform-design.md`). Seats and capacity
+ * match `lib/policy/plan-policies.ts`'s `PLAN_POLICIES` as of this write
+ * (starter: 4 seats / 350 capacity; growth: 10 seats / 1,000 capacity) —
+ * spec §2 calls these "launch priors, calibrated monthly", so keep this
+ * table in sync by hand if that file's numbers move. Dollar prices are NOT
+ * a shared code constant: Stripe owns the actual recurring Price objects
+ * (`lib/billing/stripe-plans.ts` maps plan -> Price id only, never a
+ * dollar amount), so $80/$200 are hand-set here to match the Stripe
+ * dashboard and the spec's own table. Enterprise has no public price or
+ * checkout (spec §2: "no public pricing and no checkout flow — it is a
+ * conversation") — "Contact us" ships as plain text, not a link: no
+ * contact route exists in this app yet, and a fake/dead link would be
+ * exactly the kind of overclaim this page exists to avoid.
+ */
+const TIERS: Tier[] = [
+  { name: "Starter", price: "$80/mo", seats: "Up to 4", included: "≈350 engineering tasks/mo" },
+  { name: "Growth", price: "$200/mo", seats: "Up to 10", included: "≈1,000 engineering tasks/mo" },
+  { name: "Enterprise", price: "Contact us", seats: "Custom", included: "Custom" },
 ];
 
 /**
- * #1415 PR② — the pricing page. Describes the prepaid per-task model with
- * the ACTUAL numbers (`billing/pricing.ts`'s `FLAT_SERVER_FEE_CENTS` /
- * `FLAT_PROFIT_CENTS`, the single source of truth for what a task costs —
- * never a hand-copied duplicate of those figures).
+ * Subscription-platform slice 3, Task 7 — the pricing page's copy
+ * truth-up (rollout rider, `docs/superpowers/specs/
+ * 2026-07-29-subscription-platform-design.md` §9: "the public pricing
+ * surface must stop promising 'No seats, no subscription' the moment real
+ * subscriptions can be sold"). This page used to describe the prepaid
+ * per-task model with the ACTUAL numbers (`billing/pricing.ts`'s
+ * `FLAT_SERVER_FEE_CENTS` / `FLAT_PROFIT_CENTS`). That model is retired as
+ * the COMMERCIAL story — the wallet machinery itself stays, internal-only
+ * (spec §1) — in favor of company subscriptions, so this page now names
+ * the three sellable plans instead. See `TIERS` above for where its
+ * numbers come from.
  *
- * Landing honesty rule: this page is reachable at all times (nothing to
- * hide about the intended model), but it never overstates what's true
- * TODAY. `isPricingClaimLive()` — the same gate that controls whether the
- * landing page links here — decides which status line renders: "Live" once
- * the owner has flipped `NEXT_PUBLIC_BILLING_VERIFIED_LIVE` after
- * browser-verifying AC1/AC2 on prod, or an honest "Preview" note before
- * that. Neither state claims something false.
+ * `STEPS` (fix round, coordinator call): the original "top up your
+ * balance... you're charged when the task is done" wallet-flow steps sat
+ * one section above `TIERS`' "Starter $80/mo" cards — the same
+ * contradiction this whole page exists to retire, just spelled
+ * differently, so they're rewritten too, not just the claims spec §9
+ * names verbatim. The three lines now name the actual subscription flow:
+ * pick a plan, talk to Jace on an existing chat channel, approve the work.
+ *
+ * Landing honesty rule (unchanged by this edit): this page is reachable at
+ * all times (nothing to hide about the intended model), but it never
+ * overstates what's true TODAY. `isPricingClaimLive()` — the same gate
+ * that controls whether the landing page links here — decides which
+ * status line renders: "Live" once the owner has flipped
+ * `NEXT_PUBLIC_BILLING_VERIFIED_LIVE` after browser-verifying subscription
+ * checkout on prod, or an honest "Preview" note before that. Neither state
+ * claims something false.
  */
 export default function PricingPage() {
   const live = isPricingClaimLive();
@@ -71,7 +111,8 @@ export default function PricingPage() {
         </p>
 
         <p className="mt-6 text-[var(--gray-11)]">
-          Jace is prepaid and pay-for-what-you-use. No seats, no subscription.
+          Jace is an AI software engineer for your team. Plans are priced by
+          team size.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">
@@ -86,44 +127,29 @@ export default function PricingPage() {
           ))}
         </ol>
 
-        <section className="mt-10 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-6">
-          <h2 className="text-sm font-bold text-[var(--gray-12)]">
-            What one task costs
-          </h2>
-          <p className="mt-2 text-[var(--gray-11)]">
-            The price of a completed task is the real token cost it used,
-            plus two flat amounts:
-          </p>
-          <dl className="mt-4 flex flex-col gap-2 font-mono text-sm">
-            <div className="flex items-center justify-between">
-              <dt className="text-[var(--gray-11)]">Actual token cost</dt>
-              <dd className="text-[var(--gray-12)]">varies by task</dd>
+        <section className="mt-10 flex flex-col gap-4">
+          {TIERS.map((tier) => (
+            <div
+              key={tier.name}
+              className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-6"
+            >
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-sm font-bold text-[var(--gray-12)]">{tier.name}</h2>
+                <p className="font-mono text-sm text-[var(--gray-12)]">{tier.price}</p>
+              </div>
+              <dl className="mt-4 flex flex-col gap-2 font-mono text-sm">
+                <div className="flex items-center justify-between">
+                  <dt className="text-[var(--gray-11)]">Seats</dt>
+                  <dd className="text-[var(--gray-12)]">{tier.seats}</dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt className="text-[var(--gray-11)]">Included</dt>
+                  <dd className="text-[var(--gray-12)]">{tier.included}</dd>
+                </div>
+              </dl>
             </div>
-            <div className="flex items-center justify-between">
-              <dt className="text-[var(--gray-11)]">Flat server fee</dt>
-              <dd className="text-[var(--gray-12)]">
-                {formatFlatCents(FLAT_SERVER_FEE_CENTS)}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between">
-              <dt className="text-[var(--gray-11)]">Flat profit</dt>
-              <dd className="text-[var(--gray-12)]">
-                {formatFlatCents(FLAT_PROFIT_CENTS)}
-              </dd>
-            </div>
-          </dl>
-          <p className="mt-4 text-body-sm text-[var(--gray-11)]">
-            You&apos;re charged exactly this once a task finishes. If it runs
-            under your approved estimate, you keep the difference. If it runs
-            over, that one task is the only thing allowed to dip your
-            balance negative. The next task waits for a top-up.
-          </p>
+          ))}
         </section>
-
-        <p className="mt-8 text-body-sm text-[var(--gray-11)]">
-          No hidden fees, no per-seat charge, no monthly minimum. Every task
-          shows its own cost next to its pull request.
-        </p>
       </div>
     </main>
   );

@@ -35,10 +35,13 @@ export function isConnectorProvider(value: unknown): value is ConnectorProvider 
  * established (Task 7) below, reused for Evidence Providers Wave 2's ten
  * non-secret companion fields (Task P0 — `langfuseHost`, `sentryOrg`, …) so
  * eleven near-identical blocks don't each hand-roll the same three checks.
- * `maxLength` defaults to 256 — generous enough for the URL-shaped fields
- * (`langfuseHost`, `prometheusUrl`, `grafanaUrl`) alongside the short
- * id/name-shaped ones (`sentryOrg`, `datadogSite`, …); none of these values
- * are ever rendered back at length, only stored and read by an adapter.
+ * `maxLength` defaults to 256 — generous enough for the short id/name-shaped
+ * fields (`sentryOrg`, `datadogSite`, `vercelTeamId`, …); none of these
+ * values are ever rendered back at length, only stored and read by an
+ * adapter. The wave's three URL-shaped fields (`langfuseHost`,
+ * `prometheusUrl`, `grafanaUrl`) additionally need a scheme gate — see the
+ * sibling {@link validateUrlConfigString} (Fix Round 1) immediately below,
+ * which builds on this one rather than duplicating it.
  */
 function validateSimpleConfigString(
   value: unknown,
@@ -56,6 +59,48 @@ function validateSimpleConfigString(
     return { ok: false, error: `${fieldName} must be at most ${maxLength} characters` };
   }
   return { ok: true, value: trimmed };
+}
+
+/**
+ * Sibling to {@link validateSimpleConfigString} for the wave's three
+ * URL-shaped fields (`langfuseHost`, `prometheusUrl`, `grafanaUrl`) — Fix
+ * Round 1: this is the centralization Task P0 exists for, so P2/P5/P6 never
+ * each re-derive it. Must parse via `new URL()` and the scheme must be
+ * `http:` or `https:`; everything else about `validateSimpleConfigString`
+ * (trim, ≤256 chars) still applies.
+ *
+ * SSRF tradeoff, deliberate: this gates the SCHEME only, never the HOST.
+ * `javascript:`, `file:`, `data:`, and similar non-HTTP schemes have no
+ * business being handed to a bearer-token `fetch()` call and are rejected
+ * outright. Private/internal hosts (`http://prometheus.internal:9090`,
+ * `http://10.0.0.5:3000`, `localhost`, …) are DELIBERATELY ALLOWED — a
+ * self-hosted Prometheus, Grafana, or Langfuse instance is legitimately
+ * reachable only from inside the operator's own network, and the runner
+ * that will eventually query it (P2/P5/P6's adapters) is expected to run
+ * with that same network access. Blocking private hosts here would make
+ * the self-hosted case this wave explicitly supports (see
+ * `plan-providers.md`'s P2 "or self-host" and P5's pinned scope) impossible
+ * to configure at all. This is a scheme allowlist, not a network boundary —
+ * it narrows "what shape of string is even worth storing," nothing more.
+ */
+function validateUrlConfigString(
+  value: unknown,
+  fieldName: string,
+  maxLength = 256
+): { ok: true; value: string } | { ok: false; error: string } {
+  const simple = validateSimpleConfigString(value, fieldName, maxLength);
+  if (!simple.ok) return simple;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(simple.value);
+  } catch {
+    return { ok: false, error: `${fieldName} must be a valid URL` };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, error: `${fieldName} must be an http:// or https:// URL` };
+  }
+  return { ok: true, value: simple.value };
 }
 
 /**
@@ -205,9 +250,13 @@ export function validateConnectorUpdate(
     // package again — see the schema doc-comment on each field
     // (`schema/connectors.ts`'s `ConnectorConfig`). Same
     // trim/non-empty/bounded-length shape as `railwayProjectId` above, via
-    // the shared `validateSimpleConfigString` helper.
+    // the shared `validateSimpleConfigString` helper — EXCEPT the three
+    // URL-shaped fields (langfuseHost, prometheusUrl, grafanaUrl below),
+    // which are scheme-gated via `validateUrlConfigString` instead (Fix
+    // Round 1 — see that function's own doc-comment for the SSRF-tradeoff
+    // reasoning).
     if (cfg.langfuseHost !== undefined) {
-      const r = validateSimpleConfigString(cfg.langfuseHost, "langfuseHost");
+      const r = validateUrlConfigString(cfg.langfuseHost, "langfuseHost");
       if (!r.ok) return r;
       out.langfuseHost = r.value;
     }
@@ -227,12 +276,12 @@ export function validateConnectorUpdate(
       out.datadogSite = r.value;
     }
     if (cfg.prometheusUrl !== undefined) {
-      const r = validateSimpleConfigString(cfg.prometheusUrl, "prometheusUrl");
+      const r = validateUrlConfigString(cfg.prometheusUrl, "prometheusUrl");
       if (!r.ok) return r;
       out.prometheusUrl = r.value;
     }
     if (cfg.grafanaUrl !== undefined) {
-      const r = validateSimpleConfigString(cfg.grafanaUrl, "grafanaUrl");
+      const r = validateUrlConfigString(cfg.grafanaUrl, "grafanaUrl");
       if (!r.ok) return r;
       out.grafanaUrl = r.value;
     }

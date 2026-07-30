@@ -72,26 +72,30 @@ describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
  * Evidence Providers Wave 2 (Task P0): the ten non-secret companion fields
  * added to `ConnectorConfig` all at once so P2-P8 never touch this package
  * again (mirrors `railwayProjectId` above, Task 7). Every field shares the
- * exact same "string, trim, non-empty, ≤256 chars" shape via the internal
- * `validateSimpleConfigString` helper — exercised generically over the
- * whole field list rather than eleven near-duplicate describe blocks, plus
- * a couple of named spot-checks proving the right key gets written.
+ * base "string, trim, non-empty, ≤256 chars" shape (exercised generically
+ * over the whole field list rather than eleven near-duplicate describe
+ * blocks); the three URL-shaped fields ADDITIONALLY require an http(s)
+ * scheme (Fix Round 1's `validateUrlConfigString`) and get their own
+ * dedicated cases below, since a bare non-URL string like `value-langfuseHost`
+ * is no longer a well-formed value for them.
  */
 describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fields (Task P0)", () => {
-  const WAVE2_FIELDS = [
-    "langfuseHost",
+  const WAVE2_SIMPLE_FIELDS = [
     "sentryOrg",
     "sentryProject",
     "datadogSite",
-    "prometheusUrl",
-    "grafanaUrl",
     "vercelTeamId",
     "vercelProjectId",
     "cloudflareZoneId",
     "cloudflareAccountId",
   ] as const;
+  const WAVE2_URL_FIELDS = ["langfuseHost", "prometheusUrl", "grafanaUrl"] as const;
+  // The base-shape checks (non-string / empty / over-length / absent) are
+  // identical across BOTH groups — `validateUrlConfigString` delegates to
+  // `validateSimpleConfigString` for all of them before ever parsing a URL.
+  const WAVE2_FIELDS = [...WAVE2_SIMPLE_FIELDS, ...WAVE2_URL_FIELDS] as const;
 
-  it.each(WAVE2_FIELDS)("accepts and trims a well-formed %s", (field) => {
+  it.each(WAVE2_SIMPLE_FIELDS)("accepts and trims a well-formed %s", (field) => {
     const res = validateConnectorUpdate({ config: { [field]: `  value-${field}  ` } });
     expect(res).toEqual({ ok: true, value: { config: { [field]: `value-${field}` } } });
   });
@@ -111,7 +115,7 @@ describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fie
     expect(res).toEqual({ ok: false, error: `${field} must be at most 256 characters` });
   });
 
-  it.each(WAVE2_FIELDS)("accepts a %s at exactly 256 characters (boundary)", (field) => {
+  it.each(WAVE2_SIMPLE_FIELDS)("accepts a %s at exactly 256 characters (boundary)", (field) => {
     const res = validateConnectorUpdate({ config: { [field]: "x".repeat(256) } });
     expect(res.ok).toBe(true);
   });
@@ -122,7 +126,7 @@ describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fie
     if (res.ok) expect(res.value.config).not.toHaveProperty(field);
   });
 
-  it("composes two Wave 2 fields together in the same update (Langfuse's two companions)", () => {
+  it("composes two Wave 2 fields together in the same update (Sentry's two companions)", () => {
     const res = validateConnectorUpdate({
       config: { sentryOrg: "acme", sentryProject: "web" },
     });
@@ -149,6 +153,67 @@ describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fie
           langfuseHost: "https://cloud.langfuse.com",
         },
       },
+    });
+  });
+
+  /**
+   * Fix Round 1: langfuseHost/prometheusUrl/grafanaUrl are scheme-gated via
+   * `validateUrlConfigString` — must parse as a URL AND be http(s). Private/
+   * internal hosts are deliberately accepted (self-hosted Prometheus/
+   * Grafana/Langfuse are legitimate) — only the SCHEME is gated, never the
+   * host, per that function's own SSRF-tradeoff doc-comment.
+   */
+  describe("URL-shaped fields — scheme gate (Fix Round 1)", () => {
+    it.each(WAVE2_URL_FIELDS)("rejects %s with a javascript: scheme", (field) => {
+      const res = validateConnectorUpdate({ config: { [field]: "javascript:alert(1)" } });
+      expect(res).toEqual({ ok: false, error: `${field} must be an http:// or https:// URL` });
+    });
+
+    it.each(WAVE2_URL_FIELDS)("rejects %s with a file: scheme", (field) => {
+      const res = validateConnectorUpdate({ config: { [field]: "file:///etc/passwd" } });
+      expect(res).toEqual({ ok: false, error: `${field} must be an http:// or https:// URL` });
+    });
+
+    it.each(WAVE2_URL_FIELDS)("rejects a bare non-URL string for %s", (field) => {
+      const res = validateConnectorUpdate({ config: { [field]: "not-a-url" } });
+      expect(res).toEqual({ ok: false, error: `${field} must be a valid URL` });
+    });
+
+    it("accepts prometheusUrl pointing at a private/internal host — deliberate SSRF tradeoff (self-hosted Prometheus)", () => {
+      const res = validateConnectorUpdate({
+        config: { prometheusUrl: "http://prometheus.internal:9090" },
+      });
+      expect(res).toEqual({
+        ok: true,
+        value: { config: { prometheusUrl: "http://prometheus.internal:9090" } },
+      });
+    });
+
+    it("accepts langfuseHost pointing at a cloud region URL (https://jp.cloud.langfuse.com)", () => {
+      const res = validateConnectorUpdate({
+        config: { langfuseHost: "https://jp.cloud.langfuse.com" },
+      });
+      expect(res).toEqual({
+        ok: true,
+        value: { config: { langfuseHost: "https://jp.cloud.langfuse.com" } },
+      });
+    });
+
+    it("accepts grafanaUrl pointing at a private host too (same scheme-only gate)", () => {
+      const res = validateConnectorUpdate({
+        config: { grafanaUrl: "http://grafana.internal:3000" },
+      });
+      expect(res).toEqual({
+        ok: true,
+        value: { config: { grafanaUrl: "http://grafana.internal:3000" } },
+      });
+    });
+
+    it("accepts a URL-shaped field at exactly 256 characters (boundary, still a valid http URL)", () => {
+      const value = "http://" + "x".repeat(249); // 7 + 249 = 256
+      expect(value.length).toBe(256);
+      const res = validateConnectorUpdate({ config: { grafanaUrl: value } });
+      expect(res).toEqual({ ok: true, value: { config: { grafanaUrl: value } } });
     });
   });
 });

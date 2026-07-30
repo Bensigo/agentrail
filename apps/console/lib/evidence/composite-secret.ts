@@ -29,14 +29,17 @@
  * directly too, so the split logic is written and tested in exactly ONE
  * place — never re-derived per provider.
  *
- * A raw part value containing the delimiter itself (`:`) would corrupt the
- * split; `connectors-panel.tsx`'s submit handler validates that no part
- * contains `:` BEFORE joining, client-side. Server-side, the only invariant
- * this module can enforce after the fact is the PART COUNT (see
- * {@link SplitCompositeSecretResult}'s failure case) — a part that smuggled
- * an extra `:` through would silently misparse if the total split count
- * still happens to match the declared count; this is a known, accepted
- * limitation given the client-side gate, not a TODO.
+ * A raw part value containing the delimiter itself (`:`) is guarded
+ * TWICE: `connectors-panel.tsx`'s submit handler rejects a part containing
+ * `:` BEFORE joining, client-side (the primary gate); server-side, this
+ * function's own PART-COUNT check (see {@link SplitCompositeSecretResult}'s
+ * failure case) catches it independently — an extra `:` produces MORE split
+ * parts than declared, which fails the count check loudly (`Expected N
+ * parts, got N+1`), not a silent misparse. The only way this module could
+ * misparse a smuggled colon is the narrow, coincidental case where a missing
+ * `:` in one part and an extra `:` in another cancel out and the total count
+ * happens to still match — a known, accepted residual risk given the
+ * client-side gate already covers the general case; not a TODO.
  */
 
 /**

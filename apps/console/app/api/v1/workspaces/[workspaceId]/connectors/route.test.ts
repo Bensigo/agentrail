@@ -27,8 +27,15 @@ import { GET, PUT } from "./route";
 
 // Minimal real implementations mirrored from db-postgres/queries/connectors.ts
 // so the route's validation is genuinely exercised in this hermetic test.
-// Task 7 adds "railway" to isConnectorProvider (connectorProviderEnum) and a
-// railwayProjectId branch to validateConnectorUpdate — mirrored here too.
+// Task 7 adds "railway" to isConnectorProvider (connectorProviderEnum).
+// Task P0 (Fix Round 1): the ROUTE's PUT handler no longer hand-lists
+// `railwayProjectId` — it forwards any catalog-declared extraConfigFields
+// key generically (`EXTRA_CONFIG_KEYS`, `route.ts`) to `validateConnectorUpdate`.
+// This MOCK still validates `railwayProjectId` as its own named branch
+// because it's a simplified stand-in for db-postgres's REAL
+// `validateConnectorUpdate` (which itself validates each Wave 2 field by
+// name, per `queries/connectors.ts` — the route's genericity is about which
+// keys it FORWARDS, not about how the query layer validates them).
 function realIsProvider(v: unknown): boolean {
   return v === "github" || v === "linear" || v === "discord" || v === "railway";
 }

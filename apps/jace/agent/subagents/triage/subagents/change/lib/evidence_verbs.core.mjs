@@ -1,20 +1,22 @@
 // Pure, dependency-free core for the debugger's deep-mode evidence-verb
 // tools (Task 9, debugging design spec:
 // docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md; spec PR
-// #1501). ONE function, `fetchEvidence`, backs BOTH `tools/fetch_changes.ts`
-// and `tools/search_events.ts` — the two tool wrappers differ ONLY in which
-// literal `verb` ("changes" | "search_events") they pass in; every other
-// concern (URL building, status classification, the closed ten-reason
-// degradation taxonomy, rendering) is identical. This mirrors
-// fetch_run_evidence.core.mjs's own "one injected transport, no SDK" shape,
-// generalized to two verbs of the SAME landed console route (Tasks 4-7:
-// `GET /api/v1/runner/evidence`) rather than the failure-bundle route
-// run-mode's original tool reads.
+// #1501; verb set widened from two to four by Task P1, Evidence Providers
+// Wave 2: .superpowers/sdd/plan-providers.md). ONE function, `fetchEvidence`,
+// backs FOUR tool wrappers — `tools/fetch_changes.ts`, `tools/search_events.ts`,
+// `tools/fetch_signals.ts`, and `tools/fetch_traces.ts` — which differ ONLY
+// in which literal `verb` ("changes" | "search_events" | "signals" |
+// "traces") they pass in; every other concern (URL building, status
+// classification, the closed ten-reason degradation taxonomy, rendering) is
+// identical. This mirrors fetch_run_evidence.core.mjs's own "one injected
+// transport, no SDK" shape, generalized to four verbs of the SAME landed
+// console route (Tasks 4-7: `GET /api/v1/runner/evidence`) rather than the
+// failure-bundle route run-mode's original tool reads.
 //
 // WIRE CONTRACT (landed Tasks 4-7 —
 // apps/console/app/api/v1/runner/evidence/route.ts,
 // apps/console/lib/evidence/types.ts):
-//   GET {base}/api/v1/runner/evidence?eveSessionId=&verb=changes|search_events
+//   GET {base}/api/v1/runner/evidence?eveSessionId=&verb=changes|search_events|signals|traces
 //     &windowStart=&windowEnd=&scope=&query=&limit=, Bearer JACE_CONSOLE_TOKEN.
 //   A REQUEST-level problem (malformed query, no anchored investigation, no
 //   credentialed provider for the verb) is a 200 body `{ degraded: true,
@@ -67,12 +69,15 @@ import { hardenUntrusted } from "../../../../../lib/sanitize-untrusted.core.mjs"
 /** The evidence route, joined onto the console base. */
 export const EVIDENCE_PATH = "/api/v1/runner/evidence";
 
-/** The two v1 verbs the debugger's tools expose. `signals`/`traces`/`probe`
- * exist in the console's own EvidenceVerb type but ship no adapter yet (spec:
- * "Out of scope") — this module deliberately only accepts the two verbs it
- * actually has tools for, so an unsupported verb fails fast, locally, rather
- * than round-tripping to a route that would have to reject it anyway. */
-export const VERBS = Object.freeze(["changes", "search_events"]);
+/** The four v1 verbs the debugger's tools expose — widened from two to four
+ * by Task P1, Evidence Providers Wave 2 (.superpowers/sdd/plan-providers.md):
+ * `changes`/`search_events` shipped Task 9, `signals`/`traces` here. `probe`
+ * still exists in the console's own EvidenceVerb type but ships no adapter
+ * yet (spec: "Out of scope") — this module deliberately only accepts the
+ * verbs it actually has tools for, so an unsupported verb fails fast,
+ * locally, rather than round-tripping to a route that would have to reject
+ * it anyway. */
+export const VERBS = Object.freeze(["changes", "search_events", "signals", "traces"]);
 
 /** The closed, ten-reason degradation taxonomy
  * (apps/console/lib/evidence/types.ts's `EvidenceDegradationReason`) —
@@ -120,6 +125,38 @@ const DEGRADED_NOTES = {
   capture_failed:
     "A provider answered, but persisting its result as a durable evidence item failed; nothing was captured for that provider this call.",
 };
+
+// Verb-specific refinements over the generic notes above, for the ONE reason
+// whose honest phrasing depends on WHICH kind of provider is missing — "no
+// changes provider" reads differently than "no metrics provider" or "no
+// tracing provider" (Task P1, Evidence Providers Wave 2:
+// .superpowers/sdd/plan-providers.md). The other nine reasons are
+// transport/request-level and don't vary by verb, so they have no entry here
+// and keep using DEGRADED_NOTES unchanged; changes/search_events also have no
+// override below and keep the original generic no_provider note.
+const VERB_DEGRADED_NOTES = {
+  signals: {
+    no_provider:
+      "No credentialed metrics provider answers this verb for this workspace right now — connect one to close this gap.",
+  },
+  traces: {
+    no_provider:
+      "No credentialed tracing provider answers this verb for this workspace right now — connect one to close this gap.",
+  },
+};
+
+/**
+ * Resolve the note for a (reason, verb) pair: the verb-specific override
+ * above when one exists, else the generic DEGRADED_NOTES entry — same
+ * unexpected_status fallback degraded() itself uses.
+ *
+ * @param {string} reason
+ * @param {string} [verb]
+ * @returns {string}
+ */
+function noteFor(reason, verb) {
+  return VERB_DEGRADED_NOTES[verb]?.[reason] ?? DEGRADED_NOTES[reason] ?? DEGRADED_NOTES.unexpected_status;
+}
 
 /** The advisory/untrusted framing baked into every rendered evidence block —
  * mirrors fetch_investigations.core.mjs's / fetch_briefs.core.mjs's own
@@ -383,9 +420,12 @@ export async function fetchEvidence({ eveSessionId, verb, windowStart, windowEnd
 
   // Request-level relay: the console's own { degraded: true, reason } body,
   // emitted BEFORE any provider fan-out started (see module doc-comment).
+  // The note is resolved per-verb (Task P1) — no_provider reads differently
+  // for signals/traces than for changes/search_events; every other reason is
+  // verb-independent and noteFor() falls back to the generic note.
   if (body.degraded === true) {
     const reason = DEGRADATION_REASONS.includes(body.reason) ? body.reason : "unexpected_status";
-    return degraded(reason);
+    return degraded(reason, { note: noteFor(reason, verb) });
   }
 
   const envelopes = projectEnvelopes(body.envelopes);

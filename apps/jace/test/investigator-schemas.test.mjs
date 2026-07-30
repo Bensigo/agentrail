@@ -14,9 +14,11 @@
 //      additionalProperties:false, evidence_refs minItems:1 on every
 //      claim-bearing array) validated against real fixtures.
 //   2. Both investigators' tools/ directories strip the ENTIRE default
-//      harness (10 disableTool() sentinels) and author EXACTLY the two
-//      read-only evidence-verb tools (fetch_changes, search_events). No file
-//      in either investigator's ENTIRE tree (not just tools/) imports a
+//      harness (10 disableTool() sentinels) and author EXACTLY the four
+//      read-only evidence-verb tools (fetch_changes, fetch_signals,
+//      fetch_traces, search_events — widened from two to four by Task P1,
+//      Evidence Providers Wave 2: .superpowers/sdd/plan-providers.md). No
+//      file in either investigator's ENTIRE tree (not just tools/) imports a
 //      database client — the replacement coverage for what
 //      test/triage-read-only.test.mjs's own write-path/DB-client scan used
 //      to provide here, before that test's sourceFiles() was deliberately
@@ -272,7 +274,12 @@ const FRAMEWORK_HARNESS_TOOLS = [
   "write_file",
 ];
 const WRITE_CAPABLE_HARNESS_TOOLS = ["bash", "write_file"];
-const AUTHORED_TOOLS = ["fetch_changes.ts", "search_events.ts"].sort();
+// Widened from two to four by Task P1 (Evidence Providers Wave 2:
+// .superpowers/sdd/plan-providers.md) — fetch_signals/fetch_traces join
+// fetch_changes/search_events, all four thin wrappers over the same shared
+// evidence_verbs.core.mjs copy. 12 files per investigator tools/ dir (10
+// harness sentinels + 2 authored) becomes 14 (10 + 4).
+const AUTHORED_TOOLS = ["fetch_changes.ts", "fetch_signals.ts", "fetch_traces.ts", "search_events.ts"].sort();
 
 function investigatorDir(name) {
   return fileURLToPath(new URL(`../agent/subagents/triage/subagents/${name}`, import.meta.url));
@@ -375,7 +382,7 @@ for (const name of INVESTIGATORS) {
     }
   });
 
-  test(`${name}: authors exactly its TWO read-only tools — fetch_changes, search_events`, () => {
+  test(`${name}: authors exactly its FOUR read-only tools — fetch_changes, fetch_signals, fetch_traces, search_events`, () => {
     const toolsDir = `${dir}/tools`;
     const authored = readdirSync(toolsDir)
       .filter((f) => f.endsWith(".ts"))
@@ -384,7 +391,7 @@ for (const name of INVESTIGATORS) {
     assert.deepEqual(
       authored,
       AUTHORED_TOOLS,
-      `${name} must author exactly fetch_changes.ts + search_events.ts; found: ${authored.join(", ") || "(none)"}`,
+      `${name} must author exactly fetch_changes.ts + fetch_signals.ts + fetch_traces.ts + search_events.ts; found: ${authored.join(", ") || "(none)"}`,
     );
 
     for (const tool of AUTHORED_TOOLS) {
@@ -394,7 +401,11 @@ for (const name of INVESTIGATORS) {
         /approval:\s*(always|once)\(|consoleGatedApproval/,
         `${name}/tools/${tool} is read-only and must not carry an approval gate`,
       );
-      assert.match(src, /verb:\s*"(changes|search_events)"/, `${name}/tools/${tool} must call fetchEvidence with a literal verb`);
+      assert.match(
+        src,
+        /verb:\s*"(changes|search_events|signals|traces)"/,
+        `${name}/tools/${tool} must call fetchEvidence with a literal verb`,
+      );
     }
   });
 
@@ -536,6 +547,8 @@ const EVIDENCE_VERBS_PATHS = {
 // hops (two levels deeper — .../triage/subagents/<name>/lib/ vs .../triage/lib/).
 // Both hop counts are verified to actually resolve on disk below — this
 // normalization is not an excuse, it's a documented, checked exception.
+// Line 67 (was 65 before Task P1 added two header lines widening VERBS from
+// two to four — see evidence_verbs.core.mjs's own header comment).
 const SANITIZE_IMPORT_RE = /from\s+"(?:\.\.\/)+lib\/sanitize-untrusted\.core\.mjs"/;
 const SANITIZE_IMPORT_PLACEHOLDER = 'from "<sanitize-untrusted-import>"';
 
@@ -562,14 +575,14 @@ test("the sanitize-untrusted import is the ONLY line differing between triage's 
     }
     assert.deepEqual(
       diffLines,
-      [65],
-      `expected exactly line 65 (the sanitize-untrusted import) to differ between ` +
+      [67],
+      `expected exactly line 67 (the sanitize-untrusted import) to differ between ` +
         `${EVIDENCE_VERBS_PATHS.triage} and ${EVIDENCE_VERBS_PATHS[name]}; found differing lines: ${diffLines.join(", ") || "(none)"}`,
     );
     assert.match(
-      lines[64],
+      lines[66],
       SANITIZE_IMPORT_RE,
-      `${EVIDENCE_VERBS_PATHS[name]}:65 must still import hardenUntrusted from a relative ".../lib/sanitize-untrusted.core.mjs" path`,
+      `${EVIDENCE_VERBS_PATHS[name]}:67 must still import hardenUntrusted from a relative ".../lib/sanitize-untrusted.core.mjs" path`,
     );
   }
 });

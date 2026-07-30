@@ -1,13 +1,17 @@
 // AC1 — the debugger (directory/tool name still `triage` — Global
 // Constraints: the name is unchanged for wire + calibration continuity) has
 // ZERO write capability and is isolated from the factory's single write path
-// (create_issue), while authoring exactly its THREE read-only tools:
+// (create_issue), while authoring exactly its FIVE read-only tools:
 // fetch_run_evidence (run mode's failure-bundle read) plus fetch_changes /
-// search_events (Task 9 — deep mode's evidence-verb tools, both thin
-// wrappers over the SAME shared lib/evidence_verbs.core.mjs). Widening from
-// one tool to three is Task 9's own change (the debugger now answers
-// production-investigation missions, not just run diagnoses); the read-only,
-// zero-write guarantee this file exists to prove is otherwise untouched.
+// fetch_signals / fetch_traces / search_events (deep mode's evidence-verb
+// tools — changes/search_events shipped Task 9, signals/traces widened this
+// to four verbs by Task P1, Evidence Providers Wave 2:
+// .superpowers/sdd/plan-providers.md — all four thin wrappers over the SAME
+// shared lib/evidence_verbs.core.mjs). Widening from one tool to three was
+// Task 9's own change (the debugger now answers production-investigation
+// missions, not just run diagnoses), and from three to five is Task P1's;
+// the read-only, zero-write guarantee this file exists to prove is
+// otherwise untouched.
 //
 // Two mechanisms make the zero-write guarantee true, and this test PROVES both:
 //
@@ -27,15 +31,15 @@
 //      sentinels (each `tools/<name>.ts` default-exports disableTool()) that
 //      strips the ENTIRE default harness. Because triage declares NO connections,
 //      the dynamic connection_search is never injected, so there is no
-//      connection_search sentinel either. The two new Task 9 tools sit BESIDE
-//      those sentinels in the same tools/ directory — none of the sentinels are
-//      removed or replaced.
+//      connection_search sentinel either. The Task 9 and Task P1 evidence-verb
+//      tools sit BESIDE those sentinels in the same tools/ directory — none
+//      of the sentinels are removed or replaced.
 //
-// All THREE authored tools are read-only: none sets an `approval` field
+// All FIVE authored tools are read-only: none sets an `approval` field
 // (approval gates are reserved for root's gated write tools), and each
 // reaches exactly one configured console endpoint via the global fetch (the
 // failure-bundle route for fetch_run_evidence; the evidence-capability route
-// for fetch_changes/search_events).
+// for fetch_changes/fetch_signals/fetch_traces/search_events).
 //
 // The complementary guarantee — that root's write surface is UNCHANGED and that
 // NO subagent authors a mutating tool — is covered by no-second-write-path.test.mjs
@@ -54,11 +58,20 @@ const triageDir = fileURLToPath(
 );
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 
-// The three authored tools. Each legitimately uses defineTool, so all three
-// are EXCLUDED from the sentinel-only assertions and from the defineTool
-// write-path scan. Adding a fourth is a deliberate edit here, same posture
-// as no-second-write-path.test.mjs's own EXPECTED_TOOL_FILES ceiling-and-floor.
-const AUTHORED_TOOLS = ["fetch_run_evidence.ts", "fetch_changes.ts", "search_events.ts"].sort();
+// The five authored tools (widened from three to five by Task P1, Evidence
+// Providers Wave 2: .superpowers/sdd/plan-providers.md — fetch_signals/
+// fetch_traces join fetch_run_evidence/fetch_changes/search_events). Each
+// legitimately uses defineTool, so all five are EXCLUDED from the
+// sentinel-only assertions and from the defineTool write-path scan. Adding a
+// sixth is a deliberate edit here, same posture as no-second-write-path.
+// test.mjs's own EXPECTED_TOOL_FILES ceiling-and-floor.
+const AUTHORED_TOOLS = [
+  "fetch_run_evidence.ts",
+  "fetch_changes.ts",
+  "fetch_signals.ts",
+  "fetch_traces.ts",
+  "search_events.ts",
+].sort();
 
 // Skips `subagents/` — Task 10 (debugging design spec:
 // docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md; spec PR
@@ -182,9 +195,9 @@ test("triage strips the ENTIRE default harness via disableTool() sentinels", () 
   }
 });
 
-test("triage authors exactly its THREE read-only tools — fetch_run_evidence, fetch_changes, search_events", () => {
+test("triage authors exactly its FIVE read-only tools — fetch_run_evidence, fetch_changes, fetch_signals, fetch_traces, search_events", () => {
   // Enumerate every source file that authors a tool (defineTool). It must be
-  // exactly the three read-only tools, nothing else.
+  // exactly the five read-only tools, nothing else.
   const authored = sourceFiles(triageDir)
     .filter((f) => /defineTool\s*\(/.test(stripComments(readFileSync(f, "utf8"))))
     .map((f) => f.replace(`${triageDir}/`, ""))
@@ -192,10 +205,10 @@ test("triage authors exactly its THREE read-only tools — fetch_run_evidence, f
   assert.deepEqual(
     authored,
     AUTHORED_TOOLS.map((t) => `tools/${t}`).sort(),
-    `triage must author exactly its three tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
+    `triage must author exactly its five tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
   );
 
-  // Every one of the three is READ-ONLY: none may carry an approval gate (an
+  // Every one of the five is READ-ONLY: none may carry an approval gate (an
   // approval gate — always()/once() or consoleGatedApproval — is a write-path
   // signal reserved for root's gated write tools).
   for (const tool of AUTHORED_TOOLS) {
@@ -229,6 +242,7 @@ test("triage declares no connections directory (no MCP surface, HTTP-only reach)
   assert.ok(
     !existsSync(`${triageDir}/connections`),
     "triage must declare no connections — its only outbound reach is configured " +
-      "console endpoints via its three authored tools (fetch_run_evidence, fetch_changes, search_events)",
+      "console endpoints via its five authored tools (fetch_run_evidence, fetch_changes, fetch_signals, " +
+      "fetch_traces, search_events)",
   );
 });

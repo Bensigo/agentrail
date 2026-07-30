@@ -4,6 +4,7 @@ import {
   enqueueChannelMessage,
   getThreadEngagement,
   getSlackInstallation,
+  revokeSlackInstallation,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { verifySlackSignature } from "../../../../../../lib/slack-bot";
@@ -53,6 +54,19 @@ import { parseConnectCommand } from "../../../../../../lib/connect-command";
  * request is rejected (401) — mirrors the Telegram/Discord webhooks'
  * identical fail-closed posture. The signing secret is per-APP, not
  * per-install, so this check needs no per-team knowledge.
+ *
+ * `event_callback` with `event.type === "app_uninstalled"`: final whole-branch
+ * review, finding #3. Slack fires this when a workspace removes the app — the
+ * only signal we ever get. Handled BEFORE the "message" event filter below
+ * (which would otherwise silently discard it, since it is not a "message"),
+ * and BEFORE the installation lookup (a team that just uninstalled has
+ * nothing to fail-closed on — there is no message to process, only a
+ * revocation to record). Calls `revokeSlackInstallation(team_id)`, which sets
+ * `revoked_at` and never deletes the row (audit trail, spec §1). Without
+ * this, `revokeSlackInstallation` — otherwise only ever called by its own
+ * unit test — never runs in prod, and an uninstalled workspace's encrypted
+ * bot token stays live in this table forever (token rotation is deliberately
+ * off, so it never naturally expires either).
  *
  * FAIL CLOSED (installation, Task 3): every `event_callback` carries the
  * workspace's `team_id` at the envelope's top level. This route looks up
@@ -184,6 +198,24 @@ export async function POST(request: NextRequest) {
   }
 
   const event = body.event;
+
+  // app_uninstalled (final whole-branch review, finding #3) — see this
+  // file's header doc. Handled before the "message"-only filter below, which
+  // would otherwise treat it as just another event type this door doesn't
+  // understand and silently drop it, leaving the revoked workspace's bot
+  // token live forever.
+  if (event.type === "app_uninstalled") {
+    if (body.team_id) {
+      await revokeSlackInstallation(body.team_id);
+    } else {
+      // Nothing to revoke without a team id — log so this is diagnosable,
+      // never throw (Slack retries on a non-2xx, and there is no fixing a
+      // missing team_id by retrying).
+      console.warn("[slack/events] app_uninstalled with no team_id — nothing to revoke.");
+    }
+    return json({ ok: true });
+  }
+
   if (
     event.type !== "message" ||
     event.bot_id ||
@@ -229,12 +261,18 @@ export async function POST(request: NextRequest) {
   // (pure, no I/O) so the engagement gate below — and its one indexed
   // lookup — can run BEFORE any identity resolution or enqueue, same "cheap
   // gate first" shape the Discord doors use (lib/discord-inbound.ts).
-  const thread = resolveSlackThread({
-    channel: event.channel,
-    ts: event.ts,
-    thread_ts: event.thread_ts,
-    channel_type: event.channel_type,
-  });
+  // teamId: `installation.teamId`, not the outer `teamId` local — see the
+  // `payload.teamId` comment below for why this reads off the verified
+  // installation rather than the raw envelope value.
+  const thread = resolveSlackThread(
+    {
+      channel: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      channel_type: event.channel_type,
+    },
+    installation.teamId
+  );
 
   // THE ENGAGEMENT GATE — see this file's header doc. `installation.botUserId`
   // is per-team (Task 3), so mention detection is always resolvable once an
@@ -272,9 +310,12 @@ export async function POST(request: NextRequest) {
   // `event.user` — without the team prefix they would collide onto the SAME
   // identity row, and identity is what binds a conversation to an AgentRail
   // workspace. `platformUserId` below is therefore the composite
-  // `"${team_id}:${event.user}"`. This string is OPAQUE to everything
-  // downstream: it is only ever compared for equality, never parsed apart.
-  const platformUserId = `${teamId}:${event.user}`;
+  // `"${installation.teamId}:${event.user}"` (read off the verified
+  // installation, not the outer `teamId` local, matching this file's
+  // established `payload.teamId` convention below). This string is OPAQUE to
+  // everything downstream: it is only ever compared for equality, never
+  // parsed apart.
+  const platformUserId = `${installation.teamId}:${event.user}`;
   const { identity } = await resolveInboundChatIdentity({
     platform: "slack",
     platformUserId,
@@ -292,7 +333,21 @@ export async function POST(request: NextRequest) {
     channel: "slack",
     conversationKey: thread.conversationKey,
     kind: "message",
-    senderId: event.user,
+    // FINAL WHOLE-BRANCH REVIEW, FINDING #1 (critical, ships-100%-dead):
+    // this MUST be the SAME composite `platformUserId` the identity row
+    // above was just created/found under — `channel-dispatch.ts`'s
+    // `processRow` looks the row back up via `getChatIdentity(row.channel,
+    // row.senderId)`, i.e. `getChatIdentity("slack", row.senderId)`, and that
+    // is only ever going to find a row keyed `(platform: "slack",
+    // platform_user_id: platformUserId)`. Writing the raw `event.user` here
+    // (unprefixed) means every Slack message dead-letters in the dispatcher
+    // with "no chat identity" — see channel-dispatch.ts:1188's own invariant
+    // comment, which documents exactly this requirement. `payload.fromId`
+    // below is deliberately DIFFERENT: it stays the raw Slack user id, because
+    // it is the user-facing "who sent this" value (not an identity-lookup
+    // key), and every other channel's `fromId` (Telegram, Discord) is
+    // likewise the platform's own raw sender id, not a composite.
+    senderId: platformUserId,
     // No senderDisplay: see the displayName comment above — event.user is a
     // raw platform id, not a name; left absent (defaults to "") rather than
     // populated with a misleading id.

@@ -7,6 +7,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   enqueueChannelMessage: vi.fn(),
   getThreadEngagement: vi.fn(),
   getSlackInstallation: vi.fn(),
+  revokeSlackInstallation: vi.fn(),
 }));
 
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
@@ -19,6 +20,7 @@ import {
   enqueueChannelMessage,
   getThreadEngagement,
   getSlackInstallation,
+  revokeSlackInstallation,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
@@ -27,6 +29,7 @@ const mockEnqueue = vi.mocked(enqueueChannelMessage);
 const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
 const mockGetEngagement = vi.mocked(getThreadEngagement);
 const mockGetInstallation = vi.mocked(getSlackInstallation);
+const mockRevoke = vi.mocked(revokeSlackInstallation);
 mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
 
 const SIGNING_SECRET = "shhh-its-a-secret";
@@ -471,7 +474,7 @@ describe("POST /api/v1/connectors/slack/events — mention detection per install
 
     expect(mockGetEngagement).toHaveBeenCalledWith({
       channel: "slack",
-      conversationKey: "C123:1700000000.000100",
+      conversationKey: "T1:C123:1700000000.000100",
     });
     expect(res.status).toBe(200);
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
@@ -550,13 +553,19 @@ describe("POST /api/v1/connectors/slack/events — mention detection per install
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "C123:1700000000.000100",
+      conversationKey: "T1:C123:1700000000.000100",
       kind: "message",
-      senderId: "U061F7AUR",
+      // Final whole-branch review, finding #1: senderId MUST be the SAME
+      // composite platformUserId the identity resolve call above used —
+      // channel-dispatch.ts's processRow looks the identity back up via
+      // getChatIdentity("slack", row.senderId).
+      senderId: "T1:U061F7AUR",
       providerMessageId: "C123:Ev0PV52K21",
       payload: {
         chatId: "C123",
         text: `<@${DEFAULT_BOT_USER_ID}> hey <@U777> check this out`,
+        // fromId stays the RAW Slack user id — user-facing "who sent this",
+        // not an identity-lookup key.
         fromId: "U061F7AUR",
         teamId: "T1",
         threadTs: "1700000000.000100",
@@ -576,6 +585,23 @@ describe("POST /api/v1/connectors/slack/events — mention detection per install
         payload: expect.objectContaining({ mentionsBot: true, mentionsOtherUsers: false }),
       })
     );
+  });
+
+  // Final whole-branch review, finding #1 (critical): the invariant
+  // channel-dispatch.ts:1188 documents and relies on — channel_inbox's
+  // (channel, senderId) MUST equal the (platform, platformUserId) the
+  // chat_identities row was resolved under. Asserted directly (not just
+  // incidentally via a hardcoded literal above) so this keeps failing if a
+  // future change re-introduces the raw event.user.
+  it("enqueues senderId byte-identical to the platformUserId resolveInboundChatIdentity was called with", async () => {
+    mockGetEngagement.mockResolvedValue({ dormantSince: null, engagedSpeakerId: "U061F7AUR" });
+
+    await POST(req(channelMessageBody({ text: "hello" })));
+
+    const resolveArgs = mockResolve.mock.calls[0]?.[0];
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0] as unknown as { senderId: string };
+    expect(resolveArgs?.platformUserId).toBeDefined();
+    expect(enqueueArgs.senderId).toBe(resolveArgs?.platformUserId);
   });
 });
 
@@ -600,9 +626,9 @@ describe("POST /api/v1/connectors/slack/events — event_callback message (a str
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "D0PNCRP9N",
+      conversationKey: "T1:D0PNCRP9N",
       kind: "message",
-      senderId: "U061F7AUR",
+      senderId: "T1:U061F7AUR",
       providerMessageId: "D0PNCRP9N:Ev0PV52K21",
       payload: {
         chatId: "D0PNCRP9N",
@@ -707,9 +733,9 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "C123:1700000000.000100",
+      conversationKey: "T1:C123:1700000000.000100",
       kind: "message",
-      senderId: "U061F7AUR",
+      senderId: "T1:U061F7AUR",
       providerMessageId: "C123:Ev0PV52K21",
       payload: {
         chatId: "C123",
@@ -743,9 +769,9 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "C123:1700000000.000100",
+      conversationKey: "T1:C123:1700000000.000100",
       kind: "message",
-      senderId: "U061F7AUR",
+      senderId: "T1:U061F7AUR",
       providerMessageId: "C123:Ev0PV52K21",
       payload: {
         chatId: "C123",
@@ -761,13 +787,40 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     });
   });
 
-  it("leaves a DM byte-unchanged — channel-keyed, no threadTs key at all", async () => {
+  it("leaves a DM byte-unchanged in shape — channel-keyed (now team-scoped), no threadTs key at all", async () => {
     const res = await POST(req(messageEventBody()));
 
     expect(res.status).toBe(200);
     const arg = mockEnqueue.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
-    expect(arg["conversationKey"]).toBe("D0PNCRP9N");
+    // Final whole-branch review, finding #2: team-scoped, not the bare
+    // channel id — see slack-thread.ts's own doc-comment.
+    expect(arg["conversationKey"]).toBe("T1:D0PNCRP9N");
     expect(arg["payload"]).not.toHaveProperty("threadTs");
+  });
+
+  // Final whole-branch review, finding #2 — the cross-tenant test the fix
+  // exists for: the SAME channel id from two different teams must resolve to
+  // DIFFERENT conversationKeys, so a pinned session in one workspace can
+  // never be ridden into by the other.
+  it("the SAME channel id from two DIFFERENT teams never collides onto the same conversationKey", async () => {
+    mockGetInstallation.mockImplementation(async (teamId: string) => {
+      if (teamId === "TEAM_A") return installation({ teamId: "TEAM_A", botUserId: "UBOTTEAMA" });
+      if (teamId === "TEAM_B") return installation({ teamId: "TEAM_B", botUserId: "UBOTTEAMB" });
+      return null;
+    });
+
+    await POST(
+      req(messageEventBody({ team_id: "TEAM_A", event: { channel: "C_SHARED" } }))
+    );
+    await POST(
+      req(messageEventBody({ team_id: "TEAM_B", event: { channel: "C_SHARED" } }))
+    );
+
+    const keyA = (mockEnqueue.mock.calls[0]?.[0] as unknown as { conversationKey: string })
+      .conversationKey;
+    const keyB = (mockEnqueue.mock.calls[1]?.[0] as unknown as { conversationKey: string })
+      .conversationKey;
+    expect(keyA).not.toBe(keyB);
   });
 
   // Final whole-branch review, finding #2 (minor): admit a thread_broadcast
@@ -793,9 +846,9 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "C123:1700000000.000100",
+      conversationKey: "T1:C123:1700000000.000100",
       kind: "message",
-      senderId: "U061F7AUR",
+      senderId: "T1:U061F7AUR",
       providerMessageId: "C123:Ev0PV52K21",
       payload: {
         chatId: "C123",
@@ -809,5 +862,70 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
         repliesToBot: false,
       },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Final whole-branch review, finding #3 — app_uninstalled must actually reach
+// revokeSlackInstallation. Before this fix, every non-"message" event
+// (including app_uninstalled) fell into the generic "not a message this door
+// understands" ignore branch and was silently dropped; revokeSlackInstallation
+// had no caller in production at all.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/connectors/slack/events — app_uninstalled", () => {
+  function uninstallBody(team_id = DEFAULT_TEAM_ID) {
+    return JSON.stringify({
+      token: "tok",
+      team_id,
+      api_app_id: "A1",
+      event: { type: "app_uninstalled" },
+      type: "event_callback",
+      event_id: "EvUNINSTALL1",
+      event_time: 1515449483,
+    });
+  }
+
+  it("revokes the installation for the uninstalling team", async () => {
+    const res = await POST(req(uninstallBody("T1")));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(mockRevoke).toHaveBeenCalledWith("T1");
+    expect(mockRevoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("never enqueues, never resolves identity, never looks up an installation for an app_uninstalled event", async () => {
+    await POST(req(uninstallBody("T1")));
+
+    expect(mockGetInstallation).not.toHaveBeenCalled();
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("revokes by the event's OWN team_id, not whatever the default fixture team is", async () => {
+    await POST(req(uninstallBody("T_SOME_OTHER_TEAM")));
+
+    expect(mockRevoke).toHaveBeenCalledWith("T_SOME_OTHER_TEAM");
+  });
+
+  it("logs and does not call revoke when team_id is missing, without throwing", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = JSON.stringify({
+      token: "tok",
+      api_app_id: "A1",
+      event: { type: "app_uninstalled" },
+      type: "event_callback",
+      event_id: "EvUNINSTALL2",
+      event_time: 1515449483,
+    });
+
+    const res = await POST(req(raw));
+
+    expect(res.status).toBe(200);
+    expect(mockRevoke).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

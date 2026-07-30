@@ -80,6 +80,8 @@ v1 **rejects** an install where `is_enterprise_install` is true, with a clear me
 
 1. Ship this. 2. Install to HeyJace via the new flow. 3. Set the Event Subscriptions request URL — **only now**, because Slack validates it on save and it must not go live while the code can't tell workspaces apart. 4. Verify a real threaded exchange. 5. Tick the attestation and activate public distribution.
 
+**Bot events (step 3), final whole-branch review, finding #3:** the manifest's Event Subscriptions must list `message.channels`, `message.groups`, `message.im`, `message.mpim` (the message shapes this door already handles) **and `app_uninstalled`** — without it, Slack never tells us a workspace removed the app, `revokeSlackInstallation` (§1) is never called, and an uninstalled workspace's encrypted bot token stays live in `slack_installations` forever (token rotation is off, so it never naturally expires either). The event-handling code for `app_uninstalled` already lands in this PR; this bullet is the one manual dashboard step it depends on — apply it in step 3, at the same time as the request URL.
+
 `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` are already set on console (2026-07-29). The signing secret is **per-app**, not per-install, so inbound verification needs no change at all.
 
 ## Verification

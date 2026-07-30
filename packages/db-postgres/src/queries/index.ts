@@ -1948,6 +1948,35 @@ export async function listWorkspaceMembers(workspaceId: string) {
   return rows;
 }
 
+/**
+ * Remove a member from a workspace — same shape as `revokeInvite` above
+ * (delete scoped by workspaceId + the row's own identity, `.returning()` so
+ * the caller can tell "removed" from "wasn't a member / already removed"
+ * apart without a separate existence check). `workspace_memberships`' PK is
+ * the `(userId, workspaceId)` composite (`schema/workspace_memberships.ts`),
+ * so that pair alone is a sufficient, unambiguous delete target.
+ *
+ * This is the write behind the console members page's "Remove" action
+ * (slice 4 Task 3, spec §5 rule 5) — see
+ * `apps/console/app/api/v1/workspaces/[workspaceId]/members/[userId]/route.ts`
+ * for the seat-release hook that runs after a successful removal.
+ */
+export async function removeWorkspaceMembership(
+  workspaceId: string,
+  userId: string
+) {
+  const rows = await db
+    .delete(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.userId, userId),
+        eq(workspaceMemberships.workspaceId, workspaceId)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
 export interface AgentRunStatsRow {
   agent: string;
   runCount: number;

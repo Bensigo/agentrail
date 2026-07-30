@@ -6,6 +6,7 @@ vi.mock("../db.js", () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -22,6 +23,7 @@ import {
   revokeInvite,
   claimInvitesForUser,
   listInvites,
+  removeWorkspaceMembership,
 } from "../queries/index.js";
 
 const mockDb = vi.mocked(db);
@@ -246,5 +248,40 @@ describe("listInvites", () => {
     expect(mockDb.select).toHaveBeenCalled();
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(1);
+  });
+});
+
+// removeWorkspaceMembership (slice 4 Task 3): the previously-missing
+// membership-removal write the console members page needs to actually
+// have something to call — see that route's own doc-comment
+// (apps/console/app/api/v1/workspaces/[workspaceId]/members/[userId]/route.ts)
+// for why this didn't already exist. Same shape as revokeInvite above
+// (delete/update scoped by workspaceId + the row's own id, `.returning()`
+// to let the caller distinguish "removed" from "nothing to remove").
+describe("removeWorkspaceMembership", () => {
+  const MOCK_MEMBERSHIP = {
+    userId: "user-1",
+    workspaceId: "ws-1",
+    role: "member" as const,
+    createdAt: new Date("2026-01-01"),
+  };
+
+  it("deletes the membership scoped by workspaceId + userId and returns the row", async () => {
+    const chain = makeChain([MOCK_MEMBERSHIP]);
+    mockDb.delete = vi.fn(() => chain as ReturnType<typeof db.delete>);
+
+    const result = await removeWorkspaceMembership("ws-1", "user-1");
+
+    expect(mockDb.delete).toHaveBeenCalled();
+    expect(result).toEqual(MOCK_MEMBERSHIP);
+  });
+
+  it("returns null when no matching membership exists (not a member / already removed)", async () => {
+    const chain = makeChain([]);
+    mockDb.delete = vi.fn(() => chain as ReturnType<typeof db.delete>);
+
+    const result = await removeWorkspaceMembership("ws-1", "nonexistent-user");
+
+    expect(result).toBeNull();
   });
 });

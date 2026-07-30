@@ -1,6 +1,7 @@
 import { auth, signIn } from "@agentrail/auth";
 import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
+import { claimSeatsForAcceptedInvites } from "../../lib/claim-invite-seats";
 import Link from "next/link";
 import Image from "next/image";
 import { Send } from "lucide-react";
@@ -63,7 +64,18 @@ export default async function LandingPage() {
     const email = (session.user as typeof session.user & { email?: string }).email;
     if (email) {
       try {
-        await claimInvitesForUser({ userId: session.user.id, email });
+        const claimedWorkspaceIds = await claimInvitesForUser({
+          userId: session.user.id,
+          email,
+        });
+        // Seat claim (spec §5 rule 1, slice 4 Task 3) — this landing-page
+        // auto-claim-on-visit is the SECOND real entry point for the same
+        // claimInvitesForUser call the /invite/[token] page uses (see
+        // ../../lib/claim-invite-seats.ts's own doc-comment), so it gets the
+        // identical hook. The helper never throws by contract, so it's safe
+        // inside this same try even though the catch below exists for
+        // claimInvitesForUser itself.
+        await claimSeatsForAcceptedInvites(claimedWorkspaceIds, session.user.id);
       } catch {
         // never block login
       }

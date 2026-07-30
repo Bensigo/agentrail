@@ -2393,6 +2393,7 @@ export {
   reclaimStaleChannelMessages,
   deadLettersForWorkspace,
   requeueDeadChannelMessage,
+  stampChannelInboxWorkspace,
   type InboxRetryDecision,
   type EnqueueChannelMessageInput,
   type EnqueueChannelMessageResult,

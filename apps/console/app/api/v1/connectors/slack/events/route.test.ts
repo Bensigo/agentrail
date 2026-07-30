@@ -6,6 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   resolveInboundChatIdentity: vi.fn(),
   enqueueChannelMessage: vi.fn(),
   getThreadEngagement: vi.fn(),
+  getSlackInstallation: vi.fn(),
 }));
 
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
@@ -17,6 +18,7 @@ import {
   resolveInboundChatIdentity,
   enqueueChannelMessage,
   getThreadEngagement,
+  getSlackInstallation,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
@@ -24,10 +26,32 @@ const mockResolve = vi.mocked(resolveInboundChatIdentity);
 const mockEnqueue = vi.mocked(enqueueChannelMessage);
 const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
 const mockGetEngagement = vi.mocked(getThreadEngagement);
+const mockGetInstallation = vi.mocked(getSlackInstallation);
 mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
 
 const SIGNING_SECRET = "shhh-its-a-secret";
 const ORIGINAL_SECRET_ENV = process.env["SLACK_SIGNING_SECRET"];
+
+// The default team every test fixture uses unless it overrides `team_id`.
+const DEFAULT_TEAM_ID = "T1";
+const DEFAULT_BOT_USER_ID = "UBOTDEFAULT";
+
+function installation(overrides: Partial<{
+  teamId: string;
+  teamName: string | null;
+  botToken: string;
+  botUserId: string;
+  enterpriseId: string | null;
+}> = {}) {
+  return {
+    teamId: DEFAULT_TEAM_ID,
+    teamName: "Test Team",
+    botToken: "xoxb-test-token",
+    botUserId: DEFAULT_BOT_USER_ID,
+    enterpriseId: null,
+    ...overrides,
+  };
+}
 
 function sign(timestamp: string, rawBody: string, secret = SIGNING_SECRET): string {
   const basestring = `v0:${timestamp}:${rawBody}`;
@@ -58,10 +82,12 @@ const URL_VERIFICATION_BODY = JSON.stringify({
   type: "url_verification",
 });
 
-function messageEventBody(overrides: Record<string, unknown> = {}) {
+function messageEventBody(
+  overrides: { event?: Record<string, unknown>; team_id?: string } = {}
+) {
   return JSON.stringify({
     token: "tok",
-    team_id: "T1",
+    team_id: overrides.team_id ?? DEFAULT_TEAM_ID,
     api_app_id: "A1",
     event: {
       type: "message",
@@ -70,7 +96,7 @@ function messageEventBody(overrides: Record<string, unknown> = {}) {
       text: "hello jace",
       ts: "1515449483.000078",
       channel_type: "im",
-      ...((overrides.event as Record<string, unknown>) ?? {}),
+      ...(overrides.event ?? {}),
     },
     type: "event_callback",
     event_id: "Ev0PV52K21",
@@ -81,6 +107,13 @@ function messageEventBody(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
+  // Every test gets a resolvable installation for DEFAULT_TEAM_ID unless it
+  // overrides this — mirrors prod's steady state (an installed team) so
+  // tests that aren't specifically about installation resolution don't have
+  // to think about it.
+  mockGetInstallation.mockImplementation(async (teamId: string) =>
+    teamId === DEFAULT_TEAM_ID ? installation() : null
+  );
   process.env["SLACK_SIGNING_SECRET"] = SIGNING_SECRET;
 });
 
@@ -208,10 +241,11 @@ describe("POST /api/v1/connectors/slack/events — bot-loop / noise guard", () =
   });
 
   // Final whole-branch review, finding #2 (minor): a thread reply sent with
-  // Slack's "Also send to channel" checkbox carries subtype:
-  // "thread_broadcast" — a genuine human turn, not noise. It must be
-  // admitted while every OTHER subtype (edits, joins, deletions, ...) stays
-  // rejected, and a bot_id is still rejected regardless of subtype.
+  // Slack's "Also send to channel" checkbox carries that subtype but is a
+  // genuine human turn — it has the same text/user/channel/ts/thread_ts
+  // shape as any other in-thread reply, so admitting it here is enough for
+  // it to flow through the existing path unchanged. Every other subtype
+  // (edits, deletes, joins, ...) and any bot_id stay rejected.
   it("still ignores a thread_broadcast event that ALSO carries bot_id", async () => {
     const res = await POST(
       req(messageEventBody({ event: { subtype: "thread_broadcast", bot_id: "B123" } }))
@@ -222,99 +256,132 @@ describe("POST /api/v1/connectors/slack/events — bot-loop / noise guard", () =
   });
 });
 
-describe("POST /api/v1/connectors/slack/events — event_callback message (a stranger DMing the app)", () => {
-  it("resolves identity and enqueues, anchoring on chatIdentityId for an unbound (intro) sender", async () => {
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
+// ---------------------------------------------------------------------------
+// Task 3 — fail closed on an unknown/uninstalled/revoked team. This gate
+// runs BEFORE identity resolution and BEFORE the engagement gate: no
+// installation means no credential to ever reply with, so the event must
+// never reach `channel_inbox`.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/connectors/slack/events — unknown team (fail closed)", () => {
+  it("ignores an event whose team_id has no installation — never resolves identity, never enqueues, never kicks the dispatcher", async () => {
+    mockGetInstallation.mockResolvedValue(null);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await POST(req(messageEventBody({ team_id: "TUNKNOWN" })));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: true });
+    expect(mockGetInstallation).toHaveBeenCalledWith("TUNKNOWN");
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+    // "ignored with a log line" — a diagnosable trace, not silent drop.
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  // getSlackInstallation collapses "never installed" and "revoked" to the
+  // SAME `null` (see its own doc-comment) precisely so this door never has
+  // to special-case revocation — this test proves the door actually honours
+  // that collapse rather than assuming it.
+  it("treats a revoked installation (getSlackInstallation returns null) identically to an unknown team", async () => {
+    mockGetInstallation.mockResolvedValue(null);
+
+    const res = await POST(req(messageEventBody({ team_id: "TREVOKED" })));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: true });
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("ignores an event_callback with no team_id at all, without throwing", async () => {
+    const raw = JSON.stringify({
+      token: "tok",
+      api_app_id: "A1",
+      event: {
+        type: "message",
+        channel: "D0PNCRP9N",
+        user: "U061F7AUR",
+        text: "hello jace",
+        ts: "1515449483.000078",
+        channel_type: "im",
+      },
+      type: "event_callback",
+      event_id: "Ev0PV52K21",
+      event_time: 1515449483,
+    });
+
+    const res = await POST(req(raw));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: true });
+    expect(mockGetInstallation).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3 — the cross-tenant identity fix. This is the test the whole task
+// exists for: two workspaces whose Slack user ids collide (Slack ids are
+// only unique WITHIN a workspace) must resolve to two DIFFERENT
+// chat_identities rows, not one shared row.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/connectors/slack/events — team-scoped identity (cross-tenant fix)", () => {
+  beforeEach(() => {
+    mockGetInstallation.mockImplementation(async (teamId: string) => {
+      if (teamId === "T111") return installation({ teamId: "T111", botUserId: "UBOT111" });
+      if (teamId === "T222") return installation({ teamId: "T222", botUserId: "UBOT222" });
+      return null;
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  it("two teams with the SAME Slack user id resolve to DIFFERENT identities (distinct platformUserId)", async () => {
+    mockResolve.mockResolvedValueOnce({
+      identity: { id: "chat-identity-team-111", workspaceId: null } as never,
       created: true,
       disposition: "intro",
     });
-    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+    mockResolve.mockResolvedValueOnce({
+      identity: { id: "chat-identity-team-222", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
 
-    const res = await POST(req(messageEventBody()));
+    await POST(
+      req(messageEventBody({ team_id: "T111", event: { user: "U999", text: "hi" } }))
+    );
+    await POST(
+      req(messageEventBody({ team_id: "T222", event: { user: "U999", text: "hi" } }))
+    );
 
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-
-    expect(mockResolve).toHaveBeenCalledWith({
+    expect(mockResolve).toHaveBeenNthCalledWith(1, {
       platform: "slack",
-      platformUserId: "U061F7AUR",
+      platformUserId: "T111:U999",
     });
-    expect(mockEnqueue).toHaveBeenCalledWith({
-      chatIdentityId: "chat-identity-1",
-      channel: "slack",
-      conversationKey: "D0PNCRP9N",
-      kind: "message",
-      senderId: "U061F7AUR",
-      providerMessageId: "D0PNCRP9N:Ev0PV52K21",
-      payload: {
-        chatId: "D0PNCRP9N",
-        text: "hello jace",
-        fromId: "U061F7AUR",
-      },
+    expect(mockResolve).toHaveBeenNthCalledWith(2, {
+      platform: "slack",
+      platformUserId: "T222:U999",
     });
-  });
-
-  it("anchors on workspaceId (not chatIdentityId) for a bound identity", async () => {
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-2", workspaceId: "ws-1" } as never,
-      created: false,
-      disposition: "bound",
-    });
-    mockEnqueue.mockResolvedValue({ id: "row-2", deduped: false });
-
-    await POST(req(messageEventBody()));
-
-    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
-    expect(enqueueArgs).toMatchObject({ workspaceId: "ws-1" });
-    expect(enqueueArgs).not.toHaveProperty("chatIdentityId");
-  });
-
-  it("returns { ok: true, deduped: true } on a redelivered event_id, without erroring", async () => {
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
-      created: false,
-      disposition: "intro",
-    });
-    mockEnqueue.mockResolvedValue({ id: null, deduped: true });
-
-    const res = await POST(req(messageEventBody()));
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, deduped: true });
-  });
-
-  it("kicks the dispatcher fire-and-forget after a fresh enqueue", async () => {
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
-      created: true,
-      disposition: "intro",
-    });
-    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
-
-    const res = await POST(req(messageEventBody()));
-
-    expect(res.status).toBe(200);
-    expect(mockDispatch).toHaveBeenCalledTimes(1);
-  });
-
-  it("never lets a dispatcher rejection surface into the route's response (fire-and-forget)", async () => {
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
-      created: true,
-      disposition: "intro",
-    });
-    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
-    mockDispatch.mockRejectedValueOnce(new Error("drain blew up"));
-
-    const res = await POST(req(messageEventBody()));
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    // Not merely "different calls" — the actual platformUserId strings must differ.
+    const firstCallUserId = mockResolve.mock.calls[0]?.[0]?.platformUserId;
+    const secondCallUserId = mockResolve.mock.calls[1]?.[0]?.platformUserId;
+    expect(firstCallUserId).not.toBe(secondCallUserId);
   });
 });
 
-describe("POST /api/v1/connectors/slack/events — thread-scoped channel conversations", () => {
+// ---------------------------------------------------------------------------
+// Task 3 — mention detection is per installation now: `installation.botUserId`
+// replaces the old shared `SLACK_BOT_USER_ID` env var. A message containing
+// one team's bot id must never count as a mention for a DIFFERENT team's
+// event.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/connectors/slack/events — mention detection per installation", () => {
   beforeEach(() => {
     mockResolve.mockResolvedValue({
       identity: { id: "chat-identity-1", workspaceId: null } as never,
@@ -324,144 +391,9 @@ describe("POST /api/v1/connectors/slack/events — thread-scoped channel convers
     mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
   });
 
-  it("keys a top-level channel message on its own thread and carries threadTs", async () => {
-    const res = await POST(
-      req(
-        messageEventBody({
-          event: {
-            channel: "C123",
-            channel_type: undefined,
-            ts: "1700000000.000100",
-          },
-        })
-      )
-    );
-
-    expect(res.status).toBe(200);
-    expect(mockEnqueue).toHaveBeenCalledWith({
-      chatIdentityId: "chat-identity-1",
-      channel: "slack",
-      conversationKey: "C123:1700000000.000100",
-      kind: "message",
-      senderId: "U061F7AUR",
-      providerMessageId: "C123:Ev0PV52K21",
-      payload: {
-        chatId: "C123",
-        text: "hello jace",
-        fromId: "U061F7AUR",
-        threadTs: "1700000000.000100",
-      },
-    });
-  });
-
-  it("keys an in-thread reply on the thread root, not on the reply's own ts", async () => {
-    const res = await POST(
-      req(
-        messageEventBody({
-          event: {
-            channel: "C123",
-            channel_type: undefined,
-            ts: "1700000009.000900",
-            thread_ts: "1700000000.000100",
-          },
-        })
-      )
-    );
-
-    expect(res.status).toBe(200);
-    expect(mockEnqueue).toHaveBeenCalledWith({
-      chatIdentityId: "chat-identity-1",
-      channel: "slack",
-      conversationKey: "C123:1700000000.000100",
-      kind: "message",
-      senderId: "U061F7AUR",
-      providerMessageId: "C123:Ev0PV52K21",
-      payload: {
-        chatId: "C123",
-        text: "hello jace",
-        fromId: "U061F7AUR",
-        threadTs: "1700000000.000100",
-      },
-    });
-  });
-
-  it("leaves a DM byte-unchanged — channel-keyed, no threadTs key at all", async () => {
-    const res = await POST(req(messageEventBody()));
-
-    expect(res.status).toBe(200);
-    const arg = mockEnqueue.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
-    expect(arg["conversationKey"]).toBe("D0PNCRP9N");
-    expect(arg["payload"]).not.toHaveProperty("threadTs");
-  });
-
-  // Final whole-branch review, finding #2 (minor): admit a thread_broadcast
-  // reply (Slack's "Also send to channel" checkbox) exactly like any other
-  // in-thread reply — same conversationKey (thread root), same threadTs.
-  it("admits a subtype: 'thread_broadcast' in-thread reply and enqueues it like a normal message", async () => {
-    const res = await POST(
-      req(
-        messageEventBody({
-          event: {
-            channel: "C123",
-            channel_type: undefined,
-            ts: "1700000009.000900",
-            thread_ts: "1700000000.000100",
-            subtype: "thread_broadcast",
-          },
-        })
-      )
-    );
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(mockEnqueue).toHaveBeenCalledWith({
-      chatIdentityId: "chat-identity-1",
-      channel: "slack",
-      conversationKey: "C123:1700000000.000100",
-      kind: "message",
-      senderId: "U061F7AUR",
-      providerMessageId: "C123:Ev0PV52K21",
-      payload: {
-        chatId: "C123",
-        text: "hello jace",
-        fromId: "U061F7AUR",
-        threadTs: "1700000000.000100",
-      },
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Thread engagement gate (spec: docs/superpowers/specs/2026-07-28-thread-
-// native-jace-design.md). SLACK_BOT_USER_ID unset (every describe block
-// above) must stay byte-unchanged — proven by every test above passing with
-// no env var set at all. This block covers the var IS set.
-// ---------------------------------------------------------------------------
-
-describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK_BOT_USER_ID set)", () => {
-  const BOT_ID = "UBOT1";
-  const ORIGINAL_BOT_ID_ENV = process.env["SLACK_BOT_USER_ID"];
-
-  beforeEach(() => {
-    process.env["SLACK_BOT_USER_ID"] = BOT_ID;
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
-      created: true,
-      disposition: "intro",
-    });
-    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_BOT_ID_ENV === undefined) {
-      delete process.env["SLACK_BOT_USER_ID"];
-    } else {
-      process.env["SLACK_BOT_USER_ID"] = ORIGINAL_BOT_ID_ENV;
-    }
-  });
-
-  function channelMessageBody(overrides: Record<string, unknown> = {}) {
+  function channelMessageBody(overrides: Record<string, unknown> = {}, team_id?: string) {
     return messageEventBody({
+      team_id,
       event: {
         channel: "C123",
         channel_type: undefined,
@@ -473,8 +405,51 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
     });
   }
 
-  it("a mention (<@BOT_ID> in text) always enqueues, without ever looking up engagement state", async () => {
-    const res = await POST(req(channelMessageBody({ text: `<@${BOT_ID}> what's the status?` })));
+  it("a message containing team A's bot id does NOT count as a mention when the event came from team B", async () => {
+    mockGetInstallation.mockImplementation(async (teamId: string) => {
+      if (teamId === "TEAM_A") return installation({ teamId: "TEAM_A", botUserId: "UBOTTEAMA" });
+      if (teamId === "TEAM_B") return installation({ teamId: "TEAM_B", botUserId: "UBOTTEAMB" });
+      return null;
+    });
+    // The dropped path never even reaches identity/enqueue unless engagement
+    // admits it, so make the session dormant to prove the mention truly
+    // isn't recognized (if it wrongly counted as a mention, it would enqueue
+    // regardless of this dormant state).
+    mockGetEngagement.mockResolvedValue({
+      dormantSince: new Date("2026-07-28T12:00:00Z"),
+      engagedSpeakerId: "U061F7AUR",
+    });
+
+    const res = await POST(
+      req(channelMessageBody({ text: "<@UBOTTEAMA> what's the status?" }, "TEAM_B"))
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, skipped: true });
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("that SAME text DOES count as a mention when the event actually came from team A", async () => {
+    mockGetInstallation.mockImplementation(async (teamId: string) => {
+      if (teamId === "TEAM_A") return installation({ teamId: "TEAM_A", botUserId: "UBOTTEAMA" });
+      return null;
+    });
+
+    const res = await POST(
+      req(channelMessageBody({ text: "<@UBOTTEAMA> what's the status?" }, "TEAM_A"))
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetEngagement).not.toHaveBeenCalled();
+    expect(mockEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ mentionsBot: true, mentionsOtherUsers: false }),
+      })
+    );
+  });
+
+  it("a mention of the resolved installation's bot id always enqueues, without ever looking up engagement state", async () => {
+    const res = await POST(req(channelMessageBody({ text: `<@${DEFAULT_BOT_USER_ID}> status?` })));
 
     expect(res.status).toBe(200);
     expect(mockGetEngagement).not.toHaveBeenCalled();
@@ -567,9 +542,9 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
-  it("carries mentionsBot/mentionsOtherUsers/repliesToMessageId/repliesToBot into the payload once configured", async () => {
+  it("carries mentionsBot/mentionsOtherUsers/repliesToMessageId/repliesToBot into the payload", async () => {
     await POST(
-      req(channelMessageBody({ text: `<@${BOT_ID}> hey <@U777> check this out` }))
+      req(channelMessageBody({ text: `<@${DEFAULT_BOT_USER_ID}> hey <@U777> check this out` }))
     );
 
     expect(mockEnqueue).toHaveBeenCalledWith({
@@ -581,7 +556,7 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
       providerMessageId: "C123:Ev0PV52K21",
       payload: {
         chatId: "C123",
-        text: `<@${BOT_ID}> hey <@U777> check this out`,
+        text: `<@${DEFAULT_BOT_USER_ID}> hey <@U777> check this out`,
         fromId: "U061F7AUR",
         threadTs: "1700000000.000100",
         mentionsBot: true,
@@ -593,7 +568,7 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
   });
 
   it("mentionsOtherUsers is false when the only <@...> token is the bot's own", async () => {
-    await POST(req(channelMessageBody({ text: `<@${BOT_ID}> status?` })));
+    await POST(req(channelMessageBody({ text: `<@${DEFAULT_BOT_USER_ID}> status?` })));
 
     expect(mockEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -603,8 +578,8 @@ describe("POST /api/v1/connectors/slack/events — thread engagement gate (SLACK
   });
 });
 
-describe("POST /api/v1/connectors/slack/events — SLACK_BOT_USER_ID unset", () => {
-  it("enqueues unconditionally, never looks up engagement state, and never adds engagement fields to the payload — today's exact behavior", async () => {
+describe("POST /api/v1/connectors/slack/events — event_callback message (a stranger DMing the app)", () => {
+  it("resolves identity and enqueues, anchoring on chatIdentityId for an unbound (intro) sender", async () => {
     mockResolve.mockResolvedValue({
       identity: { id: "chat-identity-1", workspaceId: null } as never,
       created: true,
@@ -612,20 +587,125 @@ describe("POST /api/v1/connectors/slack/events — SLACK_BOT_USER_ID unset", () 
     });
     mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
 
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    expect(mockResolve).toHaveBeenCalledWith({
+      platform: "slack",
+      platformUserId: "T1:U061F7AUR",
+    });
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "D0PNCRP9N:Ev0PV52K21",
+      payload: {
+        chatId: "D0PNCRP9N",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        mentionsBot: false,
+        mentionsOtherUsers: false,
+        repliesToMessageId: null,
+        repliesToBot: false,
+      },
+    });
+  });
+
+  it("anchors on workspaceId (not chatIdentityId) for a bound identity", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-2", workspaceId: "ws-1" } as never,
+      created: false,
+      disposition: "bound",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-2", deduped: false });
+
+    await POST(req(messageEventBody()));
+
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs).toMatchObject({ workspaceId: "ws-1" });
+    expect(enqueueArgs).not.toHaveProperty("chatIdentityId");
+  });
+
+  it("returns { ok: true, deduped: true } on a redelivered event_id, without erroring", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: false,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: null, deduped: true });
+
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deduped: true });
+  });
+
+  it("kicks the dispatcher fire-and-forget after a fresh enqueue", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("never lets a dispatcher rejection surface into the route's response (fire-and-forget)", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+    mockDispatch.mockRejectedValueOnce(new Error("drain blew up"));
+
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+});
+
+describe("POST /api/v1/connectors/slack/events — thread-scoped channel conversations", () => {
+  beforeEach(() => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+    // These tests are about thread-key computation, not engagement — none of
+    // these messages mention the bot, so admit them via an engaged session
+    // rather than folding engagement concerns into thread-keying assertions.
+    mockGetEngagement.mockResolvedValue({ dormantSince: null, engagedSpeakerId: "U061F7AUR" });
+  });
+
+  it("keys a top-level channel message on its own thread and carries threadTs", async () => {
     const res = await POST(
       req(
         messageEventBody({
-          event: { channel: "C123", channel_type: undefined, ts: "1700000009.000900" },
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000000.000100",
+          },
         })
       )
     );
 
     expect(res.status).toBe(200);
-    expect(mockGetEngagement).not.toHaveBeenCalled();
     expect(mockEnqueue).toHaveBeenCalledWith({
       chatIdentityId: "chat-identity-1",
       channel: "slack",
-      conversationKey: "C123:1700000009.000900",
+      conversationKey: "C123:1700000000.000100",
       kind: "message",
       senderId: "U061F7AUR",
       providerMessageId: "C123:Ev0PV52K21",
@@ -633,27 +713,96 @@ describe("POST /api/v1/connectors/slack/events — SLACK_BOT_USER_ID unset", () 
         chatId: "C123",
         text: "hello jace",
         fromId: "U061F7AUR",
-        threadTs: "1700000009.000900",
+        threadTs: "1700000000.000100",
+        mentionsBot: false,
+        mentionsOtherUsers: false,
+        repliesToMessageId: null,
+        repliesToBot: false,
       },
     });
   });
 
-  it("logs a missing-SLACK_BOT_USER_ID notice at most once per process", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    mockResolve.mockResolvedValue({
-      identity: { id: "chat-identity-1", workspaceId: null } as never,
-      created: true,
-      disposition: "intro",
-    });
-    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
-
-    await POST(req(messageEventBody()));
-    await POST(req(messageEventBody({ event: { ts: "1700000009.000900" } })));
-
-    const missingVarWarnings = warnSpy.mock.calls.filter((call) =>
-      String(call[0]).includes("SLACK_BOT_USER_ID")
+  it("keys an in-thread reply on the thread root, not on the reply's own ts", async () => {
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000009.000900",
+            thread_ts: "1700000000.000100",
+          },
+        })
+      )
     );
-    expect(missingVarWarnings.length).toBeLessThanOrEqual(1);
-    warnSpy.mockRestore();
+
+    expect(res.status).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+        mentionsBot: false,
+        mentionsOtherUsers: false,
+        repliesToMessageId: null,
+        repliesToBot: false,
+      },
+    });
+  });
+
+  it("leaves a DM byte-unchanged — channel-keyed, no threadTs key at all", async () => {
+    const res = await POST(req(messageEventBody()));
+
+    expect(res.status).toBe(200);
+    const arg = mockEnqueue.mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(arg["conversationKey"]).toBe("D0PNCRP9N");
+    expect(arg["payload"]).not.toHaveProperty("threadTs");
+  });
+
+  // Final whole-branch review, finding #2 (minor): admit a thread_broadcast
+  // reply (Slack's "Also send to channel" checkbox) exactly like any other
+  // in-thread reply — same conversationKey (thread root), same threadTs.
+  it("admits a subtype: 'thread_broadcast' in-thread reply and enqueues it like a normal message", async () => {
+    const res = await POST(
+      req(
+        messageEventBody({
+          event: {
+            channel: "C123",
+            channel_type: undefined,
+            ts: "1700000009.000900",
+            thread_ts: "1700000000.000100",
+            subtype: "thread_broadcast",
+          },
+        })
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(mockEnqueue).toHaveBeenCalledWith({
+      chatIdentityId: "chat-identity-1",
+      channel: "slack",
+      conversationKey: "C123:1700000000.000100",
+      kind: "message",
+      senderId: "U061F7AUR",
+      providerMessageId: "C123:Ev0PV52K21",
+      payload: {
+        chatId: "C123",
+        text: "hello jace",
+        fromId: "U061F7AUR",
+        threadTs: "1700000000.000100",
+        mentionsBot: false,
+        mentionsOtherUsers: false,
+        repliesToMessageId: null,
+        repliesToBot: false,
+      },
+    });
   });
 });

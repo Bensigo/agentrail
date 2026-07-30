@@ -120,6 +120,20 @@ export const connectorProviderEnum = [
   // as every provider above: a free-text column, so this is a TS-union
   // addition only — no migration.
   "vercel",
+  // observability — Task P8 (Evidence Providers Wave 2): cloudflare, the
+  // FINAL Wave-2 provider (`apps/console/lib/evidence/cloudflare.ts`).
+  // Stores a SINGLE API Token in `secret` — no `secretParts`/
+  // `secretPartPatterns` on this provider's catalog entry, same
+  // single-secret shape as `prometheus`/`grafana`/`vercel` above. Its
+  // non-secret companion field is `config.cloudflareZoneId` (already added
+  // by Task P0 — see {@link ConnectorConfig.cloudflareZoneId});
+  // `config.cloudflareAccountId` (also already added by Task P0) is
+  // DELIBERATELY left unused — confirmed both GraphQL Analytics datasets
+  // this adapter reads are reachable via `zoneTag` alone, no `accountTag`
+  // needed (see cloudflare.ts's own doc-comment, "ACCOUNT TAG NOT NEEDED").
+  // Same precedent as every provider above: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "cloudflare",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

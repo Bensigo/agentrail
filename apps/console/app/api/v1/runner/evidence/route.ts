@@ -163,6 +163,9 @@ import "../../../../../lib/evidence/grafana";
 // Task P7 (Evidence Providers Wave 2): same self-registration idiom for the
 // `vercel` adapter.
 import "../../../../../lib/evidence/vercel";
+// Task P8 (Evidence Providers Wave 2 — FINAL provider): same
+// self-registration idiom for the `cloudflare` adapter.
+import "../../../../../lib/evidence/cloudflare";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

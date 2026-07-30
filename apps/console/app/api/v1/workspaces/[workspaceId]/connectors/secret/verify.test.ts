@@ -1017,6 +1017,114 @@ describe("verifyConnectorCredential('vercel', ...)", () => {
 });
 
 /**
+ * Task P8 (FINAL Wave-2 provider): cloudflare verify — a SINGLE leg
+ * (`GET /client/v4/user/tokens/verify`), no `config` needed at all (unlike
+ * every Wave-2 provider before Vercel's own unconditional token leg — see
+ * verify.ts's own doc-comment, "CLOUDFLARE (Task P8)"). `secret` is a
+ * SINGLE field (no composite split).
+ */
+describe("verifyConnectorCredential('cloudflare', ...)", () => {
+  // FIXTURE, deliberately non-realistic (mirrors the vercel block's own
+  // shared discipline above): starts with `TESTFIXTURE_`, not
+  // `cfut_`/`cfat_`/`cfk_` — the current, GitHub-secret-scanning-detected
+  // Cloudflare token prefixes (see cloudflare.ts's own doc-comment,
+  // "AUTH"); cannot match those detectors' prefix checks by construction.
+  const TOKEN = "TESTFIXTURE_cloudflare_token_00000000000000";
+
+  it("posts to the confirmed token-verify endpoint with Authorization: Bearer <token>", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { id: "t1", status: "active" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe("https://api.cloudflare.com/client/v4/user/tokens/verify");
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("succeeds even when config itself is undefined (no 4th argument at all) — this verify needs no config", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, result: { status: "active" } }),
+    })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("rejects a token whose status is 'disabled' even though success:true and HTTP 200 — success alone is not sufficient", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, result: { status: "disabled" } }),
+    })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Cloudflare rejected this token." });
+  });
+
+  it("rejects a token whose status is 'expired'", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, result: { status: "expired" } }),
+    })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Cloudflare rejected this token." });
+  });
+
+  it("rejects a body with success:false even on HTTP 200", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: false, errors: [{ message: "invalid" }] }),
+    })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Cloudflare rejected this token." });
+  });
+
+  it("maps a 401 to a rejection error", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Cloudflare rejected this token." });
+  });
+
+  it("maps a 403 to the same rejection error", async () => {
+    global.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Cloudflare rejected this token." });
+  });
+
+  it("surfaces a non-2xx/non-401/403 status with its own HTTP code", async () => {
+    global.fetch = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Cloudflare (HTTP 500)." });
+  });
+
+  it("reports an unreachable upstream with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("cloudflare", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Couldn't reach Cloudflare to verify the token — try again." });
+  });
+
+  it("does NOT go through splitCompositeSecret's exact-part-count model — no catalog secretParts declared for this kind", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { status: "active" } }) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("cloudflare", TOKEN);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus, grafana, vercel) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus, grafana, vercel, cloudflare) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -126,6 +126,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("grafana");
     // Task P7.
     expect(body.error).toContain("vercel");
+    // Task P8 (final Wave-2 provider).
+    expect(body.error).toContain("cloudflare");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -1042,5 +1044,153 @@ describe("PUT /connectors/secret — vercel, full flow + extra-config pass-throu
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "vercel", null);
+  });
+});
+
+/**
+ * Full cloudflare connect flow (Task P8, FINAL Wave-2 provider) — both
+ * gates run for real (this route doesn't mock `./verify`), same idiom as
+ * the grafana/vercel blocks above. `secret` is a SINGLE field (no
+ * composite split). UNLIKE every other Wave-2 provider's full-flow block,
+ * cloudflare's live verify needs NO extra config at all (see verify.ts's
+ * own doc-comment, "CLOUDFLARE (Task P8)") — this block still proves the
+ * extra-config pass-through mechanism generalizes to an EIGHTH provider
+ * carrying its own `cloudflareZoneId` field through the SAME PUT body, with
+ * no cloudflare-specific code in this route; the field is simply not
+ * needed by the verify call itself here.
+ */
+describe("PUT /connectors/secret — cloudflare, full flow + extra-config pass-through (Task P8)", () => {
+  const originalFetch = global.fetch;
+  // FIXTURE, deliberately non-realistic (mirrors the vercel/grafana blocks'
+  // own shared discipline above): starts with `TESTFIXTURE_`, not
+  // `cfut_`/`cfat_`/`cfk_` — the current, GitHub-secret-scanning-detected
+  // Cloudflare token prefixes (see lib/evidence/cloudflare.ts's own
+  // doc-comment, "AUTH"); cannot match those detectors' prefix checks by
+  // construction.
+  const CLOUDFLARE_SECRET = "TESTFIXTURE_cloudflare_token_00000000000000";
+  const ZONE_ID = "023e105f4ecef8ad9ca31a8372d0c353";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT cloudflare accepted end to end: secret + cloudflareZoneId in the SAME body + a live verify that succeeds (GET /client/v4/user/tokens/verify) → 200 connected:true, setConnectorSecret called with the trimmed secret (the zone id NOT part of it)", async () => {
+    const calledUrls: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledUrls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { id: "t1", status: "active" } }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "cloudflare",
+      enabled: true,
+      config: {
+        repos: [],
+        triggerLabel: "ready-for-agent",
+        pollIntervalSeconds: 60,
+        cloudflareZoneId: ZONE_ID,
+      },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "cloudflare", secret: `  ${CLOUDFLARE_SECRET}  `, cloudflareZoneId: ZONE_ID }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(calledUrls).toEqual(["https://api.cloudflare.com/client/v4/user/tokens/verify"]);
+    // The route itself never persists cloudflareZoneId — only the trimmed
+    // secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "cloudflare", CLOUDFLARE_SECRET);
+  });
+
+  it("PUT cloudflare with NO cloudflareZoneId in the body still passes Gate 2 (verify needs no config at all) — the route itself has no cloudflare-specific required-field check; the connector-level config_missing gate is the adapter's own concern at read time, not this route's", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, result: { status: "active" } }),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "cloudflare",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "cloudflare", secret: CLOUDFLARE_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("PUT cloudflare with a live verify Cloudflare rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "cloudflare", secret: CLOUDFLARE_SECRET, cloudflareZoneId: ZONE_ID }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Cloudflare rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT cloudflare with a disabled token (success:true, status:'disabled') → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, result: { status: "disabled" } }),
+    })) as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "cloudflare", secret: CLOUDFLARE_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Cloudflare rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT cloudflare with a whitespace-containing credential fails at the FORMAT gate — never calls fetch, never reads the extra config", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "cloudflare", secret: "has a space", cloudflareZoneId: ZONE_ID }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Cloudflare tokens must not contain whitespace." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT cloudflare with secret:null disconnects without ever calling verify/fetch, and without needing any extra config in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "cloudflare",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "cloudflare", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "cloudflare", null);
   });
 });

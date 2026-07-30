@@ -61,12 +61,17 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * (PIVOTED from the plan's believed `signals`-via-datasource-proxy shape —
  * see `lib/evidence/grafana.ts`'s own doc-comment, "PIVOT DECISION," for the
  * doc-verify trail) over a per-workspace SINGLE service-account-token
- * secret, scoped by a base-URL extra config — and `vercel` (Task P7,
+ * secret, scoped by a base-URL extra config — `vercel` (Task P7,
  * Evidence Providers Wave 2), the sixth Wave-2 provider: deployments as
  * `changes`, deployment build/runtime events as `search_events`, over a
  * per-workspace SINGLE Access Token, scoped by a required project id and
  * an OPTIONAL team id (the first Wave-2 provider with an optional extra
- * config field — a personal-account-scoped Vercel project has no team).
+ * config field — a personal-account-scoped Vercel project has no team) —
+ * and `cloudflare` (Task P8, Evidence Providers Wave 2), the FINAL Wave-2
+ * provider: edge-traffic signals + firewall/security events as
+ * `search_events`, both over Cloudflare's GraphQL Analytics API, a
+ * per-workspace SINGLE API Token, scoped by a required zone id (no account
+ * id needed — see `lib/evidence/cloudflare.ts`'s own doc-comment).
  */
 export type ConnectorKind =
   | "github"
@@ -80,7 +85,8 @@ export type ConnectorKind =
   | "datadog"
   | "prometheus"
   | "grafana"
-  | "vercel";
+  | "vercel"
+  | "cloudflare";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -780,6 +786,60 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P8, Evidence Providers Wave 2 — FINAL provider) - //
+  {
+    kind: "cloudflare",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Cloudflare",
+    description:
+      "Give the debugging investigator visibility into your Cloudflare edge traffic signals and firewall/security events.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The SEVENTH and final Wave-2 evidence provider (Task P8) — edge
+      // request/error/byte signals as `signals`, firewall/security events as
+      // `search_events`, both over Cloudflare's GraphQL Analytics API. See
+      // `lib/evidence/cloudflare.ts`.
+      evidence: ["signals", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Cloudflare API token",
+      credentialPlaceholder: "your Cloudflare API token",
+      credentialHint:
+        "A Cloudflare API Token (My Profile → API Tokens) scoped to the zone's Analytics: Read permission. Both the newer cfut_-prefixed format and the older, still-valid unprefixed format are accepted here; the live check against api.cloudflare.com is the real gate.",
+      helpUrl: "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
+      setupSteps: [
+        "Open Cloudflare → My Profile → API Tokens (dash.cloudflare.com/profile/api-tokens), and create a token with Zone → Analytics → Read on the zone below.",
+        "Copy the token (shown once).",
+        "Open the zone's Overview page to find its Zone ID (right sidebar), then paste both the token and the zone id here and connect.",
+      ],
+      // Task P8's own pinned decision: a SINGLE secret field (no
+      // secretParts — like sentry/prometheus/grafana/vercel above), a
+      // single REQUIRED extra config field. UNLIKE every provider above
+      // that needed exactly one field, Cloudflare's schema ALSO already
+      // carries a second, adjacent field (`cloudflareAccountId`, added by
+      // Task P0 alongside `cloudflareZoneId`) — deliberately NOT declared
+      // here: both GraphQL Analytics datasets this adapter reads
+      // (`httpRequestsAdaptiveGroups`, `firewallEventsAdaptive`) are
+      // confirmed reachable via `zoneTag` alone, no `accountTag` needed
+      // (see `lib/evidence/cloudflare.ts`'s own doc-comment, "ACCOUNT TAG
+      // NOT NEEDED"). `cloudflareAccountId` stays in `ConnectorConfig`,
+      // validated and preservable, simply never read by this connector's
+      // own connect form, adapter, or verify path — an intentional,
+      // documented non-use of an already-provisioned schema field.
+      extraConfigFields: [
+        {
+          key: "cloudflareZoneId",
+          label: "Zone ID",
+          placeholder: "your Cloudflare zone id",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -1189,6 +1249,31 @@ export function validateConnectorCredential(
       }
       if (s.length > 512) {
         return { ok: false, error: "Vercel tokens must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
+    case "cloudflare": {
+      // Task P8 (see `lib/evidence/cloudflare.ts`'s own doc-comment, "AUTH"
+      // for the full citation trail): Cloudflare's own token-formats page
+      // documents TWO new scannable, checksummed prefixes covering the
+      // credential type this connector asks for — `cfut_` (User API Token)
+      // and `cfat_` (Account API Token), both just "an API Token" from this
+      // connector's point of view — but the LEGACY, UNPREFIXED 40-char
+      // shape "continue[s] to work" per that same page; Cloudflare did not
+      // retire or reissue existing tokens. This gate stays shape-agnostic
+      // DELIBERATELY (not from an absence of documentation, and not from
+      // only ONE prefix being ambiguous — TWO independently-valid new
+      // prefixes exist here): requiring either would reject every
+      // still-valid legacy token a workspace may already hold. Mirrors
+      // vercel's/prometheus's identical "no single confirmed shape to gate
+      // on" precedent: no embedded whitespace, a generous ≤512-char bound
+      // wide enough for either generation. Real security lives at Gate 2
+      // (live verify), unaffected by this format gate's own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Cloudflare tokens must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Cloudflare tokens must be at most 512 characters." };
       }
       return { ok: true };
     }

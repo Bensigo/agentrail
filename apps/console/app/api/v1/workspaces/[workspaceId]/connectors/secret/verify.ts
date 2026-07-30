@@ -22,7 +22,8 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * — `GET /api/org`, confirmed the one endpoint of the two candidates that
  * actually accepts a service account token), Vercel (Task P7 —
  * `GET /v2/user` unconditionally, ADDITIONALLY `GET /v9/projects/{id}` when
- * a project id is present). Context7 stays
+ * a project id is present), Cloudflare (Task P8 — `GET
+ * /client/v4/user/tokens/verify`, needs no config at all). Context7 stays
  * format-only here — it has no stable side-effect-free check; its
  * format gate already rejects malformed values. Discord/Slack/Telegram are
  * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
@@ -48,6 +49,35 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  *   - A GraphQL error body (`{"errors":[...]}`, HTTP 200) is treated as
  *     rejection — Railway, like most GraphQL servers, does not always signal
  *     an invalid-token query with a non-2xx status.
+ *
+ * CLOUDFLARE (Task P8, Evidence Providers Wave 2 — FINAL provider):
+ * confirmed against Cloudflare's own docs during implementation (this
+ * task's mandatory first step), not trusted from memory — see
+ * `lib/evidence/cloudflare.ts`'s own doc-comment for the full doc-verify
+ * trail (token-format prefixes, the GraphQL dataset names/fields, the
+ * `$zoneTag: string`/`$filter: filter` custom-scalar quirk, rate limits).
+ * This module's own concern is narrower: the live-verify endpoint.
+ *   - `GET https://api.cloudflare.com/client/v4/user/tokens/verify` —
+ *     confirmed, current. Response: `{success, result:{id,
+ *     status:"active"|"disabled"|"expired", …}, errors, messages}`.
+ *     Genuinely validates the TOKEN ITSELF, independent of what it's
+ *     scoped to — works unmodified for a ZONE-scoped token (this task's
+ *     own "does it work with zone-scoped tokens" question), since it only
+ *     ever resolves the token's own identity/status, never anything about
+ *     its granted scope. NEEDS NO CONFIG (this task's own pinned
+ *     expectation, confirmed) — unlike Langfuse/Sentry/Datadog/Prometheus/
+ *     Grafana above, this is the SECOND Wave-2 provider (after Vercel's own
+ *     UNCONDITIONAL token leg) whose verify call needs no
+ *     not-yet-persisted config value at all, so `verifyCloudflare` below
+ *     takes no `config` parameter — mirrors `verifyLinear`'s/
+ *     `verifyFigma`'s/`verifyRailway`'s identical no-config shape, not the
+ *     `config`-threading shape every OTHER Wave-2 provider needed.
+ *   - `success: true` ALONE is NOT sufficient: the documented `status` enum
+ *     includes `"disabled"`/`"expired"` alongside `"active"` — a disabled
+ *     or expired token can still return a well-formed, successful response
+ *     body. `verifyCloudflare` checks `success === true && result.status
+ *     === "active"` so a technically-valid-but-unusable token is correctly
+ *     rejected rather than stored.
  *
  * LANGFUSE (Task P2, Evidence Providers Wave 2): confirmed against Langfuse's
  * own docs during implementation (`langfuse.com/docs/api-and-data-platform/
@@ -682,6 +712,41 @@ async function verifyVercel(
   }
 }
 
+const CLOUDFLARE_TOKEN_VERIFY_URL = "https://api.cloudflare.com/client/v4/user/tokens/verify";
+
+/** Cloudflare: a valid API Token resolves `GET
+ * https://api.cloudflare.com/client/v4/user/tokens/verify` with
+ * `result.status === "active"` — see this module's own doc-comment
+ * ("CLOUDFLARE (Task P8)") for the confirmed endpoint/response shape and
+ * why NO config is needed here (unlike every Wave-2 provider before
+ * Vercel's own token leg). */
+async function verifyCloudflare(token: string): Promise<VerifyResult> {
+  try {
+    const res = await fetchWithTimeout(CLOUDFLARE_TOKEN_VERIFY_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Cloudflare rejected this token." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Cloudflare (HTTP ${res.status}).` };
+    }
+    const body = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      result?: { status?: string };
+    };
+    // `success: true` alone is not sufficient — see this module's own
+    // doc-comment ("CLOUDFLARE (Task P8)") for why a disabled/expired token
+    // can still return a well-formed, successful response.
+    if (body?.success === true && body.result?.status === "active") {
+      return { ok: true };
+    }
+    return { ok: false, error: "Cloudflare rejected this token." };
+  } catch {
+    return { ok: false, error: "Couldn't reach Cloudflare to verify the token — try again." };
+  }
+}
+
 /**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
@@ -755,6 +820,13 @@ export async function verifyConnectorCredential(
       // step above is a harmless passthrough for this kind, so `first` IS
       // the full trimmed secret.
       return verifyVercel(first, config);
+    case "cloudflare":
+      // No declared secretParts (single field) — the split-before-dispatch
+      // step above is a harmless passthrough for this kind, so `first` IS
+      // the full trimmed secret. No `config` passed — see this module's
+      // own doc-comment ("CLOUDFLARE (Task P8)"): the verify endpoint needs
+      // no zone-scoped value at all.
+      return verifyCloudflare(first);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

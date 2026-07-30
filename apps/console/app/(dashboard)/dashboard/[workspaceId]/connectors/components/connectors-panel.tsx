@@ -21,6 +21,7 @@ import {
   PrometheusBrand,
   GrafanaBrand,
   VercelBrand,
+  CloudflareBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -63,6 +64,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   prometheus: PrometheusBrand,
   grafana: GrafanaBrand,
   vercel: VercelBrand,
+  cloudflare: CloudflareBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -98,6 +100,11 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // identity is pure black-in-light/white-in-dark, which a fixed hex
   // cannot represent across both themes).
   vercel: "text-[var(--gray-12)]",
+  // Task P8 (final Wave-2 provider): Cloudflare's real brand orange
+  // (#F38020, confirmed against simple-icons' own data) — same "real mark
+  // exists, so a real hex is pinned" precedent as Sentry/Datadog/
+  // Prometheus/Grafana above.
+  cloudflare: "text-[#f38020]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

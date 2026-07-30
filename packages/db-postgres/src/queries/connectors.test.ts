@@ -99,6 +99,19 @@ describe("isConnectorProvider — vercel (Task P7)", () => {
   });
 });
 
+// Task P8 (Evidence Providers Wave 2, FINAL provider): "cloudflare" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway"/"langfuse"/"sentry"/"datadog"/"prometheus"/"grafana"/"vercel"
+// above (no migration). cloudflareZoneId's/cloudflareAccountId's own
+// validateConnectorUpdate coverage already lives in the "Evidence Providers
+// Wave 2 (Task P0)" describe block below (P0 added both fields for all
+// seven remaining Wave-2 providers at once) — not duplicated here.
+describe("isConnectorProvider — cloudflare (Task P8)", () => {
+  it("recognizes 'cloudflare' as a known connector provider", () => {
+    expect(isConnectorProvider("cloudflare")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

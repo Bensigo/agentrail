@@ -30,6 +30,7 @@ describe("projectConnectors", () => {
       "prometheus",
       "grafana",
       "vercel",
+      "cloudflare",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -39,13 +40,14 @@ describe("projectConnectors", () => {
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
     // for debugging investigations, no ingest); Task P2 adds langfuse, Task
     // P3 adds sentry, Task P4 adds datadog, Task P5 adds prometheus, Task P6
-    // adds grafana, and Task P7 adds vercel to the SAME `observability`
-    // group.
+    // adds grafana, Task P7 adds vercel, and Task P8 adds cloudflare (the
+    // final Wave-2 provider) to the SAME `observability` group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
       "observability",
@@ -154,6 +156,7 @@ describe("projectConnectors", () => {
       "prometheus",
       "grafana",
       "vercel",
+      "cloudflare",
     ]);
   });
 
@@ -171,6 +174,7 @@ describe("projectConnectors", () => {
       "prometheus",
       "grafana",
       "vercel",
+      "cloudflare",
     ]);
   });
 });
@@ -418,7 +422,7 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), prometheus (base URL, Task P5), grafana (base URL, Task P6), and vercel (project id + team id, Task P7) are the only seven so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), prometheus (base URL, Task P5), grafana (base URL, Task P6), vercel (project id + team id, Task P7), and cloudflare (zone id, Task P8) are the only eight so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
       if (
         entry.kind === "railway" ||
@@ -427,7 +431,8 @@ describe("connector catalog — railway entry (Task 7)", () => {
         entry.kind === "datadog" ||
         entry.kind === "prometheus" ||
         entry.kind === "grafana" ||
-        entry.kind === "vercel"
+        entry.kind === "vercel" ||
+        entry.kind === "cloudflare"
       )
         continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
@@ -840,6 +845,41 @@ describe("connector catalog — vercel entry (Task P7)", () => {
   });
 });
 
+describe("connector catalog — cloudflare entry (Task P8, FINAL Wave-2 provider)", () => {
+  const cloudflare = CONNECTOR_CATALOG.find((c) => c.kind === "cloudflare")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(cloudflare.type).toBe("observability");
+    expect(cloudflare.connectMethod).toBe("secret");
+    expect(cloudflare.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities [signals, search_events], and no ingest/postResult/notify", () => {
+    expect(cloudflare.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["signals", "search_events"],
+    });
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a SINGLE-part credential, like sentry/prometheus/grafana/vercel", () => {
+    expect(cloudflare.connect?.secretParts).toBeUndefined();
+    expect(cloudflare.connect?.secretPartPatterns).toBeUndefined();
+  });
+
+  it("declares ONLY cloudflareZoneId (required) — cloudflareAccountId is deliberately NOT declared here (zoneTag suffices for both GraphQL datasets)", () => {
+    expect(cloudflare.connect?.extraConfigFields).toEqual([
+      {
+        key: "cloudflareZoneId",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
 // FIXTURE, deliberately non-realistic (Fix Round 1 — shape asserted
 // explicitly, per review; Fix Round 2 — a prior version of the test below
 // wrote its prefixed literal as ONE contiguous string, itself flagged on
@@ -892,6 +932,47 @@ describe("validateConnectorCredential — vercel (Task P7)", () => {
   });
 });
 
+// FIXTURE, deliberately non-realistic (mirrors the vercel block's own
+// shared comment above — see that block for the full concat-split rule).
+// Cloudflare's live-scanned prefixes are `cfut_`/`cfat_`/`cfk_` (see
+// lib/evidence/cloudflare.ts's own doc-comment, "AUTH") — no contiguous
+// literal bearing any of them exists in this file.
+describe("validateConnectorCredential — cloudflare (Task P8, FINAL Wave-2 provider)", () => {
+  it("accepts a legacy, unprefixed credential — the shape the gate has always accepted, still valid per Cloudflare's own token-formats page", () => {
+    expect(validateConnectorCredential("cloudflare", "a-plausible-looking-token-0000")).toEqual({ ok: true });
+  });
+
+  it("ALSO accepts a cfut_-prefixed credential (the newer User API Token format) — the gate is deliberately permissive across both generations", () => {
+    // Concat-split (see this block's own shared comment) — no contiguous
+    // `cfut_...` literal exists in source.
+    const cfutPrefixedFixture = "cfut" + "_TESTFIXTURE0000000000000000000000000000000";
+    expect(validateConnectorCredential("cloudflare", cfutPrefixedFixture)).toEqual({ ok: true });
+  });
+
+  it("ALSO accepts a cfat_-prefixed credential (the newer Account API Token format)", () => {
+    const cfatPrefixedFixture = "cfat" + "_TESTFIXTURE0000000000000000000000000000000";
+    expect(validateConnectorCredential("cloudflare", cfatPrefixedFixture)).toEqual({ ok: true });
+  });
+
+  it("rejects a credential containing whitespace", () => {
+    const res = validateConnectorCredential("cloudflare", "has a space");
+    expect(res).toEqual({ ok: false, error: "Cloudflare tokens must not contain whitespace." });
+  });
+
+  it("rejects a credential over 512 characters", () => {
+    const res = validateConnectorCredential("cloudflare", "x".repeat(513));
+    expect(res).toEqual({ ok: false, error: "Cloudflare tokens must be at most 512 characters." });
+  });
+
+  it("accepts a credential at exactly 512 characters (boundary)", () => {
+    expect(validateConnectorCredential("cloudflare", "x".repeat(512))).toEqual({ ok: true });
+  });
+
+  it("rejects an empty credential before ever reaching the cloudflare-specific check", () => {
+    expect(validateConnectorCredential("cloudflare", "   ").ok).toBe(false);
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -921,6 +1002,11 @@ describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes both of vercel's declared keys from the real catalog (Task P7)", () => {
     expect(extraConfigFieldKeys().has("vercelProjectId")).toBe(true);
     expect(extraConfigFieldKeys().has("vercelTeamId")).toBe(true);
+  });
+
+  it("includes cloudflare's declared key from the real catalog (Task P8) but NOT cloudflareAccountId (deliberately undeclared)", () => {
+    expect(extraConfigFieldKeys().has("cloudflareZoneId")).toBe(true);
+    expect(extraConfigFieldKeys().has("cloudflareAccountId")).toBe(false);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {

@@ -2736,8 +2736,14 @@ export {
   creditTopUpForStripeEvent,
   recordIgnoredStripeEvent,
   hasProcessedStripeEvent,
+  applySubscriptionStateForStripeEvent,
+  recordPastDueForStripeEvent,
   type CreditTopUpForStripeEventInput,
   type CreditTopUpForStripeEventResult,
+  type ApplySubscriptionStateForStripeEventInput,
+  type ApplySubscriptionStateForStripeEventResult,
+  type RecordPastDueForStripeEventInput,
+  type RecordPastDueForStripeEventResult,
 } from "./stripe_events.js";
 // #1389 — the per-attempt log a queue entry accumulates across its retry
 // lifecycle (timestamp, tier, outcome, error summary). Written by
@@ -2793,18 +2799,19 @@ export {
 // is the NULL = trial-policy read a later slice's policy resolver joins
 // through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
 // derives the seat count from released_at IS NULL rows — there is no
-// mutable counter. bindStripeCustomer, getBillingAccountByStripeCustomerId,
-// and applySubscriptionState (slice 3) are the Stripe write side.
-// getBillingAccountByStripeCustomerId and applySubscriptionState have the
-// webhook route (a later task) as their only caller; bindStripeCustomer has
-// two — the subscription checkout action (billing/actions.ts, Task 3) and
-// that same webhook route.
+// mutable counter. bindStripeCustomer and getBillingAccountByStripeCustomerId
+// (slice 3) are the Stripe write/lookup side that lives here — the actual
+// subscription-state write is applySubscriptionStateForStripeEvent
+// (queries/stripe_events.ts), the webhook route's SOLE writer of that
+// state. getBillingAccountByStripeCustomerId is the webhook's fallback
+// account lookup only (metadata resolves first, always); bindStripeCustomer
+// has two callers — the subscription checkout action (billing/actions.ts,
+// Task 3) and that same webhook route.
 export {
   getBillingAccountForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
   bindStripeCustomer,
   getBillingAccountByStripeCustomerId,
-  applySubscriptionState,
   type BillingAccountRow,
 } from "./billing_accounts.js";

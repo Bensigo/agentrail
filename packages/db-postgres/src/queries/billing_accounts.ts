@@ -9,25 +9,29 @@ import { billingAccounts } from "../schema/billing_accounts.js";
  * rollout"; see `schema/billing_accounts.ts` and `schema/seats.ts` for the
  * table shapes and the WHY behind the design). Slice 1 shipped the read side
  * only (no writers beyond the 0062 migration's own trial backfill); slice 3
- * ("Stripe subscriptions", spec §9) adds the write side below —
- * `bindStripeCustomer`, `applySubscriptionState`, and the
- * `getBillingAccountByStripeCustomerId` lookup that keys them off a Stripe
- * event payload's `customer` field. `getBillingAccountByStripeCustomerId`
- * and `applySubscriptionState` have exactly ONE caller — the Stripe webhook
- * route (a later slice-3 task): it reads through
- * `getBillingAccountByStripeCustomerId` to resolve which account a
- * payload's `customer` field means, then writes through
- * `applySubscriptionState`. `bindStripeCustomer` has TWO callers instead —
- * the subscription checkout server action (`billing/actions.ts`, Task 3:
- * binds a fresh customer id the first time a workspace's billing account
- * ever checks out) and that same webhook route (binds it again for any
- * account that reaches Stripe some other way) — both safe under
- * redelivery/out-of-order/racing arrival on their own terms:
+ * ("Stripe subscriptions", spec §9) adds the write/lookup side below —
+ * `bindStripeCustomer` and `getBillingAccountByStripeCustomerId`, which
+ * keys the latter off a Stripe event payload's `customer` field. The
+ * subscription-STATE write itself (`plan`, `subscription_status`,
+ * `stripe_subscription_id`, `current_period_end`) does NOT live in this
+ * module — it's `applySubscriptionStateForStripeEvent`
+ * (`queries/stripe_events.ts`), the Stripe webhook route's SOLE writer of
+ * that state, defined alongside that file's own `stripe_events` dedup-
+ * ledger transaction rather than here (a `db.transaction` callback's `tx`
+ * and this module's `Db`-typed functions are not mutually assignable — see
+ * that function's own doc-comment for the full reason).
+ * `getBillingAccountByStripeCustomerId` is the webhook's FALLBACK account
+ * lookup only, used when a Stripe object's own metadata is absent (logged
+ * every time) — account resolution tries metadata FIRST, always; see the
+ * webhook route's own doc-comment for the full race-immunity rationale.
+ * `bindStripeCustomer` has TWO callers — the subscription checkout server
+ * action (`billing/actions.ts`, Task 3: binds a fresh customer id the first
+ * time a workspace's billing account ever checks out) and that same
+ * webhook route (binds it again for any account that reaches Stripe some
+ * other way) — both safe under redelivery/out-of-order/racing arrival:
  * `bindStripeCustomer` is a fill-only UPDATE (never clobbers a value
- * already set), so either caller racing the other is benign;
- * `applySubscriptionState` is a plain last-write-wins UPDATE (no
- * compare-and-swap against event ordering — see its own doc-comment). This
- * is independent of `stripe_events`
+ * already set), so either caller racing the other is benign. This is
+ * independent of `stripe_events`
  * (`schema/stripe_events.ts`), the
  * redelivery-of-the-SAME-event dedup ledger the existing wallet top-up flow
  * uses — that solves a different problem (never process one event twice) and
@@ -220,11 +224,17 @@ export async function bindStripeCustomer(
 /**
  * The billing account bound to a given Stripe customer id, or `null` when no
  * account has been bound to it (yet, or ever). This is the Stripe webhook
- * route's (a later slice-3 task) primary lookup: a subscription event
- * payload carries `customer`, not a `billing_accounts.id`, so the webhook
- * resolves this FIRST and keys `applySubscriptionState` below off the
- * returned row's `id` — never off anything the event payload claims about
- * the account directly.
+ * route's FALLBACK account lookup ONLY: a subscription event's own metadata
+ * (`billingAccountId`, stamped by the checkout action on both the Checkout
+ * Session and, via `subscription_data.metadata`, the Subscription it
+ * creates) is always tried FIRST — race-immune against
+ * `bindStripeCustomer`'s own documented race, since the metadata on the
+ * object an event is actually about is always correct regardless of which
+ * customer bind won. This function is called only when that metadata is
+ * absent, and the webhook `console.warn`s every time it falls back to this
+ * lookup. See the webhook route's own doc-comment
+ * (`apps/console/app/api/v1/billing/stripe/webhook/route.ts`) for the full
+ * rationale.
  *
  * Same raw-`db.execute` + snake_case-to-camelCase normalization as
  * `getBillingAccountForWorkspace` above; see this module's top doc-comment
@@ -280,54 +290,4 @@ export async function getBillingAccountByStripeCustomerId(
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-/**
- * Apply a Stripe-sourced subscription state onto a billing account in ONE
- * UPDATE — the write side of a `customer.subscription.*` webhook event (a
- * later slice-3 task). Sets exactly five columns: `plan`,
- * `subscription_status`, `stripe_subscription_id`, `current_period_end`, and
- * `updated_at` — nothing else on the row (notably not `stripe_customer_id`,
- * which `bindStripeCustomer` above owns exclusively and fill-only).
- *
- * Deliberately LAST-WRITE-WINS, not compare-and-swap against event
- * ordering: Stripe does not guarantee webhook delivery order, and this
- * function does no timestamp/sequence comparison before writing — whichever
- * event the webhook processes most recently simply overwrites whatever was
- * there. (Redelivery of the SAME event is a different problem, solved for
- * the existing top-up flow by the `stripe_events` ledger — see this
- * module's top doc-comment — and is not this function's job.) The spec
- * accepts this as good enough for v1: a rare out-of-order pair of Stripe
- * events converges to whichever arrived last, not necessarily the
- * logically-latest one.
- *
- * `stripeSubscriptionId` and `currentPeriodEnd` are nullable in the type and
- * write actual SQL NULL when passed `null` (a canceled subscription clears
- * both) — never coalesced or skipped, so a cancellation genuinely clears the
- * column rather than leaving a stale value behind.
- *
- * No-ops (0 rows affected, no error) when `billingAccountId` doesn't match
- * any row — the caller (the webhook route) has no result to branch on, same
- * fire-and-forget contract as `bindStripeCustomer` above.
- */
-export async function applySubscriptionState(
-  db: Db,
-  args: {
-    billingAccountId: string;
-    plan: "trial" | "starter" | "growth" | "enterprise";
-    subscriptionStatus: string;
-    stripeSubscriptionId: string | null;
-    currentPeriodEnd: Date | null;
-  }
-): Promise<void> {
-  await db.execute(sql`
-    UPDATE billing_accounts
-    SET
-      plan = ${args.plan},
-      subscription_status = ${args.subscriptionStatus},
-      stripe_subscription_id = ${args.stripeSubscriptionId},
-      current_period_end = ${args.currentPeriodEnd},
-      updated_at = now()
-    WHERE id = ${args.billingAccountId}
-  `);
 }

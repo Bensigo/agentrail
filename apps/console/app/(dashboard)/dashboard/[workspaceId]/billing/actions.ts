@@ -147,9 +147,23 @@ export async function createSubscriptionCheckoutSessionAction(
   // Ensure a Stripe customer exists — the ONE write this action may make
   // (see this module's top doc-comment). `bindStripeCustomer` is fill-only
   // (`WHERE stripe_customer_id IS NULL`), so a second checkout attempt
-  // racing this one is benign: whichever completes second finds the guard
-  // already tripped and silently no-ops instead of clobbering the
-  // first-bound id.
+  // racing this one is benign in the sense that neither write can clobber
+  // the other — but it CAN still lose: two concurrent attempts each create
+  // their OWN Stripe customer, and only the first bind wins, so
+  // `billing_accounts.stripe_customer_id` can end up permanently pointing
+  // at the LOSING (dead, unused) customer while the actual paying
+  // subscription lives on the other one. That's acceptable, not a
+  // correctness bug, ONLY because the webhook (Task 4,
+  // `stripe/webhook/route.ts`) never resolves an account through this
+  // column as its primary path — it resolves METADATA-FIRST: the checkout
+  // session below stamps `billingAccountId` on both `metadata` (the
+  // session itself) AND `subscription_data.metadata` (the subscription it
+  // creates), so whichever Stripe object a later event is actually about
+  // always carries the correct account id regardless of which customer bind
+  // won. `getBillingAccountByStripeCustomerId` — the one place this
+  // possibly-wrong column IS read — is a fallback the webhook only reaches
+  // when that metadata is absent, and it loudly `console.warn`s every time
+  // it's used.
   let stripeCustomerId = account.stripeCustomerId;
   if (!stripeCustomerId) {
     try {

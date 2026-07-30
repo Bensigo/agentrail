@@ -56,6 +56,8 @@ import {
   creditTopUpForStripeEvent,
   recordIgnoredStripeEvent,
   hasProcessedStripeEvent,
+  applySubscriptionStateForStripeEvent,
+  recordPastDueForStripeEvent,
 } from "./stripe_events.js";
 
 beforeEach(() => {
@@ -158,5 +160,107 @@ describe("hasProcessedStripeEvent", () => {
   it("false when no row exists", async () => {
     mockState.selectReturn = [];
     expect(await hasProcessedStripeEvent("evt_unknown")).toBe(false);
+  });
+});
+
+describe("applySubscriptionStateForStripeEvent", () => {
+  const input = {
+    eventId: "evt_sub_1",
+    eventType: "customer.subscription.updated",
+    billingAccountId: "acct-1",
+    plan: "growth" as const,
+    subscriptionStatus: "active",
+    stripeSubscriptionId: "sub_123",
+    currentPeriodEnd: new Date("2026-08-29T00:00:00Z"),
+  };
+
+  it("(a) a brand-new event id writes all five Stripe-state columns exactly once", async () => {
+    mockState.eventInsertReturn = [{ id: "se-1" }]; // conflict-free insert
+
+    const result = await applySubscriptionStateForStripeEvent(input);
+
+    expect(result.applied).toBe(true);
+    expect(mockState.updateCalls).toHaveLength(1);
+    expect(mockState.updateCalls[0]?.set).toEqual({
+      plan: "growth",
+      subscriptionStatus: "active",
+      stripeSubscriptionId: "sub_123",
+      currentPeriodEnd: input.currentPeriodEnd,
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("(b) a REPLAYED event id (same event.id redelivered) writes ZERO additional state changes", async () => {
+    // First delivery: genuinely new, applies once.
+    mockState.eventInsertReturn = [{ id: "se-1" }];
+    const first = await applySubscriptionStateForStripeEvent(input);
+    expect(first.applied).toBe(true);
+    expect(mockState.updateCalls).toHaveLength(1);
+
+    // Second delivery of the SAME event id: the unique index on event_id
+    // means the INSERT ... ON CONFLICT DO NOTHING returns zero rows.
+    mockState.eventInsertReturn = [];
+    const second = await applySubscriptionStateForStripeEvent(input);
+
+    expect(second.applied).toBe(false);
+    // billing_accounts UPDATE must never run on the duplicate — still only
+    // the ONE update from the first delivery.
+    expect(mockState.updateCalls).toHaveLength(1);
+  });
+
+  it("writes SQL NULL (not skipped, not coalesced) for stripeSubscriptionId and currentPeriodEnd on a cancellation", async () => {
+    mockState.eventInsertReturn = [{ id: "se-1" }];
+
+    const result = await applySubscriptionStateForStripeEvent({
+      eventId: "evt_sub_deleted_1",
+      eventType: "customer.subscription.deleted",
+      billingAccountId: "acct-1",
+      plan: "trial",
+      subscriptionStatus: "canceled",
+      stripeSubscriptionId: null,
+      currentPeriodEnd: null,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(mockState.updateCalls[0]?.set).toEqual({
+      plan: "trial",
+      subscriptionStatus: "canceled",
+      stripeSubscriptionId: null,
+      currentPeriodEnd: null,
+      updatedAt: expect.any(Date),
+    });
+  });
+});
+
+describe("recordPastDueForStripeEvent", () => {
+  const input = {
+    eventId: "evt_invoice_failed_1",
+    eventType: "invoice.payment_failed",
+    billingAccountId: "acct-1",
+  };
+
+  it("(a) a brand-new event id sets subscription_status to past_due ONLY — plan/subscription/period untouched", async () => {
+    mockState.eventInsertReturn = [{ id: "se-1" }];
+
+    const result = await recordPastDueForStripeEvent(input);
+
+    expect(result.applied).toBe(true);
+    expect(mockState.updateCalls).toHaveLength(1);
+    expect(mockState.updateCalls[0]?.set).toEqual({
+      subscriptionStatus: "past_due",
+      updatedAt: expect.any(Date),
+    });
+  });
+
+  it("(b) a REPLAYED event id credits ZERO additional status changes", async () => {
+    mockState.eventInsertReturn = [{ id: "se-1" }];
+    const first = await recordPastDueForStripeEvent(input);
+    expect(first.applied).toBe(true);
+
+    mockState.eventInsertReturn = [];
+    const second = await recordPastDueForStripeEvent(input);
+
+    expect(second.applied).toBe(false);
+    expect(mockState.updateCalls).toHaveLength(1); // only from the FIRST call
   });
 });

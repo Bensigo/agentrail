@@ -46,11 +46,15 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *     endpoint/shape `apps/jace/agent/lib/spend-by-intent.core.mjs`
  *     verified against a REAL live prod Langfuse project (2026-07-20; see
  *     that module's own header comment) — reused here per this task's own
- *     instruction. Query shape: `{ view, dimensions, metrics: [{measure,
- *     aggregation}], filters, timeDimension: {granularity}, fromTimestamp,
- *     toTimestamp }`. Response: `{ data: [{ time_dimension, ...,
- *     "{aggregation}_{measure}": number|null }] }` (the
- *     `{aggregation}_{measure}` row-key pattern is the SAME one
+ *     instruction. Query shape (fern source, `metrics.yml`): `{ view,
+ *     dimensions, metrics: [{measure, aggregation}], filters, timeDimension?:
+ *     {granularity}, fromTimestamp, toTimestamp }` — `timeDimension` is
+ *     confirmed OPTIONAL ("Optional. Default: null. If provided, results
+ *     will be grouped by time."; Fix Round 1 fetched this directly rather
+ *     than trusting the initial submission's guess) and this adapter
+ *     OMITS it (see "SIGNALS DESIGN" below). Response: `{ data: [{
+ *     time_dimension, ..., "{aggregation}_{measure}": number|null }] }`
+ *     (the `{aggregation}_{measure}` row-key pattern is the SAME one
  *     spend-by-intent.core.mjs's confirmed real response used, e.g.
  *     `sum_totalCost`). CONFIRMED (fern source, `metrics.yml`): v2's
  *     `view: "traces"` was REMOVED ("no longer available in v2" — the
@@ -105,20 +109,23 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *      `duration_ms` does, so there is no "honest mapping" reason to
  *      convert; the `_seconds` suffix keeps the unit unambiguous in the
  *      rendered text itself.
- * `timeDimension: {granularity: "auto"}` is ALWAYS sent (mirroring the one
- * real confirmed example's own inclusion of `timeDimension`, since this
- * task could not confirm whether the field is optional) rather than a
- * fixed granularity — this adapter does NOT assume the response is exactly
- * one row: it renders ONE signal line PER RETURNED ROW (each stamped with
- * that row's own `time_dimension` bucket, converted to a full ISO
- * datetime, or `windowEnd` when a row carries none), so it is correct
- * whether Langfuse returns one aggregate row for the whole window or
- * several time-bucketed rows for a wide one — no assumption required
- * either way. A row whose aggregated value is `null` (Langfuse's own
- * "no data this bucket" signal — see spend-by-intent.core.mjs's identical
- * null-vs-0 discipline) is SKIPPED, not rendered as a fabricated
- * `value=0`/`value=null` — the `signal` line format's own contract is a
- * real number.
+ * `timeDimension` is DELIBERATELY OMITTED from every query (Fix Round 1,
+ * FIX 1 — see {@link buildMetricsUrl}'s own doc-comment): confirmed directly
+ * against `metrics.yml` (not the initial submission's guess) as "Optional.
+ * Default: null. If provided, results will be grouped by time." — omitting
+ * it means each of the three fixed queries returns exactly ONE aggregate
+ * row for the whole window, by construction. This is the clean "3
+ * pre-aggregated numbers" reading of the pinned `signals` convention, and
+ * it removes the risk of a wide window's time-bucketed rows silently
+ * outnumbering the cap. `fetchMetric` still iterates the response
+ * defensively (never assumes exactly one row, and belt-and-braces
+ * window-re-filters any row that DOES carry a `time_dimension` — Fix Round
+ * 1, FIX 2) rather than hard-coding a single-row read, since a malformed or
+ * future-changed response should degrade gracefully, not throw. A row
+ * whose aggregated value is `null` (Langfuse's own "no data this bucket"
+ * signal — see spend-by-intent.core.mjs's identical null-vs-0 discipline)
+ * is SKIPPED, not rendered as a fabricated `value=0`/`value=null` — the
+ * `signal` line format's own contract is a real number.
  *
  * REQUEST HYGIENE mirrors `railway.ts`/`github.ts`: an 8s
  * `AbortSignal.timeout` per request, `User-Agent: agentrail-console`.
@@ -222,13 +229,20 @@ function truncateName(name: string): string {
  * `splitCompositeSecret` — display metadata only (`{name}` strings), not
  * imported from the catalog so this adapter stays independent of
  * `connector-helpers.ts` (mirrors railway.ts/github.ts, neither of which
- * imports the catalog either). Must match `connector-helpers.ts`'s real
- * `langfuse` catalog entry's `secretParts` in SHAPE (two parts) — the
- * ORDER (public key first, secret key second) is what actually matters,
- * since only `parts.length` and positional indexing are used below, not
- * the `name` strings themselves (those exist purely for
- * `splitCompositeSecret`'s own error messages). */
-const LANGFUSE_SECRET_SPEC = {
+ * imports the catalog either — this is the FIRST composite adapter, so
+ * this independence is a new pattern, not yet proven elsewhere). Must
+ * match `connector-helpers.ts`'s real `langfuse` catalog entry's
+ * `secretParts` in SHAPE (two parts) — the ORDER (public key first, secret
+ * key second) is what actually matters, since only `parts.length` and
+ * positional indexing are used below, not the `name` strings themselves
+ * (those exist purely for `splitCompositeSecret`'s own error messages).
+ * EXPORTED (Fix Round 1 fold-in) solely so `langfuse.test.ts` can assert
+ * this constant's part count against the real catalog entry's
+ * `secretParts.length` directly — the two declarations can never silently
+ * drift apart unnoticed. This does NOT create a runtime dependency on the
+ * catalog (the adapter itself still never imports `connector-helpers.ts`);
+ * only the TEST imports both. */
+export const LANGFUSE_SECRET_SPEC = {
   secretParts: [{ name: "Public key" }, { name: "Secret key" }],
 };
 
@@ -451,13 +465,22 @@ function metricValueKey(spec: MetricSpec): string {
   return `${spec.aggregation}_${spec.measure}`;
 }
 
+/** `timeDimension` is DELIBERATELY OMITTED (Fix Round 1, FIX 1 — reviewer
+ * fetched `metrics.yml` directly: "Optional. Default: null. If provided,
+ * results will be grouped by time." — confirmed, not a guess): omitting it
+ * means each of the three fixed queries returns exactly ONE aggregate row
+ * for the whole `[fromTimestamp, toTimestamp]` window, by construction —
+ * the clean "3 pre-aggregated numbers" reading of the pinned `signals`
+ * convention, and it removes the possibility of a wide window's time-
+ * bucketed rows silently outnumbering the cap (see {@link fetchMetric}'s
+ * own doc-comment for the belt-and-braces row-level window check kept
+ * anyway). */
 function buildMetricsUrl(base: string, spec: MetricSpec, windowStart: string, windowEnd: string): string {
   const query = {
     view: "observations",
     dimensions: [],
     metrics: [{ measure: spec.measure, aggregation: spec.aggregation }],
     filters: spec.filters,
-    timeDimension: { granularity: "auto" },
     fromTimestamp: windowStart,
     toTimestamp: windowEnd,
   };
@@ -479,9 +502,19 @@ type MetricOutcome = { ok: true; lines: Array<RenderedLine> } | { ok: false; mar
 
 /** One metric's own fetch — its OWN try/catch (per-metric granularity;
  * mirrors railway.ts's `fetchDeploymentLogs`, applied to a FIXED set of
- * three metrics instead of a dynamic per-deployment fan-out). Renders ONE
- * line PER RETURNED ROW — see this module's own doc-comment ("SIGNALS
- * DESIGN") for why this adapter never assumes exactly one row comes back. */
+ * three metrics instead of a dynamic per-deployment fan-out). With
+ * `timeDimension` omitted (Fix Round 1, FIX 1 — see {@link buildMetricsUrl}'s
+ * own doc-comment) a compliant response carries exactly one row per metric
+ * and no `time_dimension` at all; this function still iterates `rows`
+ * generically rather than assuming that shape (defense in depth, not a
+ * behavior change). Fix Round 1, FIX 2: any row that DOES carry a
+ * `time_dimension` outside `[windowStart, windowEnd]` is skipped — the SAME
+ * belt-and-braces client-side re-filter {@link parseTraces} applies to
+ * traces and railway.ts's `fetchDeploymentLogs` applies to log lines, now
+ * genuinely mirrored here rather than merely claimed (the initial
+ * submission's doc-comment overclaimed this parity without the check). A
+ * row carrying no `time_dimension` (the expected, now-only case with FIX 1)
+ * is kept, stamped with `windowEnd` for `at=`. */
 async function fetchMetric(
   base: string,
   publicKey: string,
@@ -506,6 +539,7 @@ async function fetchMetric(
 
   const rows = Array.isArray(result.data.data) ? (result.data.data as MetricRow[]) : [];
   const valueKey = metricValueKey(spec);
+  const windowStartMs = new Date(windowStart).getTime();
   const windowEndMs = new Date(windowEnd).getTime();
 
   const lines: RenderedLine[] = [];
@@ -518,6 +552,13 @@ async function fetchMetric(
 
     const bucketRaw = typeof row.time_dimension === "string" ? row.time_dimension : null;
     const bucketMs = bucketRaw ? new Date(bucketRaw).getTime() : NaN;
+    // Fix Round 1, FIX 2 — belt-and-braces: a row carrying a PARSEABLE
+    // bucket outside the window is skipped, never trusted blindly. A row
+    // with no bucket at all (absent/null/unparseable `time_dimension` — the
+    // expected shape now that FIX 1 omits `timeDimension` from the query)
+    // is unaffected by this check and falls through to the windowEnd
+    // fallback below.
+    if (Number.isFinite(bucketMs) && (bucketMs < windowStartMs || bucketMs > windowEndMs)) continue;
     const atMs = Number.isFinite(bucketMs) ? bucketMs : windowEndMs;
 
     lines.push({ at: atMs, line: renderSignalLine(spec, raw, new Date(atMs).toISOString()) });

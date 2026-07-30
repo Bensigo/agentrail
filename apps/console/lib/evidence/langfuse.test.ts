@@ -8,9 +8,15 @@ vi.mock("@agentrail/db-postgres", () => ({
 }));
 
 import { getConnector } from "@agentrail/db-postgres";
-import { langfuseAdapter } from "./langfuse";
+import { langfuseAdapter, LANGFUSE_SECRET_SPEC } from "./langfuse";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
+// Fix Round 1 fold-in: the ONLY place this test file imports the catalog —
+// the adapter itself (langfuse.ts) never does (see LANGFUSE_SECRET_SPEC's
+// own doc-comment for why). Used exclusively to cross-check the adapter's
+// local composite-secret shape against the real catalog entry's declared
+// shape, so the two can never silently drift apart.
+import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 
 const mockGetConnector = vi.mocked(getConnector);
 
@@ -128,6 +134,23 @@ describe("langfuseAdapter — shape", () => {
 
   it("self-registers into the shared registry on module load", () => {
     expect(adapterFor("langfuse")).toBe(langfuseAdapter);
+  });
+});
+
+// Fix Round 1 fold-in: the first composite-secret adapter declares its own
+// local part-count expectation (LANGFUSE_SECRET_SPEC) independently of the
+// real catalog entry's declared secretParts — a new pattern this wave's
+// later composite providers will repeat. Without this cross-check the two
+// could silently drift (e.g. a future catalog edit adding a third key part)
+// with no test ever catching it, since the adapter's own tests all use a
+// hardcoded 2-part SECRET fixture that would keep "working" against a stale
+// local spec regardless of what the catalog says.
+describe("langfuseAdapter — LANGFUSE_SECRET_SPEC matches the real catalog entry (Fix Round 1 fold-in)", () => {
+  it("the adapter's local secretParts count equals the catalog's declared secretParts count", () => {
+    const catalogEntry = CONNECTOR_CATALOG.find((c) => c.kind === "langfuse")!;
+    expect(LANGFUSE_SECRET_SPEC.secretParts).toHaveLength(
+      catalogEntry.connect!.secretParts!.length
+    );
   });
 });
 
@@ -550,7 +573,7 @@ describe("langfuseAdapter — signals: happy path rendering", () => {
     );
   });
 
-  it("sends the confirmed v2 metrics query shape: view=observations, empty dimensions, metrics=[{measure,aggregation}], timeDimension, fromTimestamp/toTimestamp", async () => {
+  it("sends the confirmed v2 metrics query shape: view=observations, empty dimensions, metrics=[{measure,aggregation}], fromTimestamp/toTimestamp — and OMITS timeDimension (Fix Round 1, FIX 1)", async () => {
     const captured: Record<string, unknown>[] = [];
     global.fetch = routeFetch({
       metrics: (query) => {
@@ -565,7 +588,12 @@ describe("langfuseAdapter — signals: happy path rendering", () => {
     for (const query of captured) {
       expect(query.view).toBe("observations");
       expect(query.dimensions).toEqual([]);
-      expect(query.timeDimension).toEqual({ granularity: "auto" });
+      // Fix Round 1, FIX 1: metrics.yml confirms timeDimension is optional
+      // ("Default: null. If provided, results will be grouped by time.") —
+      // omitted here so each query returns exactly one aggregate row for
+      // the whole window, by construction.
+      expect(query.timeDimension).toBeUndefined();
+      expect("timeDimension" in query).toBe(false);
       expect(query.fromTimestamp).toBe(WINDOW_START);
       expect(query.toTimestamp).toBe(WINDOW_END);
     }
@@ -622,6 +650,85 @@ describe("langfuseAdapter — signals: happy path rendering", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
     expect(res.raw).not.toContain("langfuse.observations.count value=");
+  });
+});
+
+// Fix Round 1, FIX 2: belt-and-braces client-side re-filter on a signal
+// row's own time_dimension — mirrors parseTraces (traces) and railway.ts's
+// fetchDeploymentLogs (never trust a bucket that happens to be returned
+// without checking it against the window). With timeDimension omitted from
+// every query (FIX 1) a compliant response should carry no time_dimension
+// at all, so this is future-proofing against an uncooperative/malformed
+// response, exercised the same way railway.test.ts's own FIX 1b tests
+// simulate one.
+describe("langfuseAdapter — signals: FIX 2 belt-and-braces window re-filter on time_dimension", () => {
+  it("drops a row whose time_dimension falls after windowEnd, even though the mock 'returns' it regardless of the omitted timeDimension query param", async () => {
+    global.fetch = routeFetch({
+      metrics: (query) => {
+        if (metricKind(query) !== "count") return { status: 200, body: { data: [] } };
+        return {
+          status: 200,
+          body: {
+            data: [
+              metricsRow("count_count", 10, "2026-07-29T12:00:00.000Z"),
+              metricsRow("count_count", 999, "2026-08-01T00:00:00.000Z"),
+            ],
+          },
+        };
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await langfuseAdapter.query(WS, signalsQuery(), SECRET);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("value=10");
+    expect(res.raw).not.toContain("value=999");
+  });
+
+  it("drops a row whose time_dimension falls before windowStart too (inclusive-bounds re-filter, not just an upper check)", async () => {
+    global.fetch = routeFetch({
+      metrics: (query) => {
+        if (metricKind(query) !== "count") return { status: 200, body: { data: [] } };
+        return {
+          status: 200,
+          body: {
+            data: [
+              metricsRow("count_count", 888, "2026-07-20T00:00:00.000Z"),
+              metricsRow("count_count", 5, "2026-07-29T12:00:00.000Z"),
+            ],
+          },
+        };
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await langfuseAdapter.query(WS, signalsQuery(), SECRET);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain("value=5");
+    expect(res.raw).not.toContain("value=888");
+  });
+
+  it("keeps a row whose time_dimension is exactly at the window bounds (inclusive)", async () => {
+    global.fetch = routeFetch({
+      metrics: (query) => {
+        if (metricKind(query) !== "count") return { status: 200, body: { data: [] } };
+        return {
+          status: 200,
+          body: {
+            data: [
+              metricsRow("count_count", 1, WINDOW_START),
+              metricsRow("count_count", 2, WINDOW_END),
+            ],
+          },
+        };
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await langfuseAdapter.query(WS, signalsQuery(), SECRET);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain(`value=1 at=${WINDOW_START}`);
+    expect(res.raw).toContain(`value=2 at=${WINDOW_END}`);
   });
 });
 

@@ -232,7 +232,12 @@ PR-sized slices, in order; each lands behind the kill-switch and none flips cust
 - **Slice 4 — seats.** Claim/merge/release logic, `/connect` seat-collapse, members surface with release.
 - **Slice 5 — gates.** All four §6 gates + prompts + cooldown + the two delivery-trap fixes.
 - **Slice 6 — console swap.** Plan card, all-time strip, sidebar demotion, approval-copy change.
-- **Slice 7 — marketing.** Pricing page rewrite (outcome-led tiers, nav link, enterprise contact path), landing §6b rewrite, retire the copy below, update `docs/design/landing-content-architecture.md`, flip the live gate.
+- **Slice 7 — marketing.** Pricing page rewrite (outcome-led tiers, nav link, enterprise contact path), landing §6b rewrite, retire the copy below, update `docs/design/landing-content-architecture.md`.
+
+**Rollout decision (2026-07-29, owner):** `BILLING_SUBSCRIPTIONS_ENFORCED` flips ON once **slice 3** is built and merged — not after slice 7. Riders that must accompany the flip:
+1. The cold-start seed entitlement fix lands first (tracked follow-up from the slice-2 review — without it a Starter workspace's early tasks run on premium models).
+2. The anti-subscription copy retirement (the list below) moves forward from slice 7 **into slice 3's scope** — the public pricing surface must stop promising "No seats, no subscription" the moment real subscriptions can be sold. The full outcome-led pricing-page rewrite can still follow in slice 7; slice 3 ships the minimal truth-up.
+3. Until slice 5 lands, the only active enforcement is the slice-2 routing entitlement filter; seat/capacity gates and upgrade prompts follow behind the live flag, and slice 6's console swap follows behind those.
 
 **Copy that must be retired** (all currently promise the opposite of this spec):
 - `apps/console/app/(marketing)/pricing/page.tsx:74` — "No seats, no subscription." — and `:124-126` — "no per-seat charge, no monthly minimum."

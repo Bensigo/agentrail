@@ -846,6 +846,174 @@ describe("verifyConnectorCredential('grafana', ...)", () => {
 });
 
 /**
+ * Task P7: vercel verify — TWO legs, the token leg unconditional (`GET
+ * /v2/user`) and the project leg CONDITIONAL on `config.vercelProjectId`
+ * being present (`GET /v9/projects/{id}`) — see verify.ts's own doc-comment
+ * ("VERCEL (Task P7)") for why this is additive rather than Sentry's
+ * "both required values gate the ONE call" shape. `secret` is a SINGLE
+ * field (no composite split).
+ */
+describe("verifyConnectorCredential('vercel', ...)", () => {
+  // FIXTURE, deliberately non-realistic — Vercel documents no fixed token
+  // shape (see lib/evidence/vercel.ts's own doc-comment).
+  const TOKEN = "TESTFIXTURE_vercel_token_0000000000000000";
+  const PROJECT_ID = "prj_abc123";
+  const TEAM_ID = "team_abc123";
+
+  it("token-only: succeeds via GET /v2/user alone when no vercelProjectId is configured", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(String(url)).toBe("https://api.vercel.com/v2/user");
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("token-only: succeeds when config itself is undefined (no 4th argument at all)", async () => {
+    global.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ user: { id: "u1" } }),
+    })) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN);
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("token leg sends Authorization: Bearer <token>", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("maps a 401 on the token leg to a rejection error, never reaching the project leg", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(res).toEqual({ ok: false, error: "Vercel rejected this token." });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a 403 on the token leg to the same rejection error", async () => {
+    global.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Vercel rejected this token." });
+  });
+
+  it("surfaces a non-2xx/non-401/403 token-leg status with its own HTTP code", async () => {
+    global.fetch = (async () => ({ ok: false, status: 500, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Vercel (HTTP 500)." });
+  });
+
+  it("reports an unreachable token-leg upstream with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Couldn't reach Vercel to verify the token — try again." });
+  });
+
+  it("project leg: when vercelProjectId is present, ALSO GETs /v9/projects/{id} and includes teamId when configured", async () => {
+    const calledUrls: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledUrls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ id: PROJECT_ID }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, {
+      vercelProjectId: PROJECT_ID,
+      vercelTeamId: TEAM_ID,
+    });
+
+    expect(res).toEqual({ ok: true });
+    expect(calledUrls).toEqual([
+      "https://api.vercel.com/v2/user",
+      `https://api.vercel.com/v9/projects/${PROJECT_ID}?teamId=${TEAM_ID}`,
+    ]);
+  });
+
+  it("project leg omits teamId from the URL when vercelTeamId is absent (personal scope)", async () => {
+    const calledUrls: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledUrls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ id: PROJECT_ID }) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(calledUrls[1]).toBe(`https://api.vercel.com/v9/projects/${PROJECT_ID}`);
+  });
+
+  it("project leg 404 → a distinct, actionable 'project not found' error (a wrong project id is an operator config mistake, not a rejected credential)", async () => {
+    global.fetch = (async (url: string) => {
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(res).toEqual({ ok: false, error: "Couldn't find this Vercel project — check the project ID." });
+  });
+
+  it("project leg 401/403 → the same 'rejected this token' error as the token leg", async () => {
+    global.fetch = (async (url: string) => {
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: false, status: 403, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(res).toEqual({ ok: false, error: "Vercel rejected this token." });
+  });
+
+  it("project leg non-2xx/non-401/403/404 surfaces its own HTTP code", async () => {
+    global.fetch = (async (url: string) => {
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Vercel (HTTP 500)." });
+  });
+
+  it("reports an unreachable project-leg upstream with its own retry hint", async () => {
+    global.fetch = (async (url: string) => {
+      if (String(url).includes("/v9/projects/")) {
+        throw new Error("network down");
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("vercel", TOKEN, undefined, { vercelProjectId: PROJECT_ID });
+    expect(res).toEqual({ ok: false, error: "Couldn't reach Vercel to verify the project — try again." });
+  });
+
+  it("does NOT go through splitCompositeSecret's exact-part-count model — no catalog secretParts declared for this kind", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("vercel", TOKEN, undefined, {});
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

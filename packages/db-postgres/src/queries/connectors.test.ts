@@ -86,6 +86,19 @@ describe("isConnectorProvider — grafana (Task P6)", () => {
   });
 });
 
+// Task P7 (Evidence Providers Wave 2): "vercel" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway"/"langfuse"/"sentry"/"datadog"/"prometheus"/"grafana" above (no
+// migration). vercelProjectId's/vercelTeamId's own validateConnectorUpdate
+// coverage already lives in the "Evidence Providers Wave 2 (Task P0)"
+// describe block below (P0 added both fields for all seven remaining
+// Wave-2 providers at once) — not duplicated here.
+describe("isConnectorProvider — vercel (Task P7)", () => {
+  it("recognizes 'vercel' as a known connector provider", () => {
+    expect(isConnectorProvider("vercel")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

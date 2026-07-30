@@ -20,7 +20,9 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * `GET /api/v2/validate_keys`), Prometheus (Task P5 — a documented fallback
  * chain: buildinfo → `/-/ready` → a trivial instant query), Grafana (Task P6
  * — `GET /api/org`, confirmed the one endpoint of the two candidates that
- * actually accepts a service account token). Context7 stays
+ * actually accepts a service account token), Vercel (Task P7 —
+ * `GET /v2/user` unconditionally, ADDITIONALLY `GET /v9/projects/{id}` when
+ * a project id is present). Context7 stays
  * format-only here — it has no stable side-effect-free check; its
  * format gate already rejects malformed values. Discord/Slack/Telegram are
  * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
@@ -595,6 +597,92 @@ async function verifyGrafana(
 }
 
 /**
+ * VERCEL (Task P7, Evidence Providers Wave 2): confirmed against Vercel's
+ * own docs during implementation (this task's mandatory first step), not
+ * trusted from memory — see `lib/evidence/vercel.ts`'s own doc-comment for
+ * the full doc-verify trail (the `/v6/`→`/v7/` deployments-listing version
+ * correction, the since/until pairing choice, the response shape).
+ *   - Token leg: `GET /v2/user` — confirmed, current, unchanged from this
+ *     task's believed shape. No `teamId` query param exists on this
+ *     endpoint (it always resolves the token's own bound principal); a
+ *     401/403 is a definitive rejection.
+ *   - Project leg (this task's own pinned design: "when vercelProjectId
+ *     present, confirm project visibility with a cheap project GET"):
+ *     `GET /v9/projects/{idOrName}` — confirmed, current
+ *     (vercel.com/docs/rest-api/reference/endpoints/projects/
+ *     find-a-project-by-id-or-name), `teamId`/`slug` query params
+ *     confirmed. UNLIKE `verifySentry`'s two REQUIRED companion values
+ *     (org+project, both needed to even form that endpoint's path), this
+ *     task's own pinned design makes the project leg CONDITIONAL, not
+ *     fail-closed: `vercelProjectId` is declared `required: true` on the
+ *     catalog entry, so in practice it is always present by the time a
+ *     real connect flow reaches this function — but this function itself
+ *     does not hinge success on it, matching the task's own literal
+ *     wording ("confirm the token... AND, when vercelProjectId present,
+ *     confirm project visibility...", token-check unconditional,
+ *     project-check additive) rather than Sentry's "both requirements gate
+ *     the ONE call" shape (Vercel's token check is independently useful
+ *     and already a full call to a real Vercel endpoint on its own).
+ *     `teamId` (`config.vercelTeamId`) is genuinely OPTIONAL end to end —
+ *     included on the project-leg request when present, omitted otherwise
+ *     (personal scope) — never itself a reason to fail closed. A 404 on
+ *     the project leg reads as "Vercel could not find this project" — a
+ *     wrong/stale project id is an operator CONFIGURATION mistake, not a
+ *     credential Vercel rejected, so it gets its own distinct, actionable
+ *     error rather than being folded into the generic "rejected this
+ *     token" message a 401/403 produces.
+ */
+async function verifyVercel(
+  token: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  try {
+    const res = await fetchWithTimeout("https://api.vercel.com/v2/user", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Vercel rejected this token." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Vercel (HTTP ${res.status}).` };
+    }
+  } catch {
+    return { ok: false, error: "Couldn't reach Vercel to verify the token — try again." };
+  }
+
+  // Token leg passed. Project leg is ADDITIVE (see this function's own
+  // doc-comment) — only runs when a project id rode along in this request.
+  const projectId = resolveNonEmptyString(config?.vercelProjectId);
+  if (!projectId) {
+    return { ok: true };
+  }
+
+  const teamId = resolveNonEmptyString(config?.vercelTeamId);
+  const params = new URLSearchParams();
+  if (teamId) params.set("teamId", teamId);
+  const qs = params.toString();
+  const projectUrl = `https://api.vercel.com/v9/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`;
+
+  try {
+    const res = await fetchWithTimeout(projectUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Vercel rejected this token." };
+    }
+    if (res.status === 404) {
+      return { ok: false, error: "Couldn't find this Vercel project — check the project ID." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Vercel (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Vercel to verify the project — try again." };
+  }
+}
+
+/**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
  * `{ok:true}` here — its format gate is the guarantee.
@@ -662,6 +750,11 @@ export async function verifyConnectorCredential(
       // split-before-dispatch step above is a harmless passthrough for this
       // kind, so `first` IS the full trimmed secret.
       return verifyGrafana(first, config);
+    case "vercel":
+      // No declared secretParts (single field) — the split-before-dispatch
+      // step above is a harmless passthrough for this kind, so `first` IS
+      // the full trimmed secret.
+      return verifyVercel(first, config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

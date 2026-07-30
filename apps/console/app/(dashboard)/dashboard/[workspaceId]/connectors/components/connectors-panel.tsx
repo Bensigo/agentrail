@@ -20,6 +20,7 @@ import {
   DatadogBrand,
   PrometheusBrand,
   GrafanaBrand,
+  VercelBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -61,6 +62,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   datadog: DatadogBrand,
   prometheus: PrometheusBrand,
   grafana: GrafanaBrand,
+  vercel: VercelBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -91,6 +93,11 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // simple-icons' own data) — same "real mark exists, so a real hex is
   // pinned" precedent as Sentry/Datadog/Prometheus above.
   grafana: "text-[#f46800]",
+  // Task P7: Vercel's mark is monochrome (like GitHub's/Railway's/
+  // Langfuse's) — the gray var, not a literal brand hex (Vercel's own
+  // identity is pure black-in-light/white-in-dark, which a fixed hex
+  // cannot represent across both themes).
+  vercel: "text-[var(--gray-12)]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

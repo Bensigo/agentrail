@@ -29,6 +29,7 @@ describe("projectConnectors", () => {
       "datadog",
       "prometheus",
       "grafana",
+      "vercel",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -37,13 +38,15 @@ describe("projectConnectors", () => {
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
     // for debugging investigations, no ingest); Task P2 adds langfuse, Task
-    // P3 adds sentry, Task P4 adds datadog, Task P5 adds prometheus, and
-    // Task P6 adds grafana to the SAME `observability` group.
+    // P3 adds sentry, Task P4 adds datadog, Task P5 adds prometheus, Task P6
+    // adds grafana, and Task P7 adds vercel to the SAME `observability`
+    // group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
       "observability",
@@ -150,6 +153,7 @@ describe("projectConnectors", () => {
       "datadog",
       "prometheus",
       "grafana",
+      "vercel",
     ]);
   });
 
@@ -166,6 +170,7 @@ describe("projectConnectors", () => {
       "datadog",
       "prometheus",
       "grafana",
+      "vercel",
     ]);
   });
 });
@@ -413,7 +418,7 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), prometheus (base URL, Task P5), and grafana (base URL, Task P6) are the only six so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), prometheus (base URL, Task P5), grafana (base URL, Task P6), and vercel (project id + team id, Task P7) are the only seven so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
       if (
         entry.kind === "railway" ||
@@ -421,7 +426,8 @@ describe("connector catalog — railway entry (Task 7)", () => {
         entry.kind === "sentry" ||
         entry.kind === "datadog" ||
         entry.kind === "prometheus" ||
-        entry.kind === "grafana"
+        entry.kind === "grafana" ||
+        entry.kind === "vercel"
       )
         continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
@@ -793,6 +799,74 @@ describe("validateConnectorCredential — grafana (Task P6)", () => {
   });
 });
 
+describe("connector catalog — vercel entry (Task P7)", () => {
+  const vercel = CONNECTOR_CATALOG.find((c) => c.kind === "vercel")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(vercel.type).toBe("observability");
+    expect(vercel.connectMethod).toBe("secret");
+    expect(vercel.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities [changes, search_events], and no ingest/postResult/notify", () => {
+    expect(vercel.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["changes", "search_events"],
+    });
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a SINGLE-part credential, like sentry/prometheus/grafana", () => {
+    expect(vercel.connect?.secretParts).toBeUndefined();
+    expect(vercel.connect?.secretPartPatterns).toBeUndefined();
+  });
+
+  it("declares vercelProjectId (required) then vercelTeamId (optional) — the wave's first OPTIONAL extra config field", () => {
+    expect(vercel.connect?.extraConfigFields).toEqual([
+      {
+        key: "vercelProjectId",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+      {
+        key: "vercelTeamId",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: false,
+      },
+    ]);
+  });
+});
+
+// FIXTURE, deliberately non-realistic — Vercel documents no fixed token
+// shape (see lib/evidence/vercel.ts's own doc-comment), so this is just a
+// plausible-looking opaque string, not a real-token-shaped literal.
+describe("validateConnectorCredential — vercel (Task P7)", () => {
+  it("accepts a plain, well-formed credential — no documented format to check beyond shape-agnostic hygiene", () => {
+    expect(validateConnectorCredential("vercel", "a-plausible-looking-token-0000")).toEqual({ ok: true });
+  });
+
+  it("rejects a credential containing whitespace", () => {
+    const res = validateConnectorCredential("vercel", "has a space");
+    expect(res).toEqual({ ok: false, error: "Vercel tokens must not contain whitespace." });
+  });
+
+  it("rejects a credential over 512 characters", () => {
+    const res = validateConnectorCredential("vercel", "x".repeat(513));
+    expect(res).toEqual({ ok: false, error: "Vercel tokens must be at most 512 characters." });
+  });
+
+  it("accepts a credential at exactly 512 characters (boundary)", () => {
+    expect(validateConnectorCredential("vercel", "x".repeat(512))).toEqual({ ok: true });
+  });
+
+  it("rejects an empty credential before ever reaching the vercel-specific check", () => {
+    expect(validateConnectorCredential("vercel", "   ").ok).toBe(false);
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -817,6 +891,11 @@ describe("extraConfigFieldKeys (Task P0)", () => {
 
   it("includes grafana's declared key from the real catalog (Task P6)", () => {
     expect(extraConfigFieldKeys().has("grafanaUrl")).toBe(true);
+  });
+
+  it("includes both of vercel's declared keys from the real catalog (Task P7)", () => {
+    expect(extraConfigFieldKeys().has("vercelProjectId")).toBe(true);
+    expect(extraConfigFieldKeys().has("vercelTeamId")).toBe(true);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {

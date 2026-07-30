@@ -61,7 +61,12 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * (PIVOTED from the plan's believed `signals`-via-datasource-proxy shape —
  * see `lib/evidence/grafana.ts`'s own doc-comment, "PIVOT DECISION," for the
  * doc-verify trail) over a per-workspace SINGLE service-account-token
- * secret, scoped by a base-URL extra config.
+ * secret, scoped by a base-URL extra config — and `vercel` (Task P7,
+ * Evidence Providers Wave 2), the sixth Wave-2 provider: deployments as
+ * `changes`, deployment build/runtime events as `search_events`, over a
+ * per-workspace SINGLE Access Token, scoped by a required project id and
+ * an OPTIONAL team id (the first Wave-2 provider with an optional extra
+ * config field — a personal-account-scoped Vercel project has no team).
  */
 export type ConnectorKind =
   | "github"
@@ -74,7 +79,8 @@ export type ConnectorKind =
   | "sentry"
   | "datadog"
   | "prometheus"
-  | "grafana";
+  | "grafana"
+  | "vercel";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -715,6 +721,65 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P7, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "vercel",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Vercel",
+    description:
+      "Give the debugging investigator visibility into your Vercel deployments and build/runtime events.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The sixth Wave-2 evidence provider (Task P7) — deployments as
+      // `changes`, deployment build/runtime events as `search_events`,
+      // mirroring railway's own "deployments + logs" shape closely (the
+      // task's own closest-sibling template). See `lib/evidence/vercel.ts`.
+      evidence: ["changes", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Vercel access token",
+      credentialPlaceholder: "your Vercel personal or team Access Token",
+      credentialHint:
+        "A Vercel Access Token (Settings → Tokens). Vercel does not document a fixed prefix or shape for this token type — any non-empty value is accepted here; the live check against api.vercel.com is the real gate.",
+      helpUrl: "https://vercel.com/docs/rest-api/authentication",
+      setupSteps: [
+        "Open Vercel → Settings → Tokens (vercel.com/account/tokens), and create a token scoped to your personal account or the team this project belongs to.",
+        "Copy the token (shown once).",
+        "Open the project → Settings to find its Project ID (and, if it's team-owned, the Team ID), then paste the token and both ids here and connect.",
+      ],
+      // Task P7's own pinned decision: TWO extra config fields — unlike
+      // every prior Wave-2 provider (which declared either one required
+      // field, like grafana/prometheus/langfuse above, or two BOTH-required
+      // fields, like sentry above), vercelTeamId is the wave's first
+      // OPTIONAL extra config field: a personal-account-scoped Vercel
+      // project legitimately has no team id, and every API call this
+      // adapter makes documents `teamId` as an optional query param (see
+      // `lib/evidence/vercel.ts`'s own doc-comment, "TEAM SCOPING") — its
+      // absence degrades nothing, it simply falls back to the token's own
+      // personal/team-bound scope. `vercelProjectId` is first-declared
+      // (drives `projectConnectors`' displayed card target, P0 mechanics)
+      // and required — there is no sensible default project within an
+      // account/team, mirroring railway's own single required project id.
+      extraConfigFields: [
+        {
+          key: "vercelProjectId",
+          label: "Project ID",
+          placeholder: "prj_…",
+          required: true,
+        },
+        {
+          key: "vercelTeamId",
+          label: "Team ID",
+          placeholder: "team_… (optional for personal scope)",
+          required: false,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -1104,6 +1169,23 @@ export function validateConnectorCredential(
             ok: false,
             error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
           };
+    case "vercel": {
+      // Task P7: a SINGLE secret with NO documented format — confirmed by
+      // checking TWO independent first-party Vercel doc pages specifically
+      // for the personal/team Access Token type this connector stores
+      // (`lib/evidence/vercel.ts`'s own doc-comment, "AUTH"); neither shows
+      // a prefix, length, or charset. Mirrors prometheus's identical
+      // shape-agnostic gate: no embedded whitespace, a generous ≤512-char
+      // bound. Real security lives at Gate 2 (live verify), unaffected by
+      // this format gate's own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Vercel tokens must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Vercel tokens must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

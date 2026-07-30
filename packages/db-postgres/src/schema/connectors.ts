@@ -108,6 +108,18 @@ export const connectorProviderEnum = [
   // doc-verify trail. Same precedent as every provider above: a free-text
   // column, so this is a TS-union addition only — no migration.
   "grafana",
+  // observability — Task P7 (Evidence Providers Wave 2): vercel, the sixth
+  // Wave-2 provider (`apps/console/lib/evidence/vercel.ts`). Stores a
+  // SINGLE Access Token in `secret` — no `secretParts`/`secretPartPatterns`
+  // on this provider's catalog entry, same single-secret shape as
+  // `prometheus`/`grafana` above. Its non-secret companion fields are
+  // `config.vercelProjectId` (required) and `config.vercelTeamId`
+  // (OPTIONAL — the wave's first optional extra config field; a
+  // personal-account-scoped project has no team) — both already added by
+  // Task P0 (see {@link ConnectorConfig.vercelProjectId}). Same precedent
+  // as every provider above: a free-text column, so this is a TS-union
+  // addition only — no migration.
+  "vercel",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus, grafana) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus, grafana, vercel) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -124,6 +124,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("prometheus");
     // Task P6.
     expect(body.error).toContain("grafana");
+    // Task P7.
+    expect(body.error).toContain("vercel");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -856,5 +858,186 @@ describe("PUT /connectors/secret — grafana, full flow + extra-config pass-thro
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "grafana", null);
+  });
+});
+
+/**
+ * Full vercel connect flow (Task P7) — both gates run for real (this route
+ * doesn't mock `./verify`), same idiom as the grafana block above. ALSO
+ * proves the extra-config pass-through mechanism generalizes to a
+ * SEVENTH provider carrying TWO extra fields (`vercelProjectId` REQUIRED,
+ * `vercelTeamId` OPTIONAL) in the SAME PUT body, with no vercel-specific
+ * code in this route. `secret` is a SINGLE field (no composite split),
+ * same shape as grafana/prometheus above.
+ */
+describe("PUT /connectors/secret — vercel, full flow + extra-config pass-through (Task P7)", () => {
+  const originalFetch = global.fetch;
+  // FIXTURE, deliberately non-realistic — Vercel documents no fixed token
+  // shape (see lib/evidence/vercel.ts's own doc-comment).
+  const VERCEL_SECRET = "TESTFIXTURE_vercel_token_0000000000000000";
+  const PROJECT_ID = "prj_abc123";
+  const TEAM_ID = "team_abc123";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT vercel accepted end to end: secret + vercelProjectId + vercelTeamId in the SAME body + a live verify that succeeds (/v2/user then /v9/projects/{id}) → 200 connected:true, setConnectorSecret called with the trimmed secret (ids NOT part of it)", async () => {
+    const calledUrls: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledUrls.push(String(url));
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: true, status: 200, json: async () => ({ id: PROJECT_ID }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "vercel",
+      enabled: true,
+      config: {
+        repos: [],
+        triggerLabel: "ready-for-agent",
+        pollIntervalSeconds: 60,
+        vercelProjectId: PROJECT_ID,
+        vercelTeamId: TEAM_ID,
+      },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({
+        provider: "vercel",
+        secret: `  ${VERCEL_SECRET}  `,
+        vercelProjectId: PROJECT_ID,
+        vercelTeamId: TEAM_ID,
+      }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(calledUrls).toEqual([
+      "https://api.vercel.com/v2/user",
+      `https://api.vercel.com/v9/projects/${PROJECT_ID}?teamId=${TEAM_ID}`,
+    ]);
+    // The route itself never persists vercelProjectId/vercelTeamId — only
+    // the trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "vercel", VERCEL_SECRET);
+  });
+
+  it("PUT vercel with NO vercelTeamId in the body still succeeds — teamId is OPTIONAL (personal scope), unlike vercelProjectId", async () => {
+    const calledUrls: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledUrls.push(String(url));
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: true, status: 200, json: async () => ({ id: PROJECT_ID }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "vercel",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, vercelProjectId: PROJECT_ID },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "vercel", secret: VERCEL_SECRET, vercelProjectId: PROJECT_ID }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(calledUrls[1]).toBe(`https://api.vercel.com/v9/projects/${PROJECT_ID}`);
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "vercel", VERCEL_SECRET);
+  });
+
+  it("PUT vercel with NO vercelProjectId in the body still passes Gate 2 (token-only verify) — the route itself has no vercel-specific required-field check; the project leg is verify.ts's own additive concern, not this route's", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "vercel",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "vercel", secret: VERCEL_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("PUT vercel with a live verify Vercel rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "vercel", secret: VERCEL_SECRET, vercelProjectId: PROJECT_ID }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Vercel rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT vercel with a stale/wrong project id (404 on the project leg) → 400 with the distinct project-not-found error, setConnectorSecret never called", async () => {
+    global.fetch = (async (url: string) => {
+      if (String(url).includes("/v9/projects/")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => ({ user: { id: "u1" } }) };
+    }) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "vercel", secret: VERCEL_SECRET, vercelProjectId: "prj_does_not_exist" }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Couldn't find this Vercel project — check the project ID." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT vercel with a whitespace-containing credential fails at the FORMAT gate — never calls fetch, never reads the extra config", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "vercel", secret: "has a space", vercelProjectId: PROJECT_ID }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Vercel tokens must not contain whitespace." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT vercel with secret:null disconnects without ever calling verify/fetch, and without needing any extra config in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "vercel",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "vercel", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "vercel", null);
   });
 });

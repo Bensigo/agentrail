@@ -160,6 +160,9 @@ import "../../../../../lib/evidence/prometheus";
 // Task P6 (Evidence Providers Wave 2): same self-registration idiom for the
 // `grafana` adapter.
 import "../../../../../lib/evidence/grafana";
+// Task P7 (Evidence Providers Wave 2): same self-registration idiom for the
+// `vercel` adapter.
+import "../../../../../lib/evidence/vercel";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

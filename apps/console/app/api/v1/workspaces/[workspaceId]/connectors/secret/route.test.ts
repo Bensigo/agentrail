@@ -872,8 +872,11 @@ describe("PUT /connectors/secret — grafana, full flow + extra-config pass-thro
  */
 describe("PUT /connectors/secret — vercel, full flow + extra-config pass-through (Task P7)", () => {
   const originalFetch = global.fetch;
-  // FIXTURE, deliberately non-realistic — Vercel documents no fixed token
-  // shape (see lib/evidence/vercel.ts's own doc-comment).
+  // FIXTURE, deliberately non-realistic (Fix Round 1 — shape asserted
+  // explicitly, per review): starts with `TESTFIXTURE_`, NOT `vcp_` — the
+  // current, GitHub-secret-scanning-detected personal-access-token prefix
+  // (see lib/evidence/vercel.ts's own doc-comment, "AUTH"); cannot match
+  // that detector's prefix check by construction.
   const VERCEL_SECRET = "TESTFIXTURE_vercel_token_0000000000000000";
   const PROJECT_ID = "prj_abc123";
   const TEAM_ID = "team_abc123";

@@ -21,10 +21,14 @@ import { verifyConnectorCredential } from "../../app/api/v1/workspaces/[workspac
 const mockGetConnector = vi.mocked(getConnector);
 
 const WS = "00000000-0000-0000-0000-000000000001";
-// FIXTURE, deliberately non-realistic — Vercel documents no fixed token
-// shape (see vercel.ts's own doc-comment), so this is just a plausible-
-// looking opaque string, not a real-token-shaped literal that could trip a
-// secret scanner.
+// FIXTURE, deliberately non-realistic (Fix Round 1 — shape asserted
+// explicitly, per review): starts with the literal `TESTFIXTURE_` prefix,
+// NOT `vcp_` — Vercel's own Feb 2026 changelog documents `vcp_` as the
+// current personal-access-token prefix, and GitHub's secret scanning added
+// a live detector for it in March 2026 (see vercel.ts's own doc-comment,
+// "AUTH," for the full citation trail); this literal cannot match that
+// detector's prefix check by construction. Do NOT "fix" this to start with
+// `vcp_` — that is exactly what would get it flagged.
 const TOKEN = "TESTFIXTURE_vercel_token_0000000000000000";
 const PROJECT_ID = "prj_abc123";
 const TEAM_ID = "team_abc123";
@@ -742,6 +746,91 @@ describe("vercelAdapter — search_events: happy path rendering", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
     expect(res.raw.split("\n")).toHaveLength(1);
+  });
+});
+
+// FIX 2 (Fix Round 1, coordinator review): the deployment-events response
+// has a THIRD confirmed oneOf branch — `alias-assigned` events — whose own
+// `required` list has NO `created` field, only `date`. The original
+// submission read `created` only, silently dropping every alias-assigned
+// event (indistinguishable from a malformed entry). Fixed: `created ?? date`
+// (see vercel.ts's own `eventTimestamp`).
+describe("vercelAdapter — search_events: alias-assigned events use `date`, not `created` (Fix Round 1, FIX 2)", () => {
+  function withOneDeploymentInWindow(events: Array<Record<string, unknown>>) {
+    return routeFetch({
+      deployments: () => ({ status: 200, body: { deployments: [deploymentNode({ uid: "dpl_1" })] } }),
+      events: () => ({ status: 200, body: events }),
+    });
+  }
+
+  it("an alias-assigned event (no created field, only date) appears in output at its own date, type rendered as alias-assigned", async () => {
+    global.fetch = withOneDeploymentInWindow([
+      {
+        type: "alias-assigned",
+        date: WINDOW_START_MS + 4000,
+        deploymentId: "dpl_1",
+        alias: ["my-app.vercel.app"],
+        aliasError: null,
+        aliasWarning: null,
+      },
+    ]) as unknown as typeof fetch;
+
+    const res = await vercelAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({
+      ok: true,
+      raw: `log alias-assigned "" at=${new Date(WINDOW_START_MS + 4000).toISOString()}`,
+    });
+  });
+
+  it("an alias-assigned event composes correctly alongside an ordinary stdout event, ordered chronologically by their own timestamps", async () => {
+    global.fetch = withOneDeploymentInWindow([
+      { type: "stdout", created: WINDOW_START_MS + 5000, text: "after alias" },
+      {
+        type: "alias-assigned",
+        date: WINDOW_START_MS + 1000,
+        deploymentId: "dpl_1",
+        alias: ["my-app.vercel.app"],
+        aliasError: null,
+        aliasWarning: null,
+      },
+    ]) as unknown as typeof fetch;
+
+    const res = await vercelAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    const lines = res.raw.split("\n");
+    expect(lines[0]).toContain("alias-assigned");
+    expect(lines[1]).toContain("after alias");
+  });
+
+  it("respects window bounds on an alias-assigned event's own date, same belt-and-braces re-filter as every other branch", async () => {
+    global.fetch = withOneDeploymentInWindow([
+      {
+        type: "alias-assigned",
+        date: WINDOW_END_MS + 3600_000,
+        deploymentId: "dpl_1",
+        alias: [],
+        aliasError: null,
+        aliasWarning: null,
+      },
+    ]) as unknown as typeof fetch;
+
+    const res = await vercelAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({ ok: true, raw: "(no matching log lines)" });
+  });
+
+  it("an entry with NEITHER created NOR date is still skipped — now the ONLY remaining silent-skip case for a missing timestamp", async () => {
+    global.fetch = withOneDeploymentInWindow([
+      { type: "stdout", text: "no timestamp at all" },
+      { type: "stdout", created: WINDOW_START_MS + 1000, text: "has one" },
+    ]) as unknown as typeof fetch;
+
+    const res = await vercelAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw.split("\n")).toHaveLength(1);
+    expect(res.raw).toContain("has one");
+    expect(res.raw).not.toContain("no timestamp at all");
   });
 });
 

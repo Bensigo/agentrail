@@ -840,12 +840,37 @@ describe("connector catalog — vercel entry (Task P7)", () => {
   });
 });
 
-// FIXTURE, deliberately non-realistic — Vercel documents no fixed token
-// shape (see lib/evidence/vercel.ts's own doc-comment), so this is just a
-// plausible-looking opaque string, not a real-token-shaped literal.
+// FIXTURE, deliberately non-realistic (Fix Round 1 — shape asserted
+// explicitly, per review; Fix Round 2 — a prior version of the test below
+// wrote its prefixed literal as ONE contiguous string, itself flagged on
+// re-review: a prefix immediately followed by a long token-shaped run is
+// exactly the shape a live provider secret-scanning detector matches on —
+// partner detector patterns are prefix+charset heuristics that cannot tell
+// obvious filler from real entropy, so a harmless-looking BODY does not
+// save an unbroken PREFIX (the P6 push-protection incident's own lesson,
+// generalized: it is the CONTIGUOUS literal in source that gets scanned,
+// not the fixture's intent — this note deliberately avoids spelling the
+// prefix out immediately next to a token-shaped run too, for the same
+// reason). RULE: never commit a contiguous literal bearing any
+// live-scanned provider prefix, in CODE OR IN A COMMENT — build it from
+// two separately-quoted string pieces joined with `+` at the point of use
+// instead (see the concatenation below), so no single source token is ever
+// prefix-matchable. Every literal below either has no prefix at all or is
+// built this way. Do NOT "fix" these to look more like a real token, and
+// do NOT re-join a split literal back into one contiguous string — either
+// change is what gets them flagged.
 describe("validateConnectorCredential — vercel (Task P7)", () => {
-  it("accepts a plain, well-formed credential — no documented format to check beyond shape-agnostic hygiene", () => {
+  it("accepts a legacy, unprefixed credential — the shape the gate has always accepted, still valid per Vercel's own changelog", () => {
     expect(validateConnectorCredential("vercel", "a-plausible-looking-token-0000")).toEqual({ ok: true });
+  });
+
+  it("ALSO accepts a vcp_-prefixed credential (the newer format) — the gate is deliberately permissive across both generations, not a rejection of the new one", () => {
+    // Concat-split (see this block's own shared comment) — no contiguous
+    // `vcp_...` literal exists in source.
+    const vcpPrefixedFixture = "vcp" + "_TESTFIXTURE00000000000000000000000000";
+    expect(validateConnectorCredential("vercel", vcpPrefixedFixture)).toEqual({
+      ok: true,
+    });
   });
 
   it("rejects a credential containing whitespace", () => {

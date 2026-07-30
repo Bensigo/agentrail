@@ -25,28 +25,41 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *   - AUTH: `Authorization: Bearer <token>` — confirmed
  *     (vercel.com/docs/rest-api/authentication; restated on every
  *     individual endpoint page as "Authentication: bearerToken: HTTP
- *     bearer"). TOKEN FORMAT: this task's own mandatory-first-step wording
- *     anticipated "Vercel tokens have no documented stable prefix? confirm"
- *     — CONFIRMED TRUE. Checked TWO independent first-party sources
- *     specifically for the personal/team Access Token a user creates at
- *     Settings → Tokens (the credential THIS connector stores):
- *     `vercel.com/docs/rest-api/authentication` (the "Create an Auth Token"
- *     page states only "Make a note of the token created as it will not be
- *     shown again" — no format detail) and the Vercel KB guide "How do I use
- *     a Vercel API Access Token?" (shows no example token at all). NEITHER
- *     documents a prefix, length, or charset. Do NOT confuse this with
- *     "Sign in with Vercel" — a DIFFERENT, unrelated OAuth feature whose
- *     Access/Refresh Tokens DO carry documented `vca_`/`vcr_` prefixes
- *     (vercel.com/docs/sign-in-with-vercel/tokens) — those are issued to a
- *     third-party app's END USERS who sign in "with Vercel"; they are
- *     structurally NOT the personal/team REST API token this connector's
- *     catalog entry asks the workspace operator to paste, and would not
- *     even work as one. Per this task's own explicit license ("be honest,
- *     keep permissive if undocumented, live verify is the boundary"), the
- *     format gate (`connector-helpers.ts`'s `case "vercel"`) is
- *     shape-agnostic — mirrors `prometheus.ts`'s identical "no documented
- *     shape" precedent (non-empty, no embedded whitespace, ≤512 chars);
- *     real security lives at Gate 2 (live verify), unaffected.
+ *     bearer"). TOKEN FORMAT (Fix Round 1 correction — the initial
+ *     submission's "no documented prefix" claim was STALE, caught in
+ *     review): Vercel's Feb 9 2026 changelog
+ *     (vercel.com/changelog/new-token-formats-and-secret-scanning,
+ *     "Introducing new token formats and secret scanning") DOES now
+ *     document prefixed formats per credential type — `vcp_` (personal
+ *     access tokens), `vci_` (integration tokens), `vca_`/`vcr_` (the
+ *     SEPARATE "Sign in with Vercel" OAuth app access/refresh tokens — see
+ *     below), `vck_` (API keys, e.g. AI Gateway) — introduced specifically
+ *     so GitHub's secret-scanning partner program could fingerprint them;
+ *     GitHub's own March 2026 changelog confirms it added live detectors
+ *     for these Vercel prefixes that same month (a real, current risk this
+ *     module's own test fixtures must not accidentally match — see below).
+ *     CRITICALLY, per that same changelog and independently corroborated by
+ *     GitGuardian's own detector documentation for the classic "Vercel API
+ *     Access Token" (explicitly flagged `Prefixed: False` in GitGuardian's
+ *     own detector metadata): the LEGACY, UNPREFIXED personal/team Access
+ *     Token shape — created at Settings → Tokens, the credential type THIS
+ *     connector's catalog entry asks the workspace operator to paste —
+ *     REMAINS VALID alongside the new `vcp_`-prefixed one; Vercel did not
+ *     retire or reissue existing tokens. The format gate
+ *     (`connector-helpers.ts`'s `case "vercel"`) therefore stays
+ *     shape-agnostic DELIBERATELY, not from an absence of documentation:
+ *     tightening it to require `vcp_` would reject every legacy,
+ *     still-valid, unprefixed token a workspace may already hold (or create
+ *     via an older CLI/dashboard flow) — mirrors `prometheus.ts`'s identical
+ *     "no single confirmed shape to gate on" precedent (non-empty, no
+ *     embedded whitespace, ≤512 chars — a bound wide enough for either
+ *     generation); real security lives at Gate 2 (live verify), unaffected.
+ *     Do NOT confuse `vca_`/`vcr_` with this connector's credential at all
+ *     — "Sign in with Vercel" (vercel.com/docs/sign-in-with-vercel/tokens)
+ *     is a DIFFERENT, unrelated OAuth feature whose Access/Refresh Tokens
+ *     are issued to a third-party app's END USERS who sign in "with
+ *     Vercel"; they are structurally NOT a REST API credential and would
+ *     not even work as one.
  *   - VERIFY (token leg): `GET /v2/user` — CONFIRMED, current, unchanged
  *     from this task's believed shape
  *     (vercel.com/docs/rest-api/reference/endpoints/user/get-the-user).
@@ -112,18 +125,33 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *     param of any kind, and no free-text query param either — answering
  *     this task's own anticipated "client-only by construction" framing for
  *     `q.query` (see "Q.QUERY" below). Response shape: CONFIRMED to be a
- *     genuine `oneOf` UNION across at least two real object shapes — NOT a
- *     clean flat triple like railway.ts's `{timestamp,message,severity}`.
- *     `created` (number) is the ONE field BOTH primary branches' own
- *     `required` lists share — used as this adapter's sort/window-filter
- *     key. `type` (string enum: command/delimiter/deployment-state/
+ *     genuine `oneOf` UNION across THREE real object shapes — NOT a clean
+ *     flat triple like railway.ts's `{timestamp,message,severity}`. `type`
+ *     (string enum: command/delimiter/deployment-state/
  *     edge-function-invocation/exit/fatal/metric/middleware/
  *     middleware-invocation/report/stderr/stdout, or `alias-assigned` for
  *     the third branch) is present at the top level in every branch.
- *     `text` is OPTIONAL and appears in two different places depending on
- *     branch: top-level (`entry.text`, the flatter branch) or nested
- *     (`entry.payload.text`, the wrapped branch) — read defensively as
- *     `entry.text ?? entry.payload?.text ?? ""` (see {@link eventText}).
+ *     TIMESTAMP (Fix Round 1 correction — the initial submission read
+ *     `created` only, silently dropping the third branch): the first two
+ *     branches' own `required` lists both include `created` (number), but
+ *     the THIRD branch — `alias-assigned` events, confirmed
+ *     `required: [alias, aliasError, aliasWarning, date, deploymentId,
+ *     type]` — has NO `created` field at all, only `date` (number). Read
+ *     as `entry.created ?? entry.date` (see {@link eventTimestamp}) so an
+ *     alias-assigned event (e.g. a deployment's alias being (re)pointed —
+ *     a real, debugging-relevant occurrence) renders at its own `date`
+ *     instead of being silently skipped; `type` already renders correctly
+ *     for it via the existing generic `entry.type` read. An entry with
+ *     NEITHER `created` NOR `date` is still skipped — now the ONLY
+ *     remaining silent-skip case for a missing timestamp (a genuinely
+ *     undocumented/malformed shape, not one of the three confirmed
+ *     branches). `text` is OPTIONAL and appears in two different places
+ *     depending on branch: top-level (`entry.text`, the flatter branch) or
+ *     nested (`entry.payload.text`, the wrapped branch) — read defensively
+ *     as `entry.text ?? entry.payload?.text ?? ""` (see {@link eventText});
+ *     the `alias-assigned` branch carries neither, so it renders with an
+ *     empty quoted text, same as any other text-less event kind
+ *     (`delimiter`/`exit`).
  *     The TOP-LEVEL response array is ALSO confirmed `nullable: true` (a
  *     legitimate "no events" response can be a bare JSON `null`, not just
  *     `[]`) — this adapter's own `vercelGet` deliberately does NOT treat a
@@ -175,21 +203,34 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * discussion on finding a deployment by commit SHA) describing exactly
  * this convention for a deployment's populated git metadata; (2) bare
  * (`commitSha`/`commitMessage`/`commitRef`) — this IS first-party-schema-
- * documented, but on a DIFFERENT endpoint and for a DIFFERENT direction:
- * the CREATE-deployment endpoint's OWN REQUEST BODY `gitSource` object
- * (vercel.com/docs/rest-api/reference/endpoints/deployments/
- * create-a-new-deployment) — what a CALLER supplies to tell Vercel which
- * commit to deploy, not what Vercel reports back on a LIST read. Since
- * either convention is plausible for the read-side `meta` bag and a wrong
- * guess here only ever degrades ONE line's commit columns to `-` (a plain
- * JSON object property read, unlike railway.ts's GraphQL field-name risk,
- * where a wrong guess could break the WHOLE query) — this adapter checks
- * BOTH conventions defensively, bare keys first (the one convention that
- * IS schema-documented somewhere in this API, even if not on this exact
- * endpoint), falling back through the three provider-prefixed variants
- * (github/gitlab/bitbucket), and finally `-`. A live token can confirm the
- * real key in a follow-up, exactly like railway.ts's own disclosed "ENV
- * FIELD" v1 gap invites for its unconfirmed field.
+ * documented, but on a DIFFERENT endpoint and for a DIFFERENT direction
+ * (Fix Round 1 correction — the initial submission mis-cited this as the
+ * CREATE-deployment endpoint's `gitSource` object; it is actually a
+ * SEPARATE sibling request field on that SAME endpoint, `gitMetadata`,
+ * confirmed "Populates initial git metadata for different git providers,"
+ * carrying exactly `commitAuthorName`/`commitAuthorEmail`/`commitMessage`/
+ * `commitRef`/`commitSha`/`dirty`/`ci*` — `gitSource` itself, by contrast,
+ * uses ENTIRELY DIFFERENT field names, `sha`/`ref` (it specifies WHICH
+ * commit to deploy FROM, not metadata ABOUT one — a different concern; its
+ * own required-field variants are keyed by `type`/`sha`/`ref`/`repoId`/
+ * `org`/`repo`, no `commitSha`/`commitMessage` anywhere in it). This
+ * correction, if anything, STRENGTHENS hypothesis (2) as a candidate: a
+ * field literally named "populates git metadata" is a closer conceptual
+ * match to this adapter's own read-side `meta` bag than a "which commit to
+ * deploy" input ever was. vercel.com/docs/rest-api/reference/endpoints/
+ * deployments/create-a-new-deployment — what a CALLER supplies when
+ * creating a deployment, not what Vercel reports back on a LIST read, so
+ * still not a DIRECT confirmation of the list endpoint's own `meta` shape).
+ * Since either convention is plausible for the read-side `meta` bag and a
+ * wrong guess here only ever degrades ONE line's commit columns to `-` (a
+ * plain JSON object property read, unlike railway.ts's GraphQL field-name
+ * risk, where a wrong guess could break the WHOLE query) — this adapter
+ * checks BOTH conventions defensively, bare keys first (the one convention
+ * that IS schema-documented somewhere in this API, even if not on this
+ * exact endpoint), falling back through the three provider-prefixed
+ * variants (github/gitlab/bitbucket), and finally `-`. A live token can
+ * confirm the real key in a follow-up, exactly like railway.ts's own
+ * disclosed "ENV FIELD" v1 gap invites for its unconfirmed field.
  *
  * SHARED CANDIDATE FETCH — a deliberate, disclosed STRUCTURAL DIVERGENCE
  * from railway.ts's identical-looking `fetchProjectDeployments` (railway's
@@ -638,6 +679,11 @@ async function queryChanges(
 interface VercelEventEntry {
   type?: unknown;
   created?: unknown;
+  /** The THIRD confirmed response branch (Fix Round 1 — see the module
+   * doc-comment, "SEARCH_EVENTS"): an `alias-assigned` event carries `date`
+   * instead of `created` — its own `required` list has no `created` field
+   * at all. Read as a fallback — see {@link eventTimestamp}. */
+  date?: unknown;
   text?: unknown;
   payload?: unknown;
 }
@@ -662,6 +708,25 @@ function eventText(entry: VercelEventEntry): string {
   return "";
 }
 
+/** Reads an event's own timestamp as `created ?? date` (Fix Round 1 — see
+ * the module doc-comment, "SEARCH_EVENTS"): `created` is present on the
+ * two branches this adapter originally confirmed, but the THIRD confirmed
+ * branch — `alias-assigned` events — carries ONLY `date` (its own
+ * `required` list has no `created` field). Without this fallback, every
+ * alias-assigned event was silently dropped, indistinguishable from a
+ * malformed entry. An entry with NEITHER field is still skipped — now the
+ * ONLY remaining silent-skip case for a missing timestamp (a genuinely
+ * undocumented/malformed shape, not a known real branch). */
+function eventTimestamp(entry: VercelEventEntry): number | null {
+  if (typeof entry.created === "number" && Number.isFinite(entry.created)) {
+    return entry.created;
+  }
+  if (typeof entry.date === "number" && Number.isFinite(entry.date)) {
+    return entry.date;
+  }
+  return null;
+}
+
 /** `log {type|-} "{text-120}" at={iso}` — this task's own pinned field
  * order. */
 function renderLogLine(type: string, text: string, atIso: string): string {
@@ -675,9 +740,10 @@ type DeploymentEventsOutcome = { ok: true; lines: RenderedLogLine[] } | { ok: fa
  * `since`/`until` server-side (no serving-at-start conflict here — this
  * fetch targets ONE already-selected candidate's own event stream, not the
  * shared candidate-discovery fetch) AND re-filters each returned event's
- * own `created` against the SAME window client-side — belt-and-braces,
- * never trusting the server-side filter alone (mirrors railway.ts's FIX
- * 1a/1b precedent exactly). */
+ * own timestamp (`created ?? date` — see {@link eventTimestamp}) against
+ * the SAME window client-side — belt-and-braces, never trusting the
+ * server-side filter alone (mirrors railway.ts's FIX 1a/1b precedent
+ * exactly). */
 async function fetchDeploymentEvents(
   token: string,
   deploymentId: string,
@@ -718,7 +784,7 @@ async function fetchDeploymentEvents(
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as VercelEventEntry;
 
-    const createdMs = typeof entry.created === "number" && Number.isFinite(entry.created) ? entry.created : null;
+    const createdMs = eventTimestamp(entry);
     if (createdMs === null) continue;
     // Client-side re-filter (belt-and-braces) — inclusive bounds,
     // independent of whatever the server-side since/until actually did

@@ -744,7 +744,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       credentialLabel: "Vercel access token",
       credentialPlaceholder: "your Vercel personal or team Access Token",
       credentialHint:
-        "A Vercel Access Token (Settings → Tokens). Vercel does not document a fixed prefix or shape for this token type — any non-empty value is accepted here; the live check against api.vercel.com is the real gate.",
+        "A Vercel Access Token (Settings → Tokens) — either the newer vcp_-prefixed format or an older, still-valid token without a prefix. Both are accepted here; the live check against api.vercel.com is the real gate.",
       helpUrl: "https://vercel.com/docs/rest-api/authentication",
       setupSteps: [
         "Open Vercel → Settings → Tokens (vercel.com/account/tokens), and create a token scoped to your personal account or the team this project belongs to.",
@@ -1170,14 +1170,20 @@ export function validateConnectorCredential(
             error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
           };
     case "vercel": {
-      // Task P7: a SINGLE secret with NO documented format — confirmed by
-      // checking TWO independent first-party Vercel doc pages specifically
-      // for the personal/team Access Token type this connector stores
-      // (`lib/evidence/vercel.ts`'s own doc-comment, "AUTH"); neither shows
-      // a prefix, length, or charset. Mirrors prometheus's identical
-      // shape-agnostic gate: no embedded whitespace, a generous ≤512-char
-      // bound. Real security lives at Gate 2 (live verify), unaffected by
-      // this format gate's own permissiveness.
+      // Task P7 (Fix Round 1 correction — see `lib/evidence/vercel.ts`'s
+      // own doc-comment, "AUTH," for the full citation trail): Vercel's
+      // Feb 2026 changelog DOES now document a prefix for freshly-created
+      // tokens (`vcp_`, "personal access tokens"), but the LEGACY,
+      // unprefixed personal/team Access Token shape this connector has
+      // always accepted remains independently valid — Vercel did not
+      // retire or reissue existing tokens. This gate stays shape-agnostic
+      // DELIBERATELY (not from an absence of documentation): requiring
+      // `vcp_` would reject every still-valid legacy token a workspace may
+      // already hold. Mirrors prometheus's identical "no single confirmed
+      // shape to gate on" precedent: no embedded whitespace, a generous
+      // ≤512-char bound wide enough for either generation. Real security
+      // lives at Gate 2 (live verify), unaffected by this format gate's
+      // own permissiveness.
       if (/\s/.test(s)) {
         return { ok: false, error: "Vercel tokens must not contain whitespace." };
       }

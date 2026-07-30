@@ -433,7 +433,7 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
           channel: "slack",
           conversationKey: "C123:1700000000.000100",
           providerMessageId: "C123:1",
-          payload: { chatId: "C123", text: "/connect", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "/connect", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -451,7 +451,11 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
 
     await dispatchQueuedChannelMessages();
 
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("C123", "Connected to Acme.", "1700000000.000100");
+    // First arg: the Slack team id (Task 4), sourced from the row's own
+    // payload.teamId and threaded explicitly through to
+    // sendSystemSlackMessage — the team-scoped send needs it to resolve the
+    // right installation's token.
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "C123", "Connected to Acme.", "1700000000.000100");
   });
 
   it("a normal (non-'/connect') message row still reaches the Eve turn (no regression)", async () => {
@@ -1482,6 +1486,66 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
   });
 });
 
+// --- Task 4 (docs/superpowers/specs/2026-07-29-slack-multi-workspace-
+// design.md §4): the Slack team id must travel EXPLICITLY, as a plain value,
+// from the row's own payload into `auth.attributes` — the ONE seam eve
+// forwards unchanged into the session Jace's slack channel reads back out to
+// choose which installation's bot token a reply gets posted with. Never
+// inferred from channel/conversationKey, never a default.
+describe("dispatchQueuedChannelMessages — Slack team id threads into auth.attributes (Task 4)", () => {
+  it("carries payload.teamId into auth.attributes for a Slack row", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({ payload: { chatId: "D0PNCRP9N", text: "hello jace", teamId: "TEAM_A" } }),
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-team-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).toEqual({
+      chatIdentityId: "chat-slack-1",
+      workspaceId: null,
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+      teamId: "TEAM_A",
+    });
+  });
+
+  it("omits teamId from auth.attributes when the payload carries none (default Slack row, unchanged)", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-team-2" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).toEqual({
+      chatIdentityId: "chat-slack-1",
+      workspaceId: null,
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+    });
+    expect(body.auth.attributes).not.toHaveProperty("teamId");
+  });
+
+  it("never appears in auth.attributes for a Discord or Telegram row (Slack-only field)", async () => {
+    mockClaim.mockResolvedValueOnce(discordRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-team-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).not.toHaveProperty("teamId");
+  });
+});
+
 // --- #1285: Slack rows ride the SAME dispatcher, additively -----------------
 //
 // Mirrors the Discord block above exactly: the Slack Events webhook route
@@ -1631,19 +1695,22 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
   it("'ask' kind on a slack row sends the workspace-choice message via sendSystemSlackMessage, never the other channels' senders", async () => {
     const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
-    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace", teamId: "T1" } })).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
     mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
 
     await dispatchQueuedChannelMessages();
 
+    // First arg: the Slack team id (Task 4), threaded through from the row's
+    // own payload.teamId — the team-scoped send needs it to resolve the
+    // right installation's token, never a default.
     // Third arg: the Slack thread id, sourced from the row's own
     // payload.threadTs. This DM-style row (a bare channel id conversationKey,
     // no threadTs in payload) has none — asserting `undefined` explicitly
     // here (not omitting the arg) is deliberate: the finding this guards
     // against is the console posting flat when it SHOULD be threaded, not
     // the reverse, so the exact call shape matters.
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
     expect(mockSendSystem).not.toHaveBeenCalled();
     expect(mockSendSystemDiscord).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
@@ -1652,7 +1719,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
   it("'ask' kind on a slack row: a valid workspace-name reply pins and sends the pin confirmation via sendSystemSlackMessage", async () => {
     const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
-    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "Acme" } })).mockResolvedValueOnce(null);
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "Acme", teamId: "T1" } })).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
     mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
     mockPin.mockResolvedValue({ ok: true, sessionId: "pin-1" } as never);
@@ -1665,7 +1732,18 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       conversationKey: "D0PNCRP9N",
       workspaceId: "ws-1",
     });
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+  });
+
+  it("'ask' kind on a slack row with NO teamId in the payload: sendSystemSlackMessage is still called, with undefined — never a guessed/default team", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith(undefined, "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
   });
 
   // Final whole-branch review, finding #1 (critical): a channel conversation
@@ -1679,7 +1757,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       .mockResolvedValueOnce(
         slackRow({
           conversationKey: "C123:1700000000.000100",
-          payload: { chatId: "C123", text: "hey jace", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "hey jace", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -1689,6 +1767,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
     await dispatchQueuedChannelMessages();
 
     expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "T1",
       "C123",
       expect.stringContaining("Acme"),
       "1700000000.000100"
@@ -1701,7 +1780,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       .mockResolvedValueOnce(
         slackRow({
           conversationKey: "C123:1700000000.000100",
-          payload: { chatId: "C123", text: "Acme", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "Acme", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -1712,6 +1791,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
     await dispatchQueuedChannelMessages();
 
     expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "T1",
       "C123",
       expect.stringContaining("Acme"),
       "1700000000.000100"

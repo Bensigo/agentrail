@@ -312,6 +312,17 @@ export async function POST(request: NextRequest) {
       chatId: event.channel,
       text: event.text,
       fromId: event.user,
+      // Task 4 (docs/superpowers/specs/2026-07-29-slack-multi-workspace-
+      // design.md §4): the team this row's installation was resolved
+      // against, ALREADY VERIFIED above (`getSlackInstallation` returned
+      // non-null) — never the raw, unverified `body.team_id`. This is what
+      // lets `channel-dispatch.ts` carry an explicit team id into
+      // `auth.attributes`, which is the ONLY thing that later lets a reply
+      // choose the right customer's bot token. Always present at this point
+      // (the installation check above returns early otherwise), but read via
+      // `installation.teamId` rather than the outer `teamId` local so this
+      // never depends on that local's control-flow-derived narrowing.
+      teamId: installation.teamId,
       // Slack-only; omitted (never written as `undefined`) for a DM, so a DM
       // payload stays byte-identical to today's. Task 3 reads this back to
       // know which thread to reply in.

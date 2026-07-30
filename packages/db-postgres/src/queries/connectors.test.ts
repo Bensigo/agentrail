@@ -25,6 +25,18 @@ describe("isConnectorProvider — railway (Task 7)", () => {
   });
 });
 
+// Task P2 (Evidence Providers Wave 2): "langfuse" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway" above (no migration). langfuseHost's own validateConnectorUpdate
+// coverage (scheme-gated via validateUrlConfigString) already lives in the
+// "Evidence Providers Wave 2 (Task P0)" describe block below, alongside its
+// nine Wave-2 siblings — not duplicated here.
+describe("isConnectorProvider — langfuse (Task P2)", () => {
+  it("recognizes 'langfuse' as a known connector provider", () => {
+    expect(isConnectorProvider("langfuse")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

@@ -55,6 +55,15 @@ export const connectorProviderEnum = [
   // Same precedent as `jace`: a free-text column, so this is a TS-union
   // addition only — no migration.
   "railway",
+  // observability — Task P2 (Evidence Providers Wave 2): langfuse, the
+  // first Wave-2 provider (`apps/console/lib/evidence/langfuse.ts`). Stores
+  // a COMPOSITE `pk-lf-…:sk-lf-…` credential in `secret` (see
+  // `apps/console/lib/evidence/composite-secret.ts`), same single-column
+  // convention as every other provider here; its non-secret companion
+  // field is `config.langfuseHost` (already added by Task P0 — see
+  // {@link ConnectorConfig.langfuseHost}). Same precedent as `railway`: a
+  // free-text column, so this is a TS-union addition only — no migration.
+  "langfuse",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

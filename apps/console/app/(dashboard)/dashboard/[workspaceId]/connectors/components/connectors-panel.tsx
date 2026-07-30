@@ -15,6 +15,7 @@ import {
   FigmaBrand,
   Context7Brand,
   RailwayBrand,
+  LangfuseBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -51,6 +52,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   context7: Context7Brand,
   factory: FactoryGlyph,
   railway: RailwayBrand,
+  langfuse: LangfuseBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -63,6 +65,9 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // Railway's mark is monochrome (like GitHub's) — the gray var, not a
   // literal brand hex (Task 7 could not confirm one against public docs).
   railway: "text-[var(--gray-12)]",
+  // Task P2: same fallback as Railway — Langfuse's mark here is a generic
+  // stand-in (brand-icons.tsx's own doc-comment), so no brand hex to pin.
+  langfuse: "text-[var(--gray-12)]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
@@ -296,12 +301,36 @@ function SecretManage({
       setSaving(true);
       setErr(null);
       try {
+        // Computed BEFORE the secret PUT (Task P2 — see this component's own
+        // note below at the persistence call for why the SAME entries also
+        // ride ALONGSIDE the secret in the request below, not just here).
+        const configEntries = extraFields
+          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
+          .filter(([, v]) => v.length > 0);
+
         const res = await fetch(
           `/api/v1/workspaces/${workspaceId}/connectors/secret`,
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ provider: connector.kind, ...body }),
+            // Task P2: a catalog entry's extraConfigFields values ride
+            // ALONGSIDE the secret in this SAME request (in addition to the
+            // dedicated persistence call below) — some providers' live
+            // verify needs a not-yet-persisted extra field (Langfuse's host:
+            // `verify.ts` calls `GET {host}/api/public/projects`, and at
+            // THIS point in the flow no config PUT has run yet — see
+            // `verify.ts`'s own doc-comment). secret/route.ts reads these
+            // ONLY to hand to verify; it never persists them itself (the
+            // dedicated config PUT below remains the sole persistence
+            // path), so this is harmless for every provider whose secret
+            // route doesn't consume them (every provider before this task,
+            // including Railway's own `railwayProjectId`). Never sent on a
+            // disconnect (`body.secret === null`).
+            body: JSON.stringify({
+              provider: connector.kind,
+              ...body,
+              ...(body.secret !== null ? Object.fromEntries(configEntries) : {}),
+            }),
           }
         );
         if (!res.ok) {
@@ -309,16 +338,14 @@ function SecretManage({
           throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
         }
 
-        // The extra fields (when the catalog entry declares any) save via
-        // the connectors CONFIG route, not this secret route — and only once
-        // the credential itself is accepted, so a rejected token never
-        // leaves an orphaned config value behind. Never attempted on a
-        // disconnect (`body.secret === null`). Only non-empty values are
-        // sent, so an optional field left blank never overwrites a
-        // previously-stored one with an empty string.
-        const configEntries = extraFields
-          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
-          .filter(([, v]) => v.length > 0);
+        // The extra fields (when the catalog entry declares any) ALSO save
+        // via the connectors CONFIG route (the sole persistence path for
+        // them — see the note above), and only once the credential itself
+        // is accepted, so a rejected token never leaves an orphaned config
+        // value behind. Never attempted on a disconnect (`body.secret ===
+        // null`). Only non-empty values are sent, so an optional field left
+        // blank never overwrites a previously-stored one with an empty
+        // string.
         if (body.secret !== null && configEntries.length > 0) {
           const configRes = await fetch(
             `/api/v1/workspaces/${workspaceId}/connectors`,

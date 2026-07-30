@@ -115,6 +115,132 @@ describe("verifyConnectorCredential('railway', ...)", () => {
 });
 
 /**
+ * Task P2: langfuse verify — `GET {host}/api/public/projects`, HTTP Basic
+ * auth (public key as username, secret key as password). The `config`
+ * parameter (this module's own doc-comment, "LANGFUSE HOST — THE ORDERING
+ * GAP") is where `langfuseHost` comes from — never a persisted connector
+ * row at this call site.
+ */
+describe("verifyConnectorCredential('langfuse', ...)", () => {
+  const HOST = "https://cloud.langfuse.com";
+  const PUBLIC_KEY = "pk-lf-abc123";
+  const SECRET_KEY = "sk-lf-def456";
+  const SECRET = `${PUBLIC_KEY}:${SECRET_KEY}`;
+  const EXPECTED_AUTH = `Basic ${Buffer.from(`${PUBLIC_KEY}:${SECRET_KEY}`).toString("base64")}`;
+
+  function projectsResponse(status: number, body: unknown = {}) {
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  }
+
+  it("GETs {host}/api/public/projects with HTTP Basic auth built from the split public:secret key pair", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return projectsResponse(200, { data: [{ id: "proj-1" }] });
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, {
+      langfuseHost: HOST,
+    });
+
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe(`${HOST}/api/public/projects`);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(EXPECTED_AUTH);
+  });
+
+  it("fails closed with a clear error and never calls fetch when config.langfuseHost is absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Set the Langfuse host before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and never calls fetch when config itself is undefined (no 4th argument at all)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("langfuse", SECRET);
+    expect(res).toEqual({ ok: false, error: "Set the Langfuse host before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a langfuseHost that isn't a valid URL", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, {
+      langfuseHost: "not-a-url",
+    });
+    expect(res).toEqual({ ok: false, error: "Set the Langfuse host before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a non-http(s) scheme (defensive re-gate — this value has not passed validateUrlConfigString yet)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, {
+      langfuseHost: "javascript:alert(1)",
+    });
+    expect(res).toEqual({ ok: false, error: "Set the Langfuse host before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("strips a trailing slash from the host before building the URL", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return projectsResponse(200, { data: [] });
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("langfuse", SECRET, undefined, { langfuseHost: `${HOST}/` });
+    expect(capturedUrl).toBe(`${HOST}/api/public/projects`);
+  });
+
+  it("rejects on HTTP 401", async () => {
+    global.fetch = (async () => projectsResponse(401)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, { langfuseHost: HOST });
+    expect(res).toEqual({ ok: false, error: "Langfuse rejected these API keys." });
+  });
+
+  it("rejects on HTTP 403", async () => {
+    global.fetch = (async () => projectsResponse(403)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, { langfuseHost: HOST });
+    expect(res).toEqual({ ok: false, error: "Langfuse rejected these API keys." });
+  });
+
+  it("reports a non-2xx, non-401/403 status with its HTTP code", async () => {
+    global.fetch = (async () => projectsResponse(500)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, { langfuseHost: HOST });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Langfuse (HTTP 500)." });
+  });
+
+  it("reports an unreachable upstream (thrown fetch) with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", SECRET, undefined, { langfuseHost: HOST });
+    expect(res).toEqual({
+      ok: false,
+      error: "Couldn't reach Langfuse to verify the keys — try again.",
+    });
+  });
+
+  it("rejects a malformed composite secret (wrong part count) before ever reading config or calling fetch", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("langfuse", "only-one-part", undefined, {
+      langfuseHost: HOST,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

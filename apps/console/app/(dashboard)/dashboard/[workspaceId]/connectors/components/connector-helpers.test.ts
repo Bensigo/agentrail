@@ -24,6 +24,7 @@ describe("projectConnectors", () => {
       "figma",
       "context7",
       "railway",
+      "langfuse",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -31,12 +32,14 @@ describe("projectConnectors", () => {
     // tools-only `mcp`. Gateways-page T4 removed the third group, `channel`
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
-    // for debugging investigations, no ingest).
+    // for debugging investigations, no ingest); Task P2 adds langfuse to the
+    // SAME `observability` group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
     ]);
   });
@@ -128,7 +131,13 @@ describe("projectConnectors", () => {
     const rows = projectConnectors([], withInternal);
     expect(rows.find((r) => r.kind === "context7")).toBeUndefined();
     expect(rows.find((r) => r.kind === "factory")).toBeUndefined();
-    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "figma", "railway"]);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "github",
+      "linear",
+      "figma",
+      "railway",
+      "langfuse",
+    ]);
   });
 
   it("the default (no injected catalog) call still projects every real catalog entry — the optional param is additive, not a behavior change", () => {
@@ -139,6 +148,7 @@ describe("projectConnectors", () => {
       "figma",
       "context7",
       "railway",
+      "langfuse",
     ]);
   });
 });
@@ -386,9 +396,9 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every other catalog entry declares no extraConfigFields (railway is still the only provider needing one before Wave 2's providers land)", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id) and langfuse (host, Task P2) are the only two so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
-      if (entry.kind === "railway") continue;
+      if (entry.kind === "railway" || entry.kind === "langfuse") continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
     }
   });
@@ -399,9 +409,85 @@ describe("connector catalog — railway entry (Task 7)", () => {
   });
 });
 
+describe("connector catalog — langfuse entry (Task P2)", () => {
+  const langfuse = CONNECTOR_CATALOG.find((c) => c.kind === "langfuse")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(langfuse.type).toBe("observability");
+    expect(langfuse.connectMethod).toBe("secret");
+    expect(langfuse.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities traces + signals, and no ingest/postResult/notify", () => {
+    expect(langfuse.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["traces", "signals"],
+    });
+  });
+
+  it("declares a composite two-part secret (public + secret key) with per-part patterns", () => {
+    expect(langfuse.connect?.secretParts).toEqual([{ name: "Public key" }, { name: "Secret key" }]);
+    expect(langfuse.connect?.secretPartPatterns).toEqual(["^pk-lf-", "^sk-lf-"]);
+  });
+
+  it("declares a required langfuseHost extraConfigFields entry", () => {
+    expect(langfuse.connect?.extraConfigFields).toEqual([
+      {
+        key: "langfuseHost",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
+describe("validateConnectorCredential — langfuse (Task P2)", () => {
+  it("accepts a well-formed pk-lf-…:sk-lf-… composite secret via the generic composite path (real catalog, no synthetic entry needed)", () => {
+    expect(validateConnectorCredential("langfuse", "pk-lf-abc123:sk-lf-def456")).toEqual({
+      ok: true,
+    });
+  });
+
+  it("rejects when the public key part doesn't match ^pk-lf-", () => {
+    const res = validateConnectorCredential("langfuse", "wrong-prefix:sk-lf-def456");
+    expect(res).toEqual({ ok: false, error: "Public key has an unexpected format." });
+  });
+
+  it("rejects when the secret key part doesn't match ^sk-lf-", () => {
+    const res = validateConnectorCredential("langfuse", "pk-lf-abc123:wrong-prefix");
+    expect(res).toEqual({ ok: false, error: "Secret key has an unexpected format." });
+  });
+
+  it("rejects a single-part value (no colon) with the composite part-count error, never reaching the langfuse switch case", () => {
+    const res = validateConnectorCredential("langfuse", "pk-lf-abc123-only");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+  });
+
+  it("the langfuse switch case itself (defense in depth, unreachable through the real catalog) rejects — proven via a synthetic catalog entry with secretParts stripped", () => {
+    const real = CONNECTOR_CATALOG.find((c) => c.kind === "langfuse")!;
+    const stripped: ConnectorCatalogEntry = {
+      ...real,
+      connect: { ...real.connect!, secretParts: undefined, secretPartPatterns: undefined },
+    };
+    const res = validateConnectorCredential("langfuse", "anything", [stripped]);
+    expect(res).toEqual({
+      ok: false,
+      error: "Langfuse requires both API keys (public + secret).",
+    });
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
+  });
+
+  it("includes langfuse's declared key from the real catalog (Task P2)", () => {
+    expect(extraConfigFieldKeys().has("langfuseHost")).toBe(true);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {

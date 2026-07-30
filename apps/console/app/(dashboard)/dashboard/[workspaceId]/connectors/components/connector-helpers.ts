@@ -40,10 +40,13 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * The external tools AgentRail can connect (M038 catalog), plus `factory` —
  * Task 5's `availability: "internal"` evidence-only entry (this console's
  * own runs/failure-events; nothing to connect, see
- * {@link ConnectorAvailability}'s own doc-comment) — and `railway` (Task 7),
+ * {@link ConnectorAvailability}'s own doc-comment) — `railway` (Task 7),
  * the first EXTERNAL evidence-only-role connector: deployments + logs for
  * the debugging investigator, over the workspace's Railway account/team
- * token.
+ * token — and `langfuse` (Task P2, Evidence Providers Wave 2,
+ * `.superpowers/sdd/plan-providers.md`), the first Wave-2 provider: traces +
+ * observation-level signals over a per-workspace public/secret API key
+ * pair.
  */
 export type ConnectorKind =
   | "github"
@@ -51,7 +54,8 @@ export type ConnectorKind =
   | "figma"
   | "context7"
   | "factory"
-  | "railway";
+  | "railway"
+  | "langfuse";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -413,6 +417,61 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P2, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "langfuse",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Langfuse",
+    description:
+      "Give the debugging investigator visibility into your Langfuse traces and observation-level signals (error rate, latency).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The first Wave-2 evidence provider (Task P2) — proves the same
+      // "add a provider = catalog entry + adapter" property Task 7 proved
+      // for railway, now for a COMPOSITE-secret provider. See
+      // `lib/evidence/langfuse.ts`.
+      evidence: ["traces", "signals"],
+    },
+    connect: {
+      credentialLabel: "Langfuse API keys",
+      credentialPlaceholder: "pk-lf-… / sk-lf-…",
+      credentialHint:
+        "A Langfuse project's public + secret API key pair — pk-lf-… and sk-lf-….",
+      helpUrl:
+        "https://langfuse.com/docs/api-and-data-platform/features/public-api",
+      setupSteps: [
+        "Open your Langfuse project → Settings → API Keys.",
+        "Click “Create new API keys” and copy both the pk-lf-… public key and the sk-lf-… secret key (shown once).",
+        "Paste both here, along with your Langfuse host (e.g. https://cloud.langfuse.com, https://jp.cloud.langfuse.com, or your self-hosted origin), and connect.",
+      ],
+      // Task P0's composite-secret mechanism (see composite-secret.ts's own
+      // doc-comment): Langfuse's public+secret key pair is stored as ONE
+      // `publicKey:secretKey` string in `connectors.secret`, split back
+      // apart generically by `validateConnectorCredential` (format gate)
+      // and `verifyConnectorCredential` (live gate) — neither needs a
+      // langfuse-specific parsing branch.
+      secretParts: [{ name: "Public key" }, { name: "Secret key" }],
+      secretPartPatterns: ["^pk-lf-", "^sk-lf-"],
+      // The workspace's Langfuse region/self-host origin — required (unlike
+      // Railway's project id, every workspace needs SOME host; there is no
+      // sensible default across cloud regions/self-host — see
+      // `lib/evidence/langfuse.ts`'s own doc-comment). Scheme-gated at
+      // write time by `validateUrlConfigString` (Task P0 Fix Round 1,
+      // `packages/db-postgres/src/queries/connectors.ts`).
+      extraConfigFields: [
+        {
+          key: "langfuseHost",
+          label: "Langfuse host",
+          placeholder: "https://cloud.langfuse.com",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -722,6 +781,19 @@ export function validateConnectorCredential(
       return UUID_SHAPE_RE.test(s)
         ? { ok: true }
         : { ok: false, error: "Railway tokens are UUIDs." };
+    case "langfuse":
+      // Task P2: the real catalog entry declares `secretParts` (two parts),
+      // so every real call is intercepted by the generic composite-secret
+      // branch ABOVE this switch and never reaches this case — this is this
+      // function's own defense in depth regardless (same reasoning as
+      // `factory` below): the switch must stay total over every
+      // ConnectorKind, and this is the operative rejection for a direct
+      // caller (this module's own tests included, or a hypothetical future
+      // catalog edit that strips `secretParts`) that reaches it anyway.
+      return {
+        ok: false,
+        error: "Langfuse requires both API keys (public + secret).",
+      };
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

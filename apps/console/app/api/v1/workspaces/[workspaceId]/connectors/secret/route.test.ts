@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -114,6 +114,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("figma");
     expect(body.error).toContain("context7");
     expect(body.error).toContain("railway");
+    // Task P2.
+    expect(body.error).toContain("langfuse");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -214,5 +216,116 @@ describe("PUT /connectors/secret — railway, full flow (Task 7)", () => {
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "railway", null);
+  });
+});
+
+/**
+ * Full langfuse connect flow (Task P2) — both gates run for real (this
+ * route doesn't mock `./verify`), so the live-verify HTTP call is exercised
+ * via a `global.fetch` swap, same idiom as the railway block above. ALSO
+ * proves the extra-config pass-through mechanism this task added (see
+ * `verify.ts`'s own doc-comment, "LANGFUSE HOST — THE ORDERING GAP"): a
+ * catalog-declared extraConfigFields value (`langfuseHost`) riding
+ * alongside `secret` in the SAME PUT body reaches `verifyConnectorCredential`
+ * generically, with no langfuse-specific code in this route.
+ */
+describe("PUT /connectors/secret — langfuse, full flow + extra-config pass-through (Task P2)", () => {
+  const originalFetch = global.fetch;
+  const PUBLIC_KEY = "pk-lf-abc123";
+  const SECRET_KEY = "sk-lf-def456";
+  const LANGFUSE_SECRET = `${PUBLIC_KEY}:${SECRET_KEY}`;
+  const HOST = "https://cloud.langfuse.com";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT langfuse accepted end to end: composite secret + langfuseHost in the SAME body + a live verify that succeeds → 200 connected:true, setConnectorSecret called with the trimmed composite secret (host NOT part of it)", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: "proj-1" }] }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "langfuse",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, langfuseHost: HOST },
+      hasSecret: true,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "langfuse", secret: `  ${LANGFUSE_SECRET}  `, langfuseHost: HOST }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(capturedUrl).toBe(`${HOST}/api/public/projects`);
+    // The route itself never persists langfuseHost — only the trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "langfuse", LANGFUSE_SECRET);
+  });
+
+  it("PUT langfuse with NO langfuseHost in the body → 400 with verify's own host-missing error, setConnectorSecret never called (proves the pass-through, not a hardcoded route branch)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "langfuse", secret: LANGFUSE_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set the Langfuse host before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT langfuse with a well-formed composite secret but a live verify Langfuse rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "langfuse", secret: LANGFUSE_SECRET, langfuseHost: HOST }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Langfuse rejected these API keys." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT langfuse with a malformed composite secret (wrong prefix) fails at the FORMAT gate — never calls fetch, never reads langfuseHost", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "langfuse", secret: "wrong:wrong", langfuseHost: HOST }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Public key has an unexpected format." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT langfuse with secret:null disconnects without ever calling verify/fetch, and without needing langfuseHost in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "langfuse",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "langfuse", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "langfuse", null);
   });
 });

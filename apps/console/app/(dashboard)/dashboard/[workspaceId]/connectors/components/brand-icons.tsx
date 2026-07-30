@@ -4,7 +4,11 @@
  * simple-icons, CC0) rendered with `currentColor` so they inherit the card's
  * text color. Each component mirrors lucide's `{ size, className }` props so it
  * is a drop-in inside the `KIND_ICON` map. Context7 has no published logo, so its
- * mark is a small docs glyph that reads as "documentation".
+ * mark is a small docs glyph that reads as "documentation". Langfuse (Task P2,
+ * Evidence Providers Wave 2) is likewise not present in simple-icons as of this
+ * task (confirmed via search — no simple-icons entry exists for it), so its
+ * mark is a small hand-drawn pulse/trace-line glyph in the SAME stroke style as
+ * Context7's — an honest stand-in, not a claim of Langfuse's actual trademark.
  */
 import type { SVGProps } from "react";
 
@@ -86,6 +90,29 @@ export function Context7Brand({ size = 18, className, ...rest }: BrandIconProps)
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
       <path d="M9 7h7M9 11h7" />
+    </svg>
+  );
+}
+
+/** Langfuse has no simple-icons entry — a compact pulse/trace-line glyph
+ * stands in (see this file's own doc-comment). */
+export function LangfuseBrand({ size = 18, className, ...rest }: BrandIconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+      {...rest}
+    >
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path d="M7 13.5h2.5L11 8l2 8 1.5-5.5H17" />
     </svg>
   );
 }

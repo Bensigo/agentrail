@@ -15,13 +15,14 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * rejected (we never store an unverified credential) with a retry hint.
  *
  * Verified live: Linear (GraphQL `viewer`), Figma (`/v1/me`), Railway (Task 7
- * — GraphQL `me`). Context7 stays format-only here — it has no stable
- * side-effect-free check; its format gate already rejects malformed values.
- * Discord/Slack/Telegram are no longer credential-based (Gateway → Channels
- * cutover): `secret/route.ts`'s allowlist rejects them before a call ever
- * reaches this module. The `default` case below still answers `{ok:true}`
- * for them so this function stays total over every `ConnectorKind`, but that
- * path is unreachable through the route today.
+ * — GraphQL `me`), Langfuse (Task P2 — `GET /api/public/projects`). Context7
+ * stays format-only here — it has no stable side-effect-free check; its
+ * format gate already rejects malformed values. Discord/Slack/Telegram are
+ * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
+ * allowlist rejects them before a call ever reaches this module. The
+ * `default` case below still answers `{ok:true}` for them so this function
+ * stays total over every `ConnectorKind`, but that path is unreachable
+ * through the route today.
  *
  * RAILWAY (Task 7): confirmed against Railway's public API docs
  * (https://docs.railway.com/integrations/api,
@@ -40,6 +41,52 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  *   - A GraphQL error body (`{"errors":[...]}`, HTTP 200) is treated as
  *     rejection — Railway, like most GraphQL servers, does not always signal
  *     an invalid-token query with a non-2xx status.
+ *
+ * LANGFUSE (Task P2, Evidence Providers Wave 2): confirmed against Langfuse's
+ * own docs during implementation (`langfuse.com/docs/api-and-data-platform/
+ * features/public-api`, cross-checked with a live GitHub discussion + the
+ * `fern/apis/server/definition/*.yml` API source files) rather than trusted
+ * from memory:
+ *   - Auth: HTTP Basic, public key as username, secret key as password — the
+ *     docs' own worked example is
+ *     `curl -u public-key:secret-key https://cloud.langfuse.com/api/public/projects`.
+ *   - `GET {host}/api/public/projects` is exactly that worked example — a
+ *     side-effect-free, real-project-scoped read, confirmed rejecting an
+ *     ORGANIZATION-scoped key with "Invalid API key" (so it genuinely
+ *     exercises the project-scoped public/secret pair this connector stores,
+ *     not some other credential shape).
+ *
+ * LANGFUSE HOST — THE ORDERING GAP (Task P2, flagged for reviewer
+ * adjudication — see the task report's own Concerns section): Langfuse has
+ * no single global API host (cloud has multiple regions, e.g.
+ * `cloud.langfuse.com` / `jp.cloud.langfuse.com`, and self-host is a fully
+ * custom origin), so THIS live-verify call needs the workspace's own
+ * `config.langfuseHost` — a catalog `extraConfigFields` value. But
+ * `connectors-panel.tsx`'s `SecretManage.save()` PUTs the secret BEFORE the
+ * extra-config fields (the config PUT only runs once the secret PUT already
+ * succeeded), so at THIS point in a brand-new connect, no `langfuseHost` has
+ * been persisted yet — `verifyConnectorCredential`'s existing signature
+ * (`kind, secret, catalog`) has nothing to read it from. Rather than either
+ * (a) reordering the two PUTs (a bigger, riskier behavior change to
+ * shared "connect-form machinery"), or (b) skipping live-verify for
+ * Langfuse entirely (violates this task's own pinned "Live verify in
+ * verify.ts" decision), the fix is the SMALLEST generic extension: this
+ * function gains an OPTIONAL 4th `config` parameter — the SAME request's
+ * extra-config values, read generically off the request body by
+ * `secret/route.ts` (via the already-catalog-derived `extraConfigFieldKeys`,
+ * Task P0) and passed straight through, never persisted by this route (the
+ * dedicated config PUT, unchanged, remains the sole persistence path — see
+ * `connectors-panel.tsx`'s own note at its `save()` callback). Every
+ * existing call site (none pass a 4th argument) is behavior-identical.
+ * Because this value is UNVALIDATED raw client input at this point (the
+ * scheme-gate `validateUrlConfigString`, `packages/db-postgres/src/queries/
+ * connectors.ts`, only ever runs on the SEPARATE, later config PUT),
+ * `resolveHttpUrl` below re-applies the SAME http/https scheme gate
+ * defensively before this module ever hands it to `fetch` — never trusting
+ * that the client-supplied value is well-formed. This same `config`
+ * parameter is intended to generalize to P4/P5/P6 (Datadog/Prometheus/
+ * Grafana), whose verify endpoints have the identical "needs a not-yet-
+ * persisted host/site" shape.
  */
 
 export type VerifyResult = { ok: true } | { ok: false; error: string };
@@ -137,6 +184,66 @@ async function verifyRailway(token: string): Promise<VerifyResult> {
   }
 }
 
+/** Defensively re-validate an untrusted `config.langfuseHost` value at
+ * verify-time — see this module's own doc-comment ("LANGFUSE HOST — THE
+ * ORDERING GAP") for why this value has NOT yet passed
+ * `validateUrlConfigString`. Mirrors that function's own scheme-only gate
+ * (parse via `new URL()`, require `http:`/`https:`) rather than importing
+ * it — `packages/db-postgres/src/queries/connectors.ts` does not export it,
+ * and this module stays a leaf (no db-postgres dependency for a five-line
+ * check). Returns the trimmed, de-slashed origin+path string on success, or
+ * `null` for anything missing/malformed. */
+function resolveHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return trimmed.replace(/\/+$/, "");
+}
+
+/** Langfuse: a valid public/secret key pair resolves the CURRENT project via
+ * `GET {host}/api/public/projects` — see this module's own doc-comment
+ * ("LANGFUSE (Task P2)") for the confirmed endpoint/auth shape, and
+ * ("LANGFUSE HOST — THE ORDERING GAP") for why `config` (not yet a
+ * persisted connector row) is where `langfuseHost` comes from here. No host
+ * (missing, or present but not a valid http/https URL) fails closed with a
+ * clear, actionable error rather than guessing a default region — Langfuse
+ * cloud regions and self-host origins are DIFFERENT deployments with
+ * different projects; guessing would produce a confusing false rejection
+ * for a real, well-formed key pair scoped to the "wrong" (unguessed) host. */
+async function verifyLangfuse(
+  publicKey: string,
+  secretKey: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  const host = resolveHttpUrl(config?.langfuseHost);
+  if (!host) {
+    return { ok: false, error: "Set the Langfuse host before connecting." };
+  }
+  try {
+    const res = await fetchWithTimeout(`${host}/api/public/projects`, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString("base64")}`,
+      },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Langfuse rejected these API keys." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Langfuse (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Langfuse to verify the keys — try again." };
+  }
+}
+
 /**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
@@ -147,18 +254,24 @@ async function verifyRailway(token: string): Promise<VerifyResult> {
  * `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment) before
  * dispatching — so a FUTURE provider's own case (P2-P8) receives
  * `split.parts` directly instead of re-deriving the split itself. Every kind
- * below predates this wave and is single-part, so `splitCompositeSecret`'s
+ * that predates this wave is single-part, so `splitCompositeSecret`'s
  * passthrough makes `split.parts[0] === secret.trim()` for all of them —
  * behavior-identical to before this generalization. `catalog` defaults to
  * the real {@link CONNECTOR_CATALOG} — the optional param exists so a test
  * can prove the split-before-dispatch mechanism with a synthetic composite
  * entry, without a second real composite provider in the catalog (P0 adds
  * none).
+ *
+ * Task P2: an optional 4th `config` parameter — see this module's own
+ * doc-comment ("LANGFUSE HOST — THE ORDERING GAP"). Every pre-P2 call site
+ * omits it (`undefined`), which every pre-P2 case below simply never reads —
+ * behavior-identical.
  */
 export async function verifyConnectorCredential(
   kind: ConnectorKind,
   secret: string,
-  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG,
+  config?: Record<string, unknown>
 ): Promise<VerifyResult> {
   const trimmed = secret.trim();
 
@@ -181,6 +294,8 @@ export async function verifyConnectorCredential(
       return verifyFigma(first);
     case "railway":
       return verifyRailway(first);
+    case "langfuse":
+      return verifyLangfuse(first, split.parts[1], config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };
@@ -189,7 +304,7 @@ export async function verifyConnectorCredential(
       // longer credential-based) never legitimately reach this function
       // through the route's allowlist; total and harmless if they ever do.
       // A future composite provider with no case yet added here (shouldn't
-      // happen — P2-P8 each add their own case) would also fall through to
+      // happen — P3-P8 each add their own case) would also fall through to
       // this harmless default rather than silently "verifying" nothing.
       return { ok: true };
   }

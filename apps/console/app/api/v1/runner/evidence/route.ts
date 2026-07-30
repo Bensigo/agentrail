@@ -145,6 +145,9 @@ import "../../../../../lib/evidence/factory";
 import "../../../../../lib/evidence/github";
 // Task 7: same self-registration idiom for the `railway` adapter.
 import "../../../../../lib/evidence/railway";
+// Task P2 (Evidence Providers Wave 2): same self-registration idiom for the
+// `langfuse` adapter.
+import "../../../../../lib/evidence/langfuse";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

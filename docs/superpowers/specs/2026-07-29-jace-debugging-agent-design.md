@@ -745,3 +745,39 @@ these are the deltas reality forced, each with its reason:
   severity→depth-budget derivation; the factory adapter's createdAt-ranged
   run query + wedged-run horizon edge; an admin unclaim affordance for the
   promote crash window; assorted test hygiene.
+
+## As built (Wave 2) — the provider roster, 2026-07-31
+
+The "additional providers expand capability without changing the foundation"
+claim was exercised at scale: nine stacked PRs (#1527–#1538) atop the v1 arc,
+zero prompt/methodology/investigator changes anywhere (reviewer-asserted from
+every diff), evidence-layer core files untouched throughout.
+
+- **Foundations:** generalized connect forms (`extraConfigFields` arrays,
+  composite `secretParts` joined client-side with a server-side split
+  helper, catalog-derived key allowlists, URL keys scheme-gated centrally)
+  and the Jace-side `fetch_signals`/`fetch_traces` verb tools (all three
+  evidence-core copies, sync-tested).
+- **Providers shipped:** Langfuse (traces + single-row RED signals),
+  Sentry (error events + signals; free text quoted per the real search
+  grammar with round-trip tests), Datadog (rollup-collapsed signals +
+  `message:`-scoped log search), Prometheus (four instant RED/USE queries,
+  two-layer PromQL escaping proven order-correct), Grafana (sanctioned
+  pivot to alerts/annotations as `search_events` — datasource-proxy
+  querying is undocumented first-party and exceeds the Viewer role),
+  Vercel (v7 deployments + deployment events incl. alias-assigned),
+  Cloudflare (edge signals + firewall events via the inline-filter GraphQL
+  idiom with schema-dump-confirmed leaf scalars).
+- **Wave lessons now pinned as process:** vendor claims verified against
+  raw doc fetches only (a summarizing fetch fabricated a "verbatim" type
+  citation from a screenshot-heavy page — caught in review); query-DSL
+  escaping tested by round-tripping the provider's documented unescape,
+  for the exact field queried; secret fixtures structurally fake with no
+  contiguous live-scanned prefix (concat-split).
+- **Pre-deploy additions:** a Cloudflare live-token smoke (both verbs — the
+  query shapes are schema-grounded but never ran against a real zone; the
+  failure mode degrades gracefully but silently) and a recommended live
+  composite-connect check (Langfuse pk/sk, JP region).
+- **Wave follow-up filed:** search-horizon caveats across all seven
+  search-ish adapters (bounded-fetch + client filter can render a false
+  "(no matching events)") + the Jace-side excerpt head-truncation fix.

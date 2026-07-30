@@ -110,6 +110,38 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *     the same as a real outage. Neither branch requires the ambiguity to
  *     be resolved.
  *
+ *     SINGLE-ROW DESIGN (Fix Round 1 — pin 2's "single-row per metric where
+ *     the API allows"): the initial submission rendered one line PER
+ *     RETURNED POINT, defensively — correct given `/api/v1/query`'s raw
+ *     shape, but not the pinned "small pre-aggregated summary" contract.
+ *     Confirmed real, documented fix: Datadog's metrics query language has
+ *     a `.rollup(<method>, <seconds>)` function
+ *     (`docs.datadoghq.com/dashboards/functions/rollup/`, confirmed real
+ *     example: `avg:checkout.latency{service:checkout,env:prod}.rollup(avg,
+ *     60)`) — a TIME aggregation (distinct from the `avg:` prefix's SPACE
+ *     aggregation across matching series). Every fixed query now appends
+ *     `.rollup(avg, <window_seconds>)`, where `window_seconds` is the WHOLE
+ *     queried window's length (computed from the original millisecond
+ *     timestamps, `Math.ceil((windowEndMs - windowStartMs) / 1000)` — NOT
+ *     from the already-floored `from`/`to` request seconds, which could
+ *     under-count by up to a second and leave the rollup interval fractionally
+ *     narrower than the actual queried span) — sized so at most one rollup
+ *     bucket can ever form, mirroring langfuse.ts's `timeDimension` omission
+ *     and sentry.ts's full-window `interval` sizing, both aimed at the exact
+ *     same "collapse the window to one point" goal via each provider's own
+ *     mechanism. `avg` is used as the rollup METHOD (not `sum`/`max`) for
+ *     all three metrics because all three are gauge-like measurements
+ *     (percentages/load) where averaging over time is the representative
+ *     aggregation — summing a percentage across time buckets would be
+ *     meaningless. BELT-AND-BRACES: {@link fetchMetric} does not simply
+ *     trust that `.rollup()` collapsed the response to one point — it
+ *     collects every in-window, non-null point first (unchanged from
+ *     before) and, if MORE than one survives, honestly re-aggregates them
+ *     client-side via a plain average (the same `avg` semantics as the
+ *     query's own rollup method) into ONE line, never rendering a per-point
+ *     dump. See {@link fetchMetric}'s own doc-comment for the exact
+ *     mechanics and the timestamp-selection policy for each case.
+ *
  *   - SIGNALS' THREE METRICS are this adapter's own disclosed judgment call
  *     (mirrors langfuse.ts's/sentry.ts's identical disclosed picks) — see
  *     {@link metricSpecs}'s own doc-comment for why USE-shaped Datadog Agent
@@ -146,31 +178,46 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *     `"service": "datadog.agent"`), a direct match for the task's own
  *     pinned `log {status|-} {service|-} ...` render format.
  *
- *   - LOG SEARCH SYNTAX — QUOTING (pin 3): confirmed directly from
- *     `docs.datadoghq.com/logs/explorer/search_syntax/` (quoted verbatim,
- *     not paraphrased): a bare double-quoted phrase, `"hello world"`,
- *     "searches only the log message for hello and dolly words" (a
- *     MESSAGE-field phrase search — the exact field this adapter's own
- *     rendered `"{message}"` line reflects, a clean match with no `*:`
- *     all-attributes prefix needed). "The following characters are
- *     considered special and require escaping with the `\` character: `-`
- *     `!` `&&` `||` `>` `>=` `<` `<=` `(` `)` `{` `}` `[` `]` `"` `*` `?`
- *     `:` `\` `#`, and spaces" — CRITICALLY, unlike Sentry's grammar (whose
- *     own confirmed parser source had NO `\\`-to-`\` production at all, the
- *     exact thing Task P3's Fix Round 1 CODA got burned by assuming without
- *     checking), Datadog's OWN documented reserved-character list
- *     explicitly INCLUDES the backslash character itself — meaning `\`
- *     DOES need escaping here, and blindly copying Sentry's corrected
- *     "never double a backslash" fix would be WRONG for Datadog
- *     specifically. See {@link quoteLogSearchText}'s own doc-comment for the
- *     full quoting design and why wrapping the whole query in a double-quoted
- *     phrase is sufficient (matches the docs' own stated equivalence,
- *     `@my_attribute:hello\:world` OR `@my_attribute:"hello:world"` — quoting
- *     neutralizes the reserved-character list without needing to escape each
- *     one individually; only the quote delimiter itself and the escape
- *     character itself need their own escaping inside the quotes, the
- *     standard shape of every quoted-string grammar this codebase has
- *     touched so far).
+ *   - LOG SEARCH SYNTAX — QUOTING (pin 3, CORRECTED Fix Round 1): confirmed
+ *     directly from `docs.datadoghq.com/logs/explorer/search_syntax/`
+ *     (quoted verbatim, not paraphrased). The initial submission wrapped
+ *     free text in a BARE double-quoted phrase (`"hello world"`, a
+ *     free-text/message search) on the theory that quoting alone made it
+ *     safe — the docs' own words say otherwise: "You cannot search for
+ *     special characters in a log message. You can search for special
+ *     characters when they are inside of an attribute." A bare phrase
+ *     search is documented to match only `message`, `@title`,
+ *     `@error.message`, `@error.stack` via TOKENIZED full-text matching
+ *     that does not reliably preserve special characters, even quoted.
+ *     ATTRIBUTE search is the documented path that DOES support escaping/
+ *     quoting for special characters (the worked example:
+ *     `@my_attribute:hello\:world` OR `@my_attribute:"hello:world"`) — and
+ *     the SAME page confirms `message` is one of Datadog's RESERVED
+ *     attributes (`host`, `source`, `status`, `service`, `trace_id`,
+ *     `message` — "do not require the `@` prefix"), searchable directly as
+ *     `message:value`, going through the SAME attribute-search escaping
+ *     rules as a custom `@attribute`. {@link buildLogsSearchBody} therefore
+ *     prefixes the quoted text with the literal `message:` reserved-
+ *     attribute reference (`message:"<escaped>"`), routing free text
+ *     through the attribute-search path rather than the free-text path —
+ *     this is the fix. "The following characters are considered special
+ *     and require escaping with the `\` character: `-` `!` `&&` `||` `>`
+ *     `>=` `<` `<=` `(` `)` `{` `}` `[` `]` `"` `*` `?` `:` `\` `#`, and
+ *     spaces" — CRITICALLY, unlike Sentry's grammar (whose own confirmed
+ *     parser source had NO `\\`-to-`\` production at all, the exact thing
+ *     Task P3's Fix Round 1 CODA got burned by assuming without checking),
+ *     Datadog's OWN documented reserved-character list explicitly INCLUDES
+ *     the backslash character itself — meaning `\` DOES need escaping here,
+ *     and blindly copying Sentry's corrected "never double a backslash" fix
+ *     would be WRONG for Datadog specifically. See
+ *     {@link quoteLogSearchText}'s own doc-comment for the escaping
+ *     mechanics (unchanged by this fix — only the `message:` prefix,
+ *     applied by the caller in {@link buildLogsSearchBody}, is new) —
+ *     quoting neutralizes the reserved-character list without needing to
+ *     escape each one individually; only the quote delimiter itself and the
+ *     escape character itself need their own escaping inside the quotes,
+ *     the standard shape of every quoted-string grammar this codebase has
+ *     touched so far.
  *
  * Q.SCOPE (`signals` only — task's own explicit instruction: "design 2-4
  * fixed RED/USE-shaped queries... parameterized by q.scope as a tag
@@ -191,9 +238,14 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * quoting primitive, not an oversight of pin 3's intent.
  *
  * RENDERING: `signals` — the Global Constraints' pinned `signal
- * {name}{labels} window_agg={avg|max|p95...} value={n} at={iso}`, one line
- * PER RETURNED POINT (never assumes exactly one), capped
- * `Math.max(1, q.limit ?? 50)`. `search_events` — the task's own pinned
+ * {name}{labels} window_agg={avg|max|p95...} value={n} at={iso}`, ONE
+ * AGGREGATED LINE PER METRIC (Fix Round 1 — pin 2's single-row-per-metric
+ * contract; see the module doc-comment, "SINGLE-ROW DESIGN", and
+ * {@link fetchMetric}'s own doc-comment for the `.rollup()` + client-side
+ * belt mechanics), capped `Math.max(1, q.limit ?? 50)` — a cap this verb's
+ * own output (at most 3 real lines, one per fixed metric) can no longer
+ * structurally reach on its own; the cap machinery is kept regardless,
+ * unchanged and still meaningful for a future wider metric set. `search_events` — the task's own pinned
  * `log {status|-} {service|-} "{message-first-120-chars}" at={iso}`,
  * chronological (ascending — ordering the task's own brief pins
  * explicitly), capped `Math.max(1, q.limit ?? 200)`, keeping the MOST
@@ -209,8 +261,10 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * millisecond timestamp is re-checked against `[windowStart, windowEnd]`
  * regardless of what the server-side params already did.
  *
- * Q.QUERY (`search_events`): quoted via {@link quoteLogSearchText} before it
- * ever reaches `filter.query` (pin 3). The CLIENT-side re-filter is,
+ * Q.QUERY (`search_events`): quoted via {@link quoteLogSearchText} and
+ * prefixed with the `message:` reserved-attribute reference (Fix Round 1 —
+ * see the module doc-comment, "LOG SEARCH SYNTAX — QUOTING") before it ever
+ * reaches `filter.query` (pin 3). The CLIENT-side re-filter is,
  * DELIBERATELY, a substring match against the FULL RENDERED LINE — NOT
  * message-only the way langfuse.ts's `name` re-filter or sentry.ts's
  * `title` re-filter are scoped. This is an explicit, task-pinned deviation
@@ -338,8 +392,13 @@ export const DATADOG_SECRET_SPEC = {
  * anything not an exact match — including a value that merely CONTAINS a
  * real site as a substring (e.g. `datadoghq.com.attacker.example`), which a
  * permissive regex could wrongly accept but an exact Set membership check
- * cannot. */
-const DATADOG_SITES = new Set([
+ * cannot. EXPORTED (Fix Round 1, FOLD 3) solely so `datadog.test.ts` can
+ * assert this Set stays IN SYNC with `verify.ts`'s own independently
+ * duplicated `DATADOG_SITES` (that module stays a leaf and does not import
+ * this one — see its own doc-comment) — the two declarations can never
+ * silently drift apart unnoticed. This does NOT create a new runtime
+ * coupling between the two modules; only the TEST imports both. */
+export const DATADOG_SITES = new Set([
   "datadoghq.com",
   "us3.datadoghq.com",
   "us5.datadoghq.com",
@@ -436,27 +495,32 @@ function renderLogLine(status: string, service: string, message: string, atIso: 
 }
 
 /**
- * Wraps free text in Datadog's documented quoted-phrase syntax before it
- * rides in `filter.query` — see the module doc-comment ("LOG SEARCH SYNTAX
- * — QUOTING") for the confirmed docs text this implements. UNLIKE
- * sentry.ts's `quoteSearchText` (whose Fix Round 1 CODA discovered Sentry's
- * grammar has NO `\\`-to-`\` production, so doubling a backslash there was
- * a real regression), Datadog's OWN documented reserved-character list
- * explicitly names the backslash character itself as needing escaping —
- * this function therefore DOES double a literal backslash (`\` → `\\`)
- * before escaping the quote delimiter (`"` → `\"`), the conventional order
- * for a grammar that defines `\\` as "one literal backslash" (running the
- * backslash pass FIRST means the backslash the quote-escaping pass
- * introduces is never itself re-escaped by a later pass — order matters and
- * is deliberate, not incidental). The whole thing is then wrapped in `"`
- * delimiters, producing a MESSAGE-field phrase search (confirmed: a bare
- * `"..."` query is documented to search the message field specifically —
- * see the module doc-comment). Called unconditionally on every non-empty
- * `q.query` (mirrors sentry.ts's FOLD 1 "quoted always" uniformity). See
- * `datadog.test.ts`'s round-trip describe block for tests that decode this
- * function's wire output back through Datadog's OWN documented escape rule
- * and assert the original text is recovered exactly — the exact discipline
- * that would have caught Sentry's coda regression before it shipped. */
+ * Escapes + quotes free text for use as a Datadog ATTRIBUTE search VALUE —
+ * see the module doc-comment ("LOG SEARCH SYNTAX — QUOTING") for the
+ * confirmed docs text this implements and why this is an attribute-search
+ * value (produced here, prefixed with the `message:` reserved-attribute
+ * reference by {@link buildLogsSearchBody}) rather than a bare free-text
+ * phrase — free text cannot reliably match special characters at all, only
+ * an attribute search can. UNLIKE sentry.ts's `quoteSearchText` (whose Fix
+ * Round 1 CODA discovered Sentry's grammar has NO `\\`-to-`\` production, so
+ * doubling a backslash there was a real regression), Datadog's OWN
+ * documented reserved-character list explicitly names the backslash
+ * character itself as needing escaping — this function therefore DOES
+ * double a literal backslash (`\` → `\\`) before escaping the quote
+ * delimiter (`"` → `\"`), the conventional order for a grammar that defines
+ * `\\` as "one literal backslash" (running the backslash pass FIRST means
+ * the backslash the quote-escaping pass introduces is never itself
+ * re-escaped by a later pass — order matters and is deliberate, not
+ * incidental). The whole thing is then wrapped in `"` delimiters, matching
+ * the docs' own attribute-search quoting example
+ * (`@my_attribute:"hello:world"`). Called unconditionally on every
+ * non-empty `q.query` (mirrors sentry.ts's FOLD 1 "quoted always"
+ * uniformity). See `datadog.test.ts`'s round-trip describe block for tests
+ * that decode this function's wire output (as embedded in the full
+ * `message:"..."` value {@link buildLogsSearchBody} sends) back through
+ * Datadog's OWN documented escape rule and assert the original text is
+ * recovered exactly — the exact discipline that would have caught Sentry's
+ * coda regression before it shipped. */
 function quoteLogSearchText(text: string): string {
   const backslashesEscaped = text.replace(/\\/g, "\\\\");
   const quotesEscaped = backslashesEscaped.replace(/"/g, '\\"');
@@ -477,8 +541,16 @@ function buildLogsSearchBody(windowStart: string, windowEnd: string, query: stri
   // override a hidden default. There is no equivalent hidden default here,
   // so this adapter omits the key rather than sending a value with nothing
   // to override (see the module doc-comment, "SEARCH_EVENTS").
+  //
+  // Fix Round 1: prefixed with the `message:` RESERVED-ATTRIBUTE reference
+  // (no `@` — confirmed alongside host/source/status/service/trace_id) so
+  // the quoted text rides through Datadog's ATTRIBUTE-search path, the only
+  // documented path that preserves escaped special characters — a bare
+  // quoted phrase (the initial submission's design) is a free-text/message
+  // search, which the docs state cannot match special characters at all.
+  // See the module doc-comment, "LOG SEARCH SYNTAX — QUOTING".
   if (query) {
-    filter.query = quoteLogSearchText(query);
+    filter.query = `message:${quoteLogSearchText(query)}`;
   }
   return {
     filter,
@@ -630,6 +702,20 @@ function tagFilterFor(scope: string | undefined): string {
   return "{*}";
 }
 
+/** The `.rollup(avg, <seconds>)` interval — sized to the WHOLE queried
+ * window so at most one bucket can ever form (Fix Round 1 — see the module
+ * doc-comment, "SINGLE-ROW DESIGN"). Computed from the ORIGINAL millisecond
+ * timestamps (not the already-floored `from`/`to` request seconds below),
+ * ceil'd, so the rollup width is never fractionally narrower than the
+ * actual queried span. Floored to a 1-second minimum defensively (a
+ * zero/negative width is nonsensical as a rollup interval and would not
+ * come from any real `EvidenceQuery`, but this function never assumes its
+ * caller validated that). */
+function rollupSecondsFor(windowStart: string, windowEnd: string): number {
+  const spanMs = new Date(windowEnd).getTime() - new Date(windowStart).getTime();
+  return Math.max(1, Math.ceil(spanMs / 1000));
+}
+
 function buildMetricsUrl(base: string, spec: MetricSpec, tagFilter: string, windowStart: string, windowEnd: string): string {
   // CONFIRMED: `from`/`to` are epoch SECONDS on the REQUEST side (this
   // module's own doc-comment, "SIGNALS") — the opposite unit from the
@@ -637,7 +723,8 @@ function buildMetricsUrl(base: string, spec: MetricSpec, tagFilter: string, wind
   // {@link fetchMetric} below.
   const fromSec = Math.floor(new Date(windowStart).getTime() / 1000);
   const toSec = Math.floor(new Date(windowEnd).getTime() / 1000);
-  const query = `${spec.aggregator}:${spec.metric}${tagFilter}`;
+  const rollupSeconds = rollupSecondsFor(windowStart, windowEnd);
+  const query = `${spec.aggregator}:${spec.metric}${tagFilter}.rollup(avg, ${rollupSeconds})`;
   const params = new URLSearchParams({ from: String(fromSec), to: String(toSec), query });
   return `${base}${METRICS_PATH}?${params}`;
 }
@@ -663,23 +750,52 @@ interface DatadogSeries {
 
 type MetricOutcome = { ok: true; lines: RenderedLine[] } | { ok: false; marker: string };
 
+/** Rounds a CLIENT-SYNTHESIZED (never a raw API) value to 4 decimal places —
+ * only ever applied in {@link fetchMetric}'s belt-and-braces multi-point
+ * average (Fix Round 1), never to a value read directly off the API (which
+ * always renders exactly as returned, matching every sibling adapter's "never
+ * transform a provider number" discipline). 4 places preserves meaningful
+ * precision across all three metrics' scales (load averages are often
+ * sub-1, e.g. `0.15`) while avoiding a repeating-decimal tail from plain
+ * float division (e.g. `10.666666666666666`). */
+function roundSynthesized(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
 /**
  * One metric's own fetch — its OWN try/catch (per-metric granularity;
  * mirrors langfuse.ts's/sentry.ts's `fetchMetric` exactly, applied to a
- * FIXED set of three Datadog metrics). Each returned `pointlist` entry is
- * rendered as its OWN line (never assumes exactly one point per series, nor
- * exactly one series). UNIT HANDLING (this module's own doc-comment,
- * "SIGNALS"): a `pointlist` entry's timestamp is read as MILLISECONDS
- * DIRECTLY — no division, no multiplication — the opposite of
+ * FIXED set of three Datadog metrics). UNIT HANDLING (this module's own
+ * doc-comment, "SIGNALS"): a `pointlist` entry's timestamp is read as
+ * MILLISECONDS DIRECTLY — no division, no multiplication — the opposite of
  * {@link buildMetricsUrl}'s own `/1000` conversion for the REQUEST params;
  * conflating the two directions was the single easiest mistake this
  * adapter could make, so they are implemented, commented, and tested
- * independently rather than sharing one "the conversion factor" constant. A
- * point whose value is `null`/non-numeric (Datadog's own "no data this
- * point" signal within an otherwise-populated series) is skipped, never
- * rendered as a fabricated `value=0`. A point whose timestamp lands outside
+ * independently rather than sharing one "the conversion factor" constant.
+ *
+ * SINGLE-ROW AGGREGATION (Fix Round 1 — pin 2; see the module doc-comment,
+ * "SINGLE-ROW DESIGN"): every in-window point across every series is
+ * collected first — a point whose value is `null`/non-numeric (Datadog's
+ * own "no data this point" signal) is skipped, never rendered as a
+ * fabricated `value=0`; a point whose timestamp lands outside
  * `[windowStart, windowEnd]` is skipped too (belt-and-braces — mirrors
- * every sibling adapter's identical re-filter, unqualified by verb). */
+ * every sibling adapter's identical re-filter, unqualified by verb). The
+ * SURVIVING points are then collapsed into AT MOST ONE line, never a
+ * per-point dump:
+ *   - Zero survivors → zero lines (an empty, still-successful result — the
+ *     query's own `.rollup()` genuinely found no data in the window, same
+ *     as before this fix).
+ *   - Exactly one survivor (the EXPECTED case — `.rollup(avg,
+ *     window_seconds)`, sized to the whole window, means the query itself
+ *     asks Datadog for one bucket) → rendered AS RETURNED, at ITS OWN
+ *     timestamp — real data is preserved untouched, nothing is
+ *     synthesized.
+ *   - More than one survivor (the BELT — `.rollup()` not fully respected,
+ *     defensively handled rather than assumed away) → honestly
+ *     re-aggregated via a plain average ({@link roundSynthesized}'d) into
+ *     ONE line, stamped at `windowEnd` (mirrors langfuse.ts's identical
+ *     "no single bucket's timestamp is more correct than another for a
+ *     synthesized value" fallback) — never rendered as separate lines. */
 async function fetchMetric(
   base: string,
   apiKey: string,
@@ -708,7 +824,7 @@ async function fetchMetric(
   const windowStartMs = new Date(windowStart).getTime();
   const windowEndMs = new Date(windowEnd).getTime();
 
-  const lines: RenderedLine[] = [];
+  const points: Array<{ atMs: number; value: number }> = [];
   for (const s of series) {
     const pointlist = Array.isArray(s?.pointlist) ? (s.pointlist as unknown[]) : [];
     for (const point of pointlist) {
@@ -722,10 +838,24 @@ async function fetchMetric(
       if (typeof valueRaw !== "number" || !Number.isFinite(valueRaw)) continue;
       if (atMsRaw < windowStartMs || atMsRaw > windowEndMs) continue;
 
-      lines.push({ at: atMsRaw, line: renderSignalLine(spec, labels, valueRaw, new Date(atMsRaw).toISOString()) });
+      points.push({ atMs: atMsRaw, value: valueRaw });
     }
   }
-  return { ok: true, lines };
+
+  if (points.length === 0) {
+    return { ok: true, lines: [] };
+  }
+  if (points.length === 1) {
+    const { atMs, value } = points[0];
+    return { ok: true, lines: [{ at: atMs, line: renderSignalLine(spec, labels, value, new Date(atMs).toISOString()) }] };
+  }
+  // BELT: more than one point survived — `.rollup()` did not collapse the
+  // response as designed. Never render per-point; re-aggregate honestly.
+  const avg = roundSynthesized(points.reduce((sum, p) => sum + p.value, 0) / points.length);
+  return {
+    ok: true,
+    lines: [{ at: windowEndMs, line: renderSignalLine(spec, labels, avg, new Date(windowEndMs).toISOString()) }],
+  };
 }
 
 async function querySignals(base: string, apiKey: string, appKey: string, q: EvidenceQuery): Promise<AdapterResult> {

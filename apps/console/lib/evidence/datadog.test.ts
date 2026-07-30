@@ -8,15 +8,18 @@ vi.mock("@agentrail/db-postgres", () => ({
 }));
 
 import { getConnector } from "@agentrail/db-postgres";
-import { datadogAdapter, DATADOG_SECRET_SPEC } from "./datadog";
+import { datadogAdapter, DATADOG_SECRET_SPEC, DATADOG_SITES as ADAPTER_DATADOG_SITES } from "./datadog";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
 // Fix Round 1, FOLD 2 precedent (sentry.test.ts): the ONLY place this test
 // file imports the catalog (and verify.ts) — the adapter itself (datadog.ts)
-// never does. Used exclusively by the drift-protection describe block near
+// never does. Used exclusively by the drift-protection describe blocks near
 // the bottom of this file.
 import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
-import { verifyConnectorCredential } from "../../app/api/v1/workspaces/[workspaceId]/connectors/secret/verify";
+import {
+  verifyConnectorCredential,
+  DATADOG_SITES as VERIFY_DATADOG_SITES,
+} from "../../app/api/v1/workspaces/[workspaceId]/connectors/secret/verify";
 
 const mockGetConnector = vi.mocked(getConnector);
 
@@ -32,6 +35,10 @@ const WINDOW_END = "2026-07-29T23:59:59.000Z";
 const WINDOW_START_SEC = Math.floor(new Date(WINDOW_START).getTime() / 1000);
 const WINDOW_START_MS = new Date(WINDOW_START).getTime();
 const WINDOW_END_MS = new Date(WINDOW_END).getTime();
+// Fix Round 1: the rollup interval every metric query now appends — see
+// datadog.ts's own rollupSecondsFor, mirrored here rather than imported so
+// a wrong implementation on either side would show up as a test failure.
+const ROLLUP_SECONDS = Math.max(1, Math.ceil((WINDOW_END_MS - WINDOW_START_MS) / 1000));
 
 function q(overrides: Partial<EvidenceQuery> = {}): EvidenceQuery {
   return {
@@ -267,7 +274,7 @@ describe("datadogAdapter — signals: happy path rendering", () => {
     );
   });
 
-  it("sends the confirmed /api/v1/query params: from/to as EPOCH SECONDS (not ms), query=avg:<metric>{*} when unscoped", async () => {
+  it("sends the confirmed /api/v1/query params: from/to as EPOCH SECONDS (not ms), query=avg:<metric>{*}.rollup(avg, <window_seconds>) when unscoped", async () => {
     const captured: URL[] = [];
     global.fetch = routeFetch({
       query: (url) => {
@@ -284,11 +291,11 @@ describe("datadogAdapter — signals: happy path rendering", () => {
       expect(url.searchParams.get("to")).toBe(String(Math.floor(WINDOW_END_MS / 1000)));
     }
     const cpuUrl = captured.find((u) => metricKind(u) === "cpu")!;
-    expect(cpuUrl.searchParams.get("query")).toBe("avg:system.cpu.user{*}");
+    expect(cpuUrl.searchParams.get("query")).toBe(`avg:system.cpu.user{*}.rollup(avg, ${ROLLUP_SECONDS})`);
     const loadUrl = captured.find((u) => metricKind(u) === "load")!;
-    expect(loadUrl.searchParams.get("query")).toBe("avg:system.load.1{*}");
+    expect(loadUrl.searchParams.get("query")).toBe(`avg:system.load.1{*}.rollup(avg, ${ROLLUP_SECONDS})`);
     const memUrl = captured.find((u) => metricKind(u) === "mem")!;
-    expect(memUrl.searchParams.get("query")).toBe("avg:system.mem.pct_usable{*}");
+    expect(memUrl.searchParams.get("query")).toBe(`avg:system.mem.pct_usable{*}.rollup(avg, ${ROLLUP_SECONDS})`);
   });
 
   it("embeds q.scope as a service: tag filter on all three queries, and reflects it in the rendered {labels}", async () => {
@@ -321,11 +328,11 @@ describe("datadogAdapter — signals: happy path rendering", () => {
 
     await datadogAdapter.query(WS, q({ scope: "foo,extra:bar}" }), SECRET);
     for (const url of captured) {
-      expect(url.searchParams.get("query")).toMatch(/\{\*\}$/);
+      expect(url.searchParams.get("query")).toContain("{*}.rollup(avg,");
     }
   });
 
-  it("renders one line PER POINT when a metric's series carries multiple pointlist entries, each stamped with its own millisecond timestamp read directly (no unit conversion)", async () => {
+  it("collapses multiple pointlist entries into ONE averaged line (Fix Round 1 — pin 2's single-row-per-metric contract; the belt for when .rollup() doesn't fully collapse the response), stamped at windowEnd, never rendered per-point", async () => {
     const laterMs = WINDOW_START_MS + 12 * 3600 * 1000;
     global.fetch = routeFetch({
       query: (url) => {
@@ -334,7 +341,7 @@ describe("datadogAdapter — signals: happy path rendering", () => {
           status: 200,
           body: seriesWith([
             [WINDOW_START_MS, 10],
-            [laterMs, 15],
+            [laterMs, 20],
           ]),
         };
       },
@@ -343,8 +350,47 @@ describe("datadogAdapter — signals: happy path rendering", () => {
     const res = await datadogAdapter.query(WS, q(), SECRET);
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
-    expect(res.raw).toContain(`value=10 at=${new Date(WINDOW_START_MS).toISOString()}`);
-    expect(res.raw).toContain(`value=15 at=${new Date(laterMs).toISOString()}`);
+    // avg(10, 20) = 15 — ONE line, not two, stamped at windowEnd (no single
+    // point's own timestamp is more "correct" for a synthesized value).
+    expect(res.raw).toContain(`datadog.system.cpu.user window_agg=avg value=15 at=${new Date(WINDOW_END_MS).toISOString()}`);
+    expect(res.raw).not.toContain("value=10");
+    expect(res.raw).not.toContain("value=20");
+  });
+
+  it("rounds a synthesized multi-point average to 4 decimal places rather than a raw repeating-decimal float", async () => {
+    global.fetch = routeFetch({
+      query: (url) => {
+        if (metricKind(url) !== "cpu") return { status: 200, body: { series: [] } };
+        return {
+          status: 200,
+          body: seriesWith([
+            [WINDOW_START_MS, 1],
+            [WINDOW_START_MS + 1000, 2],
+            [WINDOW_START_MS + 2000, 2],
+          ]),
+        };
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await datadogAdapter.query(WS, q(), SECRET);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    // avg(1, 2, 2) = 1.6666666666666667 raw -> rounded to 1.6667.
+    expect(res.raw).toContain("value=1.6667");
+  });
+
+  it("renders a SINGLE returned point AS RETURNED, at ITS OWN timestamp (the expected case once .rollup() collapses the response — real data preserved untouched, nothing synthesized)", async () => {
+    global.fetch = routeFetch({
+      query: (url) => {
+        if (metricKind(url) !== "cpu") return { status: 200, body: { series: [] } };
+        return { status: 200, body: seriesWith([[WINDOW_START_MS + 3600_000, 42.5]]) };
+      },
+    }) as unknown as typeof fetch;
+
+    const res = await datadogAdapter.query(WS, q(), SECRET);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.raw).toContain(`value=42.5 at=${new Date(WINDOW_START_MS + 3600_000).toISOString()}`);
   });
 
   it("skips a point whose value is null — Datadog's own 'no data this point' signal, never rendered as a fabricated value", async () => {
@@ -413,15 +459,15 @@ describe("datadogAdapter — signals: belt-and-braces window re-filter on each p
     expect(res.raw).not.toContain("value=888");
   });
 
-  it("keeps a point whose timestamp is exactly at the window bounds (inclusive)", async () => {
+  it("keeps a point whose timestamp is exactly at the window bounds (inclusive) — proven via the aggregate reflecting BOTH endpoints, not just one", async () => {
     global.fetch = routeFetch({
       query: (url) => {
         if (metricKind(url) !== "cpu") return { status: 200, body: { series: [] } };
         return {
           status: 200,
           body: seriesWith([
-            [WINDOW_START_MS, 1],
-            [WINDOW_END_MS, 2],
+            [WINDOW_START_MS, 10],
+            [WINDOW_END_MS, 20],
           ]),
         };
       },
@@ -430,8 +476,10 @@ describe("datadogAdapter — signals: belt-and-braces window re-filter on each p
     const res = await datadogAdapter.query(WS, q(), SECRET);
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
-    expect(res.raw).toContain(`value=1 at=${new Date(WINDOW_START_MS).toISOString()}`);
-    expect(res.raw).toContain(`value=2 at=${new Date(WINDOW_END_MS).toISOString()}`);
+    // If either inclusive bound were wrongly EXCLUSIVE, only one point would
+    // survive and render alone (value=10 or value=20); avg(10,20)=15 proves
+    // both were kept and combined.
+    expect(res.raw).toContain("datadog.system.cpu.user window_agg=avg value=15");
   });
 });
 
@@ -442,7 +490,7 @@ describe("datadogAdapter — signals: honest empty marker + limit cap", () => {
     expect(res).toEqual({ ok: true, raw: "(no matching signals)" });
   });
 
-  it("caps total lines at limit (default 50) across all three metrics combined", async () => {
+  it("Fix Round 1: even when every metric's raw response carries 30 points (well over the old per-point default cap of 50), the aggregation collapses each metric to ONE line — 3 total, not 50, and the 50-line cap is structurally unreachable from this verb now", async () => {
     global.fetch = routeFetch({
       query: () => {
         const points = Array.from(
@@ -456,7 +504,7 @@ describe("datadogAdapter — signals: honest empty marker + limit cap", () => {
     const res = await datadogAdapter.query(WS, q(), SECRET);
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
-    expect(res.raw.split("\n")).toHaveLength(50);
+    expect(res.raw.split("\n")).toHaveLength(3);
   });
 
   it("clamps limit:0 to at least one line", async () => {
@@ -543,7 +591,7 @@ describe("datadogAdapter — signals: per-metric failure isolation", () => {
     expect(res).toEqual({ ok: false, reason: "upstream_error" });
   });
 
-  it("markers are cap-exempt — survive alongside a busy sibling metric's capped real lines", async () => {
+  it("markers are cap-exempt and rendered first, alongside sibling metrics' own single aggregated lines (Fix Round 1: each busy metric's 5 raw points still collapses to exactly 1 line, so there is nothing left for the limit to meaningfully cap)", async () => {
     global.fetch = routeFetch({
       query: (url) => {
         const kind = metricKind(url);
@@ -556,12 +604,14 @@ describe("datadogAdapter — signals: per-metric failure isolation", () => {
       },
     }) as unknown as typeof fetch;
 
-    const res = await datadogAdapter.query(WS, q({ limit: 2 }), SECRET);
+    const res = await datadogAdapter.query(WS, q(), SECRET);
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error("expected ok");
     const lines = res.raw.split("\n");
     expect(lines[0]).toBe("(signal cpu: datadog unauthorized)");
     const realLines = lines.filter((l) => l.startsWith("signal "));
+    // load's own 5 points collapse to 1 line, mem's own 5 points collapse to
+    // 1 line — 2 real lines total, one per surviving metric.
     expect(realLines).toHaveLength(2);
   });
 });
@@ -823,7 +873,7 @@ describe("datadogAdapter — search_events: q.query dual filter (server-side quo
     expect("query" in filter).toBe(false);
   });
 
-  it("quotes a plain word as a message-field phrase search", async () => {
+  it("quotes a plain word as a message: attribute search (Fix Round 1 — NOT a bare free-text phrase, which the docs say cannot match special characters at all)", async () => {
     let capturedBody: Record<string, unknown> = {};
     global.fetch = routeFetch({
       logsSearch: (body) => {
@@ -834,7 +884,7 @@ describe("datadogAdapter — search_events: q.query dual filter (server-side quo
 
     await datadogAdapter.query(WS, searchQuery({ query: "timeout" }), SECRET);
     const filter = capturedBody.filter as Record<string, unknown>;
-    expect(filter.query).toBe('"timeout"');
+    expect(filter.query).toBe('message:"timeout"');
   });
 
   it("quotes a query containing reserved characters (colon, parens) so Datadog's parser cannot misread it as filter tokens", async () => {
@@ -848,7 +898,7 @@ describe("datadogAdapter — search_events: q.query dual filter (server-side quo
 
     await datadogAdapter.query(WS, searchQuery({ query: "error: connection refused (retry 3)" }), SECRET);
     const filter = capturedBody.filter as Record<string, unknown>;
-    expect(filter.query).toBe('"error: connection refused (retry 3)"');
+    expect(filter.query).toBe('message:"error: connection refused (retry 3)"');
   });
 
   it("escapes an embedded double quote as \\\" (the delimiter itself)", async () => {
@@ -862,7 +912,7 @@ describe("datadogAdapter — search_events: q.query dual filter (server-side quo
 
     await datadogAdapter.query(WS, searchQuery({ query: 'say "hi"' }), SECRET);
     const filter = capturedBody.filter as Record<string, unknown>;
-    expect(filter.query).toBe('"say \\"hi\\""');
+    expect(filter.query).toBe('message:"say \\"hi\\""');
   });
 
   it("DOUBLES an embedded backslash (\\ -> \\\\) — UNLIKE sentry.ts, because Datadog's own docs list \\ itself as a reserved character requiring escaping", async () => {
@@ -876,7 +926,7 @@ describe("datadogAdapter — search_events: q.query dual filter (server-side quo
 
     await datadogAdapter.query(WS, searchQuery({ query: "C:\\path\\to\\file" }), SECRET);
     const filter = capturedBody.filter as Record<string, unknown>;
-    expect(filter.query).toBe('"C:\\\\path\\\\to\\\\file"');
+    expect(filter.query).toBe('message:"C:\\\\path\\\\to\\\\file"');
   });
 
   it("filters client-side against the FULL RENDERED LINE (status/service text too), not just the message — the task's own pinned deviation from sentry.ts's/langfuse.ts's field-only re-filter", async () => {
@@ -927,12 +977,19 @@ describe("datadogAdapter — search_events: quoteLogSearchText round-trips throu
    * (NOT two independent sequential global replaces, which can misparse an
    * adversarial input with adjacent escape sequences — this scanner
    * consumes exactly 2 characters per recognized escape pair, mirroring
-   * what a real parser does). Takes the WIRE value with its outer
-   * delimiting quotes still attached (exactly what `filter.query` actually
-   * contains) and strips those the same way the grammar's own quoted-phrase
-   * rule does. */
+   * what a real parser does). Takes the WIRE value with its `message:`
+   * reserved-attribute prefix (Fix Round 1) AND its outer delimiting quotes
+   * still attached (exactly what `filter.query` actually contains) — strips
+   * the prefix first (proving it's actually present, not just the
+   * escaping), then the outer quotes the same way the grammar's own
+   * quoted-phrase rule does. */
   function simulateDatadogUnescape(wireValue: string): string {
-    const inner = wireValue.slice(1, -1);
+    const PREFIX = "message:";
+    if (!wireValue.startsWith(PREFIX)) {
+      throw new Error(`expected wire value to start with "${PREFIX}", got: ${wireValue}`);
+    }
+    const quoted = wireValue.slice(PREFIX.length);
+    const inner = quoted.slice(1, -1);
     let out = "";
     for (let i = 0; i < inner.length; i++) {
       if (inner[i] === "\\" && (inner[i + 1] === "\\" || inner[i + 1] === '"')) {
@@ -1009,6 +1066,30 @@ describe("datadogAdapter — search_events: request hygiene", () => {
 // secret-part-count parity (mirrors langfuse.test.ts's LANGFUSE_SECRET_SPEC
 // cross-check and sentry.test.ts's dynamically-keyed FOLD 2 tests).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Fix Round 1, FOLD 3 — datadog.ts's own DATADOG_SITES allowlist and
+// verify.ts's independently duplicated one (neither imports the other — see
+// each module's own doc-comment for why) must stay set-equal, or the
+// adapter's own query path and the connect-time live-verify path would
+// silently accept/reject different sites, a real correctness gap no
+// individual file's own tests could ever catch.
+// ---------------------------------------------------------------------------
+describe("datadogAdapter — DATADOG_SITES stays in sync with verify.ts's own duplicate (Fix Round 1, FOLD 3)", () => {
+  it("the adapter's allowlist and verify.ts's allowlist are set-equal", () => {
+    expect(ADAPTER_DATADOG_SITES.size).toBe(VERIFY_DATADOG_SITES.size);
+    for (const site of ADAPTER_DATADOG_SITES) {
+      expect(VERIFY_DATADOG_SITES.has(site)).toBe(true);
+    }
+    for (const site of VERIFY_DATADOG_SITES) {
+      expect(ADAPTER_DATADOG_SITES.has(site)).toBe(true);
+    }
+  });
+
+  it("neither list is accidentally empty (a vacuous set-equality check would pass trivially)", () => {
+    expect(ADAPTER_DATADOG_SITES.size).toBeGreaterThan(0);
+  });
+});
+
 describe("datadogAdapter — DATADOG_SECRET_SPEC matches the real catalog entry (pin 4)", () => {
   it("the adapter's local secretParts count equals the catalog's declared secretParts count", () => {
     const catalogEntry = CONNECTOR_CATALOG.find((c) => c.kind === "datadog")!;

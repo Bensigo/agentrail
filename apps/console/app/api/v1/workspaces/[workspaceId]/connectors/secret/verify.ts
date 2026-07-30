@@ -350,8 +350,13 @@ async function verifySentry(
  * has from `packages/db-postgres`'s own URL validator) rather than shared,
  * mirroring this codebase's existing precedent for small, provider-specific
  * defensive checks. See that module's own doc-comment ("SITE ROUTING") for
- * the confirmed source. */
-const DATADOG_SITES = new Set([
+ * the confirmed source. EXPORTED (Fix Round 1, FOLD 3) solely so
+ * `datadog.test.ts` can assert this Set stays set-equal to the adapter's own
+ * duplicate — the two lists can never silently drift apart (e.g. a future
+ * new Datadog region added to one and not the other) unnoticed. This does
+ * NOT create a runtime import between the two modules; only the TEST
+ * imports both. */
+export const DATADOG_SITES = new Set([
   "datadoghq.com",
   "us3.datadoghq.com",
   "us5.datadoghq.com",

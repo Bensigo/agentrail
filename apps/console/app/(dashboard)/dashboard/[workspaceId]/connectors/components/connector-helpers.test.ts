@@ -582,7 +582,7 @@ describe("connector catalog — datadog entry (Task P4)", () => {
 
   it("declares a composite two-part secret (apiKey + appKey) with per-part patterns", () => {
     expect(datadog.connect?.secretParts).toEqual([{ name: "API key" }, { name: "Application key" }]);
-    expect(datadog.connect?.secretPartPatterns).toEqual(["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]+)$"]);
+    expect(datadog.connect?.secretPartPatterns).toEqual(["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]{34})$"]);
   });
 
   it("declares a required datadogSite extraConfigFields entry", () => {
@@ -604,10 +604,17 @@ describe("validateConnectorCredential — datadog (Task P4)", () => {
     ).toEqual({ ok: true });
   });
 
-  it("also accepts the newer ddapp_-prefixed application key form", () => {
+  it("also accepts the newer ddapp_-prefixed application key form (exactly 34 chars after the prefix, Fix Round 1's tightened length)", () => {
     expect(
-      validateConnectorCredential("datadog", `${"a".repeat(32)}:ddapp_someLongerToken123`)
+      validateConnectorCredential("datadog", `${"a".repeat(32)}:ddapp_${"X".repeat(34)}`)
     ).toEqual({ ok: true });
+  });
+
+  it("rejects a ddapp_-prefixed application key of the WRONG length — Fix Round 1 tightened the pattern from open-ended to exactly 34 chars", () => {
+    const tooShort = validateConnectorCredential("datadog", `${"a".repeat(32)}:ddapp_${"X".repeat(33)}`);
+    expect(tooShort.ok).toBe(false);
+    const tooLong = validateConnectorCredential("datadog", `${"a".repeat(32)}:ddapp_${"X".repeat(35)}`);
+    expect(tooLong.ok).toBe(false);
   });
 
   it("rejects when the api key part isn't exactly 32 hex chars", () => {

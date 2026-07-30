@@ -570,15 +570,19 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // AWS Secrets Manager partner integration doc and this task's own
       // believed shape agree); the Application key accepts EITHER the
       // confirmed-shape legacy 40-hex form OR the newer `ddapp_`-prefixed
-      // form (secondary-sourced only, could not be confirmed against
-      // Datadog's own first-party docs page directly — accepted
-      // permissively rather than risk rejecting a real key a real user
-      // holds today, same "cheap format gate, not cryptographic
-      // correctness" spirit as every pattern in this file — see
-      // `lib/evidence/datadog.ts`'s own doc-comment for the full citation
-      // trail).
+      // form — Fix Round 1: tightened to the cited source's own fixed
+      // length (`ddapp_` + 34 alphanumeric chars = 40 total, the SAME total
+      // length as the legacy hex form) rather than an open-ended
+      // `ddapp_[A-Za-z0-9]+` — the 34-char figure comes from the same
+      // secondary source (Datadog's own AWS Secrets Manager partner
+      // integration doc; Datadog's first-party docs page states no format
+      // at all), so this is still "cheap format gate, not cryptographic
+      // correctness" (same spirit as every pattern in this file), just
+      // precise about the one concrete number that source actually gives —
+      // see `lib/evidence/datadog.ts`'s own doc-comment for the full
+      // citation trail.
       secretParts: [{ name: "API key" }, { name: "Application key" }],
-      secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]+)$"],
+      secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]{34})$"],
       // The workspace's Datadog site — required (every workspace needs
       // SOME site; there is no sensible default across Datadog's 9 regional
       // deployments). Unlike langfuseHost/prometheusUrl/grafanaUrl, this is

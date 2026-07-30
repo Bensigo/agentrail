@@ -2,6 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ClaimedChannelInboxRow } from "@agentrail/db-postgres";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  // #1517 — processRow's fire-and-forget back-stamp calls
+  // `stampChannelInboxWorkspace(db, ...).catch(...)`. Both are real exports
+  // this wholesale-mocked module must carry: `db` is only ever passed
+  // through (never dereferenced by the mock), but `stampChannelInboxWorkspace`
+  // MUST resolve to a Promise, not just exist — `vi.fn()`'s default return
+  // is `undefined`, and `undefined.catch(...)` throws synchronously (same as
+  // calling a missing export), which processRow's outer catch swallows into
+  // a silent failChannelMessage before getOrCreateJaceSession/fetch ever run.
+  db: {},
+  stampChannelInboxWorkspace: vi.fn().mockResolvedValue(undefined),
   reclaimStaleChannelMessages: vi.fn(),
   claimNextChannelMessage: vi.fn(),
   completeChannelMessage: vi.fn(),

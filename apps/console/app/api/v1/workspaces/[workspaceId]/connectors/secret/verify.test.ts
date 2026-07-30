@@ -241,6 +241,182 @@ describe("verifyConnectorCredential('langfuse', ...)", () => {
 });
 
 /**
+ * Task P3: sentry verify — `GET /api/0/projects/{org}/{project}/`, `Bearer`
+ * auth. Unlike langfuse above, `secret` is a SINGLE token (no composite
+ * split); `config` carries BOTH `sentryOrg` and `sentryProject` — the same
+ * "not yet persisted" ordering gap Task P2 hit first (this module's own
+ * doc-comment, "LANGFUSE HOST — THE ORDERING GAP"), now with two keys
+ * instead of one.
+ */
+describe("verifyConnectorCredential('sentry', ...)", () => {
+  const TOKEN = "sntrys_abc123";
+  const ORG = "acme";
+  const PROJECT = "web";
+
+  function projectResponse(status: number, body: unknown = {}) {
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  }
+
+  it("GETs /api/0/projects/{org}/{project}/ with Bearer auth built from the token", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return projectResponse(200, { id: "123", slug: PROJECT });
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe(`https://sentry.io/api/0/projects/${ORG}/${PROJECT}/`);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("URL-encodes org and project when building the path", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return projectResponse(200, {});
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: "my org",
+      sentryProject: "my/project",
+    });
+    expect(capturedUrl).toBe(
+      `https://sentry.io/api/0/projects/${encodeURIComponent("my org")}/${encodeURIComponent("my/project")}/`
+    );
+  });
+
+  it("fails closed with a distinct error and never calls fetch when config.sentryOrg is absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, { sentryProject: PROJECT });
+    expect(res).toEqual({ ok: false, error: "Set the Sentry organization before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed with a distinct error and never calls fetch when config.sentryProject is absent (org present)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, { sentryOrg: ORG });
+    expect(res).toEqual({ ok: false, error: "Set the Sentry project before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks org before project — org-missing error wins when BOTH are absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Set the Sentry organization before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and never calls fetch when config itself is undefined (no 4th argument at all)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN);
+    expect(res).toEqual({ ok: false, error: "Set the Sentry organization before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("treats a whitespace-only sentryOrg as absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: "   ",
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: false, error: "Set the Sentry organization before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects on HTTP 401", async () => {
+    global.fetch = (async () => projectResponse(401)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: false, error: "Sentry rejected this token." });
+  });
+
+  it("rejects on HTTP 403", async () => {
+    global.fetch = (async () => projectResponse(403)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: false, error: "Sentry rejected this token." });
+  });
+
+  it("rejects on HTTP 404 (org or project not found / not accessible) with its HTTP code", async () => {
+    global.fetch = (async () => projectResponse(404)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Sentry (HTTP 404)." });
+  });
+
+  it("reports a non-2xx, non-401/403 status with its HTTP code", async () => {
+    global.fetch = (async () => projectResponse(500)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Sentry (HTTP 500)." });
+  });
+
+  it("reports an unreachable upstream (thrown fetch) with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({
+      ok: false,
+      error: "Couldn't reach Sentry to verify the token — try again.",
+    });
+  });
+
+  it("trims the token before sending it", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return projectResponse(200, {});
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("sentry", `  ${TOKEN}  `, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("single-part credential — no composite split involved, unaffected by the generic split-before-dispatch mechanism", async () => {
+    // sentry declares no secretParts in the real catalog, so
+    // splitCompositeSecret's passthrough makes split.parts[0] === the
+    // trimmed token, same as railway's own single-part precedent.
+    global.fetch = (async () => projectResponse(200, {})) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      sentryOrg: ORG,
+      sentryProject: PROJECT,
+    });
+    expect(res).toEqual({ ok: true });
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

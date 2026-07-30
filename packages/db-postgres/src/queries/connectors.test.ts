@@ -37,6 +37,18 @@ describe("isConnectorProvider — langfuse (Task P2)", () => {
   });
 });
 
+// Task P3 (Evidence Providers Wave 2): "sentry" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway"/"langfuse" above (no migration). sentryOrg/sentryProject's own
+// validateConnectorUpdate coverage already lives in the "Evidence Providers
+// Wave 2 (Task P0)" describe block below, alongside their eight Wave-2
+// siblings — not duplicated here.
+describe("isConnectorProvider — sentry (Task P3)", () => {
+  it("recognizes 'sentry' as a known connector provider", () => {
+    expect(isConnectorProvider("sentry")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

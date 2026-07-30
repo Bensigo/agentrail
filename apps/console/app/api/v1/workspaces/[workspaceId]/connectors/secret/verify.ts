@@ -15,8 +15,9 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * rejected (we never store an unverified credential) with a retry hint.
  *
  * Verified live: Linear (GraphQL `viewer`), Figma (`/v1/me`), Railway (Task 7
- * — GraphQL `me`), Langfuse (Task P2 — `GET /api/public/projects`). Context7
- * stays format-only here — it has no stable side-effect-free check; its
+ * — GraphQL `me`), Langfuse (Task P2 — `GET /api/public/projects`), Sentry
+ * (Task P3 — `GET /api/0/projects/{org}/{project}/`). Context7 stays
+ * format-only here — it has no stable side-effect-free check; its
  * format gate already rejects malformed values. Discord/Slack/Telegram are
  * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
  * allowlist rejects them before a call ever reaches this module. The
@@ -87,6 +88,31 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  * parameter is intended to generalize to P4/P5/P6 (Datadog/Prometheus/
  * Grafana), whose verify endpoints have the identical "needs a not-yet-
  * persisted host/site" shape.
+ *
+ * SENTRY (Task P3, Evidence Providers Wave 2): confirmed against Sentry's
+ * own docs and source during implementation (this task's mandatory first
+ * step), not trusted from memory:
+ *   - Auth: `Authorization: Bearer <token>` (docs.sentry.io/api/auth/).
+ *   - Verify endpoint: `GET /api/0/projects/{org}/{project}/` — chosen over
+ *     the plan's own believed org-only shape
+ *     (`GET /api/0/organizations/{org}/`, also confirmed real and
+ *     side-effect-free) because this one validates BOTH the org AND the
+ *     SPECIFIC connected project (and the token's access to it) in one
+ *     side-effect-free call, for the same one-request cost — exactly what
+ *     the task's own brief prefers ("prefer one that also validates the
+ *     project if cheap"). Confirmed statuses: 200 success, 403 forbidden,
+ *     404 not found (docs.sentry.io/api/projects/retrieve-a-project/); 401
+ *     is handled defensively alongside 403 here too, mirroring every
+ *     sibling verify function's dual-status handling, even though this
+ *     specific page's fetched content only explicitly showed 403/404.
+ *   - Needs BOTH `config.sentryOrg` AND `config.sentryProject` — the SAME
+ *     "not yet persisted at verify-time" ordering gap Langfuse hit first
+ *     (see "LANGFUSE HOST — THE ORDERING GAP" above); this function reuses
+ *     the identical `config` pass-through mechanism, reading two keys
+ *     instead of one. Missing EITHER value fails closed with a distinct,
+ *     actionable error (checked org-first, matching the catalog's own
+ *     `extraConfigFields` declaration order) rather than guessing or
+ *     silently probing the org-only endpoint as a fallback.
  */
 
 export type VerifyResult = { ok: true } | { ok: false; error: string };
@@ -244,6 +270,51 @@ async function verifyLangfuse(
   }
 }
 
+/** A trimmed, non-empty string, or `null` — a plainer sibling of
+ * {@link resolveHttpUrl} for the two Sentry config values, neither of which
+ * is URL-shaped (org/project slugs), so no scheme parsing applies. */
+function resolveNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Sentry: a valid org/user auth token resolves the CONNECTED project via
+ * `GET /api/0/projects/{org}/{project}/` — see this module's own
+ * doc-comment ("SENTRY (Task P3)") for the confirmed endpoint/status shapes
+ * and why this endpoint (not the org-only one) was chosen, and why `config`
+ * (not yet a persisted connector row) is where BOTH `sentryOrg` and
+ * `sentryProject` come from here. Either missing fails closed with a
+ * distinct, actionable error rather than guessing. */
+async function verifySentry(
+  token: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  const org = resolveNonEmptyString(config?.sentryOrg);
+  if (!org) {
+    return { ok: false, error: "Set the Sentry organization before connecting." };
+  }
+  const project = resolveNonEmptyString(config?.sentryProject);
+  if (!project) {
+    return { ok: false, error: "Set the Sentry project before connecting." };
+  }
+  try {
+    const res = await fetchWithTimeout(
+      `https://sentry.io/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(project)}/`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Sentry rejected this token." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Sentry (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Sentry to verify the token — try again." };
+  }
+}
+
 /**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
@@ -296,6 +367,8 @@ export async function verifyConnectorCredential(
       return verifyRailway(first);
     case "langfuse":
       return verifyLangfuse(first, split.parts[1], config);
+    case "sentry":
+      return verifySentry(first, config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

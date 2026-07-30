@@ -43,10 +43,12 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * {@link ConnectorAvailability}'s own doc-comment) — `railway` (Task 7),
  * the first EXTERNAL evidence-only-role connector: deployments + logs for
  * the debugging investigator, over the workspace's Railway account/team
- * token — and `langfuse` (Task P2, Evidence Providers Wave 2,
+ * token — `langfuse` (Task P2, Evidence Providers Wave 2,
  * `.superpowers/sdd/plan-providers.md`), the first Wave-2 provider: traces +
  * observation-level signals over a per-workspace public/secret API key
- * pair.
+ * pair — and `sentry` (Task P3, Evidence Providers Wave 2), the second
+ * Wave-2 provider: issue search + RED-shaped signals over a per-workspace
+ * SINGLE auth token (org or user), scoped by org+project extra config.
  */
 export type ConnectorKind =
   | "github"
@@ -55,7 +57,8 @@ export type ConnectorKind =
   | "context7"
   | "factory"
   | "railway"
-  | "langfuse";
+  | "langfuse"
+  | "sentry";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -472,6 +475,56 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P3, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "sentry",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Sentry",
+    description:
+      "Give the debugging investigator visibility into your Sentry error events and RED-shaped signals (error rate, p95 duration).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The second Wave-2 evidence provider (Task P3) — a SINGLE-secret
+      // provider (unlike langfuse's composite pair), proving the catalog +
+      // adapter pattern generalizes to that shape too. See
+      // `lib/evidence/sentry.ts`.
+      evidence: ["search_events", "signals"],
+    },
+    connect: {
+      credentialLabel: "Sentry auth token",
+      credentialPlaceholder: "sntrys_… or sntryu_…",
+      credentialHint:
+        "A Sentry organization or user auth token — starts with sntrys_ or sntryu_.",
+      helpUrl: "https://docs.sentry.io/api/auth/",
+      setupSteps: [
+        "Open Sentry → Settings → Auth Tokens (organization-level) or your own User Settings → API Tokens (user-level).",
+        "Create a token with event:read, project:read, and org:read scopes, and copy the sntrys_… or sntryu_… value (shown once).",
+        "Paste it here, along with your Sentry organization slug and project slug, and connect.",
+      ],
+      // Both required (Task P3's own pinned decision) — unlike Railway's
+      // single project id, Sentry has no sensible default project within an
+      // org, and the chosen verify/adapter endpoints need both to scope
+      // every call — see `lib/evidence/sentry.ts`'s own doc-comment.
+      extraConfigFields: [
+        {
+          key: "sentryOrg",
+          label: "Sentry organization",
+          placeholder: "your-org-slug",
+          required: true,
+        },
+        {
+          key: "sentryProject",
+          label: "Sentry project",
+          placeholder: "your-project-slug",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -794,6 +847,21 @@ export function validateConnectorCredential(
         ok: false,
         error: "Langfuse requires both API keys (public + secret).",
       };
+    case "sentry":
+      // Task P3: a SINGLE secret (no secretParts) — org auth tokens
+      // (`sntrys_…`) and user auth tokens (`sntryu_…`) are both accepted;
+      // confirmed prefixes against Sentry's own source
+      // (`src/sentry/types/token.py`: USER="sntryu_", ORG="sntrys_",
+      // also USER_APP="sntrya_"/INTEGRATION="sntryi_", both DELIBERATELY
+      // out of scope for v1 — see `lib/evidence/sentry.ts`'s own
+      // doc-comment for why only these two, most-common-for-this-use-case
+      // kinds are accepted).
+      return s.startsWith("sntrys_") || s.startsWith("sntryu_")
+        ? { ok: true }
+        : {
+            ok: false,
+            error: "Sentry tokens start with sntrys_ (organization) or sntryu_ (user).",
+          };
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

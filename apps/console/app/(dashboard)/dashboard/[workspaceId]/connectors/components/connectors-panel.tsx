@@ -16,6 +16,7 @@ import {
   Context7Brand,
   RailwayBrand,
   LangfuseBrand,
+  SentryBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -53,6 +54,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   factory: FactoryGlyph,
   railway: RailwayBrand,
   langfuse: LangfuseBrand,
+  sentry: SentryBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -68,6 +70,10 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // Task P2: same fallback as Railway — Langfuse's mark here is a generic
   // stand-in (brand-icons.tsx's own doc-comment), so no brand hex to pin.
   langfuse: "text-[var(--gray-12)]",
+  // Task P3: Sentry's real brand purple, confirmed against simple-icons'
+  // own data/simple-icons.json ("hex": "362D59") — unlike Railway/Langfuse
+  // above, a real mark exists, so a real hex is pinned too.
+  sentry: "text-[#362d59]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

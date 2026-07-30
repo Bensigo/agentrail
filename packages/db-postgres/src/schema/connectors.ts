@@ -64,6 +64,15 @@ export const connectorProviderEnum = [
   // {@link ConnectorConfig.langfuseHost}). Same precedent as `railway`: a
   // free-text column, so this is a TS-union addition only — no migration.
   "langfuse",
+  // observability — Task P3 (Evidence Providers Wave 2): sentry, the second
+  // Wave-2 provider (`apps/console/lib/evidence/sentry.ts`). Stores a
+  // SINGLE org/user auth token in `secret` (no composite split, unlike
+  // `langfuse` above — same single-column shape as `railway`); its two
+  // non-secret companion fields are `config.sentryOrg` + `config.sentryProject`
+  // (already added by Task P0 — see {@link ConnectorConfig.sentryOrg}).
+  // Same precedent as `railway`/`langfuse`: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "sentry",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

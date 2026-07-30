@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -116,6 +116,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("railway");
     // Task P2.
     expect(body.error).toContain("langfuse");
+    // Task P3.
+    expect(body.error).toContain("sentry");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -327,5 +329,137 @@ describe("PUT /connectors/secret — langfuse, full flow + extra-config pass-thr
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "langfuse", null);
+  });
+});
+
+/**
+ * Full sentry connect flow (Task P3) — both gates run for real (this route
+ * doesn't mock `./verify`), so the live-verify HTTP call is exercised via a
+ * `global.fetch` swap, same idiom as the railway/langfuse blocks above.
+ * ALSO proves the extra-config pass-through mechanism generalizes to TWO
+ * simultaneous keys (`sentryOrg` + `sentryProject`) riding alongside
+ * `secret` in the SAME PUT body, with no sentry-specific code in this
+ * route.
+ */
+describe("PUT /connectors/secret — sentry, full flow + two-key extra-config pass-through (Task P3)", () => {
+  const originalFetch = global.fetch;
+  const TOKEN = "sntrys_abc123";
+  const ORG = "acme";
+  const PROJECT = "web";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT sentry accepted end to end: token + sentryOrg + sentryProject in the SAME body + a live verify that succeeds → 200 connected:true, setConnectorSecret called with the trimmed token (org/project NOT part of it)", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ id: "123", slug: PROJECT }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "sentry",
+      enabled: true,
+      config: {
+        repos: [],
+        triggerLabel: "ready-for-agent",
+        pollIntervalSeconds: 60,
+        sentryOrg: ORG,
+        sentryProject: PROJECT,
+      },
+      hasSecret: true,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "sentry", secret: `  ${TOKEN}  `, sentryOrg: ORG, sentryProject: PROJECT }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(capturedUrl).toBe(`https://sentry.io/api/0/projects/${ORG}/${PROJECT}/`);
+    // The route itself never persists sentryOrg/sentryProject — only the
+    // trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "sentry", TOKEN);
+  });
+
+  it("PUT sentry with NO sentryOrg/sentryProject in the body → 400 with verify's own org-missing error, setConnectorSecret never called (proves the pass-through, not a hardcoded route branch)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "sentry", secret: TOKEN }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set the Sentry organization before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT sentry with sentryOrg but NO sentryProject → 400 with verify's own project-missing error", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "sentry", secret: TOKEN, sentryOrg: ORG }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set the Sentry project before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT sentry with a well-formed token but a live verify Sentry rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "sentry", secret: TOKEN, sentryOrg: ORG, sentryProject: PROJECT }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Sentry rejected this token." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT sentry with a malformed token (wrong prefix) fails at the FORMAT gate — never calls fetch, never reads sentryOrg/sentryProject", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "sentry", secret: "wrong-prefix", sentryOrg: ORG, sentryProject: PROJECT }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "Sentry tokens start with sntrys_ (organization) or sntryu_ (user).",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT sentry with secret:null disconnects without ever calling verify/fetch, and without needing sentryOrg/sentryProject in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "sentry",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "sentry", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "sentry", null);
   });
 });

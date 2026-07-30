@@ -25,6 +25,7 @@ describe("projectConnectors", () => {
       "context7",
       "railway",
       "langfuse",
+      "sentry",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -32,13 +33,14 @@ describe("projectConnectors", () => {
     // tools-only `mcp`. Gateways-page T4 removed the third group, `channel`
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
-    // for debugging investigations, no ingest); Task P2 adds langfuse to the
-    // SAME `observability` group.
+    // for debugging investigations, no ingest); Task P2 adds langfuse and
+    // Task P3 adds sentry to the SAME `observability` group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
     ]);
@@ -137,6 +139,7 @@ describe("projectConnectors", () => {
       "figma",
       "railway",
       "langfuse",
+      "sentry",
     ]);
   });
 
@@ -149,6 +152,7 @@ describe("projectConnectors", () => {
       "context7",
       "railway",
       "langfuse",
+      "sentry",
     ]);
   });
 });
@@ -396,9 +400,9 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id) and langfuse (host, Task P2) are the only two so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), and sentry (org+project, Task P3) are the only three so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
-      if (entry.kind === "railway" || entry.kind === "langfuse") continue;
+      if (entry.kind === "railway" || entry.kind === "langfuse" || entry.kind === "sentry") continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
     }
   });
@@ -481,6 +485,72 @@ describe("validateConnectorCredential — langfuse (Task P2)", () => {
   });
 });
 
+describe("connector catalog — sentry entry (Task P3)", () => {
+  const sentry = CONNECTOR_CATALOG.find((c) => c.kind === "sentry")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(sentry.type).toBe("observability");
+    expect(sentry.connectMethod).toBe("secret");
+    expect(sentry.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities search_events + signals, and no ingest/postResult/notify", () => {
+    expect(sentry.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["search_events", "signals"],
+    });
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a SINGLE-part credential, unlike langfuse's composite pair", () => {
+    expect(sentry.connect?.secretParts).toBeUndefined();
+    expect(sentry.connect?.secretPartPatterns).toBeUndefined();
+  });
+
+  it("declares required sentryOrg + sentryProject extraConfigFields entries, in that order", () => {
+    expect(sentry.connect?.extraConfigFields).toEqual([
+      {
+        key: "sentryOrg",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+      {
+        key: "sentryProject",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
+describe("validateConnectorCredential — sentry (Task P3)", () => {
+  it("accepts an sntrys_… organization auth token", () => {
+    expect(validateConnectorCredential("sentry", "sntrys_abc123")).toEqual({ ok: true });
+  });
+
+  it("accepts an sntryu_… user auth token", () => {
+    expect(validateConnectorCredential("sentry", "sntryu_def456")).toEqual({ ok: true });
+  });
+
+  it("rejects a token with neither confirmed prefix, including the two OUT-OF-SCOPE Sentry kinds (sntrya_ user-app, sntryi_ integration)", () => {
+    expect(validateConnectorCredential("sentry", "sntrya_abc").ok).toBe(false);
+    expect(validateConnectorCredential("sentry", "sntryi_abc").ok).toBe(false);
+    expect(validateConnectorCredential("sentry", "ghp_abc123").ok).toBe(false);
+    const res = validateConnectorCredential("sentry", "not-a-sentry-token");
+    expect(res).toEqual({
+      ok: false,
+      error: "Sentry tokens start with sntrys_ (organization) or sntryu_ (user).",
+    });
+  });
+
+  it("rejects an empty credential before ever reaching the sentry-specific check", () => {
+    expect(validateConnectorCredential("sentry", "   ").ok).toBe(false);
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -488,6 +558,11 @@ describe("extraConfigFieldKeys (Task P0)", () => {
 
   it("includes langfuse's declared key from the real catalog (Task P2)", () => {
     expect(extraConfigFieldKeys().has("langfuseHost")).toBe(true);
+  });
+
+  it("includes both of sentry's declared keys from the real catalog (Task P3)", () => {
+    expect(extraConfigFieldKeys().has("sentryOrg")).toBe(true);
+    expect(extraConfigFieldKeys().has("sentryProject")).toBe(true);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {
@@ -625,5 +700,27 @@ describe("projectConnectors — railway's target (Fix Round 1, FIX 3)", () => {
       { kind: "linear", hasSecret: true, railwayProjectId: "should-not-leak" },
     ]).find((r) => r.kind === "linear")!;
     expect(linear.target).toBeNull();
+  });
+});
+
+// Task P3: sentry declares TWO extraConfigFields (sentryOrg, sentryProject,
+// in that order) — the FIRST one (sentryOrg) is what surfaces as target,
+// exactly the same generic derivation railway's own single-field block above
+// already proved; this is the multi-field real-catalog case.
+describe("projectConnectors — sentry's target (Task P3)", () => {
+  it("shows sentry's stored org (the FIRST declared field) as its target once connected, not the project", () => {
+    const sentry = projectConnectors([
+      { kind: "sentry", hasSecret: true, sentryOrg: "acme", sentryProject: "web" },
+    ]).find((r) => r.kind === "sentry")!;
+    expect(sentry.status).toBe("connected");
+    expect(sentry.target).toBe("acme");
+  });
+
+  it("sentry's target is null when connected but no org is stored yet, even if the project is", () => {
+    const sentry = projectConnectors([
+      { kind: "sentry", hasSecret: true, sentryProject: "web" },
+    ]).find((r) => r.kind === "sentry")!;
+    expect(sentry.status).toBe("connected");
+    expect(sentry.target).toBeNull();
   });
 });

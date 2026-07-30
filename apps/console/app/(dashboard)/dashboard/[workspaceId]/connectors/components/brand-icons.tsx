@@ -9,6 +9,10 @@
  * task (confirmed via search — no simple-icons entry exists for it), so its
  * mark is a small hand-drawn pulse/trace-line glyph in the SAME stroke style as
  * Context7's — an honest stand-in, not a claim of Langfuse's actual trademark.
+ * Sentry (Task P3) DOES have a simple-icons entry — its official mark (path
+ * data confirmed against TWO independent CDN mirrors of the same npm package,
+ * jsdelivr and unpkg, byte-identical) is used directly, same as
+ * Github/Linear/Figma/Railway above.
  */
 import type { SVGProps } from "react";
 
@@ -69,6 +73,16 @@ export const TelegramBrand = makeBrand(
 export const RailwayBrand = makeBrand(
   "M.113 10.27A13.026 13.026 0 000 11.48h18.23c-.064-.125-.15-.237-.235-.347-3.117-4.027-4.793-3.677-7.19-3.78-.8-.034-1.34-.048-4.524-.048-1.704 0-3.555.005-5.358.01-.234.63-.459 1.24-.567 1.737h9.342v1.216H.113v.002zm18.26 2.426H.009c.02.326.05.645.094.961h16.955c.754 0 1.179-.429 1.315-.96zm-17.318 4.28s2.81 6.902 10.93 7.024c4.855 0 9.027-2.883 10.92-7.024H1.056zM11.988 0C7.5 0 3.593 2.466 1.531 6.108l4.75-.005v-.002c3.71 0 3.849.016 4.573.047l.448.016c1.563.052 3.485.22 4.996 1.364.82.621 2.007 1.99 2.712 2.965.654.902.842 1.94.396 2.934-.408.914-1.289 1.458-2.353 1.458H.391s.099.42.249.886h22.748A12.026 12.026 0 0024 12.005C24 5.377 18.621 0 11.988 0z",
   "RailwayBrand"
+);
+
+/** Sentry's official simple-icons mark (Task P3) — see this file's own
+ * doc-comment for the two-CDN confirmation. Brand hex `#362D59` (confirmed
+ * against simple-icons' own `data/simple-icons.json`) lives in
+ * `connectors-panel.tsx`'s `KIND_TINT`, not here (this file only carries
+ * path geometry, mirroring every other `makeBrand` entry above). */
+export const SentryBrand = makeBrand(
+  "M13.91 2.505c-.873-1.448-2.972-1.448-3.844 0L6.904 7.92a15.478 15.478 0 0 1 8.53 12.811h-2.221A13.301 13.301 0 0 0 5.784 9.814l-2.926 5.06a7.65 7.65 0 0 1 4.435 5.848H2.194a.365.365 0 0 1-.298-.534l1.413-2.402a5.16 5.16 0 0 0-1.614-.913L.296 19.275a2.182 2.182 0 0 0 .812 2.999 2.24 2.24 0 0 0 1.086.288h6.983a9.322 9.322 0 0 0-3.845-8.318l1.11-1.922a11.47 11.47 0 0 1 4.95 10.24h5.915a17.242 17.242 0 0 0-7.885-15.28l2.244-3.845a.37.37 0 0 1 .504-.13c.255.14 9.75 16.708 9.928 16.9a.365.365 0 0 1-.327.543h-2.287c.029.612.029 1.223 0 1.831h2.297a2.206 2.206 0 0 0 1.922-3.31z",
+  "SentryBrand"
 );
 
 /** Context7 has no published brand mark — a compact "docs" glyph stands in. */

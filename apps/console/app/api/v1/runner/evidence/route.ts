@@ -148,6 +148,9 @@ import "../../../../../lib/evidence/railway";
 // Task P2 (Evidence Providers Wave 2): same self-registration idiom for the
 // `langfuse` adapter.
 import "../../../../../lib/evidence/langfuse";
+// Task P3 (Evidence Providers Wave 2): same self-registration idiom for the
+// `sentry` adapter.
+import "../../../../../lib/evidence/sentry";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

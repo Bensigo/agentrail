@@ -73,6 +73,16 @@ export const connectorProviderEnum = [
   // Same precedent as `railway`/`langfuse`: a free-text column, so this is
   // a TS-union addition only — no migration.
   "sentry",
+  // observability — Task P4 (Evidence Providers Wave 2): datadog, the third
+  // Wave-2 provider (`apps/console/lib/evidence/datadog.ts`). Stores a
+  // COMPOSITE `apiKey:appKey` credential in `secret` (see
+  // `apps/console/lib/evidence/composite-secret.ts`), same convention as
+  // `langfuse` above; its non-secret companion field is
+  // `config.datadogSite` (already added by Task P0 — see
+  // {@link ConnectorConfig.datadogSite}). Same precedent as
+  // `railway`/`langfuse`/`sentry`: a free-text column, so this is a
+  // TS-union addition only — no migration.
+  "datadog",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

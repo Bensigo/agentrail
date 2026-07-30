@@ -113,6 +113,34 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  *     actionable error (checked org-first, matching the catalog's own
  *     `extraConfigFields` declaration order) rather than guessing or
  *     silently probing the org-only endpoint as a fallback.
+ *
+ * DATADOG (Task P4, Evidence Providers Wave 2): confirmed against Datadog's
+ * own docs during implementation (this task's mandatory first step), not
+ * trusted from memory:
+ *   - Auth: `DD-API-KEY: <apiKey>` + `DD-APPLICATION-KEY: <appKey>` on every
+ *     read (docs.datadoghq.com/api/latest/authentication/).
+ *   - Verify endpoint: `GET /api/v2/validate_keys` — chosen over the plan's
+ *     believed `GET /api/v1/validate`, which a docs search confirms
+ *     validates the API key ONLY, never exercising the application key —
+ *     `/api/v2/validate_keys`'s own docs state it checks "that the API key
+ *     and application key used for the request are both valid," the
+ *     cheapest confirmed read that genuinely exercises BOTH stored parts.
+ *     Response `{"status":"ok"}` on success.
+ *   - Needs `config.datadogSite` — the SAME "not yet persisted at
+ *     verify-time" ordering gap Langfuse/Sentry hit first (see "LANGFUSE
+ *     HOST — THE ORDERING GAP" above); reuses the identical `config`
+ *     pass-through mechanism. UNLIKE `langfuseHost` (scheme-gated
+ *     generically by `validateUrlConfigString` at write time), `datadogSite`
+ *     is only ever a bare `validateSimpleConfigString` value (confirmed by
+ *     reading `packages/db-postgres/src/queries/connectors.ts` directly) —
+ *     it becomes part of a `fetch` URL here just like `langfuseHost` does,
+ *     so this module validates it against the SAME documented-site
+ *     allowlist `lib/evidence/datadog.ts`'s own `resolveDatadogSite`
+ *     enforces (duplicated rather than imported — this module stays a leaf,
+ *     the same independence `resolveHttpUrl` above already has from
+ *     `packages/db-postgres`'s own URL validator). A site not on the
+ *     allowlist (missing, garbled, or a malicious value) fails closed with
+ *     the same actionable error as an absent one.
  */
 
 export type VerifyResult = { ok: true } | { ok: false; error: string };
@@ -316,6 +344,73 @@ async function verifySentry(
 }
 
 /**
+ * The 9 confirmed Datadog site parameter values — duplicated from
+ * `lib/evidence/datadog.ts`'s own `DATADOG_SITES` (not imported: this
+ * module stays a leaf, the same independence `resolveHttpUrl` above already
+ * has from `packages/db-postgres`'s own URL validator) rather than shared,
+ * mirroring this codebase's existing precedent for small, provider-specific
+ * defensive checks. See that module's own doc-comment ("SITE ROUTING") for
+ * the confirmed source. */
+const DATADOG_SITES = new Set([
+  "datadoghq.com",
+  "us3.datadoghq.com",
+  "us5.datadoghq.com",
+  "datadoghq.eu",
+  "ddog-gov.com",
+  "us2.ddog-gov.com",
+  "ap1.datadoghq.com",
+  "ap2.datadoghq.com",
+  "uk1.datadoghq.com",
+]);
+
+/** Defensively validate an untrusted `config.datadogSite` value at
+ * verify-time — see this module's own doc-comment ("DATADOG") for why this
+ * value has NOT passed any site-specific check yet (only the bare
+ * non-empty-string `validateSimpleConfigString`). Returns the trimmed,
+ * lowercased site string on an exact allowlist match, or `null` for
+ * anything missing/malformed/not-on-the-list. */
+function resolveDatadogSite(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  return DATADOG_SITES.has(trimmed) ? trimmed : null;
+}
+
+const DATADOG_VALIDATE_KEYS_PATH = "/api/v2/validate_keys";
+
+/** Datadog: a valid apiKey/appKey pair resolves `GET
+ * {https://api.<site>}/api/v2/validate_keys` — see this module's own
+ * doc-comment ("DATADOG (Task P4)") for the confirmed endpoint/auth shape,
+ * and ("LANGFUSE HOST — THE ORDERING GAP") for why `config` (not yet a
+ * persisted connector row) is where `datadogSite` comes from here. No site
+ * (missing, or present but not on the documented allowlist) fails closed
+ * with a clear, actionable error rather than guessing a default region —
+ * exactly like `verifyLangfuse`'s identical no-default-host discipline. */
+async function verifyDatadog(
+  apiKey: string,
+  appKey: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  const site = resolveDatadogSite(config?.datadogSite);
+  if (!site) {
+    return { ok: false, error: "Set a valid Datadog site before connecting." };
+  }
+  try {
+    const res = await fetchWithTimeout(`https://api.${site}${DATADOG_VALIDATE_KEYS_PATH}`, {
+      headers: { "DD-API-KEY": apiKey, "DD-APPLICATION-KEY": appKey },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Datadog rejected these API keys." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Datadog (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Datadog to verify the keys — try again." };
+  }
+}
+
+/**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
  * `{ok:true}` here — its format gate is the guarantee.
@@ -369,6 +464,8 @@ export async function verifyConnectorCredential(
       return verifyLangfuse(first, split.parts[1], config);
     case "sentry":
       return verifySentry(first, config);
+    case "datadog":
+      return verifyDatadog(first, split.parts[1], config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

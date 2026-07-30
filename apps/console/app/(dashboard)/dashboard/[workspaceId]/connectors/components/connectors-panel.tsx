@@ -17,6 +17,7 @@ import {
   RailwayBrand,
   LangfuseBrand,
   SentryBrand,
+  DatadogBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -55,6 +56,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   railway: RailwayBrand,
   langfuse: LangfuseBrand,
   sentry: SentryBrand,
+  datadog: DatadogBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -74,6 +76,9 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // own data/simple-icons.json ("hex": "362D59") — unlike Railway/Langfuse
   // above, a real mark exists, so a real hex is pinned too.
   sentry: "text-[#362d59]",
+  // Task P4: Datadog's real brand purple ("Daisy Bush", #632CA6) — same
+  // "real mark exists, so a real hex is pinned" precedent as Sentry above.
+  datadog: "text-[#632ca6]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

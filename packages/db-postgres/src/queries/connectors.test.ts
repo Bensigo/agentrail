@@ -49,6 +49,18 @@ describe("isConnectorProvider — sentry (Task P3)", () => {
   });
 });
 
+// Task P4 (Evidence Providers Wave 2): "datadog" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway"/"langfuse"/"sentry" above (no migration). datadogSite's own
+// validateConnectorUpdate coverage already lives in the "Evidence Providers
+// Wave 2 (Task P0)" describe block below, alongside its nine Wave-2
+// siblings — not duplicated here.
+describe("isConnectorProvider — datadog (Task P4)", () => {
+  it("recognizes 'datadog' as a known connector provider", () => {
+    expect(isConnectorProvider("datadog")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

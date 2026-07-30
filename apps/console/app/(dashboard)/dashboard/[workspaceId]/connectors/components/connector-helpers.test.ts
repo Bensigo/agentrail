@@ -26,6 +26,7 @@ describe("projectConnectors", () => {
       "railway",
       "langfuse",
       "sentry",
+      "datadog",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -33,13 +34,15 @@ describe("projectConnectors", () => {
     // tools-only `mcp`. Gateways-page T4 removed the third group, `channel`
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
-    // for debugging investigations, no ingest); Task P2 adds langfuse and
-    // Task P3 adds sentry to the SAME `observability` group.
+    // for debugging investigations, no ingest); Task P2 adds langfuse, Task
+    // P3 adds sentry, and Task P4 adds datadog to the SAME `observability`
+    // group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
       "observability",
@@ -140,6 +143,7 @@ describe("projectConnectors", () => {
       "railway",
       "langfuse",
       "sentry",
+      "datadog",
     ]);
   });
 
@@ -153,6 +157,7 @@ describe("projectConnectors", () => {
       "railway",
       "langfuse",
       "sentry",
+      "datadog",
     ]);
   });
 });
@@ -400,9 +405,15 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), and sentry (org+project, Task P3) are the only three so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), and datadog (site, Task P4) are the only four so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
-      if (entry.kind === "railway" || entry.kind === "langfuse" || entry.kind === "sentry") continue;
+      if (
+        entry.kind === "railway" ||
+        entry.kind === "langfuse" ||
+        entry.kind === "sentry" ||
+        entry.kind === "datadog"
+      )
+        continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
     }
   });
@@ -551,6 +562,84 @@ describe("validateConnectorCredential — sentry (Task P3)", () => {
   });
 });
 
+describe("connector catalog — datadog entry (Task P4)", () => {
+  const datadog = CONNECTOR_CATALOG.find((c) => c.kind === "datadog")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(datadog.type).toBe("observability");
+    expect(datadog.connectMethod).toBe("secret");
+    expect(datadog.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities signals + search_events, and no ingest/postResult/notify", () => {
+    expect(datadog.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["signals", "search_events"],
+    });
+  });
+
+  it("declares a composite two-part secret (apiKey + appKey) with per-part patterns", () => {
+    expect(datadog.connect?.secretParts).toEqual([{ name: "API key" }, { name: "Application key" }]);
+    expect(datadog.connect?.secretPartPatterns).toEqual(["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]+)$"]);
+  });
+
+  it("declares a required datadogSite extraConfigFields entry", () => {
+    expect(datadog.connect?.extraConfigFields).toEqual([
+      {
+        key: "datadogSite",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
+describe("validateConnectorCredential — datadog (Task P4)", () => {
+  it("accepts a well-formed 32-hex-api-key:40-hex-app-key composite secret via the generic composite path", () => {
+    expect(
+      validateConnectorCredential("datadog", `${"a".repeat(32)}:${"b".repeat(40)}`)
+    ).toEqual({ ok: true });
+  });
+
+  it("also accepts the newer ddapp_-prefixed application key form", () => {
+    expect(
+      validateConnectorCredential("datadog", `${"a".repeat(32)}:ddapp_someLongerToken123`)
+    ).toEqual({ ok: true });
+  });
+
+  it("rejects when the api key part isn't exactly 32 hex chars", () => {
+    const res = validateConnectorCredential("datadog", `${"a".repeat(31)}:${"b".repeat(40)}`);
+    expect(res).toEqual({ ok: false, error: "API key has an unexpected format." });
+  });
+
+  it("rejects when the app key part matches neither the 40-hex nor the ddapp_ form", () => {
+    const res = validateConnectorCredential("datadog", `${"a".repeat(32)}:not-a-real-app-key`);
+    expect(res).toEqual({ ok: false, error: "Application key has an unexpected format." });
+  });
+
+  it("rejects a single-part value (no colon) with the composite part-count error, never reaching the datadog switch case", () => {
+    const res = validateConnectorCredential("datadog", "only-one-part");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+  });
+
+  it("the datadog switch case itself (defense in depth, unreachable through the real catalog) rejects — proven via a synthetic catalog entry with secretParts stripped", () => {
+    const real = CONNECTOR_CATALOG.find((c) => c.kind === "datadog")!;
+    const stripped: ConnectorCatalogEntry = {
+      ...real,
+      connect: { ...real.connect!, secretParts: undefined, secretPartPatterns: undefined },
+    };
+    const res = validateConnectorCredential("datadog", "anything", [stripped]);
+    expect(res).toEqual({
+      ok: false,
+      error: "Datadog requires both an API key and an application key.",
+    });
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -563,6 +652,10 @@ describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes both of sentry's declared keys from the real catalog (Task P3)", () => {
     expect(extraConfigFieldKeys().has("sentryOrg")).toBe(true);
     expect(extraConfigFieldKeys().has("sentryProject")).toBe(true);
+  });
+
+  it("includes datadog's declared key from the real catalog (Task P4)", () => {
+    expect(extraConfigFieldKeys().has("datadogSite")).toBe(true);
   });
 
   it("generalizes over N synthetic entries declaring multiple fields each — no second real provider needed to prove it", () => {

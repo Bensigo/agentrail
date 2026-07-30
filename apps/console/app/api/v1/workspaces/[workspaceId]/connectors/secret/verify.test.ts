@@ -417,6 +417,122 @@ describe("verifyConnectorCredential('sentry', ...)", () => {
 });
 
 /**
+ * Task P4: datadog verify — `GET https://api.<site>/api/v2/validate_keys`,
+ * `DD-API-KEY`/`DD-APPLICATION-KEY` headers built from the split
+ * `apiKey:appKey` composite. `config` carries `datadogSite` — the same
+ * "not yet persisted" ordering gap Langfuse/Sentry hit first — but UNLIKE
+ * either of those, this module also re-validates the value against a
+ * closed site allowlist (not just a scheme/non-empty check), since
+ * `datadogSite` never passes through `validateUrlConfigString` at write
+ * time at all.
+ */
+describe("verifyConnectorCredential('datadog', ...)", () => {
+  const API_KEY = "a".repeat(32);
+  const APP_KEY = "b".repeat(40);
+  const SECRET = `${API_KEY}:${APP_KEY}`;
+  const SITE = "datadoghq.com";
+
+  function validateKeysResponse(status: number, body: unknown = {}) {
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  }
+
+  it("GETs https://api.<site>/api/v2/validate_keys with DD-API-KEY/DD-APPLICATION-KEY headers built from the split apiKey:appKey pair", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return validateKeysResponse(200, { status: "ok" });
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: SITE });
+
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe(`https://api.${SITE}/api/v2/validate_keys`);
+    expect((capturedInit?.headers as Record<string, string>)?.["DD-API-KEY"]).toBe(API_KEY);
+    expect((capturedInit?.headers as Record<string, string>)?.["DD-APPLICATION-KEY"]).toBe(APP_KEY);
+  });
+
+  it("fails closed with a clear error and never calls fetch when config.datadogSite is absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Set a valid Datadog site before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and never calls fetch when config itself is undefined (no 4th argument at all)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("datadog", SECRET);
+    expect(res).toEqual({ ok: false, error: "Set a valid Datadog site before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a datadogSite value that isn't on the documented allowlist — this value never passed a scheme/URL check at write time, so this is the ONLY gate", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, {
+      datadogSite: "evil.example.com",
+    });
+    expect(res).toEqual({ ok: false, error: "Set a valid Datadog site before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("is case-insensitive on the stored site value", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return validateKeysResponse(200, { status: "ok" });
+    }) as unknown as typeof fetch;
+    await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: "DataDogHQ.COM" });
+    expect(capturedUrl).toBe("https://api.datadoghq.com/api/v2/validate_keys");
+  });
+
+  it("rejects on HTTP 401", async () => {
+    global.fetch = (async () => validateKeysResponse(401)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: SITE });
+    expect(res).toEqual({ ok: false, error: "Datadog rejected these API keys." });
+  });
+
+  it("rejects on HTTP 403", async () => {
+    global.fetch = (async () => validateKeysResponse(403)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: SITE });
+    expect(res).toEqual({ ok: false, error: "Datadog rejected these API keys." });
+  });
+
+  it("reports a non-2xx, non-401/403 status with its HTTP code", async () => {
+    global.fetch = (async () => validateKeysResponse(500)) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: SITE });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Datadog (HTTP 500)." });
+  });
+
+  it("reports an unreachable upstream (thrown fetch) with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", SECRET, undefined, { datadogSite: SITE });
+    expect(res).toEqual({
+      ok: false,
+      error: "Couldn't reach Datadog to verify the keys — try again.",
+    });
+  });
+
+  it("rejects a malformed composite secret (wrong part count) before ever reading config or calling fetch", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("datadog", "only-one-part", undefined, {
+      datadogSite: SITE,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("2 parts");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

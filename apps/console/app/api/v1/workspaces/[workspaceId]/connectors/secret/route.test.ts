@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -118,6 +118,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("langfuse");
     // Task P3.
     expect(body.error).toContain("sentry");
+    // Task P4.
+    expect(body.error).toContain("datadog");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -461,5 +463,114 @@ describe("PUT /connectors/secret — sentry, full flow + two-key extra-config pa
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "sentry", null);
+  });
+});
+
+/**
+ * Full datadog connect flow (Task P4) — both gates run for real (this route
+ * doesn't mock `./verify`), so the live-verify HTTP call is exercised via a
+ * `global.fetch` swap, same idiom as the railway/langfuse/sentry blocks
+ * above. ALSO proves the extra-config pass-through mechanism generalizes to
+ * a THIRD provider (`datadogSite`) riding alongside `secret` in the SAME
+ * PUT body, with no datadog-specific code in this route.
+ */
+describe("PUT /connectors/secret — datadog, full flow + extra-config pass-through (Task P4)", () => {
+  const originalFetch = global.fetch;
+  const API_KEY = "a".repeat(32);
+  const APP_KEY = "b".repeat(40);
+  const DATADOG_SECRET = `${API_KEY}:${APP_KEY}`;
+  const SITE = "datadoghq.com";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT datadog accepted end to end: composite secret + datadogSite in the SAME body + a live verify that succeeds → 200 connected:true, setConnectorSecret called with the trimmed composite secret (site NOT part of it)", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ status: "ok" }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "datadog",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, datadogSite: SITE },
+      hasSecret: true,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "datadog", secret: `  ${DATADOG_SECRET}  `, datadogSite: SITE }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(capturedUrl).toBe(`https://api.${SITE}/api/v2/validate_keys`);
+    // The route itself never persists datadogSite — only the trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "datadog", DATADOG_SECRET);
+  });
+
+  it("PUT datadog with NO datadogSite in the body → 400 with verify's own site-missing error, setConnectorSecret never called (proves the pass-through, not a hardcoded route branch)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "datadog", secret: DATADOG_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set a valid Datadog site before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT datadog with a well-formed composite secret but a live verify Datadog rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "datadog", secret: DATADOG_SECRET, datadogSite: SITE }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Datadog rejected these API keys." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT datadog with a malformed composite secret (wrong shape) fails at the FORMAT gate — never calls fetch, never reads datadogSite", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "datadog", secret: "wrong:wrong", datadogSite: SITE }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "API key has an unexpected format." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT datadog with secret:null disconnects without ever calling verify/fetch, and without needing datadogSite in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "datadog",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "datadog", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "datadog", null);
   });
 });

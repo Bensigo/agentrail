@@ -46,9 +46,12 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * token — `langfuse` (Task P2, Evidence Providers Wave 2,
  * `.superpowers/sdd/plan-providers.md`), the first Wave-2 provider: traces +
  * observation-level signals over a per-workspace public/secret API key
- * pair — and `sentry` (Task P3, Evidence Providers Wave 2), the second
+ * pair — `sentry` (Task P3, Evidence Providers Wave 2), the second
  * Wave-2 provider: issue search + RED-shaped signals over a per-workspace
- * SINGLE auth token (org or user), scoped by org+project extra config.
+ * SINGLE auth token (org or user), scoped by org+project extra config — and
+ * `datadog` (Task P4, Evidence Providers Wave 2), the third Wave-2 provider:
+ * USE-shaped host signals + log search over a per-workspace apiKey+appKey
+ * composite pair, scoped by a site extra config.
  */
 export type ConnectorKind =
   | "github"
@@ -58,7 +61,8 @@ export type ConnectorKind =
   | "factory"
   | "railway"
   | "langfuse"
-  | "sentry";
+  | "sentry"
+  | "datadog";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -525,6 +529,76 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P4, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "datadog",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Datadog",
+    description:
+      "Give the debugging investigator visibility into your Datadog host signals (CPU, load, memory) and log search.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The third Wave-2 evidence provider (Task P4) — a COMPOSITE-secret
+      // provider (like langfuse) that ALSO needs a non-secret companion
+      // config value (like sentry, though only one — the account site). See
+      // `lib/evidence/datadog.ts`.
+      evidence: ["signals", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Datadog API keys",
+      credentialPlaceholder: "32-hex API key / 40-hex Application key",
+      credentialHint:
+        "A Datadog API key (32 hex chars) and Application key (40 hex chars, or the newer ddapp_… form).",
+      helpUrl: "https://docs.datadoghq.com/account_management/api-app-keys/",
+      setupSteps: [
+        "Open Datadog → Organization Settings → API Keys, create a key, and copy the 32-character value.",
+        "Open Organization Settings → Application Keys, create a key, and copy its value (shown once).",
+        "Paste both here, along with your Datadog site (e.g. datadoghq.com, us5.datadoghq.com), and connect.",
+      ],
+      // Task P0's composite-secret mechanism (see composite-secret.ts's own
+      // doc-comment): Datadog's api+application key pair is stored as ONE
+      // `apiKey:appKey` string in `connectors.secret`, split back apart
+      // generically by `validateConnectorCredential` (format gate) and
+      // `verifyConnectorCredential` (live gate) — neither needs a
+      // datadog-specific parsing branch. Per-part patterns: the API key is
+      // CONFIRMED 32 hex chars (docs.datadoghq.com/account_management/
+      // api-app-keys/ itself does not state a format, but Datadog's own
+      // AWS Secrets Manager partner integration doc and this task's own
+      // believed shape agree); the Application key accepts EITHER the
+      // confirmed-shape legacy 40-hex form OR the newer `ddapp_`-prefixed
+      // form (secondary-sourced only, could not be confirmed against
+      // Datadog's own first-party docs page directly — accepted
+      // permissively rather than risk rejecting a real key a real user
+      // holds today, same "cheap format gate, not cryptographic
+      // correctness" spirit as every pattern in this file — see
+      // `lib/evidence/datadog.ts`'s own doc-comment for the full citation
+      // trail).
+      secretParts: [{ name: "API key" }, { name: "Application key" }],
+      secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]+)$"],
+      // The workspace's Datadog site — required (every workspace needs
+      // SOME site; there is no sensible default across Datadog's 9 regional
+      // deployments). Unlike langfuseHost/prometheusUrl/grafanaUrl, this is
+      // NOT one of `validateUrlConfigString`'s three scheme-gated fields
+      // (confirmed by reading `packages/db-postgres/src/queries/
+      // connectors.ts` directly — datadogSite goes through the plain
+      // `validateSimpleConfigString`) — the adapter itself validates it
+      // against a documented-site allowlist before ever using it as a
+      // fetch target (see `lib/evidence/datadog.ts`'s own doc-comment,
+      // "SITE ROUTING").
+      extraConfigFields: [
+        {
+          key: "datadogSite",
+          label: "Site",
+          placeholder: "datadoghq.com",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -862,6 +936,19 @@ export function validateConnectorCredential(
             ok: false,
             error: "Sentry tokens start with sntrys_ (organization) or sntryu_ (user).",
           };
+    case "datadog":
+      // Task P4: the real catalog entry declares `secretParts` (two parts),
+      // so every real call is intercepted by the generic composite-secret
+      // branch ABOVE this switch and never reaches this case — this is this
+      // function's own defense in depth regardless (same reasoning as
+      // `langfuse` above): the switch must stay total over every
+      // ConnectorKind, and this is the operative rejection for a direct
+      // caller (this module's own tests included, or a hypothetical future
+      // catalog edit that strips `secretParts`) that reaches it anyway.
+      return {
+        ok: false,
+        error: "Datadog requires both an API key and an application key.",
+      };
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

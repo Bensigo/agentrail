@@ -151,6 +151,9 @@ import "../../../../../lib/evidence/langfuse";
 // Task P3 (Evidence Providers Wave 2): same self-registration idiom for the
 // `sentry` adapter.
 import "../../../../../lib/evidence/sentry";
+// Task P4 (Evidence Providers Wave 2): same self-registration idiom for the
+// `datadog` adapter.
+import "../../../../../lib/evidence/datadog";
 import {
   EVIDENCE_VERBS,
   type EvidenceDegradation,

@@ -11,6 +11,13 @@ import { getConnector } from "@agentrail/db-postgres";
 import { sentryAdapter } from "./sentry";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
+// Fix Round 1, FOLD 2: the ONLY place this test file imports the catalog
+// (and verify.ts) — the adapter itself (sentry.ts) never does, mirroring
+// langfuse.test.ts's identical "cross-check only from the test" precedent.
+// Used exclusively by the drift-protection describe block at the bottom of
+// this file.
+import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { verifyConnectorCredential } from "../../app/api/v1/workspaces/[workspaceId]/connectors/secret/verify";
 
 const mockGetConnector = vi.mocked(getConnector);
 
@@ -414,7 +421,7 @@ describe("sentryAdapter — search_events: upstream failure taxonomy", () => {
 });
 
 describe("sentryAdapter — search_events: q.query dual filter (server-side param AND client-side title match)", () => {
-  it("sends q.query in the server-side query param alongside project=", async () => {
+  it("sends a PLAIN word q.query wrapped in quotes — quoted ALWAYS, not conditionally (Fix Round 1, FOLD 1: uniformity over special-casing)", async () => {
     let captured: URL | null = null;
     global.fetch = routeFetch({
       issues: (url) => {
@@ -424,11 +431,50 @@ describe("sentryAdapter — search_events: q.query dual filter (server-side para
     }) as unknown as typeof fetch;
 
     await sentryAdapter.query(WS, q({ query: "TypeError" }), TOKEN);
-    expect(captured!.searchParams.get("query")).toBe("TypeError");
+    expect(captured!.searchParams.get("query")).toBe('"TypeError"');
     expect(captured!.searchParams.get("project")).toBe(PROJECT);
   });
 
-  it("sends an explicit empty query string when q.query is absent (never omitted — overrides Sentry's own is:unresolved default)", async () => {
+  it("quotes a q.query containing a colon — the adapter's own core use case (a real error title, 'TypeError: x is undefined') — so Sentry's parser cannot misread it as a key:value token", async () => {
+    let captured: URL | null = null;
+    global.fetch = routeFetch({
+      issues: (url) => {
+        captured = url;
+        return { status: 200, body: [] };
+      },
+    }) as unknown as typeof fetch;
+
+    await sentryAdapter.query(WS, q({ query: "TypeError: x is undefined" }), TOKEN);
+    expect(captured!.searchParams.get("query")).toBe('"TypeError: x is undefined"');
+  });
+
+  it("escapes an embedded double quote in q.query as \\\" (Sentry's own documented quoted-value escape unit)", async () => {
+    let captured: URL | null = null;
+    global.fetch = routeFetch({
+      issues: (url) => {
+        captured = url;
+        return { status: 200, body: [] };
+      },
+    }) as unknown as typeof fetch;
+
+    await sentryAdapter.query(WS, q({ query: 'say "hi"' }), TOKEN);
+    expect(captured!.searchParams.get("query")).toBe('"say \\"hi\\""');
+  });
+
+  it("escapes an embedded backslash in q.query (doubled, ahead of quote-escaping — the conventional order)", async () => {
+    let captured: URL | null = null;
+    global.fetch = routeFetch({
+      issues: (url) => {
+        captured = url;
+        return { status: 200, body: [] };
+      },
+    }) as unknown as typeof fetch;
+
+    await sentryAdapter.query(WS, q({ query: "C:\\path\\to\\file" }), TOKEN);
+    expect(captured!.searchParams.get("query")).toBe('"C:\\\\path\\\\to\\\\file"');
+  });
+
+  it("sends an explicit empty query string when q.query is absent (never omitted — overrides Sentry's own is:unresolved default; NOT quoted — there is no free text to quote)", async () => {
     let captured: URL | null = null;
     global.fetch = routeFetch({
       issues: (url) => {
@@ -828,5 +874,75 @@ describe("sentryAdapter — signals: request hygiene", () => {
       });
       expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix Round 1, FOLD 2 (coordinator review): catalog↔adapter↔verify
+// config-key drift protection. Neither the adapter (this module) nor
+// verify.ts's own verifySentry declares an exported, shared "these are the
+// keys" spec the way langfuse.ts's LANGFUSE_SECRET_SPEC does (a single
+// secret has no split shape to declare) — so a bare equality assertion
+// against a HARDCODED ["sentryOrg","sentryProject"] literal here would only
+// prove the CATALOG's own shape, never catch a rename that touched the
+// catalog's extraConfigFields key but left sentry.ts's/verify.ts's own
+// separately-hardcoded `row.config.sentryOrg` / `config?.sentryProject`
+// reads un-synced. The two behavioral tests below close that gap WITHOUT
+// any production-code change: each builds its fixture's config object
+// DYNAMICALLY off the catalog's OWN declared keys (never off this test
+// file's own hardcoded ORG/PROJECT-keyed literals used everywhere else in
+// this file) — if a future rename changes what the catalog declares
+// without updating the adapter/verify's own reads, the dynamically-keyed
+// fixture would use the NEW name, the unchanged runtime code would look
+// for the OLD name, and the assertion below (which expects success) would
+// fail in CI, exactly the protection the coordinator asked for.
+// ---------------------------------------------------------------------------
+describe("sentryAdapter — catalog↔adapter↔verify config-key alignment (Fix Round 1, FOLD 2)", () => {
+  const sentryEntry = CONNECTOR_CATALOG.find((c) => c.kind === "sentry")!;
+  const catalogFields = sentryEntry.connect!.extraConfigFields!;
+
+  it("the catalog declares exactly ['sentryOrg','sentryProject'], both required:true — the literal keys sentry.ts's query() and verify.ts's verifySentry both read", () => {
+    expect(catalogFields.map((f) => f.key)).toEqual(["sentryOrg", "sentryProject"]);
+    for (const field of catalogFields) {
+      expect(field.required).toBe(true);
+    }
+  });
+
+  it("the adapter reads config.org/config.project using EXACTLY the catalog's declared keys — a connector row built from those keys (not this test file's own hardcoded literals) reaches a real fetch rather than degrading config_missing", async () => {
+    const [orgKey, projectKey] = catalogFields.map((f) => f.key);
+    mockGetConnector.mockResolvedValue({
+      provider: "sentry" as const,
+      enabled: true,
+      config: {
+        repos: [],
+        triggerLabel: "ready-for-agent",
+        pollIntervalSeconds: 60,
+        [orgKey]: ORG,
+        [projectKey]: PROJECT,
+      },
+      hasSecret: true,
+      updatedAt: null,
+    } as never);
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+
+    const res = await sentryAdapter.query(WS, q(), TOKEN);
+    // Reaching an actual (mocked) fetch response rather than degrading
+    // config_missing proves the adapter successfully read org+project off
+    // exactly these catalog-derived key names.
+    expect(res).not.toEqual({ ok: false, reason: "config_missing" });
+  });
+
+  it("verifySentry reads config using EXACTLY the catalog's declared keys too — a config object built from those keys reaches Sentry's verify endpoint rather than failing closed with the org/project-missing errors", async () => {
+    const [orgKey, projectKey] = catalogFields.map((f) => f.key);
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("sentry", TOKEN, undefined, {
+      [orgKey]: ORG,
+      [projectKey]: PROJECT,
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(res).toEqual({ ok: true });
   });
 });

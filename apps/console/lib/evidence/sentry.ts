@@ -96,12 +96,9 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * param documentation says it "uses the same syntax as the events query
  * endpoint" — the same search language the confirmed `project:` token
  * belongs to. This is the SAFER of the two confirmable options, not a
- * guess; it also means a raw `q.query` containing a stray `:`-shaped token
- * COULD be misread by Sentry's search parser as an (invalid) key:value
- * pair rather than free text — a disclosed, accepted risk of forwarding
- * free text into a structured search DSL at all (see "Q.QUERY" below),
- * mitigated (for `search_events`) by the client-side re-filter, not
- * eliminated.
+ * guess. See "Q.QUERY" below for the colon-in-free-text risk this same
+ * structured-search-DSL choice creates for `search_events`, and how
+ * {@link quoteSearchText} closes it (Fix Round 1, FOLD 1).
  *
  * VERIFY ENDPOINT (chosen over the plan's believed org-only shape — see
  * `verify.ts`'s own doc-comment, "SENTRY (Task P3)"): `GET
@@ -174,13 +171,43 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * client-side as a case-insensitive substring match against each issue's
  * OWN (truncated) title specifically — belt-and-braces against Sentry's
  * search matching a DIFFERENT field (message/culprit) than what the
- * rendered line's `"{title}"` promises, or against the colon-token risk
- * noted above ("PROJECT SCOPING ASYMMETRY"). `signals` has no verb-pinned
- * `q.query` wording; mirrors langfuse.ts's own generalization — matched
- * against each signal's `{name}{labels}` identifier, client-side only (the
- * three metric queries themselves never vary by `q.query`, same "do not
- * let free text change WHICH fixed metrics run" restraint P5's own pinned
- * caution states for a different provider).
+ * rendered line's `"{title}"` promises.
+ *
+ * QUOTING (`search_events`, Fix Round 1, FOLD 1 — coordinator review): a
+ * raw, unquoted `q.query` containing a colon is this adapter's actual core
+ * use case gone wrong — a real error title/message is overwhelmingly
+ * likely to look like `"TypeError: x is undefined"`, and Sentry's search
+ * grammar reads an unquoted `word:word` shape as a `key:value` FILTER
+ * TOKEN, not free text (confirmed against Sentry's own parser source,
+ * `src/sentry/api/event_search.py`) — silently narrowing or erroring the
+ * search server-side, a FALSE NEGATIVE the client-side title re-filter
+ * cannot recover (it only re-filters what Sentry actually returned).
+ * {@link quoteSearchText} wraps `q.query` in Sentry's documented
+ * QUOTED-VALUE syntax before it ever reaches the `query` param — confirmed
+ * grammar: `quoted_value = '"' ('\"' / [^"])* '"'` (i.e. the ONLY
+ * recognized in-quotes escape unit is `\"`, an embedded literal quote; a
+ * bare backslash otherwise carries no special meaning). This adapter
+ * escapes backslashes THEN quotes — the conventional order, so a
+ * user-typed literal `\"` round-trips as itself — which is the correct,
+ * standard choice even though the grammar's own lack of a dedicated
+ * backslash-escape production leaves ONE narrow, INHERITED edge case
+ * unresolved: a value ending in an odd number of trailing backslashes
+ * immediately before the closing quote can still combine with that
+ * delimiter and misparse. That is a limitation of Sentry's own grammar
+ * (no dedicated `\\` production), not of this function, and not a shape
+ * any realistic error title/message hits. Every `q.query` is quoted
+ * ALWAYS, even a plain single word with nothing to escape — uniformity
+ * over conditional logic (coordinator's own pinned choice), so the
+ * server-side query text has exactly one shape to reason about. `signals`
+ * has no verb-pinned `q.query` wording and, unlike `search_events`, NEVER
+ * embeds `q.query` into any Sentry-bound `query` string at all (confirmed
+ * — none of {@link metricSpecs}'s three fixed queries reference it) —
+ * mirrors langfuse.ts's own generalization instead: matched against each
+ * signal's `{name}{labels}` identifier, CLIENT-SIDE ONLY (the three metric
+ * queries themselves never vary by `q.query`, same "do not let free text
+ * change WHICH fixed metrics run" restraint P5's own pinned caution states
+ * for a different provider) — so there is nothing for this fold to quote
+ * on the `signals` side; confirmed, not overlooked.
  *
  * RATE LIMITS: single page per endpoint (`search_events` — one
  * `limit=100` GET, no cursor-following; this task's own pinned rate-limit
@@ -324,15 +351,30 @@ function renderEventLine(idText: string, level: string, title: string, countText
   return `event ${idText} level=${level} "${title}" count=${countText} at=${atIso}`;
 }
 
+/** Wraps free text in Sentry's documented quoted-value syntax before it
+ * rides in the `query` param — see the module doc-comment ("QUOTING") for
+ * the confirmed grammar, why backslashes are escaped before quotes, and
+ * the one inherited edge case this cannot close. Called unconditionally on
+ * every non-empty `q.query` (Fix Round 1, FOLD 1) — never conditionally,
+ * so the server-side query text has one shape regardless of whether the
+ * text happens to contain a colon today. */
+function quoteSearchText(text: string): string {
+  const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
 /** One page (this adapter's own rate-limit discipline — see the module
  * doc-comment, "RATE LIMITS") of the organization's issues, scoped to the
  * connected project via the dedicated `project` param (confirmed to accept
  * a slug — see the module doc-comment, "PROJECT SCOPING ASYMMETRY"),
- * window-filtered server-side, `q.query` forwarded server-side (pinned by
- * this task) — NOT yet client-filtered/rendered (parsing is separated into
- * {@link parseIssues} so the belt-and-braces re-filter and the client-side
- * title re-match stay independently testable, mirroring langfuse.ts's
- * `fetchTraces`/`parseTraces` split). */
+ * window-filtered server-side. `query` is whatever the caller hands in
+ * VERBATIM — already {@link quoteSearchText}-quoted when it carries real
+ * `q.query` text (see the module doc-comment, "QUOTING") — this function
+ * itself is quoting-agnostic, just a plain param passthrough. NOT yet
+ * client-filtered/rendered (parsing is separated into {@link parseIssues}
+ * so the belt-and-braces re-filter and the client-side title re-match stay
+ * independently testable, mirroring langfuse.ts's `fetchTraces`/
+ * `parseTraces` split). */
 async function fetchIssues(
   token: string,
   org: string,
@@ -410,9 +452,21 @@ async function querySearchEvents(
   project: string,
   q: EvidenceQuery
 ): Promise<AdapterResult> {
-  const result = await fetchIssues(token, org, project, q.windowStart, q.windowEnd, q.query ?? "");
+  // Fix Round 1, FOLD 1: q.query is quoted (never sent bare) so an embedded
+  // colon — a real error title's overwhelmingly common shape, "TypeError: x
+  // is undefined" — cannot be misread as a key:value search token server
+  // side. An absent q.query still sends a bare "" (unchanged): there is no
+  // free text to quote, and the empty string's own job (override Sentry's
+  // `is:unresolved` default — see the module doc-comment, "QUERY DEFAULT")
+  // is unrelated to this fold.
+  const serverQuery = q.query ? quoteSearchText(q.query) : "";
+  const result = await fetchIssues(token, org, project, q.windowStart, q.windowEnd, serverQuery);
   if (!result.ok) return result;
 
+  // The CLIENT-side re-filter matches the RAW, unquoted q.query against
+  // each issue's own title — belt-and-braces against whatever Sentry's
+  // server-side search actually matched, unaffected by this fold (pinned:
+  // "Keep the client-side substring re-filter unchanged").
   let candidates = parseIssues(result.entries, q.windowStart, q.windowEnd);
   if (q.query) {
     const needle = q.query.toLowerCase();

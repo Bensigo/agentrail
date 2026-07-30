@@ -105,7 +105,7 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(setConnectorSecret).not.toHaveBeenCalled();
   });
 
-  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog) and excludes factory", async () => {
+  it("the derived allowlist includes every real credential-based catalog kind so the error message stays accurate (linear, figma, context7, railway, langfuse, sentry, datadog, prometheus) and excludes factory", async () => {
     const res = await PUT(putReq({ provider: "not-a-real-kind", secret: "x" }), {
       params: params(),
     });
@@ -120,6 +120,8 @@ describe("PUT /connectors/secret — allowlist (Channels cutover)", () => {
     expect(body.error).toContain("sentry");
     // Task P4.
     expect(body.error).toContain("datadog");
+    // Task P5.
+    expect(body.error).toContain("prometheus");
     // Fix Round 1, FIX 4 — see below for the dedicated test.
     expect(body.error).not.toContain("factory");
   });
@@ -572,5 +574,141 @@ describe("PUT /connectors/secret — datadog, full flow + extra-config pass-thro
     expect(await res.json()).toEqual({ connected: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(setConnectorSecret).toHaveBeenCalledWith(WS, "datadog", null);
+  });
+});
+
+/**
+ * Full prometheus connect flow (Task P5) — both gates run for real (this
+ * route doesn't mock `./verify`), so the live-verify HTTP call is exercised
+ * via a `global.fetch` swap, same idiom as the railway/langfuse/sentry/
+ * datadog blocks above. ALSO proves the extra-config pass-through mechanism
+ * generalizes to a FOURTH provider (`prometheusUrl`) riding alongside
+ * `secret` in the SAME PUT body, with no prometheus-specific code in this
+ * route. UNLIKE datadog/langfuse above, `secret` is a SINGLE field (no
+ * composite split) — the "malformed secret" case here is the format gate's
+ * own whitespace/length check, not a wrong part count.
+ */
+describe("PUT /connectors/secret — prometheus, full flow + extra-config pass-through (Task P5)", () => {
+  const originalFetch = global.fetch;
+  const PROM_SECRET = "sometoken1234567890";
+  const PROM_URL = "https://prometheus.internal:9090";
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("PUT prometheus accepted end to end: secret + prometheusUrl in the SAME body + a live verify that succeeds (buildinfo leg) → 200 connected:true, setConnectorSecret called with the trimmed secret (url NOT part of it)", async () => {
+    let capturedUrl = "";
+    global.fetch = (async (url: string) => {
+      capturedUrl = String(url);
+      return { ok: true, status: 200, json: async () => ({ status: "success", data: {} }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "prometheus",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, prometheusUrl: PROM_URL },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "prometheus", secret: `  ${PROM_SECRET}  `, prometheusUrl: PROM_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: true });
+    expect(capturedUrl).toBe(`${PROM_URL}/api/v1/status/buildinfo`);
+    // The route itself never persists prometheusUrl — only the trimmed secret.
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "prometheus", PROM_SECRET);
+  });
+
+  it("PUT prometheus with NO prometheusUrl in the body → 400 with verify's own URL-missing error, setConnectorSecret never called (proves the pass-through, not a hardcoded route branch)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(putReq({ provider: "prometheus", secret: PROM_SECRET }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Set the Prometheus base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT prometheus with a well-formed secret but a live verify Prometheus rejects (401) → 400, setConnectorSecret never called", async () => {
+    global.fetch = (async () => ({ ok: false, status: 401, json: async () => ({}) })) as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "prometheus", secret: PROM_SECRET, prometheusUrl: PROM_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Prometheus rejected this credential." });
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT prometheus with a credential containing whitespace fails at the FORMAT gate — never calls fetch, never reads prometheusUrl", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await PUT(
+      putReq({ provider: "prometheus", secret: "has a space", prometheusUrl: PROM_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Prometheus credentials must not contain whitespace." });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  it("PUT prometheus accepts a user:pass credential too — same single field, Basic auth sent instead of Bearer", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ status: "success", data: {} }) };
+    }) as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "prometheus",
+      enabled: true,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60, prometheusUrl: PROM_URL },
+      hasSecret: true,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(
+      putReq({ provider: "prometheus", secret: "myuser:mypass", prometheusUrl: PROM_URL }),
+      { params: params() }
+    );
+
+    expect(res.status).toBe(200);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(
+      `Basic ${Buffer.from("myuser:mypass").toString("base64")}`
+    );
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "prometheus", "myuser:mypass");
+  });
+
+  it("PUT prometheus with secret:null disconnects without ever calling verify/fetch, and without needing prometheusUrl in the body", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(setConnectorSecret).mockResolvedValue({
+      provider: "prometheus",
+      enabled: false,
+      config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    } as never);
+
+    const res = await PUT(putReq({ provider: "prometheus", secret: null }), {
+      params: params(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ connected: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setConnectorSecret).toHaveBeenCalledWith(WS, "prometheus", null);
   });
 });

@@ -18,6 +18,7 @@ import {
   LangfuseBrand,
   SentryBrand,
   DatadogBrand,
+  PrometheusBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -57,6 +58,7 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   langfuse: LangfuseBrand,
   sentry: SentryBrand,
   datadog: DatadogBrand,
+  prometheus: PrometheusBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -79,6 +81,10 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   // Task P4: Datadog's real brand purple ("Daisy Bush", #632CA6) — same
   // "real mark exists, so a real hex is pinned" precedent as Sentry above.
   datadog: "text-[#632ca6]",
+  // Task P5: Prometheus's real brand orange (#E6522C, "Cinnabar", confirmed
+  // against simple-icons' own data) — same "real mark exists, so a real hex
+  // is pinned" precedent as Sentry/Datadog above.
+  prometheus: "text-[#e6522c]",
 };
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];

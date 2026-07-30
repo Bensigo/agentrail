@@ -573,7 +573,7 @@ describe("completeConfig preserves the onboarding skip flags (three-step rebuild
 // survive projection and survive a later unrelated merge, exactly like
 // railwayProjectId (Task 7) already does above.
 describe("completeConfig preserves Evidence Providers Wave 2 companion fields (Task P0)", () => {
-  it("carries langfuseHost + sentryOrg + sentryProject + datadogSite through the read projection", async () => {
+  it("carries langfuseHost + sentryOrg + sentryProject + datadogSite + prometheusUrl through the read projection", async () => {
     mockDb.select.mockReturnValue(
       makeSelectOrderChain([
         {
@@ -587,6 +587,7 @@ describe("completeConfig preserves Evidence Providers Wave 2 companion fields (T
             sentryOrg: "acme",
             sentryProject: "web",
             datadogSite: "datadoghq.com",
+            prometheusUrl: "https://prometheus.internal:9090",
           },
           updatedAt: null,
         },
@@ -598,6 +599,7 @@ describe("completeConfig preserves Evidence Providers Wave 2 companion fields (T
     expect(rows[0].config.sentryOrg).toBe("acme");
     expect(rows[0].config.sentryProject).toBe("web");
     expect(rows[0].config.datadogSite).toBe("datadoghq.com");
+    expect(rows[0].config.prometheusUrl).toBe("https://prometheus.internal:9090");
   });
 
   it("omits every Wave 2 field entirely when absent (no accidental default)", async () => {

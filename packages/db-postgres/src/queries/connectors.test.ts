@@ -61,6 +61,18 @@ describe("isConnectorProvider — datadog (Task P4)", () => {
   });
 });
 
+// Task P5 (Evidence Providers Wave 2): "prometheus" added to
+// connectorProviderEnum — same free-text-column, TS-union-only precedent as
+// "railway"/"langfuse"/"sentry"/"datadog" above (no migration).
+// prometheusUrl's own validateConnectorUpdate coverage already lives in the
+// "Evidence Providers Wave 2 (Task P0)" describe block below, alongside its
+// nine Wave-2 siblings — not duplicated here.
+describe("isConnectorProvider — prometheus (Task P5)", () => {
+  it("recognizes 'prometheus' as a known connector provider", () => {
+    expect(isConnectorProvider("prometheus")).toBe(true);
+  });
+});
+
 describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
   it("accepts and trims a well-formed railwayProjectId", () => {
     const res = validateConnectorUpdate({ config: { railwayProjectId: "  proj-123  " } });

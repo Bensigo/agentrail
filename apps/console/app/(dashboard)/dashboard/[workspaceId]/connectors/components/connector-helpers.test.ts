@@ -27,6 +27,7 @@ describe("projectConnectors", () => {
       "langfuse",
       "sentry",
       "datadog",
+      "prometheus",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
@@ -35,13 +36,14 @@ describe("projectConnectors", () => {
     // (Discord / Slack / Telegram) — those now live on their own Gateways
     // surface. Task 7 adds a FOURTH group, `observability` (Railway — evidence
     // for debugging investigations, no ingest); Task P2 adds langfuse, Task
-    // P3 adds sentry, and Task P4 adds datadog to the SAME `observability`
-    // group.
+    // P3 adds sentry, Task P4 adds datadog, and Task P5 adds prometheus to
+    // the SAME `observability` group.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
+      "observability",
       "observability",
       "observability",
       "observability",
@@ -144,6 +146,7 @@ describe("projectConnectors", () => {
       "langfuse",
       "sentry",
       "datadog",
+      "prometheus",
     ]);
   });
 
@@ -158,6 +161,7 @@ describe("projectConnectors", () => {
       "langfuse",
       "sentry",
       "datadog",
+      "prometheus",
     ]);
   });
 });
@@ -405,13 +409,14 @@ describe("connector catalog — railway entry (Task 7)", () => {
     ]);
   });
 
-  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), and datadog (site, Task P4) are the only four so far", () => {
+  it("every catalog entry that doesn't need one declares no extraConfigFields — railway (project id), langfuse (host, Task P2), sentry (org+project, Task P3), datadog (site, Task P4), and prometheus (base URL, Task P5) are the only five so far", () => {
     for (const entry of CONNECTOR_CATALOG) {
       if (
         entry.kind === "railway" ||
         entry.kind === "langfuse" ||
         entry.kind === "sentry" ||
-        entry.kind === "datadog"
+        entry.kind === "datadog" ||
+        entry.kind === "prometheus"
       )
         continue;
       expect(entry.connect?.extraConfigFields).toBeUndefined();
@@ -647,6 +652,73 @@ describe("validateConnectorCredential — datadog (Task P4)", () => {
   });
 });
 
+describe("connector catalog — prometheus entry (Task P5)", () => {
+  const prometheus = CONNECTOR_CATALOG.find((c) => c.kind === "prometheus")!;
+
+  it("is type observability, connectMethod secret, availability available", () => {
+    expect(prometheus.type).toBe("observability");
+    expect(prometheus.connectMethod).toBe("secret");
+    expect(prometheus.availability).toBe("available");
+  });
+
+  it("declares evidence capabilities signals ONLY, and no ingest/postResult/notify", () => {
+    expect(prometheus.capabilities).toEqual({
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["signals"],
+    });
+  });
+
+  it("declares neither secretParts nor secretPartPatterns — a SINGLE-part credential, unlike langfuse's/datadog's composite pairs", () => {
+    expect(prometheus.connect?.secretParts).toBeUndefined();
+    expect(prometheus.connect?.secretPartPatterns).toBeUndefined();
+  });
+
+  it("declares a required prometheusUrl extraConfigFields entry", () => {
+    expect(prometheus.connect?.extraConfigFields).toEqual([
+      {
+        key: "prometheusUrl",
+        label: expect.any(String),
+        placeholder: expect.any(String),
+        required: true,
+      },
+    ]);
+  });
+});
+
+describe("validateConnectorCredential — prometheus (Task P5)", () => {
+  it("accepts a plain bearer-shaped token (no colon)", () => {
+    expect(validateConnectorCredential("prometheus", "sometoken1234567890")).toEqual({ ok: true });
+  });
+
+  it("accepts a user:pass composite (the same single field also carries Basic-auth pairs)", () => {
+    expect(validateConnectorCredential("prometheus", "myuser:mypass")).toEqual({ ok: true });
+  });
+
+  it("accepts a user:pass pair whose password itself contains a colon", () => {
+    expect(validateConnectorCredential("prometheus", "myuser:my:pass:word")).toEqual({ ok: true });
+  });
+
+  it("rejects a credential containing whitespace", () => {
+    const res = validateConnectorCredential("prometheus", "token with spaces");
+    expect(res).toEqual({ ok: false, error: "Prometheus credentials must not contain whitespace." });
+  });
+
+  it("rejects a credential over 512 characters", () => {
+    const res = validateConnectorCredential("prometheus", "a".repeat(513));
+    expect(res).toEqual({ ok: false, error: "Prometheus credentials must be at most 512 characters." });
+  });
+
+  it("accepts a credential at exactly 512 characters (boundary)", () => {
+    expect(validateConnectorCredential("prometheus", "a".repeat(512))).toEqual({ ok: true });
+  });
+
+  it("rejects an empty credential before ever reaching the prometheus-specific check", () => {
+    expect(validateConnectorCredential("prometheus", "   ").ok).toBe(false);
+  });
+});
+
 describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes railway's declared key from the real catalog", () => {
     expect(extraConfigFieldKeys().has("railwayProjectId")).toBe(true);
@@ -659,6 +731,10 @@ describe("extraConfigFieldKeys (Task P0)", () => {
   it("includes both of sentry's declared keys from the real catalog (Task P3)", () => {
     expect(extraConfigFieldKeys().has("sentryOrg")).toBe(true);
     expect(extraConfigFieldKeys().has("sentryProject")).toBe(true);
+  });
+
+  it("includes prometheus's declared key from the real catalog (Task P5)", () => {
+    expect(extraConfigFieldKeys().has("prometheusUrl")).toBe(true);
   });
 
   it("includes datadog's declared key from the real catalog (Task P4)", () => {

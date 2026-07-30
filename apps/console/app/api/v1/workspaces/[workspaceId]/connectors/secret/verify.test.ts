@@ -533,6 +533,193 @@ describe("verifyConnectorCredential('datadog', ...)", () => {
 });
 
 /**
+ * Task P5: prometheus verify — a THREE-LEG fallback chain (buildinfo →
+ * `/-/ready` → a trivial `vector(1)` instant query), unlike every prior
+ * Wave-2 provider's single-endpoint verify. `secret` is a SINGLE field
+ * (no composite split) that is EITHER a bearer token OR a `user:pass`
+ * pair, disambiguated by a colon-presence heuristic — see
+ * `lib/evidence/prometheus.ts`'s own doc-comment ("AUTH HEURISTIC").
+ */
+describe("verifyConnectorCredential('prometheus', ...)", () => {
+  const URL_BASE = "https://prometheus.internal:9090";
+  const BEARER = "sometoken1234567890";
+  const BASIC = "myuser:mypass";
+
+  it("leg 1 (buildinfo) succeeds: GETs {url}/api/v1/status/buildinfo with Authorization: Bearer <token>", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (url: string, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ status: "success", data: {} }) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+
+    expect(res).toEqual({ ok: true });
+    expect(capturedUrl).toBe(`${URL_BASE}/api/v1/status/buildinfo`);
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(`Bearer ${BEARER}`);
+  });
+
+  it("uses Basic auth (base64 of user:pass) when the secret contains a colon", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({ status: "success" }) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("prometheus", BASIC, undefined, { prometheusUrl: URL_BASE });
+    const expected = `Basic ${Buffer.from(BASIC).toString("base64")}`;
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(expected);
+  });
+
+  it("falls back to /-/ready when buildinfo 404s (an older/hardened Prometheus)", async () => {
+    const calledPaths: string[] = [];
+    global.fetch = (async (url: string) => {
+      const path = new URL(String(url)).pathname;
+      calledPaths.push(path);
+      if (path === "/api/v1/status/buildinfo") return { ok: false, status: 404, json: async () => ({}) };
+      if (path === "/-/ready") return { ok: true, status: 200, json: async () => ({}) };
+      throw new Error("should not reach the third leg");
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: true });
+    expect(calledPaths).toEqual(["/api/v1/status/buildinfo", "/-/ready"]);
+  });
+
+  it("falls back all the way to the trivial instant query (vector(1)) when BOTH buildinfo and /-/ready 404", async () => {
+    const calledPaths: string[] = [];
+    global.fetch = (async (url: string) => {
+      const parsed = new URL(String(url));
+      calledPaths.push(parsed.pathname);
+      if (parsed.pathname === "/api/v1/status/buildinfo") return { ok: false, status: 404, json: async () => ({}) };
+      if (parsed.pathname === "/-/ready") return { ok: false, status: 404, json: async () => ({}) };
+      if (parsed.pathname === "/api/v1/query") {
+        expect(parsed.searchParams.get("query")).toBe("vector(1)");
+        return { ok: true, status: 200, json: async () => ({ status: "success", data: {} }) };
+      }
+      throw new Error("unexpected URL");
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: true });
+    expect(calledPaths).toEqual(["/api/v1/status/buildinfo", "/-/ready", "/api/v1/query"]);
+  });
+
+  it("fails with the final leg's own HTTP status when all three legs are non-2xx, non-401/403", async () => {
+    global.fetch = (async (url: string) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === "/api/v1/query") return { ok: false, status: 500, json: async () => ({}) };
+      return { ok: false, status: 404, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Couldn't verify with Prometheus (HTTP 500)." });
+  });
+
+  it("fails FAST on a 401 at the FIRST leg — never tries /-/ready or the trivial query with the same rejected credential", async () => {
+    const calledPaths: string[] = [];
+    global.fetch = (async (url: string) => {
+      calledPaths.push(new URL(String(url)).pathname);
+      return { ok: false, status: 401, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Prometheus rejected this credential." });
+    expect(calledPaths).toEqual(["/api/v1/status/buildinfo"]);
+  });
+
+  it("also fails fast on a 403 at the SECOND leg (buildinfo 404'd first)", async () => {
+    const calledPaths: string[] = [];
+    global.fetch = (async (url: string) => {
+      const path = new URL(String(url)).pathname;
+      calledPaths.push(path);
+      if (path === "/api/v1/status/buildinfo") return { ok: false, status: 404, json: async () => ({}) };
+      return { ok: false, status: 403, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: false, error: "Prometheus rejected this credential." });
+    expect(calledPaths).toEqual(["/api/v1/status/buildinfo", "/-/ready"]);
+  });
+
+  it("a thrown/network-error first leg falls through to the next leg rather than failing immediately", async () => {
+    const calledPaths: string[] = [];
+    global.fetch = (async (url: string) => {
+      const path = new URL(String(url)).pathname;
+      calledPaths.push(path);
+      if (path === "/api/v1/status/buildinfo") throw new Error("network down");
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({ ok: true });
+    expect(calledPaths).toEqual(["/api/v1/status/buildinfo", "/-/ready"]);
+  });
+
+  it("reports an unreachable upstream (every leg throws) with a retry hint, never throwing itself", async () => {
+    global.fetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, { prometheusUrl: URL_BASE });
+    expect(res).toEqual({
+      ok: false,
+      error: "Couldn't reach Prometheus to verify the credential — try again.",
+    });
+  });
+
+  it("fails closed with a clear error and never calls fetch when config.prometheusUrl is absent", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, {});
+    expect(res).toEqual({ ok: false, error: "Set the Prometheus base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and never calls fetch when config itself is undefined (no 4th argument at all)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await verifyConnectorCredential("prometheus", BEARER);
+    expect(res).toEqual({ ok: false, error: "Set the Prometheus base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on a non-http(s) scheme (defensive re-gate — reuses the existing resolveHttpUrl, same as langfuse)", async () => {
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, {
+      prometheusUrl: "javascript:alert(1)",
+    });
+    expect(res).toEqual({ ok: false, error: "Set the Prometheus base URL before connecting." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a private/internal host (self-hosted Prometheus — only the scheme is gated, never the host)", async () => {
+    global.fetch = (async () => ({ ok: true, status: 200, json: async () => ({}) })) as unknown as typeof fetch;
+    const res = await verifyConnectorCredential("prometheus", BEARER, undefined, {
+      prometheusUrl: "http://prometheus.internal:9090",
+    });
+    expect(res).toEqual({ ok: true });
+  });
+
+  it("does NOT go through splitCompositeSecret's exact-part-count model — a user:pass:word triple survives whole (no catalog secretParts declared for this kind)", async () => {
+    let capturedInit: RequestInit | undefined;
+    global.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedInit = init;
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    await verifyConnectorCredential("prometheus", "myuser:my:pass:word", undefined, { prometheusUrl: URL_BASE });
+    const expected = `Basic ${Buffer.from("myuser:my:pass:word").toString("base64")}`;
+    expect((capturedInit?.headers as Record<string, string>)?.Authorization).toBe(expected);
+  });
+});
+
+/**
  * Task P0: `verifyConnectorCredential` splits `secret` via
  * `splitCompositeSecret` BEFORE dispatching to any per-kind case — proven
  * here with a synthetic composite catalog entry (P0 adds no real composite

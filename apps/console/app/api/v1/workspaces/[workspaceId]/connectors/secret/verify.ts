@@ -16,7 +16,9 @@ import { splitCompositeSecret } from "../../../../../../../lib/evidence/composit
  *
  * Verified live: Linear (GraphQL `viewer`), Figma (`/v1/me`), Railway (Task 7
  * — GraphQL `me`), Langfuse (Task P2 — `GET /api/public/projects`), Sentry
- * (Task P3 — `GET /api/0/projects/{org}/{project}/`). Context7 stays
+ * (Task P3 — `GET /api/0/projects/{org}/{project}/`), Datadog (Task P4 —
+ * `GET /api/v2/validate_keys`), Prometheus (Task P5 — a documented fallback
+ * chain: buildinfo → `/-/ready` → a trivial instant query). Context7 stays
  * format-only here — it has no stable side-effect-free check; its
  * format gate already rejects malformed values. Discord/Slack/Telegram are
  * no longer credential-based (Gateway → Channels cutover): `secret/route.ts`'s
@@ -416,6 +418,130 @@ async function verifyDatadog(
 }
 
 /**
+ * PROMETHEUS (Task P5, Evidence Providers Wave 2): confirmed against
+ * Prometheus's own docs during implementation (this task's mandatory first
+ * step), not trusted from memory — see `lib/evidence/prometheus.ts`'s own
+ * doc-comment for the full citation trail (endpoint shapes, escaping rules,
+ * the label-name ambiguity). This module's own concern is narrower: the
+ * live-verify FALLBACK CHAIN the task's mandatory first step explicitly
+ * asked for, since a single hard-coded endpoint isn't safe to assume across
+ * every deployment shape (an old pinned version, or a reverse proxy that
+ * only allowlists `/api/v1/query` itself):
+ *   1. `GET /api/v1/status/buildinfo` — confirmed
+ *      (prometheus.io/docs/prometheus/latest/querying/api/), but confirmed
+ *      ADDED IN 2.14.0 (Nov 2019) — plausibly 404s on an old pin or a
+ *      hardened reverse proxy.
+ *   2. `GET /-/ready` — confirmed
+ *      (prometheus.io/docs/prometheus/latest/management_api/): "returns 200
+ *      when Prometheus is ready to serve traffic"; confirmed to need NO
+ *      special flag (unlike `/-/reload`/`/-/quit`, which the same page
+ *      confirms need `--web.enable-lifecycle`), so this leg is always
+ *      available on a stock instance.
+ *   3. `query=vector(1)` against `/api/v1/query` — confirmed real,
+ *      dependency-free PromQL
+ *      (prometheus.io/docs/prometheus/latest/querying/functions/): "returns
+ *      [the scalar] as a single-element instant vector with no labels" —
+ *      needs no stored metric, the closest possible proxy for "is the exact
+ *      endpoint this adapter's REAL calls depend on alive and functional".
+ * A 401/403 at ANY leg is a definitive credential rejection — returned
+ * immediately, never falling through to try the same rejected credential
+ * against a later leg. Any other non-2xx, or a thrown network error, falls
+ * through to the next leg; the LAST leg's own outcome is what verify
+ * finally reports.
+ *
+ * AUTH HEURISTIC (duplicated from `lib/evidence/prometheus.ts`'s own
+ * `resolvePrometheusAuth` — NOT imported: this module stays a leaf, the
+ * same independence `resolveHttpUrl`/`DATADOG_SITES` above already have
+ * from `packages/db-postgres` and `lib/evidence/datadog.ts` respectively).
+ * `prometheus.test.ts` asserts this duplicate and the adapter's own
+ * original agree on the same table of inputs — the two can never silently
+ * drift apart unnoticed, mirroring `DATADOG_SITES`' FOLD 3 sync-test
+ * precedent, adapted for a FUNCTION (no shared constant to Set-equality-
+ * check). See that module's own doc-comment ("AUTH HEURISTIC") for the full
+ * reasoning, including the disclosed "any credential verifies against an
+ * unauthenticated instance" limitation.
+ */
+type PrometheusAuth = { scheme: "bearer"; token: string } | { scheme: "basic"; user: string; pass: string };
+
+export function resolvePrometheusAuthForVerify(secret: string): PrometheusAuth {
+  const idx = secret.indexOf(":");
+  if (idx === -1) {
+    return { scheme: "bearer", token: secret };
+  }
+  return { scheme: "basic", user: secret.slice(0, idx), pass: secret.slice(idx + 1) };
+}
+
+function prometheusAuthHeaderForVerify(auth: PrometheusAuth): string {
+  return auth.scheme === "bearer"
+    ? `Bearer ${auth.token}`
+    : `Basic ${Buffer.from(`${auth.user}:${auth.pass}`).toString("base64")}`;
+}
+
+const PROMETHEUS_BUILDINFO_PATH = "/api/v1/status/buildinfo";
+const PROMETHEUS_READY_PATH = "/-/ready";
+const PROMETHEUS_QUERY_PATH = "/api/v1/query";
+
+/** Prometheus: see this module's own doc-comment ("PROMETHEUS (Task P5)")
+ * for the confirmed three-leg fallback chain and the auth heuristic. `url`
+ * (not yet a persisted connector row) is where `config.prometheusUrl` comes
+ * from here — the same "not yet persisted" ordering gap every Wave-2
+ * provider's live-verify hits (see "LANGFUSE HOST — THE ORDERING GAP"
+ * above) — re-gated via the EXISTING {@link resolveHttpUrl} (this value has
+ * not passed `validateUrlConfigString` yet at this point in the flow). */
+async function verifyPrometheus(
+  secret: string,
+  config: Record<string, unknown> | undefined
+): Promise<VerifyResult> {
+  const url = resolveHttpUrl(config?.prometheusUrl);
+  if (!url) {
+    return { ok: false, error: "Set the Prometheus base URL before connecting." };
+  }
+  const auth = resolvePrometheusAuthForVerify(secret);
+  const headers = { Authorization: prometheusAuthHeaderForVerify(auth) };
+
+  try {
+    const res = await fetchWithTimeout(`${url}${PROMETHEUS_BUILDINFO_PATH}`, { headers });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Prometheus rejected this credential." };
+    }
+    if (res.ok) {
+      return { ok: true };
+    }
+    // Not ok, not an auth rejection (e.g. a 404 on an old pin or a hardened
+    // proxy) — fall through to the next leg rather than failing closed here.
+  } catch {
+    // Network-level failure on this leg — still try the fallbacks rather
+    // than giving up on the very first hop.
+  }
+
+  try {
+    const res = await fetchWithTimeout(`${url}${PROMETHEUS_READY_PATH}`, { headers });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Prometheus rejected this credential." };
+    }
+    if (res.ok) {
+      return { ok: true };
+    }
+  } catch {
+    // fall through to the final leg
+  }
+
+  try {
+    const params = new URLSearchParams({ query: "vector(1)", time: new Date().toISOString() });
+    const res = await fetchWithTimeout(`${url}${PROMETHEUS_QUERY_PATH}?${params}`, { headers });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Prometheus rejected this credential." };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Couldn't verify with Prometheus (HTTP ${res.status}).` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Couldn't reach Prometheus to verify the credential — try again." };
+  }
+}
+
+/**
  * Verify a credential against its provider. Returns `{ok:true}` only when the
  * provider accepts it. Context7 has no safe live check, so it returns
  * `{ok:true}` here — its format gate is the guarantee.
@@ -471,6 +597,13 @@ export async function verifyConnectorCredential(
       return verifySentry(first, config);
     case "datadog":
       return verifyDatadog(first, split.parts[1], config);
+    case "prometheus":
+      // No declared secretParts (see this module's own doc-comment,
+      // "PROMETHEUS (Task P5)") — the split-before-dispatch step above is a
+      // harmless passthrough for this kind, so `first` IS the full trimmed
+      // secret; `verifyPrometheus` runs its OWN colon-presence heuristic on
+      // it, mirroring `lib/evidence/prometheus.ts`'s adapter-side read.
+      return verifyPrometheus(first, config);
     case "context7":
       // Format-only (no safe side-effect-free live probe); already gated upstream.
       return { ok: true };

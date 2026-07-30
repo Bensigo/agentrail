@@ -83,6 +83,19 @@ export const connectorProviderEnum = [
   // `railway`/`langfuse`/`sentry`: a free-text column, so this is a
   // TS-union addition only — no migration.
   "datadog",
+  // observability — Task P5 (Evidence Providers Wave 2): prometheus, the
+  // fourth Wave-2 provider (`apps/console/lib/evidence/prometheus.ts`).
+  // Stores a SINGLE secret in `secret` — EITHER a bearer token OR a
+  // `user:pass` composite for HTTP Basic auth, disambiguated at READ time
+  // by a colon-presence heuristic (see that adapter's own doc-comment,
+  // "AUTH HEURISTIC") rather than a declared composite split — no
+  // `secretParts`/`secretPartPatterns` on this provider's catalog entry,
+  // unlike `langfuse`/`datadog` above. Its non-secret companion field is
+  // `config.prometheusUrl` (already added by Task P0 — see
+  // {@link ConnectorConfig.prometheusUrl}). Same precedent as
+  // `railway`/`langfuse`/`sentry`/`datadog`: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "prometheus",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

@@ -51,7 +51,11 @@ import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-s
  * SINGLE auth token (org or user), scoped by org+project extra config — and
  * `datadog` (Task P4, Evidence Providers Wave 2), the third Wave-2 provider:
  * USE-shaped host signals + log search over a per-workspace apiKey+appKey
- * composite pair, scoped by a site extra config.
+ * composite pair, scoped by a site extra config — and `prometheus` (Task P5,
+ * Evidence Providers Wave 2), the fourth Wave-2 provider: RED/USE-shaped
+ * instant-query signals over a per-workspace SINGLE secret (bearer token OR
+ * `user:pass` for Basic auth, disambiguated at read time — no declared
+ * composite split), scoped by a base-URL extra config.
  */
 export type ConnectorKind =
   | "github"
@@ -62,7 +66,8 @@ export type ConnectorKind =
   | "railway"
   | "langfuse"
   | "sentry"
-  | "datadog";
+  | "datadog"
+  | "prometheus";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
@@ -603,6 +608,55 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task P5, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "prometheus",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Prometheus",
+    description:
+      "Give the debugging investigator visibility into your Prometheus request rate, error rate, p95 latency, and target health (RED/USE-shaped signals).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The fourth Wave-2 evidence provider (Task P5) — `signals` ONLY (no
+      // search_events/traces/changes: Prometheus is a time-series store,
+      // not a log/event/deploy history). See `lib/evidence/prometheus.ts`.
+      evidence: ["signals"],
+    },
+    connect: {
+      credentialLabel: "Prometheus credential",
+      credentialPlaceholder: "a bearer token, or user:pass for Basic auth",
+      credentialHint:
+        "A bearer token, OR a user:pass pair for HTTP Basic auth. If the value contains a colon, it's read as user:pass; otherwise as a bearer token (Authorization: Bearer <value>). Prometheus itself has no built-in login — this authenticates to whatever reverse proxy or web.yml basic_auth guards your instance. If your instance is unauthenticated, any non-empty value here works.",
+      helpUrl: "https://prometheus.io/docs/prometheus/latest/querying/api/",
+      setupSteps: [
+        "Prometheus has no login system of its own — this credential authenticates to whatever sits in front of it (a reverse proxy's Basic auth, an oauth2-proxy bearer token, or Prometheus's own web.yml basic_auth users).",
+        "If your instance is protected by HTTP Basic auth, paste it here as user:pass. If it's protected by a bearer token instead, paste the token alone.",
+        "Paste your Prometheus base URL (e.g. https://prometheus.internal:9090) below and connect — AgentRail queries /api/v1/query for RED/USE-shaped signals.",
+      ],
+      // Task P5: a SINGLE secret field (NOT composite — unlike
+      // langfuse/datadog's declared secretParts above). The adapter (and
+      // verify.ts) decide bearer-vs-Basic-auth by inspecting the secret's
+      // OWN shape at read time (does it contain a `:`?), never from a
+      // second declared field — see `lib/evidence/prometheus.ts`'s own
+      // doc-comment ("AUTH HEURISTIC") for the full reasoning and its
+      // disclosed limitation. No secretParts/secretPartPatterns here; the
+      // format gate lives in `validateConnectorCredential`'s own hand-written
+      // `case "prometheus"` below (non-empty, ≤512 chars, no whitespace —
+      // a shape both a bearer token and a user:pass pair satisfy).
+      extraConfigFields: [
+        {
+          key: "prometheusUrl",
+          label: "Base URL",
+          placeholder: "https://prometheus.internal:9090",
+          required: true,
+        },
+      ],
+    },
+  },
   // -- internal (evidence-only; never rendered — see ConnectorAvailability's
   // own doc-comment and projectConnectors' filter below) ------------------- //
   {
@@ -953,6 +1007,29 @@ export function validateConnectorCredential(
         ok: false,
         error: "Datadog requires both an API key and an application key.",
       };
+    case "prometheus": {
+      // Task P5: a SINGLE secret — EITHER a bearer token OR a `user:pass`
+      // composite for Basic auth, disambiguated at READ time (see
+      // `lib/evidence/prometheus.ts`'s own doc-comment, "AUTH HEURISTIC") —
+      // NOT a declared `secretParts` composite, so (unlike langfuse/datadog
+      // above) this case IS the operative gate for every real call, not
+      // just a defensive fallback. Prometheus itself defines no fixed token
+      // shape for either form (a bearer token could be anything a reverse
+      // proxy/oauth2-proxy issues; a Basic-auth pair is just two operator-
+      // chosen strings), so the format gate is the widest cheap check both
+      // shapes legitimately share: no embedded whitespace (a real token
+      // never contains any; a real user:pass pair's own parts shouldn't
+      // either) and a generous ≤512-char bound (well above any realistic
+      // token or credential pair). Real security lives at Gate 2 (live
+      // verify), unaffected by this format gate's own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Prometheus credentials must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Prometheus credentials must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
     case "github":
       // GitHub is OAuth — nothing to paste here.
       return { ok: false, error: "This connector is not credential-based." };

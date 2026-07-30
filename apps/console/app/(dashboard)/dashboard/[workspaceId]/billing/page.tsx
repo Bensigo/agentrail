@@ -1,14 +1,23 @@
 import { notFound } from "next/navigation";
-import { db, getBillingAccountForWorkspace, countActiveSeats } from "@agentrail/db-postgres";
+import {
+  db,
+  getBillingAccountForWorkspace,
+  countActiveSeats,
+  listActiveSeatsWithHolders,
+} from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { subscriptionBillingConfigured } from "../../../../../lib/billing/stripe-plans";
 import { PageHeader } from "../../../../components/page-header";
 import { CheckoutButtons } from "./components/checkout-buttons";
 import { ManageBillingButton } from "./components/manage-billing-button";
+import { ReleaseSeatButton } from "./components/release-seat-button";
 import {
   canStartCheckout,
+  claimedViaLabel,
   planLabel,
+  releaseSeatButtonLabel,
   renewalLabel,
+  seatClaimedLabel,
   seatLimitForPlan,
   seatsLabel,
   statusChip,
@@ -38,6 +47,16 @@ const ADMIN_ROLES = ["owner", "admin"] as const;
  * account id to count seat rows against) and the checkout/portal actions
  * below carry their own typed errors for this same case.
  *
+ * Slice 4 Task 5 adds the Seats section under the plan card: every ACTIVE
+ * seat (`listActiveSeatsWithHolders`), each with its holder label (never a
+ * UUID — `queries/seats.ts`'s own `deriveSeatHolder`), its claim channel
+ * badge, its claim date, and a Release button visible only to `canManage`
+ * viewers (`releaseSeatAction`, `actions.ts`, re-checks that server-side).
+ * Same no-account-yet degrade as seats-used above: `seats` reads as `[]`
+ * when there's no account to list seats against. Same no-dollars-language
+ * posture as the rest of this page — a seat's row shows who holds it and
+ * when/how they claimed it, never anything about cost.
+ *
  * `checkout` search param (`?checkout=success|cancelled`) is READ-ONLY, same
  * posture as `wallet/page.tsx`'s own doc-comment on its own `checkout`
  * param — it only decides which banner to show. It never writes plan state;
@@ -64,6 +83,7 @@ export default async function BillingPage({
 
   const account = await getBillingAccountForWorkspace(db, workspaceId);
   const seatsUsed = account ? await countActiveSeats(db, account.id) : 0;
+  const seats = account ? await listActiveSeatsWithHolders(db, account.id) : [];
 
   const canManage = ADMIN_ROLES.includes(
     membership.role as (typeof ADMIN_ROLES)[number]
@@ -109,6 +129,47 @@ export default async function BillingPage({
             {renewalLabel(account?.currentPeriodEnd ?? null)}
           </p>
           <p className="text-sm text-[var(--gray-11)]">Seats: {seatsLabel(seatsUsed, seatLimit)}</p>
+        </div>
+
+        <div className="flex flex-col gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+          <span className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+            Seats
+          </span>
+          {seats.length === 0 ? (
+            <p className="text-sm text-[var(--gray-09)]">
+              Seats are claimed automatically when someone talks to Jace or accepts an invite.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {seats.map((seat) => (
+                <li
+                  key={seat.id}
+                  className="flex items-center justify-between gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 py-2"
+                >
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="truncate text-sm text-[var(--gray-12)]">
+                      {seat.holderLabel}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex w-fit items-center rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-[var(--gray-10)]">
+                        {claimedViaLabel(seat.claimedVia)}
+                      </span>
+                      <span className="text-xs text-[var(--gray-09)]">
+                        {seatClaimedLabel(seat.claimedAt)}
+                      </span>
+                    </div>
+                  </div>
+                  {canManage && (
+                    <ReleaseSeatButton
+                      workspaceId={workspaceId}
+                      seatId={seat.id}
+                      ariaLabel={releaseSeatButtonLabel(seat.holderLabel)}
+                    />
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Final whole-slice review, Critical: an already-subscribed account

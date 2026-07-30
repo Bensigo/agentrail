@@ -11,13 +11,20 @@ vi.mock("next/headers", () => ({
   headers: vi.fn(),
 }));
 
+vi.mock("next/cache", () => ({
+  revalidatePath: vi.fn(),
+}));
+
 import { getSession, getMembership } from "../../../../../lib/cached";
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import {
   createSubscriptionCheckoutSessionAction,
   createPortalSessionAction,
+  releaseSeatAction,
   type CreateSubscriptionCheckoutResult,
   type CreatePortalSessionResult,
+  type ReleaseSeatResult,
 } from "./actions";
 import type { PaidPlan } from "../../../../../lib/billing/stripe-plans";
 
@@ -144,7 +151,7 @@ function makeStripeFake(
 }
 
 function expectError(
-  result: CreateSubscriptionCheckoutResult | CreatePortalSessionResult,
+  result: CreateSubscriptionCheckoutResult | CreatePortalSessionResult | ReleaseSeatResult,
   error: string
 ) {
   expect(result).toEqual({ ok: false, error });
@@ -671,5 +678,252 @@ describe("createPortalSessionAction", () => {
     });
 
     expectError(result, "Couldn't open billing. Try again in a moment.");
+  });
+});
+
+/**
+ * `releaseSeatAction` (subscription-platform-design spec §5, §7 "seats list
+ * with release"; slice-4 plan Task 5). Same injectable-`deps` posture as the
+ * two describe blocks above — `fetchAccountId`/`fetchSeatAccountId`/
+ * `doRelease` are passed as plain fakes, no `vi.mock("@agentrail/db-postgres")`
+ * — plus this suite's own two-layer focus: ADMIN_ROLES authz (same
+ * owner-or-admin gate as checkout/portal above) AND the seat-belongs-to-
+ * this-workspace ownership check `createSubscriptionCheckoutSessionAction`
+ * has no equivalent of (a workspace-scoped Server Action's `workspaceId`
+ * argument is caller-supplied, but `seatId` is a SECOND caller-supplied id
+ * with no relationship to `workspaceId` proven by the type system — the
+ * action itself has to prove it).
+ */
+describe("releaseSeatAction", () => {
+  const SEAT_ID = "seat-1";
+
+  // --- argument validation (#1343 minor (d): a Server Action is a real
+  // wire endpoint) -----------------------------------------------------------
+
+  it("rejects a missing workspaceId, never calls getSession", async () => {
+    const result = await releaseSeatAction("", SEAT_ID);
+
+    expectError(result, "Missing workspace.");
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing seatId, never calls getSession", async () => {
+    const result = await releaseSeatAction(WORKSPACE_ID, "");
+
+    expectError(result, "Missing seat.");
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  // --- authz: owner/admin only, ADMIN_ROLES pattern -------------------------
+
+  it("rejects when not signed in", async () => {
+    mockSession(null);
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID);
+
+    expectError(result, "Not signed in.");
+  });
+
+  it("rejects when the user has no membership on this workspace, never fetches the account", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership(null);
+    const fetchAccountId = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(fetchAccountId).not.toHaveBeenCalled();
+  });
+
+  it.each(["member", "viewer"] as const)(
+    "rejects a %s — owner/admin only, never fetches the account",
+    async (role) => {
+      mockSession(OWNER_USER_ID);
+      mockMembership(role);
+      const fetchAccountId = vi.fn();
+
+      const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+        fetchAccountId: fetchAccountId as never,
+      });
+
+      expectError(result, "Only an owner or admin can manage seats.");
+      expect(fetchAccountId).not.toHaveBeenCalled();
+    }
+  );
+
+  // --- account resolution: no billing account is a typed error, never
+  // creates one (matches createSubscriptionCheckoutSessionAction's own
+  // posture) -------------------------------------------------------------
+
+  it("rejects when the workspace has no billing account, never looks up the seat", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => null);
+    const fetchSeatAccountId = vi.fn();
+    const doRelease = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expectError(result, "This workspace doesn't have a billing account yet.");
+    expect(fetchSeatAccountId).not.toHaveBeenCalled();
+    expect(doRelease).not.toHaveBeenCalled();
+  });
+
+  it("a failure fetching the account returns a generic error, never looks up the seat", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const fetchSeatAccountId = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+    });
+
+    expectError(result, "Couldn't release the seat. Try again in a moment.");
+    expect(fetchSeatAccountId).not.toHaveBeenCalled();
+  });
+
+  // --- ownership check: the seat must belong to THIS workspace's account,
+  // checked BEFORE releaseSeat is ever called --------------------------------
+
+  it("rejects when the seat doesn't exist, never releases", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => null);
+    const doRelease = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expectError(result, "This seat doesn't exist.");
+    expect(doRelease).not.toHaveBeenCalled();
+  });
+
+  it("rejects a seat that belongs to a DIFFERENT workspace's billing account, never releases (the core cross-tenant guard this action exists to add)", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => "acct-someone-elses");
+    const doRelease = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expectError(result, "This seat doesn't belong to this workspace.");
+    expect(doRelease).not.toHaveBeenCalled();
+  });
+
+  it("a failure looking up the seat's account returns a generic error, never releases", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const doRelease = vi.fn();
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expectError(result, "Couldn't release the seat. Try again in a moment.");
+    expect(doRelease).not.toHaveBeenCalled();
+  });
+
+  // --- happy path: same-account seat is released, page revalidated ---------
+
+  it.each(["owner", "admin"] as const)(
+    "releases the seat for a workspace %s, revalidates the billing page, returns ok",
+    async (role) => {
+      mockSession(OWNER_USER_ID);
+      mockMembership(role);
+      const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+      const fetchSeatAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+      const doRelease = vi.fn(async () => undefined);
+
+      const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+        fetchAccountId: fetchAccountId as never,
+        fetchSeatAccountId: fetchSeatAccountId as never,
+        doRelease: doRelease as never,
+      });
+
+      expect(doRelease).toHaveBeenCalledWith(expect.anything(), SEAT_ID);
+      expect(revalidatePath).toHaveBeenCalledWith(`/dashboard/${WORKSPACE_ID}/billing`);
+      expect(result).toEqual({ ok: true });
+    }
+  );
+
+  it("allows releasing a seat held by the calling user themself — nothing here checks who holds the seat being released (it self-heals on that person's next served turn, per this action's own doc-comment)", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const doRelease = vi.fn(async () => undefined);
+
+    const result = await releaseSeatAction(WORKSPACE_ID, "seat-belonging-to-owner-user", {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(doRelease).toHaveBeenCalledWith(expect.anything(), "seat-belonging-to-owner-user");
+  });
+
+  it("a failure releasing the seat returns a generic error, never revalidates", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const doRelease = vi.fn(async () => {
+      throw new Error("db down");
+    });
+
+    const result = await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expectError(result, "Couldn't release the seat. Try again in a moment.");
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("threads an injected db through to fetchAccountId, fetchSeatAccountId, and doRelease", async () => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+    const fakeDb = { marker: "fake-db-instance" };
+    const fetchAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const fetchSeatAccountId = vi.fn(async () => BILLING_ACCOUNT_ID);
+    const doRelease = vi.fn(async () => undefined);
+
+    await releaseSeatAction(WORKSPACE_ID, SEAT_ID, {
+      db: fakeDb as never,
+      fetchAccountId: fetchAccountId as never,
+      fetchSeatAccountId: fetchSeatAccountId as never,
+      doRelease: doRelease as never,
+    });
+
+    expect(fetchAccountId).toHaveBeenCalledWith(fakeDb, WORKSPACE_ID);
+    expect(fetchSeatAccountId).toHaveBeenCalledWith(fakeDb, SEAT_ID);
+    expect(doRelease).toHaveBeenCalledWith(fakeDb, SEAT_ID);
   });
 });

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   canStartCheckout,
+  claimedViaLabel,
   planLabel,
+  releaseSeatButtonLabel,
   renewalLabel,
+  seatClaimedLabel,
   seatLimitForPlan,
   seatsLabel,
   statusChip,
@@ -108,5 +111,43 @@ describe("canStartCheckout", () => {
 
   it("blocks starting a second checkout once the account already has a subscription (final whole-slice review, Critical: an already-subscribed account could otherwise start a SECOND, independent Stripe subscription)", () => {
     expect(canStartCheckout({ stripeSubscriptionId: "sub_x" })).toBe(false);
+  });
+});
+
+describe("seatClaimedLabel", () => {
+  it("renders 'Claimed <date>' in plain month/day/year, UTC — same format as renewalLabel's date", () => {
+    expect(seatClaimedLabel(new Date("2026-07-20T09:05:34.000Z"))).toBe("Claimed Jul 20, 2026");
+  });
+
+  it("stays on the stored UTC calendar day even close to a local-timezone midnight boundary", () => {
+    // 23:30 UTC on Dec 31 must never roll to Jan 1 just because a host
+    // machine's local clock is ahead of UTC — same rationale as
+    // renewalLabel's own equivalent test above.
+    expect(seatClaimedLabel(new Date("2026-12-31T23:30:00.000Z"))).toBe("Claimed Dec 31, 2026");
+  });
+});
+
+describe("claimedViaLabel", () => {
+  it.each([
+    ["console", "Console"],
+    ["telegram", "Telegram"],
+    ["discord", "Discord"],
+    ["slack", "Slack"],
+  ] as const)("labels claimedVia %s as %s", (claimedVia, label) => {
+    expect(claimedViaLabel(claimedVia)).toBe(label);
+  });
+
+  it("humanizes an out-of-union claimedVia value instead of rendering undefined or a raw snake_case string (SeatWithHolder.claimedVia arrives through an unchecked DB cast, same posture as planLabel)", () => {
+    expect(claimedViaLabel("some_future_channel")).toBe("Some future channel");
+  });
+});
+
+describe("releaseSeatButtonLabel", () => {
+  it("includes the seat holder's label so multiple Release buttons in one list are distinguishable to a screen reader", () => {
+    expect(releaseSeatButtonLabel("Ada Lovelace")).toBe("Release seat for Ada Lovelace");
+  });
+
+  it("works with a generic fallback holder label just as plainly — never a raw id either way", () => {
+    expect(releaseSeatButtonLabel("Unknown member")).toBe("Release seat for Unknown member");
   });
 });

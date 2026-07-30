@@ -2942,13 +2942,17 @@ export {
 // rule 3) — one transaction claiming a user-seat and releasing the
 // identity-seat for every account the identity held one in;
 // listActiveSeatsWithHolders is the settings "seats list" read, holder
-// labels never a raw UUID.
+// labels never a raw UUID. getSeatAccountId (slice 4 Task 5) is the
+// ownership-check primitive releaseSeatAction (console billing/actions.ts)
+// uses to confirm a seat id belongs to the caller's own workspace before
+// releasing it.
 export {
   claimSeat,
   releaseSeat,
   releaseUserSeatForAccount,
   collapseIdentitySeatsForUser,
   listActiveSeatsWithHolders,
+  getSeatAccountId,
   type SeatSubject,
   type SeatWithHolder,
 } from "./seats.js";

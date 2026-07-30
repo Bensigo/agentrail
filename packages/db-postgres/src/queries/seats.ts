@@ -378,3 +378,36 @@ export async function listActiveSeatsWithHolders(
     };
   });
 }
+
+/**
+ * The billing account id a seat belongs to, by the seat's own id — slice 4
+ * Task 5's ownership-check primitive. `releaseSeatAction`
+ * (`apps/console/app/(dashboard)/dashboard/[workspaceId]/billing/actions.ts`)
+ * takes a bare `seatId` from the client, and nothing about that id proves on
+ * its own which workspace's account it belongs to; nothing else in this
+ * module returns a seat's account given only its id (the closest,
+ * {@link listActiveSeatsWithHolders}, runs the opposite direction — every
+ * seat for a KNOWN account), so this is what lets that action confirm a seat
+ * belongs to the caller's own workspace BEFORE calling {@link releaseSeat},
+ * rather than trusting the id outright.
+ *
+ * Deliberately NOT scoped to `released_at IS NULL`, unlike
+ * {@link listActiveSeatsWithHolders}: {@link releaseSeat} is fill-only (a
+ * no-op on an already-released seat, see its own doc-comment) precisely so a
+ * retry or a double-click is safe — scoping this lookup to active-only would
+ * undermine that by turning "already released" into "doesn't exist" from the
+ * caller's perspective (a typed error) instead of the quiet no-op
+ * `releaseSeat` itself would give. This only returns `null` — never
+ * throws — when the id matches no row at all.
+ */
+export async function getSeatAccountId(db: Db, seatId: string): Promise<string | null> {
+  const rows = (await db.execute(sql`
+    SELECT billing_account_id
+    FROM seats
+    WHERE id = ${seatId}
+    LIMIT 1
+  `)) as unknown as Array<{ billing_account_id: string }>;
+
+  const row = Array.from(rows)[0];
+  return row ? row.billing_account_id : null;
+}

@@ -15,6 +15,7 @@ import {
   releaseUserSeatForAccount,
   collapseIdentitySeatsForUser,
   listActiveSeatsWithHolders,
+  getSeatAccountId,
 } from "../queries/seats.js";
 import type { Db } from "../db.js";
 
@@ -479,5 +480,40 @@ describe("listActiveSeatsWithHolders", () => {
       holderKind: "identity",
       holderLabel: "Grace (telegram)",
     });
+  });
+});
+
+describe("getSeatAccountId", () => {
+  it("selects billing_account_id from seats scoped to the seat's own id, bound not interpolated", async () => {
+    const db = mockDbCapturing(captured, [{ billing_account_id: "acct-1" }]);
+    await getSeatAccountId(db, "seat-1");
+
+    expect(captured).toHaveLength(1);
+    const sql = render(captured[0]);
+    const params = renderParams(captured[0]);
+    expect(sql).toMatch(/select\s+billing_account_id/i);
+    expect(sql).toMatch(/from\s+seats/i);
+    expect(sql).toMatch(/where.*\bid\s*=/is);
+    expect(params).toContain("seat-1");
+    expect(sql).not.toContain("seat-1");
+  });
+
+  it("returns the seat's billing_account_id when the seat exists", async () => {
+    const db = mockDbCapturing(captured, [{ billing_account_id: "acct-1" }]);
+    const result = await getSeatAccountId(db, "seat-1");
+    expect(result).toBe("acct-1");
+  });
+
+  it("returns null for an unknown seat id, never throws", async () => {
+    const db = mockDbCapturing(captured, []);
+    const result = await getSeatAccountId(db, "seat-unknown");
+    expect(result).toBeNull();
+  });
+
+  it("does NOT scope to released_at IS NULL — an already-released seat still resolves its account, since releaseSeat's own fill-only UPDATE makes a second release attempt a safe no-op rather than a 'this seat doesn't exist' error", async () => {
+    const db = mockDbCapturing(captured, [{ billing_account_id: "acct-1" }]);
+    await getSeatAccountId(db, "seat-1");
+    const sql = render(captured[0]);
+    expect(sql).not.toMatch(/released_at/i);
   });
 });

@@ -2887,3 +2887,16 @@ export {
   getBillingAccountByStripeCustomerId,
   type BillingAccountRow,
 } from "./billing_accounts.js";
+
+// Slack multi-workspace install, Task 1 (spec docs/superpowers/specs/
+// 2026-07-29-slack-multi-workspace-design.md §1) — one encrypted bot token
+// per Slack team. upsertSlackInstallation encrypts + reactivates on
+// reinstall; getSlackInstallation decrypts and fails closed (null) for both
+// an unknown AND a revoked team; revokeSlackInstallation never deletes.
+export {
+  upsertSlackInstallation,
+  getSlackInstallation,
+  revokeSlackInstallation,
+  type UpsertSlackInstallationInput,
+  type SlackInstallation,
+} from "./slack_installations.js";

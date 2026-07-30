@@ -33,3 +33,4 @@ export * from "./guardrail_events.js";
 export * from "./billing_accounts.js";
 export * from "./seats.js";
 export * from "./upgrade_prompt_events.js";
+export * from "./slack_installations.js";

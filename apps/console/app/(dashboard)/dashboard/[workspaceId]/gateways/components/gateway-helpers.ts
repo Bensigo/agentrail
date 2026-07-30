@@ -30,18 +30,18 @@
  * marketing route group, same call as `GatewayIdentity`'s doc-comment below
  * makes re: `connector-helpers.ts`.
  *
- * SLACK SINGLE-TOKEN LIMITATION: the Slack action button (its `actionUrl` is
- * the owner-pasted `NEXT_PUBLIC_SLACK_INSTALL_URL`, verbatim — see
- * `GatewayEnv` below) sends a workspace admin through Slack's own OAuth
- * consent screen and *installs* the Jace app into their workspace, but the
- * send path (`lib/slack-bot.ts`) reads ONE shared `SLACK_BOT_TOKEN` from env
- * — so only the single workspace whose token happens to be in env can
- * actually be replied to. A real public, multi-tenant Slack integration
- * needs an OAuth callback route that exchanges the consent for a token and
- * stores it per `team_id`, then looks that token up per workspace at send
- * time; that callback + storage is deliberately not built here (explicitly
- * out of scope). Discord has no such problem: one bot token/application
- * serves every guild it's invited into.
+ * SLACK IS MULTI-WORKSPACE (docs/superpowers/specs/2026-07-29-slack-multi-
+ * workspace-design.md): the Slack action button (its `actionUrl` is the
+ * owner-pasted `NEXT_PUBLIC_SLACK_INSTALL_URL`, verbatim — see `GatewayEnv`
+ * below) sends a workspace admin through Slack's own OAuth consent screen,
+ * which lands on this app's own `/api/v1/connectors/slack/install` ->
+ * `/callback` route pair — that exchanges the consent for a bot token and
+ * stores it per `team_id` in `slack_installations` (Task 3). Outbound sends
+ * (Task 4) resolve THAT installation's own token per reply
+ * (`getSlackInstallation`), so every installing workspace gets replied to,
+ * not just whichever one happened to be in env. Discord has never had this
+ * limitation: one bot token/application serves every guild it's invited
+ * into.
  */
 // Relative (not @/…) because lib/ lives outside app/ or src/, the only roots
 // the @/* alias covers — mirrors connectors-panel.tsx's identical import of

@@ -154,16 +154,24 @@ const HOSTED_INBOUND_PINS_CONVERSATION: ReadonlySet<string> = new Set(["discord"
  * alone (a system send with no thread id posts flat in the channel, which is
  * exactly the regression this parameter fixes — see the picker/`/connect`/
  * pin-confirmation call sites in `processRow` below).
+ *
+ * `slackTeamId` (Task 4): the Slack team this send is FOR, sourced by every
+ * call site below from the row's own `payload.teamId` (Slack-only — see
+ * `TelegramInboxPayload.teamId`). Forwarded ONLY to the Slack branch —
+ * `sendSystemSlackMessage` is now team-scoped (it resolves that team's own
+ * installation and token; there is no more shared `SLACK_BOT_TOKEN` to fall
+ * back to) — so Discord's and Telegram's sends stay byte-unchanged.
  */
 async function sendSystemChannelMessage(
   channel: string,
   targetId: string,
   text: string,
   messageThreadId?: string,
-  slackThreadTs?: string
+  slackThreadTs?: string,
+  slackTeamId?: string
 ) {
   if (channel === "discord") return sendSystemDiscordMessage(targetId, text);
-  if (channel === "slack") return sendSystemSlackMessage(targetId, text, slackThreadTs);
+  if (channel === "slack") return sendSystemSlackMessage(slackTeamId, targetId, text, slackThreadTs);
   return sendSystemTelegramMessage(targetId, text, messageThreadId);
 }
 
@@ -238,6 +246,21 @@ interface TelegramInboxPayload {
    * telegram/discord payload never carries this.
    */
   threadTs?: string;
+  /**
+   * Slack-only (Task 4, docs/superpowers/specs/2026-07-29-slack-multi-
+   * workspace-design.md §4): the Slack `team_id` this row's installation was
+   * resolved against, written by the Slack door (`connectors/slack/events/
+   * route.ts`) from its own already-verified `getSlackInstallation` lookup —
+   * never re-derived here. This is the ONE value that lets a reply later
+   * choose the right customer's bot token: carried into `auth.attributes`
+   * below (`buildDoorInitiatorAuth`) and forwarded to `sendSystemChannelMessage`
+   * for every in-dispatcher system send, so both the Eve turn's reply (via
+   * jace's new console reply route) and a system send (/connect, workspace
+   * picker, pin confirmation, guardrail notice) resolve the SAME team's
+   * token, never a default, never another team's. A telegram/discord payload
+   * never carries this key.
+   */
+  teamId?: string;
   /**
    * The thread-engagement envelope (spec: docs/superpowers/specs/2026-07-28-
    * thread-native-jace-design.md), read by `buildThreadInbound` below to run
@@ -352,6 +375,12 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   const threadTs = p["threadTs"];
   if (typeof threadTs === "string" && threadTs.trim()) {
     result.threadTs = threadTs;
+  }
+  // Slack-only (Task 4) — same tolerant, omit-if-malformed extraction as
+  // threadTs above. See TelegramInboxPayload.teamId's own doc-comment.
+  const teamId = p["teamId"];
+  if (typeof teamId === "string" && teamId.trim()) {
+    result.teamId = teamId;
   }
   // The thread-engagement envelope — see TelegramInboxPayload's doc-comment
   // on these fields. `threadId`/`repliesToMessageId` are `string | null`
@@ -597,6 +626,20 @@ function parseWorkspaceChoice(
  * `extractFollowupCredentials`. Telegram/Slack calls never pass these
  * params, so `attributes` for those channels stays byte-identical to before
  * this fix.
+ *
+ * `teamId` (Task 4, docs/superpowers/specs/2026-07-29-slack-multi-workspace-
+ * design.md §4): Slack-only, the SAME `attributes` seam carries the team id
+ * a Slack reply needs to choose the right installation's bot token. This is
+ * the ONLY place a Slack turn's team id enters `auth` — never inferred from
+ * `channel`/`conversationKey`, never read from ambient state — so eve
+ * forwarding `auth` unchanged into `session.auth.current`/`.initiator` is
+ * what lets `apps/jace/agent/channels/slack.ts`'s `message.completed` read it
+ * back out (mirroring `resolveSessionAuthAttributes`'s current-then-initiator
+ * preference) and pass it, explicit and unmodified, to the console's new
+ * Slack-reply route. Included whenever present, independent of
+ * interactionToken/applicationId's paired requirement above — a telegram/
+ * discord/console call never passes it, so `attributes` for those channels
+ * stays byte-identical.
  */
 function buildDoorInitiatorAuth(params: {
   chatIdentityId: string;
@@ -605,6 +648,7 @@ function buildDoorInitiatorAuth(params: {
   conversationKey: string;
   interactionToken?: string;
   applicationId?: string;
+  teamId?: string;
 }): Record<string, unknown> {
   const attributes: Record<string, unknown> = {
     chatIdentityId: params.chatIdentityId,
@@ -615,6 +659,9 @@ function buildDoorInitiatorAuth(params: {
   if (params.interactionToken && params.applicationId) {
     attributes["interactionToken"] = params.interactionToken;
     attributes["applicationId"] = params.applicationId;
+  }
+  if (params.teamId) {
+    attributes["teamId"] = params.teamId;
   }
   return {
     authenticator: "agentrail",
@@ -1246,7 +1293,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
             consoleUrl: consolePublicUrl || "the console",
           }),
           payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-          payload.threadTs
+          payload.threadTs,
+          payload.teamId
         );
         await completeChannelMessage(row.id);
         return "completed";
@@ -1260,7 +1308,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           String(payload.chatId),
           "Something went wrong handling /connect. Try again in a moment.",
           payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-          payload.threadTs
+          payload.threadTs,
+          payload.teamId
         );
         await completeChannelMessage(row.id);
         return "completed";
@@ -1283,7 +1332,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
             String(payload.chatId),
             buildPinConfirmationMessage(chosen.name),
             payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-            payload.threadTs
+            payload.threadTs,
+            payload.teamId
           );
           await completeChannelMessage(row.id);
           return "completed";
@@ -1297,7 +1347,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         String(payload.chatId),
         buildWorkspaceChoiceMessage(decision.options),
         payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-        payload.threadTs
+        payload.threadTs,
+        payload.teamId
       );
       await completeChannelMessage(row.id);
       return "completed";
@@ -1367,6 +1418,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       conversationKey: row.conversationKey,
       interactionToken: payload.interactionToken,
       applicationId: payload.applicationId,
+      teamId: payload.teamId,
     });
 
     // Group-vs-DM, hoisted to a first-class fact (spec §9 slice 0) — see
@@ -1483,7 +1535,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           String(payload.chatId),
           guard.notice,
           payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-          payload.threadTs
+          payload.threadTs,
+          payload.teamId
         );
       }
       await completeChannelMessage(row.id);
@@ -1498,7 +1551,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         String(payload.chatId),
         guard.notice,
         payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
-        payload.threadTs
+        payload.threadTs,
+        payload.teamId
       );
     }
 

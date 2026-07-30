@@ -94,6 +94,9 @@ export default function MembersClient() {
   // Revoke state
   const [revoking, setRevoking] = useState<string | null>(null);
 
+  // Remove-member state (tracks which member user id is in-flight)
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+
   // Copy state (tracks which invite id just got copied)
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -178,6 +181,28 @@ export default function MembersClient() {
     }
   }
 
+  // Removes a member (the API route also releases their seat when this was
+  // their last membership across the billing account's workspaces — see
+  // api/v1/workspaces/[workspaceId]/members/[userId]/route.ts). Same
+  // fetch/state-update shape as handleRevoke above; 404 is treated as
+  // success (already gone) so a double-click or a stale row never gets
+  // stuck.
+  async function handleRemoveMember(userId: string) {
+    setRemovingMemberId(userId);
+    try {
+      const res = await fetch(`/api/v1/workspaces/${workspaceId}/members/${userId}`, {
+        method: "DELETE",
+      });
+      if (res.ok || res.status === 404) {
+        setMembers((prev) => prev.filter((m) => m.id !== userId));
+      }
+    } catch {
+      // Silent — row stays; user can retry
+    } finally {
+      setRemovingMemberId(null);
+    }
+  }
+
   function handleCopyLink(invite: PendingInvite) {
     const url = `${window.location.origin}/invite/${invite.token}`;
     navigator.clipboard.writeText(url).then(() => {
@@ -236,6 +261,11 @@ export default function MembersClient() {
                   <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
                     Joined
                   </th>
+                  {isAdmin && (
+                    <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                      Actions
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -266,6 +296,21 @@ export default function MembersClient() {
                           {formatDate(m.joinedAt)}
                         </span>
                       </td>
+                      {isAdmin && (
+                        <td className="px-3 py-1.5">
+                          {!isYou && (
+                            <button
+                              onClick={() => handleRemoveMember(m.id)}
+                              disabled={removingMemberId === m.id}
+                              className="flex h-7 items-center gap-1.5 rounded border border-[var(--red-09)]/30 bg-[var(--gray-03)] px-2.5 text-xs text-[var(--red-11)] transition-colors hover:border-[var(--red-09)]/50 disabled:cursor-not-allowed disabled:opacity-50"
+                              title={`Remove ${m.email} from this workspace`}
+                            >
+                              <Trash2 size={12} />
+                              {removingMemberId === m.id ? "Removing…" : "Remove"}
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

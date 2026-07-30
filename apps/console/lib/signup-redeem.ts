@@ -111,6 +111,8 @@ import {
   createUserForSignup,
   createConsoleSession,
   bindChatIdentityUser,
+  collapseIdentitySeatsForUser,
+  db,
 } from "@agentrail/db-postgres";
 import {
   completeConnectOwnerElect,
@@ -170,6 +172,28 @@ export async function redeemSignupToken(token: string): Promise<SignupRedeemResu
     const user = await createUserForSignup(identity.displayName);
     userId = user.id;
     await bindChatIdentityUser(identity.id, userId);
+
+    // Seat collapse (spec §5.3, docs/superpowers/specs/2026-07-29-subscription-
+    // platform-design.md) — the SECOND live bind path: `/connect/[token]/page.tsx`'s
+    // `fresh_bind` branch already carries this same hook; this identity just
+    // became linked to a console user for the first time here too, so any
+    // identity-seats it holds should collapse into a user-seat now. See
+    // collapseIdentitySeatsForUser's own doc-comment (db-postgres
+    // queries/seats.ts) for the one-transaction claim-then-release shape.
+    // Try/catch, deliberately NON-FATAL — same discipline as the connect
+    // page's identical hook: a collapse failure is capacity bookkeeping,
+    // never a reason to fail an otherwise-successful sign-up.
+    try {
+      await collapseIdentitySeatsForUser(db, {
+        chatIdentityId: identity.id,
+        userId,
+      });
+    } catch (err) {
+      console.error(
+        `[signup-redeem] collapseIdentitySeatsForUser failed (chatIdentityId=${identity.id}, userId=${userId}):`,
+        err instanceof Error ? err.message : String(err)
+      );
+    }
   }
 
   const sessionToken = randomBytes(SESSION_TOKEN_BYTES).toString("hex");

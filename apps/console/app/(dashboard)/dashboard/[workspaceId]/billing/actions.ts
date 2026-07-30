@@ -2,10 +2,14 @@
 
 import type Stripe from "stripe";
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import {
   db,
   bindStripeCustomer,
   getBillingAccountForWorkspace,
+  getBillingAccountIdForWorkspace,
+  getSeatAccountId,
+  releaseSeat,
   type BillingAccountRow,
 } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
@@ -331,4 +335,123 @@ export async function createPortalSessionAction(
   }
 
   return { ok: true, url: portalUrl };
+}
+
+export type ReleaseSeatResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Release-a-seat server action (subscription-platform-design spec §5, §7
+ * "seats list with release"; slice-4 plan Task 5). Backs the Plan & billing
+ * page's per-seat Release button (`components/release-seat-button.tsx`).
+ *
+ * Same owner-OR-admin `ADMIN_ROLES` authz as the checkout/portal actions
+ * above — managing seats is the same admin-level trust as managing the
+ * subscription itself, not the owner-only ceiling `permissions/actions.ts`
+ * gates — re-checked here server-side regardless of what the page's own
+ * `canManage` prop hid client-side.
+ *
+ * Ownership check, BEFORE calling `releaseSeat`: unlike the two actions
+ * above (whose only caller-supplied id is `workspaceId` itself, the thing
+ * membership is already checked against), this action ALSO takes a bare
+ * `seatId` — and nothing about that id, by itself, proves it belongs to the
+ * workspace the caller has admin rights on. Without this check, an
+ * admin/owner of workspace A could release a seat belonging to workspace B's
+ * account simply by knowing (or guessing/replaying) its id. This resolves
+ * the CALLER's own account id (`getBillingAccountIdForWorkspace`, the
+ * id-only sibling — this action never needs the full row) and the SEAT's
+ * actual account id (`getSeatAccountId`, `queries/seats.ts`, added for this
+ * action) and compares them; a mismatch is a typed error and `releaseSeat`
+ * is never reached.
+ *
+ * Releasing your own seat is explicitly ALLOWED — nothing here checks
+ * whether the seat being released belongs to the calling user, and that's
+ * intentional (slice-4 plan Task 5's own note): a seat is claimed again on
+ * that person's next served chat turn or console visit (`claimSeat`'s own
+ * ON CONFLICT DO NOTHING no-op-or-insert contract), so releasing your own
+ * seat self-heals on your next served turn rather than locking you out of
+ * anything — there is no session/auth dependency anywhere on this app that
+ * requires holding an active seat.
+ *
+ * `revalidatePath` on success only (mirrors `permissions/actions.ts`'s
+ * `setMergePermissionAction` own precedent for a same-page mutation, as
+ * opposed to the checkout/portal actions above, which redirect off-page and
+ * have no local list to refresh) so the seats list reflects the release the
+ * moment the client's own `router.refresh()` runs
+ * (`components/release-seat-button.tsx`) without racing a stale
+ * Next.js Data Cache entry.
+ */
+export async function releaseSeatAction(
+  workspaceId: string,
+  seatId: string,
+  deps: {
+    db?: typeof db;
+    fetchAccountId?: typeof getBillingAccountIdForWorkspace;
+    fetchSeatAccountId?: typeof getSeatAccountId;
+    doRelease?: typeof releaseSeat;
+  } = {}
+): Promise<ReleaseSeatResult> {
+  // #1343 minor (d): a Server Action is a real wire endpoint, not just a
+  // typed function call — validate every argument at runtime (same posture
+  // as every other action in this file).
+  if (typeof workspaceId !== "string" || !workspaceId) {
+    return { ok: false, error: "Missing workspace." };
+  }
+  if (typeof seatId !== "string" || !seatId) {
+    return { ok: false, error: "Missing seat." };
+  }
+
+  const session = await getSession();
+  const userId = session?.user?.id;
+  if (!userId) {
+    return { ok: false, error: "Not signed in." };
+  }
+
+  const membership = await getMembership(userId, workspaceId);
+  if (
+    !membership ||
+    !ADMIN_ROLES.includes(membership.role as (typeof ADMIN_ROLES)[number])
+  ) {
+    return { ok: false, error: "Only an owner or admin can manage seats." };
+  }
+
+  const database = deps.db ?? db;
+  const fetchAccountId = deps.fetchAccountId ?? getBillingAccountIdForWorkspace;
+  const fetchSeatAccountId = deps.fetchSeatAccountId ?? getSeatAccountId;
+  const doRelease = deps.doRelease ?? releaseSeat;
+
+  let accountId: string | null;
+  try {
+    accountId = await fetchAccountId(database, workspaceId);
+  } catch (err) {
+    console.error("[billing] failed to fetch the billing account:", err);
+    return { ok: false, error: "Couldn't release the seat. Try again in a moment." };
+  }
+  if (!accountId) {
+    return { ok: false, error: "This workspace doesn't have a billing account yet." };
+  }
+
+  let seatAccountId: string | null;
+  try {
+    seatAccountId = await fetchSeatAccountId(database, seatId);
+  } catch (err) {
+    console.error("[billing] failed to look up the seat:", err);
+    return { ok: false, error: "Couldn't release the seat. Try again in a moment." };
+  }
+  if (seatAccountId === null) {
+    return { ok: false, error: "This seat doesn't exist." };
+  }
+  if (seatAccountId !== accountId) {
+    return { ok: false, error: "This seat doesn't belong to this workspace." };
+  }
+
+  try {
+    await doRelease(database, seatId);
+  } catch (err) {
+    console.error("[billing] failed to release the seat:", err);
+    return { ok: false, error: "Couldn't release the seat. Try again in a moment." };
+  }
+
+  revalidatePath(`/dashboard/${workspaceId}/billing`);
+
+  return { ok: true };
 }

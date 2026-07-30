@@ -75,27 +75,34 @@ export function seatLimitForPlan(plan: string): number {
 }
 
 /**
- * "Renews <date>" from `current_period_end`, or a plain no-subscription
- * notice when null — null covers both a pure trial account (never checked
- * out) and a canceled subscription (the webhook nulls this column on
- * cancellation, `stripe/webhook/route.ts`'s `handleSubscriptionDeleted`),
- * which is intentional: neither case has a renewal to report.
- *
  * `timeZone: "UTC"` makes the label deterministic regardless of the host's
  * local timezone (same recipe as `../components/digest-panel-helpers.ts`'s
  * `formatWeekRangeLabel`) — a stored `timestamptz` should read as the same
  * calendar date to every viewer, never shift a day depending on where the
- * server (or a test runner) happens to sit relative to UTC.
+ * server (or a test runner) happens to sit relative to UTC. Shared by
+ * `renewalLabel` ("Renews <date>") and `seatClaimedLabel` ("Claimed <date>")
+ * below — same date format, different prefix — so the two never drift apart
+ * on the actual `toLocaleDateString` options.
  */
-export function renewalLabel(currentPeriodEnd: Date | null): string {
-  if (!currentPeriodEnd) return "No active subscription";
-  const date = currentPeriodEnd.toLocaleDateString("en-US", {
+function formatUtcDate(date: Date): string {
+  return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     timeZone: "UTC",
   });
-  return `Renews ${date}`;
+}
+
+/**
+ * "Renews <date>" from `current_period_end`, or a plain no-subscription
+ * notice when null — null covers both a pure trial account (never checked
+ * out) and a canceled subscription (the webhook nulls this column on
+ * cancellation, `stripe/webhook/route.ts`'s `handleSubscriptionDeleted`),
+ * which is intentional: neither case has a renewal to report.
+ */
+export function renewalLabel(currentPeriodEnd: Date | null): string {
+  if (!currentPeriodEnd) return "No active subscription";
+  return `Renews ${formatUtcDate(currentPeriodEnd)}`;
 }
 
 /** "<used> of <limit>" seats — the exact house phrasing (slice-3 plan
@@ -207,4 +214,52 @@ export const STATUS_CHIP_TONE_CLASSNAME: Record<SubscriptionStatusTone, string> 
  */
 export function canStartCheckout(account: { stripeSubscriptionId: string | null }): boolean {
   return account.stripeSubscriptionId === null;
+}
+
+// --- Seats list (slice-4 plan Task 5, "seats list with release") ----------
+
+/**
+ * "Claimed <date>" for one seats-list row — reuses {@link formatUtcDate}
+ * so a seat's claim date reads as the same calendar day to every viewer as
+ * `renewalLabel`'s own date above, for the same reason (see that function's
+ * doc-comment: a stored `timestamptz` must never shift a day depending on
+ * the host's local timezone).
+ */
+export function seatClaimedLabel(claimedAt: Date): string {
+  return `Claimed ${formatUtcDate(claimedAt)}`;
+}
+
+/**
+ * Known keys mirror `claimSeat`'s own `claimedVia` union
+ * (`@agentrail/db-postgres`'s `queries/seats.ts`) — `console` (an invite
+ * accept or a served console chat turn) plus the three chat platforms.
+ * `SeatWithHolder.claimedVia` itself is typed as a plain `string`, not that
+ * union — same "DB cast is a compile-time-only promise" posture as
+ * `planLabel`/`statusChip` above — so an unrecognized future value falls
+ * back to `humanizeUnknownValue` rather than rendering `undefined` or a raw
+ * snake_case string on the seat row's channel badge.
+ */
+const CLAIMED_VIA_LABEL: Record<string, string> = {
+  console: "Console",
+  telegram: "Telegram",
+  discord: "Discord",
+  slack: "Slack",
+};
+
+/** The seats-list row's channel badge text — see `CLAIMED_VIA_LABEL` above. */
+export function claimedViaLabel(claimedVia: string): string {
+  return CLAIMED_VIA_LABEL[claimedVia] ?? humanizeUnknownValue(claimedVia);
+}
+
+/**
+ * The per-seat Release button's `aria-label`. A list with one "Release"
+ * button per row is ambiguous to a screen reader — which seat does THIS one
+ * release? — so this disambiguates using the same `holderLabel` the row's
+ * own visible text already shows. Never a raw id either way:
+ * `SeatWithHolder.holderLabel` is guaranteed non-UUID by `deriveSeatHolder`
+ * (`queries/seats.ts`, house display rule `ui-prefer-names-over-ids`), and
+ * this function does nothing but interpolate whatever string it's handed.
+ */
+export function releaseSeatButtonLabel(holderLabel: string): string {
+  return `Release seat for ${holderLabel}`;
 }

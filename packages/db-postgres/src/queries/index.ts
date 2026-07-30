@@ -1948,6 +1948,35 @@ export async function listWorkspaceMembers(workspaceId: string) {
   return rows;
 }
 
+/**
+ * Remove a member from a workspace — same shape as `revokeInvite` above
+ * (delete scoped by workspaceId + the row's own identity, `.returning()` so
+ * the caller can tell "removed" from "wasn't a member / already removed"
+ * apart without a separate existence check). `workspace_memberships`' PK is
+ * the `(userId, workspaceId)` composite (`schema/workspace_memberships.ts`),
+ * so that pair alone is a sufficient, unambiguous delete target.
+ *
+ * This is the write behind the console members page's "Remove" action
+ * (slice 4 Task 3, spec §5 rule 5) — see
+ * `apps/console/app/api/v1/workspaces/[workspaceId]/members/[userId]/route.ts`
+ * for the seat-release hook that runs after a successful removal.
+ */
+export async function removeWorkspaceMembership(
+  workspaceId: string,
+  userId: string
+) {
+  const rows = await db
+    .delete(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.userId, userId),
+        eq(workspaceMemberships.workspaceId, workspaceId)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
 export interface AgentRunStatsRow {
   agent: string;
   runCount: number;
@@ -2878,9 +2907,13 @@ export {
 // state. getBillingAccountByStripeCustomerId is the webhook's fallback
 // account lookup only (metadata resolves first, always); bindStripeCustomer
 // has two callers — the subscription checkout action (billing/actions.ts,
-// Task 3) and that same webhook route.
+// Task 3) and that same webhook route. getBillingAccountIdForWorkspace
+// (slice 4 Task 2) is the id-only sibling of getBillingAccountForWorkspace —
+// the chat-turn seat-claim hook's read (channel-dispatch.ts's
+// claimSeatForServedTurn).
 export {
   getBillingAccountForWorkspace,
+  getBillingAccountIdForWorkspace,
   listAccountWorkspaceIds,
   countActiveSeats,
   bindStripeCustomer,
@@ -2900,3 +2933,26 @@ export {
   type UpsertSlackInstallationInput,
   type SlackInstallation,
 } from "./slack_installations.js";
+
+// Seat lifecycle queries (subscription-platform-design spec §3, §5; see
+// `queries/seats.ts` for the full WHY, including the ON CONFLICT DO NOTHING
+// concurrency rationale and the toDate wire-text coercion). claimSeat/
+// releaseSeat/releaseUserSeatForAccount are the individual claim/release
+// primitives; collapseIdentitySeatsForUser is the /connect merge (spec §5
+// rule 3) — one transaction claiming a user-seat and releasing the
+// identity-seat for every account the identity held one in;
+// listActiveSeatsWithHolders is the settings "seats list" read, holder
+// labels never a raw UUID. getSeatAccountId (slice 4 Task 5) is the
+// ownership-check primitive releaseSeatAction (console billing/actions.ts)
+// uses to confirm a seat id belongs to the caller's own workspace before
+// releasing it.
+export {
+  claimSeat,
+  releaseSeat,
+  releaseUserSeatForAccount,
+  collapseIdentitySeatsForUser,
+  listActiveSeatsWithHolders,
+  getSeatAccountId,
+  type SeatSubject,
+  type SeatWithHolder,
+} from "./seats.js";

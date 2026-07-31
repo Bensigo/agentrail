@@ -133,6 +133,40 @@ describe("sendTelegramMessage (shared sender)", () => {
     expect(body).not.toHaveProperty("reply_markup");
     expect(body).toEqual({ chat_id: "999", text: "hello world" });
   });
+
+  it("includes message_thread_id in the body, as a number, when a numeric thread id is supplied (subscription-slice-5 delivery-trap fix)", async () => {
+    const fn = mockFetchOnce({ ok: true });
+
+    const res = await sendTelegramMessage(TOKEN, "999", "hi", undefined, "42");
+
+    expect(res).toEqual({ ok: true });
+    const [, init] = fn.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      chat_id: "999",
+      text: "hi",
+      message_thread_id: 42,
+    });
+  });
+
+  it("omits message_thread_id from the body entirely when not supplied", async () => {
+    const fn = mockFetchOnce({ ok: true });
+
+    await sendTelegramMessage(TOKEN, "999", "hi");
+
+    const [, init] = fn.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).not.toHaveProperty("message_thread_id");
+  });
+
+  it("omits message_thread_id when the supplied value is non-numeric (defensive — Telegram rejects non-int thread ids)", async () => {
+    const fn = mockFetchOnce({ ok: true });
+
+    await sendTelegramMessage(TOKEN, "999", "hi", undefined, "not-a-number");
+
+    const [, init] = fn.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).not.toHaveProperty("message_thread_id");
+  });
 });
 
 describe("buildApprovalKeyboard (issue #1273)", () => {

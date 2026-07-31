@@ -34,7 +34,17 @@ describe("sendSystemTelegramMessage", () => {
     const result = await sendSystemTelegramMessage("-100123", "hello");
 
     expect(result).toEqual({ ok: true });
-    expect(mockSend).toHaveBeenCalledWith("bot-token-abc", "-100123", "hello");
+    // 5 positional args: sendTelegramMessage's 4th slot (replyMarkup) is not
+    // this wrapper's to fill, and messageThreadId (5th) is undefined here —
+    // see sendSystemTelegramMessage's own doc-comment for why both trail
+    // explicitly rather than the call stopping at 3 args.
+    expect(mockSend).toHaveBeenCalledWith(
+      "bot-token-abc",
+      "-100123",
+      "hello",
+      undefined,
+      undefined
+    );
   });
 
   it("returns a typed failure and never calls sendTelegramMessage when TELEGRAM_BOT_TOKEN is unset", async () => {
@@ -56,6 +66,33 @@ describe("sendSystemTelegramMessage", () => {
     const result = await sendSystemTelegramMessage("-100123", "hello");
 
     expect(result).toEqual({ ok: false, error: "Couldn't reach Telegram to send the message — try again." });
+  });
+
+  it("forwards a numeric thread id to sendTelegramMessage (subscription-slice-5 delivery-trap fix — was silently dropped)", async () => {
+    process.env["TELEGRAM_BOT_TOKEN"] = "bot-token-abc";
+    mockSend.mockResolvedValue({ ok: true });
+
+    await sendSystemTelegramMessage("123", "hi", "42");
+
+    expect(mockSend).toHaveBeenCalledWith("bot-token-abc", "123", "hi", undefined, "42");
+  });
+
+  it("forwards undefined when no thread id is supplied", async () => {
+    process.env["TELEGRAM_BOT_TOKEN"] = "bot-token-abc";
+    mockSend.mockResolvedValue({ ok: true });
+
+    await sendSystemTelegramMessage("-100123", "hello");
+
+    expect(mockSend).toHaveBeenCalledWith("bot-token-abc", "-100123", "hello", undefined, undefined);
+  });
+
+  it("forwards a non-numeric thread id unchanged — sendTelegramMessage owns the numeric validation, not this wrapper", async () => {
+    process.env["TELEGRAM_BOT_TOKEN"] = "bot-token-abc";
+    mockSend.mockResolvedValue({ ok: true });
+
+    await sendSystemTelegramMessage("123", "hi", "not-a-number");
+
+    expect(mockSend).toHaveBeenCalledWith("bot-token-abc", "123", "hi", undefined, "not-a-number");
   });
 });
 

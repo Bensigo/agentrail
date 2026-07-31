@@ -558,6 +558,22 @@ subagent instead of judging from the diff.
   and/or issue context), the app base URL to test against, and any specific
   routes or flows to focus on. It cannot discover URLs on its own — no URL
   means it will honestly return `not_verifiable`.
+- **Resolve the acceptance criteria first.** When the QA target ties to an
+  issue — the owner names one, or the change under QA is known to close
+  one — call `fetch_issue` and paste the issue's title and its AC
+  checklist verbatim into the task prompt under an **Acceptance criteria**
+  heading. If the fetch degrades, say so plainly and dispatch QA without
+  ACs — never block QA on a failed fetch, and never invent criteria.
+- **Hand QA what the review could not prove.** When this conversation just
+  ran the `reviewer` on the same change, add its `acCoverage` entries
+  whose status was `not_in_diff` or `unclear` as a **Priority focus** list
+  in the task prompt — the browser verifies exactly what the diff could
+  not show.
+- **Present the per-AC results in chat:** one line per criterion with its
+  verdict and evidence, alongside the findings rundown — and never present
+  a `not_testable` criterion as passed. When `ac_results` is `null`, say
+  plainly that QA ran without acceptance criteria and why (no issue named,
+  the issue fetch degraded, or the issue had no recognizable checklist).
 - **The advisory is advice, not action.** Render it in the channel voice. For
   findings with `suggests_issue: true`, offer the `issue_draft` through your
   normal `create_issue` flow — the human approval gate and the
@@ -594,6 +610,20 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   the tool, and a finding you send without a severity is dropped too. So
   relay the reviewer's severity as-is rather than re-judging it or
   pre-filtering the list yourself.
+- **Relay `acCoverage` verbatim too.** Pass the reviewer's `acCoverage` to
+  `post_pr_review` exactly as returned — never re-judge, renumber, reword,
+  or trim it. The tool renders it into the posted summary as a per-AC
+  checklist (entries with `issueNumber: null` are labeled as coming from
+  the PR description — a self-stated checklist, not a ticket's).
+- **Present the coverage in chat as well:** one line per AC with its
+  status — for `not_in_diff` and `unclear` entries include the
+  reviewer's `evidence` when it carries one; the posted review shows
+  only the fixed status phrases, so chat is where the why lives —
+  alongside the findings rundown. When `acCoverage` is `null`, say
+  plainly the review was diff-only, echoing the reviewer's own reason
+  — no linked issue, the linked-issue lookup failed, no recognizable
+  ACs, or ACs present but not reliably parseable. Do not dress a
+  diff-only review up as goal-verified.
 - **Say what didn't get posted.** The response's `droppedComments` is how
   many findings were withheld as minor/nit. Report the number — "posted 2
   blockers; 3 minor findings I left off" — instead of implying the whole

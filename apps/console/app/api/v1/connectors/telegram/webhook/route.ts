@@ -105,6 +105,37 @@ interface TelegramMessage {
   // malformed/absent value never fails THIS message's shape check (today's
   // behavior, unchanged).
   reply_to_message?: unknown;
+  /**
+   * Subscription-platform spec §6, "delivery trap #2". Telegram sets this
+   * only on a message posted inside a forum-topic thread of a supergroup
+   * with topics enabled — absent for every DM, non-forum group, and
+   * (Telegram's own behavior) a message posted to the topic-less "General"
+   * thread. Captured below the same way `chatType`/`fromUsername` are:
+   * trusted directly off this interface-typed field, presence-checked only
+   * (no separate tolerant validator — unlike `reply_to_message`, this is a
+   * flat scalar with nothing to parse).
+   *
+   * A malformed inbound value reaches two different downstream paths with
+   * DIFFERENT safety margins — `channel-dispatch.ts`'s `extractPayload`
+   * re-checks the type on the way back out of storage either way, but past
+   * that:
+   *  - The system-message path (`sendSystemChannelMessage` ->
+   *    `sendSystemTelegramMessage` -> `sendTelegramMessage`) IS backstopped:
+   *    `sendTelegramMessage`'s own numeric guard
+   *    (`connectors/secret/telegram.ts`) drops anything that isn't a valid
+   *    positive integer before it ever reaches the Bot API.
+   *  - The Eve-turn reply path (`runEveTurn` -> Jace's hosted-inbound door
+   *    -> `normalizeHostedInbound`, which only checks `!= null`, no numeric
+   *    validation) is NOT: the raw string rides through to the external
+   *    `eve` package's own Telegram sender, a different code path from
+   *    `sendTelegramMessage` entirely. Acceptable in practice — this door
+   *    sits behind the webhook secret (not open attacker input) and
+   *    Telegram itself only ever sends a valid integer here, so a malformed
+   *    value would require a deliberately-crafted internal call, not real
+   *    Telegram traffic — but it is a real gap relative to the
+   *    system-message path's stronger guarantee, not a backstop of its own.
+   */
+  message_thread_id?: number;
 }
 
 function isTelegramMessage(value: unknown): value is TelegramMessage {
@@ -548,6 +579,15 @@ export async function POST(request: NextRequest) {
       messageId: message.message_id,
       date: message.date,
       ...(replyContext ? { replyContext } : {}),
+      // Subscription-platform spec §6, delivery trap #2 — see
+      // TelegramMessage.message_thread_id's own doc-comment. String, to
+      // match this route's own id-stringification convention
+      // (conversationKey/senderId above), and because every downstream
+      // consumer (sendSystemChannelMessage, sendSystemTelegramMessage,
+      // sendTelegramMessage) takes it as a string.
+      ...(message.message_thread_id !== undefined
+        ? { messageThreadId: String(message.message_thread_id) }
+        : {}),
     },
   });
 

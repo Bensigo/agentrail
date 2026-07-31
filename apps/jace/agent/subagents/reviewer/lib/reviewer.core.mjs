@@ -24,10 +24,16 @@ export const REVIEW_SEVERITIES = ["blocker", "major", "minor", "nit"];
 // same way whether it violates the JSON Schema hint or slips past it.
 export const MAX_FINDINGS = 10;
 
+// Coverage of the goal's acceptance criteria — the vocabulary is deliberately
+// about the DIFF, not the world: `not_in_diff` never claims "unmet" (the AC
+// may pre-exist or land in another PR); proving an AC *works* is QA's job.
+export const AC_COVERAGE_STATUSES = ["addressed", "not_in_diff", "unclear"];
+export const MAX_AC_COVERAGE = 20;
+
 export const REVIEW_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "summary", "findings", "issueDrafts", "degraded"],
+  required: ["verdict", "summary", "findings", "issueDrafts", "acCoverage", "degraded"],
   properties: {
     verdict: {
       type: "string",
@@ -132,6 +138,47 @@ export const REVIEW_SCHEMA = {
         },
       },
     },
+    acCoverage: {
+      type: ["array", "null"],
+      maxItems: MAX_AC_COVERAGE,
+      description:
+        "Per-AC coverage of the goal this PR exists to meet (linked issues " +
+        "first; the PR description's own checkbox list only as fallback). " +
+        "Null when no usable ACs were found — the summary must say which " +
+        "case: none recognizable anywhere, or present but not reliably " +
+        "parseable. Always null when verdict is 'degraded'.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["issueNumber", "criterion", "status", "evidence"],
+        properties: {
+          issueNumber: {
+            type: ["number", "null"],
+            description:
+              "The linked issue the criterion came from; null = it came " +
+              "from the PR description (fallback source).",
+          },
+          criterion: {
+            type: "string",
+            description: "The AC text — a discrete item quoted from the source, trimmed.",
+          },
+          status: {
+            type: "string",
+            enum: AC_COVERAGE_STATUSES,
+            description:
+              "addressed = the diff visibly implements it; not_in_diff = " +
+              "nothing in THIS diff visibly addresses it (not a claim it is " +
+              "unmet elsewhere); unclear = cannot tell from the diff alone.",
+          },
+          evidence: {
+            type: "string",
+            description:
+              "One line: where in the diff (for addressed), or why " +
+              "not/unclear. May be empty when the status phrase says it all.",
+          },
+        },
+      },
+    },
     degraded: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -226,6 +273,32 @@ export function validateReview(review) {
     });
   }
 
+  if (review.acCoverage !== null) {
+    if (!Array.isArray(review.acCoverage)) {
+      push("acCoverage must be an array or null");
+    } else {
+      if (review.acCoverage.length > MAX_AC_COVERAGE) {
+        push(`acCoverage must have at most ${MAX_AC_COVERAGE} entries`);
+      }
+      review.acCoverage.forEach((c, i) => {
+        if (c === null || typeof c !== "object" || Array.isArray(c)) {
+          push(`acCoverage[${i}] must be an object`);
+          return;
+        }
+        if (c.issueNumber !== null && typeof c.issueNumber !== "number") {
+          push(`acCoverage[${i}].issueNumber must be a number or null`);
+        }
+        if (!isStr(c.criterion)) push(`acCoverage[${i}].criterion must be a non-empty string`);
+        if (!AC_COVERAGE_STATUSES.includes(c.status)) {
+          push(`acCoverage[${i}].status must be one of: ${AC_COVERAGE_STATUSES.join(", ")}`);
+        }
+        if (typeof c.evidence !== "string") {
+          push(`acCoverage[${i}].evidence must be a string`);
+        }
+      });
+    }
+  }
+
   if (review.degraded !== null) {
     if (review.degraded === undefined || typeof review.degraded !== "object" || Array.isArray(review.degraded)) {
       push("degraded must be an object or null");
@@ -246,6 +319,9 @@ export function validateReview(review) {
     }
     if (draftsShapeOk && review.issueDrafts.length > 0) {
       push("verdict 'degraded' must carry zero issueDrafts — the diff was never read");
+    }
+    if (review.acCoverage !== null && review.acCoverage !== undefined) {
+      push("verdict 'degraded' must carry acCoverage: null — the diff was never read");
     }
   } else if (review.degraded !== null && review.degraded !== undefined) {
     push("degraded must be null unless verdict is 'degraded'");

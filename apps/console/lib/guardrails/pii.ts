@@ -21,7 +21,7 @@
  * imports beyond `./types.js` — this must be testable without any stub.
  */
 
-import type { Finding } from "./types.js";
+import type { Finding } from "./types";
 
 // ---------------------------------------------------------------------------
 // normalizeForScreening

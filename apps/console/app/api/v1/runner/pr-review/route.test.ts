@@ -113,6 +113,23 @@ function fileEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function graphqlIssuesResponse(nodes: unknown[]) {
+  return githubJsonResponse(200, {
+    data: { repository: { pullRequest: { closingIssuesReferences: { nodes } } } },
+  });
+}
+
+function issueNode(overrides: Record<string, unknown> = {}) {
+  return {
+    number: 42,
+    title: "Widgets must persist",
+    body: "## Acceptance criteria\n- [ ] AC1: widgets persist across restarts",
+    state: "OPEN",
+    repository: { nameWithOwner: "ada/widgets" },
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   process.env[ENV_KEY] = SECRET;
@@ -265,7 +282,7 @@ describe("GET /api/v1/runner/pr-review", () => {
   });
 
   it("200: returns title/author/baseRef/headRef/body/changedFiles/truncated/omittedPaths", async () => {
-    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]));
+    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]), graphqlIssuesResponse([]));
 
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
     const json = await res.json();
@@ -288,17 +305,24 @@ describe("GET /api/v1/runner/pr-review", () => {
       ],
       truncated: false,
       omittedPaths: [],
+      linkedIssues: [],
+      linkedIssuesDegraded: false,
     });
   });
 
   it("paginates the files endpoint until a short page signals the end", async () => {
     const fullPage = Array.from({ length: 100 }, (_, i) => fileEntry({ filename: `file-${i}.ts` }));
-    const fetchMock = mockFetchSequence(prMetaResponse(), filesPage(fullPage), filesPage([fileEntry({ filename: "last.ts" })]));
+    const fetchMock = mockFetchSequence(
+      prMetaResponse(),
+      filesPage(fullPage),
+      filesPage([fileEntry({ filename: "last.ts" })]),
+      graphqlIssuesResponse([]),
+    );
 
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
     await res.json();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "https://api.github.com/repos/ada/widgets/pulls/98/files?per_page=100&page=1",
@@ -355,6 +379,169 @@ describe("GET /api/v1/runner/pr-review", () => {
     expect(json.truncated).toBe(true);
     expect(json.changedFiles.map((f: { path: string }) => f.path)).toEqual(["first.ts", "second.ts"]);
     expect(json.omittedPaths).toEqual(["third.ts"]);
+  });
+
+  // ---------------------------------------------------------------------
+  // linked issues (GraphQL closingIssuesReferences)
+  // ---------------------------------------------------------------------
+
+  it("200: returns same-repo linked issues from GraphQL with linkedIssuesDegraded:false", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([
+        issueNode(),
+        issueNode({ number: 43, repository: { nameWithOwner: "other/repo" } }),
+      ]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.linkedIssuesDegraded).toBe(false);
+    expect(json.linkedIssues).toEqual([
+      {
+        number: 42,
+        title: "Widgets must persist",
+        body: "## Acceptance criteria\n- [ ] AC1: widgets persist across restarts",
+        state: "OPEN",
+        bodyTruncated: false,
+      },
+    ]);
+  });
+
+  it("GraphQL failure degrades the lookup, never the diff (network throw)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(prMetaResponse());
+    fetchMock.mockResolvedValueOnce(filesPage([fileEntry()]));
+    fetchMock.mockRejectedValueOnce(new Error("network down"));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.changedFiles).toHaveLength(1);
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("GraphQL 200 with a null-data errors body degrades the lookup", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      githubJsonResponse(200, { data: null, errors: [{ message: "resource not accessible" }] }),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("caps an issue body at 8000 bytes on a UTF-8 boundary and flags bodyTruncated", async () => {
+    // "é" is 2 UTF-8 bytes; 4500 of them = 9000 bytes.
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([issueNode({ body: "é".repeat(4500) })]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    expect(json.linkedIssues).toHaveLength(1);
+    const issue = json.linkedIssues[0];
+    expect(issue.bodyTruncated).toBe(true);
+    expect(Buffer.byteLength(issue.body, "utf8")).toBeLessThanOrEqual(8000);
+    // A mid-character cut must not leave a replacement char at the end.
+    expect(issue.body.endsWith("é")).toBe(true);
+  });
+
+  it("no closing issues → empty linkedIssues with linkedIssuesDegraded:false", async () => {
+    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]), graphqlIssuesResponse([]));
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(false);
+  });
+
+  it("sends the GraphQL POST to api.github.com/graphql with the bearer and the PR variables", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(prMetaResponse());
+    fetchMock.mockResolvedValueOnce(filesPage([fileEntry()]));
+    fetchMock.mockResolvedValueOnce(graphqlIssuesResponse([]) as never);
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const [url, init] = fetchMock.mock.calls[2];
+    expect(url).toBe("https://api.github.com/graphql");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe(`Bearer ${MOCK_TOKEN}`);
+    const sent = JSON.parse(init.body as string);
+    expect(sent.variables).toEqual({ owner: "ada", name: "widgets", prNumber: 7 });
+  });
+
+  it("caps an issue body on a true mid-character UTF-8 cut, stripping the replacement character", async () => {
+    // "€" is 3 UTF-8 bytes; 2667 of them = 8001 bytes, so the 8000-byte
+    // slice cuts mid-character (unlike the 2-byte "é" case above, which
+    // lands on a clean boundary).
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([issueNode({ body: "€".repeat(2667) })]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    const issue = json.linkedIssues[0];
+    expect(issue.bodyTruncated).toBe(true);
+    expect(Buffer.byteLength(issue.body, "utf8")).toBeLessThanOrEqual(8000);
+    expect(issue.body.endsWith("€")).toBe(true);
+    expect(issue.body.includes("�")).toBe(false);
+  });
+
+  it("GraphQL non-ok response (500) degrades the lookup, never the diff", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      githubJsonResponse(500, { message: "boom" }),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.changedFiles).toHaveLength(1);
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("GraphQL res.json() throw degrades the lookup, never the diff", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce(prMetaResponse());
+    fetchMock.mockResolvedValueOnce(filesPage([fileEntry()]));
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error("bad json");
+      },
+      text: async () => "",
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.changedFiles).toHaveLength(1);
+    expect(json.linkedIssues).toEqual([]);
+    expect(json.linkedIssuesDegraded).toBe(true);
+  });
+
+  it("caps linkedIssues at 3 client-side even when the GraphQL response names more same-repo nodes", async () => {
+    mockFetchSequence(
+      prMetaResponse(),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([
+        issueNode({ number: 41 }),
+        issueNode({ number: 42 }),
+        issueNode({ number: 43 }),
+        issueNode({ number: 44 }),
+      ]),
+    );
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "7" }));
+    const json = await res.json();
+    expect(json.linkedIssues.map((i: { number: number }) => i.number)).toEqual([41, 42, 43]);
   });
 
   it("404 'PR not found' when GitHub 404s the PR metadata call", async () => {

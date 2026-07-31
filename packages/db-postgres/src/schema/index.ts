@@ -31,3 +31,7 @@ export * from "./queue_attempts.js";
 export * from "./briefs.js";
 export * from "./guardrail_events.js";
 export * from "./investigations.js";
+export * from "./billing_accounts.js";
+export * from "./seats.js";
+export * from "./upgrade_prompt_events.js";
+export * from "./slack_installations.js";

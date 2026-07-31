@@ -1,4 +1,11 @@
-import { pgTable, uuid, text, timestamp, unique } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  unique,
+  index,
+} from "drizzle-orm/pg-core";
 import { users } from "./auth.js";
 import { workspaces } from "./workspaces.js";
 
@@ -64,6 +71,9 @@ export const chatIdentities = pgTable(
     signupTokenUnique: unique("chat_identities_signup_token_unique").on(
       t.signupToken
     ),
+    // Seat/capacity counting: how many chat identities link to one user
+    // (subscription platform slice 0, spec §9).
+    userIdIdx: index("chat_identities_user_id_idx").on(t.userId),
   })
 );
 

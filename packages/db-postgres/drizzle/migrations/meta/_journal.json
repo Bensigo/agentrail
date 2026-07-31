@@ -409,23 +409,44 @@
       "breakpoints": true
     },
     {
-      "idx": 60,
+      "idx": 62,
       "version": "7",
-      "when": 1786200000000,
+      "when": 1786400000000,
+      "tag": "0061_counting_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1786500000000,
+      "tag": "0062_billing_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1786600000000,
+      "tag": "0064_slack_installations",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1786700000000,
       "tag": "0059_investigations",
       "breakpoints": true
     },
     {
-      "idx": 61,
+      "idx": 67,
       "version": "7",
-      "when": 1786300000000,
+      "when": 1786800000000,
       "tag": "0060_jace_sessions_investigation_anchor",
       "breakpoints": true
     },
     {
-      "idx": 62,
+      "idx": 68,
       "version": "7",
-      "when": 1786400000000,
+      "when": 1786900000000,
       "tag": "0063_investigation_issue_links_unique",
       "breakpoints": true
     }

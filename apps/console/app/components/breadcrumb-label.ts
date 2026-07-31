@@ -8,7 +8,8 @@
 // #1276, permissions added #1278, api-keys removed 2026-07-19 owner ruling,
 // wiki added repo wiki 6/7, gateways added gateways-page T3, wallet added
 // #1415, briefs added spec PR #1487/#1489, investigations added debugging
-// design spec PR #1501 (Task 13); breadcrumb.test.ts now enforces the sync).
+// design spec PR #1501 (Task 13), billing added subscription-platform spec
+// slice-3 plan Task 5; breadcrumb.test.ts now enforces the sync).
 // "queue" stays mapped to its old label for the instant before its redirect
 // fires; "work" is the real nav destination now (spec §3).
 export const SEGMENT_LABELS: Record<string, string> = {
@@ -32,6 +33,7 @@ export const SEGMENT_LABELS: Record<string, string> = {
   members: "Team",
   teams: "Teams",
   permissions: "Permissions",
+  billing: "Plan & billing",
 };
 
 /**

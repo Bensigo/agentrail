@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   jaceSessions,
@@ -626,6 +626,60 @@ export async function latestTelegramSessionForWorkspace(
       and(
         eq(jaceSessions.workspaceId, workspaceId),
         eq(jaceSessions.channel, "telegram")
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The `{ channel, conversationKey }` shape {@link latestChatSessionForWorkspace}
+ * returns — just enough for a caller to address a reply, never the whole
+ * session row (that's what {@link latestTelegramSessionForWorkspace}'s
+ * broader `JaceSessionRow | null` is for). */
+export type LatestChatSession = { channel: string; conversationKey: string };
+
+/**
+ * The most recently active CHAT session (any of `telegram`/`discord`/
+ * `slack`) for a WORKSPACE — the same shape as
+ * {@link latestTelegramSessionForWorkspace} above, generalized from one
+ * channel to the three chat channels, and narrowed from the whole
+ * `JaceSessionRow` to just `{ channel, conversationKey }` (all a delivery
+ * call needs to address a reply). This is the capacity gate's delivery
+ * lookup (spec §6 point 2): unlike the chat seat gate, which fires INLINE
+ * inside `processRow`/`processConsoleRow` and can reply straight into the
+ * turn it's gating, the capacity gate runs at the runner CLAIM route — no
+ * chat turn is in flight there, so it needs to find which chat conversation
+ * to push the upgrade notice INTO, the same problem
+ * `latestTelegramSessionForWorkspace` already solves for the
+ * monthly-budget-ceiling notify (see that function's own doc-comment).
+ *
+ * `console` is deliberately EXCLUDED from the IN-list: a console-only
+ * workspace has no chat surface for this lookup to find, and the console
+ * chat thread (`jace_messages`, `queries/jace_messages.ts`) is a different
+ * delivery mechanism entirely, not one this function's callers address
+ * through a `(channel, conversationKey)` pair.
+ *
+ * Ordered by `lastActivityAt` descending, same tie-break as
+ * `latestTelegramSessionForWorkspace`, for the same reason: a workspace with
+ * more than one bound conversation across channels resolves to whichever is
+ * currently most active. Returns `null` when the workspace has no
+ * telegram/discord/slack session at all — callers must skip the send
+ * silently in that case, never error.
+ */
+export async function latestChatSessionForWorkspace(
+  workspaceId: string
+): Promise<LatestChatSession | null> {
+  const [row] = await db
+    .select({
+      channel: jaceSessions.channel,
+      conversationKey: jaceSessions.conversationKey,
+    })
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.workspaceId, workspaceId),
+        inArray(jaceSessions.channel, ["telegram", "discord", "slack"])
       )
     )
     .orderBy(desc(jaceSessions.lastActivityAt))

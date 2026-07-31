@@ -19,6 +19,7 @@ import {
   evalArmMetrics,
   chatIdentities,
   fleetKeyRotations,
+  billingAccounts,
 } from "../schema/index.js";
 import type { EvalArmMetric } from "../schema/index.js";
 import type {
@@ -1451,6 +1452,31 @@ export async function createWorkspace(data: {
       userId: data.userId,
       role: "owner",
     });
+
+    // Trial billing account at creation (subscription-platform spec §9,
+    // slice 3 Task 6) — closes the NEW-workspace gap the 0062 migration's
+    // backfill left standing for existing rows (see that migration and
+    // schema/billing_accounts.ts for the full design): every workspace now
+    // gets an account the moment it exists, so the policy resolver's
+    // NULL-means-trial path is a transitional state for a workspace created
+    // from here on, not a permanent one. `workspace` was just inserted THIS
+    // transaction, so `billingAccountId` is always null at this point — the
+    // WHERE-guard on the stamp below mirrors `completeOwnerElectWorkspace`'s
+    // identical guard for idempotency-shape parity, not because a real race
+    // is possible against a row id no other transaction can see yet.
+    if (workspace.billingAccountId === null) {
+      const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+      const [account] = await tx
+        .insert(billingAccounts)
+        .values({ name: workspace.name, plan: "trial", trialEndsAt })
+        .returning();
+      await tx
+        .update(workspaces)
+        .set({ billingAccountId: account!.id })
+        .where(and(eq(workspaces.id, workspace.id), isNull(workspaces.billingAccountId)));
+      workspace.billingAccountId = account!.id;
+    }
+
     return workspace;
   });
 }
@@ -1535,23 +1561,69 @@ export async function createWorkspaceOwnerElect(data: {
  * SECURITY: `userId` must be the server-derived session user from the bind
  * flow (`session.user.id` in `/connect/[token]/page.tsx`), never
  * model/input-supplied — this inserts a real ownership grant.
+ *
+ * Slice 3 Task 6 (subscription-platform spec §9) adds a second, independent
+ * write to this SAME transaction: a trial `billing_accounts` row, created
+ * and stamped onto the workspace whenever its `billing_account_id` is still
+ * NULL — see that write, below, for the full guard rationale. Short version:
+ * it runs regardless of whether THIS call's ownership grant above actually
+ * completed, because this function can be called against a workspace that
+ * already has an owner (or already has a billing account) via some other
+ * path — same reasoning as the `NOT EXISTS` guard's own "any workspace, not
+ * just a genuine owner-elect one" scope above.
  */
 export async function completeOwnerElectWorkspace(data: {
   workspaceId: string;
   userId: string;
 }): Promise<{ completed: boolean }> {
-  const rows = (await db.execute(sql`
-    INSERT INTO workspace_memberships (user_id, workspace_id, role)
-    SELECT ${data.userId}, ${data.workspaceId}, 'owner'
-    WHERE NOT EXISTS (
-      SELECT 1 FROM workspace_memberships
-      WHERE workspace_id = ${data.workspaceId} AND role = 'owner'
-    )
-    ON CONFLICT (user_id, workspace_id) DO NOTHING
-    RETURNING user_id
-  `)) as unknown as Array<{ user_id: string }>;
+  return db.transaction(async (tx) => {
+    const rows = (await tx.execute(sql`
+      INSERT INTO workspace_memberships (user_id, workspace_id, role)
+      SELECT ${data.userId}, ${data.workspaceId}, 'owner'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM workspace_memberships
+        WHERE workspace_id = ${data.workspaceId} AND role = 'owner'
+      )
+      ON CONFLICT (user_id, workspace_id) DO NOTHING
+      RETURNING user_id
+    `)) as unknown as Array<{ user_id: string }>;
 
-  return { completed: Array.from(rows).length > 0 };
+    // Trial billing account, closing the same NEW-workspace gap as
+    // createWorkspace (see that function's own doc-comment) — this path
+    // covers the chat-first owner-elect flow (createWorkspaceOwnerElect
+    // creates the workspace with NO account; this is where it gets one).
+    // ONE atomic statement, mirroring the 0062 backfill's INSERT-then-UPDATE
+    // shape collapsed into a single CTE: that migration needs a
+    // `seed_workspace_id` correlation column because it processes MANY
+    // workspaces in one bulk INSERT...SELECT and has to pair each new row
+    // back to its source; this handles exactly one workspace per call, so
+    // `RETURNING id` -> `FROM inserted` already correlates the two writes
+    // without one. The `billing_account_id IS NULL` guard is repeated on
+    // the outer UPDATE's own WHERE against `workspaces`, not left solely
+    // inside the `inserted` CTE: under READ COMMITTED a CTE qualifier is
+    // evaluated once at the statement snapshot and is NOT re-checked when
+    // the UPDATE finally locks the row — Postgres's EvalPlanQual only
+    // re-checks quals on the UPDATE's own target relation. Repeating the
+    // guard there is what makes this genuinely safe against a workspace
+    // that picks up a billing account some other way in the same instant
+    // (e.g. a racing call into this same function for the same workspace),
+    // not merely idempotent against a simple sequential retry.
+    await tx.execute(sql`
+      WITH inserted AS (
+        INSERT INTO billing_accounts (name, plan, trial_ends_at)
+        SELECT w.name, 'trial', now() + interval '14 days'
+        FROM workspaces w
+        WHERE w.id = ${data.workspaceId} AND w.billing_account_id IS NULL
+        RETURNING id
+      )
+      UPDATE workspaces
+      SET billing_account_id = inserted.id
+      FROM inserted
+      WHERE workspaces.id = ${data.workspaceId} AND workspaces.billing_account_id IS NULL
+    `);
+
+    return { completed: Array.from(rows).length > 0 };
+  });
 }
 
 export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
@@ -1874,6 +1946,35 @@ export async function listWorkspaceMembers(workspaceId: string) {
     .where(eq(workspaceMemberships.workspaceId, workspaceId))
     .orderBy(workspaceMemberships.createdAt);
   return rows;
+}
+
+/**
+ * Remove a member from a workspace — same shape as `revokeInvite` above
+ * (delete scoped by workspaceId + the row's own identity, `.returning()` so
+ * the caller can tell "removed" from "wasn't a member / already removed"
+ * apart without a separate existence check). `workspace_memberships`' PK is
+ * the `(userId, workspaceId)` composite (`schema/workspace_memberships.ts`),
+ * so that pair alone is a sufficient, unambiguous delete target.
+ *
+ * This is the write behind the console members page's "Remove" action
+ * (slice 4 Task 3, spec §5 rule 5) — see
+ * `apps/console/app/api/v1/workspaces/[workspaceId]/members/[userId]/route.ts`
+ * for the seat-release hook that runs after a successful removal.
+ */
+export async function removeWorkspaceMembership(
+  workspaceId: string,
+  userId: string
+) {
+  const rows = await db
+    .delete(workspaceMemberships)
+    .where(
+      and(
+        eq(workspaceMemberships.userId, userId),
+        eq(workspaceMemberships.workspaceId, workspaceId)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
 }
 
 export interface AgentRunStatsRow {
@@ -2393,6 +2494,7 @@ export {
   reclaimStaleChannelMessages,
   deadLettersForWorkspace,
   requeueDeadChannelMessage,
+  stampChannelInboxWorkspace,
   type InboxRetryDecision,
   type EnqueueChannelMessageInput,
   type EnqueueChannelMessageResult,
@@ -2439,6 +2541,11 @@ export {
 // are the persistence layer for the engagementDormantSince/engagedSpeakerId
 // latch: read/write by (channel, conversationKey) only, no workspace scope,
 // so the door can call them before any workspace is resolved.
+// latestChatSessionForWorkspace (subscription-platform-design spec §6, slice
+// 5 Task 1) generalizes latestTelegramSessionForWorkspace from one channel to
+// telegram/discord/slack — the capacity gate's delivery-destination lookup,
+// since that gate (unlike the inline chat seat gate) fires from the runner
+// claim route with no chat turn in flight to reply into directly.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -2452,6 +2559,8 @@ export {
   getJaceSessionById,
   latestTelegramSessionForChatIdentity,
   latestTelegramSessionForWorkspace,
+  latestChatSessionForWorkspace,
+  type LatestChatSession,
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
   getSessionBriefAnchor,
@@ -2561,12 +2670,15 @@ export {
 // recordRunOutcome is called by the runner-result route on every terminal
 // queue transition; mapTerminalStateToRunOutcome is its pure vocabulary
 // mapping (independently unit-testable); getModelOutcomeStats is the
-// aggregate read a LATER PR's selector will consume.
+// aggregate read a LATER PR's selector will consume. countRunOutcomesForWorkspace
+// is the per-workspace, all-time variant of countRunOutcomes that feeds the
+// subscription-console digest's plan-card "shipped all-time" strip (slice 6).
 export {
   recordRunOutcome,
   mapTerminalStateToRunOutcome,
   getModelOutcomeStats,
   countRunOutcomes,
+  countRunOutcomesForWorkspace,
   type RunOutcomeValue,
   type ModelOutcomeStatsRow,
   type RunOutcomeCounts,
@@ -2738,8 +2850,14 @@ export {
   creditTopUpForStripeEvent,
   recordIgnoredStripeEvent,
   hasProcessedStripeEvent,
+  applySubscriptionStateForStripeEvent,
+  recordPastDueForStripeEvent,
   type CreditTopUpForStripeEventInput,
   type CreditTopUpForStripeEventResult,
+  type ApplySubscriptionStateForStripeEventInput,
+  type ApplySubscriptionStateForStripeEventResult,
+  type RecordPastDueForStripeEventInput,
+  type RecordPastDueForStripeEventResult,
 } from "./stripe_events.js";
 // #1389 — the per-attempt log a queue entry accumulates across its retry
 // lifecycle (timestamp, tier, outcome, error summary). Written by
@@ -2858,3 +2976,87 @@ export {
   type CreateInvestigationItemAsHumanInput,
   type CreateInvestigationItemAsHumanResult,
 } from "./investigations.js";
+// Billing account queries (subscription-platform-design spec §3, §5, §9;
+// see `queries/billing_accounts.ts` for the full WHY, including why these
+// take `db` as an explicit parameter and use raw SQL). getBillingAccountForWorkspace
+// is the NULL = trial-policy read a later slice's policy resolver joins
+// through; listAccountWorkspaceIds is the inverse fan-out; countActiveSeats
+// derives the seat count from released_at IS NULL rows — there is no
+// mutable counter. bindStripeCustomer and getBillingAccountByStripeCustomerId
+// (slice 3) are the Stripe write/lookup side that lives here — the actual
+// subscription-state write is applySubscriptionStateForStripeEvent
+// (queries/stripe_events.ts), the webhook route's SOLE writer of that
+// state. getBillingAccountByStripeCustomerId is the webhook's fallback
+// account lookup only (metadata resolves first, always); bindStripeCustomer
+// has two callers — the subscription checkout action (billing/actions.ts,
+// Task 3) and that same webhook route. getBillingAccountIdForWorkspace
+// (slice 4 Task 2) is the id-only sibling of getBillingAccountForWorkspace —
+// the chat-turn seat-claim hook's read (channel-dispatch.ts's
+// claimSeatForServedTurn).
+export {
+  getBillingAccountForWorkspace,
+  getBillingAccountIdForWorkspace,
+  listAccountWorkspaceIds,
+  countActiveSeats,
+  bindStripeCustomer,
+  getBillingAccountByStripeCustomerId,
+  type BillingAccountRow,
+} from "./billing_accounts.js";
+
+// Slack multi-workspace install, Task 1 (spec docs/superpowers/specs/
+// 2026-07-29-slack-multi-workspace-design.md §1) — one encrypted bot token
+// per Slack team. upsertSlackInstallation encrypts + reactivates on
+// reinstall; getSlackInstallation decrypts and fails closed (null) for both
+// an unknown AND a revoked team; revokeSlackInstallation never deletes.
+export {
+  upsertSlackInstallation,
+  getSlackInstallation,
+  revokeSlackInstallation,
+  type UpsertSlackInstallationInput,
+  type SlackInstallation,
+} from "./slack_installations.js";
+
+// Seat lifecycle queries (subscription-platform-design spec §3, §5; see
+// `queries/seats.ts` for the full WHY, including the ON CONFLICT DO NOTHING
+// concurrency rationale and the toDate wire-text coercion). claimSeat/
+// releaseSeat/releaseUserSeatForAccount are the individual claim/release
+// primitives; collapseIdentitySeatsForUser is the /connect merge (spec §5
+// rule 3) — one transaction claiming a user-seat and releasing the
+// identity-seat for every account the identity held one in;
+// listActiveSeatsWithHolders is the settings "seats list" read, holder
+// labels never a raw UUID. getSeatAccountId (slice 4 Task 5) is the
+// ownership-check primitive releaseSeatAction (console billing/actions.ts)
+// uses to confirm a seat id belongs to the caller's own workspace before
+// releasing it. hasActiveSeat + countActiveIdentitySeats (slice 5 Task 1,
+// spec §6) are the gate reads: the former is the chat seat gate's admission
+// check (an existing seat-holder is never blocked), the latter feeds the
+// seat-limit prompt's /connect hint.
+export {
+  claimSeat,
+  releaseSeat,
+  releaseUserSeatForAccount,
+  collapseIdentitySeatsForUser,
+  listActiveSeatsWithHolders,
+  getSeatAccountId,
+  hasActiveSeat,
+  countActiveIdentitySeats,
+  type SeatSubject,
+  type SeatWithHolder,
+} from "./seats.js";
+
+// Upgrade-prompt CAS dedup (subscription-platform-design spec §6
+// "Enforcement seams" — "Prompt cooldown", slice 5 Task 1; see
+// `queries/upgrade_prompts.ts` for the full WHY). recordUpgradePromptOnce is
+// the insert-based twin of markBudgetExhaustedNotified
+// (workspace_budget.ts) — every gate that wants to fire an upgrade nudge
+// calls this first and delivers the prompt iff it returns true, so two
+// concurrent blocked turns in the same conversation can never both prompt.
+export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
+
+// Billing-account-wide capacity count (subscription-platform-design spec §6
+// point 2, §9's "one capacity unit per admitted run"; slice 5 Task 1; see
+// `queries/capacity.ts` for the full WHY, including the ::int cast and
+// ISO-string-not-Date idioms). countAccountRunsStartedInWindow is the
+// capacity gate's read: runs claimed (not completed), across every
+// workspace on the account, in a caller-supplied half-open window.
+export { countAccountRunsStartedInWindow } from "./capacity.js";

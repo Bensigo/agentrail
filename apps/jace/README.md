@@ -50,9 +50,14 @@ inbound + outbound + threading + credentials.
   ```
 - `agent/channels/discord.ts` — `discordChannel()`. Inbound at `/eve/v1/discord`.
 - `agent/channels/slack.ts` — `slackChannel()`. Inbound (Events API +
-  Interactivity) at `/eve/v1/slack`; point Slack's request URLs there. Credentials
-  come from env (`SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET`) — the same env-based
-  self-host shape as Telegram/Discord, no Vercel Connect required.
+  Interactivity) at `/eve/v1/slack`; point Slack's request URLs there.
+  `SLACK_SIGNING_SECRET` verifies inbound requests. Outbound is NOT native
+  anymore (Task 4, docs/superpowers/specs/2026-07-29-slack-multi-workspace-
+  design.md §4): Slack issues a separate bot token per workspace install, so
+  there is no single `SLACK_BOT_TOKEN` to read — `message.completed` hands
+  the reply back to the console instead
+  (`agent/lib/slack_reply.core.mjs`'s `postSlackReply`), and the console
+  resolves the installing team's own token from `slack_installations`.
 - `agent/channels/run-outcome.ts` — a custom `defineChannel` route mounted at
   `/eve/v1/run-outcome`. The AgentRail console POSTs a TERMINAL run outcome here
   (`{ channel, message, target, auth }`); Jace hands it to the addressed platform
@@ -123,8 +128,7 @@ to migrate an existing self-hosted workspace onto the shared bot.
 | `DISCORD_PUBLIC_KEY` | Verifies inbound Discord `X-Signature-Ed25519` + timestamp. |
 | `DISCORD_APPLICATION_ID` | Edits Discord deferred responses / sends followups. |
 | `DISCORD_BOT_TOKEN` | Proactive Discord messages + typing indicators. |
-| `SLACK_BOT_TOKEN` | Bot user OAuth token (`xoxb-…`) for the native `slack` channel — proactive posts + Web API calls. (`slackChannel()` reads it from env when no explicit credentials are passed.) |
-| `SLACK_SIGNING_SECRET` | Verifies inbound Slack request signatures (Events API + Interactivity). Read from env by `slackChannel()` unless a `webhookVerifier` is supplied. |
+| `SLACK_SIGNING_SECRET` | Verifies inbound Slack request signatures (Events API + Interactivity). Read from env by `slackChannel()` unless a `webhookVerifier` is supplied. There is deliberately no `SLACK_BOT_TOKEN` here (Task 4) — Slack issues a separate bot token per workspace install, so outbound posting resolves per-team on the console side instead; see `agent/channels/slack.ts`'s header comment. |
 | `LOOPMESSAGE_API_KEY` | LoopMessage Send-API key for the native `imessage` channel. Sent RAW as the `Authorization` header (no `Bearer` prefix). |
 | `LOOPMESSAGE_SENDER_NAME` | The LoopMessage sender name (`…@imsg.co` / your dedicated sender) used as `sender_name` on 1:1 sends. |
 | `LOOPMESSAGE_WEBHOOK_SECRET_TOKEN` | The dashboard `webhook_header` value; inbound LoopMessage webhooks must present it as `Authorization`. Verified constant-time — unset ⇒ fail-closed (every inbound `401`s). |

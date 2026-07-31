@@ -123,6 +123,75 @@ export async function sendDiscordChannelMessage(
   }
 }
 
+export type CreateThreadResult =
+  | { ok: true; threadId: string }
+  | { ok: false; error: string; status?: number; code?: number };
+
+/**
+ * Create a thread from an existing channel message via the Bot API
+ * (`POST /channels/{channelId}/messages/{messageId}/threads`,
+ * `Authorization: Bot <token>`). Discord makes the created thread's id equal
+ * to the source message id, but that is still read from the response body
+ * rather than assumed — a 2xx response with no usable `id` is treated as a
+ * failure. Never throws; a transport blip or a Discord-side rejection
+ * surfaces as a typed failure carrying the numeric HTTP status and Discord's
+ * numeric `code` (never the token, never the URL — the caller logs those),
+ * mirroring `sendDiscordChannelMessage`'s contract.
+ */
+export async function createDiscordThreadFromMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  name: string
+): Promise<CreateThreadResult> {
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${DISCORD_API_BASE}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/threads`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${token}`,
+        },
+        body: JSON.stringify({ name, auto_archive_duration: 1440 }),
+      }
+    );
+  } catch {
+    return { ok: false, error: "Couldn't reach Discord to create the thread — try again." };
+  }
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    body = undefined;
+  }
+  const bodyObj: Record<string, unknown> =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const code = typeof bodyObj.code === "number" ? bodyObj.code : undefined;
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: `Discord rejected the thread-create request (status ${res.status}) — make sure the bot has access to that channel.`,
+      status: res.status,
+      ...(code !== undefined ? { code } : {}),
+    };
+  }
+
+  const id = bodyObj.id;
+  if (typeof id !== "string" || !id) {
+    return {
+      ok: false,
+      error: `Discord returned a successful thread-create response (status ${res.status}) with no usable thread id.`,
+      status: res.status,
+    };
+  }
+
+  return { ok: true, threadId: id };
+}
+
 /** Discord interaction response types this door uses (a small, deliberate subset). */
 export const DISCORD_INTERACTION_RESPONSE = {
   PONG: 1,

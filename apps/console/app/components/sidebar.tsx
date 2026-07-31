@@ -11,7 +11,33 @@ import {
   GOALS_NAV_ITEM,
   SETTINGS_ZONE,
   YOUR_ENGINEER_ZONE,
+  type NavItem,
 } from "./sidebar-nav";
+
+/**
+ * Costs/Budget/Wallet leave the customer-facing Engine room group behind
+ * the billing-swap flag (subscription-platform spec §8 margin telemetry /
+ * staff-console seed) — deliberately a nav-only demotion: the three pages
+ * stay code-live and URL-reachable (direct links, breadcrumbs, staff
+ * access), only these hrefs disappear from what gets rendered here.
+ */
+const BILLING_SWAP_HIDDEN_HREFS = new Set(["costs", "budget", "wallet"]);
+
+/**
+ * Pure filter (data in, data out — no JSX, no hooks) so it's unit-testable
+ * without a React render pass: `Sidebar` below calls `usePathname()`, which
+ * makes the component itself uncallable directly in this repo's hookless
+ * vitest environment (see `sidebar.test.tsx`'s header comment). Exported
+ * solely to make this piece independently testable, same "extract the pure
+ * part" move `digest-panel.tsx` makes with `PlanCardBlock`.
+ */
+export function filterEngineRoomItems(
+  items: NavItem[],
+  billingSwapEnabled: boolean
+): NavItem[] {
+  if (!billingSwapEnabled) return items;
+  return items.filter((item) => !BILLING_SWAP_HIDDEN_HREFS.has(item.href));
+}
 
 interface SidebarProps {
   workspaces: { id: string; name: string; slug: string; role: string }[];
@@ -27,6 +53,19 @@ interface SidebarProps {
    * (`isGoalLoopEnabled`) by the layout that renders this, same "undefined
    * reads as off" posture as `chatEnabled` above. */
   goalsEnabled?: boolean;
+  /** Subscription-platform billing swap (slice 6 Task 4), default OFF —
+   * computed server-side (`subscriptionsEnforced`) by the layout that
+   * renders this, same "undefined reads as off" posture as `chatEnabled`/
+   * `goalsEnabled` above: it must never flash Costs/Budget/Wallet in only
+   * to hide them a moment later. When true, those three Engine room items
+   * are filtered out of what renders (see `filterEngineRoomItems` above) —
+   * the pages themselves stay code-live and URL-reachable (spec §8 margin
+   * telemetry / staff-console seed), only their nav entries hide. This
+   * component never imports the flag module itself
+   * (`lib/policy/feature-flags.ts`'s `subscriptionsEnforced`) — server
+   * boolean via prop only, same posture as `digest-panel.tsx`'s
+   * `planCard` prop. */
+  billingSwapEnabled?: boolean;
 }
 
 export function Sidebar({
@@ -36,6 +75,7 @@ export function Sidebar({
   signOutAction,
   chatEnabled = false,
   goalsEnabled = false,
+  billingSwapEnabled = false,
 }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
@@ -44,6 +84,10 @@ export function Sidebar({
     ...(goalsEnabled ? [GOALS_NAV_ITEM] : []),
     ...(chatEnabled ? [CHAT_NAV_ITEM] : []),
   ];
+  const engineRoomItems = filterEngineRoomItems(
+    ENGINE_ROOM_ZONE.items,
+    billingSwapEnabled
+  );
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">
@@ -78,7 +122,11 @@ export function Sidebar({
           <NavLink key={item.href} item={item} basePath={basePath} pathname={pathname} />
         ))}
 
-        <EngineRoomGroup zone={ENGINE_ROOM_ZONE} pathname={pathname} basePath={basePath} />
+        <EngineRoomGroup
+          zone={{ ...ENGINE_ROOM_ZONE, items: engineRoomItems }}
+          pathname={pathname}
+          basePath={basePath}
+        />
 
         <p className="mt-3 px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
           {SETTINGS_ZONE.label}

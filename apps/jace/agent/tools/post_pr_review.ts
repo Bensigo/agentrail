@@ -73,7 +73,9 @@ export default defineTool({
     "implying the whole review landed. If GitHub can't attach a comment to " +
     "the exact line given (the line isn't part of the diff), the console " +
     "folds it into the summary instead so the review still lands — check " +
-    "`foldedComments` before assuming every comment landed inline.",
+    "`foldedComments` before assuming every comment landed inline. Pass the " +
+    "reviewer's acCoverage verbatim too — it is rendered into the posted " +
+    "summary as a per-AC checklist.",
   inputSchema: z.object({
     repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
     prNumber: z.number().int().positive().describe("The pull request number."),
@@ -104,6 +106,33 @@ export default defineTool({
         "Every inline finding, with its severity. May be empty only when " +
           "summary is non-empty.",
       ),
+    acCoverage: z
+      .array(
+        z.object({
+          issueNumber: z
+            .number()
+            .int()
+            .positive()
+            .nullable()
+            .describe(
+              "The linked issue the criterion came from; null when it came " +
+                "from the PR description (the reviewer's fallback source).",
+            ),
+          criterion: z.string().min(1).describe("The AC text, relayed verbatim from the reviewer."),
+          status: z
+            .enum(["addressed", "not_in_diff", "unclear"])
+            .describe("The reviewer's coverage status, relayed verbatim — never re-judged here."),
+          evidence: z.string().default("").describe("The reviewer's one-line evidence."),
+        }),
+      )
+      .nullable()
+      .default(null)
+      .describe(
+        "The reviewer's acCoverage, passed through verbatim. Rendered into " +
+          "the posted summary as a per-AC checklist (folded to a count line " +
+          "if it would overflow the summary cap). Null when the reviewer " +
+          "found no usable ACs.",
+      ),
   }),
   async execute(input, ctx) {
     return runPostPrReview({
@@ -112,6 +141,7 @@ export default defineTool({
       prNumber: input.prNumber,
       summary: input.summary,
       comments: input.comments,
+      acCoverage: input.acCoverage,
       env: process.env,
       transport: realTransport,
     });

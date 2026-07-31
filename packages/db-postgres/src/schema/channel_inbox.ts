@@ -7,6 +7,7 @@ import {
   timestamp,
   unique,
   check,
+  index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
@@ -102,6 +103,12 @@ export const channelInbox = pgTable(
     workspaceOrIdentityCheck: check(
       "channel_inbox_workspace_or_identity_check",
       sql`${t.workspaceId} IS NOT NULL OR ${t.chatIdentityId} IS NOT NULL`
+    ),
+    // Seat/capacity counting: inbox volume per workspace over time
+    // (subscription platform slice 0, spec §9).
+    workspaceCreatedIdx: index("channel_inbox_workspace_created_idx").on(
+      t.workspaceId,
+      t.createdAt
     ),
   })
 );

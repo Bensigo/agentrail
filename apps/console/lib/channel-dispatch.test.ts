@@ -2,6 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ClaimedChannelInboxRow } from "@agentrail/db-postgres";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  // #1517 — processRow's fire-and-forget back-stamp calls
+  // `stampChannelInboxWorkspace(db, ...).catch(...)`. Both are real exports
+  // this wholesale-mocked module must carry: `db` is only ever passed
+  // through (never dereferenced by the mock), but `stampChannelInboxWorkspace`
+  // MUST resolve to a Promise, not just exist — `vi.fn()`'s default return
+  // is `undefined`, and `undefined.catch(...)` throws synchronously (same as
+  // calling a missing export), which processRow's outer catch swallows into
+  // a silent failChannelMessage before getOrCreateJaceSession/fetch ever run.
+  db: {},
+  stampChannelInboxWorkspace: vi.fn().mockResolvedValue(undefined),
   reclaimStaleChannelMessages: vi.fn(),
   claimNextChannelMessage: vi.fn(),
   completeChannelMessage: vi.fn(),
@@ -28,7 +38,45 @@ vi.mock("@agentrail/db-postgres", () => ({
   // latch, discord/slack only.
   getThreadEngagement: vi.fn(),
   setThreadEngagement: vi.fn(),
+  // Seat claiming (slice 4 Task 2) — previously MISSING from this mock
+  // (channel-dispatch.ts already imported both; every existing test's
+  // fire-and-forget `claimSeatForServedTurn` call simply hit `undefined` and
+  // was swallowed by its own `.catch`, silently). Added here alongside the
+  // seat GATE mocks below because the gate's own wiring tests need to assert
+  // `claimSeat` was/was not called — a bare `vi.fn()` with no default return
+  // is a strict improvement over `undefined`, not a behavior change for any
+  // existing test (see this task's own report for the full "why this is
+  // safe" analysis).
+  getBillingAccountIdForWorkspace: vi.fn(),
+  claimSeat: vi.fn(),
+  // Chat seat GATE (spec §6, slice 5 Task 4) — `applySeatGateForServedTurn`'s
+  // own DB reads. Left with no default resolved value here; every existing
+  // test never reaches these (the arc kill-switch, mocked below via
+  // `./policy/feature-flags`, defaults to `undefined`/falsy after
+  // `vi.clearAllMocks()`, so `applySeatGateForServedTurn` returns `"pass"`
+  // before any of these are ever called) — only this file's own "chat seat
+  // gate" describe block sets them up.
+  hasActiveSeat: vi.fn(),
+  countActiveSeats: vi.fn(),
+  countActiveIdentitySeats: vi.fn(),
+  recordUpgradePromptOnce: vi.fn(),
+  getWorkspaceMembership: vi.fn(),
 }));
+
+// Chat seat gate (slice 5 Task 4): mock ONLY the two functions
+// `applySeatGateForServedTurn` reads, via `importOriginal` so every other
+// export of each module (unused here, but keeping the module "real"
+// otherwise avoids surprises for any future test in this file) stays live —
+// same convention `lib/policy/entitlement-wiring.test.ts` already
+// establishes for this exact pair of modules.
+vi.mock("./policy/resolve-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./policy/resolve-policy")>();
+  return { ...actual, resolvePolicyForWorkspace: vi.fn() };
+});
+vi.mock("./policy/feature-flags", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./policy/feature-flags")>();
+  return { ...actual, subscriptionsEnforced: vi.fn() };
+});
 
 // Stub ONLY the network-performing send; keep the REAL pure message
 // builders via importActual so wording changes can't silently drift
@@ -44,13 +92,24 @@ vi.mock("./telegram-system-message", async () => {
 });
 
 // #1284: Discord's own system-message sender, stubbed the same way.
+// `sendSystemDiscordMessagePreferFollowup` (Task 3) is the seat gate's own
+// discord sender (slice 5 Task 4) — added alongside its older sibling.
 vi.mock("./discord-system-message", () => ({
   sendSystemDiscordMessage: vi.fn(),
+  sendSystemDiscordMessagePreferFollowup: vi.fn(),
 }));
 
 // #1285: Slack's own system-message sender, stubbed the same way.
 vi.mock("./slack-system-message", () => ({
   sendSystemSlackMessage: vi.fn(),
+}));
+
+// Jace-opens-threads Task 2: stub ONLY the network-performing thread-create
+// call; `deriveThreadName` is pure text shaping (no I/O), so it is left REAL
+// throughout this file — matching this file's own "keep the real pure
+// builders" convention above.
+vi.mock("./discord-bot", () => ({
+  createDiscordThreadFromMessage: vi.fn(),
 }));
 
 import {
@@ -72,11 +131,23 @@ import {
   appendJaceMessage,
   getThreadEngagement,
   setThreadEngagement,
+  getBillingAccountIdForWorkspace,
+  claimSeat,
+  hasActiveSeat,
+  countActiveSeats,
+  countActiveIdentitySeats,
+  recordUpgradePromptOnce,
+  getWorkspaceMembership,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
-import { sendSystemDiscordMessage } from "./discord-system-message";
+import { sendSystemDiscordMessage, sendSystemDiscordMessagePreferFollowup } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
+import { createDiscordThreadFromMessage } from "./discord-bot";
 import { dispatchQueuedChannelMessages } from "./channel-dispatch";
+import { resolvePolicyForWorkspace } from "./policy/resolve-policy";
+import { subscriptionsEnforced } from "./policy/feature-flags";
+import { PLAN_POLICIES } from "./policy/plan-policies";
+import type { ResolvedPolicy } from "./policy/resolve-policy";
 
 const mockReclaim = vi.mocked(reclaimStaleChannelMessages);
 const mockClaim = vi.mocked(claimNextChannelMessage);
@@ -99,6 +170,17 @@ const mockRecordGuardrailEvent = vi.mocked(recordGuardrailEvent);
 const mockAppendJaceMessage = vi.mocked(appendJaceMessage);
 const mockGetThreadEngagement = vi.mocked(getThreadEngagement);
 const mockSetThreadEngagement = vi.mocked(setThreadEngagement);
+const mockCreateDiscordThread = vi.mocked(createDiscordThreadFromMessage);
+const mockGetBillingAccountIdForWorkspace = vi.mocked(getBillingAccountIdForWorkspace);
+const mockClaimSeat = vi.mocked(claimSeat);
+const mockSendSystemDiscordPreferFollowup = vi.mocked(sendSystemDiscordMessagePreferFollowup);
+const mockSubsEnforced = vi.mocked(subscriptionsEnforced);
+const mockResolvePolicy = vi.mocked(resolvePolicyForWorkspace);
+const mockHasActiveSeat = vi.mocked(hasActiveSeat);
+const mockCountActiveSeats = vi.mocked(countActiveSeats);
+const mockCountActiveIdentitySeats = vi.mocked(countActiveIdentitySeats);
+const mockRecordUpgradePromptOnce = vi.mocked(recordUpgradePromptOnce);
+const mockGetWorkspaceMembership = vi.mocked(getWorkspaceMembership);
 
 const mockFetch = vi.fn();
 
@@ -171,6 +253,14 @@ beforeEach(() => {
   // below for the tests that override this.
   mockGetThreadEngagement.mockResolvedValue(null);
   mockSetThreadEngagement.mockResolvedValue(undefined);
+  // Jace-opens-threads Task 2: a loud, obviously-wrong default so any
+  // accidental/unexpected call in a test that doesn't set up this feature
+  // fails clearly rather than silently succeeding with a made-up threadId.
+  mockCreateDiscordThread.mockResolvedValue({
+    ok: false,
+    error: "createDiscordThreadFromMessage called without test setup",
+  });
+  delete process.env["DISCORD_BOT_TOKEN"];
 });
 
 describe("dispatchQueuedChannelMessages — loop shape", () => {
@@ -405,7 +495,7 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
           channel: "slack",
           conversationKey: "C123:1700000000.000100",
           providerMessageId: "C123:1",
-          payload: { chatId: "C123", text: "/connect", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "/connect", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -423,7 +513,11 @@ describe("dispatchQueuedChannelMessages — '/connect' command (runs BEFORE 'ask
 
     await dispatchQueuedChannelMessages();
 
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("C123", "Connected to Acme.", "1700000000.000100");
+    // First arg: the Slack team id (Task 4), sourced from the row's own
+    // payload.teamId and threaded explicitly through to
+    // sendSystemSlackMessage — the team-scoped send needs it to resolve the
+    // right installation's token.
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "C123", "Connected to Acme.", "1700000000.000100");
   });
 
   it("a normal (non-'/connect') message row still reaches the Eve turn (no regression)", async () => {
@@ -912,6 +1006,49 @@ describe("dispatchQueuedChannelMessages — 'pinned' kind", () => {
 
     const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
     expect(body.target).toEqual({ chatId: -100123, messageThreadId: 77 });
+  });
+
+  it("extractPayload tolerantly accepts a string message_thread_id too (the webhook door's own convention — see connectors/telegram/webhook/route.ts)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi", messageThreadId: "77" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123, messageThreadId: "77" });
+  });
+
+  it("extractPayload omits messageThreadId entirely when the row's payload carries none — the default row() fixture, unchanged", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123 });
+    expect(body.target).not.toHaveProperty("messageThreadId");
+  });
+
+  it("extractPayload drops a malformed message_thread_id (neither number nor string) rather than forwarding garbage", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        row({ payload: { chatId: -100123, text: "hi", messageThreadId: { nested: true } } })
+      )
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123 });
+    expect(body.target).not.toHaveProperty("messageThreadId");
   });
 });
 
@@ -1454,6 +1591,66 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
   });
 });
 
+// --- Task 4 (docs/superpowers/specs/2026-07-29-slack-multi-workspace-
+// design.md §4): the Slack team id must travel EXPLICITLY, as a plain value,
+// from the row's own payload into `auth.attributes` — the ONE seam eve
+// forwards unchanged into the session Jace's slack channel reads back out to
+// choose which installation's bot token a reply gets posted with. Never
+// inferred from channel/conversationKey, never a default.
+describe("dispatchQueuedChannelMessages — Slack team id threads into auth.attributes (Task 4)", () => {
+  it("carries payload.teamId into auth.attributes for a Slack row", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        slackRow({ payload: { chatId: "D0PNCRP9N", text: "hello jace", teamId: "TEAM_A" } }),
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-team-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).toEqual({
+      chatIdentityId: "chat-slack-1",
+      workspaceId: null,
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+      teamId: "TEAM_A",
+    });
+  });
+
+  it("omits teamId from auth.attributes when the payload carries none (default Slack row, unchanged)", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-team-2" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).toEqual({
+      chatIdentityId: "chat-slack-1",
+      workspaceId: null,
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+    });
+    expect(body.auth.attributes).not.toHaveProperty("teamId");
+  });
+
+  it("never appears in auth.attributes for a Discord or Telegram row (Slack-only field)", async () => {
+    mockClaim.mockResolvedValueOnce(discordRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-team-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.auth.attributes).not.toHaveProperty("teamId");
+  });
+});
+
 // --- #1285: Slack rows ride the SAME dispatcher, additively -----------------
 //
 // Mirrors the Discord block above exactly: the Slack Events webhook route
@@ -1603,19 +1800,22 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
   it("'ask' kind on a slack row sends the workspace-choice message via sendSystemSlackMessage, never the other channels' senders", async () => {
     const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
-    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace", teamId: "T1" } })).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
     mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
 
     await dispatchQueuedChannelMessages();
 
+    // First arg: the Slack team id (Task 4), threaded through from the row's
+    // own payload.teamId — the team-scoped send needs it to resolve the
+    // right installation's token, never a default.
     // Third arg: the Slack thread id, sourced from the row's own
     // payload.threadTs. This DM-style row (a bare channel id conversationKey,
     // no threadTs in payload) has none — asserting `undefined` explicitly
     // here (not omitting the arg) is deliberate: the finding this guards
     // against is the console posting flat when it SHOULD be threaded, not
     // the reverse, so the exact call shape matters.
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
     expect(mockSendSystem).not.toHaveBeenCalled();
     expect(mockSendSystemDiscord).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
@@ -1624,7 +1824,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
 
   it("'ask' kind on a slack row: a valid workspace-name reply pins and sends the pin confirmation via sendSystemSlackMessage", async () => {
     const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
-    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "Acme" } })).mockResolvedValueOnce(null);
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "Acme", teamId: "T1" } })).mockResolvedValueOnce(null);
     mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
     mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
     mockPin.mockResolvedValue({ ok: true, sessionId: "pin-1" } as never);
@@ -1637,7 +1837,18 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       conversationKey: "D0PNCRP9N",
       workspaceId: "ws-1",
     });
-    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("T1", "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
+  });
+
+  it("'ask' kind on a slack row with NO teamId in the payload: sendSystemSlackMessage is still called, with undefined — never a guessed/default team", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith(undefined, "D0PNCRP9N", expect.stringContaining("Acme"), undefined);
   });
 
   // Final whole-branch review, finding #1 (critical): a channel conversation
@@ -1651,7 +1862,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       .mockResolvedValueOnce(
         slackRow({
           conversationKey: "C123:1700000000.000100",
-          payload: { chatId: "C123", text: "hey jace", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "hey jace", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -1661,6 +1872,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
     await dispatchQueuedChannelMessages();
 
     expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "T1",
       "C123",
       expect.stringContaining("Acme"),
       "1700000000.000100"
@@ -1673,7 +1885,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
       .mockResolvedValueOnce(
         slackRow({
           conversationKey: "C123:1700000000.000100",
-          payload: { chatId: "C123", text: "Acme", threadTs: "1700000000.000100" },
+          payload: { chatId: "C123", text: "Acme", threadTs: "1700000000.000100", teamId: "T1" },
         })
       )
       .mockResolvedValueOnce(null);
@@ -1684,6 +1896,7 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
     await dispatchQueuedChannelMessages();
 
     expect(mockSendSystemSlack).toHaveBeenCalledWith(
+      "T1",
       "C123",
       expect.stringContaining("Acme"),
       "1700000000.000100"
@@ -2428,5 +2641,786 @@ describe("dispatchQueuedChannelMessages — engagement decided before any guardr
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockComplete).toHaveBeenCalledWith("row-1");
     expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Jace-opens-threads Task 2: a Discord channel mention gets answered inside
+// its own NEW thread, so the channel stays clean and the thread needs no
+// further mentions. Scope was widened (coordinator-authorized) to also carry
+// a real Gateway `messageId` through discord-inbound.ts + its
+// runner/discord-inbound route — see this file's own
+// TelegramInboxPayload.messageId doc-comment for why `channel_inbox.payload`
+// never carried one before this.
+// ---------------------------------------------------------------------------
+describe("dispatchQueuedChannelMessages — discord thread relocation (Jace opens a thread when mentioned in a channel)", () => {
+  const DISCORD_TOKEN = "discord-bot-token-abc";
+
+  beforeEach(() => {
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-relocate",
+      sessionId: "s-relocate",
+      ambiguous: false,
+    } as never);
+    // A generic implementation (rather than a single mockResolvedValue) so
+    // the SAME mock correctly answers both the channel-keyed call every
+    // discord turn already makes AND the thread-keyed call relocation adds —
+    // each keyed by the conversationKey argument it was actually called with.
+    mockGetOrCreateSession.mockImplementation((_workspaceId, _channel, conversationKey) =>
+      Promise.resolve({ id: `ledger-${conversationKey}` } as never)
+    );
+    process.env["DISCORD_BOT_TOKEN"] = DISCORD_TOKEN;
+  });
+
+  afterEach(() => {
+    delete process.env["DISCORD_BOT_TOKEN"];
+  });
+
+  /** A genuine, un-threaded channel mention — every relocation condition
+   * satisfied unless a test overrides one. */
+  function mentionRow(overrides: Partial<ClaimedChannelInboxRow> & { payload?: Record<string, unknown> } = {}) {
+    return discordRow({
+      conversationKey: "998877",
+      senderId: "555",
+      providerMessageId: "998877:msg-100",
+      payload: {
+        chatId: "998877",
+        text: "how do I deploy this?",
+        threadId: null,
+        mentionsBot: true,
+        messageId: "msg-100",
+      },
+      ...overrides,
+    });
+  }
+
+  it("creates a thread from the mentioning message, and the hosted-inbound target's channelId and pinned conversationId are both the new thread id", async () => {
+    mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-1" });
+    mockClaim.mockResolvedValueOnce(mentionRow()).mockResolvedValueOnce(null);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).toHaveBeenCalledWith(
+      DISCORD_TOKEN,
+      "998877",
+      "msg-100",
+      "how do I deploy this?"
+    );
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.channel).toBe("discord");
+    expect(body.target.channelId).toBe("thread-new-1");
+    // #1479's session-continuity pin rides `conversationId` for discord —
+    // both must be the new thread id, never the channel's.
+    expect(body.target.conversationId).toBe("thread-new-1");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("derives the thread name from the CLEANSED text, never the raw text (finding B — a thread name is published to the whole channel sidebar)", async () => {
+    mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-pii" });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-750",
+          payload: {
+            chatId: "998877",
+            text: "my card is 4111 1111 1111 1111, can you check this charge?",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-750",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const name = mockCreateDiscordThread.mock.calls[0]?.[3];
+    expect(name).toContain("[redacted:card]");
+    expect(name).not.toContain("4111");
+  });
+
+  it("resolves the ledger session and persists engagement under the THREAD's key, and BINDS the Eve session to that row (the correctness crux)", async () => {
+    mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-2" });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-200",
+          payload: {
+            chatId: "998877",
+            text: "deploy status?",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-200",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    // The initial (pre-relocation) channel-keyed resolution still happens —
+    // expected, unrelated to the bug this test guards against.
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-relocate", "discord", "998877");
+    // The relocation redirect: a SECOND session, keyed on the thread.
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-relocate", "discord", "thread-new-2");
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "thread-new-2",
+      dormantSince: null,
+      engagedSpeakerId: "555",
+    });
+    // THE crux: if this bound the CHANNEL's ledger session instead, the next
+    // message in the thread would find no session and no engagement — a
+    // brand-new conversation with no memory, demanding another mention.
+    expect(mockBindEveSession).toHaveBeenCalledWith("ledger-thread-new-2", "eve-sess-1");
+  });
+
+  it("strips interactionToken/applicationId from auth.attributes for a relocated turn, keeping every other attribute intact", async () => {
+    mockCreateDiscordThread.mockResolvedValue({ ok: true, threadId: "thread-new-3" });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-300",
+          payload: {
+            chatId: "998877",
+            text: "please post the review",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-300",
+            interactionToken: "interaction-secret-abc",
+            applicationId: "app-42",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    // Whole-object assertion, not one field (this arc's own lesson: `toEqual`
+    // treats an `undefined`-valued key as equal to an omitted one — assert
+    // absence explicitly, and assert every surviving attribute too).
+    expect(body.auth.attributes).not.toHaveProperty("interactionToken");
+    expect(body.auth.attributes).not.toHaveProperty("applicationId");
+    expect(body.auth.attributes).toEqual({
+      chatIdentityId: "chat-discord-1",
+      workspaceId: "ws-relocate",
+      channel: "discord",
+      conversationKey: "998877",
+    });
+  });
+
+  it("does NOT create a thread for a message already inside one", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          conversationKey: "existing-thread-1",
+          providerMessageId: "998877:msg-400",
+          senderId: "555",
+          payload: {
+            chatId: "existing-thread-1",
+            text: "another question",
+            threadId: "existing-thread-1",
+            mentionsBot: true,
+            messageId: "msg-400",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("existing-thread-1");
+  });
+
+  it("does NOT create a thread for a DM (threadId null, mentionsBot false) — still reaches Eve unrelocated, a DM is always a turn", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          payload: {
+            chatId: "998877",
+            text: "hey are you there",
+            threadId: null,
+            mentionsBot: false,
+            messageId: "msg-500",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("998877");
+  });
+
+  it("a Telegram row never attempts thread creation and is otherwise byte-unchanged", async () => {
+    mockGetChatIdentity.mockResolvedValue(IDENTITY);
+    mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hello jace" } })).mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.channel).toBe("telegram");
+    expect(body.target).toEqual({ chatId: -100123 });
+  });
+
+  it("falls back to the unrelocated turn on thread-creation failure — original channelId, credential intact — and logs the status+code, never the token", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockCreateDiscordThread.mockResolvedValue({
+      ok: false,
+      error: "Discord rejected the thread-create request",
+      status: 403,
+      code: 50013,
+    });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-600",
+          payload: {
+            chatId: "998877",
+            text: "post the review please",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-600",
+            interactionToken: "super-secret-interaction-token",
+            applicationId: "app-77",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    // Unrelocated: original channel id, credential intact.
+    expect(body.target.channelId).toBe("998877");
+    expect(body.auth.attributes).toMatchObject({
+      interactionToken: "super-secret-interaction-token",
+      applicationId: "app-77",
+    });
+    // No SECOND (thread-keyed) engagement write — only the channel-keyed one
+    // Task 6's own decision already made, unrelated to relocation.
+    expect(mockSetThreadEngagement).toHaveBeenCalledTimes(1);
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "998877",
+      dormantSince: null,
+      engagedSpeakerId: "555",
+    });
+    const loggedLines = errorSpy.mock.calls.map((call) => call.join(" "));
+    expect(loggedLines.some((line) => line.includes("403") && line.includes("50013"))).toBe(true);
+    for (const line of loggedLines) {
+      expect(line).not.toContain("super-secret-interaction-token");
+    }
+    errorSpy.mockRestore();
+  });
+
+  it("treats Discord code 160004 ('thread already created for this message') as SUCCESS and relocates onto the existing thread, rather than falling back and splitting the conversation (finding A)", async () => {
+    mockCreateDiscordThread.mockResolvedValue({
+      ok: false,
+      error: "Discord rejected the thread-create request",
+      status: 400,
+      code: 160004,
+    });
+    mockClaim
+      .mockResolvedValueOnce(
+        mentionRow({
+          providerMessageId: "998877:msg-900",
+          payload: {
+            chatId: "998877",
+            text: "is the deploy done?",
+            threadId: null,
+            mentionsBot: true,
+            messageId: "msg-900",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    // Discord guarantees a thread's id equals its source message id, so the
+    // existing (already-created) thread is exactly `payload.messageId` —
+    // the turn must be relocated onto it, not left in the channel.
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("msg-900");
+    expect(body.target.conversationId).toBe("msg-900");
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-relocate", "discord", "msg-900");
+    expect(mockSetThreadEngagement).toHaveBeenCalledWith({
+      channel: "discord",
+      conversationKey: "msg-900",
+      dormantSince: null,
+      engagedSpeakerId: "555",
+    });
+    expect(mockBindEveSession).toHaveBeenCalledWith("ledger-msg-900", "eve-sess-1");
+  });
+
+  it("falls back to the unrelocated turn when DISCORD_BOT_TOKEN is not configured, never even attempting thread creation", async () => {
+    delete process.env["DISCORD_BOT_TOKEN"];
+    mockClaim.mockResolvedValueOnce(mentionRow()).mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("998877");
+  });
+
+  it("does NOT relocate when payload.messageId is absent — the /jace slash-command door's shape (an interaction has no backing message)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          payload: { chatId: "998877", text: "/jace fix the bug", threadId: null, mentionsBot: true },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("998877");
+  });
+
+  it("does NOT relocate when the engagement envelope isn't configured at all (no mentionsBot key — a pre-feature row)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          payload: { chatId: "998877", text: "hello jace", threadId: null, messageId: "msg-700" },
+        })
+      )
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+  });
+
+  it("does NOT relocate an 'intro' (pre-workspace) conversation — getOrCreateJaceSession requires a workspaceId", async () => {
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-relocate" } as never);
+    mockClaim.mockResolvedValueOnce(mentionRow()).mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockCreateDiscordThread).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target.channelId).toBe("998877");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat seat gate (spec docs/superpowers/specs/2026-07-29-subscription-
+// platform-design.md §6 "Enforcement seams" point 1, slice 5 Task 4):
+// `applySeatGateForServedTurn`'s WIRING at both call sites
+// (`processRow`/`processConsoleRow`) — that it sits in the right place
+// relative to the seat claim/guardrails/Eve, resolves its inputs from the
+// right mocks, and delivers through the right per-channel sender. The
+// decision math itself (`decideSeatGate`'s full truth table) and the exact
+// prompt copy (`buildSeatLimitPrompt`, with/without the /connect hint) are
+// already pinned, unmocked, in `channel-dispatch-seat-gate.test.ts` — this
+// file only proves the GLUE.
+// ---------------------------------------------------------------------------
+describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", () => {
+  /** Today's UTC day key, computed the same way `utcDayPeriodKey` does
+   * (`new Date().toISOString().slice(0, 10)`) — used to assert
+   * `recordUpgradePromptOnce`'s `periodKey` argument without hardcoding
+   * "today"'s date into the test. */
+  const TODAY_UTC = new Date().toISOString().slice(0, 10);
+
+  const SEAT_PROMPT_BASE =
+    "You've reached your team's seat limit. Upgrade your plan or remove an inactive member.";
+  const SEAT_PROMPT_WITH_HINT = `${SEAT_PROMPT_BASE} Already have a seat? Use /connect to link your account.`;
+
+  function resolved(overrides: Partial<ResolvedPolicy> = {}): ResolvedPolicy {
+    return {
+      policy: { ...PLAN_POLICIES.starter, seatLimit: 1 },
+      billingAccountId: "acct-1",
+      degraded: false,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    // Off by default — every test below that wants the gate live flips this
+    // on itself. Every other (pre-existing) test in this file never touches
+    // it, so it stays at vi.fn()'s post-clearAllMocks default (undefined,
+    // falsy) for them — byte-identical to the gate never having been added.
+    mockSubsEnforced.mockReturnValue(false);
+    mockResolvePolicy.mockResolvedValue(resolved());
+    mockHasActiveSeat.mockResolvedValue(false);
+    mockCountActiveSeats.mockResolvedValue(1);
+    mockCountActiveIdentitySeats.mockResolvedValue(0);
+    mockRecordUpgradePromptOnce.mockResolvedValue(true);
+    // `as never`: `getWorkspaceMembership`'s built .d.ts infers a
+    // non-nullable resolved type (a pre-existing `rows[0] ?? null` /
+    // no-noUncheckedIndexedAccess inference gap in
+    // packages/db-postgres/src/queries/index.ts — every real caller already
+    // works around it with a plain truthy check; the runtime absolutely can
+    // and does return null for "no membership row"). Same `as never` escape
+    // hatch this file already uses throughout for other mock-vs-inferred-type
+    // mismatches (e.g. `mockResolve.mockResolvedValue({...} as never)` above).
+    mockGetWorkspaceMembership.mockResolvedValue(null as never);
+  });
+
+  it("(a) flag off: the policy resolver is never called and dispatch is byte-identical (Eve still runs, row still completes)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockResolvePolicy).not.toHaveBeenCalled();
+    expect(mockHasActiveSeat).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("(b) enforced + at-cap new unlinked identity (telegram): delivers the byte-exact prompt WITH the /connect hint via sendSystemChannelMessage, completes the row, never claims a seat, never invokes Eve", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+    // IDENTITY (module-level fixture) carries no userId — unlinked — so this
+    // also exercises the /connect-hint branch end to end.
+    mockCountActiveIdentitySeats.mockResolvedValue(1);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    // Review round 1, hot-path cost finding: the gate must pass an injected
+    // zero-spend `fetchMonthSpendUsd` dep so a served turn never pays for a
+    // real ClickHouse economics aggregation it doesn't read. Asserted here
+    // (rather than only the shape) by actually invoking the captured
+    // function and confirming it resolves to 0 — proving the stub, not just
+    // its presence.
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
+    const resolvePolicyDeps = mockResolvePolicy.mock.calls[0]?.[1] as { fetchMonthSpendUsd: () => Promise<number> };
+    await expect(resolvePolicyDeps.fetchMonthSpendUsd()).resolves.toBe(0);
+    // hasActiveSeat/recordUpgradePromptOnce both take the mocked `db` (the
+    // module's `db: {}` fixture) as their FIRST argument.
+    expect(mockHasActiveSeat).toHaveBeenCalledWith(
+      {},
+      { billingAccountId: "acct-1", subject: { chatIdentityId: "chat-1" } }
+    );
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+      {},
+      {
+        billingAccountId: "acct-1",
+        kind: "seat_limit",
+        conversationKey: "-100123",
+        channel: "telegram",
+        periodKey: TODAY_UTC,
+      }
+    );
+    expect(mockSendSystem).toHaveBeenCalledWith("-100123", SEAT_PROMPT_WITH_HINT, undefined);
+    expect(mockSendSystemDiscordPreferFollowup).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockGetBillingAccountIdForWorkspace).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("(b) enforced + at-cap (discord): prefers sendSystemDiscordMessagePreferFollowup over the plain bot sender, reading interactionToken/applicationId off the payload", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockClaim
+      .mockResolvedValueOnce(
+        discordRow({
+          payload: {
+            chatId: "998877",
+            text: "hi jace",
+            interactionToken: "interaction-secret-abc",
+            applicationId: "app-42",
+          },
+        })
+      )
+      .mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+    mockCountActiveIdentitySeats.mockResolvedValue(0);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemDiscordPreferFollowup).toHaveBeenCalledWith({
+      channelId: "998877",
+      text: SEAT_PROMPT_BASE,
+      interactionToken: "interaction-secret-abc",
+      applicationId: "app-42",
+    });
+    expect(mockSendSystemDiscord).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    // Order hardening (review round 1): `deliverSeatLimitPromptForChatRow`'s
+    // own doc-comment calls this ordering MUST — the credential read (baked
+    // into the arguments above) and the send itself have to happen before
+    // `completeChannelMessage` scrubs `interactionToken`/`applicationId` from
+    // the STORED row. Pinning the actual call order (not just "both
+    // happened") is what would catch a future refactor that silently
+    // reorders them — today that reorder would be harmless (nothing re-reads
+    // this row's payload from the DB afterward), but it stops being harmless
+    // the moment something does.
+    const sendCallOrder = mockSendSystemDiscordPreferFollowup.mock.invocationCallOrder[0];
+    const completeCallOrder = mockComplete.mock.invocationCallOrder[0];
+    expect(sendCallOrder).toBeTypeOf("number");
+    expect(completeCallOrder).toBeTypeOf("number");
+    expect(sendCallOrder as number).toBeLessThan(completeCallOrder as number);
+  });
+
+  it("(b) enforced + at-cap (console): delivers via appendJaceMessage as a jace-role message, completes the row, never invokes Eve", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+    mockCountActiveIdentitySeats.mockResolvedValue(0);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-console-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
+    expect(mockHasActiveSeat).toHaveBeenCalledWith(
+      {},
+      { billingAccountId: "acct-1", subject: { userId: "user-1" } }
+    );
+    expect(mockAppendJaceMessage).toHaveBeenCalledWith({
+      workspaceId: "ws-console-1",
+      conversationKey: "console:user-1:1",
+      role: "jace",
+      text: SEAT_PROMPT_BASE,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("(delivery-throw hardening, review round 1) a deliver() throw still blocks the turn: row completed, Eve NOT invoked, no seat claimed over cap, failure logged with the '[seat-gate] prompt delivery failed' prefix — not swallowed into a generic fail-open", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // The console path's real delivery mechanism (appendJaceMessage) is
+    // exactly the "bare db.insert with no internal catch" the finding calls
+    // out — the most realistic vehicle for this scenario.
+    mockAppendJaceMessage.mockRejectedValueOnce(new Error("db insert failed"));
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+    mockCountActiveIdentitySeats.mockResolvedValue(0);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    // Delivery was attempted exactly once (the gate's own prompt) — never a
+    // second time, and never reaching the (later, unrelated) guardrail
+    // notice's own appendJaceMessage call, since the gate already
+    // completed-and-returned before guardrails ever run.
+    expect(mockAppendJaceMessage).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[seat-gate] prompt delivery failed"),
+      expect.anything()
+    );
+    // The OUTER, generic "[seat-gate] applySeatGateForServedTurn failed"
+    // fail-open log must NOT also have fired — this is the inner catch
+    // handling it, not the throw bubbling past the decision.
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("applySeatGateForServedTurn failed"),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("(identity-seat-count-failure hardening, review round 2 — mirrors the deliver-throw test above) a countActiveIdentitySeats() rejection still blocks the turn: row completed (still gated), the prompt is STILL delivered but WITHOUT the /connect hint, no seat claimed over cap, failure logged with the '[seat-gate] countActiveIdentitySeats failed' prefix — not swallowed into a generic fail-open", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockCountActiveIdentitySeats.mockRejectedValueOnce(new Error("db read failed"));
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    // Delivery was STILL attempted, with the un-hinted base prompt — a
+    // failed count degrades the COPY (drop the hint), never the decision to
+    // show a prompt at all.
+    expect(mockAppendJaceMessage).toHaveBeenCalledWith({
+      workspaceId: "ws-console-1",
+      conversationKey: "console:user-1:1",
+      role: "jace",
+      text: SEAT_PROMPT_BASE,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[seat-gate] countActiveIdentitySeats failed"),
+      expect.anything()
+    );
+    // Neither the delivery-specific catch's log NOR the outer generic
+    // fail-open log should have fired — this is the count's OWN narrow
+    // catch handling it, nothing bubbled past the decision.
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("prompt delivery failed"),
+      expect.anything()
+    );
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("applySeatGateForServedTurn failed"),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("(c) enforced + existing seat-holder: served normally (Eve runs), and the count/membership reads are skipped entirely (hot-path short-circuit)", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockHasActiveSeat.mockResolvedValue(true);
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockHasActiveSeat).toHaveBeenCalledTimes(1);
+    expect(mockCountActiveSeats).not.toHaveBeenCalled();
+    expect(mockGetWorkspaceMembership).not.toHaveBeenCalled();
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalled();
+    expect(mockSendSystem).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("(c) enforced + workspace owner/admin: served normally even though the account is at its seat cap (spec §5 rule 4 bypass)", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockHasActiveSeat.mockResolvedValue(false);
+    mockCountActiveSeats.mockResolvedValue(1);
+    mockGetWorkspaceMembership.mockResolvedValue({ userId: "user-42", workspaceId: "ws-1", role: "owner", createdAt: new Date() } as never);
+    mockClaim
+      .mockResolvedValueOnce(discordRow({ payload: { chatId: "998877", text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    // A LINKED identity — only a userId-bearing subject has a workspace role
+    // to check at all (an unlinked chat identity is never an admin).
+    mockGetChatIdentity.mockResolvedValue({ id: "chat-discord-1", platform: "discord", platformUserId: "555", userId: "user-42" } as never);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockGetWorkspaceMembership).toHaveBeenCalledWith("user-42", "ws-1");
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("(d) degraded policy: served normally, and hasActiveSeat is never even reached (degraded skips the gate before any seat read)", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue(resolved({ degraded: true }));
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
+    expect(mockHasActiveSeat).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("(d) null billingAccountId (no account bound yet — a transitional workspace): served normally, same skip as degraded", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue(resolved({ billingAccountId: null, degraded: false }));
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockHasActiveSeat).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("(e) CAS lost (another concurrent turn already prompted this conversation today): completes SILENTLY — no send, no /connect-hint read, no Eve", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockRecordUpgradePromptOnce.mockResolvedValue(false);
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+    expect(mockCountActiveIdentitySeats).not.toHaveBeenCalled();
+    expect(mockSendSystem).not.toHaveBeenCalled();
+    expect(mockSendSystemDiscordPreferFollowup).not.toHaveBeenCalled();
+    expect(mockAppendJaceMessage).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("skips the gate entirely for the 'intro' path (workspaceId null — nothing to count seats against yet)", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockResolvePolicy).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("any thrown error fails OPEN — served normally, with a namespaced [seat-gate] console.error", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockRejectedValue(new Error("boom: policy resolver down"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi jace" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-1" } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "sess-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[seat-gate]"),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
   });
 });

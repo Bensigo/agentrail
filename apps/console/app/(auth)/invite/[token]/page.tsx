@@ -5,6 +5,7 @@ import {
   claimInvitesForUser,
 } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
+import { claimSeatsForAcceptedInvites } from "../../../../lib/claim-invite-seats";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -117,7 +118,18 @@ export default async function InvitePage({ params }: Props) {
   }
 
   // Claim the invite
-  await claimInvitesForUser({ userId: session.user.id, email });
+  const claimedWorkspaceIds = await claimInvitesForUser({
+    userId: session.user.id,
+    email,
+  });
+
+  // Seat claim (spec §5 rule 1, slice 4 Task 3) — claims a seat for this
+  // user on the billing account of every workspace just claimed above.
+  // Awaited but the helper itself is non-fatal (never throws): a claim
+  // failure must never turn a successful invite accept into a failed one.
+  // See claim-invite-seats.ts's own doc-comment — this same hook also runs
+  // from the marketing landing page's identical claimInvitesForUser call.
+  await claimSeatsForAcceptedInvites(claimedWorkspaceIds, session.user.id);
 
   // After claiming, verify the invite was accepted
   const refreshed = await getInviteByToken(token);

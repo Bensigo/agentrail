@@ -11,6 +11,7 @@ import {
   getMembership,
 } from "../../../../lib/cached";
 import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
+import { subscriptionsEnforced } from "../../../../lib/policy/feature-flags";
 
 type SidebarUser = {
   name?: string | null;
@@ -21,13 +22,14 @@ type SidebarUser = {
 // Streams in the workspace list for the switcher without blocking the page
 // shell: the surrounding Suspense fallback renders the full sidebar (nav,
 // user, sign-out) immediately with an empty switcher.
-async function SidebarWithWorkspaces({
+export async function SidebarWithWorkspaces({
   userId,
   workspaceId,
   user,
   signOutAction,
   chatEnabled,
   goalsEnabled,
+  billingSwapEnabled,
 }: {
   userId: string;
   workspaceId: string;
@@ -35,6 +37,7 @@ async function SidebarWithWorkspaces({
   signOutAction: () => Promise<void>;
   chatEnabled: boolean;
   goalsEnabled: boolean;
+  billingSwapEnabled: boolean;
 }) {
   const workspaces = await getWorkspacesForUser(userId);
   return (
@@ -45,6 +48,7 @@ async function SidebarWithWorkspaces({
       signOutAction={signOutAction}
       chatEnabled={chatEnabled}
       goalsEnabled={goalsEnabled}
+      billingSwapEnabled={billingSwapEnabled}
     />
   );
 }
@@ -81,6 +85,12 @@ export default async function WorkspaceLayout({
   }
 
   const chatEnabled = isConsoleChatEnabled(workspaceId);
+  // Subscription-platform billing swap (slice 6 Task 4) — same arc kill
+  // switch every other billing gate reads (`channel-dispatch.ts`,
+  // `plan-card-data.ts`); hides Costs/Budget/Wallet from the customer
+  // sidebar without touching the pages themselves (spec §8 margin
+  // telemetry / staff-console seed stays URL-reachable either way).
+  const billingSwapEnabled = subscriptionsEnforced();
 
   return (
     <div className="flex min-h-screen">
@@ -93,6 +103,7 @@ export default async function WorkspaceLayout({
             signOutAction={handleSignOut}
             chatEnabled={chatEnabled}
             goalsEnabled={goalsEnabled}
+            billingSwapEnabled={billingSwapEnabled}
           />
         }
       >
@@ -103,6 +114,7 @@ export default async function WorkspaceLayout({
           signOutAction={handleSignOut}
           chatEnabled={chatEnabled}
           goalsEnabled={goalsEnabled}
+          billingSwapEnabled={billingSwapEnabled}
         />
       </Suspense>
       <div className="flex-1 pl-[220px] max-md:pl-12">

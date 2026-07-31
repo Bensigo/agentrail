@@ -289,7 +289,13 @@ export function GatewaysPanel({ workspaceId }: { workspaceId: string }) {
         </div>
       ) : (
         // Catalog order, as returned by the T2 route — never re-sorted.
-        <div className="grid grid-cols-1 items-start gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        //
+        // No `items-start`: grid's default `stretch` is what keeps every card
+        // in a row the same height. These cards carry different amounts of
+        // content — a linked one adds an "Open …" link, an unconfigured one
+        // adds two lines of explanation — so pinning them to their own content
+        // height left the row visibly ragged.
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
           {gateways.map((gateway) => (
             <GatewayCard key={gateway.kind} gateway={gateway} />
           ))}

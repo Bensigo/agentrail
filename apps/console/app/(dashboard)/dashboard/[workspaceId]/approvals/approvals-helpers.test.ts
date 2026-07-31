@@ -199,6 +199,137 @@ describe("summarizeApprovalToolInput — alignment_brief", () => {
   });
 });
 
+describe("summarizeApprovalToolInput — hideDollars option (subscription slice 6 Task 5)", () => {
+  describe("create_issue's tolerant _brief summary suffix", () => {
+    it("hideDollars: true — suffixes the lowercase scope word + 'task', never a dollar amount", () => {
+      const summary = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "Composed brief title", estimateUsd: 1.35 } },
+        { hideDollars: true }
+      );
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — small task",
+      });
+      expect(summary.fields.some((f) => f.value.includes("$"))).toBe(false);
+    });
+
+    it("hideDollars: true — scope tracks the estimate (medium/large)", () => {
+      const medium = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "t", estimateUsd: 4.2 } },
+        { hideDollars: true }
+      );
+      expect(medium.fields).toContainEqual({ label: "Brief", value: "t — medium task" });
+
+      const large = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "t", estimateUsd: 12.5 } },
+        { hideDollars: true }
+      );
+      expect(large.fields).toContainEqual({ label: "Brief", value: "t — large task" });
+    });
+
+    it("hideDollars omitted — byte-identical to the existing dollar-suffix pin", () => {
+      const summary = summarizeApprovalToolInput("create_issue", {
+        title: "x",
+        _brief: { title: "Composed brief title", estimateUsd: 12.5 },
+      });
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — ~$12.50",
+      });
+    });
+
+    it("hideDollars: false — explicit false behaves exactly like omitted", () => {
+      const summary = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "Composed brief title", estimateUsd: 12.5 } },
+        { hideDollars: false }
+      );
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — ~$12.50",
+      });
+    });
+  });
+
+  describe("alignment_brief's Scope/Estimate field", () => {
+    const INPUT = {
+      title: "Add dark mode",
+      taskType: "feature",
+      suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" },
+      estimateUsd: 4.2,
+    };
+
+    it("hideDollars: true — a 'Scope' field with the Title Case scope value, never 'Estimate', a dollar amount, or an arrow (review fix round 1: sweep extended to the arrow pattern)", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT, { hideDollars: true });
+      expect(summary.fields).toContainEqual({ label: "Scope", value: "Medium task" });
+      expect(summary.fields.some((f) => f.label === "Estimate")).toBe(false);
+      expect(summary.fields.some((f) => f.value.includes("$"))).toBe(false);
+      expect(summary.fields.some((f) => f.value.includes("→"))).toBe(false);
+    });
+
+    it("hideDollars omitted — byte-identical to the existing 'Estimate' pin", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT);
+      expect(summary.fields).toContainEqual({ label: "Estimate", value: "~$4.20" });
+      expect(summary.fields.some((f) => f.label === "Scope")).toBe(false);
+    });
+  });
+
+  // Review fix round 1 (Important finding 1 — model-name leak): the Task
+  // type field's suggested-model name, and the "Why"/modelSelectionReason
+  // field, are BOTH visible to any workspace member on the Approvals page —
+  // the plan's Global Constraint bans model names on any flag-on surface,
+  // not just dollar amounts.
+  describe("alignment_brief's Task type / Why fields never leak a model name (review fix round 1 — Important finding 1)", () => {
+    const INPUT_WITH_MODEL_AND_REASON = {
+      title: "Add dark mode",
+      taskType: "feature",
+      suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" },
+      estimateUsd: 4.2,
+      modelSelectionReason: "Claude Sonnet 5 — best success rate for feature (12 runs)",
+    };
+
+    it("hideDollars: true — Task type value is EXACTLY the task type, no arrow", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT_WITH_MODEL_AND_REASON, {
+        hideDollars: true,
+      });
+      expect(summary.fields).toContainEqual({ label: "Task type", value: "feature" });
+    });
+
+    it("hideDollars: true — no field's value contains the model display name, and there is no 'Why' field at all", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT_WITH_MODEL_AND_REASON, {
+        hideDollars: true,
+      });
+      expect(summary.fields.some((f) => f.value.includes("Claude Sonnet 5"))).toBe(false);
+      expect(summary.fields.some((f) => f.label === "Why")).toBe(false);
+    });
+
+    it("hideDollars: true, taskType absent but a model is present — still never reveals the model name (falls back to 'general')", () => {
+      const summary = summarizeApprovalToolInput(
+        "alignment_brief",
+        { title: "x", suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" } },
+        { hideDollars: true }
+      );
+      expect(summary.fields).toContainEqual({ label: "Task type", value: "general" });
+      expect(summary.fields.some((f) => f.value.includes("Claude Sonnet 5"))).toBe(false);
+    });
+
+    it("hideDollars omitted — byte-identical to the existing pins (arrow + model name in Task type, Why field present)", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT_WITH_MODEL_AND_REASON);
+      expect(summary.fields).toContainEqual({
+        label: "Task type",
+        value: "feature → Claude Sonnet 5",
+      });
+      expect(summary.fields).toContainEqual({
+        label: "Why",
+        value: "Claude Sonnet 5 — best success rate for feature (12 runs)",
+      });
+    });
+  });
+});
+
 describe("summarizeApprovalToolInput — unknown tool fallback", () => {
   it("headlines the raw tool name and lists key:value fields", () => {
     const summary = summarizeApprovalToolInput("some_future_tool", { foo: "bar", count: 3 });

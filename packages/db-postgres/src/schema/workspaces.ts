@@ -7,6 +7,7 @@ import {
   boolean,
   numeric,
 } from "drizzle-orm/pg-core";
+import { billingAccounts } from "./billing_accounts.js";
 
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -115,6 +116,27 @@ export const workspaces = pgTable("workspaces", {
   githubInstallState: text("github_install_state"),
   githubInstallStateExpiresAt: timestamp("github_install_state_expires_at", {
     withTimezone: true,
+  }),
+  // Subscription platform (spec docs/superpowers/specs/2026-07-29-subscription-platform-design.md
+  // §3 "Platform architecture"). Billing moves ABOVE workspaces — this FK
+  // points at the account that owns this workspace's plan, Stripe
+  // subscription, and seats; multiple workspaces can share one account.
+  // NULLABLE here even though spec §3 calls it "not null after backfill":
+  // the backfill migration (next task) back-stamps one trial account onto
+  // every existing row, but drizzle stays nullable so a workspace created
+  // between this schema landing and that migration running never violates
+  // a not-null constraint the database doesn't have yet — old in-flight
+  // rows can't fail an insert on a column they don't know about. The
+  // policy resolver (`resolvePolicyForWorkspace`, a later slice) treats
+  // NULL exactly like a fresh trial: no billing account yet is the
+  // default, never an error. ON DELETE SET NULL, not CASCADE — same
+  // "column ships before enforcement" posture as hostedExecution /
+  // monthlyBudgetUsd above: losing the billing account row must never
+  // cascade into deleting a real workspace and its runs, it just falls
+  // back to the same NULL-is-trial default. No UI to set this yet — the
+  // backfill migration and, later, checkout (slice 3) are what populate it.
+  billingAccountId: uuid("billing_account_id").references(() => billingAccounts.id, {
+    onDelete: "set null",
   }),
 });
 

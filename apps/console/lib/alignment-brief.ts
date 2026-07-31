@@ -25,6 +25,16 @@
  * around. This keeps every existing synchronous call site (including every
  * pre-#1338 test that calls these two functions directly, with no `await`)
  * completely unaffected.
+ *
+ * Subscription-platform slice 2, Task 11 — {@link resolveModelSelectionForBrief}
+ * is also the single ADMISSION call site (spec §4/§6 gate 4, "the profile
+ * entitlement filter ... inside model selection"): the only place in the
+ * codebase that resolves a billing policy and turns it into
+ * `selector.ts`'s `SelectExecuteModelOptions.allowedProfiles`. Entirely
+ * layered on top of the #1338 flag above, behind its OWN separate kill
+ * switch (`lib/policy/feature-flags.ts`'s `subscriptionsEnforced`) — see
+ * this function's own doc comment for the exact wiring and the `degraded`
+ * hard contract it honors.
  */
 
 import { estimateBrief, classifyTaskType, isModelSelectionLearningEnabled } from "./alignment";
@@ -35,7 +45,20 @@ import type { TaskType, ModelSeat } from "./alignment";
 // transitively pulls in @agentrail/db-postgres (see index.ts's own module
 // doc for the build failure this avoids).
 import { selectExecuteModel, describeModelSelection } from "./alignment/selector";
+import type { SelectExecuteModelOptions } from "./alignment/selector";
+import type { QualityProfile } from "./alignment/quality-profile";
 import { validateAcceptanceCriteria } from "@agentrail/db-postgres";
+// Subscription-platform slice 2, Task 11 — the admission-side entitlement
+// filter. `alignment-brief.ts` lives OUTSIDE `lib/alignment/` (it's a
+// sibling file, not a member of that directory), so importing `lib/policy/`
+// here does not trip `lib/alignment/import-direction.test.ts`'s "routing
+// never imports billing" guard — that guard scans `lib/alignment/`'s own
+// files only. This is deliberately the ONLY file outside `lib/policy/`
+// itself that imports these.
+import { subscriptionsEnforced } from "./policy/feature-flags";
+import { resolvePolicyForWorkspace } from "./policy/resolve-policy";
+import { classifyTaskProfile } from "./policy/classify-task";
+import { allowedProfilesFor } from "./policy/allowed-profiles";
 
 /**
  * An already-resolved execute-model pick to feed into
@@ -51,13 +74,82 @@ export interface ModelSelectionForBrief {
   reasonText: string;
 }
 
+/** Ascending reasoning-level order, matching `allowed-profiles.ts`'s own — the highest-ranked member of a non-empty `allowedProfiles` set is what `profile_downgraded` telemetry below calls "served". */
+const QUALITY_PROFILE_RANK_ASCENDING: readonly QualityProfile[] = ["economy", "standard", "premium"];
+
+/**
+ * The best profile a task will actually be SERVED under `allowed` — the
+ * highest-ranked member present. `undefined` only for the degenerate empty
+ * set (no real `PLAN_POLICIES` constant produces this today — see
+ * `allowed-profiles.ts`'s own module doc — a defensive fallback for a
+ * self-contradictory policy override, not a modeled scenario).
+ */
+function highestAllowedProfile(allowed: ReadonlySet<QualityProfile>): QualityProfile | undefined {
+  for (let i = QUALITY_PROFILE_RANK_ASCENDING.length - 1; i >= 0; i--) {
+    const profile = QUALITY_PROFILE_RANK_ASCENDING[i];
+    if (allowed.has(profile)) return profile;
+  }
+  return undefined;
+}
+
+/**
+ * Subscription-platform slice 2, Task 11 — the admission-side entitlement
+ * filter, computed ONLY when `subscriptionsEnforced()` (the arc's own kill
+ * switch, `policy/feature-flags.ts`) is on. Resolves `workspaceId`'s billing
+ * policy and turns it into a `SelectExecuteModelOptions` to merge into the
+ * `selectExecuteModel` call below.
+ *
+ * **Hard contract**: `resolvePolicyForWorkspace`'s own doc comment states
+ * `degraded: true` means every enforcement consumer MUST skip gating on it
+ * — this function honors that literally: a degraded resolution returns
+ * `undefined` (no filter) rather than risk enforcing against incomplete
+ * billing data. `undefined` (not `{}`) is deliberate: it lets the caller
+ * below fall through to the exact pre-Task-11 two-argument
+ * `selectExecuteModel(taskType, workspaceId)` call rather than a
+ * three-argument call with an empty options object — behaviorally identical
+ * either way, but keeping the literal call shape unchanged when there is
+ * truly nothing to filter is one less thing for a caller (or a strict
+ * `toHaveBeenCalledWith` assertion, see `alignment-brief.model-selection.test.ts`)
+ * to have to reason about.
+ *
+ * Also logs the spec's `profile_downgraded` measurement tag (§4 constraint
+ * 4) when the classifier's own answer (`classified`) isn't in the entitled
+ * set — i.e. the task is about to run at a lower profile than stage 1 asked
+ * for. ClickHouse wiring for this telemetry is a later slice's job; this is
+ * `console.warn` only.
+ */
+async function resolveAdmissionFilter(
+  workspaceId: string,
+  taskType: TaskType
+): Promise<SelectExecuteModelOptions | undefined> {
+  const resolvedPolicy = await resolvePolicyForWorkspace(workspaceId);
+  if (resolvedPolicy.degraded) {
+    return undefined;
+  }
+
+  const classified = classifyTaskProfile(taskType);
+  const allowed = allowedProfilesFor(resolvedPolicy.policy, classified);
+
+  if (!allowed.has(classified)) {
+    console.warn("[alignment-brief] profile_downgraded", {
+      workspaceId,
+      taskType,
+      classified,
+      served: highestAllowedProfile(allowed),
+    });
+  }
+
+  return { allowedProfiles: allowed };
+}
+
 /**
  * #1338 PR② — resolve the model-selection override for a brief, if the
  * feature flag (`feature-flags.ts`) is on for `workspaceId`. This is the
  * ONE place in the whole alignment-brief compose path that touches the
- * database (via `selectExecuteModel` -> `getModelOutcomeStats`) — isolated
- * here so `estimateBrief` and `composeAlignmentBrief`/`composeChatBornBrief`
- * all stay synchronous and side-effect-free, exactly as before #1338.
+ * database (via `selectExecuteModel` -> `getModelOutcomeStats`, and — Task
+ * 11 — `resolvePolicyForWorkspace`) — isolated here so `estimateBrief` and
+ * `composeAlignmentBrief`/`composeChatBornBrief` all stay synchronous and
+ * side-effect-free, exactly as before #1338.
  *
  * Returns `undefined` (falling back to `MODEL_CATALOG[taskType]`,
  * byte-identical to pre-#1338 behavior) when: the flag is off, `workspaceId`
@@ -66,6 +158,18 @@ export interface ModelSelectionForBrief {
  * anyway), or `selectExecuteModel` itself throws (fail-safe: a selector bug
  * or a transient DB error must never block posting a brief — the caller
  * still gets a usable static-catalog brief instead of an unhandled 500).
+ *
+ * Task 11: when `subscriptionsEnforced()`, ALSO resolves the billing-plan
+ * entitlement filter (`resolveAdmissionFilter` above) and merges it into the
+ * options passed to `selectExecuteModel` — wrapped inside this same `try`,
+ * so a `resolvePolicyForWorkspace` failure (contractually never supposed to
+ * throw — see its own doc comment — but defended here anyway, matching this
+ * function's existing fail-safe posture) degrades exactly like a
+ * `selectExecuteModel` failure: log loudly, fall back to
+ * `MODEL_CATALOG[taskType]`, never block posting a brief. When the flag is
+ * off (the default), `resolvePolicyForWorkspace` is never called at all and
+ * `selectExecuteModel` receives no filter — byte-identical to pre-Task-11
+ * behavior.
  */
 export async function resolveModelSelectionForBrief(
   taskInput: { title: string; whatToBuild: string; acceptanceCriteria: string[] },
@@ -77,7 +181,18 @@ export async function resolveModelSelectionForBrief(
 
   const taskType = classifyTaskType(taskInput);
   try {
-    const selection = await selectExecuteModel(taskType, workspaceId);
+    const admissionFilter = subscriptionsEnforced()
+      ? await resolveAdmissionFilter(workspaceId, taskType)
+      : undefined;
+
+    // Two call shapes, not one call with a possibly-empty options object:
+    // preserves the EXACT pre-Task-11 two-argument call whenever there is no
+    // filter to apply (flag off, or a degraded policy resolution), so the
+    // flag-off path stays call-for-call byte-identical, not merely
+    // behaviorally equivalent.
+    const selection = admissionFilter
+      ? await selectExecuteModel(taskType, workspaceId, admissionFilter)
+      : await selectExecuteModel(taskType, workspaceId);
     return {
       model: selection.model,
       reasonText: describeModelSelection(taskType, selection),

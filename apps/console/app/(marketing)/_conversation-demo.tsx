@@ -9,19 +9,28 @@ import {
   getDemoBrief,
   getDemoOutcomeMessage,
 } from "./_conversation-demo-data";
+import { scopeSentence } from "../../lib/approval-scope";
 
 /**
  * The landing page's centerpiece (#1279 PR ①, replacing `_dashboard-demo.tsx`,
  * TASTE.md's landing directive: "a real chat conversation with Jace — never
  * a dashboard mockup"). A visitor didn't really send this message, but every
- * FIELD in Jace's reply is the real product's own render: task type,
- * suggested model, and the ~$ estimate are computed live by the real
- * estimate lib, and the run-outcome ping below is byte-identical to what
- * `buildOutcomeMessage` actually sends over Telegram — see
- * `_conversation-demo-data.ts` for the drift-guarded numbers, and
- * `apps/console/lib/approval-message.ts`'s `renderAlignmentBrief` for the
- * real chat rendering this mirrors. The "✅ Approve" button's wording matches
- * the real Telegram inline keyboard exactly (`.../connectors/secret/telegram.ts`,
+ * FIELD in Jace's reply is the real product's own render: task type and
+ * suggested model are computed live by the real estimate lib, and the scope
+ * line below them is `../../lib/approval-scope.ts`'s `scopeSentence`, fed
+ * that SAME live `estimateUsd` — the identical pure helper
+ * `apps/console/lib/approval-message.ts`'s `renderAlignmentBrief` calls when
+ * `BILLING_SUBSCRIPTIONS_ENFORCED` is on. This demo renders it
+ * UNCONDITIONALLY, never the dollar wording that renderer falls back to
+ * when the flag is off (subscription-platform slice 6 Task 5: marketing
+ * mirrors the flag-on product, deliberately not gated on the flag itself —
+ * a visitor never sees a raw dollar estimate here even while the console's
+ * own flag defaults off). The run-outcome ping below is a SEPARATE message
+ * (sent after a run finishes, reporting real spend) and is untouched by
+ * Task 5 — it stays byte-identical to what `buildOutcomeMessage` actually
+ * sends over Telegram — see `_conversation-demo-data.ts` for the
+ * drift-guarded numbers. The "✅ Approve" button's wording matches the real
+ * Telegram inline keyboard exactly (`.../connectors/secret/telegram.ts`,
  * which also renders a "❌ Deny" button not reproduced here — this demo only
  * walks the approve path).
  *
@@ -130,7 +139,7 @@ export function ConversationDemo({
             Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
           </p>
           <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
-            Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
+            {scopeSentence(brief.estimateUsd)}
           </p>
           <span aria-hidden className="text-label mt-1 block text-right text-[var(--gray-11)]">
             6:08 PM

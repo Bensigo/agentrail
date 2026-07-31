@@ -4,6 +4,8 @@ import {
   bindChatIdentityUser,
   bindChatIdentityWorkspace,
   listWorkspacesForUser,
+  collapseIdentitySeatsForUser,
+  db,
 } from "@agentrail/db-postgres";
 import { decideConnectIdentityBind } from "../../../../lib/connect-bind-decision";
 import { sendConnectBindConfirmation } from "../../../../lib/connect-bind-confirmation";
@@ -131,6 +133,46 @@ export default async function ConnectPage({ params }: Props) {
 
   if (decision.kind === "fresh_bind") {
     await bindChatIdentityUser(identity.id, session.user.id);
+
+    // Seat collapse (spec §5.3's linking nudge made real; spec §5 rule 3,
+    // docs/superpowers/specs/2026-07-29-subscription-platform-design.md):
+    // this identity just became linked to a console user for the FIRST
+    // time, so this is exactly the moment any identity-seats it holds
+    // should collapse into a user-seat, freeing capacity — see
+    // collapseIdentitySeatsForUser's own doc-comment (db-postgres
+    // queries/seats.ts) for the full one-transaction claim-then-release
+    // shape. Deliberately scoped to ONLY this branch, not hoisted above the
+    // `already_yours` check too: a re-redemption's identity was already
+    // linked by an earlier fresh_bind pass, so any collapse-eligible seats
+    // already collapsed then — running it again on every idempotent reload
+    // would only add a redundant transaction, never find anything left to
+    // do.
+    //
+    // Placement: BEFORE the workspace-bind and owner-elect steps below, and
+    // deliberately not reordered relative to them — this only ever needs
+    // `identity.id` and `session.user.id`, both already available, so there
+    // is no reason to delay it behind steps it doesn't depend on. Awaited,
+    // same as the bind above (this is a plain sequential connect step, not
+    // a fire-and-forget like sendConnectBindConfirmation further down), but
+    // wrapped in its OWN try/catch and deliberately NON-FATAL — same
+    // discipline as claimSeatsForAcceptedInvites (lib/claim-invite-seats.ts,
+    // slice 4 Task 3's sibling seat hook) and claimSeatForServedTurn
+    // (lib/channel-dispatch.ts): a collapse failure is capacity
+    // bookkeeping, not correctness-critical to the connect flow, and must
+    // never undo the identity bind that already succeeded above, or block
+    // the workspace-bind / owner-elect-completion steps that follow —
+    // regardless of whether the collapse itself succeeded or failed.
+    try {
+      await collapseIdentitySeatsForUser(db, {
+        chatIdentityId: identity.id,
+        userId: session.user.id,
+      });
+    } catch (err) {
+      console.error(
+        `[connect] collapseIdentitySeatsForUser failed (chatIdentityId=${identity.id}, userId=${session.user.id}):`,
+        err instanceof Error ? err.message : String(err)
+      );
+    }
   }
 
   if (decision.workspaceDecision.action === "bind") {

@@ -302,4 +302,27 @@ describe("admitDiscordChannelMessage", () => {
     expect(enqueueArgs.payload).not.toHaveProperty("interactionToken");
     expect(enqueueArgs.payload).not.toHaveProperty("applicationId");
   });
+
+  // --- messageId (Jace-opens-threads Task 2 scope widening): the Gateway
+  // listener's real message id, needed downstream by channel-dispatch.ts to
+  // create a thread from the mentioning message. The slash-command webhook
+  // door has no backing message for an interaction, so it never supplies
+  // this — omitted entirely there, never written as `undefined`.
+  describe("messageId (channel-relocation prerequisite)", () => {
+    it("carries messageId into the payload when supplied", async () => {
+      await admitDiscordChannelMessage(
+        baseMessage({ mentionsBot: true, messageId: "msg-real-123" })
+      );
+
+      const enqueueArgs = mockEnqueue.mock.calls[0]?.[0] as { payload: Record<string, unknown> };
+      expect(enqueueArgs.payload).toMatchObject({ messageId: "msg-real-123" });
+    });
+
+    it("omits messageId entirely when not supplied (never writes it as undefined) — the slash-command door's shape", async () => {
+      await admitDiscordChannelMessage(baseMessage({ mentionsBot: true }));
+
+      const enqueueArgs = mockEnqueue.mock.calls[0]?.[0] as { payload: Record<string, unknown> };
+      expect(enqueueArgs.payload).not.toHaveProperty("messageId");
+    });
+  });
 });

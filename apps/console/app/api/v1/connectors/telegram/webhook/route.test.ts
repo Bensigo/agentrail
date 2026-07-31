@@ -1270,3 +1270,64 @@ describe("POST /api/v1/connectors/telegram/webhook — reply_to_message -> reply
     expect(JSON.stringify(enqueueArgs.payload)).not.toContain("9999");
   });
 });
+
+// --- subscription-platform spec §6, delivery trap #2: message_thread_id ---
+
+describe("POST /api/v1/connectors/telegram/webhook — message_thread_id capture (delivery trap #2)", () => {
+  beforeEach(() => {
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: "ws-1" } as never,
+      created: false,
+      disposition: "bound",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  it("captures message_thread_id onto the payload, as a string, for a forum-topic message", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          chat: { id: -100123, type: "supergroup" },
+          message_thread_id: 55,
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({ messageThreadId: "55" });
+  });
+
+  it("omits messageThreadId entirely (not just undefined) when Telegram sends no message_thread_id — the overwhelming majority of messages (DMs, non-forum groups, the General topic)", async () => {
+    const res = await POST(req(messageUpdate(), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("messageThreadId");
+  });
+
+  it("PINS current behavior for a malformed (non-numeric) message_thread_id: presence-only capture stores whatever String() produces, unvalidated — this door does no type-checking of its own (see TelegramMessage.message_thread_id's doc-comment); an internet-reachable endpoint, so a future change here should be deliberate, not silent", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          chat: { id: -100123, type: "supergroup" },
+          // A real Telegram Update always sends an integer here; this is a
+          // forged/malformed body exercising what THIS door actually does
+          // with one today (nothing downstream trusts it blindly — see the
+          // route's own doc-comment on the two consumer paths' differing
+          // safety margins).
+          message_thread_id: {},
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({
+      messageThreadId: "[object Object]",
+    });
+  });
+});

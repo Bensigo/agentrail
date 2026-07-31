@@ -1,4 +1,5 @@
 import { sanitizeField } from "../../../../../lib/approval-message";
+import { scopeFieldValue, scopeForEstimate } from "../../../../../lib/approval-scope";
 
 /**
  * Pure formatting/derivation helpers for the workspace Approvals page
@@ -17,7 +18,16 @@ import { sanitizeField } from "../../../../../lib/approval-message";
  * come from that package (the alignment park-reason constant
  * `isAlignmentLocked` compares against), the SERVER component (`page.tsx`)
  * imports the real constant and passes it through as a plain string.
- * `lib/approval-message` is safe: it's pure (zero imports) by design.
+ * `lib/approval-message` is safe: its own imports (subscription-platform
+ * slice 6 Task 5) are themselves pure, with no node-builtins. THIS module
+ * goes one step further and NEVER imports the flag itself
+ * (`lib/policy/feature-flags.ts`'s `subscriptionsEnforced`) — a
+ * `hideDollars` boolean arrives as an options param on every `summarize*`
+ * function below instead (see `ApprovalSummaryOptions`), threaded in from
+ * the server page via `PendingApprovalsList`'s prop — same "server computes
+ * it, client receives a prop" posture as `Sidebar`'s `billingSwapEnabled`
+ * (slice 6 Task 4). `lib/approval-scope` (the scope thresholds/wording) is
+ * imported directly here since it, too, is pure and flag-free.
  *
  * SANITIZATION (#1276 fix round, review finding I1): every model-authored
  * `toolInput` field rendered here runs through the chat renderer's own
@@ -80,6 +90,23 @@ export interface ApprovalSummary {
   fields: ApprovalSummaryField[];
 }
 
+/**
+ * Options threaded through every `summarize*` function below (subscription-
+ * platform slice 6 Task 5). `hideDollars` swaps every dollar-shaped string
+ * this module would otherwise render — the tolerant brief summary's
+ * `~$X.XX` suffix, the alignment brief's `Estimate` field — for the scope
+ * vocabulary (`../../../../../lib/approval-scope.ts`: single-sourced
+ * thresholds/wording, imported directly since it's pure and flag-free — see
+ * this file's header comment). Set server-side from `subscriptionsEnforced()`
+ * by the page that renders `PendingApprovalsList`, and threaded down as a
+ * plain boolean prop from there. Omitted, or `{ hideDollars: false }`,
+ * renders byte-identical to before this option existed — every pre-Task-5
+ * call site (and test) keeps working unchanged.
+ */
+export interface ApprovalSummaryOptions {
+  hideDollars?: boolean;
+}
+
 /** Cap on how many `toolInput` keys the unknown-tool fallback renders — same rationale and same number as `approval-message.ts`'s `GENERIC_FALLBACK_MAX_KEYS`: a wide/adversarial object could otherwise bury the useful bit under key noise. Combined with the per-field caps below (60/key + 200/value), this bounds the whole fallback summary to ~3.2KB — the structured-fields analog of the chat side's `hardTruncate` total cap. */
 const GENERIC_FALLBACK_MAX_FIELDS = 12;
 
@@ -96,8 +123,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `title` and/or `estimateUsd`, and returns `null` (rendering nothing, never
  * throwing) for absolutely any other shape — a string, an array, a number, an
  * object missing both fields, or the key simply not being present at all.
+ *
+ * `opts.hideDollars` (subscription slice 6 Task 5) swaps the `~$X.XX`
+ * suffix for `` `${scope} task` `` (lowercase, e.g. "small task" —
+ * `approval-scope.ts`'s `scopeForEstimate`) — see `ApprovalSummaryOptions`.
  */
-function tolerantBriefSummary(value: unknown): string | null {
+function tolerantBriefSummary(value: unknown, opts?: ApprovalSummaryOptions): string | null {
   if (!isPlainObject(value)) return null;
   const title = typeof value["title"] === "string" ? sanitizeField(value["title"], 200) : "";
   const estimateUsd =
@@ -107,7 +138,11 @@ function tolerantBriefSummary(value: unknown): string | null {
   if (!title && estimateUsd === null) return null;
   const parts: string[] = [];
   if (title) parts.push(title);
-  if (estimateUsd !== null) parts.push(`~$${estimateUsd.toFixed(2)}`);
+  if (estimateUsd !== null) {
+    parts.push(
+      opts?.hideDollars ? `${scopeForEstimate(estimateUsd)} task` : `~$${estimateUsd.toFixed(2)}`
+    );
+  }
   return parts.join(" — ");
 }
 
@@ -115,10 +150,13 @@ function tolerantBriefSummary(value: unknown): string | null {
 // field-for-field (title 200, workspace name 80, repo name 100, taskType 40,
 // model displayName 60, generic key 60 / value 200, toolName 100).
 
-function summarizeCreateIssue(input: Record<string, unknown>): ApprovalSummary {
+function summarizeCreateIssue(
+  input: Record<string, unknown>,
+  opts?: ApprovalSummaryOptions
+): ApprovalSummary {
   const headline = sanitizeField(input["title"], 200) || "(untitled)";
   const fields: ApprovalSummaryField[] = [];
-  const brief = tolerantBriefSummary(input["_brief"]);
+  const brief = tolerantBriefSummary(input["_brief"], opts);
   if (brief) fields.push({ label: "Brief", value: brief });
   return { headline, fields };
 }
@@ -139,8 +177,28 @@ function summarizeCreateRepo(input: Record<string, unknown>): ApprovalSummary {
   };
 }
 
-/** Mirrors `approval-message.ts`'s `renderAlignmentBrief` field selection (task type, suggested model, why, estimate) — same content, same caps, React-structured. */
-function summarizeAlignmentBrief(input: Record<string, unknown>): ApprovalSummary {
+/**
+ * Mirrors `approval-message.ts`'s `renderAlignmentBrief` field selection
+ * (task type, suggested model, why, estimate/scope) — same content, same
+ * caps, React-structured. `opts.hideDollars` (subscription slice 6 Task 5)
+ * swaps the `{ label: "Estimate", value: "~$X.XX" }` field for
+ * `{ label: "Scope", value: scopeFieldValue(...) }` — same swap
+ * `renderAlignmentBrief` makes for its own dollar line, mirrored here.
+ *
+ * Review fix round 1 (Important finding 1 — model-name leak): the plan's
+ * Global Constraint ("Customer never sees dollars, MODEL NAMES, or the word
+ * 'budget'" when the flag is on) covers more than the Estimate/Scope swap —
+ * `opts.hideDollars` ALSO strips the suggested-model name off the Task type
+ * field (value becomes just the task type, e.g. `"feature"`, never
+ * `"feature → Claude Sonnet 5"`) and omits the "Why" field entirely
+ * (`modelSelectionReason` narrates model-selection choices in prose, which
+ * is exactly the kind of internal detail this constraint bans). No opts ⇒
+ * byte-identical to before this fix — every pre-existing pin keeps passing.
+ */
+function summarizeAlignmentBrief(
+  input: Record<string, unknown>,
+  opts?: ApprovalSummaryOptions
+): ApprovalSummary {
   const headline = sanitizeField(input["title"], 200) || "(untitled)";
   const fields: ApprovalSummaryField[] = [];
 
@@ -152,24 +210,36 @@ function summarizeAlignmentBrief(input: Record<string, unknown>): ApprovalSummar
   if (taskType || suggestedModelDisplayName) {
     fields.push({
       label: "Task type",
-      value: suggestedModelDisplayName
-        ? `${taskType || "general"} → ${suggestedModelDisplayName}`
-        : taskType || "general",
+      value: opts?.hideDollars
+        ? taskType || "general"
+        : suggestedModelDisplayName
+          ? `${taskType || "general"} → ${suggestedModelDisplayName}`
+          : taskType || "general",
     });
   }
 
   // #1338 PR② — the model-selection learning loop's precomputed one-line
   // rationale (see approval-message.ts's own "Why:" line for the full
   // provenance); present only when the feature flag was on at compose time,
-  // absent (byte-identical to pre-#1338) otherwise.
-  const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
-  if (modelSelectionReason) {
-    fields.push({ label: "Why", value: modelSelectionReason });
+  // absent (byte-identical to pre-#1338) otherwise. Also omitted entirely
+  // whenever `opts.hideDollars` (review fix round 1, Important finding 1):
+  // this rationale narrates model-selection choices in prose — internal
+  // detail, not something a subscription customer should ever see, same
+  // posture as the Task-type field's model name above.
+  if (!opts?.hideDollars) {
+    const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
+    if (modelSelectionReason) {
+      fields.push({ label: "Why", value: modelSelectionReason });
+    }
   }
 
   const estimateUsd = input["estimateUsd"];
   if (typeof estimateUsd === "number" && Number.isFinite(estimateUsd)) {
-    fields.push({ label: "Estimate", value: `~$${estimateUsd.toFixed(2)}` });
+    fields.push(
+      opts?.hideDollars
+        ? { label: "Scope", value: scopeFieldValue(estimateUsd) }
+        : { label: "Estimate", value: `~$${estimateUsd.toFixed(2)}` }
+    );
   }
 
   return { headline, fields };
@@ -197,20 +267,27 @@ function summarizeUnknownTool(
  * `toolName`, exactly like `approval-message.ts::renderApprovalMessage`; any
  * tool this file doesn't specifically know about renders via
  * `summarizeUnknownTool` rather than throwing or hiding the row.
+ *
+ * `opts` (subscription slice 6 Task 5) forwards to the two dispatch targets
+ * that ever render a dollar amount (`create_issue`'s tolerant `_brief`
+ * summary, `alignment_brief`'s Estimate/Scope field) — see
+ * `ApprovalSummaryOptions`. The other tool kinds never render a dollar
+ * amount, so they don't need it.
  */
 export function summarizeApprovalToolInput(
   toolName: string,
-  toolInput: Record<string, unknown>
+  toolInput: Record<string, unknown>,
+  opts?: ApprovalSummaryOptions
 ): ApprovalSummary {
   switch (toolName) {
     case "create_issue":
-      return summarizeCreateIssue(toolInput);
+      return summarizeCreateIssue(toolInput, opts);
     case "create_workspace":
       return summarizeCreateWorkspace(toolInput);
     case "create_repo":
       return summarizeCreateRepo(toolInput);
     case "alignment_brief":
-      return summarizeAlignmentBrief(toolInput);
+      return summarizeAlignmentBrief(toolInput, opts);
     default:
       return summarizeUnknownTool(toolName, toolInput);
   }

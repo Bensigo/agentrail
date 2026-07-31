@@ -36,11 +36,11 @@
  * `recordGuardrailEvent`) — this module writes nothing and reads no
  * environment beyond the kill-switch.
  */
-import { normalizeForScreening, redactPii } from "./pii.js";
-import { screenInjection } from "./injection.js";
-import { moderateInbound, isModerationConfigured } from "./moderation.js";
-import { areInputGuardrailsEnabled } from "./feature-flags.js";
-import type { Finding, GuardrailTrust, ScreenResult } from "./types.js";
+import { normalizeForScreening, redactPii } from "./pii";
+import { screenInjection } from "./injection";
+import { moderateInbound, isModerationConfigured } from "./moderation";
+import { areInputGuardrailsEnabled } from "./feature-flags";
+import type { Finding, GuardrailTrust, ScreenResult } from "./types";
 
 /**
  * Layers 1 and 2. Pure and synchronous.

@@ -158,6 +158,77 @@ test("fetchPrDiff defensively coerces a malformed 2xx body to empty/safe default
   assert.deepEqual(res.omittedPaths, []);
 });
 
+test("success passes linkedIssues and linkedIssuesDegraded through", async () => {
+  const issues = [
+    {
+      number: 42,
+      title: "Widgets must persist",
+      body: "- [ ] AC1: widgets persist across restarts",
+      state: "OPEN",
+      bodyTruncated: false,
+    },
+  ];
+  const transport = fakeTransport(async () => ({
+    status: 200,
+    json: async () => prBody({ linkedIssues: issues, linkedIssuesDegraded: false }),
+  }));
+  const result = await fetchPrDiff({
+    env: ENV,
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.linkedIssues, issues);
+  assert.equal(result.linkedIssuesDegraded, false);
+});
+
+test("a console without the linked-issue fields defaults to [] and false (older console)", async () => {
+  const transport = fakeTransport(async () => ({ status: 200, json: async () => prBody() }));
+  const result = await fetchPrDiff({
+    env: ENV,
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.linkedIssues, []);
+  assert.equal(result.linkedIssuesDegraded, false);
+});
+
+test("linkedIssuesDegraded:true survives the pass-through", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 200,
+    json: async () => prBody({ linkedIssues: [], linkedIssuesDegraded: true }),
+  }));
+  const result = await fetchPrDiff({
+    env: ENV,
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    transport,
+  });
+  assert.equal(result.linkedIssuesDegraded, true);
+});
+
+test("non-array linkedIssues from the console is coerced to []", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 200,
+    json: async () => prBody({ linkedIssues: "not-an-array", linkedIssuesDegraded: "yes" }),
+  }));
+  const result = await fetchPrDiff({
+    env: ENV,
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    transport,
+  });
+  assert.deepEqual(result.linkedIssues, []);
+  assert.equal(result.linkedIssuesDegraded, false);
+});
+
 // ---------------------------------------------------------------------------
 // fetchPrDiff — degraded outcomes, never throws, never retries
 // ---------------------------------------------------------------------------

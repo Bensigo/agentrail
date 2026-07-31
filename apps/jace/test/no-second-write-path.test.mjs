@@ -111,10 +111,10 @@
 //      + `save_brief` + `save_investigation` + `record_verdict` (ungated but
 //      self-scoped/argued), and `standup` / `codebase_query` /
 //      `fetch_workspace_memory` / `fetch_backlog` / `fetch_repo_wiki` /
-//      `fetch_work_status` / `fetch_briefs` / `fetch_investigations`
-//      (read-only). Adding/removing a tool file requires updating
-//      EXPECTED_TOOL_FILES below — that edit IS the human review this test
-//      exists to force.
+//      `fetch_work_status` / `fetch_briefs` / `fetch_investigations` /
+//      `fetch_evidence_capabilities` / `fetch_issue` (read-only).
+//      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
+//      below — that edit IS the human review this test exists to force.
 //   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
 //      authored with `defineTool` and `approval: (ctx) => consoleGatedApproval(ctx)`.
 //      Every other tool sets no `approval` field. A separate negative check
@@ -186,6 +186,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_evidence_capabilities.ts", // read-only (debugging spec PR #1501, T11 review fix round 1): reads the workspace's EVIDENCE CAPABILITY MAP (which verbs have a connected/credentialed provider) — no params, no anchored investigation needed — over the console token API; no approval, no child_process
   "fetch_investigations.ts", // read-only (debugging spec PR #1501): reads INVESTIGATIONS — the durable record of one production incident (anchor/list/get/search), relays verdict eligibility verbatim — over the console token API; no approval, no child_process
+  "fetch_issue.ts", // read-only (QA AC-awareness spec, docs/superpowers/specs/2026-07-29-qa-ac-awareness-design.md): reads ONE GitHub issue (number/title/body/state) over the console token API, to resolve its acceptance criteria before dispatching qa; no approval, no child_process
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process

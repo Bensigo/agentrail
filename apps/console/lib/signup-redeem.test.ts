@@ -5,6 +5,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   createUserForSignup: vi.fn(),
   createConsoleSession: vi.fn(),
   bindChatIdentityUser: vi.fn(),
+  collapseIdentitySeatsForUser: vi.fn(),
+  db: {},
 }));
 vi.mock("./connect-owner-elect-completion", () => ({
   completeConnectOwnerElect: vi.fn(),
@@ -24,6 +26,8 @@ import {
   createUserForSignup,
   createConsoleSession,
   bindChatIdentityUser,
+  collapseIdentitySeatsForUser,
+  db,
 } from "@agentrail/db-postgres";
 import {
   completeConnectOwnerElect,
@@ -35,6 +39,7 @@ const mockConsume = vi.mocked(consumeChatIdentitySignupToken);
 const mockCreateUser = vi.mocked(createUserForSignup);
 const mockCreateSession = vi.mocked(createConsoleSession);
 const mockBindUser = vi.mocked(bindChatIdentityUser);
+const mockCollapse = vi.mocked(collapseIdentitySeatsForUser);
 const mockCompleteOwnerElect = vi.mocked(completeConnectOwnerElect);
 const mockBuildLine = vi.mocked(buildOwnerElectCompletionLine);
 const mockSendConfirmation = vi.mocked(sendSignupConfirmation);
@@ -63,6 +68,7 @@ beforeEach(() => {
   mockCompleteOwnerElect.mockResolvedValue({ completed: false, workspaceName: null });
   mockBuildLine.mockReturnValue(null);
   mockSendConfirmation.mockResolvedValue(undefined);
+  mockCollapse.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -109,6 +115,50 @@ describe("redeemSignupToken", () => {
     expect(result.kind).toBe("signed_up");
   });
 
+  // Seat collapse (second live bind path, spec §5.3 — the CRITICAL finding
+  // from the whole-slice review): `/connect/[token]/page.tsx`'s `fresh_bind`
+  // branch got this hook first; this is the mirror for the OTHER place
+  // `bindChatIdentityUser` is called. Only the fresh-user (`else`) branch
+  // binds — see the "existing user path" tests below for proof the
+  // idempotent-reuse branch never calls it and therefore needs no collapse
+  // of its own.
+  it("seat collapse (second bind path, spec §5.3): a successful fresh-user bind collapses seats with exactly {chatIdentityId, userId} for the newly created user", async () => {
+    mockConsume.mockResolvedValue(UNBOUND_IDENTITY as never);
+    mockCreateUser.mockResolvedValue({ id: "user-new-1", name: "Ada", email: null, emailVerified: null, image: null } as never);
+
+    await redeemSignupToken("tok-abc");
+
+    expect(mockCollapse).toHaveBeenCalledTimes(1);
+    expect(mockCollapse).toHaveBeenCalledWith(db, {
+      chatIdentityId: "chat-identity-1",
+      userId: "user-new-1",
+    });
+  });
+
+  it("seat collapse rejecting never fails the redemption — logged loudly with the [signup-redeem] prefix instead of swallowed or propagated", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockConsume.mockResolvedValue(UNBOUND_IDENTITY as never);
+    mockCreateUser.mockResolvedValue({ id: "user-new-1", name: "Ada", email: null, emailVerified: null, image: null } as never);
+    mockCollapse.mockRejectedValue(new Error("seats table is on fire"));
+
+    const result = await redeemSignupToken("tok-abc");
+
+    expect(result.kind).toBe("signed_up");
+    expect(mockCreateSession).toHaveBeenCalledWith(
+      "user-new-1",
+      expect.any(String),
+      expect.any(Date)
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[signup-redeem]"),
+      expect.anything()
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("collapseIdentitySeatsForUser"),
+      expect.anything()
+    );
+  });
+
   it("new user path: a null displayName is passed through to createUserForSignup unchanged (never fabricated)", async () => {
     mockConsume.mockResolvedValue({ ...UNBOUND_IDENTITY, displayName: null } as never);
     mockCreateUser.mockResolvedValue({ id: "user-new-2", name: null, email: null, emailVerified: null, image: null } as never);
@@ -131,6 +181,14 @@ describe("redeemSignupToken", () => {
       expect.any(Date)
     );
     expect(result.kind).toBe("signed_up");
+  });
+
+  it("existing user path: no bind means no collapse either — this identity was already linked by an earlier pass, so any collapse-eligible seats already collapsed then", async () => {
+    mockConsume.mockResolvedValue({ ...UNBOUND_IDENTITY, userId: "user-existing-1" } as never);
+
+    await redeemSignupToken("tok-abc");
+
+    expect(mockCollapse).not.toHaveBeenCalled();
   });
 
   it("mints a 64-hex-char session token and a ~30-day expiry", async () => {
@@ -221,6 +279,24 @@ describe("redeemSignupToken", () => {
     mockSendConfirmation.mockRejectedValue(new Error("telegram down"));
 
     await expect(redeemSignupToken("tok-abc")).resolves.toMatchObject({ kind: "signed_up" });
+  });
+
+  // Placed LAST in this describe block, deliberately: `mockRejectedValue`
+  // (unlike `vi.clearAllMocks()`) is NOT undone between tests, so a rejected
+  // bindChatIdentityUser here would otherwise poison every test below it —
+  // same ordering discipline as this file's own "never lets a
+  // failed/rejected confirmation send propagate" test just above (also a
+  // standing `mockRejectedValue` with nothing after it to leak into), and as
+  // `/connect/[token]/page.test.ts`'s equivalent "bind fails" test.
+  it("bind failing: the collapse hook is never reached, and the rejection propagates (no session minted for a half-bound identity)", async () => {
+    mockConsume.mockResolvedValue(UNBOUND_IDENTITY as never);
+    mockCreateUser.mockResolvedValue({ id: "user-new-1", name: "Ada", email: null, emailVerified: null, image: null } as never);
+    mockBindUser.mockRejectedValue(new Error("bind boom"));
+
+    await expect(redeemSignupToken("tok-abc")).rejects.toThrow("bind boom");
+
+    expect(mockCollapse).not.toHaveBeenCalled();
+    expect(mockCreateSession).not.toHaveBeenCalled();
   });
 });
 

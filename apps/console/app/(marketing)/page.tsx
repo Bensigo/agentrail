@@ -1,6 +1,7 @@
 import { auth, signIn } from "@agentrail/auth";
 import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
+import { claimSeatsForAcceptedInvites } from "../../lib/claim-invite-seats";
 import Link from "next/link";
 import Image from "next/image";
 import { Send } from "lucide-react";
@@ -63,7 +64,18 @@ export default async function LandingPage() {
     const email = (session.user as typeof session.user & { email?: string }).email;
     if (email) {
       try {
-        await claimInvitesForUser({ userId: session.user.id, email });
+        const claimedWorkspaceIds = await claimInvitesForUser({
+          userId: session.user.id,
+          email,
+        });
+        // Seat claim (spec §5 rule 1, slice 4 Task 3) — this landing-page
+        // auto-claim-on-visit is the SECOND real entry point for the same
+        // claimInvitesForUser call the /invite/[token] page uses (see
+        // ../../lib/claim-invite-seats.ts's own doc-comment), so it gets the
+        // identical hook. The helper never throws by contract, so it's safe
+        // inside this same try even though the catch below exists for
+        // claimInvitesForUser itself.
+        await claimSeatsForAcceptedInvites(claimedWorkspaceIds, session.user.id);
       } catch {
         // never block login
       }
@@ -300,24 +312,35 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 6b — Billing: the pay-for-what-you-use top-up model (owner ruling
-          2026-07-22). States the future model in plain steps while the
-          free-preview chip carries today's truth. */}
+      {/* 6b — Billing: company subscriptions (subscription-platform slice
+          3, Task 7 — rollout rider, spec §9: the public surface stops
+          promising "No seats, no subscription" the moment real
+          subscriptions can be sold,
+          docs/superpowers/specs/2026-07-29-subscription-platform-design.md).
+          Fix round (coordinator call): the wallet-flow steps ("top up your
+          balance... charged when the task is done") also contradicted the
+          model one section under "One subscription for your whole team" —
+          same category as the retired heading/claim, not approval-copy
+          slice 6 owns, so they're rewritten too, in this page's own
+          register (§6b stays declarative "you"-address, distinct from
+          HOW_WE_WORK's first-person Jace voice above). */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[560px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">Pay for what you use</h2>
+            <h2 className="text-heading-2 text-center">
+              One subscription for your whole team
+            </h2>
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Pricing is pay-for-what-you-use.
+              Plans are priced by team size, not by task.
             </p>
           </Reveal>
           <ol className="mt-10 flex flex-col gap-6">
             {[
-              "Top up your balance.",
-              "Approve a task. The estimate you approve is the budget cap.",
-              "You're charged when the task is done.",
+              "Pick a plan for your team size.",
+              "Talk to Jace where your team works: Telegram, Slack, or Discord.",
+              "Approve the work. It ships as a pull request.",
             ].map((line, i) => (
               <Reveal key={i} delay={i * 70}>
                 <li className="flex items-baseline gap-4">
@@ -333,8 +356,7 @@ export default async function LandingPage() {
           <Reveal delay={240}>
             <div className="mt-10 flex flex-col items-center gap-4 text-center">
               <p className="text-[var(--gray-11)]">
-                No seats. No subscription. Every run shows its cost next to
-                its PR.
+                One shipped PR pays for the month.
               </p>
               {/* Landing honesty rule (#1415): this link is the actual
                   pricing CLAIM ("here's what you pay, right now") — unlike

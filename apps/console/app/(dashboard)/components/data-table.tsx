@@ -127,7 +127,9 @@ export function DataTable<T>({
                 <td colSpan={colSpan} className="px-3 py-8 text-center">
                   <div className="flex flex-col items-center gap-2">
                     {/* font-mono: matches the sitewide fetch-error treatment
-                        (digest-panel, health-rates-panel, ErrorState). */}
+                        (digest-panel, health-rates-panel — mounted on the
+                        workspace dashboard behind the billing swap —
+                        ErrorState). */}
                     <span className="font-mono text-sm text-[var(--red-11)]">{error}</span>
                     {onRetry && (
                       <button

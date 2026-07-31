@@ -59,6 +59,7 @@ import type { ModelSeat } from "./catalog";
 import { MODEL_SEATS } from "./candidates";
 import type { TaskType } from "./classifier";
 import { eligibleModelsForTaskType } from "./eligibility";
+import type { QualityProfile } from "./quality-profile";
 import { seedModel } from "./seeds";
 
 /** Minimum recorded runs before an eligible model's data can outrank the seed — sample-aware, no thrash. */
@@ -98,6 +99,21 @@ export interface SelectExecuteModelOptions {
     workspaceId: string;
     taskType: string;
   }) => Promise<ModelOutcomeStatsRow[]>;
+  /**
+   * Subscription-platform entitlement filter (slice 2, Task 11): passed
+   * straight through to {@link eligibleModelsForTaskType} — see that
+   * function's own doc comment for the exact filtering and fail-open
+   * semantics. `undefined` (every caller except `alignment-brief.ts`'s
+   * admission wiring, and that one too whenever
+   * `lib/policy/feature-flags.ts`'s `subscriptionsEnforced()` kill switch is
+   * off) means no filtering, byte-identical to pre-Task-11 behavior. No
+   * other selector logic changes because of this option: exploit and
+   * exploration both already derive everything (their data source, their
+   * candidate pool) from `eligibleModelsForTaskType`'s return value, so
+   * narrowing THAT is enough to narrow both — see this module's own doc
+   * comment's ALGORITHM section, unchanged by this option's addition.
+   */
+  allowedProfiles?: ReadonlySet<QualityProfile>;
 }
 
 /** `candidates.ts`'s `MODEL_SEATS` slug -> seat lookup (#1338 PR③ — every eligible slug is, by construction (`eligibility.ts`'s `candidateModelSlugs`, `candidates.ts`'s `CANDIDATES`), one of that registry's own keys). */
@@ -132,8 +148,16 @@ function decideExploit(
   stats: readonly ModelOutcomeStatsRow[],
   minRuns: number
 ): ModelSelection {
-  const seed = seedModel(taskType);
+  let seed = seedModel(taskType);
   const eligibleSet = new Set(eligibleSlugs);
+  if (!eligibleSet.has(seed.slug)) {
+    // Entitlement (or eligibility) excluded the static seed — fall to the
+    // first entitled candidate. eligibleSlugs preserves candidates.ts's
+    // seed-first order (eligibility.ts:92-93) and is non-empty whenever the
+    // unfiltered pool is (the empty-pool fail-open at
+    // eligibility.ts:127-137), so [0] always exists.
+    seed = seatForSlug(eligibleSlugs[0]);
+  }
   const eligibleStats = stats.filter(
     (row) => row.executeModel !== null && eligibleSet.has(row.executeModel)
   );
@@ -215,9 +239,13 @@ function pickExplorationTarget(
  * Pick the EXECUTE model for `taskType` in `workspaceId`. See the module
  * doc for the full algorithm. Considers ELIGIBLE models only, at every
  * step — the exploit comparison, its data source, and the exploration
- * pool are all scoped to `eligibleModelsForTaskType(taskType)`, so an
- * excluded model (haiku for `ui`) can never come back from this function
- * for that task type.
+ * pool are all scoped to
+ * `eligibleModelsForTaskType(taskType, opts.allowedProfiles)`, so an
+ * excluded model (haiku for `ui`) can never come back from this function for
+ * that task type, and — when `opts.allowedProfiles` is supplied
+ * (subscription-platform slice 2, Task 11) — neither can a model outside the
+ * caller's billing-plan entitlement, subject to that same function's
+ * fail-open guarantee.
  */
 export async function selectExecuteModel(
   taskType: TaskType,
@@ -229,7 +257,7 @@ export async function selectExecuteModel(
   const explorationRate = opts.explorationRate ?? DEFAULT_EXPLORATION_RATE;
   const fetchStats = opts.fetchStats ?? getModelOutcomeStats;
 
-  const eligibleSlugs = eligibleModelsForTaskType(taskType);
+  const eligibleSlugs = eligibleModelsForTaskType(taskType, opts.allowedProfiles);
   const stats = await fetchStats({ workspaceId, taskType });
 
   const exploit = decideExploit(taskType, eligibleSlugs, stats, minRuns);

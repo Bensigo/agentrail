@@ -42,7 +42,7 @@
  *     `detectInjection` twice on the same input and asserts identical
  *     results, precisely to guard this invariant.
  */
-import type { Finding, GuardrailTrust } from "./types.js";
+import type { Finding, GuardrailTrust } from "./types";
 
 /**
  * The ported deny-list. Order matters: `detectInjection` returns the FIRST

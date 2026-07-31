@@ -6,7 +6,9 @@ import { ArrowUpRight, ChevronLeft, ChevronRight, MessageCircle } from "lucide-r
 import { Skeleton } from "../../../../components/loading-skeleton";
 import { EmptyState } from "../../../components/empty-state";
 import { messageJaceTarget } from "../../../setup/components/channel-step-helpers";
+import { seatsLabel } from "../billing/billing-helpers";
 import {
+  capacityText,
   formatCostUsd,
   formatNeedsYouBreakdown,
   formatTrendPct,
@@ -14,11 +16,22 @@ import {
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
   shiftWeek,
+  shippedStripText,
   type DigestData,
+  type PlanCardData,
 } from "./digest-panel-helpers";
 
 interface DigestPanelProps {
   workspaceId: string;
+  /**
+   * Subscription slice 6 plan (Task 3): server-computed, undefined = render
+   * today's cost card exactly as before (flag off / degraded / error — see
+   * `loadPlanCardData`'s own doc-comment for the three cases that produce
+   * undefined). This client component never imports `loadPlanCardData` or
+   * `subscriptionsEnforced` itself — only the (type-erased) shape of the
+   * data page.tsx already resolved server-side.
+   */
+  planCard?: PlanCardData;
 }
 
 /** Shared card shell for the four digest blocks (TASTE.md: Cards/Panels). */
@@ -151,6 +164,52 @@ function CostBlock({ cost }: { cost: DigestData["cost"] }) {
 }
 
 /**
+ * The digest's 4th grid slot when the subscription platform flag is on
+ * (slice 6 plan, Task 3) — replaces `CostBlock`/`DigestCard title="Cost
+ * this week"` with the plan's value: seats, capacity as tasks (never
+ * dollars — Global Constraints), and renewal, plus an upgrade CTA cloned
+ * from `NeedsYouBlock`'s Link+ArrowUpRight pattern above. Built from the
+ * same `DigestCard` shell as every other digest block.
+ *
+ * Exported (despite being consumed only from `DigestPanel` below) so it can
+ * be unit-tested by calling it directly and walking the returned element
+ * tree — this repo's vitest environment has no DOM/render harness, and
+ * `DigestPanel` itself can't be called that way (its own hooks need a real
+ * React dispatcher), so a hook-free sub-component is the only piece of
+ * this file strict-TDD pinned-string/CTA-href assertions can target.
+ */
+export function PlanCardBlock({
+  data,
+  workspaceId,
+}: {
+  data: PlanCardData;
+  workspaceId: string;
+}) {
+  return (
+    <DigestCard title="Plan">
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-3xl font-bold text-[var(--gray-12)]">
+          {data.planLabel}
+        </span>
+        <span className="text-xs text-[var(--gray-09)]">
+          {`Seats · ${seatsLabel(data.seatsUsed, data.seatLimit)}`}
+        </span>
+        <span className="text-xs text-[var(--gray-09)]">
+          {`Capacity · ${capacityText(data.capacityUsed, data.capacityTotal)}`}
+        </span>
+        <span className="text-xs text-[var(--gray-09)]">{data.renewalText}</span>
+        <Link
+          href={`/dashboard/${workspaceId}/billing`}
+          className="mt-1 flex items-center gap-0.5 text-xs text-[var(--blue-11)]"
+        >
+          Upgrade plan <ArrowUpRight className="h-3 w-3" />
+        </Link>
+      </div>
+    </DigestCard>
+  );
+}
+
+/**
  * "Give Jace a task" (#1281 AC2 — Home dead-end copy dies): one persistent
  * affordance in the digest area, always visible (not gated on the digest
  * having anything to show), pointing the same way as Work's empty-state
@@ -193,7 +252,7 @@ function GiveJaceATaskCard({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-export function DigestPanel({ workspaceId }: DigestPanelProps) {
+export function DigestPanel({ workspaceId, planCard }: DigestPanelProps) {
   const [weekParam, setWeekParam] = useState<string | null>(null);
   const [data, setData] = useState<DigestData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -307,10 +366,27 @@ export function DigestPanel({ workspaceId }: DigestPanelProps) {
           <DigestCard title="Needs you">
             <NeedsYouBlock needsYou={data.needsYou} workspaceId={workspaceId} />
           </DigestCard>
-          <DigestCard title="Cost this week">
-            <CostBlock cost={data.cost} />
-          </DigestCard>
+          {planCard ? (
+            <PlanCardBlock data={planCard} workspaceId={workspaceId} />
+          ) : (
+            <DigestCard title="Cost this week">
+              <CostBlock cost={data.cost} />
+            </DigestCard>
+          )}
         </div>
+      )}
+
+      {/* All-time-shipped strip (subscription slice 6 plan, Task 3) — only
+          alongside the plan card, directly under the grid it belongs to;
+          gated on `data` too so it never appears ahead of/without the grid
+          during the loading or error states above. This `data && planCard`
+          gate has no render-harness test (this repo's vitest environment
+          has no DOM harness and DigestPanel's hooks can't be called
+          directly) — it's proven by browser verification instead. */}
+      {data && planCard && (
+        <p className="text-xs text-[var(--gray-09)]">
+          {shippedStripText(planCard.shippedAllTime)}
+        </p>
       )}
     </section>
   );

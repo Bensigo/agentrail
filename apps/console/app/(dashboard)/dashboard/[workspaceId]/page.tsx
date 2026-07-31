@@ -5,6 +5,7 @@ import { loadPlanCardData } from "../../../../lib/plan-card-data";
 import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
+import { HealthRatesPanel } from "./components/health-rates-panel";
 import { OnboardingBanner } from "./components/onboarding-banner";
 
 export default async function WorkspaceDashboardPage({
@@ -48,6 +49,8 @@ export default async function WorkspaceDashboardPage({
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
         <DigestPanel workspaceId={workspaceId} planCard={planCard} />
+        {/* Rides the same planCard value as the swap above: the health panel mounts together with the plan card as one coherent flag-on change, not a separate toggle. */}
+        {planCard !== undefined && <HealthRatesPanel workspaceId={workspaceId} />}
       </div>
     </div>
   );

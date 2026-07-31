@@ -327,6 +327,26 @@ export interface ConnectorConfig {
   /** Cloudflare: the account id (needed alongside the zone id for some
    * GraphQL analytics queries). */
   cloudflareAccountId?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T1 (`.superpowers/sdd/plan-oauth.md`):
+   * server-minted single-use OAuth state (see
+   * `queries/connectors.ts`'s `mintConnectorOauthState`/
+   * `consumeConnectorOauthState` for the full design) — a no-migration
+   * generalization of `mintGithubInstallState`'s own dedicated-columns
+   * mechanism, scoped per (workspaceId, provider) into THIS row's config
+   * instead. EPHEMERAL and DELIBERATELY EXCLUDED from `completeConfig`'s
+   * preserved-fields whitelist in this file below: unlike every other field
+   * on this interface, these two are never read back through
+   * `getConnector`/`getConnectors`/`upsertConnector`'s returned
+   * `ConnectorRowView.config` — they exist in the raw jsonb column only
+   * between mint and (single-use) consume, written/cleared exclusively by
+   * the two functions above via a surgical jsonb patch, never through this
+   * file's normal typed merge path. Declared here only so `ConnectorConfig`
+   * stays the complete, honest shape of what the column can ever hold.
+   */
+  oauthState?: string;
+  /** ISO-8601 — see {@link oauthState}'s own doc-comment. */
+  oauthStateExpiresAt?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

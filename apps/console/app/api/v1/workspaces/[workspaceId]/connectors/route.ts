@@ -18,6 +18,7 @@ import {
   projectExtraConfigValues,
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
 
 /**
  * Every non-secret config key any catalog entry declares via
@@ -110,6 +111,14 @@ export async function GET(
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
         ...projectExtraConfigValues(entry, row?.config as Record<string, unknown> | undefined),
+        // W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`):
+        // derived, env-computed-server-side — BOTH a registered adapter
+        // (`oauthAdapterFor`, empty until W3-T2/T3 land) AND the provider's
+        // `<KIND>_OAUTH_CLIENT_ID`/`_OAUTH_CLIENT_SECRET` env pair
+        // (`oauthConfigFor`) must be present. Never hardcoded client-side —
+        // see `connector-helpers.ts`'s `ConnectorConfigInput.oauthReady`
+        // doc-comment for why both checks, not env alone.
+        oauthReady: oauthAdapterFor(entry.kind) !== null && oauthConfigFor(entry.kind) !== null,
       };
     });
 

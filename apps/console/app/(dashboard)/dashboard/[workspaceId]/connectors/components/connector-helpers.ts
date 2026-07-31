@@ -261,6 +261,18 @@ export interface ConnectorConfigInput {
    * hasn't stored, or that no catalog entry declares.
    */
   [key: string]: unknown;
+  /**
+   * W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`): whether
+   * this provider is ready to offer the OAuth "Connect {label}" primary
+   * button today — an adapter is registered for it AND its
+   * `<PROVIDER>_OAUTH_CLIENT_ID`/`_OAUTH_CLIENT_SECRET` env pair is set (see
+   * `apps/console/lib/oauth/types.ts`'s `oauthAdapterFor`/`oauthConfigFor`).
+   * Computed server-side by the connectors GET route (an env read has no
+   * business in this "no I/O" pure model — see the module doc-comment) and
+   * passed in exactly like `hasSecret`/`enabled`. Absent → `false` (see
+   * {@link ConnectorView.oauthReady}).
+   */
+  oauthReady?: boolean;
 }
 
 /** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
@@ -288,6 +300,13 @@ export interface ConnectorView {
   enabled: boolean;
   triggerLabel: string;
   pollIntervalSeconds: number;
+  /** W3-T1 (OAuth Connect Wave 3) — see
+   * {@link ConnectorConfigInput.oauthReady}'s own doc-comment. Always
+   * present (never optional) on a projected row: `false` for every
+   * `oauth`-connectMethod entry (github — OAuth-native already, nothing
+   * additive to offer) and for every `secret`-connectMethod entry until its
+   * adapter + env are both ready. */
+  oauthReady: boolean;
 }
 
 /** Human-facing section metadata for each connector type. */
@@ -1032,6 +1051,9 @@ export function projectConnectors(
         triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
         pollIntervalSeconds:
           cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
+        // W3-T1 (OAuth Connect Wave 3) — see ConnectorConfigInput.oauthReady's
+        // own doc-comment. Absent input → false.
+        oauthReady: cfg?.oauthReady ?? false,
       };
     });
 }

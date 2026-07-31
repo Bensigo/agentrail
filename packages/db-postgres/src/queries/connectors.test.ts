@@ -1,18 +1,38 @@
-import { describe, expect, it } from "vitest";
-import { isConnectorProvider, validateConnectorUpdate } from "./connectors.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`) adds two
+// I/O-touching functions (`mintConnectorOauthState`/`consumeConnectorOauthState`)
+// alongside this file's original pure-function-only coverage — see the
+// describe blocks at the bottom of this file. Mocked exactly like
+// `src/__tests__/github-app-token.test.ts` mocks `mintGithubInstallState`'s
+// own sibling `consumeGithubInstallState` (the closest structural
+// precedent: an atomic single-use-state UPDATE…RETURNING).
+vi.mock("../db.js", () => ({
+  db: { insert: vi.fn(), update: vi.fn() },
+}));
+
+import { db } from "../db.js";
+import {
+  isConnectorProvider,
+  validateConnectorUpdate,
+  mintConnectorOauthState,
+  consumeConnectorOauthState,
+} from "./connectors.js";
+
+const mockDb = vi.mocked(db);
 
 /**
- * Pure-function coverage only (Task 7, debugging design spec). Both
- * functions under test are synchronous and touch no I/O — `getConnectors.js`
- * / `db.js` mocking (see `briefs.test.ts`'s own doc-comment: "there is no
- * live-DB harness in this package") is unnecessary here.
- *
  * Task 7 adds `"railway"` to `connectorProviderEnum` (a free-text column, so
  * this is a TS-union addition only — no migration, same precedent as
  * `"jace"`) and a `railwayProjectId` branch to `validateConnectorUpdate`
  * (the workspace's Railway project id, saved via this route alongside the
  * secret PUT — see `schema/connectors.ts`'s doc-comment on
  * `ConnectorConfig.railwayProjectId`).
+ *
+ * `isConnectorProvider`/`validateConnectorUpdate` below stay pure-function,
+ * no-mock coverage (see `briefs.test.ts`'s own doc-comment: "there is no
+ * live-DB harness in this package") — the `db.js` mock above is a no-op for
+ * them; only the W3-T1 describe blocks at the bottom of this file exercise it.
  */
 
 describe("isConnectorProvider — railway (Task 7)", () => {
@@ -302,5 +322,77 @@ describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fie
       const res = validateConnectorUpdate({ config: { grafanaUrl: value } });
       expect(res).toEqual({ ok: true, value: { config: { grafanaUrl: value } } });
     });
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// W3-T1 (OAuth Connect Wave 3): server-minted single-use OAuth state.
+// `mintGithubInstallState`/`consumeGithubInstallState` (`github-app-token.ts`)
+// are github-hardcoded — two dedicated columns on `workspaces`, one in-flight
+// state per WORKSPACE (no provider dimension). That doesn't generalize
+// without a schema change, and the plan pins NO migration, so this mirrors
+// the mechanism instead, into the EXISTING `connectors.config` jsonb column,
+// scoped per (workspaceId, provider) — see `connectors.ts`'s own doc-comment
+// on both functions for the full design (surgical jsonb merge/delete, never
+// routed through `upsertConnector`'s whole-column replace, so a concurrent
+// unrelated connector write can't silently wipe a pending state, and the
+// state never leaks back through any GET response since it is never added to
+// `completeConfig`'s whitelist).
+// --------------------------------------------------------------------------- //
+
+function insertChain() {
+  const chain: Record<string, unknown> = {};
+  chain.values = vi.fn(() => chain);
+  chain.onConflictDoUpdate = vi.fn(() => Promise.resolve(undefined));
+  return chain;
+}
+
+function updateChain(returned: unknown[]) {
+  const chain: Record<string, unknown> = {};
+  for (const m of ["set", "where"]) chain[m] = vi.fn(() => chain);
+  chain.returning = vi.fn(() => Promise.resolve(returned));
+  return chain;
+}
+
+describe("mintConnectorOauthState (W3-T1)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("issues one INSERT … ON CONFLICT DO UPDATE scoped to (workspaceId, provider)", async () => {
+    const chain = insertChain();
+    mockDb.insert.mockReturnValue(chain as never);
+
+    const state = await mintConnectorOauthState("ws-1", "railway");
+
+    expect(typeof state).toBe("string");
+    expect(state.length).toBeGreaterThanOrEqual(32); // high-entropy, mirrors mintGithubInstallState's 24 bytes hex
+    expect(chain.values).toHaveBeenCalledTimes(1);
+    const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      workspaceId: string;
+      provider: string;
+    };
+    expect(inserted.workspaceId).toBe("ws-1");
+    expect(inserted.provider).toBe("railway");
+    expect(chain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("mints a fresh, distinct state on every call (never reused)", async () => {
+    mockDb.insert.mockReturnValue(insertChain() as never);
+    const a = await mintConnectorOauthState("ws-1", "railway");
+    const b = await mintConnectorOauthState("ws-1", "railway");
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("consumeConnectorOauthState (W3-T1)", () => {
+  it("resolves the workspace on a live, matching, unexpired state (atomic UPDATE … RETURNING)", async () => {
+    mockDb.update.mockReturnValue(updateChain([{ workspaceId: "ws-1" }]) as never);
+    expect(await consumeConnectorOauthState("railway", "deadbeef")).toEqual({
+      workspaceId: "ws-1",
+    });
+  });
+
+  it("returns null for an unknown / expired / already-consumed state — never throws", async () => {
+    mockDb.update.mockReturnValue(updateChain([]) as never);
+    expect(await consumeConnectorOauthState("railway", "deadbeef")).toBeNull();
   });
 });

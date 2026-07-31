@@ -1168,3 +1168,44 @@ describe("projectConnectors — sentry's target (Task P3)", () => {
     expect(sentry.target).toBeNull();
   });
 });
+
+// --------------------------------------------------------------------------- //
+// W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`): `oauthReady`
+// is a DERIVED, ENV-COMPUTED-SERVER-SIDE flag (adapter registered AND
+// `<PROVIDER>_OAUTH_CLIENT_ID`/`_SECRET` both set — see
+// `apps/console/lib/oauth/types.ts`'s `oauthAdapterFor`/`oauthConfigFor`) —
+// this pure model never computes it itself (no `process.env` read belongs in
+// a "no I/O" projection file); the connectors GET route computes it and
+// passes it in like every other per-row boolean (`hasSecret`, `enabled`).
+// Absent from the input → false, so a route that hasn't been updated yet (or
+// a provider the route never bothered to check) never accidentally shows the
+// OAuth-primary sheet UI.
+// --------------------------------------------------------------------------- //
+describe("projectConnectors — oauthReady (W3-T1)", () => {
+  it("defaults to false when the config input omits oauthReady", () => {
+    const railway = projectConnectors([{ kind: "railway", hasSecret: true }]).find(
+      (r) => r.kind === "railway"
+    )!;
+    expect(railway.oauthReady).toBe(false);
+  });
+
+  it("carries oauthReady: true through from the config input", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: false, oauthReady: true },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.oauthReady).toBe(true);
+  });
+
+  it("is false for every row with no config input at all (disconnected, never queried)", () => {
+    const rows = projectConnectors([]);
+    for (const r of rows) expect(r.oauthReady).toBe(false);
+  });
+
+  it("is independent of connection status — a connected row can still be oauthReady:false (e.g. connected via legacy token before the env was ever set)", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: true, oauthReady: false },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.status).toBe("connected");
+    expect(railway.oauthReady).toBe(false);
+  });
+});

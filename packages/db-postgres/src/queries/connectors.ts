@@ -1,4 +1,5 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
+import { randomBytes } from "crypto";
 import { db } from "../db.js";
 import { encryptSecret, decryptSecret } from "../crypto.js";
 import {
@@ -615,6 +616,124 @@ export async function getConnectorSecret(
   // Decrypt only at the point of use (materializing into code / posting). The
   // ciphertext never leaves this layer.
   return stored ? decryptSecret(stored) : null;
+}
+
+// --------------------------------------------------------------------------- //
+// OAuth Connect Wave 3, W3-T1 (`.superpowers/sdd/plan-oauth.md`) — server-minted,
+// single-use OAuth state for the generic authorize-link/callback routes.
+//
+// DESIGN CHOICE (disclosed, per the plan's own instruction to inspect
+// `mintGithubInstallState`/`consumeGithubInstallState` and either generalize
+// or pick a no-migration alternative): those two functions
+// (`github-app-token.ts`) are GITHUB-HARDCODED — `githubInstallState` /
+// `githubInstallStateExpiresAt` are two dedicated columns on `workspaces`,
+// good for exactly ONE in-flight state per WORKSPACE, with no provider
+// dimension at all. That does not generalize to "one in-flight state per
+// (workspace, provider)" without a schema change, and the plan pins NO
+// migration for this task. The chosen alternative: mint into
+// `connectors.config` (the plan's own explicitly-offered fallback) — the
+// EXISTING per-(workspaceId, provider) jsonb column, keyed by two ephemeral
+// fields, `oauthState`/`oauthStateExpiresAt`.
+//
+// SURGICAL, NEVER `upsertConnector` — both functions write via a raw jsonb
+// `||` merge / `-` key-delete (the SAME idiom `queries/investigations.ts`'s
+// `claimLessonPromotion`/`unclaimLessonPromotion` already established for
+// `investigation_items.data`), never through `upsertConnector`'s
+// read-completeConfig-then-replace-the-whole-column path. Two reasons:
+//   1. `upsertConnector`/`setConnectorSecret` always rewrite the ENTIRE
+//      config column from `completeConfig(existing)` — an unrelated write
+//      (e.g. toggling the heartbeat, or connecting a DIFFERENT extra field)
+//      racing a pending mint would silently wipe the state, since
+//      `completeConfig` only preserves an explicit whitelist of fields.
+//   2. The inverse matters more: `oauthState`/`oauthStateExpiresAt` are
+//      DELIBERATELY never added to that whitelist, so they can NEVER leak
+//      back out through `getConnector`/`getConnectors`/`upsertConnector`'s
+//      returned `ConnectorRowView.config` — those routes return the full
+//      config object verbatim (e.g. the connectors PUT route's JSON
+//      response), and a pending state string has no business reaching a
+//      browser response even for the SAME workspace's own admin.
+//
+// Single-use is enforced the SAME way `consumeGithubInstallState` enforces
+// it: one atomic `UPDATE … WHERE <state matches AND unexpired> RETURNING`.
+// Two callers racing the same state can never both get a match — Postgres
+// serializes the row-level UPDATE, so the first clears the key before the
+// second's WHERE can still match it (identical reasoning to
+// `claimLessonPromotion`'s own doc-comment on this exact race).
+// --------------------------------------------------------------------------- //
+
+const OAUTH_STATE_BYTES = 24;
+const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Mint a fresh single-use OAuth state for (workspaceId, provider) and store
+ * it (with its 30-minute expiry) into that row's `config`, creating the row
+ * first if this is the workspace's first-ever attempt at this provider
+ * (`enabled: true`, otherwise-default config — mirrors `upsertConnector`'s
+ * own create-on-first-touch default; a real credential is only ever written
+ * later, by `setConnectorSecret`, so this alone never flips `hasSecret`).
+ * Re-minting while a prior state is still pending simply overwrites it (the
+ * prior state stops working) — same one-in-flight-state tradeoff
+ * `mintGithubInstallState` already accepts for its own column.
+ */
+export async function mintConnectorOauthState(
+  workspaceId: string,
+  provider: ConnectorProvider
+): Promise<string> {
+  const state = randomBytes(OAUTH_STATE_BYTES).toString("hex");
+  const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
+  const patch = sql`jsonb_build_object('oauthState', ${state}::text, 'oauthStateExpiresAt', ${expiresAt}::text)`;
+
+  await db
+    .insert(connectors)
+    .values({
+      workspaceId,
+      provider,
+      enabled: true,
+      config: { ...CONNECTOR_CONFIG_DEFAULTS, oauthState: state, oauthStateExpiresAt: expiresAt },
+    })
+    .onConflictDoUpdate({
+      target: [connectors.workspaceId, connectors.provider],
+      // Surgical merge — touches ONLY these two keys on an existing row's
+      // config, never replaces it wholesale. See this section's own
+      // doc-comment for why that matters.
+      set: { config: sql`${connectors.config} || ${patch}`, updatedAt: new Date() },
+    });
+
+  return state;
+}
+
+/**
+ * Atomically redeem a single-use OAuth state for `provider`, scoped across
+ * every workspace (the caller — the callback route — does not yet know
+ * which workspace this is; that is exactly what this lookup reveals, never
+ * a round-tripped query param — see the plan's "never trust round-tripped
+ * workspace ids" pin). Clears BOTH ephemeral keys on match (jsonb `-`
+ * key-delete, ONE atomic statement with the match check in the same WHERE)
+ * so a replay of the same state — expired or not — can never resolve twice.
+ * `null` on no match (unknown / expired / already-consumed state), covering
+ * all three identically, same anti-enumeration posture
+ * `consumeGithubInstallState` already takes for its own column.
+ */
+export async function consumeConnectorOauthState(
+  provider: ConnectorProvider,
+  state: string
+): Promise<{ workspaceId: string } | null> {
+  const now = new Date().toISOString();
+  const [row] = await db
+    .update(connectors)
+    .set({
+      config: sql`${connectors.config} - 'oauthState' - 'oauthStateExpiresAt'`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(connectors.provider, provider),
+        sql`(${connectors.config} ->> 'oauthState') = ${state}`,
+        sql`(${connectors.config} ->> 'oauthStateExpiresAt') > ${now}`
+      )
+    )
+    .returning({ workspaceId: connectors.workspaceId });
+  return row ? { workspaceId: row.workspaceId } : null;
 }
 
 /** The MCP providers whose keys are materialized into a run's codebase config. */

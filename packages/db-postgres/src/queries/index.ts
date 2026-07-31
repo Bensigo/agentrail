@@ -2336,6 +2336,11 @@ export {
   isConnectorProvider,
   MIN_POLL_INTERVAL_SECONDS,
   MAX_POLL_INTERVAL_SECONDS,
+  // OAuth Connect Wave 3, W3-T1 — server-minted single-use OAuth state (the
+  // no-migration `mintGithubInstallState` generalization; see
+  // `connectors.ts`'s own doc-comment).
+  mintConnectorOauthState,
+  consumeConnectorOauthState,
   type ConnectorUpdate,
   type EnabledConnectorRow,
 } from "./connectors.js";

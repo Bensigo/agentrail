@@ -30,10 +30,49 @@ export const MAX_FINDINGS = 10;
 export const AC_COVERAGE_STATUSES = ["addressed", "not_in_diff", "unclear"];
 export const MAX_AC_COVERAGE = 20;
 
+// The investigation trail's allowed tools — the four context-reading tools
+// wired onto this subagent (search_code, read_repo_file, file_history,
+// fetch_wiki). The prompt and rendering (later tasks) are built on this
+// exact list, so both its membership and its order are the contract.
+export const INVESTIGATION_TOOLS = ["search_code", "read_repo_file", "file_history", "fetch_wiki"];
+export const MAX_INVESTIGATED = 20;
+
+// The four axes of judgment rendered per review. Verdicts are per-field
+// vocabularies (not one shared enum) because each field's honest answers
+// have a different shape.
+export const JUDGMENT_FIELDS = ["simplest", "architecture", "debt", "hiddenRisks"];
+export const JUDGMENT_VERDICTS = {
+  simplest: ["yes", "no", "cannot_judge"],
+  architecture: ["consistent", "violates", "no_decision_found", "cannot_judge"],
+  debt: ["none_found", "introduces", "cannot_judge"],
+  hiddenRisks: ["none_found", "found", "cannot_judge"],
+};
+
+// The one verdict per field that is a NEGATIVE/grounded claim — asserting
+// the diff has a real problem. Grounded claims must cite investigated ids
+// in `basis`: no investigation, no claim. `cannot_judge` is always honest
+// and never requires grounding.
+export const GROUNDED_VERDICTS = {
+  simplest: "no",
+  architecture: "violates",
+  debt: "introduces",
+  hiddenRisks: "found",
+};
+
 export const REVIEW_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "summary", "findings", "issueDrafts", "acCoverage", "degraded"],
+  required: [
+    "verdict",
+    "summary",
+    "findings",
+    "issueDrafts",
+    "acCoverage",
+    "headSha",
+    "investigated",
+    "judgment",
+    "degraded",
+  ],
   properties: {
     verdict: {
       type: "string",
@@ -58,8 +97,9 @@ export const REVIEW_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["path", "line", "severity", "finding", "suggestedComment", "escalate"],
+        required: ["id", "path", "line", "severity", "finding", "suggestedComment", "escalate"],
         properties: {
+          id: { type: "string", pattern: "^f\\d+$" },
           path: { type: "string", description: "Changed file path the finding is about." },
           line: {
             type: ["number", "null"],
@@ -179,6 +219,59 @@ export const REVIEW_SCHEMA = {
         },
       },
     },
+    headSha: {
+      type: "string",
+      description:
+        "The PR head commit SHA, echoed VERBATIM from fetch_pr_diff's headSha " +
+        "('' when the console did not send one). Never invented — it is the " +
+        "stable key pairing this review with exactly the code it judged.",
+    },
+    investigated: {
+      type: "array",
+      maxItems: MAX_INVESTIGATED,
+      description:
+        "The investigation trail — one entry per context read (or per declared " +
+        "skip of a mandatory check). Empty only when the diff needed no context " +
+        "and the mandatory checks were all inapplicable (say why in summary).",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "question", "tool", "answer"],
+        properties: {
+          id: { type: "string", pattern: "^i\\d+$" },
+          question: { type: "string", description: "What you asked, in plain language." },
+          tool: { type: "string", enum: INVESTIGATION_TOOLS },
+          answer: {
+            type: "string",
+            description:
+              "One line: what the read showed — or 'skipped: <why>' / " +
+              "'degraded: <reason>' for a check that did not complete.",
+          },
+        },
+      },
+    },
+    judgment: {
+      type: ["object", "null"],
+      description:
+        "The structured judgment over the change in the context of the " +
+        "repository. Null exactly when verdict is 'degraded'. Negative " +
+        "verdicts must cite investigated ids in basis — no investigation, no " +
+        "claim; cannot_judge is honest and legitimate.",
+      additionalProperties: false,
+      required: ["simplest", "architecture", "debt", "hiddenRisks"],
+      properties: Object.fromEntries(
+        JUDGMENT_FIELDS.map((f) => [f, {
+          type: "object",
+          additionalProperties: false,
+          required: ["verdict", "note", "basis"],
+          properties: {
+            verdict: { type: "string", enum: JUDGMENT_VERDICTS[f] },
+            note: { type: "string" },
+            basis: { type: "array", maxItems: 5, items: { type: "string" } },
+          },
+        }]),
+      ),
+    },
     degraded: {
       type: ["object", "null"],
       additionalProperties: false,
@@ -196,8 +289,9 @@ export const REVIEW_SCHEMA = {
 
 /**
  * Structural + coupling validation for a review (JSON Schema alone cannot
- * express the couplings: verdict<->findings/issueDrafts/degraded,
- * escalate<->issueDrafts count). Returns { ok, errors }.
+ * express the couplings: verdict<->findings/issueDrafts/degraded/
+ * investigated/judgment, escalate<->issueDrafts count, grounded
+ * verdict<->basis-cites-a-real-investigated-id). Returns { ok, errors }.
  *
  * @param {unknown} review
  * @returns {{ ok: boolean, errors: string[] }}
@@ -216,6 +310,7 @@ export function validateReview(review) {
   }
   if (!isStr(review.summary)) push("summary must be a non-empty string");
 
+  const findingIds = new Set();
   let findingsShapeOk = Array.isArray(review.findings);
   if (!findingsShapeOk) {
     push("findings must be an array");
@@ -228,6 +323,13 @@ export function validateReview(review) {
         push(`findings[${i}] must be an object`);
         findingsShapeOk = false;
         return;
+      }
+      if (typeof f.id !== "string" || !/^f\d+$/.test(f.id)) {
+        push(`findings[${i}].id must match ^f\\d+$`);
+      } else if (findingIds.has(f.id)) {
+        push(`findings[${i}].id '${f.id}' is not unique`);
+      } else {
+        findingIds.add(f.id);
       }
       if (!isStr(f.path)) push(`findings[${i}].path must be a non-empty string`);
       if (f.line !== null && typeof f.line !== "number") {
@@ -307,6 +409,67 @@ export function validateReview(review) {
     }
   }
 
+  if (typeof review.headSha !== "string") push("headSha must be a string ('' when unknown)");
+
+  const investigatedIds = new Set();
+  if (!Array.isArray(review.investigated)) {
+    push("investigated must be an array");
+  } else {
+    if (review.investigated.length > MAX_INVESTIGATED) {
+      push(`investigated must have at most ${MAX_INVESTIGATED} entries`);
+    }
+    review.investigated.forEach((e, i) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) {
+        push(`investigated[${i}] must be an object`);
+        return;
+      }
+      if (typeof e.id !== "string" || !/^i\d+$/.test(e.id)) {
+        push(`investigated[${i}].id must match ^i\\d+$`);
+      } else if (investigatedIds.has(e.id)) {
+        push(`investigated[${i}].id '${e.id}' is not unique`);
+      } else {
+        investigatedIds.add(e.id);
+      }
+      if (!isStr(e.question)) push(`investigated[${i}].question must be a non-empty string`);
+      if (!INVESTIGATION_TOOLS.includes(e.tool)) {
+        push(`investigated[${i}].tool must be one of: ${INVESTIGATION_TOOLS.join(", ")}`);
+      }
+      if (!isStr(e.answer)) push(`investigated[${i}].answer must be a non-empty string`);
+    });
+  }
+
+  if (review.judgment !== null && review.judgment !== undefined) {
+    if (typeof review.judgment !== "object" || Array.isArray(review.judgment)) {
+      push("judgment must be an object or null");
+    } else {
+      for (const field of JUDGMENT_FIELDS) {
+        const j = review.judgment[field];
+        if (j === null || typeof j !== "object" || Array.isArray(j)) {
+          push(`judgment.${field} must be an object`);
+          continue;
+        }
+        if (!JUDGMENT_VERDICTS[field].includes(j.verdict)) {
+          push(`judgment.${field}.verdict must be one of: ${JUDGMENT_VERDICTS[field].join(", ")}`);
+        }
+        if (typeof j.note !== "string") push(`judgment.${field}.note must be a string`);
+        if (!Array.isArray(j.basis) || j.basis.length > 5 || !j.basis.every((b) => typeof b === "string")) {
+          push(`judgment.${field}.basis must be an array of at most 5 strings`);
+        } else if (j.verdict === GROUNDED_VERDICTS[field]) {
+          if (!isStr(j.note)) push(`judgment.${field}: verdict '${j.verdict}' requires a non-empty note`);
+          if (j.basis.length === 0) {
+            push(`judgment.${field}: verdict '${j.verdict}' requires a non-empty basis — no investigation, no claim`);
+          } else {
+            for (const b of j.basis) {
+              if (!investigatedIds.has(b)) {
+                push(`judgment.${field}.basis references unknown investigated id '${b}'`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Verdict couplings — the anti-confabulation core, same posture as
   // triage/qa: a subagent that couldn't do its job must say so structurally,
   // not just in prose.
@@ -323,8 +486,19 @@ export function validateReview(review) {
     if (review.acCoverage !== null && review.acCoverage !== undefined) {
       push("verdict 'degraded' must carry acCoverage: null — the diff was never read");
     }
-  } else if (review.degraded !== null && review.degraded !== undefined) {
-    push("degraded must be null unless verdict is 'degraded'");
+    if (review.judgment !== null && review.judgment !== undefined) {
+      push("verdict 'degraded' must carry judgment: null — the diff was never read");
+    }
+    if (Array.isArray(review.investigated) && review.investigated.length > 0) {
+      push("investigated must be empty — the diff was never read");
+    }
+  } else {
+    if (review.degraded !== null && review.degraded !== undefined) {
+      push("degraded must be null unless verdict is 'degraded'");
+    }
+    if (review.judgment === null || review.judgment === undefined) {
+      push("judgment must be an object unless verdict is 'degraded'");
+    }
   }
 
   // escalate:true findings <-> issueDrafts: the schema carries no explicit

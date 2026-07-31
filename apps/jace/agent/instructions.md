@@ -615,6 +615,14 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   or trim it. The tool renders it into the posted summary as a per-AC
   checklist (entries with `issueNumber: null` are labeled as coming from
   the PR description — a self-stated checklist, not a ticket's).
+- **Relay `judgment` verbatim too.** Pass the reviewer's `judgment` to
+  `post_pr_review` exactly as returned — never re-judge, soften, or trim
+  it. The tool renders it into the posted summary as one compact line.
+- **Present the judgment in chat:** the four verdicts with each negative
+  verdict's note, plus the investigation count — "investigated 11
+  questions" — so the owner knows what the review actually consulted. A
+  `cannot_judge` is presented as exactly that; never soften it into a
+  pass, and never present a judgment the reviewer did not make.
 - **Present the coverage in chat as well:** one line per AC with its
   status — for `not_in_diff` and `unclear` entries include the
   reviewer's `evidence` when it carries one; the posted review shows

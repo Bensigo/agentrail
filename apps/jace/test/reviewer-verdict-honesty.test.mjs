@@ -235,3 +235,33 @@ test("reviewer instructions' protocol heading names all five phases, Read includ
     "the heading must not undercount the numbered sections that actually exist",
   );
 });
+
+// --- Task 9 pins: root relays judgment verbatim, presents it unsoftened ----
+//
+// Same posture as the Task 7 pins above: these assert the PROSE states the
+// rule, not that a model follows it — matching load-bearing keywords, not
+// exact wording, so a reword doesn't break this but a deletion does.
+
+test("root instructions: judgment is relayed to post_pr_review verbatim, never re-judged", () => {
+  const prose = instructions();
+  assert.ok(prose.includes("judgment"));
+  assert.match(prose, /judgment[^.]*verbatim/i);
+});
+
+test("root instructions: the chat presentation of the judgment names the investigation count", () => {
+  const prose = instructions();
+  assert.match(
+    prose,
+    /investigated \d+|investigation count/,
+    "must surface how many questions the review actually investigated",
+  );
+});
+
+test("root instructions: a cannot_judge verdict is never softened into a pass", () => {
+  const prose = instructions();
+  assert.match(
+    prose,
+    /cannot_judge[\s\S]{0,300}never soften|never soften[\s\S]{0,300}cannot_judge/i,
+    "cannot_judge must be presented as exactly that, never upgraded",
+  );
+});

@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Run a production debugging investigation — witness interview, evidence-gathering rounds, a server-gated verdict, and gated issue handoff. Load for incident-shaped messages: production broken, failing, erroring, 500ing, or slow; a symptom that has come back; or when a quick diagnosis of one run didn't resolve it. Not for checking a shipped change, and not for one failed run in isolation — those have their own paths.
+description: "Run a production debugging investigation — witness interview, evidence-gathering rounds, a server-gated verdict, and gated issue handoff. Load for incident-shaped messages: production broken, failing, erroring, 500ing, or slow; a symptom that has come back; or when a quick diagnosis of one run didn't resolve it. Not for checking a shipped change, and not for one failed run in isolation — those have their own paths."
 ---
 
 # Debug

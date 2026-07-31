@@ -22,6 +22,7 @@ import {
 import { resolveGithubAppConfig, botCommitIdentity } from "@agentrail/github-app";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { currentBudgetWindow } from "../../../../../lib/billing-period";
 import { resolvePolicyForWorkspace } from "../../../../../lib/policy/resolve-policy";
 import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
 import { notifyWorkspaceBudgetExhausted, notifyAccountCapacity } from "./notify";
@@ -32,29 +33,6 @@ import { notifyWorkspaceBudgetExhausted, notifyAccountCapacity } from "./notify"
  * runner clients ignore unknown headers; a future runner build can log it
  * (issue #1269 PR ②b). */
 const CLAIM_BLOCKED_HEADER = "X-Agentrail-Claim-Blocked";
-
-/**
- * The current UTC calendar month as both a stable "YYYY-MM" period key (the
- * markBudgetExhaustedNotified dedup key) and its [start, end) ISO bounds
- * (sumWorkspaceSpendSince's window). Bucketing is by `runs.created_at`,
- * stamped at CLAIM time, not completion — a coarse, honestly-documented
- * tradeoff (queries/workspace_budget.ts + issue #1269 PR② recon §1/§2): a run
- * claimed in the last minute of a month books to that month even if it
- * finishes into the next one, and an in-flight run's cost is invisible to
- * this SUM until it reports (self-hosted runners never heartbeat cost).
- */
-function currentBudgetWindow(now: Date = new Date()): {
-  period: string;
-  periodStartIso: string;
-  periodEndIso: string;
-} {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const periodStartIso = new Date(Date.UTC(year, month, 1)).toISOString();
-  const periodEndIso = new Date(Date.UTC(year, month + 1, 1)).toISOString();
-  const period = `${year}-${String(month + 1).padStart(2, "0")}`;
-  return { period, periodStartIso, periodEndIso };
-}
 
 /**
  * CAS-then-send for a capacity notice (subscription platform spec §6 point

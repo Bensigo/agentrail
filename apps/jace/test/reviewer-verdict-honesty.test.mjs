@@ -24,7 +24,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { AC_COVERAGE_STATUSES } from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
+import {
+  AC_COVERAGE_STATUSES,
+  JUDGMENT_FIELDS,
+  JUDGMENT_VERDICTS,
+  INVESTIGATION_TOOLS,
+} from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
 
 const instructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
 const verdictsPath = fileURLToPath(
@@ -138,5 +143,87 @@ test("root instructions: the chat coverage rundown carries the reviewer's eviden
   assert.ok(
     /include\s+the\s+reviewer's\s+`evidence`/.test(prose),
     "must say the chat rundown carries the reviewer's evidence for not_in_diff/unclear entries",
+  );
+});
+
+// --- Task 7 pins: identity, Investigate protocol, grounding -----------------
+//
+// Same posture as the pins above: these assert the PROSE states the rule,
+// not that a model follows it. Multi-word phrases use `\s+` between words
+// (not a literal space) for the same reason as the "no repo access" pin —
+// this file wraps at ~75 cols, so a phrase can straddle a line break after
+// a future reword without the rule itself having changed.
+
+function reviewerInstructions() {
+  return readFileSync(reviewerInstructionsPath, "utf8");
+}
+
+test("reviewer instructions state the repository, not just the diff, is what judgment is exercised over", () => {
+  const prose = reviewerInstructions();
+  assert.match(
+    prose,
+    /repository\s+is\s+the\s+system\s+under\s+evaluation/,
+    "identity must anchor judgment to the repo the diff changes, not the diff in isolation",
+  );
+});
+
+test("reviewer instructions name every investigation tool, backticked, in lockstep with INVESTIGATION_TOOLS", () => {
+  const prose = reviewerInstructions();
+  for (const tool of INVESTIGATION_TOOLS) {
+    assert.ok(prose.includes(`\`${tool}\``), `instructions must name tool \`${tool}\``);
+  }
+});
+
+test("reviewer instructions pin both investigation budget numbers", () => {
+  const prose = reviewerInstructions();
+  assert.match(prose, /about\s+15/, "must state the target read budget");
+  assert.match(prose, /never\s+more\s+than\s+20/, "must state the hard read cap");
+});
+
+test("reviewer instructions state the grounding rule: no investigation, no claim", () => {
+  const prose = reviewerInstructions();
+  assert.match(
+    prose,
+    /no\s+investigation,?\s+no\s+claim/,
+    "grounded judgment verdicts must require a cited investigated id",
+  );
+});
+
+test("reviewer instructions state that skipped mandatory checks are declared, never silent", () => {
+  const prose = reviewerInstructions();
+  assert.match(
+    prose,
+    /skips\s+are\s+declared,?\s+never\s+silent/,
+    "a skipped mandatory check must still get an investigated entry",
+  );
+});
+
+test("reviewer instructions name every judgment field, backticked, in lockstep with JUDGMENT_FIELDS", () => {
+  const prose = reviewerInstructions();
+  for (const field of JUDGMENT_FIELDS) {
+    assert.ok(prose.includes(`\`${field}\``), `instructions must name judgment field \`${field}\``);
+  }
+});
+
+test("reviewer instructions pin `cannot_judge` as a shared, legitimate verdict across every judgment axis", () => {
+  const prose = reviewerInstructions();
+  // Lockstep with the exported vocab, same pattern as the AC_COVERAGE_STATUSES
+  // pin above: cannot_judge is not just prose — it is a real value in every
+  // field's verdict enum, and the prose must say so is honest, not a failure.
+  for (const field of JUDGMENT_FIELDS) {
+    assert.ok(
+      JUDGMENT_VERDICTS[field].includes("cannot_judge"),
+      `JUDGMENT_VERDICTS.${field} must include cannot_judge`,
+    );
+  }
+  assert.ok(prose.includes("`cannot_judge`"), "instructions must name `cannot_judge` as a legitimate verdict");
+});
+
+test("reviewer instructions state the reviewer judges only what's visible — it cannot know minds", () => {
+  const prose = reviewerInstructions();
+  assert.match(
+    prose,
+    /you\s+cannot\s+know\s+minds/,
+    "must bound judgment to what's visible, never the author's intent",
   );
 });

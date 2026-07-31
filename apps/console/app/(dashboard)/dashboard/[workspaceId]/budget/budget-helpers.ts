@@ -6,6 +6,8 @@ import type { WorkspaceCapStatus } from "@agentrail/db-postgres";
  * console vitest has no react plugin, mirrors the sibling convention
  * (`review-gates/blocking-reason.ts`, `components/digest-panel-helpers.ts`).
  * The page and its components stay thin, reading from here.
+ *
+ * Internal-only since slice 6 (sidebar-hidden staff telemetry, spec §8) — this page's dollar copy is deliberately kept.
  */
 
 /** $X.XX formatting, matching the convention already duplicated across this

@@ -33,9 +33,9 @@ const HOW_WE_WORK = [
   { name: "Message", line: "Send me a task in chat, or hand me a GitHub issue." },
   {
     name: "Brief",
-    line: "Before I touch code you get a brief: task type, model, and a dollar estimate.",
+    line: "Before I touch code you get a brief: task type, scope, and exactly what I'll build.",
   },
-  { name: "Approve", line: "Your approval sets the run's budget. That number is the cap." },
+  { name: "Approve", line: "Your approval starts the task. Nothing ships without it." },
   {
     name: "Pull request",
     line: "I write the code, a second model reviews it, and your own tests have to pass. Then the PR opens.",
@@ -333,7 +333,9 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Plans are priced by team size, not by task.
+              Plans are priced by team size — Starter for small teams, Growth
+              for bigger ones. Every plan includes monthly engineering
+              capacity, measured in tasks.
             </p>
           </Reveal>
           <ol className="mt-10 flex flex-col gap-6">

@@ -70,8 +70,22 @@ function fmtCost(costUsd: number | undefined): string {
  *
  * e.g. `AgentRail: PR ready — issue #42 (https://github.com/o/r/pull/9 · $1.20)`
  * or, when the console merged it (#1278): `AgentRail: Merged — issue #42 (...)`
+ *
+ * `opts.hideCost` (subscription platform Task 3): when true, the ` · $X.XX`
+ * segment is omitted entirely — everything else (headline, issue #, PR link)
+ * is unchanged. Deliberately a PARAMETER, not an internal `process.env` read
+ * — this function stays pure (see outcome-format.test.ts's own determinism
+ * pin), so every caller decides FOR it. The real product's call site
+ * (`runner/result/notify.ts`'s `notifyRunOutcome`) passes
+ * `hideCost: subscriptionsEnforced()`; the landing demo
+ * (`_conversation-demo-data.ts`) passes `hideCost: true` UNCONDITIONALLY.
+ * Omitting `opts` (or passing `{}` / `hideCost: false`) is byte-identical to
+ * this function's pre-Task-3 output — pinned in outcome-format.test.ts.
  */
-export function buildOutcomeMessage(params: OutcomeMessageParams): string {
+export function buildOutcomeMessage(
+  params: OutcomeMessageParams,
+  opts?: { hideCost?: boolean }
+): string {
   const headline =
     params.outcome === "green" && params.merged
       ? "Merged"
@@ -79,8 +93,10 @@ export function buildOutcomeMessage(params: OutcomeMessageParams): string {
   let line = `AgentRail: ${headline} — issue #${params.issueNumber}`;
   const extras: string[] = [];
   if (params.prUrl) extras.push(params.prUrl);
-  const cost = fmtCost(params.costUsd);
-  if (cost) extras.push(cost);
+  if (!opts?.hideCost) {
+    const cost = fmtCost(params.costUsd);
+    if (cost) extras.push(cost);
+  }
   if (extras.length) line = `${line} (${extras.join(" · ")})`;
   return line;
 }

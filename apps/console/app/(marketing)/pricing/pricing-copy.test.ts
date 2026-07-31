@@ -44,6 +44,14 @@ function stripComments(source: string): string {
 
 const pricingSource = stripComments(readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8"));
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
+// Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
+// only `_craft-pins.test.ts` reads it, and only for the mechanical style
+// pins), so the nav's new Pricing link is pinned here as a second readFile,
+// same stripped-text idiom as the two sources above. Comment-stripped: the
+// file's own module doc-comment narrates the nav's condensed-state design
+// ("swaps the secondary 'Sign in' link...") and would false-positive a raw
+// ordering check otherwise.
+const navSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_nav.tsx"), "utf8"));
 
 /**
  * Every phrase that promised the retired usage-based, no-subscription
@@ -66,7 +74,39 @@ const RETIRED_PHRASES = [
   // contradiction this whole task exists to retire, just spelled
   // differently. Both lines are gone from the STEPS content on both pages.
   "Top up",
+  // Arc-closing review (slice 7, Task 2 fix round): the HOW_WE_WORK band's
+  // Brief/Approve step bodies still promised the retired per-run billing
+  // model — a "dollar estimate" and a run-level "budget" cap — unconditional
+  // on the landing page, contradicting the demo's scope sentence, §6b, and
+  // /pricing. Confirmed pricing/page.tsx never carried either phrase (it's
+  // already covered by the dedicated "never budget or per-task language"
+  // check below), so folding into this shared both-files loop is safe and
+  // gives the landing side the check it was missing.
+  "dollar estimate",
+  "sets the run's budget",
   "charged when the task is done",
+];
+
+/**
+ * Spec §10 feature-line vocabulary not already covered by its own dedicated
+ * `it()` below (`architecture assistance` / `premium reasoning` /
+ * `dedicated support` were named individually since the task brief called
+ * them out by name) — the remaining 10 of the full 13-phrase vocabulary (4
+ * Starter + 4 Growth + 5 Enterprise). Array-driven, same convention as
+ * `RETIRED_PHRASES` above, so all 13 are covered without 10 near-duplicate
+ * hand-written its.
+ */
+const REMAINING_FEATURE_LINES = [
+  "PR reviews",
+  "bug fixes",
+  "documentation",
+  "everyday engineering",
+  "everything in Starter",
+  "large refactors",
+  "custom AI policies",
+  "SSO",
+  "self-hosting",
+  "SLA",
 ];
 
 describe("pricing page + landing §6b never reintroduce the retired anti-subscription claims", () => {
@@ -92,6 +132,86 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).toContain("Contact us");
   });
 
+  // ---------------------------------------------------------------------
+  // Slice 7 (subscription-platform, `docs/superpowers/plans/
+  // 2026-07-31-subscription-marketing-slice7.md`, Task 1) — the pricing
+  // page's outcome-led rewrite. Global Constraints pins the capacity
+  // vocabulary and Growth/Enterprise feature-line terms verbatim; a
+  // dedicated CTA section below pins the working Starter/Growth/Enterprise
+  // actions.
+  // ---------------------------------------------------------------------
+
+  it('pricing page names the capacity vocabulary customers actually see ("included monthly engineering capacity"), never budget or per-task language', () => {
+    expect(pricingSource).toContain("included monthly engineering capacity");
+    expect(pricingSource.toLowerCase()).not.toContain("budget");
+    expect(pricingSource).not.toMatch(/\$\d+(\.\d{2})?\s*(per|\/)\s*task/i);
+  });
+
+  it("pricing page's Growth tier names architecture assistance (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("architecture assistance");
+  });
+
+  it("pricing page's Growth tier names premium reasoning (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("premium reasoning");
+  });
+
+  it("pricing page's Enterprise tier names dedicated support (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("dedicated support");
+  });
+
+  for (const phrase of REMAINING_FEATURE_LINES) {
+    it(`pricing page names "${phrase}" (spec §10 feature vocabulary)`, () => {
+      expect(pricingSource).toContain(phrase);
+    });
+  }
+
+  it("pricing page's Enterprise CTA is a mailto link built from the ENTERPRISE_CONTACT_EMAIL const (hello@heyjace.com)", () => {
+    // Raw-source pin, not a rendered-string pin (see this file's own
+    // doc-comment on why raw text): the const is interpolated into the
+    // href (`mailto:${ENTERPRISE_CONTACT_EMAIL}`), so the literal joined
+    // string "mailto:hello@heyjace.com" never appears contiguously in
+    // source — only the evaluated DOM attribute would show that. Pinning
+    // both halves (the const's exact value + the interpolation site) gives
+    // the same regression protection a single toContain would, without
+    // forcing the page to hardcode the address a second time.
+    expect(pricingSource).toContain('ENTERPRISE_CONTACT_EMAIL = "hello@heyjace.com"');
+    expect(pricingSource).toContain("mailto:${ENTERPRISE_CONTACT_EMAIL}");
+  });
+
+  it('pricing page\'s Starter CTA reads "Start with Starter"', () => {
+    expect(pricingSource).toContain("Start with Starter");
+  });
+
+  it('pricing page\'s Growth CTA reads "Start with Growth"', () => {
+    expect(pricingSource).toContain("Start with Growth");
+  });
+
+  it("pricing page's CTA render site actually renders tier.ctaLabel, not a hardcoded string", () => {
+    // Review fix (round 1): the two its above pass even if `ctaLabel` goes
+    // orphaned in the TIERS data and both render branches hardcode a
+    // different label instead (e.g. "Get started") — the literal strings
+    // "Start with Starter"/"Start with Growth" would still exist SOMEWHERE
+    // in source (the now-dead data fields), so those pins alone can't catch
+    // that mutation. Same fix shape as the mailto pin above: anchor the
+    // RENDER-SITE expression itself, not just the data value.
+    expect(pricingSource).toContain("{tier.ctaLabel}");
+  });
+
+  it("pricing page's Starter/Growth CTA links to a real route, not an invented /signin path", () => {
+    // The task brief that drove this rewrite named `href="/signin"` as the
+    // example CTA target, but no such route exists anywhere in this app
+    // (confirmed: no apps/console/app/**/signin/page.tsx, no href="/signin"
+    // reference anywhere else in the codebase). The real route, traced from
+    // `_nav.tsx`'s `signInAction` prop through `page.tsx`'s `signInWithGithub`
+    // through NextAuth's own `pages.signIn` config
+    // (`packages/auth/src/index.ts`), is "/login" — confirmed live at
+    // `app/(auth)/login/page.tsx`, which runs the identical
+    // `signIn("github", { redirectTo: "/" })` call. Pin the real target so a
+    // future edit can't silently revert to the never-real "/signin".
+    expect(pricingSource).toContain('href="/login"');
+    expect(pricingSource).not.toContain("/signin");
+  });
+
   it("landing §6b carries its new subscription heading", () => {
     expect(landingSource).toContain("One subscription for your whole team");
   });
@@ -106,5 +226,34 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
 
   it("landing §6b's new steps mention shipping as a pull request", () => {
     expect(landingSource).toContain("ships as a pull request");
+  });
+
+  // -----------------------------------------------------------------------
+  // Subscription-platform slice 7, Task 2 (`docs/superpowers/sdd/
+  // task-2-brief.md`): §6b's sub now speaks the capacity vocabulary instead
+  // of the bare "not by task" rebuttal, and the marketing nav gains an
+  // ungated Pricing link. Heading, steps, kicker, and the gated "See exact
+  // pricing" link are all pinned already (above / `_craft-pins.test.ts`) and
+  // stay untouched by this task.
+  // -----------------------------------------------------------------------
+
+  it("landing §6b's sub speaks capacity vocabulary — priced by team size, measured in tasks (subscription-platform slice 7, Task 2)", () => {
+    // Whitespace-normalized locally (not the shared `landingSource` other
+    // tests use) so this full-sentence pin survives however the formatter
+    // wraps this long JSX text node across lines — same reasoning as
+    // collapsing JSX text at render time, just done for the string compare.
+    const normalized = landingSource.replace(/\s+/g, " ");
+    expect(normalized).toContain(
+      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. Every plan includes monthly engineering capacity, measured in tasks.",
+    );
+  });
+
+  it("marketing nav carries an ungated Pricing link, placed before Sign in (subscription-platform slice 7, Task 2)", () => {
+    expect(navSource).toMatch(/<Link\s+href="\/pricing"[^>]*>\s*Pricing\s*<\/Link>/);
+    const pricingIdx = navSource.indexOf('href="/pricing"');
+    const signInIdx = navSource.indexOf("Sign in");
+    expect(pricingIdx).toBeGreaterThan(-1);
+    expect(signInIdx).toBeGreaterThan(-1);
+    expect(pricingIdx).toBeLessThan(signInIdx);
   });
 });

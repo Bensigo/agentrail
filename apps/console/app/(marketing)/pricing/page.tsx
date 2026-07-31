@@ -5,7 +5,8 @@ import { isPricingClaimLive } from "../_pricing-gate";
 
 export const metadata = {
   title: "Pricing — Jace",
-  description: "What it costs to have Jace work on your codebase.",
+  description:
+    "Plans priced by team size. One subscription, a fractional AI engineer for your whole team.",
 };
 
 const STEPS = [
@@ -19,6 +20,10 @@ type Tier = {
   price: string;
   seats: string;
   included: string;
+  /** Feature-line vocabulary — spec §10, byte-exact per subscription-
+   *  platform slice 7's Global Constraints (see the doc-comment below). */
+  features: string[];
+  ctaLabel: string;
 };
 
 /**
@@ -33,36 +38,115 @@ type Tier = {
  * dollar amount), so $80/$200 are hand-set here to match the Stripe
  * dashboard and the spec's own table. Enterprise has no public price or
  * checkout (spec §2: "no public pricing and no checkout flow — it is a
- * conversation") — "Contact us" ships as plain text, not a link: no
- * contact route exists in this app yet, and a fake/dead link would be
- * exactly the kind of overclaim this page exists to avoid.
+ * conversation") — its CTA below is a `mailto:` link, never a checkout
+ * link; see `ENTERPRISE_CONTACT_EMAIL`.
+ *
+ * `features` is the tier feature-line vocabulary (subscription-platform
+ * slice 7 Global Constraints, spec §10: "verbatim vocabulary") — copied
+ * byte-exact, including "everything in Starter" as Growth's first line and
+ * the deliberate lowercase-led phrasing of the rest (these read as list
+ * items, not sentence openers). `ctaLabel` is spelled out per tier rather
+ * than built from `` `Start with ${tier.name}` `` at render time, so the
+ * literal strings "Start with Starter" / "Start with Growth" exist in this
+ * file's own source text, not just in the rendered DOM —
+ * `pricing-copy.test.ts` pins them as raw source text (see that file's own
+ * doc-comment on why raw text), which a runtime-built string can't satisfy.
  */
 const TIERS: Tier[] = [
-  { name: "Starter", price: "$80/mo", seats: "Up to 4", included: "≈350 engineering tasks/mo" },
-  { name: "Growth", price: "$200/mo", seats: "Up to 10", included: "≈1,000 engineering tasks/mo" },
-  { name: "Enterprise", price: "Contact us", seats: "Custom", included: "Custom" },
+  {
+    name: "Starter",
+    price: "$80/mo",
+    seats: "Up to 4",
+    included: "≈350 engineering tasks/mo",
+    features: ["PR reviews", "bug fixes", "documentation", "everyday engineering"],
+    ctaLabel: "Start with Starter",
+  },
+  {
+    name: "Growth",
+    price: "$200/mo",
+    seats: "Up to 10",
+    included: "≈1,000 engineering tasks/mo",
+    features: [
+      "everything in Starter",
+      "architecture assistance",
+      "large refactors",
+      "premium reasoning",
+    ],
+    ctaLabel: "Start with Growth",
+  },
+  {
+    name: "Enterprise",
+    price: "Contact us",
+    seats: "Custom",
+    included: "Custom",
+    features: ["custom AI policies", "SSO", "self-hosting", "SLA", "dedicated support"],
+    ctaLabel: "Contact us",
+  },
 ];
 
 /**
- * Subscription-platform slice 3, Task 7 — the pricing page's copy
- * truth-up (rollout rider, `docs/superpowers/specs/
- * 2026-07-29-subscription-platform-design.md` §9: "the public pricing
- * surface must stop promising 'No seats, no subscription' the moment real
- * subscriptions can be sold"). This page used to describe the prepaid
- * per-task model with the ACTUAL numbers (`billing/pricing.ts`'s
- * `FLAT_SERVER_FEE_CENTS` / `FLAT_PROFIT_CENTS`). That model is retired as
- * the COMMERCIAL story — the wallet machinery itself stays, internal-only
- * (spec §1) — in favor of company subscriptions, so this page now names
- * the three sellable plans instead. See `TIERS` above for where its
- * numbers come from.
+ * Enterprise contact address (subscription-platform slice 7 Global
+ * Constraints: "a mailto: link behind one const ... with a doc-comment").
+ * OWNER MUST CONFIRM this inbox exists and is monitored BEFORE the pricing
+ * claim goes live — i.e. before `NEXT_PUBLIC_BILLING_VERIFIED_LIVE` flips to
+ * "1" and `isPricingClaimLive()` (`../_pricing-gate.ts`) starts rendering
+ * "Live" instead of "Preview" below. The Preview chip covers the interim:
+ * nothing on this page claims the inbox is staffed today. No contact form
+ * exists in this app (none planned for this slice) — mailto is the honest,
+ * buildable option now.
+ */
+const ENTERPRISE_CONTACT_EMAIL = "hello@heyjace.com";
+
+/** Primary tier CTA (Starter/Growth) — the landing's "ink press" lemon-fill
+ *  button recipe (see `INK_BUTTON`/`ChannelButton` in `../page.tsx`),
+ *  stretched to the card's width and pinned to the card's bottom edge
+ *  (`mt-auto` inside an `h-full` card) so three cards with different
+ *  feature-list lengths still line their buttons up in the grid row.
  *
- * `STEPS` (fix round, coordinator call): the original "top up your
- * balance... you're charged when the task is done" wallet-flow steps sat
- * one section above `TIERS`' "Starter $80/mo" cards — the same
- * contradiction this whole page exists to retire, just spelled
- * differently, so they're rewritten too, not just the claims spec §9
- * names verbatim. The three lines now name the actual subscription flow:
- * pick a plan, talk to Jace on an existing chat channel, approve the work.
+ *  Target: the brief driving this rewrite named `href="/signin"` as the
+ *  example CTA target, but no such route exists anywhere in this app —
+ *  confirmed via a repo-wide search. The real target, traced per the
+ *  brief's own "do not invent a route" instruction: `_nav.tsx` takes a
+ *  `signInAction` prop; `page.tsx` wires it to a local, non-exported
+ *  `signInWithGithub` server action (`signIn("github", { redirectTo: "/" })`)
+ *  invoked from a `<form>`, not a link — there's no URL to copy, and the
+ *  action isn't importable from another route's module. NextAuth's own
+ *  `pages.signIn` config (`packages/auth/src/index.ts`) names the real page
+ *  for this: `/login`, confirmed live at `app/(auth)/login/page.tsx`, which
+ *  runs the identical `signIn("github", { redirectTo: "/" })` call ("Same
+ *  server action as the landing's sign-in seams" — that file's own
+ *  doc-comment). `/login` is the real route; linking to it is reuse, not
+ *  invention. */
+const TIER_CTA_PRIMARY =
+  "mt-auto inline-flex w-full items-center justify-center gap-2 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-5 py-2.5 font-bold text-[var(--accent-fill-text)] shadow-[3px_3px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[1px] hover:translate-y-[1px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
+
+/** Enterprise's "Contact us" CTA — the neutral bordered recipe (same as the
+ *  nav's plain "Sign in" button), never the lemon fill: this tier isn't a
+ *  self-serve start action, it's "talk to us first". */
+const TIER_CTA_SECONDARY =
+  "mt-auto inline-flex w-full items-center justify-center gap-2 rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-5 py-2.5 font-bold text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
+
+/**
+ * Subscription-platform slice 7 (`docs/superpowers/plans/
+ * 2026-07-31-subscription-marketing-slice7.md`, Task 1) — this page's
+ * second rewrite. Slice 3 Task 7 (the prior doc-comment here) truthed the
+ * copy up from the retired usage-based pricing model to a bare three-tier
+ * summary: names, prices, seats, one capacity number, nothing else. That
+ * was a minimum-honest page, not a real one — no feature differentiation
+ * between tiers, no working CTA (Enterprise's "Contact us" was plain text,
+ * not a link; Starter/Growth had no CTA at all), no vocabulary explaining
+ * what the capacity number means. This rewrite adds all three: per-tier
+ * feature lists (`TIERS[].features`, spec §10 vocabulary), working CTAs
+ * (`/login` for Starter/Growth, `ENTERPRISE_CONTACT_EMAIL` for Enterprise —
+ * see `TIER_CTA_PRIMARY`'s doc-comment for the sign-in route trace), and a
+ * capacity explainer paragraph below the grid.
+ *
+ * The explainer deliberately reads "comes with included monthly
+ * engineering capacity" rather than the more natural "includes monthly
+ * engineering capacity": `pricing-copy.test.ts` pins the exact phrase
+ * "included monthly engineering capacity" (spec §7 — this is the wording
+ * customers actually see in-product), and the participle form is the one
+ * that makes that phrase a real substring instead of a near-miss.
  *
  * Landing honesty rule (unchanged by this edit): this page is reachable at
  * all times (nothing to hide about the intended model), but it never
@@ -97,7 +181,7 @@ export default function PricingPage() {
         </Link>
       </header>
 
-      <div className="mx-auto max-w-[560px] px-6 pb-24">
+      <div className="mx-auto max-w-[560px] px-6">
         <h1 className="text-heading-2">Pricing</h1>
 
         <p
@@ -111,8 +195,66 @@ export default function PricingPage() {
         </p>
 
         <p className="mt-6 text-[var(--gray-11)]">
-          Jace is an AI software engineer for your team. Plans are priced by
-          team size.
+          Jace is an AI software engineer for your team. One subscription
+          covers everyone — plans are priced by team size, never per task.
+        </p>
+      </div>
+
+      <section className="mx-auto mt-10 max-w-[960px] px-6">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {TIERS.map((tier) => {
+            const isEnterprise = tier.name === "Enterprise";
+            return (
+              <div
+                key={tier.name}
+                className="flex h-full flex-col rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-6"
+              >
+                <div>
+                  <h2 className="text-label font-bold text-[var(--gray-12)]">{tier.name}</h2>
+                  <p className="mt-1 font-mono text-heading-2 text-[var(--gray-12)]">{tier.price}</p>
+                </div>
+                <dl className="mt-4 flex flex-col gap-3 font-mono text-body-sm">
+                  <div>
+                    <dt className="text-[var(--gray-11)]">Seats</dt>
+                    <dd className="text-[var(--gray-12)]">{tier.seats}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-[var(--gray-11)]">Included</dt>
+                    <dd className="text-[var(--gray-12)]">{tier.included}</dd>
+                  </div>
+                </dl>
+                <ul className="mt-4 mb-6 flex flex-col gap-2">
+                  {tier.features.map((feature) => (
+                    <li key={feature} className="flex items-baseline gap-2.5">
+                      <span
+                        aria-hidden
+                        className="h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--gray-13)] bg-[var(--accent-fill)]"
+                      />
+                      <p className="text-body-sm text-[var(--gray-12)]">{feature}</p>
+                    </li>
+                  ))}
+                </ul>
+                {isEnterprise ? (
+                  <a href={`mailto:${ENTERPRISE_CONTACT_EMAIL}`} className={TIER_CTA_SECONDARY}>
+                    {tier.ctaLabel}
+                  </a>
+                ) : (
+                  <Link href="/login" className={TIER_CTA_PRIMARY}>
+                    {tier.ctaLabel}
+                  </Link>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <div className="mx-auto max-w-[560px] px-6 pb-24">
+        <p className="mt-10 text-[var(--gray-11)]">
+          Every plan comes with included monthly engineering capacity —
+          measured in tasks, not dollars. Starter includes ≈350 tasks a
+          month; Growth includes ≈1,000. Jace asks before anything runs, and
+          finished work ships as a pull request.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">
@@ -126,30 +268,6 @@ export default function PricingPage() {
             </li>
           ))}
         </ol>
-
-        <section className="mt-10 flex flex-col gap-4">
-          {TIERS.map((tier) => (
-            <div
-              key={tier.name}
-              className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-6"
-            >
-              <div className="flex items-baseline justify-between">
-                <h2 className="text-sm font-bold text-[var(--gray-12)]">{tier.name}</h2>
-                <p className="font-mono text-sm text-[var(--gray-12)]">{tier.price}</p>
-              </div>
-              <dl className="mt-4 flex flex-col gap-2 font-mono text-sm">
-                <div className="flex items-center justify-between">
-                  <dt className="text-[var(--gray-11)]">Seats</dt>
-                  <dd className="text-[var(--gray-12)]">{tier.seats}</dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-[var(--gray-11)]">Included</dt>
-                  <dd className="text-[var(--gray-12)]">{tier.included}</dd>
-                </div>
-              </dl>
-            </div>
-          ))}
-        </section>
       </div>
     </main>
   );

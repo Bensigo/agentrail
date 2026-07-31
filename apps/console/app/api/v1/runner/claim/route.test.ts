@@ -625,6 +625,129 @@ describe("GET /api/v1/runner/claim — workspace monthly-budget ceiling (#1269 P
   });
 });
 
+describe("GET /api/v1/runner/claim — workspace monthly-budget ceiling: subscriptions-enforced posture (subscription platform Task 3)", () => {
+  it("subscriptionsEnforced() off (explicit) — notifies exactly as today; no internal-only log substitution", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(false);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+    mockMarkNotified.mockResolvedValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+      expect(mockNotifyBudgetExhausted).toHaveBeenCalledWith(WS, 10, 10);
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        "[runner/claim] budget ceiling hit (internal only — subscriptions on)"
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("subscriptionsEnforced() on — skips notifyWorkspaceBudgetExhausted and logs the internal-only line instead; the 204 + header behavior is UNCHANGED (the ceiling still pauses as internal margin protection)", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+    mockMarkNotified.mockResolvedValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+      expect(mockClaim).not.toHaveBeenCalled();
+      expect(mockNotifyBudgetExhausted).not.toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[runner/claim] budget ceiling hit (internal only — subscriptions on)"
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("subscriptionsEnforced() on — the CAS still gates the internal log to once-per-period, same race-safety as the notify path it replaces", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(12);
+    mockMarkNotified.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const first = await GET(req(WS));
+      const second = await GET(req(WS));
+
+      expect(first.status).toBe(204);
+      expect(second.status).toBe(204);
+      expect(mockMarkNotified).toHaveBeenCalledTimes(2);
+      const internalLogCalls = errorSpy.mock.calls.filter(
+        (call) =>
+          call[0] === "[runner/claim] budget ceiling hit (internal only — subscriptions on)"
+      );
+      expect(internalLogCalls).toHaveLength(1);
+      expect(mockNotifyBudgetExhausted).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("subscriptionsEnforced() on, but the CAS never flips (already notified this period) — no internal log, no notify, still 204 + header", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+    mockMarkNotified.mockResolvedValue(false);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        "[runner/claim] budget ceiling hit (internal only — subscriptions on)"
+      );
+      expect(mockNotifyBudgetExhausted).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("subscriptionsEnforced() on, spend under the ceiling — claims normally; subscriptionsEnforced() is consulted only ONCE (by the capacity gate below), never an extra time inside the untaken budget-ceiling branch", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(4.5);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockMarkNotified).not.toHaveBeenCalled();
+    expect(mockNotifyBudgetExhausted).not.toHaveBeenCalled();
+    // Exactly the capacity gate's own existing subscriptionsEnforced() read —
+    // the budget block's new read is nested INSIDE `if (spend >= ceiling)`,
+    // which is false here, so it is never reached.
+    expect(mockSubscriptionsEnforced).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("GET /api/v1/runner/claim — prepaid wallet admission (#1290 PR ①)", () => {
   it("billing OFF (the default) — never reads the wallet, claims normally, no header", async () => {
     mockIsBillingEnabled.mockResolvedValue(false);

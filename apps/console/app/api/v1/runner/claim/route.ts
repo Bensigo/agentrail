@@ -191,22 +191,42 @@ export async function GET(request: NextRequest) {
       periodEndIso
     );
     if (spend >= budgetState.monthlyBudgetUsd) {
-      // Atomic compare-and-set: send the chat notice ONLY on the flip into
-      // this period — race-safe for two concurrent blocked claims (see
+      // Atomic compare-and-set: gate the customer notice (or, flag-on, the
+      // internal-only log below) to ONLY the flip into this period —
+      // race-safe for two concurrent blocked claims (see
       // markBudgetExhaustedNotified's own doc-comment). Best-effort: a send
       // failure must never fail the claim response.
       if (await markBudgetExhaustedNotified(workspaceId, period)) {
-        try {
-          await notifyWorkspaceBudgetExhausted(
-            workspaceId,
-            spend,
-            budgetState.monthlyBudgetUsd
-          );
-        } catch (err) {
+        // Subscription platform Task 3: under subscriptions, this ceiling is
+        // internal margin protection, not a customer-facing wall (that's the
+        // capacity gate's job, below) — the 204 + CLAIM_BLOCKED_HEADER still
+        // pauses new work either way, UNCHANGED; only the CUSTOMER-FACING
+        // notice is replaced with an internal-only log line. Deliberately
+        // still gated behind the SAME CAS as the notify path it replaces, so
+        // it logs once per period rather than on every poll from a
+        // continuously-polling paused workspace. Flag off (the default, and
+        // every pre-Task-3 test) notifies exactly as before this task.
+        // Caveat: this CAS is flag-agnostic (keyed on workspaceId+period
+        // only) — a mid-period flip OFF after this internal-only branch has
+        // already won the CAS means no customer notice for the rest of that
+        // period. Accepted: the rollout flip is one-time and monotonic.
+        if (subscriptionsEnforced()) {
           console.error(
-            "[runner/claim] failed to send budget-exhausted notice:",
-            err
+            "[runner/claim] budget ceiling hit (internal only — subscriptions on)"
           );
+        } else {
+          try {
+            await notifyWorkspaceBudgetExhausted(
+              workspaceId,
+              spend,
+              budgetState.monthlyBudgetUsd
+            );
+          } catch (err) {
+            console.error(
+              "[runner/claim] failed to send budget-exhausted notice:",
+              err
+            );
+          }
         }
       }
       return new NextResponse(null, {

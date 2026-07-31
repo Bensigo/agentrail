@@ -26,6 +26,10 @@ const STYLED_FILES = [
   "_use-cases.tsx",
   "_channels.tsx",
   "_stats.tsx",
+  // Subscription-platform slice 7, Task 1: the pricing page's outcome-led
+  // rewrite makes it a real styled page (tier cards, feature lists, CTAs) —
+  // held to the same mechanical rules as every other marketing surface.
+  "pricing/page.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +

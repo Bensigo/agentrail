@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { Send } from "lucide-react";
 import type { MessageJaceCta } from "./_cta";
 
@@ -81,14 +82,28 @@ export function MarketingNav({
           {condensed ? (
             <CondensedCta cta={cta} signInAction={signInAction} />
           ) : (
-            <form action={signInAction}>
-              <button
-                type="submit"
-                className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+            <div className="flex items-center gap-4">
+              {/* Pricing (subscription-platform slice 7, Task 2): ungated —
+                  unlike page.tsx's "See exact pricing" link, this one isn't
+                  gated behind isPricingClaimLive(). It makes no pricing
+                  claim itself; /pricing self-discloses its own Preview
+                  state via its own chip. Full-row only — the condensed pill
+                  keeps its single tuned primary action untouched. */}
+              <Link
+                href="/pricing"
+                className="text-body-sm rounded-sm px-2 text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
-                Sign in
-              </button>
-            </form>
+                Pricing
+              </Link>
+              <form action={signInAction}>
+                <button
+                  type="submit"
+                  className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+                >
+                  Sign in
+                </button>
+              </form>
+            </div>
           )}
         </div>
       </header>

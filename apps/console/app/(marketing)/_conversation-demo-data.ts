@@ -58,8 +58,17 @@ export const DEMO_PR_URL = "https://github.com/acme/webhooks/pull/128";
  * the page's own "nothing merges without you". A `merged: true` variant
  * exists (#1278 PR②, the opt-in the how-we-work-together section
  * describes), but the demo must never imply merge-on-approve is the
- * default (review fix round, 2026-07-19). Cost reuses the SAME estimate
- * the brief quoted — this run landed within its own budget.
+ * default (review fix round, 2026-07-19).
+ *
+ * Subscription platform Task 3: `{ hideCost: true }` — the landing demo
+ * NEVER shows a dollar figure, unconditionally (unlike the real product's
+ * own ping, which hides cost only when `subscriptionsEnforced()` — see
+ * `runner/result/notify.ts`'s `notifyRunOutcome`). `costUsd` is still
+ * threaded through with the SAME estimate the brief bubble quoted — it just
+ * never renders — so `_conversation-demo-data.test.ts`'s companion pin can
+ * still prove this calls the real builder rather than a hand-typed literal:
+ * the identical params called WITHOUT `hideCost` reproduce the exact
+ * pre-Task-3 (dollar-bearing) shape byte-for-byte.
  *
  * CONTROLLER RULING (2026-07-19): the "AgentRail:" wire prefix this line
  * renders is ACCEPTED on the otherwise Jace-branded page — the
@@ -68,11 +77,14 @@ export const DEMO_PR_URL = "https://github.com/acme/webhooks/pull/128";
  */
 export function getDemoOutcomeMessage(): string {
   const brief = getDemoBrief();
-  return buildOutcomeMessage({
-    issueNumber: DEMO_ISSUE_NUMBER,
-    outcome: "green",
-    prUrl: DEMO_PR_URL,
-    costUsd: brief.estimateUsd,
-    merged: false,
-  });
+  return buildOutcomeMessage(
+    {
+      issueNumber: DEMO_ISSUE_NUMBER,
+      outcome: "green",
+      prUrl: DEMO_PR_URL,
+      costUsd: brief.estimateUsd,
+      merged: false,
+    },
+    { hideCost: true }
+  );
 }

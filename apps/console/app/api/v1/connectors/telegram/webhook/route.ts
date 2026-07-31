@@ -105,6 +105,21 @@ interface TelegramMessage {
   // malformed/absent value never fails THIS message's shape check (today's
   // behavior, unchanged).
   reply_to_message?: unknown;
+  /**
+   * Subscription-platform spec §6, "delivery trap #2". Telegram sets this
+   * only on a message posted inside a forum-topic thread of a supergroup
+   * with topics enabled — absent for every DM, non-forum group, and
+   * (Telegram's own behavior) a message posted to the topic-less "General"
+   * thread. Captured below the same way `chatType`/`fromUsername` are:
+   * trusted directly off this interface-typed field, presence-checked only
+   * (no separate tolerant validator — unlike `reply_to_message`, this is a
+   * flat scalar with nothing to parse). A malformed inbound value is still
+   * safe: `channel-dispatch.ts`'s `extractPayload` re-checks the type on the
+   * way back out of storage, and `sendTelegramMessage`'s own numeric guard
+   * (`connectors/secret/telegram.ts`) is the final backstop before anything
+   * reaches the Bot API.
+   */
+  message_thread_id?: number;
 }
 
 function isTelegramMessage(value: unknown): value is TelegramMessage {
@@ -548,6 +563,15 @@ export async function POST(request: NextRequest) {
       messageId: message.message_id,
       date: message.date,
       ...(replyContext ? { replyContext } : {}),
+      // Subscription-platform spec §6, delivery trap #2 — see
+      // TelegramMessage.message_thread_id's own doc-comment. String, to
+      // match this route's own id-stringification convention
+      // (conversationKey/senderId above), and because every downstream
+      // consumer (sendSystemChannelMessage, sendSystemTelegramMessage,
+      // sendTelegramMessage) takes it as a string.
+      ...(message.message_thread_id !== undefined
+        ? { messageThreadId: String(message.message_thread_id) }
+        : {}),
     },
   });
 

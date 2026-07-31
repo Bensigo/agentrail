@@ -1270,3 +1270,41 @@ describe("POST /api/v1/connectors/telegram/webhook — reply_to_message -> reply
     expect(JSON.stringify(enqueueArgs.payload)).not.toContain("9999");
   });
 });
+
+// --- subscription-platform spec §6, delivery trap #2: message_thread_id ---
+
+describe("POST /api/v1/connectors/telegram/webhook — message_thread_id capture (delivery trap #2)", () => {
+  beforeEach(() => {
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: "ws-1" } as never,
+      created: false,
+      disposition: "bound",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  it("captures message_thread_id onto the payload, as a string, for a forum-topic message", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          chat: { id: -100123, type: "supergroup" },
+          message_thread_id: 55,
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({ messageThreadId: "55" });
+  });
+
+  it("omits messageThreadId entirely (not just undefined) when Telegram sends no message_thread_id — the overwhelming majority of messages (DMs, non-forum groups, the General topic)", async () => {
+    const res = await POST(req(messageUpdate(), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("messageThreadId");
+  });
+});

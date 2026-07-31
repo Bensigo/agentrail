@@ -945,6 +945,49 @@ describe("dispatchQueuedChannelMessages — 'pinned' kind", () => {
     const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
     expect(body.target).toEqual({ chatId: -100123, messageThreadId: 77 });
   });
+
+  it("extractPayload tolerantly accepts a string message_thread_id too (the webhook door's own convention — see connectors/telegram/webhook/route.ts)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi", messageThreadId: "77" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123, messageThreadId: "77" });
+  });
+
+  it("extractPayload omits messageThreadId entirely when the row's payload carries none — the default row() fixture, unchanged", async () => {
+    mockClaim
+      .mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "hi" } }))
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123 });
+    expect(body.target).not.toHaveProperty("messageThreadId");
+  });
+
+  it("extractPayload drops a malformed message_thread_id (neither number nor string) rather than forwarding garbage", async () => {
+    mockClaim
+      .mockResolvedValueOnce(
+        row({ payload: { chatId: -100123, text: "hi", messageThreadId: { nested: true } } })
+      )
+      .mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "pin-sess-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.target).toEqual({ chatId: -100123 });
+    expect(body.target).not.toHaveProperty("messageThreadId");
+  });
 });
 
 describe("dispatchQueuedChannelMessages — 'single' kind", () => {

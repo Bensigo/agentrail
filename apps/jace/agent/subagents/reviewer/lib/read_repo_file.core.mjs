@@ -1,52 +1,49 @@
-// Pure, dependency-free core for fetching a PR's metadata + diff from the
-// AgentRail console — the ONE read the reviewer subagent needs to judge a
-// pull request. No SDK, no network primitives of its own: the single HTTP
-// call is an injected `transport` seam (real `fetch` in the thin tool
-// wrapper, a fake in tests), so every branch — including every degraded one
-// — is unit-testable without a live server.
-//
-// `linkedIssues` in the success shape is the goal payload the reviewer
-// grades coverage against — the PR's own diff/body describe what the
-// builder did, not what it was asked to do (spec:
-// docs/superpowers/specs/2026-07-29-ac-aware-pr-review-design.md). Both it
-// and `linkedIssuesDegraded` default when the console omits them, so an
-// older console paired with a newer Jace degrades to today's diff-only
-// payload rather than failing.
+// Pure, dependency-free core for reading ONE file or directory listing from a
+// workspace's connected GitHub repo at a ref — one of the reviewer's four
+// context tools that let it investigate beyond the diff alone (design:
+// docs/superpowers/specs/2026-07-31-reviewer-judgment-engine-design.md §2).
+// No SDK, no network primitives of its own: the single HTTP call is an
+// injected `transport` seam (real `fetch` in the thin tool wrapper, a fake in
+// tests), so every branch — including every degraded one — is
+// unit-testable without a live server. Transcribes fetch_pr_diff.core.mjs's
+// own structure exactly (PATH const, duplicated resolveConsoleConfig,
+// URLSearchParams-built URL, the same classifyStatus table, degraded(),
+// single-attempt fetch fn) — see that file's own doc-comment for the full
+// reasoning behind the shared shape and the `eveSessionId` resolution note
+// (this module, like its three siblings here, is called from the SAME
+// reviewer subagent tool wrapper and stays equally agnostic to how
+// `eveSessionId` was resolved).
 //
 // Auth + config model: same as the sibling *.core.mjs modules across this
 // app — Jace resolves its own console endpoint + bearer from
 // JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN.
 //
-// `eveSessionId` here is NOT `ctx.session.id` read directly the way root's
-// tools do it — this core is called from a DECLARED SUBAGENT's tool
-// (tools/fetch_pr_diff.ts), and eve gives every delegated subagent its own
-// CHILD session (node_modules/eve/docs/subagents.mdx: "Each delegated
-// subagent spins up its own child session"). The tool wrapper resolves the
-// value THIS module receives as `eveSessionId` from
-// `ctx.session.parent?.rootSessionId ?? ctx.session.id` — see that file's
-// own doc-comment for the full reasoning. This module itself stays agnostic
-// to that distinction: it just sends whatever string it's given.
+// REF GUIDANCE (for the caller, not enforced here): the console's repo-file
+// route resolves `ref` against GitHub's contents API — a branch, tag, or
+// commit SHA; omitting it reads the repo's default branch. This core does
+// not validate `ref`'s shape; an invalid ref simply degrades via the
+// console's own 404/422 classification.
 
-export const PR_REVIEW_PATH = "/api/v1/runner/pr-review";
+export const REPO_FILE_PATH = "/api/v1/runner/repo-file";
 
 // Stable, cause-free notes for each degraded outcome. They describe the
-// RETRIEVAL gap, never the PR's contents — the reviewer must not turn a
-// fetch problem into a fabricated review.
+// RETRIEVAL gap, never the file's contents — the reviewer must not turn a
+// fetch problem into a fabricated claim about what a file contains.
 const DEGRADED_NOTES = {
   config_missing:
-    "The console PR-review endpoint is not configured for this Jace deployment (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN); no diff could be fetched.",
+    "The console repo-file endpoint is not configured for this Jace deployment (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN); no file could be fetched.",
   bad_request:
-    "The diff request was malformed (missing/blank repo or prNumber); no diff could be fetched.",
+    "The file request was malformed (missing/blank repo or path); no file could be fetched.",
   unreachable:
-    "The console PR-review endpoint could not be reached (network error); no diff could be fetched. Do not retry from here.",
+    "The console repo-file endpoint could not be reached (network error); no file could be fetched. Do not retry from here.",
   unauthorized:
     "The console rejected the request (401/403) — the shared JACE_CONSOLE_TOKEN this Jace deployment presents to the console may be invalid, rotated, or unset. This is a deployment configuration problem, not a workspace-specific one.",
   not_found:
-    "The console found no PR, or this repo is not connected to the workspace (404).",
+    "The console found nothing at that path (it may not exist at that ref), or this repo is not connected to the workspace (404).",
   conflict:
     "The workspace isn't fully set up yet (no workspace, or no GitHub App installed), or the console rejected a previously-stored GitHub App installation as stale/revoked — either way, reconnect GitHub for this workspace from the console (409).",
-  rate_limited: "GitHub's rate limit was hit; no diff could be fetched right now.",
-  upstream_error: "The console or GitHub errored (5xx); no diff could be fetched.",
+  rate_limited: "GitHub's rate limit was hit; no file could be fetched right now.",
+  upstream_error: "The console or GitHub errored (5xx); no file could be fetched.",
   unexpected_status: "The console returned an unexpected status.",
   bad_body: "The console responded, but the body was not valid JSON.",
 };
@@ -72,22 +69,25 @@ export function resolveConsoleConfig(env = {}) {
 }
 
 /**
- * Build the GET .../pr-review URL. `eveSessionId` is what the console
+ * Build the GET .../repo-file URL. `eveSessionId` is what the console
  * resolves the real tenant from server-side (via the jace_sessions ledger);
- * `repo` and `prNumber` name which PR.
+ * `repo` and `path` name which file/directory; `ref` rides only when
+ * non-blank (omitting it reads the repo's default branch).
  *
  * @param {string} baseUrl — already trimmed + de-slashed
  * @param {string} eveSessionId
  * @param {string} repo
- * @param {number} prNumber
+ * @param {string} path
+ * @param {string} [ref]
  * @returns {string}
  */
-export function buildPrDiffUrl(baseUrl, eveSessionId, repo, prNumber) {
+export function buildRepoFileUrl(baseUrl, eveSessionId, repo, path, ref) {
   const params = new URLSearchParams();
   params.set("eveSessionId", eveSessionId);
   params.set("repo", repo);
-  params.set("prNumber", String(prNumber));
-  return `${baseUrl}${PR_REVIEW_PATH}?${params.toString()}`;
+  params.set("path", path);
+  if (ref) params.set("ref", ref);
+  return `${baseUrl}${REPO_FILE_PATH}?${params.toString()}`;
 }
 
 /**
@@ -127,37 +127,42 @@ export function degraded(reason, extra = {}) {
 }
 
 /**
- * Fetch a PR's metadata + diff, or a degraded result. Single attempt, no
- * retry, never throws:
+ * Fetch one file's content or one directory's listing at a ref, or a
+ * degraded result. Single attempt, no retry, never throws:
  *
- *   1. blank eveSessionId/repo, or a
- *      non-positive-integer prNumber   -> degraded("bad_request")
- *   2. unset console config           -> degraded("config_missing", { missing })
- *   3. transport throws               -> degraded("unreachable")
- *   4. non-2xx status                 -> degraded(<mapped reason>, { status })
- *   5. non-JSON body                  -> degraded("bad_body", { status })
- *   6. success                        -> { ok:true, repo, prNumber, title,
- *                                        author, baseRef, headRef, headSha, body,
- *                                        changedFiles, truncated, omittedPaths,
- *                                        linkedIssues, linkedIssuesDegraded }
+ *   1. blank eveSessionId/repo/path   -> degraded("bad_request")
+ *   2. unset console config          -> degraded("config_missing", { missing })
+ *   3. transport throws              -> degraded("unreachable")
+ *   4. non-2xx status                -> degraded(<mapped reason>, { status })
+ *   5. non-JSON body                 -> degraded("bad_body", { status })
+ *   6. success                       -> { ok:true, kind, content, entries,
+ *                                        size, truncated, path, ref }
+ *
+ * `kind` is `"file"` or `"dir"` per the console's own response; a file body
+ * carries `content`/`size`/`truncated` (entries defaults to `[]`), a dir body
+ * carries `entries` (content/size/truncated default to their empty values) —
+ * this core coerces every field unconditionally rather than branching on
+ * `kind`, so a shape surprise degrades to an honest empty value instead of
+ * throwing.
  *
  * @param {{ env?: Record<string, string|undefined>, eveSessionId: string,
- *           repo: string, prNumber: number,
+ *           repo: string, path: string, ref?: string,
  *           transport: (url: string, init: { headers: Record<string,string> }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
  */
-export async function fetchPrDiff({ env = {}, eveSessionId, repo, prNumber, transport }) {
+export async function readRepoFile({ env = {}, eveSessionId, repo, path, ref, transport }) {
   const sessionId = String(eveSessionId ?? "").trim();
   const repoTrimmed = String(repo ?? "").trim();
-  const prNum = Number(prNumber);
-  if (!sessionId || !repoTrimmed || !Number.isInteger(prNum) || prNum <= 0) {
+  const pathTrimmed = String(path ?? "").trim();
+  if (!sessionId || !repoTrimmed || !pathTrimmed) {
     return degraded("bad_request");
   }
 
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) return degraded("config_missing", { missing: cfg.missing });
 
-  const url = buildPrDiffUrl(cfg.baseUrl, sessionId, repoTrimmed, prNum);
+  const refTrimmed = typeof ref === "string" ? ref.trim() : "";
+  const url = buildRepoFileUrl(cfg.baseUrl, sessionId, repoTrimmed, pathTrimmed, refTrimmed);
 
   let res;
   try {
@@ -183,18 +188,12 @@ export async function fetchPrDiff({ env = {}, eveSessionId, repo, prNumber, tran
 
   return {
     ok: true,
-    repo: repoTrimmed,
-    prNumber: prNum,
-    title: typeof body.title === "string" ? body.title : "",
-    author: typeof body.author === "string" ? body.author : "",
-    baseRef: typeof body.baseRef === "string" ? body.baseRef : "",
-    headRef: typeof body.headRef === "string" ? body.headRef : "",
-    headSha: typeof body.headSha === "string" ? body.headSha : "",
-    body: typeof body.body === "string" ? body.body : "",
-    changedFiles: Array.isArray(body.changedFiles) ? body.changedFiles : [],
+    kind: typeof body.kind === "string" ? body.kind : "",
+    content: typeof body.content === "string" ? body.content : "",
+    entries: Array.isArray(body.entries) ? body.entries : [],
+    size: typeof body.size === "number" ? body.size : 0,
     truncated: body.truncated === true,
-    omittedPaths: Array.isArray(body.omittedPaths) ? body.omittedPaths : [],
-    linkedIssues: Array.isArray(body.linkedIssues) ? body.linkedIssues : [],
-    linkedIssuesDegraded: body.linkedIssuesDegraded === true,
+    path: typeof body.path === "string" ? body.path : "",
+    ref: typeof body.ref === "string" ? body.ref : "",
   };
 }

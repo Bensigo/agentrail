@@ -38,6 +38,7 @@ function prBody(overrides = {}) {
     author: "ada",
     baseRef: "main",
     headRef: "ada/widgets-branch",
+    headSha: "abc123def4567890",
     body: "This adds widgets.",
     changedFiles: [
       { path: "src/index.ts", status: "modified", additions: 3, deletions: 1, patch: "@@ -1,3 +1,3 @@\n-old\n+new" },
@@ -106,6 +107,35 @@ test("degraded carries a stable reason + cause-free note and no free-form text",
   assert.equal(typeof degraded("who_knows").note, "string");
 });
 
+// Regression pin: pr-review's classifyGithubError reclassifies GitHub's own
+// 401/403 into EITHER 409 (stale/revoked GitHub App install — "reconnect
+// GitHub from the console") or 429 (rate limit) — it never passes a raw
+// 401/403 through. The ONLY 401/403 this core can actually see is
+// requireJaceConsoleSecret rejecting the shared JACE_CONSOLE_TOKEN (a
+// deployment config problem, not a workspace one), so the unauthorized note
+// must name THAT cause, never "GitHub credentials".
+test("degraded(unauthorized) names the shared console token, never GitHub credentials", () => {
+  const d = degraded("unauthorized");
+  assert.match(d.note, /JACE_CONSOLE_TOKEN/, `should name the shared JACE_CONSOLE_TOKEN, got: ${d.note}`);
+  assert.doesNotMatch(
+    d.note,
+    /GitHub credentials/i,
+    `must not blame GitHub credentials — a raw 401/403 from GitHub never reaches this core (it's ` +
+      `reclassified to 409/429 first), got: ${d.note}`,
+  );
+});
+
+// Companion pin: the conflict (409) note must name BOTH honest possibilities
+// pr-review's resolveWorkspaceRepoToken/classifyGithubError can produce —
+// not-yet-set-up (no workspace / no GitHub App installed) AND a
+// previously-installed GitHub App's credentials going stale/revoked
+// (reclassified from GitHub's own 401/403).
+test("degraded(conflict) names both the not-set-up-yet and the stale/revoked GitHub App possibilities", () => {
+  const d = degraded("conflict");
+  assert.match(d.note, /isn't fully set up/i, `should mention the not-set-up-yet case, got: ${d.note}`);
+  assert.match(d.note, /stale\/revoked/i, `should mention the stale/revoked GitHub App case, got: ${d.note}`);
+});
+
 // ---------------------------------------------------------------------------
 // fetchPrDiff — success
 // ---------------------------------------------------------------------------
@@ -123,6 +153,7 @@ test("fetchPrDiff returns the PR shape on 200 (ok path), with the bearer + accep
   assert.equal(res.author, "ada");
   assert.equal(res.baseRef, "main");
   assert.equal(res.headRef, "ada/widgets-branch");
+  assert.equal(res.headSha, "abc123def4567890");
   assert.equal(res.body, "This adds widgets.");
   assert.deepEqual(res.changedFiles, body.changedFiles);
   assert.equal(res.truncated, false);
@@ -135,6 +166,16 @@ test("fetchPrDiff returns the PR shape on 200 (ok path), with the bearer + accep
     transport.calls[0].url,
     `https://console.example.com${PR_REVIEW_PATH}?eveSessionId=eve-1&repo=ada%2Fwidgets&prNumber=98`,
   );
+});
+
+test("headSha defaults to \"\" when the console response omits it (back-compat, older console)", async () => {
+  const { headSha, ...bodyWithoutHeadSha } = prBody();
+  const transport = fakeTransport(() => ({ status: 200, json: async () => bodyWithoutHeadSha }));
+
+  const res = await fetchPrDiff({ env: ENV, eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98, transport });
+
+  assert.equal(res.ok, true);
+  assert.equal(res.headSha, "");
 });
 
 test("fetchPrDiff reports truncated + omittedPaths honestly when the console capped the diff", async () => {

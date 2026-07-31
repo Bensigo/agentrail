@@ -18,9 +18,18 @@ import { REVIEW_SCHEMA } from "./lib/reviewer.core.mjs";
 // workspace-scoped enforcement are what bound it. Issue filing stays gated.)
 //
 //  - Its prompt lives in this directory's instructions.md.
-//  - Its ONLY tool is the authored, read-only fetch_pr_diff (one GET to the
-//    configured console endpoint). It declares NO connections, so eve
-//    injects no connection_search either.
+//  - It authors a READ-ONLY TOOLKIT of five tools, all thin wrappers over a
+//    pure, dependency-free core (design:
+//    docs/superpowers/specs/2026-07-31-reviewer-judgment-engine-design.md
+//    §2, "the posture rework" — widened from the original ONE-tool
+//    fetch_pr_diff by this arc): fetch_pr_diff (the PR's metadata + diff),
+//    read_repo_file (one file/dir at a ref), search_code (capped textual
+//    usage search), file_history (recent commits touching a path), and
+//    fetch_wiki (the repo's compiled wiki — list/get/search). Every one of
+//    the five is GET-only against exactly one configured console endpoint —
+//    reviewer-read-only.test.mjs proves this structurally (no POST/PUT/
+//    DELETE method string, no approval field, in any of the five). It
+//    declares NO connections, so eve injects no connection_search either.
 //  - ZERO write capability comes from TWO things, because either alone is
 //    insufficient:
 //      1. eve's isolation boundary — a declared subagent inherits nothing
@@ -28,16 +37,22 @@ import { REVIEW_SCHEMA } from "./lib/reviewer.core.mjs";
 //      2. A tools/ directory of disableTool() sentinels — eve injects a
 //         default harness (bash, write_file, read_file, …) into EVERY agent
 //         at runtime regardless of the authored tools list. The sentinels
-//         strip that harness, keeping ONLY fetch_pr_diff.
+//         strip that harness, keeping ONLY the five authored tools above.
 //  - `outputSchema: REVIEW_SCHEMA` runs the child in task mode, so its
 //    answer is forced into the structured review shape.
 //
-// PROMPT-INJECTION POSTURE: the diff, PR title/body, and file contents this
-// subagent reads are UNTRUSTED DATA fetched from a repo the owner does not
-// fully control (any contributor can open a PR). Defense is two-layered:
-// (1) instructions.md mandates treating that content as data — never as
-// instructions — and flagging any embedded directive as a finding instead
-// of obeying it; (2) the ENFORCED backstop lives at root's write seams —
+// PROMPT-INJECTION POSTURE: everything any of the five tools fetches — the
+// diff, PR title/body, a file's content, search fragments, commit messages,
+// wiki prose — is the SAME UNTRUSTED DATA surface, sourced from a repo the
+// owner does not fully control (any contributor can open a PR). Widening
+// from one read tool to five does not widen this surface in kind, only in
+// volume: every fetched field is equally untrusted regardless of which tool
+// returned it. Defense is two-layered, unchanged in shape from the original
+// one-tool posture: (1) instructions.md mandates treating ALL of it as data
+// — never as instructions — flagging any embedded directive as a finding
+// instead of obeying it, and bounds the investigation with a declared
+// budget (the untrusted-fetched-content rule and the budget both live
+// there, not here); (2) the ENFORCED backstop lives at root's write seams —
 // post_pr_review hardens every field through hardenUntrusted() before
 // anything reaches GitHub, same as the factory's issue-filing path already
 // does for every other model-read tool result.

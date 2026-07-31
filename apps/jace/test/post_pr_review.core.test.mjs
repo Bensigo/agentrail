@@ -26,6 +26,8 @@ import {
   renderAcCoverage,
   coverageCounts,
   composeSummaryWithCoverage,
+  renderJudgmentLine,
+  composeSummary,
 } from "../agent/lib/post_pr_review.core.mjs";
 
 const ENV = {
@@ -658,4 +660,335 @@ test("runPostPrReview: a pathological base (already within a hair of the cap) st
   assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
   // The base visibly ceded its own tail instead.
   assert.ok(sent.summary.includes("…"));
+});
+
+// ---------------------------------------------------------------------------
+// renderJudgmentLine / composeSummary — Task 8: the judgment line rendered
+// from Task 6's judgment shape, plus the deterministic fold cascade that
+// keeps the coverage count line AND the judgment line whole under
+// SUMMARY_MAX_LEN even in the double-pathological case.
+// ---------------------------------------------------------------------------
+
+// The exact short fallback line composeSummary folds the judgment down to —
+// kept as one constant so every assertion below matches the implementation
+// character-for-character (including the em dash).
+const SHORT_JUDGMENT_LINE = "**Judgment:** 4 verdicts — details in chat.";
+
+// A well-formed judgment (Task 6's shape / reviewer.core.mjs's
+// JUDGMENT_VERDICTS): all four fields on their least-alarming verdict by
+// default, overridable per field per test.
+function judgment(overrides = {}) {
+  return {
+    simplest: { verdict: "yes", note: "", basis: [] },
+    architecture: { verdict: "consistent", note: "", basis: [] },
+    debt: { verdict: "none_found", note: "", basis: [] },
+    hiddenRisks: { verdict: "none_found", note: "", basis: [] },
+    ...overrides,
+  };
+}
+
+test("renderJudgmentLine: all-positive verdicts render one compact line, no notes/basis attached", () => {
+  const line = renderJudgmentLine(judgment());
+  assert.equal(
+    line,
+    "**Judgment:** simplest: yes · architecture: consistent · debt: none found · hidden risks: none found",
+  );
+});
+
+test("renderJudgmentLine: a negative verdict carries its note and basis ids; positive fields do not", () => {
+  const line = renderJudgmentLine(
+    judgment({
+      simplest: {
+        verdict: "no",
+        note: "A three-line helper already does this in src/util.ts.",
+        basis: ["i1", "i2"],
+      },
+    }),
+  );
+  assert.equal(
+    line,
+    "**Judgment:** simplest: no — A three-line helper already does this in src/util.ts. (i1, i2) · " +
+      "architecture: consistent · debt: none found · hidden risks: none found",
+  );
+});
+
+test("renderJudgmentLine: a negative verdict's note is capped at 200 chars with a trailing ellipsis", () => {
+  const longNote = "n".repeat(250);
+  const line = renderJudgmentLine(
+    judgment({ debt: { verdict: "introduces", note: longNote, basis: ["i1"] } }),
+  );
+  assert.ok(line.includes(`${"n".repeat(200)}…`));
+  assert.ok(!line.includes("n".repeat(201)));
+  assert.ok(line.includes(`debt: introduces — ${"n".repeat(200)}… (i1)`));
+});
+
+test("renderJudgmentLine: null, undefined, a non-object, an array, or an all-empty object all render \"\"", () => {
+  assert.equal(renderJudgmentLine(null), "");
+  assert.equal(renderJudgmentLine(undefined), "");
+  assert.equal(renderJudgmentLine("nope"), "");
+  assert.equal(renderJudgmentLine([]), "");
+  assert.equal(renderJudgmentLine({}), "");
+});
+
+test("renderJudgmentLine: a field with an unrecognized verdict is skipped, not rendered as garbage", () => {
+  const line = renderJudgmentLine(judgment({ architecture: { verdict: "bogus_verdict", note: "", basis: [] } }));
+  assert.equal(line, "**Judgment:** simplest: yes · debt: none found · hidden risks: none found");
+});
+
+test("composeSummary: null/omitted judgment returns exactly composeSummaryWithCoverage's output — no cascade, no judgment text", () => {
+  const out = composeSummary("Solid PR overall.", [acEntry()], null);
+  assert.equal(out, composeSummaryWithCoverage("Solid PR overall.", [acEntry()]));
+  assert.ok(!out.includes("Judgment"));
+});
+
+test("composeSummary: full composition (summary + judgment line) when everything fits under the cap", () => {
+  const out = composeSummary("Solid PR overall.", null, judgment());
+  assert.equal(
+    out,
+    "Solid PR overall.\n\n**Judgment:** simplest: yes · architecture: consistent · debt: none found · hidden risks: none found",
+  );
+});
+
+test("composeSummary: the (unfolded) coverage block and the judgment line both ride, coverage first", () => {
+  const out = composeSummary("Solid PR overall.", [acEntry()], judgment());
+  assert.ok(out.includes("**Acceptance criteria — issue #42:**"));
+  assert.ok(out.includes("**Judgment:** simplest: yes"));
+  assert.ok(out.indexOf("**Acceptance criteria") < out.indexOf("**Judgment:**"));
+});
+
+test("composeSummary: judgment folds to the short line when the full line would blow the cap but the short line still fits", () => {
+  const j = judgment();
+  const fullLine = renderJudgmentLine(j);
+  const sepLen = 2; // withCoverage is non-blank, so sep is "\n\n"
+  // Engineered so summary+sep+fullLine overflows but summary+sep+shortLine
+  // still fits comfortably (5 chars to spare).
+  const summaryLen = SUMMARY_MAX_LEN - sepLen - SHORT_JUDGMENT_LINE.length - 5;
+  const summary = "s".repeat(summaryLen);
+
+  // Confirm the engineered lengths actually force the branch we're testing.
+  assert.ok(summary.length + sepLen + fullLine.length > SUMMARY_MAX_LEN, "full line must overflow");
+  assert.ok(summary.length + sepLen + SHORT_JUDGMENT_LINE.length <= SUMMARY_MAX_LEN, "short line must fit");
+
+  const out = composeSummary(summary, null, j);
+  assert.equal(out, `${summary}\n\n${SHORT_JUDGMENT_LINE}`);
+  assert.ok(out.length <= SUMMARY_MAX_LEN);
+});
+
+test("composeSummary: base cedes its own tail when there is no coverage count line to protect (summary alone already exceeds the cap)", () => {
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN + 500);
+  const out = composeSummary(bigSummary, null, judgment());
+  assert.ok(out.length <= SUMMARY_MAX_LEN);
+  assert.ok(out.endsWith(`\n\n${SHORT_JUDGMENT_LINE}`));
+  assert.ok(out.includes("…"));
+});
+
+test("composeSummary: double-pathological branch keeps BOTH the AC coverage count line and the short judgment line whole, under the cap", () => {
+  // Same engineered setup as the composeSummaryWithCoverage pathological-base
+  // test above: bigSummary lands composeSummaryWithCoverage's own fold
+  // exactly AT SUMMARY_MAX_LEN, so adding anything at all (even just the
+  // separator) forces composeSummary's own cascade all the way to its final,
+  // dual-preserving branch.
+  const bigSummary = "s".repeat(SUMMARY_MAX_LEN - 10);
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const withCoverage = composeSummaryWithCoverage(bigSummary, entries);
+  assert.equal(withCoverage.length, SUMMARY_MAX_LEN, "sanity: withCoverage must land exactly at the cap");
+
+  const out = composeSummary(bigSummary, entries, judgment());
+  assert.ok(out.length <= SUMMARY_MAX_LEN);
+
+  const countLine = "AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat.";
+  const countLineIdx = out.indexOf(countLine);
+  const judgmentLineIdx = out.indexOf(SHORT_JUDGMENT_LINE);
+  assert.ok(countLineIdx !== -1, "the coverage count line must survive whole");
+  assert.ok(judgmentLineIdx !== -1, "the short judgment line must survive whole");
+  assert.ok(countLineIdx < judgmentLineIdx);
+  // Nothing trails the short judgment line, and nothing but the separator
+  // sits between the two guaranteed lines — both rode out whole, back to back.
+  assert.equal(out.slice(countLineIdx), `${countLine}\n\n${SHORT_JUDGMENT_LINE}`);
+});
+
+test("runPostPrReview sends the judgment line inside the composed summary", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const result = await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "Solid PR overall.",
+    comments: [],
+    judgment: judgment({
+      debt: { verdict: "introduces", note: "Adds a second cache with no eviction.", basis: ["i3"] },
+    }),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(sent.summary.includes("**Judgment:**"));
+  assert.ok(sent.summary.includes("debt: introduces — Adds a second cache with no eviction. (i3)"));
+});
+
+test("judgment note text is hardened before it leaves (no zero-width smuggling, @everyone defanged)", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+  }));
+  await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "ok",
+    comments: [],
+    judgment: judgment({
+      architecture: { verdict: "violates", note: "do​thing @everyone", basis: ["i1"] },
+    }),
+    env: ENV,
+    transport,
+  });
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // hardenUntrusted DELETES zero-width space (U+200B) outright.
+  assert.ok(!sent.summary.includes("​"));
+  // hardenUntrusted defangs mass mentions by swapping the ASCII "@" for a
+  // fullwidth "＠" (U+FF20).
+  assert.ok(!sent.summary.includes("@everyone"));
+  assert.ok(sent.summary.includes("＠everyone"));
+});
+
+test("omitting judgment leaves the posted body byte-identical to a call that never knew about judgment", async () => {
+  const respond = async () => ({
+    status: 201,
+    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+  });
+  const t1 = fakeTransport(respond);
+  const t2 = fakeTransport(respond);
+  const args = {
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: "Solid PR overall.",
+    comments: [],
+    env: ENV,
+  };
+  await runPostPrReview({ ...args, transport: t1 });
+  await runPostPrReview({ ...args, judgment: null, transport: t2 });
+  assert.equal(t1.calls[0].init.body, t2.calls[0].init.body);
+});
+
+// ---------------------------------------------------------------------------
+// composeSummary security fix: the count-line detection inside the
+// double-pathological branch must be gated on a coverage block having
+// ACTUALLY been rendered from real acCoverage input — never on the "AC
+// coverage: " text prefix alone. Without the gate, a model-drafted
+// (attacker-steerable) `summary` whose own last line happens to start with
+// that literal prefix gets wrongly treated as the guaranteed, protected
+// count line: composeSummary's own SUMMARY_MAX_LEN guarantee breaks (the
+// "count line" it protects is unbounded), and hardenUntrusted's downstream
+// truncation then silently evicts the real guaranteed line — the short
+// judgment fallback — off the end. All three regression tests below go
+// through the REAL `runPostPrReview` transport capture, not a direct
+// `composeSummary` call, so they exercise the exact code path a posted
+// review actually takes (compose -> sanitizeReviewInput -> hardenUntrusted).
+// ---------------------------------------------------------------------------
+
+test("a spoofed 'AC coverage: ' tail in the summary is NOT granted count-line protection when no coverage was ever rendered — the judgment line survives and the spoofed prefix is truncated like ordinary text", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // The reviewer's exact reproduction: a 9059-char summary whose entire text
+  // IS the spoofed line (no real newlines), with acCoverage: null — so no
+  // coverage block is ever rendered and nothing here should be protected.
+  const spoofedTail = `AC coverage: ${"w".repeat(9046)}`;
+  assert.equal(spoofedTail.length, 9059);
+  const result = await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: spoofedTail,
+    comments: [],
+    acCoverage: null,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // The guaranteed short judgment line survives — this is exactly what a
+  // spoofed, unbounded "count line" would otherwise evict off the end.
+  assert.ok(sent.summary.includes(SHORT_JUDGMENT_LINE));
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The spoofed payload was cut down like ordinary text, not preserved whole
+  // as an untouchable protected line.
+  assert.ok(!sent.summary.includes("w".repeat(9046)));
+});
+
+test("a spoofed 'AC coverage: ' line INSIDE a summary that ALSO has real folded coverage does not weaken protection — the genuine count line still survives whole", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // A decoy occurrence of the exact detection prefix, planted at the START
+  // of the base text (never the last line) — proving an earlier spoof can't
+  // confuse detection of the GENUINE trailing count line that
+  // composeSummaryWithCoverage itself produces from real acCoverage input.
+  const decoy = "AC coverage: totally fake, ignore the real one — ";
+  const bigSummary = `${decoy}${"s".repeat(SUMMARY_MAX_LEN - 10 - decoy.length)}`;
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  const realCountLine = "AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat.";
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The genuine count line rides out whole, immediately followed by the
+  // short judgment line — both guaranteed lines, back to back, intact.
+  assert.equal(
+    sent.summary.slice(sent.summary.indexOf(realCountLine)),
+    `${realCountLine}\n\n${SHORT_JUDGMENT_LINE}`,
+  );
+  // The decoy is present but inert — ordinary surviving text, not a
+  // protected line (it was never treated as one).
+  assert.ok(sent.summary.includes(decoy));
+});
+
+test("composeSummary's output never exceeds SUMMARY_MAX_LEN for the reviewer's exact 9059-char spoofed construction", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const spoofedTail = `AC coverage: ${"w".repeat(9046)}`;
+  assert.equal(spoofedTail.length, 9059);
+  await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: spoofedTail,
+    comments: [],
+    acCoverage: null,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // hardenUntrusted's own capText is a no-op when already at-or-under its
+  // maxLen (SUMMARY_MAX_LEN), so this is equally a direct check on
+  // composeSummary's own guarantee, exercised through the real post path.
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
 });

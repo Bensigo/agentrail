@@ -1,7 +1,16 @@
 // The reviewer subagent has ZERO write capability and is isolated from the
 // factory's write paths (post_pr_review, issue-filing), while authoring
-// exactly ONE read-only tool (fetch_pr_diff). Copies the structure of
-// triage-read-only.test.mjs.
+// exactly its FIVE read-only tools: fetch_pr_diff (the PR's metadata + diff)
+// plus the four context tools that let it investigate beyond the diff —
+// read_repo_file (one file/dir at a ref), search_code (capped textual usage
+// search), file_history (recent commits touching a path), and fetch_wiki
+// (the repo's compiled wiki, list/get/search). Widening from ONE tool to
+// FIVE is this task's own change (design:
+// docs/superpowers/specs/2026-07-31-reviewer-judgment-engine-design.md §2,
+// "the posture rework") — the read-only, zero-write guarantee this file
+// exists to prove is otherwise untouched. Copies the structure of
+// triage-read-only.test.mjs (which made the analogous one-to-five
+// widening for the debugger's own evidence-verb tools).
 //
 // Two mechanisms make the zero-write guarantee true, and this test PROVES both:
 //
@@ -11,7 +20,7 @@
 //      (post_pr_review, create_issue, etc.). We prove no file under the subagent
 //      references any write path (child_process, execFile, gh issue create,
 //      octokit, linear) or an approval gate, nor a database client (postgres /
-//      clickhouse — reviewer reads the PR diff over HTTP only; Jace keeps NO
+//      clickhouse — reviewer reads everything over HTTP only; Jace keeps NO
 //      ClickHouse client).
 //
 //   B. Harness lock-down. Isolation is NOT enough on its own: eve injects a
@@ -22,11 +31,25 @@
 //      sentinels (each `tools/<name>.ts` default-exports disableTool()) that
 //      strips the ENTIRE default harness. Because reviewer declares NO connections,
 //      the dynamic connection_search is never injected, so there is no
-//      connection_search sentinel either.
+//      connection_search sentinel either. The four context tools sit BESIDE
+//      those sentinels in the same tools/ directory — none of the sentinels are
+//      removed or replaced.
 //
-// The ONE authored tool, fetch_pr_diff, is read-only: it sets NO approval
-// (approval gates are reserved for root's gated write tools) and reaches
-// exactly one configured console endpoint via the global fetch.
+// All FIVE authored tools are read-only, proved three ways: none sets an
+// `approval` field (approval gates are reserved for root's gated write tools);
+// none of their transport code contains a POST/PUT/DELETE method string (every
+// one of the five is GET-only); and each reaches exactly one configured
+// console endpoint via the global fetch (pr-review for fetch_pr_diff,
+// repo-file for read_repo_file, code-search for search_code, file-history for
+// file_history, repo-wiki for fetch_wiki).
+//
+// What replaces the old "ONE read tool" injection-defense framing (design §2):
+// everything any of the five tools fetches — the diff, a file's content,
+// search fragments, commit messages, wiki prose — is the SAME untrusted
+// surface, never an instruction; that rule (plus the investigation budget)
+// lives in instructions.md, not here. This file proves the STRUCTURAL half of
+// the posture (isolation + harness lock-down + GET-only + no write path), not
+// the prompt-level content-handling rule.
 //
 // The complementary guarantee — that root's write surface is UNCHANGED and that
 // NO subagent authors a mutating tool — is covered by no-second-write-path.test.mjs
@@ -45,9 +68,18 @@ const reviewerDir = fileURLToPath(
 );
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 
-// The single authored tool. It legitimately uses defineTool, so it is EXCLUDED
-// from the sentinel-only assertions and from the defineTool write-path scan.
-const AUTHORED_TOOL = "fetch_pr_diff.ts";
+// The five authored tools (widened from one to five by this task — design
+// §2). Each legitimately uses defineTool, so all five are EXCLUDED from the
+// sentinel-only assertions and from the defineTool write-path scan. Adding a
+// sixth is a deliberate edit here, same posture as no-second-write-path.
+// test.mjs's own EXPECTED_TOOL_FILES ceiling-and-floor.
+const AUTHORED_TOOLS = [
+  "fetch_pr_diff.ts",
+  "read_repo_file.ts",
+  "search_code.ts",
+  "file_history.ts",
+  "fetch_wiki.ts",
+].sort();
 
 function sourceFiles(dir) {
   const out = [];
@@ -106,7 +138,7 @@ test("reviewer strips the ENTIRE default harness via disableTool() sentinels", (
   const disabled = new Set();
   for (const entry of readdirSync(toolsDir)) {
     if (!entry.endsWith(".ts")) continue;
-    if (entry === AUTHORED_TOOL) continue; // the one real tool, asserted below
+    if (AUTHORED_TOOLS.includes(entry)) continue; // the five real tools, asserted below
     const src = readFileSync(`${toolsDir}/${entry}`, "utf8");
     // A sentinel DISABLES — it must never DEFINE a real (capability-granting) tool.
     assert.doesNotMatch(
@@ -157,35 +189,50 @@ test("reviewer strips the ENTIRE default harness via disableTool() sentinels", (
   }
 });
 
-test("reviewer authors exactly ONE tool — the read-only fetch_pr_diff", () => {
+test("reviewer authors exactly its FIVE read-only tools — fetch_pr_diff, read_repo_file, search_code, file_history, fetch_wiki", () => {
   // Enumerate every source file that authors a tool (defineTool). It must be
-  // exactly the one read-only fetch_pr_diff tool, nothing else.
+  // exactly the five read-only tools, nothing else.
   const authored = sourceFiles(reviewerDir)
     .filter((f) => /defineTool\s*\(/.test(stripComments(readFileSync(f, "utf8"))))
     .map((f) => f.replace(`${reviewerDir}/`, ""))
     .sort();
   assert.deepEqual(
     authored,
-    [`tools/${AUTHORED_TOOL}`],
-    `reviewer must author exactly one tool (tools/${AUTHORED_TOOL}); found: ${authored.join(", ") || "(none)"}`,
+    AUTHORED_TOOLS.map((t) => `tools/${t}`).sort(),
+    `reviewer must author exactly its five tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
   );
 
-  // That one tool is READ-ONLY: it must NOT carry an approval gate (an
+  // Every one of the five is READ-ONLY: none may carry an approval gate (an
   // approval gate — always()/once() or consoleGatedApproval — is a write-path
   // signal reserved for root's gated write tools).
-  const toolSrc = stripComments(
-    readFileSync(`${reviewerDir}/tools/${AUTHORED_TOOL}`, "utf8"),
-  );
-  assert.doesNotMatch(
-    toolSrc,
-    /approval:\s*(always|once)\(|consoleGatedApproval/,
-    "the read-only fetch_pr_diff tool must not carry an approval gate (always/once or consoleGatedApproval)",
-  );
+  for (const tool of AUTHORED_TOOLS) {
+    const toolSrc = stripComments(readFileSync(`${reviewerDir}/tools/${tool}`, "utf8"));
+    assert.doesNotMatch(
+      toolSrc,
+      /approval:\s*(always|once)\(|consoleGatedApproval/,
+      `the read-only ${tool} tool must not carry an approval gate (always/once or consoleGatedApproval)`,
+    );
+  }
+});
+
+test("every authored tool's transport is GET-only — no POST/PUT/DELETE method string, no approval field", () => {
+  // The brief's explicit widening of the read-only proof beyond "no approval
+  // gate": a read-only tool's own realTransport must never be wired to a
+  // mutating HTTP method, and must never carry ANY approval field (not just
+  // the always()/once()/consoleGatedApproval shapes checked above — a bare
+  // `approval:` key of any shape would be a write-path signal here).
+  const METHOD_RE = /method:\s*["'](POST|PUT|DELETE|PATCH)["']/;
+  const APPROVAL_KEY_RE = /\bapproval\s*:/;
+  for (const tool of AUTHORED_TOOLS) {
+    const src = stripComments(readFileSync(`${reviewerDir}/tools/${tool}`, "utf8"));
+    assert.doesNotMatch(src, METHOD_RE, `tools/${tool} must not wire a POST/PUT/DELETE/PATCH transport method`);
+    assert.doesNotMatch(src, APPROVAL_KEY_RE, `tools/${tool} must not wire any approval field`);
+  }
 });
 
 test("no file under reviewer references a write path or a database client", () => {
-  // NB: defineTool is intentionally NOT banned here — reviewer's one authored
-  // tool uses it read-only (asserted above). What's banned is any actual
+  // NB: defineTool is intentionally NOT banned here — reviewer's five authored
+  // tools use it read-only (asserted above). What's banned is any actual
   // mutation / second write path, and any direct DB client (Jace subagents
   // read over HTTP; there is NO ClickHouse client in Jace, and standup's
   // postgres edge is root's, not a subagent's).
@@ -203,7 +250,8 @@ test("no file under reviewer references a write path or a database client", () =
 test("reviewer declares no connections directory (no MCP surface, HTTP-only reach)", () => {
   assert.ok(
     !existsSync(`${reviewerDir}/connections`),
-    "reviewer must declare no connections — its only outbound reach is the one " +
-      "configured console endpoint via fetch_pr_diff",
+    "reviewer must declare no connections — its only outbound reach is the five " +
+      "configured console endpoints via its five authored tools (fetch_pr_diff, " +
+      "read_repo_file, search_code, file_history, fetch_wiki)",
   );
 });

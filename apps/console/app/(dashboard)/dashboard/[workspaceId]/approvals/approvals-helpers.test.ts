@@ -199,6 +199,84 @@ describe("summarizeApprovalToolInput — alignment_brief", () => {
   });
 });
 
+describe("summarizeApprovalToolInput — hideDollars option (subscription slice 6 Task 5)", () => {
+  describe("create_issue's tolerant _brief summary suffix", () => {
+    it("hideDollars: true — suffixes the lowercase scope word + 'task', never a dollar amount", () => {
+      const summary = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "Composed brief title", estimateUsd: 1.35 } },
+        { hideDollars: true }
+      );
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — small task",
+      });
+      expect(summary.fields.some((f) => f.value.includes("$"))).toBe(false);
+    });
+
+    it("hideDollars: true — scope tracks the estimate (medium/large)", () => {
+      const medium = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "t", estimateUsd: 4.2 } },
+        { hideDollars: true }
+      );
+      expect(medium.fields).toContainEqual({ label: "Brief", value: "t — medium task" });
+
+      const large = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "t", estimateUsd: 12.5 } },
+        { hideDollars: true }
+      );
+      expect(large.fields).toContainEqual({ label: "Brief", value: "t — large task" });
+    });
+
+    it("hideDollars omitted — byte-identical to the existing dollar-suffix pin", () => {
+      const summary = summarizeApprovalToolInput("create_issue", {
+        title: "x",
+        _brief: { title: "Composed brief title", estimateUsd: 12.5 },
+      });
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — ~$12.50",
+      });
+    });
+
+    it("hideDollars: false — explicit false behaves exactly like omitted", () => {
+      const summary = summarizeApprovalToolInput(
+        "create_issue",
+        { title: "x", _brief: { title: "Composed brief title", estimateUsd: 12.5 } },
+        { hideDollars: false }
+      );
+      expect(summary.fields).toContainEqual({
+        label: "Brief",
+        value: "Composed brief title — ~$12.50",
+      });
+    });
+  });
+
+  describe("alignment_brief's Scope/Estimate field", () => {
+    const INPUT = {
+      title: "Add dark mode",
+      taskType: "feature",
+      suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" },
+      estimateUsd: 4.2,
+    };
+
+    it("hideDollars: true — a 'Scope' field with the Title Case scope value, never 'Estimate' or a dollar amount", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT, { hideDollars: true });
+      expect(summary.fields).toContainEqual({ label: "Scope", value: "Medium task" });
+      expect(summary.fields.some((f) => f.label === "Estimate")).toBe(false);
+      expect(summary.fields.some((f) => f.value.includes("$"))).toBe(false);
+    });
+
+    it("hideDollars omitted — byte-identical to the existing 'Estimate' pin", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", INPUT);
+      expect(summary.fields).toContainEqual({ label: "Estimate", value: "~$4.20" });
+      expect(summary.fields.some((f) => f.label === "Scope")).toBe(false);
+    });
+  });
+});
+
 describe("summarizeApprovalToolInput — unknown tool fallback", () => {
   it("headlines the raw tool name and lists key:value fields", () => {
     const summary = summarizeApprovalToolInput("some_future_tool", { foo: "bar", count: 3 });

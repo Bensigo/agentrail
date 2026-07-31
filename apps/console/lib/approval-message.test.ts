@@ -1,8 +1,29 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Subscription-platform slice 6 Task 5: `renderAlignmentBrief` reads
+// `subscriptionsEnforced()` directly (server lib — `channel-dispatch.ts`'s
+// own precedent; see that file's test for the identical partial-mock
+// idiom). Mocked here (rather than mutating the real `process.env`) so this
+// file controls the flag's resolved value per test instead of depending on
+// ambient `BILLING_SUBSCRIPTIONS_ENFORCED`.
+vi.mock("./policy/feature-flags", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./policy/feature-flags")>();
+  return { ...actual, subscriptionsEnforced: vi.fn() };
+});
+
 import {
   renderApprovalMessage,
   TELEGRAM_TEXT_LIMIT,
 } from "./approval-message";
+import { subscriptionsEnforced } from "./policy/feature-flags";
+
+// Every test in this file defaults to flag OFF unless it explicitly
+// overrides — keeps every pre-existing (flag-unaware) test below exercising
+// the exact pre-Task-5 dollar-line path, regardless of declaration order
+// relative to the flag-on tests in the "scope line" describe block below.
+beforeEach(() => {
+  vi.mocked(subscriptionsEnforced).mockReturnValue(false);
+});
 
 describe("renderApprovalMessage — create_issue", () => {
   it("renders the title and every acceptance criterion as a bullet", () => {
@@ -348,6 +369,47 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
       expect(() =>
         renderApprovalMessage("alignment_brief", { ...BRIEF_INPUT, modelSelectionReason: { evil: true } })
       ).not.toThrow();
+    });
+  });
+
+  // Subscription-platform slice 6 Task 5 — the sanction line's dollar
+  // estimate becomes a scope sentence (`approval-scope.ts`'s
+  // `scopeSentence`, single-sourced thresholds) when
+  // `BILLING_SUBSCRIPTIONS_ENFORCED` is on. Flag off (every test above this
+  // block, including the byte-exact :260/:270-274 pins) renders the EXACT
+  // pre-existing dollar line, untouched by this block's mock.
+  describe("scope line, not dollars, behind the flag (subscription slice 6 Task 5)", () => {
+    it("flag on: renders the scope sentence instead of the dollar line, with no '$' anywhere in the output", () => {
+      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
+
+      const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
+
+      expect(text).toContain("Approving starts a small task.");
+      expect(text).not.toContain("Approving sets this run's budget");
+      expect(text).not.toContain("$");
+    });
+
+    it("flag on: still omits any scope/budget line when estimateUsd is missing/malformed, exactly like flag off", () => {
+      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
+
+      const text = renderApprovalMessage("alignment_brief", { title: "x" });
+
+      expect(text.toLowerCase()).not.toContain("budget");
+      expect(text).not.toContain("Approving starts");
+      expect(text).not.toContain("$");
+    });
+
+    it("flag on: the create_issue _brief-flattening path also renders the scope sentence (delegates to the same renderer)", () => {
+      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
+
+      const text = renderApprovalMessage("create_issue", {
+        title: "Add dark mode toggle",
+        acceptanceCriteria: [],
+        _brief: { taskType: "ui", estimateUsd: 1.35 },
+      });
+
+      expect(text).toContain("Approving starts a small task.");
+      expect(text).not.toContain("$");
     });
   });
 });

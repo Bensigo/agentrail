@@ -206,6 +206,10 @@ export async function GET(request: NextRequest) {
         // it logs once per period rather than on every poll from a
         // continuously-polling paused workspace. Flag off (the default, and
         // every pre-Task-3 test) notifies exactly as before this task.
+        // Caveat: this CAS is flag-agnostic (keyed on workspaceId+period
+        // only) — a mid-period flip OFF after this internal-only branch has
+        // already won the CAS means no customer notice for the rest of that
+        // period. Accepted: the rollout flip is one-time and monotonic.
         if (subscriptionsEnforced()) {
           console.error(
             "[runner/claim] budget ceiling hit (internal only — subscriptions on)"

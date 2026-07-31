@@ -5,6 +5,11 @@ const ORIGINAL_TOKEN = process.env["DISCORD_BOT_TOKEN"];
 
 describe("sendSystemDiscordMessagePreferFollowup", () => {
   const mockFetch = vi.fn();
+  // Every failure path now logs (sanitized) on its way to the bot fallback —
+  // spy-and-silence globally so the rest of the suite (which doesn't care
+  // about logging) stays quiet; the two logging-focused tests below inspect
+  // this spy directly.
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     vi.stubGlobal("fetch", mockFetch);
@@ -14,10 +19,12 @@ describe("sendSystemDiscordMessagePreferFollowup", () => {
     // fetch call this suite asserts against, rather than short-circuiting on
     // "DISCORD_BOT_TOKEN is not configured."
     process.env["DISCORD_BOT_TOKEN"] = "bot-tok-abc";
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    errorSpy.mockRestore();
     if (ORIGINAL_TOKEN === undefined) {
       delete process.env["DISCORD_BOT_TOKEN"];
     } else {
@@ -164,5 +171,64 @@ describe("sendSystemDiscordMessagePreferFollowup", () => {
     });
 
     expect(result.ok).toBe(false);
+  });
+
+  it("passes an abort signal to the followup fetch, and falls back to the bot path — no throw — on a timeout-shaped abort", async () => {
+    mockFetch
+      .mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"))
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    const result = await sendSystemDiscordMessagePreferFollowup({
+      channelId: "chan-1",
+      text: "upgrade now",
+      interactionToken: "tok-xyz",
+      applicationId: "app-123",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [, followupInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(followupInit.signal).toBeInstanceOf(AbortSignal);
+    expect(mockFetch.mock.calls[1][0]).toBe(
+      "https://discord.com/api/v10/channels/chan-1/messages"
+    );
+  });
+
+  it("logs the numeric status (never the token or URL) and falls back when the followup responds non-2xx", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    const result = await sendSystemDiscordMessagePreferFollowup({
+      channelId: "chan-1",
+      text: "upgrade now",
+      interactionToken: "super-secret-token",
+      applicationId: "app-123",
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0] as [string];
+    expect(loggedMessage).toContain("404");
+    expect(loggedMessage).not.toContain("super-secret-token");
+    expect(loggedMessage).not.toContain("discord.com");
+  });
+
+  it("logs a null status (never the token) when the followup fetch throws for a non-abort reason", async () => {
+    mockFetch
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    await sendSystemDiscordMessagePreferFollowup({
+      channelId: "chan-1",
+      text: "upgrade now",
+      interactionToken: "super-secret-token",
+      applicationId: "app-123",
+    });
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [loggedMessage] = errorSpy.mock.calls[0] as [string];
+    expect(loggedMessage).toContain("null");
+    expect(loggedMessage).not.toContain("super-secret-token");
   });
 });

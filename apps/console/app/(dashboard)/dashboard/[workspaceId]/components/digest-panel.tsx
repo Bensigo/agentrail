@@ -9,9 +9,7 @@ import { messageJaceTarget } from "../../../setup/components/channel-step-helper
 import { seatsLabel } from "../billing/billing-helpers";
 import {
   capacityText,
-  formatCostUsd,
   formatNeedsYouBreakdown,
-  formatTrendPct,
   formatWeekRangeLabel,
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
@@ -24,12 +22,14 @@ import {
 interface DigestPanelProps {
   workspaceId: string;
   /**
-   * Subscription slice 6 plan (Task 3): server-computed, undefined = render
-   * today's cost card exactly as before (flag off / degraded / error — see
-   * `loadPlanCardData`'s own doc-comment for the three cases that produce
-   * undefined). This client component never imports `loadPlanCardData` or
-   * `subscriptionsEnforced` itself — only the (type-erased) shape of the
-   * data page.tsx already resolved server-side.
+   * Subscription slice 8 (2026-07-31 owner ruling — display swap goes
+   * unconditional): server-computed, undefined = render the dollar-free
+   * `PlanCardEmpty` card instead (degraded workspace / no billing account /
+   * a swallowed read error — see `loadPlanCardData`'s own doc-comment for
+   * the two cases that produce undefined; there is no cost card left to
+   * fall back to). This client component never imports `loadPlanCardData`
+   * itself — only the (type-erased) shape of the data page.tsx already
+   * resolved server-side.
    */
   planCard?: PlanCardData;
 }
@@ -147,29 +147,18 @@ function NeedsYouBlock({
   );
 }
 
-function CostBlock({ cost }: { cost: DigestData["cost"] }) {
-  if (cost.thisWeekUsd === null) {
-    return <EmptyState message="Cost data unavailable right now." />;
-  }
-  return (
-    <div className="flex flex-col gap-1">
-      <span className="font-mono text-3xl font-bold text-[var(--gray-12)]">
-        {formatCostUsd(cost.thisWeekUsd)}
-      </span>
-      <span className="text-xs text-[var(--gray-09)]">
-        {formatTrendPct(cost.trendPct)}
-      </span>
-    </div>
-  );
-}
-
 /**
- * The digest's 4th grid slot when the subscription platform flag is on
- * (slice 6 plan, Task 3) — replaces `CostBlock`/`DigestCard title="Cost
- * this week"` with the plan's value: seats, capacity as tasks (never
- * dollars — Global Constraints), and renewal, plus an upgrade CTA cloned
- * from `NeedsYouBlock`'s Link+ArrowUpRight pattern above. Built from the
- * same `DigestCard` shell as every other digest block.
+ * The digest's 4th grid slot whenever plan data is available — unconditional
+ * since the 2026-07-31 owner ruling (the subscription-platform display swap
+ * built in slice 6/7 behind `BILLING_SUBSCRIPTIONS_ENFORCED` no longer
+ * needs the flag; the legacy cost card and `CostBlock` are deleted
+ * entirely, not merely hidden): seats, capacity as tasks (never dollars —
+ * Global Constraints), and renewal, plus an upgrade CTA cloned from
+ * `NeedsYouBlock`'s Link+ArrowUpRight pattern above. Built from the same
+ * `DigestCard` shell as every other digest block. When `planCard` is
+ * `undefined` (degraded / no billing account / a swallowed read error —
+ * see `loadPlanCardData`'s own doc-comment), `PlanCardEmpty` below renders
+ * in this slot instead.
  *
  * Exported (despite being consumed only from `DigestPanel` below) so it can
  * be unit-tested by calling it directly and walking the returned element
@@ -205,6 +194,28 @@ export function PlanCardBlock({
           Upgrade plan <ArrowUpRight className="h-3 w-3" />
         </Link>
       </div>
+    </DigestCard>
+  );
+}
+
+/**
+ * Dollar-free empty state for the digest's 4th grid slot when `planCard` is
+ * `undefined` (2026-07-31 owner ruling — the legacy cost card this slot
+ * used to fall back to is deleted entirely, so a missing plan read must
+ * never show a dollar figure). Same `DigestCard` shell and "Plan" title as
+ * `PlanCardBlock` (the slot never visibly relabels itself), one muted line,
+ * no CTA — there's no plan data to send anyone to the billing page about.
+ *
+ * Exported for the same direct-call-testability reason as `PlanCardBlock`
+ * above (no hooks, so it's the only way this file's tests can assert on
+ * its rendered output without a DOM render harness).
+ */
+export function PlanCardEmpty() {
+  return (
+    <DigestCard title="Plan">
+      <span className="text-xs text-[var(--gray-09)]">
+        Plan details are unavailable right now.
+      </span>
     </DigestCard>
   );
 }
@@ -369,9 +380,7 @@ export function DigestPanel({ workspaceId, planCard }: DigestPanelProps) {
           {planCard ? (
             <PlanCardBlock data={planCard} workspaceId={workspaceId} />
           ) : (
-            <DigestCard title="Cost this week">
-              <CostBlock cost={data.cost} />
-            </DigestCard>
+            <PlanCardEmpty />
           )}
         </div>
       )}

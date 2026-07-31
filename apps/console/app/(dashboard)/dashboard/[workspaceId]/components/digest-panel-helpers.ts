@@ -62,20 +62,6 @@ export function inProgressStateLabel(state: "queued" | "running"): string {
   return state === "running" ? "In progress" : "Assigned";
 }
 
-export function formatCostUsd(usd: number): string {
-  if (usd === 0) return "$0.00";
-  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
-}
-
-/** Trend copy with a sign; null → no baseline to compare against. */
-export function formatTrendPct(trendPct: number | null): string {
-  if (trendPct === null) return "No prior-week data to compare";
-  const rounded = Math.round(trendPct);
-  if (rounded === 0) return "No change vs last week";
-  const sign = rounded > 0 ? "+" : "";
-  return `${sign}${rounded}% vs last week`;
-}
-
 /** Human date-range label, e.g. "Jul 13 – Jul 19, 2026", from the (exclusive-end) week ISO strings. */
 export function formatWeekRangeLabel(week: { start: string; end: string }): string {
   const start = new Date(week.start);

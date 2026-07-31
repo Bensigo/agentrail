@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // This repo's vitest environment is "node" — no DOM/render harness
@@ -11,8 +13,8 @@ import { describe, expect, it } from "vitest";
 // `agent-breakdown.test.ts` never render their hook-driven components,
 // only their pure `-helpers.ts` siblings).
 //
-// `PlanCardBlock` is different: it has no hooks of its own (props in,
-// JSX out, exactly like `NeedsYouBlock`/`CostBlock`), so calling it
+// `PlanCardBlock`/`PlanCardEmpty` are different: neither has hooks of its
+// own (props in, JSX out, exactly like `NeedsYouBlock`), so calling either
 // directly and walking the returned plain React-element tree via
 // `.type`/`.props` is safe and is this repo's only real render-assertion
 // technique (same idiom as `dashboard/[workspaceId]/page.test.ts` calling
@@ -21,15 +23,16 @@ import { describe, expect, it } from "vitest";
 // style of test — `.props.children` on an element is just the literal
 // child value the authoring JSX passed in, readable without rendering.
 //
-// `PlanCardBlock` is exported (the brief describes it as "internal to
-// digest-panel.tsx", i.e. not consumed by other feature areas) solely to
-// make this direct-call test possible — the plan's own copy/CTA pins
-// (Global Constraints in
-// `docs/superpowers/plans/2026-07-31-subscription-console-slice6.md`)
-// require asserting actual rendered strings and the CTA href, not just the
-// pure helpers that feed them.
+// `PlanCardBlock`/`PlanCardEmpty` are exported (the brief describes them as
+// "internal to digest-panel.tsx", i.e. not consumed by other feature
+// areas) solely to make this direct-call test possible — the plan's own
+// copy/CTA pins (Global Constraints in
+// `docs/superpowers/plans/2026-07-31-subscription-console-slice6.md`, plus
+// the 2026-07-31 owner ruling that retired the legacy cost card) require
+// asserting actual rendered strings, not just the pure helpers that feed
+// them.
 
-import { PlanCardBlock } from "./digest-panel";
+import { PlanCardBlock, PlanCardEmpty } from "./digest-panel";
 import type { PlanCardData } from "./digest-panel-helpers";
 
 interface ReactElementLike {
@@ -162,5 +165,53 @@ describe("PlanCardBlock (subscription slice 6 — digest plan card)", () => {
     const el = PlanCardBlock({ data: planCardData(), workspaceId: WORKSPACE_ID });
     const text = collectText(el).join(" ").toLowerCase();
     expect(text).not.toContain("budget");
+  });
+});
+
+describe("PlanCardEmpty (2026-07-31 owner ruling — dollar-free empty state for a missing plan read; the legacy cost card this replaces is deleted entirely, not just hidden)", () => {
+  it("uses the DigestCard shell with the pinned 'Plan' title (same title PlanCardBlock uses, so the grid slot never visibly relabels itself)", () => {
+    const el = asElement(PlanCardEmpty());
+    expect(el.props.title).toBe("Plan");
+  });
+
+  it("renders exactly one muted line with the byte-exact pinned copy", () => {
+    const el = asElement(PlanCardEmpty());
+    const body = asElement(el.props.children);
+
+    expect(body.props.children).toBe("Plan details are unavailable right now.");
+    expect(body.props.className).toBe("text-xs text-[var(--gray-09)]");
+  });
+
+  it("never mentions a dollar sign anywhere in its output", () => {
+    const el = PlanCardEmpty();
+    const text = collectText(el).join(" ");
+    expect(text).not.toContain("$");
+  });
+
+  it("never renders the retired 'Cost this week' title", () => {
+    const el = asElement(PlanCardEmpty());
+    expect(el.props.title).not.toBe("Cost this week");
+    expect(collectText(el).join(" ")).not.toContain("Cost this week");
+  });
+
+  it("never mentions the word 'budget'", () => {
+    const el = PlanCardEmpty();
+    const text = collectText(el).join(" ").toLowerCase();
+    expect(text).not.toContain("budget");
+  });
+});
+
+describe("digest-panel.tsx source (2026-07-31 owner ruling — the legacy cost card is deleted entirely, not just conditionally hidden)", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("./digest-panel.tsx", import.meta.url)),
+    "utf8"
+  );
+
+  it("never mentions the retired 'Cost this week' title anywhere in source", () => {
+    expect(source).not.toContain("Cost this week");
+  });
+
+  it("no longer defines a CostBlock component (mentioning the retired name in an explanatory comment is fine — this checks for the actual definition)", () => {
+    expect(source).not.toMatch(/function CostBlock\b/);
   });
 });

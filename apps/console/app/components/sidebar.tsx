@@ -15,11 +15,14 @@ import {
 } from "./sidebar-nav";
 
 /**
- * Costs/Budget/Wallet leave the customer-facing Engine room group behind
- * the billing-swap flag (subscription-platform spec §8 margin telemetry /
- * staff-console seed) — deliberately a nav-only demotion: the three pages
- * stay code-live and URL-reachable (direct links, breadcrumbs, staff
- * access), only these hrefs disappear from what gets rendered here.
+ * Costs/Budget/Wallet leave the customer-facing Engine room group
+ * unconditionally (2026-07-31 owner ruling: the cost/budget UI is
+ * redundant now that the product is subscription-based, so the
+ * billing-swap flag that used to gate this filter is retired — see
+ * subscription-platform spec §8 margin telemetry / staff-console seed).
+ * Deliberately a nav-only demotion: the three pages stay code-live and
+ * URL-reachable (direct links, breadcrumbs, staff access), only these
+ * hrefs disappear from what gets rendered here.
  */
 const BILLING_SWAP_HIDDEN_HREFS = new Set(["costs", "budget", "wallet"]);
 
@@ -31,11 +34,7 @@ const BILLING_SWAP_HIDDEN_HREFS = new Set(["costs", "budget", "wallet"]);
  * solely to make this piece independently testable, same "extract the pure
  * part" move `digest-panel.tsx` makes with `PlanCardBlock`.
  */
-export function filterEngineRoomItems(
-  items: NavItem[],
-  billingSwapEnabled: boolean
-): NavItem[] {
-  if (!billingSwapEnabled) return items;
+export function filterEngineRoomItems(items: NavItem[]): NavItem[] {
   return items.filter((item) => !BILLING_SWAP_HIDDEN_HREFS.has(item.href));
 }
 
@@ -53,19 +52,6 @@ interface SidebarProps {
    * (`isGoalLoopEnabled`) by the layout that renders this, same "undefined
    * reads as off" posture as `chatEnabled` above. */
   goalsEnabled?: boolean;
-  /** Subscription-platform billing swap (slice 6 Task 4), default OFF —
-   * computed server-side (`subscriptionsEnforced`) by the layout that
-   * renders this, same "undefined reads as off" posture as `chatEnabled`/
-   * `goalsEnabled` above: it must never flash Costs/Budget/Wallet in only
-   * to hide them a moment later. When true, those three Engine room items
-   * are filtered out of what renders (see `filterEngineRoomItems` above) —
-   * the pages themselves stay code-live and URL-reachable (spec §8 margin
-   * telemetry / staff-console seed), only their nav entries hide. This
-   * component never imports the flag module itself
-   * (`lib/policy/feature-flags.ts`'s `subscriptionsEnforced`) — server
-   * boolean via prop only, same posture as `digest-panel.tsx`'s
-   * `planCard` prop. */
-  billingSwapEnabled?: boolean;
 }
 
 export function Sidebar({
@@ -75,7 +61,6 @@ export function Sidebar({
   signOutAction,
   chatEnabled = false,
   goalsEnabled = false,
-  billingSwapEnabled = false,
 }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
@@ -84,10 +69,7 @@ export function Sidebar({
     ...(goalsEnabled ? [GOALS_NAV_ITEM] : []),
     ...(chatEnabled ? [CHAT_NAV_ITEM] : []),
   ];
-  const engineRoomItems = filterEngineRoomItems(
-    ENGINE_ROOM_ZONE.items,
-    billingSwapEnabled
-  );
+  const engineRoomItems = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">

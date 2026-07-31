@@ -2667,12 +2667,15 @@ export {
 // recordRunOutcome is called by the runner-result route on every terminal
 // queue transition; mapTerminalStateToRunOutcome is its pure vocabulary
 // mapping (independently unit-testable); getModelOutcomeStats is the
-// aggregate read a LATER PR's selector will consume.
+// aggregate read a LATER PR's selector will consume. countRunOutcomesForWorkspace
+// is the per-workspace, all-time variant of countRunOutcomes that feeds the
+// subscription-console digest's plan-card "shipped all-time" strip (slice 6).
 export {
   recordRunOutcome,
   mapTerminalStateToRunOutcome,
   getModelOutcomeStats,
   countRunOutcomes,
+  countRunOutcomesForWorkspace,
   type RunOutcomeValue,
   type ModelOutcomeStatsRow,
   type RunOutcomeCounts,

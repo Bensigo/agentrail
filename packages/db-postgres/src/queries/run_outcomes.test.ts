@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 /**
  * #1338 PR① — the model-selection learning loop's FUEL. Mocked-db unit tests
@@ -35,10 +37,22 @@ import {
   mapTerminalStateToRunOutcome,
   recordRunOutcome,
   getModelOutcomeStats,
+  countRunOutcomesForWorkspace,
 } from "./run_outcomes.js";
 import type { TerminalQueueState } from "./runner.js";
 
 const mockDb = vi.mocked(db);
+
+// Argument-level condition assertion (see workspace_costs.test.ts for the
+// full rationale): a mock chain proves a method was *called*, not what it
+// was called *with* — captured arguments are drizzle SQL trees, not plain
+// objects, so we render both the actual captured value and an expected one
+// (built with the same drizzle operators against the real columns) to
+// literal {sql, params} text via PgDialect.sqlToQuery, and compare THAT.
+const dialect = new PgDialect();
+function renderCondition(condition: unknown) {
+  return dialect.sqlToQuery(condition as Parameters<typeof dialect.sqlToQuery>[0]);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -188,5 +202,51 @@ describe("getModelOutcomeStats", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.taskType).toBeNull();
     expect(rows[0]?.executeModel).toBeNull();
+  });
+});
+
+describe("countRunOutcomesForWorkspace", () => {
+  // Same chainable-mock shape as getModelOutcomeStats' mockGroupedRows above
+  // (select -> from -> where -> groupBy), duplicated locally per this file's
+  // own per-describe-block convention rather than shared across blocks.
+  function mockGroupedRows(rows: Array<Record<string, unknown>>) {
+    const chain: Record<string, unknown> = {};
+    for (const m of ["from", "where"]) {
+      chain[m] = vi.fn(() => chain);
+    }
+    chain["groupBy"] = vi.fn(() => Promise.resolve(rows));
+    mockDb.select = vi.fn(() => chain as ReturnType<typeof db.select>);
+    return chain;
+  }
+
+  it("filters to the bound workspaceId (WHERE workspace_id = ...) — all-time, no createdAt predicate", async () => {
+    const chain = mockGroupedRows([]);
+
+    await countRunOutcomesForWorkspace("ws-1");
+
+    const whereArg = (chain["where"] as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(whereArg)).toEqual(
+      renderCondition(eq(runOutcomes.workspaceId, "ws-1"))
+    );
+  });
+
+  it("maps grouped outcome rows (including human_review) onto the counts shape", async () => {
+    mockGroupedRows([
+      { outcome: "success", n: 5 },
+      { outcome: "human_review", n: 2 },
+      { outcome: "failed", n: 1 },
+    ]);
+
+    const result = await countRunOutcomesForWorkspace("ws-1");
+
+    expect(result).toEqual({ success: 5, humanReview: 2, failed: 1 });
+  });
+
+  it("returns all-zero counts when the workspace has zero run_outcomes rows", async () => {
+    mockGroupedRows([]);
+
+    const result = await countRunOutcomesForWorkspace("ws-1");
+
+    expect(result).toEqual({ success: 0, humanReview: 0, failed: 0 });
   });
 });

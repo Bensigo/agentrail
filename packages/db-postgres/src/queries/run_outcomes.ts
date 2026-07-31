@@ -114,6 +114,30 @@ export async function countRunOutcomes(): Promise<RunOutcomeCounts> {
   };
 }
 
+/** Per-workspace variant of {@link countRunOutcomes} — same GROUP BY /
+ * `count(*)::int` shape, scoped to one workspace via
+ * `.where(eq(runOutcomes.workspaceId, workspaceId))`. ALL-TIME BY DESIGN: no
+ * `createdAt` predicate, deliberately — this feeds the console digest's
+ * plan-card "shipped all-time" strip (subscription platform slice 6), which
+ * wants the workspace's whole history, not a billing-period window. Index-
+ * backed by `run_outcomes_workspace_id_idx` (schema.ts) — no migration
+ * needed. */
+export async function countRunOutcomesForWorkspace(
+  workspaceId: string
+): Promise<RunOutcomeCounts> {
+  const rows = await db
+    .select({ outcome: runOutcomes.outcome, n: sql<number>`count(*)::int` })
+    .from(runOutcomes)
+    .where(eq(runOutcomes.workspaceId, workspaceId))
+    .groupBy(runOutcomes.outcome);
+  const byOutcome = new Map(rows.map((r) => [r.outcome, r.n]));
+  return {
+    success: byOutcome.get("success") ?? 0,
+    humanReview: byOutcome.get("human_review") ?? 0,
+    failed: byOutcome.get("failed") ?? 0,
+  };
+}
+
 /** Per-`(task_type, execute_model)` aggregate the model-selection learning
  * loop's LATER selector PR reads. Mirrors `eval_arm_metrics`' spirit
  * (solve-rate / $-per-solved per arm) — same idea, fed by PRODUCTION

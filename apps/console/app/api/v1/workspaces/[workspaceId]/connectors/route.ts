@@ -23,6 +23,13 @@ import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/typ
 // route's identical import for the full "REACHABILITY" reasoning (this GET
 // route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
 // called at runtime, deriving `oauthReady` below).
+//
+// W3-T3 (Sentry) deliberately does NOT add a sibling sentry import here —
+// see the oauth callback route's own identical comment, and
+// `lib/oauth/sentry.ts`'s doc-comment ("STATE CANNOT ROUND-TRIP"). Without
+// this import, `oauthAdapterFor("sentry")` stays null, so `oauthReady`
+// below is structurally `false` for sentry regardless of env vars — the
+// sheet renders token-paste only, exactly like before this task.
 import "../../../../../../lib/oauth/railway";
 
 /**

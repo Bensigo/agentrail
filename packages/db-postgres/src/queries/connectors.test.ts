@@ -183,6 +183,84 @@ describe("validateConnectorUpdate — railwayProjectId (Task 7)", () => {
 });
 
 /**
+ * OAuth Connect Wave 3, W3-T3 (`.superpowers/sdd/plan-oauth.md`):
+ * `sentryInstallationId` — the Sentry Public Integration installation id,
+ * normally written ONLY via `postExchange`'s configPatch
+ * (`lib/oauth/sentry.ts`, which calls `upsertConnector` directly, bypassing
+ * this validator) but also declared here for defense in depth / consistency
+ * — see the schema doc-comment on `ConnectorConfig.sentryInstallationId`.
+ * Same "string, trim, non-empty, ≤64 chars" shape as `railwayProjectId`
+ * above (an id-shaped field, not a Wave-2-style free-text companion, hence
+ * the tighter 64-char bound rather than the Wave-2 default of 256) — this
+ * IS the config-key drift coverage the plan asks for: proving the field
+ * round-trips through validation, doesn't leak into a normalized value when
+ * absent, and composes cleanly alongside its sibling sentryOrg/sentryProject
+ * fields with no cross-field interference. The DB-level "survives an
+ * unrelated write and stays visible in the client-safe view" half of this
+ * proof lives in `oauth-state-consume-race.integration.test.ts` (real
+ * Postgres — a mocked `db` here can't meaningfully prove a storage
+ * round-trip, same reasoning that file's own doc-comment gives for
+ * IMPORTANT-1).
+ */
+describe("validateConnectorUpdate — sentryInstallationId (OAuth Connect Wave 3, W3-T3)", () => {
+  it("accepts and trims a well-formed sentryInstallationId", () => {
+    const res = validateConnectorUpdate({
+      config: { sentryInstallationId: "  01635075-m30w-4f96-8fc8-ff9680780a13  " },
+    });
+    expect(res).toEqual({
+      ok: true,
+      value: { config: { sentryInstallationId: "01635075-m30w-4f96-8fc8-ff9680780a13" } },
+    });
+  });
+
+  it("rejects a non-string sentryInstallationId", () => {
+    const res = validateConnectorUpdate({ config: { sentryInstallationId: 123 as unknown as string } });
+    expect(res).toEqual({ ok: false, error: "sentryInstallationId must be a string" });
+  });
+
+  it("rejects an empty (or whitespace-only) sentryInstallationId", () => {
+    const res = validateConnectorUpdate({ config: { sentryInstallationId: "   " } });
+    expect(res).toEqual({ ok: false, error: "sentryInstallationId must not be empty" });
+  });
+
+  it("rejects a sentryInstallationId over 64 characters", () => {
+    const res = validateConnectorUpdate({ config: { sentryInstallationId: "x".repeat(65) } });
+    expect(res).toEqual({
+      ok: false,
+      error: "sentryInstallationId must be at most 64 characters",
+    });
+  });
+
+  it("leaves sentryInstallationId out of the normalized value when absent (no accidental default)", () => {
+    const res = validateConnectorUpdate({ config: { triggerLabel: "afk" } });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.value.config).not.toHaveProperty("sentryInstallationId");
+    }
+  });
+
+  it("composes with sentryOrg + sentryProject in the same update — no cross-field interference (config-key drift proof)", () => {
+    const res = validateConnectorUpdate({
+      config: {
+        sentryOrg: "acme",
+        sentryProject: "web",
+        sentryInstallationId: "01635075-m30w-4f96-8fc8-ff9680780a13",
+      },
+    });
+    expect(res).toEqual({
+      ok: true,
+      value: {
+        config: {
+          sentryOrg: "acme",
+          sentryProject: "web",
+          sentryInstallationId: "01635075-m30w-4f96-8fc8-ff9680780a13",
+        },
+      },
+    });
+  });
+});
+
+/**
  * Evidence Providers Wave 2 (Task P0): the ten non-secret companion fields
  * added to `ConnectorConfig` all at once so P2-P8 never touch this package
  * again (mirrors `railwayProjectId` above, Task 7). Every field shares the

@@ -10,6 +10,13 @@ import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
 import { computeCodeChallengeS256, generateCodeVerifier } from "../../../../../../../../lib/oauth/pkce";
 // W3-T2: registers the `railway` OAuth adapter — see the callback route's
 // identical import for the full "REACHABILITY" reasoning.
+//
+// W3-T3 (Sentry) deliberately does NOT add a sibling sentry import here —
+// see the callback route's own identical comment, and
+// `lib/oauth/sentry.ts`'s doc-comment ("STATE CANNOT ROUND-TRIP"). Without
+// this import, `oauthAdapterFor("sentry")` stays null, so a POST here with
+// `{provider: "sentry"}` 400s ("This connector does not support OAuth
+// connect") rather than minting a state for a flow that can never complete.
 import "../../../../../../../../lib/oauth/railway";
 
 const ADMIN_ROLES = ["owner", "admin"];

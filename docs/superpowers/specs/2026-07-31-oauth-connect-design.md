@@ -29,12 +29,12 @@ catalog stays `"secret"` for both providers, unchanged — OAuth is an
 | | Railway | Sentry |
 |---|---|---|
 | Flow | Standard authorization-code OAuth2 | Public Integration install flow |
-| Authorize | `GET https://backboard.railway.com/oauth/auth` (confirmed W3-T2 — **corrects** the plan's own placeholder, which guessed `railway.com/oauth/authorize`; see "W3-T2 doc-verification" below) | Vendor-hosted install screen for the registered Public Integration |
-| Token exchange | `POST https://backboard.railway.com/oauth/token`, HTTP Basic client auth (confirmed W3-T2) | `POST /api/0/sentry-app-installations/{installationId}/authorizations/`, `grant_type=authorization_code` |
-| Callback params | `code`, `state` | `code`, `state`, **`installationId`** (extra — see below) |
+| Authorize | `GET https://backboard.railway.com/oauth/auth` (confirmed W3-T2 — **corrects** the plan's own placeholder, which guessed `railway.com/oauth/authorize`; see "W3-T2 doc-verification" below) | Vendor-hosted install screen at the FIXED external URL `https://sentry.io/sentry-apps/<slug>/external-install/` (confirmed W3-T3) |
+| Token exchange | `POST https://backboard.railway.com/oauth/token`, HTTP Basic client auth (confirmed W3-T2) | `POST https://sentry.io/api/0/sentry-app-installations/{installationId}/authorizations/`, JSON body, `grant_type=authorization_code` (confirmed W3-T3 — JSON, not form-urlencoded) |
+| Callback params | `code`, `state` | `code`, **`installationId`** — **NO `state`** (confirmed-absent, W3-T3 — **corrects** this table's own prior placeholder; see "W3-T3 doc-verification" below) |
 | Scopes | `project:viewer offline_access openid`, `prompt=consent` (required to get a refresh token back) | granted at Public Integration registration time, not per-authorize |
-| Access TTL | 1 hour | 8 hours |
-| Refresh | rotates the refresh token on every use; refresh token itself is valid ~1 year | same exchange endpoint, `grant_type=refresh_token` |
+| Access TTL | 1 hour | 8 hours (confirmed W3-T3) |
+| Refresh | rotates the refresh token on every use; refresh token itself is valid ~1 year | same exchange endpoint, `grant_type=refresh_token` (confirmed W3-T3 — docs' own TOP recommendation is a different JWT-bearer mechanism; this is the documented, supported, "not recommended" alternative — see below) |
 | Data API | Same GraphQL API + queries the evidence adapter (`lib/evidence/railway.ts`) already uses — only auth resolution changes | Bearer, same as today |
 
 Sentry's extra `installationId` param is why the callback route forwards
@@ -108,6 +108,91 @@ param names confirmed verbatim, nothing guessed:
   existing `grant_type=authorization_code`/`code`/`redirect_uri` fields, at
   the SAME `-u "CLIENT_ID:CLIENT_SECRET"` Basic-authed endpoint — no
   separate PKCE endpoint, no change to the auth method.
+
+### W3-T3 doc-verification (Sentry) — and a headline finding: state cannot round-trip
+
+Raw-fetched (curl, not WebFetch) from
+`docs.sentry.io/integrations/integration-platform/public-integration.md`
+and `docs.sentry.io/api/auth.md`. **Public Integration's own redirect
+carries NO `state` parameter — confirmed absent, not merely unconfirmed —
+correcting this doc's own prior vendor-facts table (which had carried
+`state` in the Sentry callback-params cell since the planning session).**
+This is the session's headline finding, not a footnote: per this task's own
+binding instruction to stop rather than ship a stateless flow, Sentry's
+`OauthProviderAdapter` (`lib/oauth/sentry.ts`) is implemented and fully
+tested but **deliberately not wired into the live OAuth routes** — see
+"Known gap" immediately below the design section for the full consequence
+and the follow-up this unblocks.
+
+- **State — confirmed absent for Public Integration.** The redirect
+  section's own worked Flask handler reads exactly two params, nothing
+  else: *"code = request.args.get('code') / install_id =
+  request.args.get('installationId')"* — and the page's prose is explicit
+  that the redirect carries *"the grant code and installation ID in the
+  query params"*, no third value. The doc's only appearance of the word
+  `"state"` in this flow is a field INSIDE the authorization JSON response
+  (always `null` in the worked example), not a redirect query param.
+- **Two unrelated Sentry OAuth mechanisms — the likely source of the stale
+  belief.** Sentry ALSO documents a completely separate "OAuth Integration"
+  mechanism (`integration-platform/oauth-integration/`, pointing to
+  `/api/auth/#oauth2`) whose authorize endpoint
+  (`https://sentry.io/oauth/authorize/`) DOES document `state`
+  (*"Random string to prevent CSRF attacks"*) and PKCE — but that mechanism
+  is explicitly NOT self-serve: *"Before implementing OAuth, Sentry must
+  register your application. Contact our partnership team with: Client
+  Name, Redirect URIs, ..."* (confirmed by a 404 on any attempt to reach a
+  self-registration flow for it). The plan's own pin ("v1 uses the PUBLIC
+  INTEGRATION flow") chose Public Integration specifically because it's
+  self-serve — so the state-supporting mechanism was never actually in
+  scope; the belief that "state is supported" conflated the two.
+- **Confirmed — external-install URL, exact:** *"All public integrations
+  can be installed via a fixed external url:
+  `https://sentry.io/sentry-apps/<your-integration-slug>/external-install/`"*
+  — matches the plan's own believed shape.
+- **Confirmed — token exchange endpoint + JSON body (not form-urlencoded,
+  unlike Railway):** *"url =
+  'https://sentry.io/api/0/sentry-app-installations/{}/authorizations/'
+  ... payload = \{'grant_type': 'authorization_code', 'code': code,
+  'client_id': 'your-client-id', 'client_secret': 'your-client-secret'\}
+  ... resp = requests.post(url, json=payload)"* — `requests.post(...,
+  json=...)` serializes a JSON body; every one of the doc's three worked
+  exchange/refresh snippets uses this same call shape.
+- **Confirmed, and materially different from Railway/every other adapter —
+  response field names + `expiresAt` shape:** *"\{ 'id': '38', 'token':
+  '...', 'refreshToken': '...', 'dateCreated': '...', 'expiresAt':
+  '2019-08-08T04:25:09.870Z', 'state': null, 'application': null \}"* —
+  `token` (not `access_token`), `refreshToken` (not `refresh_token`,
+  camelCase), and `expiresAt` is an ABSOLUTE ISO-8601 timestamp already
+  (not an `expires_in` seconds-delta) — the adapter uses it verbatim, no
+  `Date.now() + n*1000` arithmetic.
+- **Confirmed — access TTL:** *"These tokens automatically expire every
+  eight hours, meaning they must be refreshed manually."*
+- **Confirmed, with a disclosed deviation from the doc's OWN top pick —
+  refresh mechanism.** The docs describe TWO refresh paths and rank them
+  explicitly: *"Refreshing Tokens Manually for Integrators (recommended)"*
+  — a JWT (HS256, signed with the client secret, a custom
+  `urn:sentry:params:oauth:grant-type:jwt-bearer` grant) — versus
+  *"Refreshing Tokens via Refresh Token (not recommended)"*: *"We recommend
+  Refreshing Tokens Manually as described above. But if you prefer, you can
+  use Refresh Token."* This adapter implements the SECOND (refresh-token
+  grant), matching the plan's own pinned design and this task's explicit
+  instruction — still fully documented and supported, just not Sentry's
+  top pick (their stated reason: a token-loss-in-transit edge case the
+  JWT method sidesteps). Disclosed, not silently chosen — a future task
+  could upgrade to the JWT method the same way Railway's PKCE went from
+  disclosed-gap to implemented.
+- **Confirmed, conditional — Verify Install.** *"If you have the redirect
+  URL configured, there is work happening on your end to 'finalize' the
+  installation. If this is the case, we recommend enabling the 'Verify
+  Install' option for your integration. Once enabled, you'll need to send a
+  request marking the installation as officially 'installed':
+  `requests.put('https://sentry.io/api/0/sentry-app-installations/{}/'
+  .format(install_id), json=\{'status': 'installed'\})`"* — an OPT-IN
+  toggle set at registration time (Developer Settings), not detectable from
+  the exchange response. `postExchange` calls this UNCONDITIONALLY but
+  BEST-EFFORT (caught, logged, never fails the connect) — see the design
+  section below for why this is the safer asymmetry versus Railway's
+  fail-closed postExchange.
 
 ## Design (pinned)
 
@@ -277,6 +362,67 @@ ADDITIVE extensions to the T1 seam, both from independent review
   to a failure redirect — the credential is already genuinely stored and
   usable at that point.
 
+**Sentry adapter (W3-T3)** — `lib/oauth/sentry.ts` implements the full
+`OauthProviderAdapter` (`authorizeUrl`/`exchange`/`refresh`/`postExchange`)
+against the doc-verified facts above:
+
+- *Installation id threading.* Sentry's refresh call needs `installationId`
+  in the URL itself, but `refresh(envelope)` (T1/T2, unchanged) receives
+  only the envelope, no workspaceId/config. Disclosed choice (the task
+  offered two: thread it via the envelope, or extend the interface with a
+  refresh input): threaded via the envelope's own `refresh` field, JSON-
+  encoded as `{installationId, refreshToken}`, rather than extending
+  `OauthProviderAdapter.refresh`'s signature — fully self-contained to this
+  one file, zero changes to T1/T2's already-reviewed `core.ts`/`types.ts`/
+  `railway.ts`. `postExchange` decodes the SAME field (it receives the
+  exact envelope `exchange()` just returned) to recover `installationId`
+  for its `configPatch` — no separate plumbing for that leg either.
+- *`sentryInstallationId` config field* — declared on `ConnectorConfig`
+  exactly like `railwayProjectId` (schema doc-comment, `completeConfig`
+  preserve-line, never added to `EPHEMERAL_CONFIG_KEYS`) — non-secret,
+  survives an unrelated write, visible in every `ConnectorRowView`. Written
+  by `postExchange`'s `configPatch`, same best-effort persistence path
+  Railway's own `configPatch` already established.
+- *Verify Install — best-effort, not fail-closed* (unlike Railway's
+  correctness-critical, deliberately-not-caught grant-mismatch check):
+  Verify Install's applicability is an opt-in vendor-side toggle this code
+  cannot detect from the exchange response, so `postExchange` always
+  attempts the PUT but never fails the connect on its failure — the
+  downstream risk if a genuinely-required verify is silently skipped is a
+  LEGIBLE `unauthorized`/`upstream_error` degradation on a later evidence
+  call (the same machinery any other auth problem already produces), not a
+  silent wrong-data risk the way an unreconciled Railway project grant
+  could be.
+- *No PKCE* — Public Integration's exchange payload has no `code_verifier`
+  field in any worked example; `codeChallenge`/`codeVerifier` are both
+  ignored by this adapter, mirroring how Railway's adapter ignores
+  `ExchangeInput.params`.
+
+### Known gap (W3-T3): Sentry OAuth is implemented but NOT reachable yet
+
+Because Sentry's Public Integration redirect cannot carry a `state` value,
+and the callback route's `state`/`code` requirement (above) is a security
+gate applying to every provider identically, `lib/oauth/sentry.ts` is
+**deliberately not wired into live reachability**: the three routes that
+make a provider adapter reachable
+(`connectors/oauth/{link,callback/[provider]}/route.ts`,
+`workspaces/[workspaceId]/connectors/route.ts`) do NOT side-effect-import
+`lib/oauth/sentry.ts` the way they import `lib/oauth/railway.ts` — each has
+its own inline comment pointing back here. Consequence: `oauthReady` is
+structurally `false` for `"sentry"` regardless of whether
+`SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/`_INTEGRATION_SLUG` are set on
+the deployment — token-paste remains Sentry's only connect path.
+
+The adapter itself is complete and fully tested standalone
+(`lib/oauth/sentry.test.ts`) — a follow-up task that gives the callback
+route an alternate, non-state tenant-binding mechanism for a vendor that
+can't round-trip one (e.g. a short-lived first-party HttpOnly cookie set at
+link time, read back at callback time) can wire reachability in with a
+three-line change (the three `import "./sentry"` lines) and zero changes
+to this file. That callback-route redesign is a shared-plumbing decision
+deserving its own reviewed design, not a solo mid-task improvisation —
+explicitly out of scope here.
+
 ## Sheet UX
 
 `connectMethod` never flips (plan pin) — a secret-method provider always
@@ -289,6 +435,12 @@ demand — a one-way reveal, no re-hide affordance. Without `oauthReady`, the
 component renders *exactly* today's form, byte-identical (the same JSX
 value, not a re-implementation) — zero visual regression for every other
 provider, and for railway/sentry themselves until W3-T2/T3 land.
+
+Sentry's catalog entry (`connector-helpers.ts`) DOES declare an `oauthHint`
+now (W3-T3, per this task's own brief) — but it renders nothing today:
+`oauthReady` is structurally `false` for sentry (see "Known gap" above),
+so `SecretManage`'s `!connector.oauthReady` branch is always taken.
+Pre-positioned, inert, correct the moment reachability is restored.
 
 **Connect-result banner (W3-T2 fix round)** — T1 shipped the callback's
 `?connected=<provider>`/`?oauth_error=<reason>` redirect but nothing ever
@@ -318,12 +470,20 @@ for an unrecognized/missing param. Dismissing strips the query params
    reason; connect-result banner; T1's `core.ts` gained token-free logging
    on every refresh-failure path + a persist-after-vendor-success test.
 3. **W3-T3:** Sentry's Public Integration adapter, `installationId` handling,
-   `lib/evidence/sentry.ts` switched over.
+   `lib/evidence/sentry.ts` switched over — **implemented and fully tested,
+   but NOT wired into live reachability**: doc-verification found Sentry's
+   Public Integration flow cannot round-trip a `state` value, which the
+   shared callback route requires for every provider (see "Known gap"
+   above). Sentry stays token-paste-only until a follow-up task adds an
+   alternate tenant-binding mechanism for the callback route.
 4. **W3-T4:** token-only sheet copy for the five providers that stay
    token-paste forever, wave-final review, this doc's as-built section.
-5. **Turn-on (ops, after W3-T2/T3 merge):** register the vendor apps (below),
-   set the env vars on the deployment. No further code change flips
-   `oauthReady` on — it is purely env + adapter presence.
+5. **Turn-on (ops, after W3-T2 merges):** register the Railway app (below),
+   set its env vars on the deployment — `oauthReady` flips true for Railway
+   automatically, purely env + adapter presence. Sentry's turn-on is
+   BLOCKED on the follow-up callback-route work above; registering the
+   Sentry vendor-side app now is optional prep, not a turn-on step (setting
+   its env vars alone has no effect yet — see "Known gap").
 
 ## Owner registration steps
 
@@ -345,15 +505,22 @@ workspace admins, not an account-level setting) — app type **Web
 id/secret (shown once); set `RAILWAY_OAUTH_CLIENT_ID` /
 `RAILWAY_OAUTH_CLIENT_SECRET` on the deployment.
 
-**Sentry:** register a **Public Integration** (Sentry → Settings →
-Developer Settings → New Public Integration) with the redirect URI above as
-its Redirect URL; note the issued client id/secret; set
-`SENTRY_OAUTH_CLIENT_ID` / `SENTRY_OAUTH_CLIENT_SECRET`. The uninstall
-webhook Sentry also offers is a documented v2 follow-up, not part of v1.
+**Sentry (NOT YET LIVE — see "Known gap" above):** register a **Public
+Integration** (Sentry → Settings → Developer Settings → New Public
+Integration) with the redirect URI above as its Redirect URL; note the
+issued client id/secret and the integration's own slug; set
+`SENTRY_OAUTH_CLIENT_ID` / `SENTRY_OAUTH_CLIENT_SECRET` /
+`SENTRY_OAUTH_INTEGRATION_SLUG`. Doing this now is optional prep, not a
+turn-on step — `lib/oauth/sentry.ts` is not wired into the live routes, so
+these three vars have no effect until a follow-up task resolves the
+state-round-trip gap. The uninstall webhook Sentry also offers is a
+documented v2 follow-up, not part of v1 either way.
 
-Once both are set (and W3-T2/T3 have merged so an adapter is actually
-registered), `oauthReady` flips true server-side automatically — no
-redeploy-time toggle beyond the env vars themselves.
+Once Railway's two vars are set (and W3-T2 has merged so its adapter is
+registered), `oauthReady` flips true server-side automatically for Railway
+— no redeploy-time toggle beyond the env vars themselves. Sentry's
+`oauthReady` stays `false` regardless of its three vars until the
+follow-up callback-route work lands.
 
 ## Out of scope
 

@@ -380,6 +380,28 @@ export interface ConnectorConfig {
    * write, never surfaced in any `ConnectorRowView`.
    */
   oauthPkceVerifier?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T3 (`.superpowers/sdd/plan-oauth.md`): the
+   * Sentry Public Integration installation id (`installationId` — a UUID,
+   * e.g. `01635075-...-ff9680780a13` per Sentry's own worked examples) this
+   * workspace's OAuth grant belongs to. Mirrors {@link railwayProjectId}'s
+   * own declaration exactly — a non-secret companion field, saved via
+   * `postExchange`'s `configPatch` (`lib/oauth/sentry.ts`), NOT the secret
+   * column (the token/refresh pair live there, inside the encrypted
+   * envelope). UNLIKE the three `oauthState*`/`oauthPkceVerifier` fields
+   * above, this one is NOT ephemeral: `completeConfig` (query layer)
+   * preserves it across every unrelated write exactly like
+   * `railwayProjectId`, and it is NEVER added to `EPHEMERAL_CONFIG_KEYS` —
+   * it survives in storage AND stays visible in every `ConnectorRowView`. It
+   * exists because Sentry's token-refresh endpoint is
+   * `/api/0/sentry-app-installations/{installationId}/authorizations/` —
+   * the installation id is part of the URL, not a response field a stored
+   * OAuth envelope alone carries forward to a LATER refresh call. Absent
+   * for every workspace that hasn't OAuth-connected Sentry (including every
+   * token-paste-only Sentry connection, past or future — token-paste never
+   * touches this field).
+   */
+  sentryInstallationId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

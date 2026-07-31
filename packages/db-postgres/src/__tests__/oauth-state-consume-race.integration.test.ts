@@ -217,5 +217,49 @@ describe.skipIf(!DB_AVAILABLE)(
 
       await deleteConnectorRow(provider);
     });
+
+    // -------------------------------------------------------------------
+    // OAuth Connect Wave 3, W3-T3 — sentryInstallationId is declared
+    // NON-ephemeral (unlike oauthState/oauthStateExpiresAt/oauthUserId/
+    // oauthPkceVerifier above): it must survive an unrelated write (same as
+    // railwayProjectId always has) AND stay VISIBLE in the client-safe view
+    // — the opposite of the "never leaks" proof just above for the four
+    // ephemeral keys. A mocked `db` (connectors.test.ts) can prove the
+    // validator/completeConfig SOURCE LINES exist; only a real multi-step
+    // Postgres round-trip proves the merge actually behaves this way in
+    // practice (the exact class of bug review IMPORTANT-1 caught for the
+    // ephemeral keys — the same doctrine applied here in the other
+    // direction).
+    // -------------------------------------------------------------------
+    it("sentryInstallationId survives an unrelated upsertConnector write AND stays visible in the client-safe view (non-ephemeral, unlike oauthState/etc.)", async () => {
+      const provider = "sentry";
+      await deleteConnectorRow(provider);
+
+      await upsertConnector(workspaceId, provider, {
+        config: { sentryInstallationId: "01635075-m30w-4f96-8fc8-ff9680780a13" },
+      });
+
+      // An unrelated write (re-saving org/project, or a trigger-label edit)
+      // lands on the SAME row afterward.
+      await upsertConnector(workspaceId, provider, {
+        config: { triggerLabel: "unrelated-write", sentryOrg: "acme" },
+      });
+
+      const view = await getConnector(workspaceId, provider);
+      expect(view).not.toBeNull();
+      // Survived the unrelated write...
+      expect(view!.config.sentryInstallationId).toBe("01635075-m30w-4f96-8fc8-ff9680780a13");
+      expect(view!.config.triggerLabel).toBe("unrelated-write");
+      expect(view!.config.sentryOrg).toBe("acme");
+      // ...and unlike oauthState/oauthStateExpiresAt/oauthUserId/
+      // oauthPkceVerifier, it is NOT stripped — genuinely present in the
+      // read model a route hands back to a browser (already proven present
+      // above via `.toBe(...)`; this is the same fact stated as a property
+      // check for symmetry with the ephemeral-key test's own
+      // `.not.toHaveProperty` assertions).
+      expect(view!.config).toHaveProperty("sentryInstallationId");
+
+      await deleteConnectorRow(provider);
+    });
   }
 );

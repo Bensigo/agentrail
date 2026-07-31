@@ -246,6 +246,28 @@ export function validateConnectorUpdate(
       out.railwayProjectId = trimmed;
     }
 
+    // Sentry OAuth connector (Task W3-T3): the workspace's Sentry
+    // installation id, normally written ONLY via postExchange's configPatch
+    // (`lib/oauth/sentry.ts`, bypassing this validator entirely — the
+    // callback route calls `upsertConnector` directly). Validated here too,
+    // same shape as railwayProjectId immediately above, so the field is a
+    // fully well-behaved ConnectorConfig member reachable through the
+    // generic PATCH path as well (defense in depth / consistency — see the
+    // schema doc-comment on ConnectorConfig.sentryInstallationId).
+    if (cfg.sentryInstallationId !== undefined) {
+      if (typeof cfg.sentryInstallationId !== "string") {
+        return { ok: false, error: "sentryInstallationId must be a string" };
+      }
+      const trimmed = cfg.sentryInstallationId.trim();
+      if (trimmed.length === 0) {
+        return { ok: false, error: "sentryInstallationId must not be empty" };
+      }
+      if (trimmed.length > 64) {
+        return { ok: false, error: "sentryInstallationId must be at most 64 characters" };
+      }
+      out.sentryInstallationId = trimmed;
+    }
+
     // Evidence Providers Wave 2 (Task P0): the wave's ten non-secret
     // companion fields, added ALL AT ONCE so P2-P8 never touch this
     // package again — see the schema doc-comment on each field
@@ -370,6 +392,17 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     // later config patch (e.g. re-saving the token) never strips the
     // project id, same reasoning as chatId/channelId above.
     ...(stored?.railwayProjectId ? { railwayProjectId: stored.railwayProjectId } : {}),
+    // Sentry OAuth connector (Task W3-T3) — preserved across merges for the
+    // identical reason as railwayProjectId immediately above: a later,
+    // unrelated config patch (re-saving a token-paste secret, a
+    // triggerLabel edit, a postExchange configPatch landing on the SAME row
+    // from a different concern) must never silently drop the installation
+    // id a prior OAuth connect already resolved. NOT ephemeral (see the
+    // schema doc-comment) — this preserve-line is the ONLY thing standing
+    // between "declared on ConnectorConfig" and "silently stripped on the
+    // very next write," exactly the class of bug review IMPORTANT-1 caught
+    // for the (deliberately ephemeral) oauthState fields below.
+    ...(stored?.sentryInstallationId ? { sentryInstallationId: stored.sentryInstallationId } : {}),
     // Evidence Providers Wave 2 (Task P0) — the wave's ten non-secret
     // companion fields, preserved across merges for the same reason as
     // railwayProjectId above: a later, unrelated config patch (e.g.

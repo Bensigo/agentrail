@@ -298,6 +298,70 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
   });
 
   // -----------------------------------------------------------------------
+  // W3-T3 — the sentry param shape over this SAME generic callback: `code` +
+  // `installationId`, no PKCE. Uses a SEPARATE fixture shaped like the real
+  // `sentryOauthAdapter` (provider "sentry", no PKCE requirement of its own
+  // — mirrors the postExchange block's identical "separate fixture, doesn't
+  // disturb fakeAdapter's tests above" convention) rather than the real
+  // `lib/oauth/sentry.ts` module, since this route file mocks
+  // `lib/oauth/types` wholesale (this route test's job is the GENERIC
+  // callback mechanism, not sentry.ts's own exchange() logic — that's
+  // `lib/oauth/sentry.test.ts`'s job). The test above ("passes code + ...")
+  // already proves `installationId` forwards generically for ANY provider
+  // segment against the shared `fakeAdapter`; THIS block additionally
+  // proves the full round trip succeeds end-to-end for a sentry-SHAPED
+  // adapter with no codeVerifier ever supplied — i.e. the callback itself
+  // never demands one (only an adapter's OWN internal check would, the way
+  // Railway's does; a sentry-shaped adapter simply has none).
+  // -----------------------------------------------------------------------
+  describe("sentry param shape (code + installationId, no PKCE)", () => {
+    const fakeSentryAdapter = {
+      provider: "sentry",
+      authorizeUrl: vi.fn(),
+      exchange: vi.fn(),
+      refresh: vi.fn(),
+    };
+
+    beforeEach(() => {
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSentryAdapter as never);
+      vi.mocked(fakeSentryAdapter.exchange).mockResolvedValue({
+        access: "sentry-acc-1",
+        refresh: JSON.stringify({ installationId: "42", refreshToken: "sentry-ref-1" }),
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      vi.mocked(consumeConnectorOauthState).mockResolvedValue({ workspaceId: WS, userId: USER, codeVerifier: null });
+    });
+
+    it("exchanges code + installationId (from params) with codeVerifier: undefined, and completes successfully — the shared callback never demands a verifier for sentry", async () => {
+      const res = await GET(req({ state: "s", code: "auth-code-1", installationId: "42" }), params("sentry"));
+
+      expect(fakeSentryAdapter.exchange).toHaveBeenCalledWith({
+        code: "auth-code-1",
+        redirectUri: "https://heyjace.com/api/v1/connectors/oauth/callback/sentry",
+        params: { installationId: "42" },
+        codeVerifier: undefined,
+      });
+
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe("/dashboard/ws-1/connectors");
+      expect(loc.searchParams.get("connected")).toBe("sentry");
+      expect(loc.searchParams.has("oauth_error")).toBe(false);
+    });
+
+    it("still succeeds even when Sentry's redirect carries OTHER extra params alongside installationId (e.g. a hypothetical future field) — forwarded, not special-cased", async () => {
+      const res = await GET(
+        req({ state: "s", code: "auth-code-1", installationId: "42", future_field: "x" }),
+        params("sentry")
+      );
+      expect(fakeSentryAdapter.exchange).toHaveBeenCalledWith(
+        expect.objectContaining({ params: { installationId: "42", future_field: "x" } })
+      );
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.searchParams.get("connected")).toBe("sentry");
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // W3-T2 fix round (PKCE upgrade) — the consumed state's codeVerifier
   // threads through to exchange().
   // -----------------------------------------------------------------------

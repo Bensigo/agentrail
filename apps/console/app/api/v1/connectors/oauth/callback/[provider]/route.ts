@@ -26,8 +26,18 @@ import {
 // doc-comment ("REACHABILITY") for why every route that calls
 // `oauthAdapterFor`/`oauthConfigFor` must import each provider's adapter
 // module directly (mirrors `runner/evidence/route.ts`'s identical idiom for
-// evidence adapters). W3-T3 adds a sibling `"../../../../../../../lib/oauth/sentry"`
-// import here the same way.
+// evidence adapters).
+//
+// W3-T3 (Sentry) deliberately does NOT add a sibling
+// `import "../../../../../../../lib/oauth/sentry"` here — Sentry's Public
+// Integration flow cannot round-trip a `state` value (doc-confirmed
+// absence), and this route's `state`/`code` requirement a few lines below
+// is a security-load-bearing gate, not a per-provider option. Importing
+// `lib/oauth/sentry.ts` here would make `oauthReady` flip true and expose a
+// "Connect Sentry" button that can never actually complete. See
+// `lib/oauth/sentry.ts`'s own doc-comment ("STATE CANNOT ROUND-TRIP") for
+// the full finding and the task report for the doc trail. Token-paste is
+// Sentry's only connect path today.
 import "../../../../../../../lib/oauth/railway";
 
 const ADMIN_ROLES = ["owner", "admin"];

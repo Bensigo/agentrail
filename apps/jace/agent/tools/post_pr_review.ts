@@ -57,6 +57,17 @@ async function realTransport(
   }
 }
 
+// One judgment-field shape, reused across all four axes of Task 6's judgment
+// (simplest/architecture/debt/hiddenRisks). Shape-only: the reviewer contract
+// already constrains `verdict` to its own per-field vocabulary, so this tool
+// does not re-validate or re-judge it — relayed verbatim, same posture as
+// acCoverage's status/criterion below.
+const JUDGMENT_ITEM = z.object({
+  verdict: z.string().min(1),
+  note: z.string().default(""),
+  basis: z.array(z.string()).default([]),
+});
+
 export default defineTool({
   description:
     "Post an ADVISORY code review to an existing GitHub pull request: a " +
@@ -75,7 +86,8 @@ export default defineTool({
     "folds it into the summary instead so the review still lands — check " +
     "`foldedComments` before assuming every comment landed inline. Pass the " +
     "reviewer's acCoverage verbatim too — it is rendered into the posted " +
-    "summary as a per-AC checklist.",
+    "summary as a per-AC checklist. Pass its judgment verbatim too — it is " +
+    "rendered as a compact judgment line and is never re-judged here.",
   inputSchema: z.object({
     repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
     prNumber: z.number().int().positive().describe("The pull request number."),
@@ -133,6 +145,22 @@ export default defineTool({
           "if it would overflow the summary cap). Null when the reviewer " +
           "found no usable ACs.",
       ),
+    judgment: z
+      .object({
+        simplest: JUDGMENT_ITEM,
+        architecture: JUDGMENT_ITEM,
+        debt: JUDGMENT_ITEM,
+        hiddenRisks: JUDGMENT_ITEM,
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "The reviewer's structured judgment over the change — simplest, " +
+          "architecture, debt, hiddenRisks — passed through verbatim and " +
+          "never re-judged here. Rendered into the posted summary as a " +
+          "compact judgment line (folded when the summary is already near " +
+          "its cap). Null when the reviewer's verdict was 'degraded'.",
+      ),
   }),
   async execute(input, ctx) {
     return runPostPrReview({
@@ -142,6 +170,7 @@ export default defineTool({
       summary: input.summary,
       comments: input.comments,
       acCoverage: input.acCoverage,
+      judgment: input.judgment,
       env: process.env,
       transport: realTransport,
     });

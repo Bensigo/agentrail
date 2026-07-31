@@ -91,6 +91,13 @@ export async function loadPlanCardData(
     const resolved = await resolvePolicyForWorkspace(workspaceId, {
       fetchMonthSpendUsd: async () => 0,
     });
+    // Accepted cross-surface asymmetry (subscription slice 6 whole-slice
+    // review): with the flag ON, degraded/no-account fails OPEN here — the
+    // digest shows the legacy cost card — while the sidebar
+    // (`billingSwapEnabled`) and approvals (`hideDollars`) read the raw flag
+    // with no degraded check of their own, so they stay nav-hidden /
+    // scope-only regardless. Fail-open for data, fail-simple for nav — both
+    // self-heal the moment billing resolution recovers.
     if (resolved.degraded || !resolved.billingAccountId) {
       return undefined;
     }

@@ -184,6 +184,16 @@ function summarizeCreateRepo(input: Record<string, unknown>): ApprovalSummary {
  * swaps the `{ label: "Estimate", value: "~$X.XX" }` field for
  * `{ label: "Scope", value: scopeFieldValue(...) }` — same swap
  * `renderAlignmentBrief` makes for its own dollar line, mirrored here.
+ *
+ * Review fix round 1 (Important finding 1 — model-name leak): the plan's
+ * Global Constraint ("Customer never sees dollars, MODEL NAMES, or the word
+ * 'budget'" when the flag is on) covers more than the Estimate/Scope swap —
+ * `opts.hideDollars` ALSO strips the suggested-model name off the Task type
+ * field (value becomes just the task type, e.g. `"feature"`, never
+ * `"feature → Claude Sonnet 5"`) and omits the "Why" field entirely
+ * (`modelSelectionReason` narrates model-selection choices in prose, which
+ * is exactly the kind of internal detail this constraint bans). No opts ⇒
+ * byte-identical to before this fix — every pre-existing pin keeps passing.
  */
 function summarizeAlignmentBrief(
   input: Record<string, unknown>,
@@ -200,19 +210,27 @@ function summarizeAlignmentBrief(
   if (taskType || suggestedModelDisplayName) {
     fields.push({
       label: "Task type",
-      value: suggestedModelDisplayName
-        ? `${taskType || "general"} → ${suggestedModelDisplayName}`
-        : taskType || "general",
+      value: opts?.hideDollars
+        ? taskType || "general"
+        : suggestedModelDisplayName
+          ? `${taskType || "general"} → ${suggestedModelDisplayName}`
+          : taskType || "general",
     });
   }
 
   // #1338 PR② — the model-selection learning loop's precomputed one-line
   // rationale (see approval-message.ts's own "Why:" line for the full
   // provenance); present only when the feature flag was on at compose time,
-  // absent (byte-identical to pre-#1338) otherwise.
-  const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
-  if (modelSelectionReason) {
-    fields.push({ label: "Why", value: modelSelectionReason });
+  // absent (byte-identical to pre-#1338) otherwise. Also omitted entirely
+  // whenever `opts.hideDollars` (review fix round 1, Important finding 1):
+  // this rationale narrates model-selection choices in prose — internal
+  // detail, not something a subscription customer should ever see, same
+  // posture as the Task-type field's model name above.
+  if (!opts?.hideDollars) {
+    const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
+    if (modelSelectionReason) {
+      fields.push({ label: "Why", value: modelSelectionReason });
+    }
   }
 
   const estimateUsd = input["estimateUsd"];

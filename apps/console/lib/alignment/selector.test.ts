@@ -424,3 +424,51 @@ describe("selectExecuteModel: allowedProfiles (subscription-platform slice 2, Ta
     expect(filtered.reason).toBe("seed");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 7 (subscription-platform slice 5): the cold-start SEED itself must be
+// entitlement-filtered, not just stats/exploration. Before this fix,
+// decideExploit derived `seed` from static seeds.ts config and never checked
+// it against eligibleSet -- with <5 qualified runs, a Starter plan
+// (allowedProfiles excluding premium) asking for a `refactor` task got
+// anthropic/claude-opus-4.8 (premium, refactor's static seed) anyway, reason
+// 'seed'. Every prior allowedProfiles test above used 'ui', whose seed
+// (kimi-k2.7-code) happens to be standard-tagged -- that's why the leak was
+// invisible until now. 'refactor' is the smallest task type whose seed is
+// premium-tagged, so it's the one that actually exercises the bug.
+// ---------------------------------------------------------------------------
+describe("selectExecuteModel: cold-start seed itself respects profile entitlement (Task 7)", () => {
+  it("regression: refactor's premium seed (opus-4.8) is excluded by allowedProfiles -> falls to the first entitled refactor candidate, NOT opus-4.8", async () => {
+    const result = await selectExecuteModel("refactor", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: new Set<QualityProfile>(["economy", "standard"]),
+      fetchStats: fetchStatsReturning([]), // zero stats -- cold start
+    });
+    expect(result.model.slug).not.toBe("anthropic/claude-opus-4.8");
+    // eligibleSlugs preserves candidates.ts's seed-first refactor order minus
+    // the two premium entries (opus-4.8, sonnet-5) -> glm-5.2 is [0].
+    expect(result.model.slug).toBe(GLM_5_2);
+    expect(result.reason).toBe("seed");
+    expect(result.runCount).toBeUndefined();
+  });
+
+  it("seed already in-profile (ui + standard allowed): static seed is unchanged, pinning existing behavior", async () => {
+    const result = await selectExecuteModel("ui", "ws-1", {
+      random: NEVER_EXPLORE,
+      allowedProfiles: new Set<QualityProfile>(["standard"]),
+      fetchStats: fetchStatsReturning([]),
+    });
+    expect(result.model.slug).toBe(KIMI_CODE); // ui's own seed, already standard-tagged -- no substitution needed
+    expect(result.reason).toBe("seed");
+  });
+
+  it("no allowedProfiles passed (flag-off path): static seed is unchanged, even for refactor whose seed is premium", async () => {
+    const result = await selectExecuteModel("refactor", "ws-1", {
+      random: NEVER_EXPLORE,
+      fetchStats: fetchStatsReturning([]),
+    });
+    expect(result.model).toBe(seedModel("refactor"));
+    expect(result.model.slug).toBe("anthropic/claude-opus-4.8");
+    expect(result.reason).toBe("seed");
+  });
+});

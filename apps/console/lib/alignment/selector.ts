@@ -148,8 +148,16 @@ function decideExploit(
   stats: readonly ModelOutcomeStatsRow[],
   minRuns: number
 ): ModelSelection {
-  const seed = seedModel(taskType);
+  let seed = seedModel(taskType);
   const eligibleSet = new Set(eligibleSlugs);
+  if (!eligibleSet.has(seed.slug)) {
+    // Entitlement (or eligibility) excluded the static seed — fall to the
+    // first entitled candidate. eligibleSlugs preserves candidates.ts's
+    // seed-first order (eligibility.ts:92-93) and is non-empty whenever the
+    // unfiltered pool is (the empty-pool fail-open at
+    // eligibility.ts:127-137), so [0] always exists.
+    seed = seatForSlug(eligibleSlugs[0]);
+  }
   const eligibleStats = stats.filter(
     (row) => row.executeModel !== null && eligibleSet.has(row.executeModel)
   );

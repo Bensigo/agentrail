@@ -96,7 +96,7 @@ describe.skipIf(!DB_AVAILABLE)(
 
       const wins = results.filter((r) => r !== null);
       expect(wins).toHaveLength(1);
-      expect(wins[0]).toEqual({ workspaceId, userId: "user-race" });
+      expect(wins[0]).toEqual({ workspaceId, userId: "user-race", codeVerifier: null });
 
       // The state is genuinely gone afterward — a LATER, non-concurrent
       // attempt also sees null (not just "the other N-1 concurrent callers
@@ -121,7 +121,7 @@ describe.skipIf(!DB_AVAILABLE)(
       // stateA was overwritten by the second mint — only stateB (the LIVE
       // one) can possibly resolve.
       expect(resultA).toBeNull();
-      expect(resultB).toEqual({ workspaceId, userId: "user-B" });
+      expect(resultB).toEqual({ workspaceId, userId: "user-B", codeVerifier: null });
 
       await deleteConnectorRow(provider);
     });
@@ -149,21 +149,23 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(await consumeConnectorOauthState(provider, state)).toEqual({
         workspaceId,
         userId: "user-clobber-check",
+        codeVerifier: null,
       });
 
       await deleteConnectorRow(provider);
     });
 
-    it("the read model never surfaces oauthState/oauthStateExpiresAt/oauthUserId even though storage now preserves them (toClientSafeConfig)", async () => {
+    it("the read model never surfaces oauthState/oauthStateExpiresAt/oauthUserId/oauthPkceVerifier even though storage now preserves them (toClientSafeConfig)", async () => {
       const provider = "datadog";
       await deleteConnectorRow(provider);
-      await mintConnectorOauthState(workspaceId, provider, "user-leak-check");
+      await mintConnectorOauthState(workspaceId, provider, "user-leak-check", "verifier-leak-check");
 
       const view = await getConnector(workspaceId, provider);
       expect(view).not.toBeNull();
       expect(view!.config).not.toHaveProperty("oauthState");
       expect(view!.config).not.toHaveProperty("oauthStateExpiresAt");
       expect(view!.config).not.toHaveProperty("oauthUserId");
+      expect(view!.config).not.toHaveProperty("oauthPkceVerifier");
 
       // Also true through upsertConnector's OWN returned view (a second,
       // independent code path that also merges + returns config).
@@ -171,6 +173,47 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(upserted.config).not.toHaveProperty("oauthState");
       expect(upserted.config).not.toHaveProperty("oauthStateExpiresAt");
       expect(upserted.config).not.toHaveProperty("oauthUserId");
+      expect(upserted.config).not.toHaveProperty("oauthPkceVerifier");
+
+      await deleteConnectorRow(provider);
+    });
+
+    // -------------------------------------------------------------------
+    // W3-T2 fix round (PKCE upgrade) — the codeVerifier round-trip through
+    // a REAL Postgres jsonb patch (mocked-unit coverage in
+    // queries/connectors.test.ts proves the SQL shape; this proves the
+    // actual round-trip value survives a real multi-line jsonb_build_object
+    // + `||` merge + later `->>` read, the same "don't trust a mock alone
+    // for a multi-step storage round-trip" doctrine this file's own
+    // doc-comment states for IMPORTANT-1 above).
+    // -------------------------------------------------------------------
+    it("a PKCE codeVerifier minted alongside state round-trips through consume against real Postgres, and survives an unrelated upsertConnector write in between", async () => {
+      const provider = "grafana";
+      await deleteConnectorRow(provider);
+      const state = await mintConnectorOauthState(workspaceId, provider, "user-pkce", "verifier-real-pg-roundtrip");
+
+      await upsertConnector(workspaceId, provider, { config: { triggerLabel: "unrelated-write" } });
+
+      expect(await consumeConnectorOauthState(provider, state)).toEqual({
+        workspaceId,
+        userId: "user-pkce",
+        codeVerifier: "verifier-real-pg-roundtrip",
+      });
+
+      await deleteConnectorRow(provider);
+    });
+
+    it("re-minting for the same (workspace, provider) without a codeVerifier overwrites a PRIOR mint's stale verifier — the second, live state carries no leftover verifier", async () => {
+      const provider = "vercel";
+      await deleteConnectorRow(provider);
+      await mintConnectorOauthState(workspaceId, provider, "user-a", "stale-verifier-should-not-survive");
+      const secondState = await mintConnectorOauthState(workspaceId, provider, "user-b");
+
+      expect(await consumeConnectorOauthState(provider, secondState)).toEqual({
+        workspaceId,
+        userId: "user-b",
+        codeVerifier: null,
+      });
 
       await deleteConnectorRow(provider);
     });

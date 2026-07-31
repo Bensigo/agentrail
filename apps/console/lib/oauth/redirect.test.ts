@@ -30,6 +30,9 @@ describe("OAUTH_ERROR_REASONS closed set", () => {
       "denied",
       "exchange_failed",
       "store_failed",
+      // W3-T2 fix round (review Finding #1) — a postExchange-caught
+      // project/resource-grant mismatch.
+      "project_not_granted",
     ]);
   });
 });

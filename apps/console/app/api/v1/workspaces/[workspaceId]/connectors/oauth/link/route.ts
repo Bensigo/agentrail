@@ -7,6 +7,7 @@ import {
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
+import { computeCodeChallengeS256, generateCodeVerifier } from "../../../../../../../../lib/oauth/pkce";
 // W3-T2: registers the `railway` OAuth adapter — see the callback route's
 // identical import for the full "REACHABILITY" reasoning.
 import "../../../../../../../../lib/oauth/railway";
@@ -102,9 +103,22 @@ export async function POST(
     );
   }
 
-  const state = await mintConnectorOauthState(workspaceId, body.provider, session.user.id);
+  // PKCE (RFC 7636, W3-T2 fix round) — minted for EVERY oauth connect
+  // attempt, unconditionally, and stored in the SAME jsonb state patch as
+  // state/expiry/minter (`mintConnectorOauthState`'s optional 4th arg —
+  // see `lib/oauth/pkce.ts`'s own doc-comment for why this is generic,
+  // provider-agnostic plumbing rather than Railway-specific). Whether the
+  // target adapter actually WIRES the resulting `codeChallenge` into its
+  // own authorize URL is that adapter's own choice (`AuthorizeUrlInput
+  // .codeChallenge`'s doc-comment) — this route always computes and offers
+  // it, exactly like it already always builds `ExchangeInput.params`
+  // regardless of whether a specific adapter reads it.
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = computeCodeChallengeS256(codeVerifier);
+
+  const state = await mintConnectorOauthState(workspaceId, body.provider, session.user.id, codeVerifier);
   const redirectUri = oauthCallbackUri(consolePublicUrl, body.provider);
-  const url = adapter.authorizeUrl({ state, redirectUri });
+  const url = adapter.authorizeUrl({ state, redirectUri, codeChallenge });
 
   return NextResponse.json({ url });
 }

@@ -1,5 +1,12 @@
 import { oauthConfigFor, registerOauthAdapter } from "./types";
-import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdapter } from "./types";
+import type {
+  AuthorizeUrlInput,
+  ExchangeInput,
+  OauthEnvelope,
+  OauthProviderAdapter,
+  PostExchangeInput,
+  PostExchangeResult,
+} from "./types";
 
 /**
  * OAuth Connect Wave 3, W3-T2 (`.superpowers/sdd/plan-oauth.md`) — Railway's
@@ -78,28 +85,111 @@ import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdap
  *     `lib/evidence/railway.ts` already calls — this task does not touch
  *     those queries at all (see that file's own W3-T2 doc-comment update).
  *
- * PKCE — DISCLOSED CHOICE: NOT IMPLEMENTED in v1. creating-an-app.md's own
- * app-type table is explicit that PKCE is "Recommended" (not required) for
- * a "Web (Confidential)" client — REQUIRED only for a "Native (Public)"
- * client, which this console is not (the client secret is held server-side,
- * never shipped to a browser). Two independent reasons this adapter still
- * doesn't add it: (1) the docs' own stated benefit — "protects against
- * authorization code interception if an attacker manages to observe the
- * redirect" — is a materially smaller risk for a confidential client that
- * ALSO authenticates the token-exchange call with a secret Railway has
- * never disclosed to anyone but this deployment; PKCE hardens the case
- * where an attacker captures ONLY the `code`, which still cannot be
- * exchanged without the client secret this adapter already requires. (2)
- * T1's `OauthProviderAdapter` interface (`types.ts`, out of scope to
- * redesign here) has no channel to carry a PKCE `code_verifier` from the
- * pure, synchronous `authorizeUrl()` call through to the later `exchange()`
- * call: `exchange(input: ExchangeInput)` receives `{code, redirectUri,
- * params}` — never the original `state` — so there is no key this adapter
- * could even use to look up a verifier it minted at authorize time without
- * a T1 route/state-storage change. If a future task revisits this, the
- * natural seam is threading `state` (or a derived value) through to
- * `exchange()` so a verifier can round-trip via the SAME `connectors.config`
- * ephemeral-key mechanism `mintConnectorOauthState` already uses.
+ * PKCE — IMPLEMENTED (W3-T2 fix round, independent review upgrade —
+ * `.superpowers/sdd/review-W3T2.md`, Finding #2). The FIRST submission
+ * disclosed this as deliberately skipped; the review's own citation check
+ * was accurate but incomplete, and the coordinator's scope ruling upgraded
+ * it to "now, S256." The full, honest citation this time: creating-an-app.md's
+ * app-type table says PKCE is "Recommended" (not required) for a "Web
+ * (Confidential)" client, REQUIRED only for "Native (Public)" — but that
+ * SAME doc's prose is more emphatic than the table cell alone conveys:
+ * "Even though web apps have a client secret, implementing PKCE is
+ * **strongly recommended**. PKCE protects against authorization code
+ * interception if an attacker manages to observe the redirect." Given that
+ * emphasis, AND that Cloudflare's own OAuth (a documented future phase,
+ * per the coordinator's own scope ruling) REQUIRES PKCE regardless of
+ * client type, the generic plumbing (`./pkce.ts`, `mintConnectorOauthState`'s
+ * optional 4th arg, `types.ts`'s additive `codeChallenge`/`codeVerifier`
+ * fields) is built once, shared, rather than retrofitted per-provider
+ * later. This adapter REQUIRES both fields (throws if either is missing —
+ * see `authorizeUrl`/`exchange` below) rather than treating them as
+ * best-effort: having built the shared plumbing, silently degrading to
+ * non-PKCE on a missing field would be a worse, harder-to-notice failure
+ * mode than a loud, immediate throw. `code_challenge`/`code_challenge_method`
+ * (authorize) and `code_verifier` (token exchange) param NAMES confirmed
+ * verbatim against creating-an-app.md's own worked PKCE example:
+ * `&code_challenge=CODE_CHALLENGE&code_challenge_method=S256` on the
+ * authorize URL; `-d "code_verifier=CODE_VERIFIER"` alongside
+ * `grant_type=authorization_code`/`code`/`redirect_uri` at the SAME Basic-
+ * authed token endpoint (no separate PKCE endpoint).
+ *
+ * POST-EXCHANGE PROJECT-GRANT CHECK — W3-T2 fix round, independent review
+ * Finding #1 (MEDIUM-HIGH): `project:viewer` is a RESOURCE-scoped grant —
+ * the user picks WHICH project(s) to share on Railway's OWN consent
+ * screen, independently of whatever this workspace has typed into its own
+ * `railwayProjectId` config field. Nothing previously tied these two
+ * together: an admin could configure `railwayProjectId="proj-A"`, then
+ * connect via OAuth and pick `proj-B` on Railway's consent screen — every
+ * subsequent evidence call would then query `proj-A` with a `proj-B`-scoped
+ * token, and (per the review's own doc-verify trail — no fetched page
+ * documents what `deployments(input:{projectId: <out-of-grant>})` actually
+ * returns) COULD render as an honest-looking-but-wrong "(no deployments in
+ * window)" rather than a legible error, if Railway resolves an
+ * out-of-grant project id to an empty result rather than a GraphQL error.
+ *
+ * `postExchange` closes this at CONNECT time, before the credential is
+ * ever stored: with the fresh access token, it lists every project the
+ * grant actually covers via `externalWorkspaces { projects { id name } } }`
+ * — confirmed, verbatim, from `docs.railway.com/integrations/oauth/
+ * fetching-workspaces-or-projects.md`: "Project queries work similarly but
+ * use the `externalWorkspaces` field, which returns workspaces along with
+ * the specific projects the user granted access to. This requires a
+ * project scope (`project:viewer` or `project:member`) in the original
+ * authorization request." — then applies exactly three rules (the
+ * coordinator's own pinned a/b/c):
+ *   (a) `railwayProjectId` IS configured and is NOT in the granted set ->
+ *       `{ok:false, reason:"project_not_granted"}` — the callback route
+ *       fails the connect closed, credential never stored, admin sees a
+ *       legible reason (redirect.ts's own doc-comment) instead of a
+ *       connector that looks connected but silently answers nothing.
+ *   (b) `railwayProjectId` is UNSET and the grant covers EXACTLY ONE
+ *       project -> `{ok:true, configPatch:{railwayProjectId:<that id>}}` —
+ *       auto-fills the field via the SAME `completeConfig` merge path
+ *       every other config write already goes through (its preserve-list
+ *       already protects the ephemeral oauth-state keys; this is an
+ *       ordinary, non-ephemeral field), killing the dual-selection UX gap
+ *       in the common case (a workspace connecting one Railway project for
+ *       the first time via OAuth never has to ALSO hand-type the id).
+ *   (c) `railwayProjectId` is UNSET and the grant covers ZERO or MULTIPLE
+ *       projects -> `{ok:true}` (no patch) — deliberately generalizes the
+ *       coordinator's literal "multiple grants" case to "not exactly one":
+ *       auto-filling only when there is a single unambiguous choice is the
+ *       same restraint either way. Falls through to the SAME "connected,
+ *       config_missing on evidence calls until the admin sets a project
+ *       id" state the legacy token-paste flow already produces when a
+ *       token is pasted without the project id field filled in (verified
+ *       by reading `lib/evidence/railway.ts`'s own `!projectId ->
+ *       config_missing` gate and `connector-helpers.ts`'s
+ *       `evidenceCapabilities`, which credentials this row on
+ *       `enabled && hasSecret` alone, independent of `railwayProjectId` —
+ *       this is NOT a new gap, and NOT silent: it degrades LEGIBLY per
+ *       provider in the evidence route's own `degradations` array).
+ * The already-configured-and-IN-grant case (not spelled out above) is the
+ * implicit fourth outcome: `{ok:true}`, nothing to patch, nothing wrong.
+ *
+ * FAIL-CLOSED ON THE VERIFICATION CALL ITSELF: `fetchGrantedProjects`
+ * (below) is deliberately NOT try/caught inside `postExchange` — a network
+ * error or malformed response from Railway's OWN `externalWorkspaces` call
+ * propagates uncaught, which the callback route treats exactly like a
+ * thrown `exchange()` (`exchange_failed`), failing the WHOLE connect
+ * attempt rather than silently skipping the one check this method exists
+ * to make possible. This is the safety-first choice: the alternative
+ * (catch-and-proceed-unverified) would reopen exactly the silent-mismatch
+ * risk this fix closes, for the sake of tolerating a transient Railway
+ * hiccup at connect time — a rare, one-time-per-connect-attempt call the
+ * admin can simply retry.
+ *
+ * LIVE-SMOKE FLAG (disclosed, per the coordinator's own instruction): this
+ * exact call — a real `externalWorkspaces` query against a real,
+ * newly-issued Railway OAuth access token — CANNOT be exercised end-to-end
+ * until a real Railway OAuth app is registered (this deployment has none
+ * yet; `RAILWAY_OAUTH_CLIENT_ID`/`_SECRET` are unset everywhere today). The
+ * query shape and field names are doc-confirmed (quoted above), and the
+ * response-parsing logic below is defensive (never assumes a field exists
+ * without checking), but the FIRST real OAuth connect attempt after the
+ * vendor app is registered should be treated as this code path's actual
+ * live-smoke test — flagged here so it isn't silently assumed proven by
+ * the mocked test suite alone.
  *
  * REFRESH_TOKEN OMITTED FROM A RESPONSE — DISCLOSED CHOICE: every worked
  * JSON example in the raw docs (initial exchange AND refresh) shows
@@ -223,14 +313,99 @@ async function requestToken(grantParams: Record<string, string>): Promise<OauthE
   };
 }
 
+const RAILWAY_GRAPHQL_URL = "https://backboard.railway.com/graphql/v2";
+
+// Doc-confirmed verbatim against fetching-workspaces-or-projects.md — see
+// this module's own doc-comment ("POST-EXCHANGE PROJECT-GRANT CHECK") for
+// the quoted source line. Deliberately a BARE query (no variables) — the
+// endpoint scopes the result to whatever the CALLER's own token was
+// granted, nothing to parameterize.
+const EXTERNAL_WORKSPACES_QUERY = `
+  query {
+    externalWorkspaces {
+      id
+      name
+      projects {
+        id
+        name
+      }
+    }
+  }
+`;
+
+interface RailwayExternalWorkspaceNode {
+  id?: unknown;
+  name?: unknown;
+  projects?: Array<{ id?: unknown; name?: unknown }> | null;
+}
+
+interface RailwayGrantedProject {
+  id: string;
+  name: string;
+}
+
+/**
+ * Lists every project the OAuth grant actually covers — the project-scope
+ * analogue of the evidence adapter's own `fetchProjectDeployments`, but
+ * this module's own, self-contained call (`lib/oauth/` and
+ * `lib/evidence/` stay independent, never importing each other, even
+ * though both talk to the same Railway GraphQL endpoint). Deliberately NOT
+ * try/caught here — see this module's own doc-comment ("FAIL-CLOSED ON THE
+ * VERIFICATION CALL ITSELF") for why a thrown fetch (network error,
+ * malformed response) must propagate to the callback route rather than
+ * being swallowed.
+ */
+async function fetchGrantedProjects(accessToken: string): Promise<RailwayGrantedProject[]> {
+  const res = await fetch(RAILWAY_GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      "User-Agent": "agentrail-console",
+    },
+    body: JSON.stringify({ query: EXTERNAL_WORKSPACES_QUERY }),
+    signal: AbortSignal.timeout(RAILWAY_OAUTH_TIMEOUT_MS),
+  });
+
+  if (!res.ok) {
+    throw new Error(`railway externalWorkspaces query returned HTTP ${res.status}`);
+  }
+
+  const body = (await res.json().catch(() => null)) as
+    | { data?: { externalWorkspaces?: RailwayExternalWorkspaceNode[] | null }; errors?: unknown }
+    | null;
+  if (!body || (Array.isArray(body.errors) && body.errors.length > 0) || body.data === undefined) {
+    throw new Error("railway externalWorkspaces query returned an unexpected response shape");
+  }
+
+  const workspaces = body.data?.externalWorkspaces ?? [];
+  const projects: RailwayGrantedProject[] = [];
+  for (const ws of workspaces) {
+    for (const p of ws.projects ?? []) {
+      if (typeof p.id === "string" && p.id) {
+        projects.push({ id: p.id, name: typeof p.name === "string" ? p.name : "" });
+      }
+    }
+  }
+  return projects;
+}
+
 export const railwayOauthAdapter: OauthProviderAdapter = {
   provider: "railway",
 
   /** Pure and synchronous per `OauthProviderAdapter`'s own contract — the
    * one I/O this does is a `process.env` read (via `oauthConfigFor`), not
-   * network. */
-  authorizeUrl({ state, redirectUri }: AuthorizeUrlInput): string {
+   * network. PKCE REQUIRED (see this module's own doc-comment, "PKCE —
+   * IMPLEMENTED") — throws if the link route didn't supply a
+   * `codeChallenge`, rather than silently authorizing without it. */
+  authorizeUrl({ state, redirectUri, codeChallenge }: AuthorizeUrlInput): string {
     const { clientId } = requireRailwayOauthConfig();
+    if (!codeChallenge) {
+      throw new Error(
+        "railway oauth authorizeUrl missing PKCE code_challenge (the link route always mints one — this indicates a bug)"
+      );
+    }
     const url = new URL(RAILWAY_OAUTH_AUTHORIZE_URL);
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", clientId);
@@ -241,20 +416,37 @@ export const railwayOauthAdapter: OauthProviderAdapter = {
     // ("Scopes") for why this must never be conditional on "first-time
     // connect."
     url.searchParams.set("prompt", "consent");
+    // PKCE S256 — param names confirmed verbatim against
+    // creating-an-app.md's own worked example (this module's own
+    // doc-comment, "PKCE — IMPLEMENTED").
+    url.searchParams.set("code_challenge", codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
     return url.toString();
   },
 
   /** `ExchangeInput.params` (every non-state/code query param Railway's
    * redirect carried, e.g. the `iss` issuer param login-and-tokens.md's own
    * example shows) is deliberately ignored — Railway's callback needs
-   * nothing beyond `code`/`redirect_uri`, unlike Sentry's Public
-   * Integration flow (plan's own verified vendor facts), which is why
-   * `ExchangeInput` carries that bag at all. */
-  async exchange({ code, redirectUri }: ExchangeInput): Promise<OauthEnvelope> {
+   * nothing beyond `code`/`redirect_uri`/`code_verifier`, unlike Sentry's
+   * Public Integration flow (plan's own verified vendor facts), which is
+   * why `ExchangeInput` carries that bag at all. PKCE REQUIRED, same
+   * reasoning as `authorizeUrl` above — throws rather than silently
+   * exchanging without the verifier that matches the challenge this
+   * adapter sent at authorize time (Railway's own token endpoint would
+   * reject a PKCE-initiated exchange missing `code_verifier` anyway per RFC
+   * 7636, but a local, immediate, clearly-worded throw is easier to
+   * diagnose than a generic HTTP 400 from the vendor). */
+  async exchange({ code, redirectUri, codeVerifier }: ExchangeInput): Promise<OauthEnvelope> {
+    if (!codeVerifier) {
+      throw new Error(
+        "railway oauth exchange missing PKCE code_verifier (the callback route always threads one through from the minted state — this indicates a bug)"
+      );
+    }
     return requestToken({
       grant_type: "authorization_code",
       code,
       redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
     });
   },
 
@@ -263,6 +455,34 @@ export const railwayOauthAdapter: OauthProviderAdapter = {
       grant_type: "refresh_token",
       refresh_token: envelope.refresh,
     });
+  },
+
+  /** See this module's own doc-comment ("POST-EXCHANGE PROJECT-GRANT
+   * CHECK") for the full a/b/c contract. */
+  async postExchange({ envelope, config }: PostExchangeInput): Promise<PostExchangeResult> {
+    const projects = await fetchGrantedProjects(envelope.access);
+    const grantedIds = new Set(projects.map((p) => p.id));
+
+    const configuredRaw = config["railwayProjectId"];
+    const configuredId =
+      typeof configuredRaw === "string" && configuredRaw.trim() ? configuredRaw.trim() : null;
+
+    if (configuredId) {
+      if (!grantedIds.has(configuredId)) {
+        return { ok: false, reason: "project_not_granted" };
+      }
+      return { ok: true };
+    }
+
+    // Nothing configured yet — auto-fill ONLY when the grant is
+    // unambiguous (exactly one project). Zero or multiple both fall
+    // through to "leave unset," matching today's pre-existing
+    // not-configured handling (case (c), see this module's own
+    // doc-comment).
+    if (projects.length === 1) {
+      return { ok: true, configPatch: { railwayProjectId: projects[0]!.id } };
+    }
+    return { ok: true };
   },
 };
 

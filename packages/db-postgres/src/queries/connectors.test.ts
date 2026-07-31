@@ -410,6 +410,55 @@ describe("mintConnectorOauthState (W3-T1)", () => {
     expect(a).not.toBe(b);
   });
 
+  // W3-T2 fix round (PKCE upgrade) — codeVerifier is an optional 4th arg.
+  describe("codeVerifier (W3-T2 fix round, PKCE upgrade)", () => {
+    it("includes oauthPkceVerifier in the INSERT-branch config when a codeVerifier is passed", async () => {
+      const chain = insertChain();
+      mockDb.insert.mockReturnValue(chain as never);
+      await mintConnectorOauthState("ws-1", "railway", "user-1", "verifier-abc");
+      const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        config: { oauthPkceVerifier?: string };
+      };
+      expect(inserted.config.oauthPkceVerifier).toBe("verifier-abc");
+    });
+
+    it("omits oauthPkceVerifier from the INSERT-branch config when no codeVerifier is passed (provider without PKCE)", async () => {
+      const chain = insertChain();
+      mockDb.insert.mockReturnValue(chain as never);
+      await mintConnectorOauthState("ws-1", "railway", "user-1");
+      const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        config: { oauthPkceVerifier?: string };
+      };
+      expect(inserted.config.oauthPkceVerifier).toBeUndefined();
+    });
+
+    it("the ON CONFLICT jsonb patch always carries the oauthPkceVerifier key (present or a bound NULL) so a re-mint deterministically overwrites any stale verifier from a prior attempt — proven with AND without a codeVerifier this call", async () => {
+      function captureOnConflictConfig(): { chain: Record<string, unknown>; get: () => unknown } {
+        const chain: Record<string, unknown> = {};
+        chain.values = vi.fn(() => chain);
+        let captured: unknown;
+        chain.onConflictDoUpdate = vi.fn((arg: { set: { config: unknown } }) => {
+          captured = arg.set.config;
+          return Promise.resolve(undefined);
+        });
+        return { chain, get: () => captured };
+      }
+
+      const withVerifier = captureOnConflictConfig();
+      mockDb.insert.mockReturnValueOnce(withVerifier.chain as never);
+      await mintConnectorOauthState("ws-1", "railway", "user-1", "verifier-xyz");
+      expect(renderSql(withVerifier.get())).toContain("oauthPkceVerifier");
+
+      const withoutVerifier = captureOnConflictConfig();
+      mockDb.insert.mockReturnValueOnce(withoutVerifier.chain as never);
+      await mintConnectorOauthState("ws-1", "railway", "user-1");
+      // Still present in the rendered SQL TEXT (the jsonb_build_object call
+      // always names the key) — the bound VALUE is what differs (NULL vs.
+      // "verifier-xyz"), not whether the key is mentioned at all.
+      expect(renderSql(withoutVerifier.get())).toContain("oauthPkceVerifier");
+    });
+  });
+
   it("binds a DIFFERENT minting user distinctly from another mint (no cross-user bleed in the patch)", async () => {
     const chainA = insertChain();
     mockDb.insert.mockReturnValueOnce(chainA as never);
@@ -430,7 +479,7 @@ describe("mintConnectorOauthState (W3-T1)", () => {
 });
 
 describe("consumeConnectorOauthState (W3-T1)", () => {
-  it("resolves {workspaceId, userId} on a live, matching, unexpired state (atomic UPDATE … RETURNING)", async () => {
+  it("resolves {workspaceId, userId, codeVerifier:null} on a live, matching, unexpired state with no PKCE verifier stored (atomic UPDATE … RETURNING)", async () => {
     mockDb.update.mockReturnValue(
       updateChain([
         {
@@ -442,6 +491,52 @@ describe("consumeConnectorOauthState (W3-T1)", () => {
     expect(await consumeConnectorOauthState("railway", "deadbeef")).toEqual({
       workspaceId: "ws-1",
       userId: "user-1",
+      codeVerifier: null,
+    });
+  });
+
+  // W3-T2 fix round (PKCE upgrade).
+  it("resolves codeVerifier from the stored oauthPkceVerifier when the mint carried one", async () => {
+    mockDb.update.mockReturnValue(
+      updateChain([
+        {
+          workspaceId: "ws-1",
+          config: {
+            repos: [],
+            triggerLabel: "x",
+            pollIntervalSeconds: 60,
+            oauthUserId: "user-1",
+            oauthPkceVerifier: "verifier-abc",
+          },
+        },
+      ]) as never
+    );
+    expect(await consumeConnectorOauthState("railway", "deadbeef")).toEqual({
+      workspaceId: "ws-1",
+      userId: "user-1",
+      codeVerifier: "verifier-abc",
+    });
+  });
+
+  it("resolves codeVerifier:null (never throws) when oauthPkceVerifier is present but not a string (defensive)", async () => {
+    mockDb.update.mockReturnValue(
+      updateChain([
+        {
+          workspaceId: "ws-1",
+          config: {
+            repos: [],
+            triggerLabel: "x",
+            pollIntervalSeconds: 60,
+            oauthUserId: "user-1",
+            oauthPkceVerifier: 12345,
+          },
+        },
+      ]) as never
+    );
+    expect(await consumeConnectorOauthState("railway", "deadbeef")).toEqual({
+      workspaceId: "ws-1",
+      userId: "user-1",
+      codeVerifier: null,
     });
   });
 
@@ -459,9 +554,9 @@ describe("consumeConnectorOauthState (W3-T1)", () => {
     expect(await consumeConnectorOauthState("railway", "deadbeef")).toBeNull();
   });
 
-  it("clears oauthState/oauthStateExpiresAt but NOT oauthUserId in the same SET (so RETURNING can still read it)", async () => {
+  it("clears oauthState/oauthStateExpiresAt but NOT oauthUserId or oauthPkceVerifier in the same SET (so RETURNING can still read both)", async () => {
     const chain = updateChain([
-      { workspaceId: "ws-1", config: { oauthUserId: "user-1" } },
+      { workspaceId: "ws-1", config: { oauthUserId: "user-1", oauthPkceVerifier: "verifier-abc" } },
     ]);
     mockDb.update.mockReturnValue(chain as never);
     await consumeConnectorOauthState("railway", "deadbeef");
@@ -470,5 +565,6 @@ describe("consumeConnectorOauthState (W3-T1)", () => {
     expect(rendered).toContain("oauthState");
     expect(rendered).toContain("oauthStateExpiresAt");
     expect(rendered).not.toContain("oauthUserId");
+    expect(rendered).not.toContain("oauthPkceVerifier");
   });
 });

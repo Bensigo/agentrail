@@ -76,6 +76,26 @@ function asConnectorProvider(provider: string): ConnectorProvider {
  * call may keep running in the background after "losing" the race (JS
  * cannot force-cancel an arbitrary promise), but it can no longer wedge a
  * future caller.
+ *
+ * LOGGING (W3-T2 fix round — folded in from a reviewer-flagged gap this
+ * file's own tests didn't previously cover): every catch below now logs a
+ * fixed, value-free message — provider + workspaceId ONLY, never the
+ * caught error object — matching the callback route's own asserted
+ * token-free logging discipline (`connectors/oauth/callback/route.ts`'s
+ * doc-comment: "never the caught error itself, which could carry a
+ * response body with token material"). `refreshSingleFlight`'s single
+ * try/catch is now split into two stages specifically so the log message
+ * (and a dedicated test) can distinguish the two materially different
+ * failure points: the vendor call itself rejecting/timing out, vs. the
+ * vendor call SUCCEEDING (a real rotation happened — several vendors,
+ * Railway included, invalidate the OLD refresh token the instant the new
+ * one is issued) but `setConnectorSecret` then failing to persist the
+ * rotated envelope — our own infra dropping a credential the vendor
+ * already committed to, not a rejected credential. Both still degrade
+ * identically to `{ok:false}` → `unauthorized` (same operator remedy:
+ * reconnect) and both still clear the map key in `finally`, so the NEXT
+ * call always starts a fresh attempt rather than retrying the
+ * now-vendor-invalidated token in a loop within this one call.
  */
 
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
@@ -131,13 +151,32 @@ function refreshSingleFlight(
   const attempt: Promise<RefreshOutcome> = (async () => {
     const adapter = oauthAdapterFor(provider);
     if (!adapter) return { ok: false };
+
+    let rotated: OauthEnvelope;
     try {
-      const rotated = await withTimeout(adapter.refresh(credential), REFRESH_TIMEOUT_MS);
-      await setConnectorSecret(workspaceId, asConnectorProvider(provider), serializeOauthEnvelope(rotated));
-      return { ok: true, access: rotated.access };
+      rotated = await withTimeout(adapter.refresh(credential), REFRESH_TIMEOUT_MS);
     } catch {
+      console.error(
+        `[oauth/core] refresh() rejected or timed out (provider=${provider}, workspaceId=${workspaceId})`
+      );
       return { ok: false };
     }
+
+    try {
+      await setConnectorSecret(workspaceId, asConnectorProvider(provider), serializeOauthEnvelope(rotated));
+    } catch {
+      // See this file's own doc-comment ("LOGGING") — the vendor already
+      // rotated; this is our own persistence failing, not a rejected
+      // credential. Next call reads the STILL-STORED (now vendor-stale)
+      // envelope from `getConnectorSecret` fresh and attempts its own
+      // single, bounded refresh — never a tight retry loop within this call.
+      console.error(
+        `[oauth/core] refresh succeeded but persisting the rotated envelope failed (provider=${provider}, workspaceId=${workspaceId})`
+      );
+      return { ok: false };
+    }
+
+    return { ok: true, access: rotated.access };
   })();
 
   inFlightRefreshes.set(key, attempt);
@@ -167,7 +206,10 @@ export async function resolveProviderAuth(
   } catch {
     // A stored-but-corrupted secret (tampered ciphertext, wrong
     // CONNECTOR_SECRET_KEY) — same operator remedy as a rejected refresh:
-    // reconnect the connector.
+    // reconnect the connector. See this file's own doc-comment ("LOGGING").
+    console.error(
+      `[oauth/core] failed to read/decrypt the stored secret (provider=${provider}, workspaceId=${workspaceId})`
+    );
     return { ok: false, reason: "unauthorized" };
   }
   if (!plaintext) return { ok: false, reason: "config_missing" };

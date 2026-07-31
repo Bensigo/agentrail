@@ -81,15 +81,33 @@ everything else confirmed:
   automatically."* (login-and-tokens.md). `lib/oauth/railway.ts`'s
   `refresh()` always returns whatever `refresh_token` the response carries;
   `core.ts`'s `resolveProviderAuth` already persists exactly that.
-- **PKCE — confirmed optional for this client type, not implemented**:
-  *"Web (Confidential) | Client Secret: Required | PKCE: Recommended"*
-  vs. *"Native (Public) | Client Secret: None | PKCE: Required"*
-  (creating-an-app.md). This console is a confidential client (the secret
-  never leaves the server). Not implemented in W3-T2 — disclosed: T1's
-  `OauthProviderAdapter.exchange()` receives `{code, redirectUri, params}`,
-  never the original `state`, so there is no channel to carry a per-attempt
-  `code_verifier` from the pure `authorizeUrl()` call through to `exchange()`
-  without a T1 interface/route change, out of scope here.
+- **PKCE — confirmed optional for this client type, IMPLEMENTED (upgraded in
+  the W3-T2 fix round)**: *"Web (Confidential) | Client Secret: Required |
+  PKCE: Recommended"* vs. *"Native (Public) | Client Secret: None | PKCE:
+  Required"* (creating-an-app.md). The FIRST submission read the table cell
+  alone and disclosed PKCE as deliberately skipped; independent review
+  (Finding #2, `.superpowers/sdd/review-W3T2.md`) pointed out the SAME
+  page's prose is more emphatic: *"Even though web apps have a client
+  secret, implementing PKCE is **strongly recommended**. PKCE protects
+  against authorization code interception if an attacker manages to
+  observe the redirect."* Combined with Cloudflare's own OAuth (a
+  documented future phase) REQUIRING PKCE regardless of client type, the
+  coordinator's scope ruling upgraded this to "now, S256" — see "PKCE +
+  post-exchange project-grant check (W3-T2 fix round)" below for the
+  design.
+
+### W3-T2 fix round doc-verification (PKCE param names)
+
+Re-fetched (curl) from `creating-an-app.md`'s own worked PKCE example —
+param names confirmed verbatim, nothing guessed:
+
+- Authorize URL adds `&code_challenge=CODE_CHALLENGE&code_challenge_method=S256`
+  to the SAME `response_type`/`client_id`/`redirect_uri`/`scope` params
+  already sent.
+- Token exchange adds `-d "code_verifier=CODE_VERIFIER"` alongside the
+  existing `grant_type=authorization_code`/`code`/`redirect_uri` fields, at
+  the SAME `-u "CLIENT_ID:CLIENT_SECRET"` Basic-authed endpoint — no
+  separate PKCE endpoint, no change to the auth method.
 
 ## Design (pinned)
 
@@ -108,10 +126,12 @@ never inside it: encryption doesn't care what's inside the plaintext.
 columns on `workspaces`, one in-flight state per *workspace*, no provider
 dimension) — not generic enough to reuse, and the plan pins no migration.
 The chosen no-migration alternative: mint into `connectors.config` (the
-plan's own offered fallback), keyed per `(workspaceId, provider)` via three
-ephemeral jsonb fields — `oauthState`, `oauthStateExpiresAt`, and
-`oauthUserId` (the third, added in the fix round below) — written and
-cleared with a **surgical** jsonb `||`-merge / `-`-delete (the same idiom
+plan's own offered fallback), keyed per `(workspaceId, provider)` via FOUR
+ephemeral jsonb fields — `oauthState`, `oauthStateExpiresAt`, `oauthUserId`
+(added in the W3-T1 fix round below), and `oauthPkceVerifier` (added in the
+W3-T2 fix round — the PKCE `code_verifier`, riding in the SAME patch rather
+than a second storage mechanism) — written and cleared with a **surgical**
+jsonb `||`-merge / `-`-delete (the same idiom
 `queries/investigations.ts`'s `claimLessonPromotion` already established).
 Two independent protections, BOTH directions (fix round — an independent
 review caught the original design only had the first):
@@ -158,15 +178,18 @@ session+membership gate for the same class of public, tenant-writing
 OAuth-style callback (the actually-analogous precedent — NOT
 `connectors/slack/callback/route.ts`, which never binds a workspace at
 OAuth-completion time in the first place, so has no equivalent gate to
-mirror). Failure reasons are a closed, six-value set —
+mirror). Failure reasons are a closed set — six at W3-T1, SEVEN as of the
+W3-T2 fix round —
 `state_invalid | provider_unknown | provider_unconfigured | denied |
-exchange_failed | store_failed` — never the vendor's own error text, and
-the tenant-binding failure collapses into the SAME `state_invalid` reason
-as a genuinely-expired state (anti-enumeration: a prober cannot
-distinguish "wrong person" from "never existed" from the redirect alone).
-Success redirects to `?connected=<provider>`; every failure redirects to
-`?oauth_error=<reason>` (workspace-scoped once the state has resolved a
-workspace id; the workspace-less `/dashboard` root before that).
+exchange_failed | store_failed | project_not_granted` — never the vendor's
+own error text, and the tenant-binding failure collapses into the SAME
+`state_invalid` reason as a genuinely-expired state (anti-enumeration: a
+prober cannot distinguish "wrong person" from "never existed" from the
+redirect alone). Success redirects to `?connected=<provider>`; every
+failure redirects to `?oauth_error=<reason>` (workspace-scoped once the
+state has resolved a workspace id; the workspace-less `/dashboard` root
+before that). A `?connected=`/`?oauth_error=` result was NEVER actually
+surfaced to the user until the W3-T2 fix round — see "Sheet UX" below.
 
 **Authorize-link** — `POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link`
 (owner/admin only, `{provider}` in the body) mints the state and returns the
@@ -198,7 +221,61 @@ use — verified with two simultaneous callers triggering exactly one
 internal timeout of its own would otherwise wedge that
 `(workspaceId,provider)` key's map entry forever): a timeout is treated
 exactly like any other rejection, degrading to `unauthorized` and clearing
-the map key so the next call starts fresh.
+the map key so the next call starts fresh. Fix round: every catch in this
+file now logs a fixed, value-free message (provider + workspaceId only,
+never the caught error) — matching the callback route's own asserted
+logging discipline, which previously only covered `exchange()`/
+`setConnectorSecret` failures IN THE ROUTE, not `resolveProviderAuth`'s own
+internal failures.
+
+**PKCE + post-exchange project-grant check (W3-T2 fix round)** — two
+ADDITIVE extensions to the T1 seam, both from independent review
+(`.superpowers/sdd/review-W3T2.md`):
+
+- *PKCE (Finding #2, upgraded from a disclosed gap to "implemented,
+  S256").* `apps/console/lib/oauth/pkce.ts` — `generateCodeVerifier`/
+  `computeCodeChallengeS256`, generic and provider-agnostic (reused by any
+  future adapter, not Railway-specific). The link route mints a
+  `code_verifier` for EVERY connect attempt, unconditionally, alongside
+  `state` (`mintConnectorOauthState`'s new optional 4th arg — see "State"
+  above) and hands the derived `code_challenge` to `adapter.authorizeUrl()`
+  via an additive optional field; the callback route reads the verifier
+  back off the consumed state and hands it to `adapter.exchange()` the same
+  way. Railway's own adapter REQUIRES both (throws if either is missing —
+  a deliberate choice: having built the shared plumbing, silently degrading
+  to non-PKCE would be a worse, harder-to-notice failure than a loud throw).
+- *Post-exchange project-grant check (Finding #1, MEDIUM-HIGH).* `project:viewer`
+  is a RESOURCE-scoped grant — the user picks which Railway project(s) to
+  share on Railway's OWN consent screen, independently of this workspace's
+  stored `railwayProjectId`. Nothing previously reconciled the two: a
+  mismatch could silently connect and later render as an
+  honest-looking-but-wrong "(no deployments in window)" instead of a
+  legible error. Fix: `OauthProviderAdapter` gains an OPTIONAL
+  `postExchange(input: {envelope, config})` method the callback route calls
+  AFTER `exchange()` succeeds but BEFORE persisting. Railway's
+  implementation lists the grant's actual projects (`externalWorkspaces {
+  projects { id name } }`, doc-confirmed) and applies three rules: (a)
+  configured `railwayProjectId` NOT in the granted set → reject closed with
+  the new `project_not_granted` reason, credential never stored; (b)
+  unconfigured + the grant covers EXACTLY ONE project → auto-fill
+  `railwayProjectId` via a `configPatch` (merged through `upsertConnector`
+  → `completeConfig`, the SAME preserve-list machinery that already
+  protects the ephemeral oauth-state keys) — kills the dual-selection UX
+  gap in the common case; (c) unconfigured + zero or multiple projects →
+  connect anyway, config stays unset (the SAME "config_missing on evidence
+  calls until the admin sets a project id" state the legacy token-paste
+  flow already produces when a token is pasted without the project id
+  filled in — not a new gap). The verification call itself is deliberately
+  NOT try/caught inside `postExchange` — a failure there fails the WHOLE
+  connect closed (`exchange_failed`), never silently skips the check.
+  **Live-smoke flag:** this exact call cannot be exercised against a real
+  Railway OAuth app until one is registered (none is yet) — doc-confirmed
+  and defensively parsed, but the first real post-registration connect
+  attempt is this code path's actual live-smoke test.
+- A `configPatch`'s own persistence (`upsertConnector`) is best-effort: a
+  failure there is logged but does NOT flip an otherwise-successful connect
+  to a failure redirect — the credential is already genuinely stored and
+  usable at that point.
 
 ## Sheet UX
 
@@ -213,6 +290,20 @@ component renders *exactly* today's form, byte-identical (the same JSX
 value, not a re-implementation) — zero visual regression for every other
 provider, and for railway/sentry themselves until W3-T2/T3 land.
 
+**Connect-result banner (W3-T2 fix round)** — T1 shipped the callback's
+`?connected=<provider>`/`?oauth_error=<reason>` redirect but nothing ever
+read it: a connect attempt (success OR any failure) landed back on the
+connectors page with zero visible feedback beyond the connector's own state
+quietly changing. Closed because the NEW `project_not_granted` reason
+needs a legible "what do I do now," and the sheet itself is already closed
+by redirect time (the browser navigated away to the vendor's consent
+screen, so there is no open sheet left to caption). `ConnectorsPanel`
+(`connectors-panel.tsx`) renders a small dismissible banner reading these
+two params generically off the closed `OAUTH_ERROR_REASONS` set — one
+sentence per reason (all seven), a success line for `connected`, nothing
+for an unrecognized/missing param. Dismissing strips the query params
+(`router.replace`) so a later refresh doesn't re-show a stale result.
+
 ## Phased rollout
 
 1. **W3-T1 (this PR):** the seam — envelope helpers, state, both routes,
@@ -221,7 +312,11 @@ provider, and for railway/sentry themselves until W3-T2/T3 land.
    every real user.
 2. **W3-T2:** Railway's `OauthProviderAdapter` (doc-verify the exact
    authorize URL first), `lib/evidence/railway.ts` switched to
-   `resolveProviderAuth`, both envelope kinds tested.
+   `resolveProviderAuth`, both envelope kinds tested. Fix round (independent
+   review): PKCE (S256, shared plumbing) implemented; the
+   `postExchange` project-grant check + `project_not_granted` closed
+   reason; connect-result banner; T1's `core.ts` gained token-free logging
+   on every refresh-failure path + a persist-after-vendor-success test.
 3. **W3-T3:** Sentry's Public Integration adapter, `installationId` handling,
    `lib/evidence/sentry.ts` switched over.
 4. **W3-T4:** token-only sheet copy for the five providers that stay

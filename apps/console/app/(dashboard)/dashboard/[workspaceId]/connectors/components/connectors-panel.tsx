@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Radio, AlertCircle } from "lucide-react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Radio, AlertCircle, CheckCircle2, X } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { ConnectorSheet } from "./connector-sheet";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
@@ -12,6 +13,7 @@ import {
   type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
+import { OAUTH_ERROR_REASONS, type OauthErrorReason } from "../../../../../../lib/oauth/redirect";
 
 /**
  * The Connectors page (Connectors UX v2, Track A — the owner's "the design
@@ -37,6 +39,96 @@ import {
  */
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
+
+// --------------------------------------------------------------------------- //
+// OAuth connect result banner (W3-T2 fix round, review Finding #1) — reads
+// the OAuth callback route's own `?connected=<provider>` /
+// `?oauth_error=<reason>` redirect params (`lib/oauth/redirect.ts`, T1) and
+// surfaces them as a dismissible banner. T1 shipped the redirect but NOTHING
+// ever read these params — every prior connect attempt (success or any of
+// the six original failure reasons) landed back on this page with zero
+// visible feedback beyond the connector's own state quietly changing. Closed
+// here rather than left unsurfaced, specifically because the NEW
+// `project_not_granted` reason (this fix round) needs a legible "what do I
+// do now" — the coordinator's own ask for this reason's "sheet copy" is
+// interpreted here as this banner: the sheet itself is closed by the time
+// the browser lands back on this page (it navigated away to the vendor's
+// consent screen), so there is no open sheet to caption at redirect time.
+// Every reason (all seven, generically off the closed `OAUTH_ERROR_REASONS`
+// set — never hand-listing them a second time) gets a short, calm sentence;
+// unrecognized/missing params render nothing.
+// --------------------------------------------------------------------------- //
+
+const OAUTH_ERROR_MESSAGES: Record<OauthErrorReason, string> = {
+  state_invalid:
+    "That connect link expired, was already used, or didn't match your session — click Connect again to start a fresh one.",
+  provider_unknown: "That connector isn't recognized on this deployment.",
+  provider_unconfigured:
+    "OAuth isn't set up for this connector on this deployment yet — use an API token instead.",
+  denied: "The request was declined on the provider's own consent screen — nothing was connected.",
+  exchange_failed: "Couldn't complete the connection with the provider — try Connect again in a moment.",
+  store_failed: "The connection succeeded but couldn't be saved here — try Connect again.",
+  project_not_granted:
+    "The project(s) granted during authorization don't match what's configured here — click Connect again and select the matching project, or update the project ID field below.",
+};
+
+function capitalize(value: string): string {
+  return value.length > 0 ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+/** The `useSearchParams()`-reading piece, isolated so it can sit inside its
+ * own `<Suspense>` boundary (Next.js App Router requirement for any Client
+ * Component calling `useSearchParams()`) without wrapping the whole panel. */
+function OauthResultBanner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [dismissed, setDismissed] = useState(false);
+
+  const connectedProvider = searchParams.get("connected");
+  const errorParam = searchParams.get("oauth_error");
+  const errorReason: OauthErrorReason | null =
+    errorParam !== null && (OAUTH_ERROR_REASONS as readonly string[]).includes(errorParam)
+      ? (errorParam as OauthErrorReason)
+      : null;
+
+  // Strips the query params on dismiss so a later refresh of this same page
+  // doesn't re-show a stale result.
+  const dismiss = useCallback(() => {
+    setDismissed(true);
+    router.replace(pathname);
+  }, [router, pathname]);
+
+  if (dismissed || (!connectedProvider && !errorReason)) return null;
+
+  return (
+    <div
+      role="status"
+      className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs leading-relaxed ${
+        errorReason
+          ? "border-[var(--red-09)]/30 bg-[var(--red-09)]/10 text-[var(--red-11)]"
+          : "border-[var(--green-09)]/30 bg-[var(--green-09)]/10 text-[var(--green-11)]"
+      }`}
+    >
+      {errorReason ? (
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+      ) : (
+        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+      )}
+      <p className="flex-1">
+        {errorReason ? OAUTH_ERROR_MESSAGES[errorReason] : `${capitalize(connectedProvider!)} connected.`}
+      </p>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Dismiss"
+        className="shrink-0 rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
 
 // --------------------------------------------------------------------------- //
 // A fixed-height tile — every provider, in every section, is dimensionally
@@ -230,6 +322,10 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <Suspense fallback={null}>
+        <OauthResultBanner />
+      </Suspense>
+
       {!loading && !error && connectors.length > 0 && (
         <HeartbeatStatusHeader connectors={connectors} />
       )}

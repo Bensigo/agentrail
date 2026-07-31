@@ -364,6 +364,22 @@ export interface ConnectorConfig {
    * `ConnectorRowView`.
    */
   oauthUserId?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T2 fix round (independent review, PKCE
+   * upgrade): the PKCE (RFC 7636) `code_verifier` minted alongside `state`
+   * at link time (`lib/oauth/pkce.ts`'s `generateCodeVerifier`) — stored
+   * here so the SAME surgical jsonb patch that already carries
+   * `oauthState`/`oauthStateExpiresAt`/`oauthUserId` carries this too, no
+   * new storage mechanism. `mintConnectorOauthState`'s new optional 4th
+   * argument writes it; `consumeConnectorOauthState` reads it back out
+   * (deliberately NOT cleared on consume, same disclosed simplification as
+   * {@link oauthUserId} — no further use once read, superseded by the next
+   * mint's own patch regardless) so the callback route can hand it to
+   * `adapter.exchange()`'s new optional `codeVerifier` field. Same two-tier
+   * visibility as {@link oauthState}: preserved across an unrelated config
+   * write, never surfaced in any `ConnectorRowView`.
+   */
+  oauthPkceVerifier?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

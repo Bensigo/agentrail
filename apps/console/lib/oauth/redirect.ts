@@ -13,9 +13,21 @@
  *
  * `oauth_error` is a CLOSED set (plan pin: "never echoed vendor text") —
  * the callback never forwards a vendor's own error string into the redirect
- * query string, only one of these six fixed reasons. Mirrors
- * `lib/evidence/types.ts`'s `EvidenceDegradationReason` closed-set pattern
- * (a type + a matching runtime array) one directory over.
+ * query string, only one of these fixed reasons (seven as of the W3-T2 fix
+ * round's `project_not_granted`). Mirrors `lib/evidence/types.ts`'s
+ * `EvidenceDegradationReason` closed-set pattern (a type + a matching
+ * runtime array) one directory over.
+ *
+ * `project_not_granted` (W3-T2 fix round, independent review Finding #1,
+ * `.superpowers/sdd/review-W3T2.md`): an adapter's `postExchange` hook
+ * (`types.ts`) caught the vendor's OAuth grant NOT covering the project/
+ * resource the workspace already has configured — e.g. Railway's
+ * `project:viewer` scope lets the user pick which project(s) to share on
+ * RAILWAY's OWN consent screen, independently of this workspace's stored
+ * `railwayProjectId`; without this check, a mismatch could silently
+ * connect and later render as an honest-looking-but-wrong "no deployments"
+ * on every evidence query rather than a legible error at connect time. The
+ * fix (via `postExchange`) closes it BEFORE the credential is ever stored.
  */
 
 export type OauthErrorReason =
@@ -24,7 +36,8 @@ export type OauthErrorReason =
   | "provider_unconfigured"
   | "denied"
   | "exchange_failed"
-  | "store_failed";
+  | "store_failed"
+  | "project_not_granted";
 
 /** Every {@link OauthErrorReason}, for runtime membership checks / tests. */
 export const OAUTH_ERROR_REASONS: readonly OauthErrorReason[] = [
@@ -34,6 +47,7 @@ export const OAUTH_ERROR_REASONS: readonly OauthErrorReason[] = [
   "denied",
   "exchange_failed",
   "store_failed",
+  "project_not_granted",
 ];
 
 /** The connectors page, `?connected=<provider>` — the plan's pinned success

@@ -6,8 +6,15 @@ import {
   setConnectorSecret,
   serializeOauthEnvelope,
   getWorkspaceMembership,
+  getConnector,
+  upsertConnector,
 } from "@agentrail/db-postgres";
-import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../lib/oauth/types";
+import {
+  oauthAdapterFor,
+  oauthConfigFor,
+  type OauthEnvelope,
+  type PostExchangeResult,
+} from "../../../../../../../lib/oauth/types";
 import {
   connectedRedirectUrl,
   oauthCallbackUri,
@@ -99,12 +106,34 @@ const ADMIN_ROLES = ["owner", "admin"];
  *      only distinguishes "did it throw") -> `exchange_failed`, logged
  *      server-side (provider + workspace + a fixed message ONLY — never
  *      the caught error object, which could carry a response body
- *      containing token material; mirrors slack's own caution).
- *   9. Persisting the rotated envelope (`setConnectorSecret`) throws ->
- *      `store_failed`, logged the same way. The exchange itself DID
- *      succeed here — a real credential was minted and then dropped, our
- *      own infra's fault, not the vendor's.
- *   10. Success -> the plan's pinned `?connected=<provider>` redirect.
+ *      containing token material; mirrors slack's own caution). PKCE
+ *      (W3-T2 fix round): `code_verifier` (from the consumed state, if the
+ *      minting adapter requested PKCE) rides alongside `code`/`redirectUri`
+ *      into this SAME call — an adapter that required a challenge at
+ *      authorize time throws here if it comes back missing, landing on
+ *      this identical `exchange_failed` branch (no new reason needed).
+ *   9. `adapter.postExchange()` (W3-T2 fix round, OPTIONAL — absent for a
+ *      provider with nothing to reconcile) runs NEXT, before anything is
+ *      persisted: `{ok:false, reason}` (e.g. Railway's `project_not_granted`
+ *      when the OAuth grant doesn't cover the workspace's configured
+ *      project) fails the connect with THAT specific closed reason,
+ *      credential never stored; a THROW (the adapter's own verification
+ *      call erroring) is treated exactly like an `exchange()` throw ->
+ *      `exchange_failed`, logged the same value-free way. See
+ *      `lib/oauth/types.ts`'s `postExchange` doc-comment for the full
+ *      contract.
+ *   10. Persisting the rotated envelope (`setConnectorSecret`) throws ->
+ *      `store_failed`, logged the same way. The exchange (and any
+ *      postExchange check) DID succeed here — a real credential was minted
+ *      and then dropped, our own infra's fault, not the vendor's.
+ *   11. Success -> the plan's pinned `?connected=<provider>` redirect. A
+ *      `postExchange`-returned `configPatch` (e.g. Railway auto-filling
+ *      `railwayProjectId` when the grant covered exactly one project) is
+ *      persisted via `upsertConnector` as a BEST-EFFORT step after the
+ *      credential write succeeds — its own failure is logged but does NOT
+ *      flip this outcome to a failure redirect; the connection is already
+ *      genuinely live and usable (see this route's own inline comment at
+ *      the call site for the full reasoning).
  */
 export async function GET(
   request: NextRequest,
@@ -142,7 +171,7 @@ export async function GET(
   if (!consumed) {
     return fail(null, "state_invalid");
   }
-  const { workspaceId, userId: mintedByUserId } = consumed;
+  const { workspaceId, userId: mintedByUserId, codeVerifier } = consumed;
 
   // TENANT BINDING (review CRITICAL-1) — see this route's own doc-comment
   // for the full attack this closes. Both checks collapse to the SAME
@@ -182,9 +211,20 @@ export async function GET(
 
   const redirectUri = oauthCallbackUri(consolePublicUrl, provider);
 
-  let envelope;
+  let envelope: OauthEnvelope;
   try {
-    envelope = await adapter.exchange({ code, redirectUri, params: extraParams });
+    envelope = await adapter.exchange({
+      code,
+      redirectUri,
+      params: extraParams,
+      // PKCE (W3-T2 fix round) — `undefined` (never `null`) when the mint
+      // never carried one, matching `ExchangeInput.codeVerifier`'s own
+      // optional-string typing; an adapter that required a challenge at
+      // authorize time (Railway) throws below if this comes back missing,
+      // landing on the SAME exchange_failed branch this catch already
+      // handles.
+      codeVerifier: codeVerifier ?? undefined,
+    });
   } catch {
     // Fixed, value-free message ONLY — never the caught error itself, which
     // could carry a response body with token material (mirrors
@@ -195,6 +235,47 @@ export async function GET(
     return fail(workspaceId, "exchange_failed");
   }
 
+  // W3-T2 fix round (review Finding #1) — see this route's own doc-comment
+  // ("ORDER OF CHECKS", step 9) and `lib/oauth/types.ts`'s `postExchange`
+  // doc-comment for the full contract. `configPatch` (if any) is applied
+  // AFTER the credential itself is safely stored, below.
+  let configPatch: Record<string, string> | undefined;
+  if (adapter.postExchange) {
+    let currentConfig: Record<string, unknown>;
+    try {
+      const current = await getConnector(workspaceId, provider);
+      // `ConnectorConfig` is a named interface (no index signature) — the
+      // cast is safe: every one of its declared fields is a string/boolean/
+      // number, each already a structural subtype of `unknown`.
+      currentConfig = (current?.config ?? {}) as Record<string, unknown>;
+    } catch {
+      console.error(
+        `[connectors/oauth/callback] failed to read the current config for postExchange (provider=${provider}, workspaceId=${workspaceId})`
+      );
+      return fail(workspaceId, "exchange_failed");
+    }
+
+    let postResult: PostExchangeResult;
+    try {
+      postResult = await adapter.postExchange({ envelope, config: currentConfig });
+    } catch {
+      // Same value-free logging discipline as the exchange() catch above —
+      // this is the adapter's OWN verification call (e.g. Railway's
+      // externalWorkspaces query) erroring, not a vendor rejection of the
+      // credential itself, but it fails the connect exactly the same way:
+      // closed, credential never stored.
+      console.error(
+        `[connectors/oauth/callback] postExchange threw (provider=${provider}, workspaceId=${workspaceId})`
+      );
+      return fail(workspaceId, "exchange_failed");
+    }
+
+    if (!postResult.ok) {
+      return fail(workspaceId, postResult.reason);
+    }
+    configPatch = postResult.configPatch;
+  }
+
   try {
     await setConnectorSecret(workspaceId, provider, serializeOauthEnvelope(envelope));
   } catch {
@@ -202,6 +283,25 @@ export async function GET(
       `[connectors/oauth/callback] failed to persist the exchanged credential (provider=${provider}, workspaceId=${workspaceId})`
     );
     return fail(workspaceId, "store_failed");
+  }
+
+  // Best-effort (W3-T2 fix round): a postExchange configPatch (e.g.
+  // Railway auto-filling railwayProjectId when the grant covered exactly
+  // one project — case (b), `lib/oauth/railway.ts`'s own doc-comment) is a
+  // convenience, not the credential itself — the connect has ALREADY
+  // genuinely succeeded above. A failure here degrades to "connected, but
+  // the project id wasn't auto-filled" — the SAME state postExchange's own
+  // case (c) deliberately produces on purpose (config left unset, existing
+  // not-configured handling applies) — never a reason to report the whole
+  // connect as failed after the credential is already safely stored.
+  if (configPatch) {
+    try {
+      await upsertConnector(workspaceId, provider, { config: configPatch });
+    } catch {
+      console.error(
+        `[connectors/oauth/callback] postExchange configPatch failed to persist (provider=${provider}, workspaceId=${workspaceId})`
+      );
+    }
   }
 
   return NextResponse.redirect(connectedRedirectUrl(request.url, workspaceId, provider), {

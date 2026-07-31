@@ -24,6 +24,7 @@ import {
   mintConnectorOauthState,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
+import { computeCodeChallengeS256 } from "../../../../../../../../lib/oauth/pkce";
 
 /**
  * POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link (W3-T1, OAuth
@@ -55,8 +56,16 @@ function params() {
 
 const fakeAdapter = {
   provider: "railway",
-  authorizeUrl: ({ state, redirectUri }: { state: string; redirectUri: string }) =>
-    `https://railway.com/oauth/authorize?client_id=cid&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`,
+  authorizeUrl: ({
+    state,
+    redirectUri,
+    codeChallenge,
+  }: {
+    state: string;
+    redirectUri: string;
+    codeChallenge?: string;
+  }) =>
+    `https://railway.com/oauth/authorize?client_id=cid&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}&code_challenge=${codeChallenge ?? ""}`,
   exchange: vi.fn(),
   refresh: vi.fn(),
 };
@@ -138,12 +147,48 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
     );
     // CRITICAL-1 (W3-T1 fix round): the state binds the MINTING session's
     // user id — the callback route requires the redeeming session to match.
-    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", USER);
+    // W3-T2 fix round (PKCE upgrade): a 4th arg, the minted code_verifier,
+    // is now always present too (asserted precisely in its own describe
+    // block below — `expect.any(String)` here since it's random per call).
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", USER, expect.any(String));
   });
 
   it("binds the CURRENT session's user id, not some other id — a different admin's own click mints their OWN binding", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "different-admin-user" } } as never);
     await POST(req({ provider: "railway" }), params());
-    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", "different-admin-user");
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", "different-admin-user", expect.any(String));
+  });
+
+  // -----------------------------------------------------------------------
+  // W3-T2 fix round (PKCE upgrade) — a code_verifier is minted for EVERY
+  // connect attempt and its S256 challenge is handed to the adapter.
+  // -----------------------------------------------------------------------
+  describe("PKCE (W3-T2 fix round)", () => {
+    it("mints a code_verifier and passes mintConnectorOauthState's own 4th arg through unchanged", async () => {
+      await POST(req({ provider: "railway" }), params());
+      const call = vi.mocked(mintConnectorOauthState).mock.calls[0]!;
+      const codeVerifier = call[3] as string;
+      expect(typeof codeVerifier).toBe("string");
+      expect(codeVerifier.length).toBeGreaterThan(0);
+    });
+
+    it("passes a codeChallenge to adapter.authorizeUrl that is the S256 hash of the SAME verifier minted alongside state", async () => {
+      const res = await POST(req({ provider: "railway" }), params());
+      expect(res.status).toBe(200);
+
+      const call = vi.mocked(mintConnectorOauthState).mock.calls[0]!;
+      const mintedVerifier = call[3] as string;
+      const expectedChallenge = computeCodeChallengeS256(mintedVerifier);
+
+      const body = await res.json();
+      expect(body.url).toContain(`code_challenge=${expectedChallenge}`);
+    });
+
+    it("mints a DIFFERENT verifier (and therefore a different challenge) on every call — never reused across connect attempts", async () => {
+      await POST(req({ provider: "railway" }), params());
+      await POST(req({ provider: "railway" }), params());
+      const [firstCall, secondCall] = vi.mocked(mintConnectorOauthState).mock.calls;
+      expect(firstCall![3]).not.toBe(secondCall![3]);
+    });
   });
 });

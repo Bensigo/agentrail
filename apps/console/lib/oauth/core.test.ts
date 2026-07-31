@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mirrors railway.test.ts's mocking idiom (mock the package's named exports
 // directly) — resolveProviderAuth's only I/O is through these three.
@@ -150,6 +150,188 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
       reason: "unauthorized",
     });
     expect(mockSetConnectorSecret).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------
+  // W3-T2 fix round — folded in from the review's own scope note (two T1
+  // gaps outside this task's original diff, explicitly pulled into this
+  // stack by the coordinator rather than left as a separate follow-up):
+  // the vendor-succeeds/persist-fails race, and token-free logging on
+  // every refresh-failure catch.
+  // -------------------------------------------------------------------
+  describe("vendor refresh succeeds but persisting the rotated envelope fails (W3-T2 fix round)", () => {
+    // `vi.clearAllMocks()` (the top-level `beforeEach`) clears call history
+    // but NOT a mock's configured implementation — `mockSetConnectorSecret
+    // .mockRejectedValue(...)` inside this block's own tests would otherwise
+    // leak forward into whichever test runs next in file order (several
+    // pre-existing tests below rely on `mockSetConnectorSecret` already
+    // being configured to succeed, without re-setting it themselves).
+    // Restoring a working default after every test in THIS block keeps that
+    // property intact for everything that follows.
+    afterEach(() => {
+      mockSetConnectorSecret.mockResolvedValue({
+        provider: "reset-after-persist-fail-tests" as never,
+        enabled: true,
+        config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+        hasSecret: true,
+        updatedAt: null,
+      });
+    });
+
+    it("degrades to unauthorized — the vendor already rotated (the OLD refresh token is now dead per most vendors' own semantics), but our own infra failed to persist the new one", async () => {
+      const stale = expiringEnvelope();
+      const rotated: OauthEnvelope = { access: "acc-rotated", refresh: "ref-rotated", expiresAt: "2099-01-01T00:00:00.000Z" };
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      mockSerializeOauthEnvelope.mockReturnValue("serialized-rotated");
+      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed"));
+
+      const refreshFn = vi.fn(async () => rotated);
+      registerOauthAdapter({
+        provider: "persist-fails-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => rotated,
+        refresh: refreshFn,
+      });
+
+      await expect(resolveProviderAuth(WS, "persist-fails-provider")).resolves.toEqual({
+        ok: false,
+        reason: "unauthorized",
+      });
+    });
+
+    it("calls the vendor's refresh() exactly ONCE — never retries the now-vendor-rotated credential in a loop within the same resolve call", async () => {
+      const stale = expiringEnvelope();
+      const rotated: OauthEnvelope = { access: "acc-rotated", refresh: "ref-rotated", expiresAt: "2099-01-01T00:00:00.000Z" };
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      mockSerializeOauthEnvelope.mockReturnValue("serialized-rotated");
+      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed"));
+
+      const refreshFn = vi.fn(async () => rotated);
+      registerOauthAdapter({
+        provider: "persist-fails-no-loop-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => rotated,
+        refresh: refreshFn,
+      });
+
+      await resolveProviderAuth(WS, "persist-fails-no-loop-provider");
+      expect(refreshFn).toHaveBeenCalledTimes(1);
+    });
+
+    it("across TWO SEPARATE resolve calls, each is its own single, bounded attempt (not a tight retry loop) — both read the SAME still-stale stored credential, since the failed persist never updated it", async () => {
+      const stale = expiringEnvelope();
+      const rotated: OauthEnvelope = { access: "acc-rotated", refresh: "ref-rotated", expiresAt: "2099-01-01T00:00:00.000Z" };
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      mockSerializeOauthEnvelope.mockReturnValue("serialized-rotated");
+      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed"));
+
+      const refreshCalledWith: OauthEnvelope[] = [];
+      const refreshFn = vi.fn(async (credential: OauthEnvelope) => {
+        refreshCalledWith.push(credential);
+        return rotated;
+      });
+      registerOauthAdapter({
+        provider: "persist-fails-two-calls-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => rotated,
+        refresh: refreshFn,
+      });
+
+      const first = await resolveProviderAuth(WS, "persist-fails-two-calls-provider");
+      const second = await resolveProviderAuth(WS, "persist-fails-two-calls-provider");
+
+      expect(first).toEqual({ ok: false, reason: "unauthorized" });
+      expect(second).toEqual({ ok: false, reason: "unauthorized" });
+      expect(refreshFn).toHaveBeenCalledTimes(2);
+      // BOTH calls received the identical, still-stale credential — proof
+      // storage was never mutated by the failed persist, so the second call
+      // is a fresh, independent attempt, not a continuation of a loop.
+      expect(refreshCalledWith).toEqual([stale, stale]);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // W3-T2 fix round — token-free logging on every refresh-failure catch,
+  // matching the callback route's own asserted pattern
+  // (connectors/oauth/callback/[provider]/route.test.ts, review MINOR-2).
+  // -------------------------------------------------------------------
+  describe("failure logging (W3-T2 fix round, folded in from the reviewer's T1 scope note)", () => {
+    // Same leak-prevention reasoning as the describe block immediately
+    // above — this block's own "persist fails" logging test also
+    // configures a `mockSetConnectorSecret` rejection.
+    afterEach(() => {
+      mockSetConnectorSecret.mockResolvedValue({
+        provider: "reset-after-logging-tests" as never,
+        enabled: true,
+        config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+        hasSecret: true,
+        updatedAt: null,
+      });
+    });
+
+    it("logs a fixed, value-free message naming provider+workspaceId when getConnectorSecret itself throws — never the raw error", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockGetConnectorSecret.mockRejectedValue(
+        new Error("decrypt failed, ciphertext: enc:v1:SECRET_CIPHERTEXT_BYTES")
+      );
+      await resolveProviderAuth(WS, "logging-decrypt-fail-provider");
+      expect(errSpy).toHaveBeenCalled();
+      const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logged).toContain("logging-decrypt-fail-provider");
+      expect(logged).toContain(WS);
+      expect(logged).not.toContain("SECRET_CIPHERTEXT_BYTES");
+      errSpy.mockRestore();
+    });
+
+    it("logs a fixed, value-free message when adapter.refresh() rejects — never the raw error (which could carry a vendor response body with token material)", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const stale = expiringEnvelope();
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      registerOauthAdapter({
+        provider: "logging-refresh-reject-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => stale,
+        refresh: vi.fn(async () => {
+          throw new Error("vendor said: refresh_token=SECRET_REFRESH_VALUE is invalid");
+        }),
+      });
+
+      await resolveProviderAuth(WS, "logging-refresh-reject-provider");
+      expect(errSpy).toHaveBeenCalled();
+      const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logged).toContain("logging-refresh-reject-provider");
+      expect(logged).toContain(WS);
+      expect(logged).not.toContain("SECRET_REFRESH_VALUE");
+      errSpy.mockRestore();
+    });
+
+    it("logs a fixed, value-free message when persisting the rotated envelope fails after a successful vendor refresh — never the raw error", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const stale = expiringEnvelope();
+      const rotated: OauthEnvelope = { access: "acc-rotated", refresh: "ref-rotated", expiresAt: "2099-01-01T00:00:00.000Z" };
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      mockSerializeOauthEnvelope.mockReturnValue("serialized-rotated");
+      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed, near value: ref-rotated-SECRET"));
+      registerOauthAdapter({
+        provider: "logging-persist-fail-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => rotated,
+        refresh: vi.fn(async () => rotated),
+      });
+
+      await resolveProviderAuth(WS, "logging-persist-fail-provider");
+      expect(errSpy).toHaveBeenCalled();
+      const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(logged).toContain("logging-persist-fail-provider");
+      expect(logged).toContain(WS);
+      expect(logged).not.toContain("ref-rotated-SECRET");
+      errSpy.mockRestore();
+    });
   });
 
   it("degrades to unauthorized when no oauth adapter is registered for the provider", async () => {

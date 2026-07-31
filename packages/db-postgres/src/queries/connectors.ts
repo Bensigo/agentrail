@@ -407,6 +407,11 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
       ? { oauthStateExpiresAt: stored.oauthStateExpiresAt }
       : {}),
     ...(stored?.oauthUserId ? { oauthUserId: stored.oauthUserId } : {}),
+    // OAuth Connect Wave 3, W3-T2 fix round (PKCE upgrade) — preserved
+    // across an unrelated write for the exact same reason as
+    // oauthState/oauthStateExpiresAt/oauthUserId above; see
+    // ConnectorConfig.oauthPkceVerifier's own doc-comment.
+    ...(stored?.oauthPkceVerifier ? { oauthPkceVerifier: stored.oauthPkceVerifier } : {}),
   };
 }
 
@@ -426,6 +431,9 @@ const EPHEMERAL_CONFIG_KEYS = [
   "oauthState",
   "oauthStateExpiresAt",
   "oauthUserId",
+  // W3-T2 fix round (PKCE upgrade) — same ephemeral, server-internal-only
+  // treatment as the three above.
+  "oauthPkceVerifier",
 ] as const;
 
 function toClientSafeConfig(config: ConnectorConfig): ConnectorConfig {
@@ -786,15 +794,29 @@ const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
  * Re-minting while a prior state is still pending simply overwrites it (the
  * prior state stops working) — same one-in-flight-state tradeoff
  * `mintGithubInstallState` already accepts for its own column.
+ *
+ * `codeVerifier` (W3-T2 fix round, PKCE upgrade — optional, 4th arg):
+ * when the link route mints a PKCE `code_verifier`
+ * (`apps/console/lib/oauth/pkce.ts`), it rides in the SAME surgical jsonb
+ * patch as `state`/`expiresAt`/`userId` — one ephemeral per-attempt bag,
+ * not a second storage mechanism. Omitted (undefined) for a provider whose
+ * adapter doesn't use PKCE — the stored config simply carries no
+ * `oauthPkceVerifier` key in that case, exactly like today.
  */
 export async function mintConnectorOauthState(
   workspaceId: string,
   provider: ConnectorProvider,
-  userId: string
+  userId: string,
+  codeVerifier?: string
 ): Promise<string> {
   const state = randomBytes(OAUTH_STATE_BYTES).toString("hex");
   const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
-  const patch = sql`jsonb_build_object('oauthState', ${state}::text, 'oauthStateExpiresAt', ${expiresAt}::text, 'oauthUserId', ${userId}::text)`;
+  const patch = sql`jsonb_build_object(
+    'oauthState', ${state}::text,
+    'oauthStateExpiresAt', ${expiresAt}::text,
+    'oauthUserId', ${userId}::text,
+    'oauthPkceVerifier', ${codeVerifier ?? null}::text
+  )`;
 
   await db
     .insert(connectors)
@@ -807,13 +829,19 @@ export async function mintConnectorOauthState(
         oauthState: state,
         oauthStateExpiresAt: expiresAt,
         oauthUserId: userId,
+        ...(codeVerifier ? { oauthPkceVerifier: codeVerifier } : {}),
       },
     })
     .onConflictDoUpdate({
       target: [connectors.workspaceId, connectors.provider],
-      // Surgical merge — touches ONLY these three keys on an existing row's
+      // Surgical merge — touches ONLY these four keys on an existing row's
       // config, never replaces it wholesale. See this section's own
-      // doc-comment for why that matters.
+      // doc-comment for why that matters. `jsonb_build_object` always
+      // includes all four keys (a `null` `oauthPkceVerifier` when
+      // `codeVerifier` is omitted) so the `||` merge deterministically
+      // overwrites any STALE verifier from a prior mint attempt too — never
+      // leaves an old one behind for a provider that used to send one and
+      // no longer does.
       set: { config: sql`${connectors.config} || ${patch}`, updatedAt: new Date() },
     });
 
@@ -849,11 +877,19 @@ export async function mintConnectorOauthState(
  * `ConnectorRowView`). A row whose `oauthUserId` is somehow absent (should
  * never happen post-fix; defensive only) fails CLOSED — `null`, never a
  * partial/unbound result the callback route might mistakenly trust.
+ *
+ * Also returns `codeVerifier` (W3-T2 fix round, PKCE upgrade) — the SAME
+ * disclosed simplification as `oauthUserId` applies: not cleared by this
+ * statement's own `SET` either (no further use once read, superseded by
+ * the next mint's patch regardless), never part of the client-facing read
+ * model. `null` when the mint never carried one (a provider whose adapter
+ * doesn't use PKCE) — never a hard failure the way a missing `oauthUserId`
+ * is, since PKCE is optional per provider.
  */
 export async function consumeConnectorOauthState(
   provider: ConnectorProvider,
   state: string
-): Promise<{ workspaceId: string; userId: string } | null> {
+): Promise<{ workspaceId: string; userId: string; codeVerifier: string | null } | null> {
   const now = new Date().toISOString();
   const [row] = await db
     .update(connectors)
@@ -870,9 +906,11 @@ export async function consumeConnectorOauthState(
     )
     .returning();
   if (!row) return null;
-  const userId = (row.config as ConnectorConfig | null)?.oauthUserId;
+  const cfg = row.config as ConnectorConfig | null;
+  const userId = cfg?.oauthUserId;
   if (!userId) return null;
-  return { workspaceId: row.workspaceId, userId };
+  const codeVerifier = typeof cfg?.oauthPkceVerifier === "string" ? cfg.oauthPkceVerifier : null;
+  return { workspaceId: row.workspaceId, userId, codeVerifier };
 }
 
 /** The MCP providers whose keys are materialized into a run's codebase config. */

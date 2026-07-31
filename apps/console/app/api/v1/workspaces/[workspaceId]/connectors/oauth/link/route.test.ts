@@ -9,6 +9,12 @@ vi.mock("@agentrail/db-postgres", () => ({
   // W3-T3 fix round — session-transport pre-mint clearing (last-mint-wins
   // per user across workspaces).
   clearPendingConnectorOauthStatesForUser: vi.fn(),
+  // W3-T3 second fix round (review Finding 1) — the per-transport TTL this
+  // route selects between. A literal, not an import from the real module
+  // (this whole package is mocked) — MUST match connectors.ts's own value;
+  // the "pins the asymmetry" test in connectors.test.ts is what actually
+  // guards the real constant's value, not this mock.
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS: 10 * 60 * 1000,
 }));
 vi.mock("../../../../../../../../lib/oauth/types", () => ({
   oauthAdapterFor: vi.fn(),
@@ -26,6 +32,7 @@ import {
   isConnectorProvider,
   mintConnectorOauthState,
   clearPendingConnectorOauthStatesForUser,
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { computeCodeChallengeS256 } from "../../../../../../../../lib/oauth/pkce";
@@ -154,13 +161,26 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
     // W3-T2 fix round (PKCE upgrade): a 4th arg, the minted code_verifier,
     // is now always present too (asserted precisely in its own describe
     // block below — `expect.any(String)` here since it's random per call).
-    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", USER, expect.any(String));
+    // W3-T3 second fix round: a 5th arg (the per-transport TTL override) is
+    // now ALWAYS passed too — `undefined` for param-transport (railway),
+    // which is functionally identical to omitting it entirely
+    // (`mintConnectorOauthState`'s own default parameter applies either
+    // way — see its own describe block below for the byte-unchanged
+    // behavior proof); asserted here only so this exact-call-shape
+    // assertion matches reality.
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", USER, expect.any(String), undefined);
   });
 
   it("binds the CURRENT session's user id, not some other id — a different admin's own click mints their OWN binding", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "different-admin-user" } } as never);
     await POST(req({ provider: "railway" }), params());
-    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", "different-admin-user", expect.any(String));
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(
+      WS,
+      "railway",
+      "different-admin-user",
+      expect.any(String),
+      undefined
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -246,6 +266,34 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
       await POST(req({ provider: "railway" }), params());
       expect(clearPendingConnectorOauthStatesForUser).not.toHaveBeenCalled();
       expect(mintConnectorOauthState).toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // W3-T3 second fix round (independent review Finding 1) — per-transport
+  // TTL: mintConnectorOauthState's 5th arg. The narrower window is the one
+  // real mitigation for session-transport's disclosed artifact-interception
+  // gap (see the callback route's own "SESSION-TRANSPORT CSRF ANALYSIS").
+  // -----------------------------------------------------------------------
+  describe("per-transport TTL (W3-T3 second fix round)", () => {
+    it("passes SESSION_TRANSPORT_OAUTH_STATE_TTL_MS as the 5th arg for a 'session'-transport provider", async () => {
+      const fakeSessionAdapter = { ...fakeAdapter, stateTransport: "session" as const };
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSessionAdapter as never);
+      await POST(req({ provider: "sentry" }), params());
+      const call = vi.mocked(mintConnectorOauthState).mock.calls[0]!;
+      expect(call[4]).toBe(SESSION_TRANSPORT_OAUTH_STATE_TTL_MS);
+    });
+
+    it("passes undefined as the 5th arg for a 'param'-transport provider (railway) — mintConnectorOauthState's own default (30 min) applies", async () => {
+      await POST(req({ provider: "railway" }), params());
+      const call = vi.mocked(mintConnectorOauthState).mock.calls[0]!;
+      expect(call[4]).toBeUndefined();
+    });
+
+    it("passes undefined as the 5th arg when the adapter declares no stateTransport at all (defaults to 'param')", async () => {
+      await POST(req({ provider: "railway" }), params());
+      const call = vi.mocked(mintConnectorOauthState).mock.calls[0]!;
+      expect(call[4]).toBeUndefined();
     });
   });
 });

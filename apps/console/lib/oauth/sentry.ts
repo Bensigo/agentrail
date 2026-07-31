@@ -86,10 +86,41 @@ import type {
  * pair, across every workspace, is required — zero or multiple is the
  * SAME closed `state_invalid` reason as every other tenant-binding
  * failure, and (critically) NOTHING is consumed on an ambiguous multiple
- * match. The full CSRF-equivalence argument lives on the callback route's
- * own `stateTransport === "session"` branch (search
+ * match.
+ *
+ * HONEST SCOPE (independent review Finding 1, W3-T3 SECOND fix round —
+ * the first fix round's own claim here overclaimed "CSRF-equivalent, not
+ * weaker" without qualification): this mechanism IS equivalent to
+ * param-transport against MISDIRECTION (the phishing-style attack the
+ * whole tenant-binding gate exists to close). It is NOT equivalent —
+ * strictly weaker — against a DIFFERENT attack, artifact interception +
+ * replay: a `code`/`installationId` pair leaked independently (browser
+ * history, an access log, a pasted URL) can be redeemed by ANY unrelated
+ * party who starts their own ordinary connect attempt first (trivial —
+ * this lookup only proves "the redeemer has a pending mint of their own,"
+ * never "this specific code legitimately arose from this specific flow" —
+ * there is nothing here, or achievable here, that CAN bind the vendor
+ * artifact to a specific marker, because the flow round-trips nothing to
+ * check that correlation against). Param-transport closes this
+ * structurally (a leaked `state`+`code` pair is useless without ALSO
+ * controlling the minter's own session); session-transport cannot. Two
+ * narrowing facts, stated honestly (neither is a fix): Sentry's grant
+ * codes are ASSUMED single-use/short-lived per ordinary OAuth2 hygiene
+ * (RFC 6749 §4.1.2) but this is NOT vendor-confirmed — neither raw-fetched
+ * doc page states an explicit code TTL or single-use guarantee — so IF
+ * true, the live exploitable window is specifically "a callback that
+ * never completed" (a replay after Victim's own successful exchange dies
+ * at Sentry's end); and the pending record's own TTL bounds how long an
+ * attacker's own catch-a-leaked-artifact setup stays viable, which is why
+ * `mintConnectorOauthState`'s session-transport call site uses a
+ * DELIBERATELY SHORTER TTL (`SESSION_TRANSPORT_OAUTH_STATE_TTL_MS`, 10
+ * minutes vs. param-transport's 30) — the one real mitigation this round
+ * ships, not a claim that the gap is closed. The FULL argument (attack
+ * scenario, why a nonce cookie doesn't fix it either) lives on the
+ * callback route's own `stateTransport === "session"` branch (search
  * "SESSION-TRANSPORT CSRF ANALYSIS" there) and is mirrored in the spec
- * doc's Sentry section — not restated here to avoid two copies drifting.
+ * doc's Sentry section — that comment is canonical; this one and the spec
+ * doc point back to it rather than duplicating it.
  *
  * The link route mints the SAME state-record shape either way
  * (`mintConnectorOauthState`, `oauthState`/`oauthStateExpiresAt`/

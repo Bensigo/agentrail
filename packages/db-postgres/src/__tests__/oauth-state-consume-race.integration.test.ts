@@ -11,6 +11,7 @@ import {
   getConnector,
   clearPendingConnectorOauthStatesForUser,
   consumeConnectorOauthStateBySessionUser,
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "../queries/connectors.js";
 
 /**
@@ -346,6 +347,45 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(await consumeConnectorOauthStateBySessionUser(provider, "user-untouched")).toEqual({
           workspaceId,
           userId: "user-untouched",
+          codeVerifier: null,
+        });
+      });
+
+      // ---------------------------------------------------------------
+      // W3-T3 SECOND fix round (independent review Finding 1) —
+      // per-transport TTL, proven end-to-end against real Postgres: a
+      // session-transport mint using the shorter TTL is correctly
+      // excluded by the SAME generic expiry check
+      // consumeConnectorOauthStateBySessionUser already uses (no
+      // transport-conditional logic there — see connectors.ts's own
+      // doc-comment). Uses a negative ttlMs (already-expired the instant
+      // it's minted) rather than a real 10-minute wait, to prove the
+      // MECHANISM without a slow test.
+      // ---------------------------------------------------------------
+      it("mintConnectorOauthState's ttlMs override is honored — an already-expired (negative-ttlMs) session-transport mint resolves null, not the false-negative a hardcoded 30-min assumption would produce", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+
+        await mintConnectorOauthState(workspaceId, provider, "user-short-ttl", undefined, -1000);
+
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-short-ttl")).toBeNull();
+      });
+
+      it("a mint using SESSION_TRANSPORT_OAUTH_STATE_TTL_MS (10 min) still resolves normally when unexpired — the shorter default doesn't break the happy path", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+
+        await mintConnectorOauthState(
+          workspaceId,
+          provider,
+          "user-normal-short-ttl",
+          undefined,
+          SESSION_TRANSPORT_OAUTH_STATE_TTL_MS
+        );
+
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-normal-short-ttl")).toEqual({
+          workspaceId,
+          userId: "user-normal-short-ttl",
           codeVerifier: null,
         });
       });

@@ -2346,6 +2346,11 @@ export {
   // `state` token; see `connectors.ts`'s own doc-comment on both.
   clearPendingConnectorOauthStatesForUser,
   consumeConnectorOauthStateBySessionUser,
+  // W3-T3 second fix round (review Finding 1) — the per-transport TTL the
+  // link route selects between when minting; see connectors.ts's own
+  // doc-comment on both constants.
+  OAUTH_STATE_TTL_MS,
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
   type ConnectorUpdate,
   type EnabledConnectorRow,
 } from "./connectors.js";

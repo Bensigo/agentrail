@@ -413,6 +413,14 @@ routes that make a provider adapter live), pending a coordinator decision
 on how to proceed. **The ruling: do not defer, do not ship stateless —
 implement a session-based mechanism.** Sentry is live as of this fix round.
 
+**SECOND fix round (independent review Finding 1, `.superpowers/sdd/
+review-W3T3.md`):** the mechanism and CSRF-analysis text below were
+corrected — the original text overclaimed "CSRF-equivalent, not weaker"
+without qualifying WHICH attack shape that covers. See the CSRF analysis
+subsection below for the honest scope (equivalent against misdirection,
+genuinely weaker against artifact interception + replay) and the
+per-transport TTL shipped as the one real mitigation.
+
 **The mechanism.** `OauthProviderAdapter` gains an ADDITIVE, optional
 `stateTransport?: "param" | "session"` capability flag (mirrors
 `postExchange`'s own additive-capability precedent). `"param"` (the
@@ -443,13 +451,19 @@ every workspace; zero or multiple is the SAME closed `state_invalid`
 reason as every other tenant-binding failure, and critically, **nothing is
 consumed on an ambiguous multiple match**.
 
-**CSRF-equivalence argument** (why this is not a weaker substitute forced
-by necessity, but a differently-keyed mechanism achieving the same
-property): walk the SAME misdirection attack the "Callback" section above
-describes through to completion under session-transport. An attacker,
-legitimately owner/admin of their own Workspace A, mints a state under
-THEIR OWN session and sends the resulting Sentry authorize URL to a Victim
-as a phishing pretext.
+**CSRF analysis — honestly scoped (independent review Finding 1, W3-T3
+SECOND fix round).** The FIRST fix round's own text here claimed
+session-transport is "CSRF-equivalent, not a weaker substitute forced by
+necessity." That claim is correct for exactly one attack shape and was
+wrong to state without qualification — it is genuinely weaker against a
+second, materially different one, never previously discussed. Both are
+covered below.
+
+*Equivalent against MISDIRECTION* — walk the SAME phishing attack the
+"Callback" section above describes through to completion under
+session-transport. An attacker, legitimately owner/admin of their own
+Workspace A, mints a state under THEIR OWN session and sends the resulting
+Sentry authorize URL to a Victim as a phishing pretext.
 - If Victim completes Sentry's consent screen while NOT signed into
   AgentRail, the callback's session requirement already rejects
   (`state_invalid`) before anything is resolved — same as today.
@@ -469,7 +483,61 @@ as a phishing pretext.
   this specific `code`/`installationId` belongs to, so picking one would
   risk silently connecting the WRONG workspace's attempt. A disclosed UX
   tradeoff (finish one connect attempt before starting a second, or let
-  the first's 30-minute TTL lapse), not a security hole.
+  the first's TTL lapse), not a security hole.
+
+*NOT equivalent — strictly weaker — against ARTIFACT INTERCEPTION +
+REPLAY*, a different attack shape entirely: Victim's own browser is
+legitimately redirected to `?code=X&installationId=Y` by Sentry. Before
+that request completes (tab closed, network blip, or it just hasn't
+happened yet), the URL leaks independently — browser history on a shared
+machine, an access log, a pasted support-ticket screenshot. An unrelated
+Attacker, with zero relationship to Victim, starts their OWN ordinary
+connect attempt (trivial — anyone can mint a pending record for
+themselves), then hits the callback with the LEAKED `code`/`installationId`
+instead of their own. The lookup resolves — correctly, BY DESIGN — to
+Attacker's own pending record (exactly one candidate, exactly as intended
+for a legitimate connect). `exchange()` is then called with the leaked
+artifact; if Sentry still honors it, VICTIM's real Sentry installation
+lands in ATTACKER's workspace. **Root cause: nothing here (or achievable
+here) binds the specific `code`/`installationId` VALUE to the specific
+pending record being resolved** — the lookup only proves "the redeemer has
+a pending mint of their own," true for any attacker willing to start a
+real connect attempt first. Param-transport closes this structurally (a
+leaked `state`+`code` pair is useless without ALSO controlling the
+minter's own session — account takeover, at which point OAuth binding is
+moot); session-transport cannot, because the vendor round-trips nothing to
+check that correlation against. A first-party nonce cookie was considered
+and rejected as a fix: the attacker's own browser carries the attacker's
+OWN valid cookie from their OWN legitimate mint, satisfying it just as
+well — a cookie can only prove "this pending record belongs to the browser
+presenting it" (which session/userId binding already establishes), never
+"this code legitimately arose from this flow." Inherent to tenant binding
+built on a vendor redirect that echoes nothing back, not a bug in this
+implementation.
+
+Two narrowing facts, stated honestly — neither is a fix:
+1. Sentry's grant codes are ASSUMED single-use and short-lived, per
+   ordinary OAuth2 hygiene (RFC 6749 §4.1.2: a code "MUST NOT" be used more
+   than once and "MUST expire shortly") — but this is NOT vendor-confirmed:
+   neither raw-fetched doc page states an explicit code TTL or single-use
+   guarantee for this endpoint. IF true, a replay attempted AFTER Victim's
+   own callback already completed successfully dies at Sentry's OWN
+   exchange endpoint (an already-used code) — the live exploitable window
+   is specifically "a callback that never completed," not an arbitrarily
+   long one.
+2. The pending record's own TTL bounds how long an attacker's own
+   catch-a-leaked-artifact setup stays viable. **The one real mitigation
+   this round ships:** session-transport pending records now use a
+   DELIBERATELY SHORTER TTL than param-transport's default —
+   `SESSION_TRANSPORT_OAUTH_STATE_TTL_MS` (10 minutes) vs.
+   `OAUTH_STATE_TTL_MS` (30, unchanged for param-transport, which has no
+   equivalent gap to shrink). Enforced entirely at mint time (the link
+   route passes the shorter TTL into `mintConnectorOauthState`'s new
+   optional 5th argument only for `stateTransport === "session"`) — neither
+   consume function needs, or has, any transport-conditional logic of its
+   own; both simply compare the already-shorter stored
+   `oauthStateExpiresAt` against `now`, exactly as before. This narrows the
+   practical exploit window; it does not close the gap.
 
 **Atomicity under concurrency** — proven against a REAL Postgres, not just
 argued: `consumeConnectorOauthStateBySessionUser` runs `SELECT ... FOR

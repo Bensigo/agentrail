@@ -813,20 +813,49 @@ export async function getConnectorSecret(
 // --------------------------------------------------------------------------- //
 
 const OAUTH_STATE_BYTES = 24;
-const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
+/** Default TTL — param-transport (Railway): state round-trips through the
+ * vendor, is minter-bound, and single-use, so a long-lived pending window
+ * is low-risk (an unrelated party can't do anything with a leaked
+ * `state`+`code` pair without ALSO controlling the minting user's own
+ * session). See {@link SESSION_TRANSPORT_OAUTH_STATE_TTL_MS} for why
+ * session-transport does NOT get this same 30-minute default. */
+export const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
+/**
+ * W3-T3 second fix round (independent review Finding 1, `.superpowers/sdd/
+ * review-W3T3.md`) — a DELIBERATELY SHORTER TTL for session-transport
+ * providers (Sentry). Session-transport tenant binding does not (and
+ * structurally cannot, given the vendor round-trips nothing) verify that
+ * the `code`/`installationId` presented at the callback actually
+ * originated from THIS pending record — it only verifies "the redeeming
+ * session has exactly one pending mint of its own." A leaked
+ * `code`+`installationId` (browser history, an access log, a pasted URL)
+ * can therefore be redeemed by ANY unrelated user who starts their own
+ * ordinary connect attempt and presents the leaked artifact instead of
+ * their own — the pending record's own TTL is the ONLY thing bounding how
+ * long that unrelated user's own "catch" window stays open (see
+ * `connectors/oauth/callback/[provider]/route.ts`'s own doc-comment,
+ * "SESSION-TRANSPORT CSRF ANALYSIS", for the full honest scoping of this
+ * residual risk — param-transport has no equivalent gap, hence no
+ * equivalent need to shrink its own window). 10 minutes (a third of
+ * param-transport's 30) meaningfully narrows the practical exploit window
+ * without being so short it routinely expires on a legitimate user who
+ * pauses mid-flow (e.g. picking an org on Sentry's own consent screen).
+ */
+export const SESSION_TRANSPORT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Mint a fresh single-use OAuth state for (workspaceId, provider), bound to
  * the MINTING user's id (review CRITICAL-1 — see this section's own
- * doc-comment, "TENANT-BINDING FIX"), and store it (with its 30-minute
- * expiry) into that row's `config`, creating the row first if this is the
- * workspace's first-ever attempt at this provider (`enabled: true`,
- * otherwise-default config — mirrors `upsertConnector`'s own
- * create-on-first-touch default; a real credential is only ever written
- * later, by `setConnectorSecret`, so this alone never flips `hasSecret`).
- * Re-minting while a prior state is still pending simply overwrites it (the
- * prior state stops working) — same one-in-flight-state tradeoff
- * `mintGithubInstallState` already accepts for its own column.
+ * doc-comment, "TENANT-BINDING FIX"), and store it (with its expiry —
+ * {@link OAUTH_STATE_TTL_MS} by default, {@link ttlMs} overrides it) into
+ * that row's `config`, creating the row first if this is the workspace's
+ * first-ever attempt at this provider (`enabled: true`, otherwise-default
+ * config — mirrors `upsertConnector`'s own create-on-first-touch default; a
+ * real credential is only ever written later, by `setConnectorSecret`, so
+ * this alone never flips `hasSecret`). Re-minting while a prior state is
+ * still pending simply overwrites it (the prior state stops working) — same
+ * one-in-flight-state tradeoff `mintGithubInstallState` already accepts for
+ * its own column.
  *
  * `codeVerifier` (W3-T2 fix round, PKCE upgrade — optional, 4th arg):
  * when the link route mints a PKCE `code_verifier`
@@ -835,15 +864,29 @@ const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
  * not a second storage mechanism. Omitted (undefined) for a provider whose
  * adapter doesn't use PKCE — the stored config simply carries no
  * `oauthPkceVerifier` key in that case, exactly like today.
+ *
+ * `ttlMs` (W3-T3 second fix round, optional 5th arg — additive, defaults to
+ * {@link OAUTH_STATE_TTL_MS} so every EXISTING call site, and every
+ * param-transport provider, is byte-unchanged): the link route passes
+ * {@link SESSION_TRANSPORT_OAUTH_STATE_TTL_MS} for a `stateTransport:
+ * "session"` provider — see that constant's own doc-comment for why. The
+ * shorter window is enforced ENTIRELY here, at mint time, by storing an
+ * earlier absolute `oauthStateExpiresAt` — neither
+ * `consumeConnectorOauthState` nor `consumeConnectorOauthStateBySessionUser`
+ * needs (or has) any transport-conditional logic of their own: both simply
+ * compare the STORED timestamp against `now`, generically, exactly as
+ * before this fix round. The asymmetry lives in ONE place (this function's
+ * own default), not duplicated at every read site.
  */
 export async function mintConnectorOauthState(
   workspaceId: string,
   provider: ConnectorProvider,
   userId: string,
-  codeVerifier?: string
+  codeVerifier?: string,
+  ttlMs: number = OAUTH_STATE_TTL_MS
 ): Promise<string> {
   const state = randomBytes(OAUTH_STATE_BYTES).toString("hex");
-  const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
   const patch = sql`jsonb_build_object(
     'oauthState', ${state}::text,
     'oauthStateExpiresAt', ${expiresAt}::text,

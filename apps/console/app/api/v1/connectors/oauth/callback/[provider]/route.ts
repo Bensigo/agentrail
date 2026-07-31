@@ -67,11 +67,20 @@ const ADMIN_ROLES = ["owner", "admin"];
  * `stateTransport` doc-comment): the paragraph above describes
  * `"param"`-transport tenant binding specifically (state carries the bound
  * minter id, checked against the redeeming session). A provider whose
- * vendor redirect cannot carry `state` AT ALL needs a DIFFERENT mechanism
- * to achieve the SAME property — see step 5 below ("SESSION-TRANSPORT CSRF
- * ANALYSIS") for the full, separately-argued equivalence; it is not weaker,
- * just differently keyed (by the redeeming session's own user id instead
- * of an echoed token).
+ * vendor redirect cannot carry `state` AT ALL needs a DIFFERENT mechanism —
+ * see step 5 below ("SESSION-TRANSPORT CSRF ANALYSIS") for the full,
+ * HONESTLY SCOPED analysis (independent review Finding 1, W3-T3 SECOND fix
+ * round: the first fix round's own claim here overclaimed "CSRF-equivalent,
+ * not weaker" without qualification — corrected below). Session-transport
+ * IS equivalent to param-transport against MISDIRECTION (the classic
+ * phishing-style CSRF vector this whole tenant-binding mechanism exists to
+ * close). It is NOT equivalent — strictly weaker — against a DIFFERENT
+ * attack shape, artifact interception + replay, which param-transport's
+ * minter-bound single-use `state` closes structurally and session-transport
+ * cannot, because the vendor round-trips nothing to bind a specific
+ * `code`/`installationId` to a specific pending record. See step 5 for the
+ * concrete scenario, why no better code-level fix exists, and the one
+ * mitigation that is real (a deliberately shorter pending-record TTL).
  *
  * ORDER OF CHECKS (each its own `oauth_error` reason, closed set, NEVER the
  * vendor's own error text, and NEVER a detail-leaking distinction between
@@ -104,44 +113,113 @@ const ADMIN_ROLES = ["owner", "admin"];
  *        - `"param"`: `consumeConnectorOauthState(provider, state)` finds
  *          no live match (unknown / expired / already-consumed).
  *        - `"session"`: `consumeConnectorOauthStateBySessionUser(provider,
- *          session.user.id)` — SESSION-TRANSPORT CSRF ANALYSIS (why this is
- *          CSRF-EQUIVALENT to the param-transport mechanism, not a weaker
- *          substitute forced by necessity): tenant binding here is "does
- *          the REDEEMING session's own user id have EXACTLY ONE pending
- *          record for this provider," not "does the redeeming session
- *          match a token the vendor echoed back" (there is none to echo).
- *          Walk the misdirection attack from `mintConnectorOauthState`'s
- *          own doc-comment through to completion under this mechanism: an
- *          attacker mints a state under THEIR OWN session (any user can
- *          mint for any workspace they admin) and sends the resulting
- *          authorize URL to a Victim as a phishing pretext.
- *            - If Victim completes Sentry's consent screen while NOT
- *              signed into AgentRail, step 4 above already rejects
- *              (`state_invalid`, nothing resolved) — same as today.
- *            - If Victim IS signed into AgentRail, THIS step resolves by
- *              VICTIM's own session user id — the pending record was
- *              minted under the ATTACKER's user id, so the lookup finds
- *              ZERO matches for Victim. The grant Sentry just issued is
- *              discarded, never exchanged, never lands in the attacker's
- *              workspace. Symmetrically, an attacker cannot complete a
- *              VICTIM-minted flow either — they'd need the victim's own
- *              session, which they don't have.
- *            - The attacker CAN complete their OWN minted flow under
- *              their OWN session — that is just a normal, legitimate
- *              connect, not an attack.
- *            - Same-user, two-workspace ambiguity (this one user has TWO
- *              pending sentry attempts open at once — e.g. two tabs, two
- *              workspaces they admin) resolves to MULTIPLE candidates ->
- *              REJECTED, and — critically —
- *              `consumeConnectorOauthStateBySessionUser` consumes NEITHER
- *              (see that function's own doc-comment,
- *              `@agentrail/db-postgres`): there is no vendor-echoed token
- *              here to disambiguate which pending attempt this specific
- *              `code`/`installationId` belongs to, so picking one would
- *              risk silently connecting the WRONG workspace. A disclosed
- *              UX tradeoff (finish one connect attempt before starting a
- *              second), not a security hole — this reasoning is mirrored
- *              in the spec doc's Sentry section.
+ *          session.user.id)` — SESSION-TRANSPORT CSRF ANALYSIS (independent
+ *          review Finding 1, W3-T3 SECOND fix round — honestly scoped, not
+ *          a blanket "equivalent" claim): tenant binding here is "does the
+ *          REDEEMING session's own user id have EXACTLY ONE pending record
+ *          for this provider," not "does the redeeming session match a
+ *          token the vendor echoed back" (there is none to echo).
+ *            EQUIVALENT AGAINST MISDIRECTION — walk the phishing attack
+ *            from `mintConnectorOauthState`'s own doc-comment through to
+ *            completion under this mechanism: an attacker mints a state
+ *            under THEIR OWN session (any user can mint for any workspace
+ *            they admin) and sends the resulting authorize URL to a Victim
+ *            as a phishing pretext.
+ *              - If Victim completes Sentry's consent screen while NOT
+ *                signed into AgentRail, step 4 above already rejects
+ *                (`state_invalid`, nothing resolved) — same as today.
+ *              - If Victim IS signed into AgentRail, THIS step resolves by
+ *                VICTIM's own session user id — the pending record was
+ *                minted under the ATTACKER's user id, so the lookup finds
+ *                ZERO matches for Victim. The grant Sentry just issued is
+ *                discarded, never exchanged, never lands in the attacker's
+ *                workspace. Symmetrically, an attacker cannot complete a
+ *                VICTIM-minted flow either — they'd need the victim's own
+ *                session, which they don't have.
+ *              - The attacker CAN complete their OWN minted flow under
+ *                their OWN session — that is just a normal, legitimate
+ *                connect, not an attack.
+ *              - Same-user, two-workspace ambiguity (this one user has TWO
+ *                pending sentry attempts open at once — e.g. two tabs, two
+ *                workspaces they admin) resolves to MULTIPLE candidates ->
+ *                REJECTED, and — critically —
+ *                `consumeConnectorOauthStateBySessionUser` consumes NEITHER
+ *                (see that function's own doc-comment,
+ *                `@agentrail/db-postgres`): there is no vendor-echoed token
+ *                here to disambiguate which pending attempt this specific
+ *                `code`/`installationId` belongs to, so picking one would
+ *                risk silently connecting the WRONG workspace. A disclosed
+ *                UX tradeoff (finish one connect attempt before starting a
+ *                second), not a security hole.
+ *            NOT EQUIVALENT — STRICTLY WEAKER — AGAINST ARTIFACT
+ *            INTERCEPTION + REPLAY, a DIFFERENT attack shape the first fix
+ *            round's own "CSRF-equivalent" claim never even discussed.
+ *            Concrete scenario: Victim's own browser is legitimately
+ *            redirected to `?code=X&installationId=Y` by Sentry. Before
+ *            that request completes — tab closed, network blip, or it just
+ *            hasn't happened yet — the URL leaks independently (browser
+ *            history on a shared machine, an access log, a pasted support-
+ *            ticket screenshot). An unrelated Attacker, with ZERO
+ *            relationship to Victim, starts their OWN ordinary connect
+ *            attempt (trivial — anyone can mint a pending record for
+ *            themselves), then hits this callback with the LEAKED
+ *            `code`/`installationId` instead of their own. This step
+ *            resolves — correctly, BY DESIGN — to Attacker's own pending
+ *            record (exactly one candidate, exactly as intended for a
+ *            legitimate connect). `adapter.exchange()` is then called with
+ *            the leaked artifact, using the server's own client
+ *            credentials; if Sentry still honors it, VICTIM's real Sentry
+ *            installation lands in ATTACKER's workspace. THE ROOT CAUSE:
+ *            nothing here (or achievable here) binds the specific
+ *            `code`/`installationId` VALUE to the specific pending record
+ *            being resolved — the lookup only proves "the redeemer has a
+ *            pending mint of their own," which is true for literally any
+ *            attacker willing to start a real connect attempt first. This
+ *            is EXACTLY where param-transport differs, structurally, not
+ *            just by degree: a leaked `state`+`code` pair is USELESS to an
+ *            unrelated party, because `state` is minter-bound and step 6
+ *            below requires `session.user.id === mintedByUserId` — an
+ *            attacker would ALSO need the victim's own authenticated
+ *            session (account takeover), at which point OAuth binding is
+ *            moot anyway. A first-party nonce cookie was considered and
+ *            rejected as a fix: the attacker's own browser carries the
+ *            attacker's OWN valid cookie from their OWN legitimate mint,
+ *            which would satisfy it just as well — a cookie can only prove
+ *            "this pending record belongs to the browser presenting it"
+ *            (which session/userId binding already establishes), never
+ *            "this specific code/installationId legitimately arose from
+ *            this specific flow," because Sentry gives us nothing to check
+ *            that correlation against. Inherent to tenant binding built on
+ *            a vendor redirect that echoes nothing back — not a bug in
+ *            this implementation.
+ *            TWO NARROWING FACTS (stated honestly — neither is a fix, both
+ *            genuinely bound the exposure):
+ *              1. Authorization codes are ASSUMED single-use and
+ *                 short-lived server-side, per ordinary OAuth2 hygiene
+ *                 (RFC 6749 §4.1.2: a code "MUST NOT" be usable more than
+ *                 once and "MUST expire shortly") — but this is NOT
+ *                 vendor-confirmed for Sentry specifically: neither raw-
+ *                 fetched doc page states an explicit code TTL or
+ *                 single-use guarantee for this endpoint (independent
+ *                 review's own finding, re-confirmed here). IF true, a
+ *                 replay attempted AFTER Victim's own callback already
+ *                 completed successfully dies at Sentry's OWN exchange
+ *                 endpoint (an already-used code) — the live exploitable
+ *                 window is specifically "a callback that never
+ *                 completed," not an arbitrarily long one.
+ *              2. The pending record's own TTL bounds how long an
+ *                 attacker's own catch-a-leaked-artifact setup stays
+ *                 viable. THE ONE REAL MITIGATION SHIPPED THIS ROUND:
+ *                 session-transport pending records now use a
+ *                 DELIBERATELY SHORTER TTL than param-transport's default
+ *                 (`SESSION_TRANSPORT_OAUTH_STATE_TTL_MS`, 10 minutes vs.
+ *                 30 — `@agentrail/db-postgres`'s own doc-comment on both
+ *                 constants) — param-transport has no equivalent gap to
+ *                 shrink, hence the asymmetry.
+ *            This reasoning is mirrored (not duplicated piecemeal) in
+ *            `lib/oauth/sentry.ts`'s own doc-comment and the spec doc's
+ *            Sentry section — this callback's own comment is the canonical
+ *            version; the other two point back here.
  *   6+ WORKSPACE ID (and the bound minter id) ARE NOW KNOWN — every later
  *      failure redirects to THAT workspace's own connectors page, per the
  *      plan's "redirects to the connectors page" contract; steps 1-5 above

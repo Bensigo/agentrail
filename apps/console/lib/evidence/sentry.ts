@@ -25,15 +25,19 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * resolved via `resolveProviderAuth(workspaceId, "sentry")`
  * (`lib/oauth/core.ts`), identical to `lib/evidence/railway.ts`'s own
  * W3-T2 switch. A legacy pasted token is returned verbatim (byte-identical
- * behavior to before this task — and, per `lib/oauth/sentry.ts`'s own
- * doc-comment, "STATE CANNOT ROUND-TRIP", token-paste remains the ONLY way
- * to connect Sentry today regardless of this switch); an OAuth-connected
- * envelope would be auto-refreshed when within its 2-minute expiry skew,
- * with the rotated envelope persisted before the (possibly new) access
- * token is returned — this path is written and tested now so it needs no
- * further change once a future task resolves the state-round-trip gap and
- * OAuth connect actually becomes reachable. `secret` itself is kept ONLY
- * as the pre-existing cheap "is anything stored at all" gate below
+ * behavior to before this task — token-paste remains a fully supported,
+ * permanent connect path per the Global Constraints); an OAuth-connected
+ * envelope is auto-refreshed when within its 2-minute expiry skew, with
+ * the rotated envelope persisted before the (possibly new) access token is
+ * returned. LIVE (W3-T3 fix round, `c8fdc020`): OAuth connect for Sentry is
+ * reachable today — the initial submission's adapter shipped built-but-
+ * dark pending a coordinator ruling on tenant binding for a vendor whose
+ * redirect can't carry `state`; the fix round implemented session-transport
+ * binding (`lib/oauth/sentry.ts`'s own doc-comment, "SESSION-TRANSPORT
+ * TENANT BINDING") and wired the three reachability sites live, so both
+ * credential kinds below are real, exercised paths, not one live and one
+ * dormant. `secret` itself is kept ONLY as the pre-existing cheap "is
+ * anything stored at all" gate below
  * (`!secret -> config_missing`) — same reasoning as railway.ts's identical
  * comment. A `resolveProviderAuth` failure degrades to `unauthorized` via
  * THIS adapter's existing, closed `EvidenceDegradationReason` set —

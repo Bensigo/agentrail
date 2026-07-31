@@ -24,6 +24,8 @@ import {
   validateConnectorUpdate,
   mintConnectorOauthState,
   consumeConnectorOauthState,
+  OAUTH_STATE_TTL_MS,
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "./connectors.js";
 
 const mockDb = vi.mocked(db);
@@ -534,6 +536,47 @@ describe("mintConnectorOauthState (W3-T1)", () => {
       // always names the key) — the bound VALUE is what differs (NULL vs.
       // "verifier-xyz"), not whether the key is mentioned at all.
       expect(renderSql(withoutVerifier.get())).toContain("oauthPkceVerifier");
+    });
+  });
+
+  // W3-T3 second fix round (independent review Finding 1) — a per-transport
+  // TTL, optional 5th arg. The shorter session-transport window is enforced
+  // ENTIRELY here (a shorter stored oauthStateExpiresAt) — neither consume
+  // function needs any transport-conditional logic (see connectors.ts's own
+  // doc-comment on both TTL constants).
+  describe("ttlMs (W3-T3 second fix round — per-transport TTL)", () => {
+    it("defaults to OAUTH_STATE_TTL_MS (30 minutes) when the 5th arg is omitted — every existing call site unaffected", async () => {
+      const before = Date.now();
+      const chain = insertChain();
+      mockDb.insert.mockReturnValue(chain as never);
+      await mintConnectorOauthState("ws-1", "railway", "user-1");
+      const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        config: { oauthStateExpiresAt?: string };
+      };
+      const expiresAtMs = new Date(inserted.config.oauthStateExpiresAt!).getTime();
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + OAUTH_STATE_TTL_MS);
+      expect(expiresAtMs).toBeLessThanOrEqual(Date.now() + OAUTH_STATE_TTL_MS + 5000);
+    });
+
+    it("uses the passed ttlMs instead of the default when provided (the link route's session-transport call)", async () => {
+      const before = Date.now();
+      const chain = insertChain();
+      mockDb.insert.mockReturnValue(chain as never);
+      await mintConnectorOauthState("ws-1", "sentry", "user-1", undefined, SESSION_TRANSPORT_OAUTH_STATE_TTL_MS);
+      const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        config: { oauthStateExpiresAt?: string };
+      };
+      const expiresAtMs = new Date(inserted.config.oauthStateExpiresAt!).getTime();
+      expect(expiresAtMs).toBeGreaterThanOrEqual(before + SESSION_TRANSPORT_OAUTH_STATE_TTL_MS);
+      expect(expiresAtMs).toBeLessThanOrEqual(Date.now() + SESSION_TRANSPORT_OAUTH_STATE_TTL_MS + 5000);
+      // Meaningfully shorter than the default — the whole point of the fix.
+      expect(expiresAtMs).toBeLessThan(before + OAUTH_STATE_TTL_MS);
+    });
+
+    it("SESSION_TRANSPORT_OAUTH_STATE_TTL_MS is a third of OAUTH_STATE_TTL_MS (10 min vs 30) — pins the asymmetry so a future edit to one constant doesn't silently drift the other out of its intended ratio", () => {
+      expect(SESSION_TRANSPORT_OAUTH_STATE_TTL_MS).toBe(10 * 60 * 1000);
+      expect(OAUTH_STATE_TTL_MS).toBe(30 * 60 * 1000);
+      expect(SESSION_TRANSPORT_OAUTH_STATE_TTL_MS).toBeLessThan(OAUTH_STATE_TTL_MS);
     });
   });
 

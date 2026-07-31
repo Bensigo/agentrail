@@ -5,6 +5,7 @@ import {
   isConnectorProvider,
   mintConnectorOauthState,
   clearPendingConnectorOauthStatesForUser,
+  SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
@@ -143,11 +144,31 @@ export async function POST(
   // providers (the mechanism they use — `consumeConnectorOauthState`,
   // keyed by the single-use `state` token itself — has no equivalent
   // ambiguity to guard against).
-  if (adapter.stateTransport === "session") {
+  const isSessionTransport = adapter.stateTransport === "session";
+  if (isSessionTransport) {
     await clearPendingConnectorOauthStatesForUser(body.provider, session.user.id);
   }
 
-  const state = await mintConnectorOauthState(workspaceId, body.provider, session.user.id, codeVerifier);
+  // W3-T3 second fix round (independent review Finding 1) — a
+  // session-transport pending record gets a DELIBERATELY SHORTER TTL (10
+  // minutes, vs. param-transport's 30) — see
+  // `SESSION_TRANSPORT_OAUTH_STATE_TTL_MS`'s own doc-comment
+  // (`@agentrail/db-postgres`) for why: session-transport tenant binding
+  // cannot verify the presented `code`/`installationId` actually
+  // originated from THIS pending record (the vendor round-trips nothing to
+  // check that against), so a leaked artifact could in principle be
+  // redeemed by an unrelated party who starts their own ordinary connect
+  // attempt — the pending record's own TTL is what bounds how long that
+  // unrelated party's "catch" window stays open. Param-transport's
+  // minter-bound, single-use `state` has no equivalent gap, so its default
+  // 30-minute window is unaffected.
+  const state = await mintConnectorOauthState(
+    workspaceId,
+    body.provider,
+    session.user.id,
+    codeVerifier,
+    isSessionTransport ? SESSION_TRANSPORT_OAUTH_STATE_TTL_MS : undefined
+  );
   const redirectUri = oauthCallbackUri(consolePublicUrl, body.provider);
   const url = adapter.authorizeUrl({ state, redirectUri, codeChallenge });
 

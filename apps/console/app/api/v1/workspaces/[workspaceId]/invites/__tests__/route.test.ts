@@ -17,6 +17,21 @@ vi.mock("@agentrail/db-postgres", () => ({
   listAccountWorkspaceIds: vi.fn(),
   listWorkspacesForUser: vi.fn(),
   releaseUserSeatForAccount: vi.fn(),
+  // Seat gate (subscription platform spec §6 point 1 / slice 5 Task 6) —
+  // POST /invites' own active-seat count against the resolved policy's
+  // seatLimit. Not wired to any default in beforeEach (unlike the runner/
+  // channel-dispatch suites): every PRE-existing test in this file leaves
+  // mockSubscriptionsEnforced unset, which vi.fn() defaults to returning
+  // `undefined` — falsy — so the gate's `if (subscriptionsEnforced())`
+  // short-circuits and every test below stays byte-identical without
+  // needing an explicit off-default.
+  countActiveSeats: vi.fn(),
+}));
+vi.mock("../../../../../../../lib/policy/resolve-policy", () => ({
+  resolvePolicyForWorkspace: vi.fn(),
+}));
+vi.mock("../../../../../../../lib/policy/feature-flags", () => ({
+  subscriptionsEnforced: vi.fn(),
 }));
 
 import { GET, POST } from "../route";
@@ -35,7 +50,10 @@ import {
   listAccountWorkspaceIds,
   listWorkspacesForUser,
   releaseUserSeatForAccount,
+  countActiveSeats,
 } from "@agentrail/db-postgres";
+import { resolvePolicyForWorkspace } from "../../../../../../../lib/policy/resolve-policy";
+import { subscriptionsEnforced } from "../../../../../../../lib/policy/feature-flags";
 
 const mockAuth = vi.mocked(auth);
 const mockGetWorkspaceMembership = vi.mocked(getWorkspaceMembership);
@@ -48,6 +66,9 @@ const mockGetBillingAccountIdForWorkspace = vi.mocked(getBillingAccountIdForWork
 const mockListAccountWorkspaceIds = vi.mocked(listAccountWorkspaceIds);
 const mockListWorkspacesForUser = vi.mocked(listWorkspacesForUser);
 const mockReleaseUserSeatForAccount = vi.mocked(releaseUserSeatForAccount);
+const mockCountActiveSeats = vi.mocked(countActiveSeats);
+const mockResolvePolicy = vi.mocked(resolvePolicyForWorkspace);
+const mockSubscriptionsEnforced = vi.mocked(subscriptionsEnforced);
 
 const VALID_SESSION = {
   user: { id: "user-123", name: "Test User", email: "owner@example.com" },
@@ -221,6 +242,145 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     expect(mockCreateInvite).toHaveBeenCalledWith(
       expect.objectContaining({ email: "invited@example.com" })
     );
+  });
+
+  // ---- Seat gate (subscription platform spec §6 point 1 / slice 5 Task 6):
+  // refuse a NEW invite (or a re-invite upsert of an existing pending one)
+  // once the billing account is at its seat limit — see route.ts's own
+  // doc-comment on the gate block for the full placement/fail-open/stub
+  // rationale. ----
+
+  describe("seat gate", () => {
+    function enforcedAtSeats(seatLimit: number, activeSeats: number) {
+      mockSubscriptionsEnforced.mockReturnValue(true);
+      mockResolvePolicy.mockResolvedValue({
+        policy: { seatLimit } as never,
+        billingAccountId: "account-1",
+        degraded: false,
+      });
+      mockCountActiveSeats.mockResolvedValue(activeSeats);
+    }
+
+    it("enforced + at the seat limit — 409 with the exact copy, createInvite not called", async () => {
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      enforcedAtSeats(5, 5);
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe(
+        "You've reached your team's seat limit. Upgrade your plan or remove an inactive member."
+      );
+      expect(mockCreateInvite).not.toHaveBeenCalled();
+    });
+
+    it("enforced + below the seat limit — 201 unchanged", async () => {
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      enforcedAtSeats(5, 4);
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { invite: { id: string } };
+      expect(body.invite.id).toBe("invite-1");
+      expect(mockCreateInvite).toHaveBeenCalledWith(
+        expect.objectContaining({ email: "invited@example.com" })
+      );
+    });
+
+    it("flag off (the default) — resolvePolicyForWorkspace is never called, 201 unchanged", async () => {
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      mockSubscriptionsEnforced.mockReturnValue(false);
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(201);
+      expect(mockResolvePolicy).not.toHaveBeenCalled();
+      expect(mockCountActiveSeats).not.toHaveBeenCalled();
+    });
+
+    it("degraded resolution — skips the gate entirely, 201", async () => {
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      mockSubscriptionsEnforced.mockReturnValue(true);
+      mockResolvePolicy.mockResolvedValue({
+        policy: { seatLimit: 1 } as never,
+        billingAccountId: "account-1",
+        degraded: true,
+      });
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(201);
+      expect(mockCountActiveSeats).not.toHaveBeenCalled();
+    });
+
+    it("resolvePolicyForWorkspace throws — fails open, 201", async () => {
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      mockSubscriptionsEnforced.mockReturnValue(true);
+      mockResolvePolicy.mockRejectedValue(new Error("db blip"));
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(201);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "[invites] seat gate failed open:",
+        expect.any(Error)
+      );
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("uses the zero-spend fetchMonthSpendUsd stub — this gate never reads policy.economics, matching the chat seat gate and the runner capacity gate", async () => {
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      enforcedAtSeats(5, 2);
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      await POST(req, PARAMS_WS);
+
+      expect(mockResolvePolicy).toHaveBeenCalledWith(
+        WORKSPACE_ID,
+        expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+      );
+      const deps = mockResolvePolicy.mock.calls[0]?.[1] as {
+        fetchMonthSpendUsd: () => Promise<number>;
+      };
+      await expect(deps.fetchMonthSpendUsd()).resolves.toBe(0);
+    });
   });
 });
 

@@ -9,6 +9,15 @@ vi.mock("../../../../lib/cached", () => ({
   getMembership: vi.fn(),
 }));
 
+// loadPlanCardData does its own flag/degraded/error handling (Task 2) —
+// page.tsx just awaits it and threads the result through as a prop. Mocked
+// here so this file's tests control the resolved value directly rather
+// than depending on ambient env (BILLING_SUBSCRIPTIONS_ENFORCED) to decide
+// it implicitly.
+vi.mock("../../../../lib/plan-card-data", () => ({
+  loadPlanCardData: vi.fn(),
+}));
+
 vi.mock("./components/digest-panel", () => ({
   DigestPanel: () => null,
 }));
@@ -19,6 +28,7 @@ vi.mock("./components/onboarding-banner", () => ({
 
 import { getWorkspace } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
+import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
 import WorkspaceDashboardPage from "./page";
 import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
@@ -60,6 +70,12 @@ function mockHappyPath() {
     name: "AgentRail",
     slug: "agentrail",
   } as Awaited<ReturnType<typeof getWorkspace>>);
+  // Explicit default (not just vi.fn()'s implicit undefined return) so this
+  // happy path's outcome doesn't depend on an unstated mock default —
+  // undefined is also the correct flag-off/degraded/error value from a real
+  // loadPlanCardData, so this keeps every pre-existing test in this
+  // describe block on the exact same "no plan card" rendering path.
+  vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
 }
 
 async function renderHeader(): Promise<ReactElementLike> {
@@ -70,6 +86,20 @@ async function renderHeader(): Promise<ReactElementLike> {
   );
   const children = element.props.children as ReactElementLike[];
   return children[0]; // the PageHeader element
+}
+
+/** Walks to the (mocked) DigestPanel element: root children[1] is the
+ *  `mt-2 flex flex-col gap-6` wrapper div; its children are
+ *  [OnboardingBanner, DigestPanel] in that order. */
+async function renderDigestPanel(): Promise<ReactElementLike> {
+  const element = asElement(
+    await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    })
+  );
+  const [, wrapper] = element.props.children as ReactElementLike[];
+  const [, digestPanel] = asElement(wrapper).props.children as ReactElementLike[];
+  return asElement(digestPanel);
 }
 
 describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
@@ -107,5 +137,62 @@ describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
     // (title/subtitle/actions) is untouched; only what page.tsx passes in changed.
     expect(typeof header.props.title).toBe("string");
     expect(typeof header.props.subtitle).toBe("string");
+  });
+});
+
+describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 Task 3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockHappyPath();
+  });
+
+  it("awaits loadPlanCardData with this workspace's id", async () => {
+    await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    });
+
+    expect(loadPlanCardData).toHaveBeenCalledExactlyOnceWith(WORKSPACE_ID);
+  });
+
+  it("threads an undefined loadPlanCardData result straight through as DigestPanel's planCard prop (flag off / degraded / error)", async () => {
+    vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
+
+    const digestPanel = await renderDigestPanel();
+
+    expect(digestPanel.props.workspaceId).toBe(WORKSPACE_ID);
+    expect(digestPanel.props.planCard).toBeUndefined();
+  });
+
+  it("threads a resolved PlanCardData object through as DigestPanel's planCard prop, unmodified", async () => {
+    const planCard: PlanCardData = {
+      planLabel: "Growth",
+      seatsUsed: 3,
+      seatLimit: 10,
+      capacityUsed: 42,
+      capacityTotal: 200,
+      renewalText: "Renews Aug 30, 2026",
+      shippedAllTime: 128,
+    };
+    vi.mocked(loadPlanCardData).mockResolvedValue(planCard);
+
+    const digestPanel = await renderDigestPanel();
+
+    expect(digestPanel.props.planCard).toBe(planCard);
+  });
+
+  it("still returns PageHeader as children[0] when a plan card is present (no new sibling inserted above it)", async () => {
+    vi.mocked(loadPlanCardData).mockResolvedValue({
+      planLabel: "Growth",
+      seatsUsed: 3,
+      seatLimit: 10,
+      capacityUsed: 42,
+      capacityTotal: 200,
+      renewalText: "Renews Aug 30, 2026",
+      shippedAllTime: 128,
+    });
+
+    const header = await renderHeader();
+
+    expect(header.type).toBe(PageHeader);
   });
 });

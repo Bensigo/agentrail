@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  capacityText,
   formatCostUsd,
   formatNeedsYouBreakdown,
   formatTrendPct,
@@ -104,5 +105,15 @@ describe("isAtOrPastCurrentWeek", () => {
     const now = new Date("2026-07-15T12:00:00.000Z");
     const week = { end: "2026-07-13T00:00:00.000Z" };
     expect(isAtOrPastCurrentWeek(week, now)).toBe(false);
+  });
+});
+
+describe("capacityText (subscription slice 6 plan card — pinned copy)", () => {
+  it("renders the pinned 'used of total tasks this month' phrasing", () => {
+    expect(capacityText(3, 10)).toBe("3 of 10 tasks this month");
+  });
+
+  it("renders zero usage without special-casing", () => {
+    expect(capacityText(0, 200)).toBe("0 of 200 tasks this month");
   });
 });

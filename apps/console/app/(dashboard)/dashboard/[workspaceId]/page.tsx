@@ -1,6 +1,7 @@
 import { getWorkspace } from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
+import { loadPlanCardData } from "../../../../lib/plan-card-data";
 import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
@@ -22,6 +23,13 @@ export default async function WorkspaceDashboardPage({
 
   if (!workspace || !membership) return notFound();
 
+  // Subscription slice 6 plan (Task 3): loadPlanCardData does its own
+  // flag/degraded/error handling and fails open to undefined — this page
+  // just awaits it and threads the result through as a prop. undefined
+  // means DigestPanel renders exactly today's cost card (flag off,
+  // degraded workspace, or a swallowed read error).
+  const planCard = await loadPlanCardData(workspaceId);
+
   return (
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
@@ -39,7 +47,7 @@ export default async function WorkspaceDashboardPage({
 
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
-        <DigestPanel workspaceId={workspaceId} />
+        <DigestPanel workspaceId={workspaceId} planCard={planCard} />
       </div>
     </div>
   );

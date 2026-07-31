@@ -792,7 +792,10 @@ describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscr
         })
       );
       await vi.waitFor(() => {
-        expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity_warning");
+        // No session bound in this test (mockLatestChatSession defaults to
+        // null in beforeEach) — the CAS's own null-session `session` arg
+        // must be the SAME `null` passed to notifyAccountCapacity.
+        expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity_warning", null);
       });
     } finally {
       vi.useRealTimers();
@@ -993,7 +996,7 @@ describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscr
     }
   });
 
-  it("conversationKey for the CAS falls back to the workspace sentinel when no chat session is bound", async () => {
+  it("conversationKey for the CAS falls back to the workspace sentinel when no chat session is bound — and the CAS is still attempted (sentinel dedup, not a skip)", async () => {
     enforcedWithCapacity(1000, 1000);
     mockLatestChatSession.mockResolvedValue(null);
 
@@ -1004,11 +1007,18 @@ describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscr
       {},
       expect.objectContaining({ conversationKey: `workspace:${WS}`, channel: "none" })
     );
+    // Single-resolution fix (review round 1): exactly one session lookup
+    // even on the no-session path.
+    expect(mockLatestChatSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity", null);
+    });
   });
 
-  it("conversationKey for the CAS uses the delivered session's own key + channel when one is bound", async () => {
+  it("conversationKey for the CAS uses the delivered session's own key + channel when one is bound, AND the identical session object is what gets threaded to delivery — single resolution, no re-read race (review round 1 fix)", async () => {
     enforcedWithCapacity(1000, 1000);
-    mockLatestChatSession.mockResolvedValue({ channel: "telegram", conversationKey: "tg-99" } as never);
+    const session = { channel: "telegram", conversationKey: "tg-99" };
+    mockLatestChatSession.mockResolvedValue(session as never);
 
     await GET(req(WS));
 
@@ -1017,6 +1027,50 @@ describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscr
       {},
       expect.objectContaining({ conversationKey: "tg-99", channel: "telegram" })
     );
+    // The CAS row's conversationKey/channel and the session handed to
+    // delivery must come from the SAME read — this is the exact race the
+    // fix closes: latestChatSessionForWorkspace is called exactly ONCE per
+    // notify attempt, never once for the CAS and again for delivery.
+    expect(mockLatestChatSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity", session);
+    });
+    const [, , deliveredSession] = mockNotifyAccountCapacity.mock.calls[0] as [
+      string,
+      string,
+      { channel: string; conversationKey: string } | null,
+    ];
+    const casArgs = mockRecordUpgradePromptOnce.mock.calls[0]?.[1] as {
+      conversationKey: string;
+      channel: string;
+    };
+    expect(deliveredSession).toEqual({
+      channel: casArgs.channel,
+      conversationKey: casArgs.conversationKey,
+    });
+  });
+
+  it("latestChatSessionForWorkspace throws — the capacity gate still fails open (fire-and-forget error boundary covers the session read too, not just recordUpgradePromptOnce/notifyAccountCapacity)", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockLatestChatSession.mockRejectedValue(new Error("db blip"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+      await vi.waitFor(() => {
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining("[capacity-notify] failed to notify workspace"),
+          expect.any(Error)
+        );
+      });
+      expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalled();
+      expect(mockNotifyAccountCapacity).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("a lost CAS (already prompted) never attempts delivery", async () => {
@@ -1041,5 +1095,61 @@ describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscr
     // The rejection must not become an unhandled promise rejection either —
     // give it a tick to settle and confirm the process is still here to ask.
     await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  // Threshold-edge pins (review round 1, Minor finding): a policy override
+  // could plausibly set monthlyCapacity this low (0 during an incident, 1 on
+  // a heavily-restricted trial), and the two thresholds (100% / >=80%) can
+  // mathematically collide at small integers — these pin that the early
+  // `return` inside the `used >= capacity` branch is what prevents a
+  // double-fire, not any explicit mutual-exclusion check.
+  it("monthlyCapacity=0 — always blocks (0 admitted runs already meets/exceeds a 0 cap); the warning branch is unreachable", async () => {
+    enforcedWithCapacity(0, 0);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({ kind: "capacity" })
+      );
+    });
+    // Give any stray second fire-and-forget call a chance to land before
+    // asserting the negative.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ kind: "capacity_warning" })
+    );
+  });
+
+  it("monthlyCapacity=1, used=1 — the 100% pause wins over the colliding 80% warning threshold (Math.ceil(1*0.8)=1, same value as the cap); no warning CAS is attempted", async () => {
+    enforcedWithCapacity(1, 1);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({ kind: "capacity" })
+      );
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    // Only the pause CAS fires — the early `return` inside the `used >=
+    // capacity` branch means the `used >= Math.ceil(capacity * 0.8)` check
+    // is never even reached, despite both thresholds evaluating to the same
+    // number at capacity=1.
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ kind: "capacity_warning" })
+    );
   });
 });

@@ -82,11 +82,36 @@ function currentBudgetWindow(now: Date = new Date()): {
  * OUTSIDE the four-column dedup index), so `"none"` for the no-session case
  * is safe — it never affects who gets deduped against whom.
  *
- * `notifyAccountCapacity` re-resolves `latestChatSessionForWorkspace` on its
- * own for delivery (see that function's own doc-comment) — a second,
- * independent lookup rather than threading this one's result through, so it
- * stays a self-contained, independently callable/testable unit exactly like
- * `notifyWorkspaceBudgetExhausted` above.
+ * SINGLE session resolution (review round 1 fix): `latestChatSessionForWorkspace`
+ * is read exactly ONCE, right here, and the SAME resolved `session` value is
+ * used for both the CAS row above and passed straight into
+ * `notifyAccountCapacity` for delivery below — never re-resolved. The
+ * original version had `notifyAccountCapacity` call
+ * `latestChatSessionForWorkspace` a SECOND, independent time for delivery,
+ * with `recordUpgradePromptOnce`'s write sitting between the two reads: a
+ * session-activity change in that gap (e.g. a message lands on a different
+ * bound channel between the CAS read and the delivery read) could make the
+ * persisted `upgrade_prompt_events` row — spec §8's calibration input —
+ * misrepresent where the prompt actually went, AND could let a LATER poll's
+ * CAS win again under a different conversationKey (the session having since
+ * changed again), producing a duplicate same-day prompt the CAS exists
+ * specifically to prevent. Threading one resolution through both call sites
+ * closes that window entirely; `notifyAccountCapacity`'s signature was
+ * changed to accept the resolved session directly rather than a
+ * `workspaceId` it re-looks-up (it's this same commit's own new function —
+ * no external caller to preserve compatibility for).
+ *
+ * The CAS is attempted — and, on a win, `notifyAccountCapacity` is still
+ * called — even when `session` is `null` (no chat session bound at all).
+ * This is deliberate, not an oversight: without recording the sentinel-keyed
+ * row, a sessionless workspace would get NO dedup protection and this
+ * function would re-attempt the CAS insert on every single poll for the
+ * rest of the period (a paused workspace polls continuously) instead of
+ * settling into the same "already prompted this period, nothing to do"
+ * no-op every other workspace gets after its first attempt.
+ * `notifyAccountCapacity` itself still no-ops on a `null` session (there is
+ * nobody to actually tell), so the cost of this choice is exactly one wasted
+ * `recordUpgradePromptOnce` INSERT attempt per period, never a repeated one.
  *
  * Called `void`-fire-and-forget from the gate block below — the claim
  * response must never wait on chat delivery — so this function IS the
@@ -117,7 +142,7 @@ async function maybeNotifyCapacity(
     });
     if (!won) return;
 
-    await notifyAccountCapacity(workspaceId, kind);
+    await notifyAccountCapacity(workspaceId, kind, session);
   } catch (err) {
     console.error(
       `[capacity-notify] failed to notify workspace ${workspaceId} (${kind}):`,

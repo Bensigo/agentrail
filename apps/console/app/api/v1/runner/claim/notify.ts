@@ -20,10 +20,7 @@
  * bound yet (or a Discord/Slack/iMessage-only workspace) is a silent no-op:
  * v1 ships Telegram only, matching `sendSystemTelegramMessage`'s own scope.
  */
-import {
-  latestTelegramSessionForWorkspace,
-  latestChatSessionForWorkspace,
-} from "@agentrail/db-postgres";
+import { latestTelegramSessionForWorkspace } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
 import { sendSystemDiscordMessage } from "../../../../../lib/discord-system-message";
 
@@ -87,9 +84,10 @@ export async function notifyWorkspaceBudgetExhausted(
  * block).
  *
  * Delivery is CHAT-CHANNEL-GENERAL (telegram/discord/slack in principle),
- * unlike `notifyWorkspaceBudgetExhausted`'s telegram-only v1 scope, via
- * `latestChatSessionForWorkspace` — the same "most recently active chat
- * session for this workspace" lookup, generalized from one channel to three.
+ * unlike `notifyWorkspaceBudgetExhausted`'s telegram-only v1 scope. Unlike
+ * that function, this module does NOT itself resolve
+ * `latestChatSessionForWorkspace` — see `notifyAccountCapacity`'s own
+ * doc-comment for why the caller resolves it instead and passes it in.
  */
 
 /**
@@ -117,22 +115,32 @@ export function buildCapacityWarningMessage(): string {
 }
 
 /**
- * Deliver a capacity notice into the workspace's most recently active chat
- * session (telegram/discord/slack). Pure delivery — the CAS that decides
- * WHETHER to call this lives in `route.ts`'s `maybeNotifyCapacity`; this
- * function fires unconditionally whenever its caller has already won that
- * CAS, matching `notifyWorkspaceBudgetExhausted`'s own division of labor
- * above.
+ * Deliver a capacity notice into `session` (the workspace's most recently
+ * active chat session — telegram/discord/slack). Pure delivery — the CAS
+ * that decides WHETHER to call this lives in `route.ts`'s
+ * `maybeNotifyCapacity`; this function fires unconditionally whenever its
+ * caller has already won that CAS, matching `notifyWorkspaceBudgetExhausted`'s
+ * own division of labor above.
  *
- * No session bound yet -> silent no-op, same as `notifyWorkspaceBudgetExhausted`
- * above. This function does NOT catch a `latestChatSessionForWorkspace`
- * throw itself — it propagates, exactly like the existing budget notice
- * above — because its caller (`maybeNotifyCapacity`, invoked fire-and-forget
- * via a bare `void` call so the claim response never waits on delivery) owns
- * the one try/catch that makes this whole chain safe to run unawaited; that
- * is also why `maybeNotifyCapacity`, unlike the budget block's inline
- * try/catch in `route.ts`'s `GET`, cannot rely on an outer caller to catch a
- * rejection for it.
+ * `session` is a caller-resolved value, NOT re-resolved here (review round 1
+ * fix): the original version called `latestChatSessionForWorkspace(workspaceId)`
+ * itself, a SECOND independent read of the exact same lookup
+ * `maybeNotifyCapacity` had already performed moments earlier to build the
+ * CAS row's `conversationKey`/`channel`, with `recordUpgradePromptOnce`'s
+ * write sitting between the two reads. A session-activity change in that gap
+ * (e.g. a message lands on a different bound channel between the CAS read
+ * and this one) could make the persisted `upgrade_prompt_events` row — spec
+ * §8's calibration input — misrepresent where the prompt actually went, AND
+ * could let a LATER poll's CAS win again under a different conversationKey
+ * (the session having since changed again), producing a duplicate same-day
+ * prompt the CAS exists specifically to prevent. Taking the already-resolved
+ * `session` as a parameter instead closes that window: one read, used for
+ * both the CAS row and the delivery target, guaranteed identical.
+ *
+ * `null` (no session bound, or `maybeNotifyCapacity` resolved one but is
+ * intentionally still calling this — see that function's own doc-comment on
+ * why the sentinel CAS is recorded even with no session) -> silent no-op,
+ * same as `notifyWorkspaceBudgetExhausted` above.
  *
  * discord: the PLAIN bot sender (`sendSystemDiscordMessage`), never
  * `sendSystemDiscordMessagePreferFollowup` — there is no interaction-followup
@@ -149,22 +157,23 @@ export function buildCapacityWarningMessage(): string {
  * (`channel-dispatch.ts`'s `TelegramInboxPayload.teamId` /
  * `deliverSeatLimitPromptForChatRow`) — turn-scoped, in-memory ambient data
  * carried through `auth.attributes` for that ONE dispatch, never persisted
- * anywhere durable. `latestChatSessionForWorkspace` reads `jace_sessions`,
- * which has no team-id column, and no other workspace-keyed table maps to
- * one either (`slack_installations` is keyed BY `team_id`, with no reverse
- * workspace lookup) — so there is no supported way to recover a team id in
- * this claim-route context, which backs no live turn/payload at all. Slack's
- * `conversationKey` does happen to be internally prefixed `${teamId}:...`
- * (`lib/slack-thread.ts`'s `resolveSlackThread`), but no caller anywhere in
- * this codebase treats that as a parseable public contract — every real send
- * threads `teamId` explicitly instead — so parsing it back out here would be
- * exactly the kind of guess this function must not make.
+ * anywhere durable. `latestChatSessionForWorkspace` (what resolved `session`
+ * below) reads `jace_sessions`, which has no team-id column, and no other
+ * workspace-keyed table maps to one either (`slack_installations` is keyed BY
+ * `team_id`, with no reverse workspace lookup) — so there is no supported way
+ * to recover a team id in this claim-route context, which backs no live
+ * turn/payload at all. Slack's `conversationKey` does happen to be internally
+ * prefixed `${teamId}:...` (`lib/slack-thread.ts`'s `resolveSlackThread`),
+ * but no caller anywhere in this codebase treats that as a parseable public
+ * contract — every real send threads `teamId` explicitly instead — so
+ * parsing it back out here would be exactly the kind of guess this function
+ * must not make.
  */
 export async function notifyAccountCapacity(
   workspaceId: string,
-  kind: "capacity" | "capacity_warning"
+  kind: "capacity" | "capacity_warning",
+  session: { channel: string; conversationKey: string } | null
 ): Promise<void> {
-  const session = await latestChatSessionForWorkspace(workspaceId);
   if (!session) return;
 
   const text =

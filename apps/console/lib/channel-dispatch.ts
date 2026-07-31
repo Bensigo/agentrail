@@ -841,13 +841,16 @@ function deliverSeatLimitPromptForChatRow(
  *    wins it (`won === true`) builds and delivers the prompt. A lost CAS
  *    (another concurrent turn in the same conversation already prompted
  *    today) still returns `"gated"`, just silently — and so does a WON CAS
- *    whose `deliver` call then throws (review round 1, delivery-throw
- *    finding): the CAS row is already committed by the time delivery runs,
- *    so the decision is final, and `deliver`'s own inner try/catch (below)
- *    is what stops that throw from reaching the outer catch and flipping an
- *    already-decided `"gate"` back into `"pass"`. Either way, the gate
- *    ALWAYS blocks once decided; only whether a prompt was actually shown
- *    varies.
+ *    whose `countActiveIdentitySeats` or `deliver` call then throws (review
+ *    rounds 1 and 2, delivery-throw / identity-seat-count-failure findings):
+ *    the CAS row is already committed by the time either runs, so the
+ *    decision is final, and each has its OWN narrow inner try/catch (below)
+ *    that stops its throw from reaching the outer catch and flipping an
+ *    already-decided `"gate"` back into `"pass"`. A count failure defaults
+ *    `hasUnlinkedIdentitySeats` to `false` (drop the /connect hint rather
+ *    than guess) and still attempts delivery. Either way, the gate ALWAYS
+ *    blocks once decided; only whether a prompt was shown, and whether it
+ *    carried the hint, varies.
  */
 async function applySeatGateForServedTurn(params: {
   workspaceId: string;
@@ -930,25 +933,43 @@ async function applySeatGateForServedTurn(params: {
     });
 
     if (won) {
-      const hasUnlinkedIdentitySeats = (await countActiveIdentitySeats(db, billingAccountId)) > 0;
+      // Two DELIBERATELY NARROW inner try/catches follow, both narrower than
+      // the outer one above — and both exist for the same reason (review
+      // rounds 1 and 2): by this point `recordUpgradePromptOnce` has already
+      // WON the CAS, the row is committed in Postgres, so the decision to
+      // gate this turn is final. The outer catch's fail-open contract exists
+      // for BILLING READS, where serving a paying customer beats blocking on
+      // a Postgres/ClickHouse hiccup — it was never meant to cover a failure
+      // AFTER a good-data decision has already been made and recorded.
+      // Letting either of the two calls below throw past this point would
+      // flip an already-decided `"gate"` back to `"pass"`: the person gets
+      // served, a seat gets claimed over cap, and the CAS slot stays burned
+      // for the rest of the period with no prompt ever having been shown —
+      // exactly the bug each of these two catches closes for its own call.
+
+      // Narrow catch #1 (review round 2, identity-seat-count-failure
+      // finding): defaults `hasUnlinkedIdentitySeats` to `false` (omit the
+      // /connect hint rather than guess at it) and falls through to STILL
+      // attempt delivery — a failed count is a reason to drop one sentence
+      // of copy, never a reason to skip showing the prompt at all.
+      let hasUnlinkedIdentitySeats = false;
+      try {
+        hasUnlinkedIdentitySeats = (await countActiveIdentitySeats(db, billingAccountId)) > 0;
+      } catch (countErr) {
+        console.error(
+          `[seat-gate] countActiveIdentitySeats failed (workspace=${params.workspaceId}, channel=${params.channel}), defaulting to no /connect hint:`,
+          countErr instanceof Error ? countErr.message : String(countErr)
+        );
+      }
+
+      // Narrow catch #2 (review round 1, delivery-throw finding): `deliver`
+      // is realistically throwable — the console path's `appendJaceMessage`
+      // is a bare `db.insert` with no internal catch. Catching here keeps
+      // the turn blocked regardless of outcome, exactly like a lost CAS —
+      // silently, but still blocked.
       try {
         await params.deliver(buildSeatLimitPrompt(hasUnlinkedIdentitySeats));
       } catch (deliverErr) {
-        // Inner try/catch, deliberately narrower than the outer one (review
-        // round 1, delivery-throw finding): by this point
-        // `recordUpgradePromptOnce` has already WON the CAS — the row is
-        // committed in Postgres — so the decision to gate this turn is
-        // final. The outer catch's fail-open contract exists for BILLING
-        // READS (a Postgres/ClickHouse hiccup should never block a paying
-        // customer); it was never meant to cover a delivery failure AFTER a
-        // good-data decision. `deliver` is realistically throwable — the
-        // console path's `appendJaceMessage` is a bare `db.insert` with no
-        // internal catch — and letting that throw reach the outer catch
-        // would flip an already-decided `"gate"` back to `"pass"`: the
-        // person gets served, a seat gets claimed over cap, and the CAS slot
-        // stays burned for the rest of the period with no prompt ever having
-        // been shown. Catching here instead keeps the turn blocked, exactly
-        // like a lost CAS — silently, but still blocked.
         console.error(
           `[seat-gate] prompt delivery failed (workspace=${params.workspaceId}, channel=${params.channel}):`,
           deliverErr instanceof Error ? deliverErr.message : String(deliverErr)

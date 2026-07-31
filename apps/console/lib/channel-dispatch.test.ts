@@ -3247,6 +3247,46 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
     errorSpy.mockRestore();
   });
 
+  it("(identity-seat-count-failure hardening, review round 2 — mirrors the deliver-throw test above) a countActiveIdentitySeats() rejection still blocks the turn: row completed (still gated), the prompt is STILL delivered but WITHOUT the /connect hint, no seat claimed over cap, failure logged with the '[seat-gate] countActiveIdentitySeats failed' prefix — not swallowed into a generic fail-open", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockCountActiveIdentitySeats.mockRejectedValueOnce(new Error("db read failed"));
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    // Delivery was STILL attempted, with the un-hinted base prompt — a
+    // failed count degrades the COPY (drop the hint), never the decision to
+    // show a prompt at all.
+    expect(mockAppendJaceMessage).toHaveBeenCalledWith({
+      workspaceId: "ws-console-1",
+      conversationKey: "console:user-1:1",
+      role: "jace",
+      text: SEAT_PROMPT_BASE,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[seat-gate] countActiveIdentitySeats failed"),
+      expect.anything()
+    );
+    // Neither the delivery-specific catch's log NOR the outer generic
+    // fail-open log should have fired — this is the count's OWN narrow
+    // catch handling it, nothing bubbled past the decision.
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("prompt delivery failed"),
+      expect.anything()
+    );
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("applySeatGateForServedTurn failed"),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
+  });
+
   it("(c) enforced + existing seat-holder: served normally (Eve runs), and the count/membership reads are skipped entirely (hot-path short-circuit)", async () => {
     mockSubsEnforced.mockReturnValue(true);
     mockHasActiveSeat.mockResolvedValue(true);

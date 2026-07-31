@@ -223,6 +223,21 @@ export interface ConnectorConnectMeta {
    * (`credentialHint`, `setupSteps`, …).
    */
   oauthHint?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T4 (`.superpowers/sdd/plan-oauth.md`): one
+   * calm sentence stating that API-token connect is this provider's
+   * standard integration method — never a "coming soon"/apology framing.
+   * UNLIKE {@link oauthHint}, this renders unconditionally in the shared
+   * `tokenForm` value (`connector-sheet.tsx`'s `SecretManage`), not gated
+   * on `oauthReady` — these four providers' `oauthReady` is never true, so
+   * gating it the same way `oauthHint` is would mean it never rendered.
+   * Declared by exactly the four providers this wave leaves token-only
+   * (Grafana, Prometheus, Langfuse, Datadog — see the design spec's "Out
+   * of scope"); absent for every other entry, including railway/sentry
+   * (their own `oauthHint` already covers this ground) and every provider
+   * that predates this wave.
+   */
+  tokenStandardNote?: string;
 }
 
 /** Static catalog entry for a connector kind. */
@@ -527,6 +542,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // langfuse-specific parsing branch.
       secretParts: [{ name: "Public key" }, { name: "Secret key" }],
       secretPartPatterns: ["^pk-lf-", "^sk-lf-"],
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Langfuse has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Langfuse.",
       // The workspace's Langfuse region/self-host origin — required (unlike
       // Railway's project id, every workspace needs SOME host; there is no
       // sensible default across cloud regions/self-host — see
@@ -660,6 +680,14 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // citation trail.
       secretParts: [{ name: "API key" }, { name: "Application key" }],
       secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]{34})$"],
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Datadog has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology,
+      // and names WHY the form asks for two values (the composite pair
+      // declared via secretParts above), since that's the one genuinely
+      // provider-specific fact worth surfacing here beyond the generic claim.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Datadog — its API splits access across a key and an application key, which is why this form asks for both.",
       // The workspace's Datadog site — required (every workspace needs
       // SOME site; there is no sensible default across Datadog's 9 regional
       // deployments). Unlike langfuseHost/prometheusUrl/grafanaUrl, this is
@@ -719,6 +747,12 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // format gate lives in `validateConnectorCredential`'s own hand-written
       // `case "prometheus"` below (non-empty, ≤512 chars, no whitespace —
       // a shape both a bearer token and a user:pass pair satisfy).
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Prometheus has no OAuth surface in this wave (see
+      // the design spec's "Out of scope"); this states that plainly, no
+      // apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Prometheus.",
       extraConfigFields: [
         {
           key: "prometheusUrl",
@@ -770,6 +804,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // hand-written `case "grafana"` below just accepts either documented
       // prefix. See `lib/evidence/grafana.ts`'s own doc-comment for the
       // doc-verify trail behind both prefixes.
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Grafana has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Grafana.",
       extraConfigFields: [
         {
           key: "grafanaUrl",

@@ -459,6 +459,16 @@ function SecretManage({
       }}
       className="flex flex-col gap-2"
     >
+      {/* OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote's
+          own doc-comment. Renders regardless of `oauthReady` (unlike
+          `oauthHint` below), since the four providers that declare this are
+          never oauthReady — a calm, no-apology "this is the standard way"
+          note, not an error/hint about the input's own shape. */}
+      {meta?.tokenStandardNote && (
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          {meta.tokenStandardNote}
+        </p>
+      )}
       {isComposite ? (
         secretParts.map((part, i) => (
           <input
@@ -530,6 +540,12 @@ function SecretManage({
 
   // Without oauthReady: exactly today's UI — the bare token form, nothing
   // wrapping it (plan's own pinned "no visual regression" requirement).
+  // W3-T4: four providers (grafana/prometheus/langfuse/datadog) now render
+  // one extra static sentence INSIDE `tokenForm` itself via
+  // `tokenStandardNote` — still the same single shared JSX value returned
+  // from both branches below, so "no visual regression" still holds in the
+  // sense that matters (one code path, not a byte-identical string for
+  // those four providers specifically).
   if (!connector.oauthReady) {
     return tokenForm;
   }

@@ -485,6 +485,15 @@ describe("connector catalog — langfuse entry (Task P2)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(langfuse.connect?.tokenStandardNote).toBeDefined();
+    expect(langfuse.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(langfuse.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
+  });
 });
 
 describe("validateConnectorCredential — langfuse (Task P2)", () => {
@@ -623,6 +632,16 @@ describe("connector catalog — datadog entry (Task P4)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, and names the API+app key pair", () => {
+    expect(datadog.connect?.tokenStandardNote).toBeDefined();
+    expect(datadog.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(datadog.connect?.tokenStandardNote).toMatch(/application key/i);
+    expect(datadog.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
+  });
 });
 
 describe("validateConnectorCredential — datadog (Task P4)", () => {
@@ -708,6 +727,15 @@ describe("connector catalog — prometheus entry (Task P5)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(prometheus.connect?.tokenStandardNote).toBeDefined();
+    expect(prometheus.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(prometheus.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
+  });
 });
 
 describe("validateConnectorCredential — prometheus (Task P5)", () => {
@@ -774,6 +802,15 @@ describe("connector catalog — grafana entry (Task P6)", () => {
         required: true,
       },
     ]);
+  });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(grafana.connect?.tokenStandardNote).toBeDefined();
+    expect(grafana.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(grafana.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
   });
 });
 
@@ -884,6 +921,27 @@ describe("connector catalog — cloudflare entry (Task P8, FINAL Wave-2 provider
         required: true,
       },
     ]);
+  });
+});
+
+describe("connector catalog — tokenStandardNote scope (OAuth Connect Wave 3, W3-T4)", () => {
+  // Exactly four entries declare it — the providers this wave leaves
+  // token-only (see the design spec's "Out of scope"). Railway/sentry have
+  // their own `oauthHint` instead (covers the same "why token-paste" ground
+  // for a provider that DOES have an OAuth option); every provider that
+  // predates this wave, plus github/factory, declare neither.
+  it("is declared by exactly grafana, prometheus, langfuse, datadog", () => {
+    const withNote = CONNECTOR_CATALOG.filter((e) => e.connect?.tokenStandardNote).map(
+      (e) => e.kind
+    );
+    expect(withNote.sort()).toEqual(["datadog", "grafana", "langfuse", "prometheus"]);
+  });
+
+  it("is absent for every other catalog entry, railway/sentry included", () => {
+    for (const entry of CONNECTOR_CATALOG) {
+      if (["grafana", "prometheus", "langfuse", "datadog"].includes(entry.kind)) continue;
+      expect(entry.connect?.tokenStandardNote).toBeUndefined();
+    }
   });
 });
 

@@ -7,7 +7,7 @@
 Connecting an observability provider today means pasting a hand-copied API
 token — correct, but friction for the two providers that are both fully
 self-serve (no sales call, no approval queue) AND expose a real OAuth flow:
-Railway and Sentry. The other five observability providers in the catalog
+Railway and Sentry. The other six observability providers in the catalog
 (Langfuse, Datadog, Prometheus, Grafana, Vercel, Cloudflare) either have no
 OAuth surface worth building against or aren't worth the vendor-registration
 overhead yet — token-paste is, and stays, the right mechanism for them (see
@@ -585,7 +585,13 @@ token instead"** disclosure that reveals the exact same token form on
 demand — a one-way reveal, no re-hide affordance. Without `oauthReady`, the
 component renders *exactly* today's form, byte-identical (the same JSX
 value, not a re-implementation) — zero visual regression for every other
-provider.
+provider. **Narrowed by W3-T4:** four providers (Grafana, Prometheus,
+Langfuse, Datadog) now render one extra static sentence inside that shared
+form value itself (`tokenStandardNote`, below) — still the one JSX value
+returned from both the `oauthReady` and non-`oauthReady` branches (no new
+branch, no re-implementation), so "byte-identical" now means "identical
+across both branches for a given provider," not "identical to the
+pre-W3-T4 form" for those four specifically.
 
 Sentry's catalog entry (`connector-helpers.ts`) declares an `oauthHint`
 (W3-T3) — LIVE as of the W3-T3 fix round: `oauthReady` for sentry reflects
@@ -594,6 +600,18 @@ the real three-env-var gate (`oauthConfigFor` + `sentryOauthAdapter`'s own
 deployment, the "Connect Sentry" primary button renders exactly like
 Railway's — session-transport tenant binding (see "Session-transport
 tenant binding" above) makes the whole flow actually completable now.
+
+**Token-only sheet copy (W3-T4).** `ConnectorConnectMeta.tokenStandardNote`
+— declared by exactly Grafana, Prometheus, Langfuse, Datadog — renders one
+calm sentence inside `tokenForm` itself (the shared token-paste form, not
+gated on `oauthReady` the way `oauthHint` is, since these four providers'
+`oauthReady` is never true): API-token connect is this provider's standard
+integration method, stated plainly, never a "coming soon"/apology framing.
+Datadog's additionally names why the form asks for two values (its
+already-composite API key + application key pair). Railway and Sentry keep
+their own `oauthHint` instead — that field already covers "why token-paste
+is fine here" for a provider that also offers OAuth; `tokenStandardNote`
+is for the four that don't and never will this wave (see "Out of scope").
 
 **Connect-result banner (W3-T2 fix round)** — T1 shipped the callback's
 `?connected=<provider>`/`?oauth_error=<reason>` redirect but nothing ever
@@ -633,8 +651,11 @@ for an unrecognized/missing param. Dismissing strips the query params
    wired live** — see "Session-transport tenant binding" above for the
    full mechanism and CSRF-equivalence argument. Sentry is live as of this
    fix round, on equal footing with Railway.
-4. **W3-T4:** token-only sheet copy for the five providers that stay
-   token-paste forever, wave-final review, this doc's as-built section.
+4. **W3-T4:** token-only sheet copy for four of the six providers that stay
+   token-paste forever — Grafana, Prometheus, Langfuse, Datadog (the plan's
+   own W3-T4 scope, `plan-oauth.md`; Vercel and Cloudflare did not get the
+   same catalog note — see "Out of scope" below) — wave-final review, this
+   doc's as-built section.
 5. **Turn-on (ops, after W3-T2/T3 merge):** register both vendor apps
    (below), set their env vars on the deployment. No further code change
    flips `oauthReady` on for either provider — it is purely env + adapter
@@ -678,9 +699,17 @@ derivation, gating on all three of its vars rather than the generic two).
 ## Out of scope
 
 - Cloudflare, Vercel, Datadog, Langfuse, Grafana, Prometheus OAuth — none
-  are in this wave; token-paste is the permanent, correct mechanism for them
-  (W3-T4 gives each a one-line "this is the category standard" sheet note,
-  not an apology).
+  are in this wave; token-paste is the permanent, correct mechanism for all
+  six. **Correction (W3-T4):** the one-line "this is the standard
+  integration method" sheet note (`ConnectorConnectMeta.tokenStandardNote`,
+  not an apology, no "coming soon") went to only FOUR of the six — Grafana,
+  Prometheus, Langfuse, Datadog, exactly `plan-oauth.md`'s own W3-T4 task
+  line — not all six as an earlier draft of this bullet claimed. Vercel and
+  Cloudflare did not get it: Cloudflare's own OAuth is flagged above (W3-T2
+  doc-verification, the PKCE paragraph) as a documented future phase, so a
+  "this is permanent" claim would be premature for it; Vercel's exclusion is
+  simply the plan's own W3-T4 scope pin, not a claim about its own OAuth
+  roadmap either way.
 - Datadog's own MCP server / any MCP-based connect mechanism — a different
   integration shape entirely, not evaluated here.
 - Sentry's uninstall webhook (would let a vendor-side uninstall
@@ -690,6 +719,69 @@ derivation, gating on all three of its vars rather than the generic two).
   like today's pasted tokens — one connection shared by the workspace, not
   one per team member).
 
-## As-built (W3-T4, appended when the wave closes)
+## As-built (W3-T1..T4)
 
-_Pending — filled in once W3-T2/T3/T4 land._
+Eight material deviations from this doc's own originally-pinned design,
+each already folded into its relevant section above — collected here as
+the single compact list the wave's own W3-T4 task calls for. Every item
+below is a pointer to the section carrying the full reasoning, not a
+restatement of it.
+
+1. **State store is `connectors.config` jsonb, not a reused GitHub
+   mechanism** (W3-T1) — `mintGithubInstallState` turned out to be
+   GitHub-hardcoded (two dedicated `workspaces` columns, one
+   workspace-scoped state, no provider dimension); the plan's own
+   no-migration fallback was used instead. See "State" under Design.
+2. **`postExchange` hook + `project_not_granted` + auto-fill** (W3-T2 fix
+   round) — reconciles Railway's resource-scoped `project:viewer` grant
+   against the workspace's configured project id, closed with a new
+   closed reason and single-project auto-fill. See "PKCE + post-exchange
+   project-grant check."
+3. **PKCE (S256), generic shared plumbing** (W3-T2 fix round) — upgraded
+   from a disclosed v1 gap to implemented now: `lib/oauth/pkce.ts`, reused
+   by any future adapter via the same state-record jsonb patch. See the
+   same section.
+4. **Sentry state-transport correction** (W3-T3, both fix rounds) —
+   doc-verification found Sentry's redirect carries no `state` param at
+   all (the plan's own vendor-facts table was wrong); shipped
+   adapter-complete-but-unreachable pending a coordinator ruling, then
+   wired live via session-transport tenant binding (a per-user pending
+   marker, not an echoed token). The second fix round corrected an
+   overclaim that this was flatly CSRF-equivalent to param-transport —
+   it's equivalent against misdirection but honestly disclosed as weaker
+   against artifact interception + replay, with a shorter TTL (item 7) as
+   the one real mitigation. See "Session-transport tenant binding."
+5. **Connect-result banner** (W3-T2 fix round) — W3-T1 shipped the
+   callback's `?connected=<provider>`/`?oauth_error=<reason>` redirect but
+   nothing ever read it; closed once `project_not_granted` needed a
+   legible surface. See "Sheet UX."
+6. **`getConnectorRaw`/`toRawView` split** (W3-T1 fix round) — the
+   ephemeral-oauth-key preserve-list fix was a silent no-op because the
+   merge read "existing" config through the already-client-stripped public
+   `getConnector`; fixed with an internal, never-exported raw-view read
+   path. See "State."
+7. **Per-transport state TTLs** (W3-T3 second fix round) —
+   `mintConnectorOauthState` gained an optional `ttlMs`; session-transport
+   uses a deliberately shorter `SESSION_TRANSPORT_OAUTH_STATE_TTL_MS` (10
+   min) than param-transport's unchanged `OAUTH_STATE_TTL_MS` (30 min),
+   narrowing item 4's disclosed exploit window. See "Session-transport
+   tenant binding."
+8. **`envReady` third-env-var gate** (W3-T3 fix round) —
+   `OauthProviderAdapter` gained an additive, optional `envReady?()` beyond
+   the generic client id/secret pair; Sentry's checks
+   `SENTRY_OAUTH_INTEGRATION_SLUG`, folded into both `oauthReady`
+   derivation and the link route's 409 env-gate. See "Env gating."
+
+W3-T4 itself shipped as this doc always scoped it — the `tokenStandardNote`
+sheet copy for Grafana/Prometheus/Langfuse/Datadog (see "Sheet UX") plus
+this appendix and the stale-cross-reference sweep below — no deviation
+from the original plan.
+
+**Stale cross-references corrected this task** (the wave-final consistency
+review `plan-oauth.md`'s own W3-T4 line calls for): the Problem section's
+provider count ("five" → six, matching its own parenthetical list of six
+names); the phased-rollout W3-T4 line and the "Out of scope" section both
+undercounted/overcounted which providers got the `tokenStandardNote` sheet
+note (corrected to the actual four); the Sheet UX section's
+"byte-identical" claim narrowed to account for the four providers that now
+render one extra static sentence in the shared token-form value.

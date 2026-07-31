@@ -137,7 +137,7 @@ export function degraded(reason, extra = {}) {
  *   4. non-2xx status                 -> degraded(<mapped reason>, { status })
  *   5. non-JSON body                  -> degraded("bad_body", { status })
  *   6. success                        -> { ok:true, repo, prNumber, title,
- *                                        author, baseRef, headRef, body,
+ *                                        author, baseRef, headRef, headSha, body,
  *                                        changedFiles, truncated, omittedPaths,
  *                                        linkedIssues, linkedIssuesDegraded }
  *
@@ -189,6 +189,7 @@ export async function fetchPrDiff({ env = {}, eveSessionId, repo, prNumber, tran
     author: typeof body.author === "string" ? body.author : "",
     baseRef: typeof body.baseRef === "string" ? body.baseRef : "",
     headRef: typeof body.headRef === "string" ? body.headRef : "",
+    headSha: typeof body.headSha === "string" ? body.headSha : "",
     body: typeof body.body === "string" ? body.body : "",
     changedFiles: Array.isArray(body.changedFiles) ? body.changedFiles : [],
     truncated: body.truncated === true,

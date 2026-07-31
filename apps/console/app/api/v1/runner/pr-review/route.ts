@@ -261,7 +261,7 @@ interface GithubPrResponse {
   body?: unknown;
   user?: { login?: unknown } | null;
   base?: { ref?: unknown } | null;
-  head?: { ref?: unknown } | null;
+  head?: { ref?: unknown; sha?: unknown } | null;
 }
 
 interface GithubFileEntry {
@@ -519,6 +519,7 @@ export async function GET(request: NextRequest) {
       author: prBody.user && typeof prBody.user.login === "string" ? prBody.user.login : "",
       baseRef: prBody.base && typeof prBody.base.ref === "string" ? prBody.base.ref : "",
       headRef: prBody.head && typeof prBody.head.ref === "string" ? prBody.head.ref : "",
+      headSha: prBody.head && typeof prBody.head.sha === "string" ? prBody.head.sha : "",
       body: typeof prBody.body === "string" ? prBody.body : "",
       changedFiles,
       truncated,

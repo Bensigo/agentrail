@@ -38,6 +38,7 @@ function prBody(overrides = {}) {
     author: "ada",
     baseRef: "main",
     headRef: "ada/widgets-branch",
+    headSha: "abc123def4567890",
     body: "This adds widgets.",
     changedFiles: [
       { path: "src/index.ts", status: "modified", additions: 3, deletions: 1, patch: "@@ -1,3 +1,3 @@\n-old\n+new" },
@@ -123,6 +124,7 @@ test("fetchPrDiff returns the PR shape on 200 (ok path), with the bearer + accep
   assert.equal(res.author, "ada");
   assert.equal(res.baseRef, "main");
   assert.equal(res.headRef, "ada/widgets-branch");
+  assert.equal(res.headSha, "abc123def4567890");
   assert.equal(res.body, "This adds widgets.");
   assert.deepEqual(res.changedFiles, body.changedFiles);
   assert.equal(res.truncated, false);
@@ -135,6 +137,16 @@ test("fetchPrDiff returns the PR shape on 200 (ok path), with the bearer + accep
     transport.calls[0].url,
     `https://console.example.com${PR_REVIEW_PATH}?eveSessionId=eve-1&repo=ada%2Fwidgets&prNumber=98`,
   );
+});
+
+test("headSha defaults to \"\" when the console response omits it (back-compat, older console)", async () => {
+  const { headSha, ...bodyWithoutHeadSha } = prBody();
+  const transport = fakeTransport(() => ({ status: 200, json: async () => bodyWithoutHeadSha }));
+
+  const res = await fetchPrDiff({ env: ENV, eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98, transport });
+
+  assert.equal(res.ok, true);
+  assert.equal(res.headSha, "");
 });
 
 test("fetchPrDiff reports truncated + omittedPaths honestly when the console capped the diff", async () => {

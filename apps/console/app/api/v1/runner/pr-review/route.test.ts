@@ -281,8 +281,12 @@ describe("GET /api/v1/runner/pr-review", () => {
     );
   });
 
-  it("200: returns title/author/baseRef/headRef/body/changedFiles/truncated/omittedPaths", async () => {
-    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]), graphqlIssuesResponse([]));
+  it("200: returns title/author/baseRef/headRef/headSha/body/changedFiles/truncated/omittedPaths", async () => {
+    mockFetchSequence(
+      prMetaResponse({ head: { ref: "ada/widgets-branch", sha: "abc123def4567890" } }),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([]),
+    );
 
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
     const json = await res.json();
@@ -293,6 +297,7 @@ describe("GET /api/v1/runner/pr-review", () => {
       author: "ada",
       baseRef: "main",
       headRef: "ada/widgets-branch",
+      headSha: "abc123def4567890",
       body: "This adds widgets.",
       changedFiles: [
         {
@@ -308,6 +313,16 @@ describe("GET /api/v1/runner/pr-review", () => {
       linkedIssues: [],
       linkedIssuesDegraded: false,
     });
+  });
+
+  it("200: headSha defaults to \"\" when head.sha is absent (older GitHub response shape)", async () => {
+    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]), graphqlIssuesResponse([]));
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.headSha).toBe("");
   });
 
   it("paginates the files endpoint until a short page signals the end", async () => {

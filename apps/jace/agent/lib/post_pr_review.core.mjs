@@ -39,24 +39,24 @@
 // fetch_pr_diff.core.mjs, which runs inside a declared subagent's own child
 // session (see that module's doc-comment).
 //
-// `repo` / `prNumber` / `summary` / `comments` / `acCoverage` are
-// model-supplied — the reviewer subagent's findings and per-AC coverage
-// judgments, relayed by root verbatim. Safe without a human in the loop for
-// the two structural reasons in this file's header (advisory-only event,
-// server-scoped repo), plus hardenUntrusted() below.
+// `repo` / `prNumber` / `summary` / `comments` / `acCoverage` / `judgment`
+// are model-supplied — the reviewer subagent's findings, per-AC coverage
+// judgments, and structured judgment, relayed by root verbatim. Safe without
+// a human in the loop for the two structural reasons in this file's header
+// (advisory-only event, server-scoped repo), plus hardenUntrusted() below.
 //
 // hardenUntrusted() runs over `summary` and every comment `body` before they
-// ever leave this module: the reviewer's findings — and its acCoverage
-// judgments, both criterion text and evidence — are shaped by reading
-// UNTRUSTED diff content (root wiring's own rule — a hostile PR could try to
-// seed a prompt-injection payload that rides all the way to a POSTED GITHUB
-// COMMENT a human later reads), so this mirrors create_issue's own
-// defense-in-depth backstop rather than trusting instructions.md alone. This
-// matters MORE now than it did behind the gate — it is the only thing between
-// a hostile diff and posted text, with no human reading the draft first.
-// `acCoverage` is rendered into `summary` (composeSummaryWithCoverage, in
-// runPostPrReview below) BEFORE that hardening runs, precisely so its text
-// never skips the sanitizer.
+// ever leave this module: the reviewer's findings — and its acCoverage and
+// judgment judgments, both criterion/note text and evidence/basis — are
+// shaped by reading UNTRUSTED diff content (root wiring's own rule — a
+// hostile PR could try to seed a prompt-injection payload that rides all the
+// way to a POSTED GITHUB COMMENT a human later reads), so this mirrors
+// create_issue's own defense-in-depth backstop rather than trusting
+// instructions.md alone. This matters MORE now than it did behind the gate —
+// it is the only thing between a hostile diff and posted text, with no human
+// reading the draft first. `acCoverage` and `judgment` are both rendered
+// into `summary` (composeSummary, in runPostPrReview below) BEFORE that
+// hardening runs, precisely so neither's text ever skips the sanitizer.
 //
 // Failure posture: every non-2xx status is mapped to a stable `reason` + a
 // relayable `message` — the console's OWN honest error text when the body
@@ -240,9 +240,31 @@ export function renderJudgmentLine(judgment) {
  * portion ahead of it, and reassembles base… + countLine + sep + shortLine.
  * This is the pathological-of-pathological case: both guaranteed lines (the
  * coverage count line and the short judgment line) must ride out whole.
+ *
+ * That count-line detection is TEXT-based (a literal prefix check), so it
+ * must be gated on a STRUCTURAL fact — a coverage block was actually
+ * rendered from real `acCoverage` input — never on the text prefix alone.
+ * `summary` is model-drafted, attacker-steerable text: without the gate, a
+ * summary whose own last line happens to start with "AC coverage: " would
+ * be treated as the guaranteed count line and exempted from trimming, which
+ * both breaks the SUMMARY_MAX_LEN guarantee (the spoofed "count line" has no
+ * actual length bound) and lets the attacker silently evict the real
+ * guaranteed line (the short judgment fallback) off the end into
+ * hardenUntrusted's truncation. `coverageRendered` closes this off:
+ *   - rendered + folded    -> withCoverage's last line IS the genuine count
+ *     line (composeSummaryWithCoverage's own hard guarantee) — protect it.
+ *   - rendered + unfolded  -> the block's own last entry is last, and every
+ *     AC_STATUS_RENDER line starts with "- ✅ "/"- ❌ "/"- ❓ ", never
+ *     "AC coverage: " — the prefix check is simply false here regardless.
+ *   - nothing rendered     -> NOTHING in `withCoverage` is a guaranteed
+ *     line; attacker-influenced summary text must never be granted
+ *     count-line protection, so the gate short-circuits before the prefix
+ *     check is even consulted, and the plain base-cedes-its-tail path below
+ *     runs instead (protecting only the short judgment line, generically).
  */
 export function composeSummary(summary, acCoverage, judgment) {
   const withCoverage = composeSummaryWithCoverage(summary, acCoverage);
+  const coverageRendered = renderAcCoverage(acCoverage) !== "";
   const line = renderJudgmentLine(judgment);
   if (!line) return withCoverage;
   const sep = withCoverage.trim().length > 0 ? "\n\n" : "";
@@ -254,12 +276,13 @@ export function composeSummary(summary, acCoverage, judgment) {
 
   // Double-pathological: even the folded judgment line doesn't fit alongside
   // withCoverage. If withCoverage already folded down to the coverage count
-  // line (composeSummaryWithCoverage's own hard guarantee), that line is the
-  // LAST line of withCoverage and must not be touched — only the base ahead
-  // of it may cede its tail.
+  // line (composeSummaryWithCoverage's own hard guarantee) — never merely
+  // because the text looks like it did — that line is the LAST line of
+  // withCoverage and must not be touched; only the base ahead of it may
+  // cede its tail.
   const lines = withCoverage.split("\n");
   const lastLine = lines[lines.length - 1];
-  if (lastLine.startsWith("AC coverage: ")) {
+  if (coverageRendered && lastLine.startsWith("AC coverage: ")) {
     const countLine = lastLine;
     const head = withCoverage.slice(0, withCoverage.length - countLine.length);
     const innerSep = head.endsWith("\n\n") ? "\n\n" : "";
@@ -271,6 +294,11 @@ export function composeSummary(summary, acCoverage, judgment) {
     return `${base.slice(0, budget)}…${innerSep}${countLine}${sep}${shortLine}`;
   }
 
+  // No coverage block was actually rendered (or the check above didn't
+  // match) — the short judgment line is the only guaranteed line left to
+  // protect. Cede the base's tail generically: this keeps the total ≤
+  // SUMMARY_MAX_LEN even for an unbounded or attacker-crafted summary,
+  // because nothing here is exempted from the slice.
   const budget = Math.max(0, SUMMARY_MAX_LEN - shortLine.length - sep.length - 1);
   return `${withCoverage.slice(0, budget)}…${sep}${shortLine}`;
 }

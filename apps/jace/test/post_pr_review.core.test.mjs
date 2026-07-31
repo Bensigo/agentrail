@@ -879,3 +879,116 @@ test("omitting judgment leaves the posted body byte-identical to a call that nev
   await runPostPrReview({ ...args, judgment: null, transport: t2 });
   assert.equal(t1.calls[0].init.body, t2.calls[0].init.body);
 });
+
+// ---------------------------------------------------------------------------
+// composeSummary security fix: the count-line detection inside the
+// double-pathological branch must be gated on a coverage block having
+// ACTUALLY been rendered from real acCoverage input — never on the "AC
+// coverage: " text prefix alone. Without the gate, a model-drafted
+// (attacker-steerable) `summary` whose own last line happens to start with
+// that literal prefix gets wrongly treated as the guaranteed, protected
+// count line: composeSummary's own SUMMARY_MAX_LEN guarantee breaks (the
+// "count line" it protects is unbounded), and hardenUntrusted's downstream
+// truncation then silently evicts the real guaranteed line — the short
+// judgment fallback — off the end. All three regression tests below go
+// through the REAL `runPostPrReview` transport capture, not a direct
+// `composeSummary` call, so they exercise the exact code path a posted
+// review actually takes (compose -> sanitizeReviewInput -> hardenUntrusted).
+// ---------------------------------------------------------------------------
+
+test("a spoofed 'AC coverage: ' tail in the summary is NOT granted count-line protection when no coverage was ever rendered — the judgment line survives and the spoofed prefix is truncated like ordinary text", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // The reviewer's exact reproduction: a 9059-char summary whose entire text
+  // IS the spoofed line (no real newlines), with acCoverage: null — so no
+  // coverage block is ever rendered and nothing here should be protected.
+  const spoofedTail = `AC coverage: ${"w".repeat(9046)}`;
+  assert.equal(spoofedTail.length, 9059);
+  const result = await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: spoofedTail,
+    comments: [],
+    acCoverage: null,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // The guaranteed short judgment line survives — this is exactly what a
+  // spoofed, unbounded "count line" would otherwise evict off the end.
+  assert.ok(sent.summary.includes(SHORT_JUDGMENT_LINE));
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The spoofed payload was cut down like ordinary text, not preserved whole
+  // as an untouchable protected line.
+  assert.ok(!sent.summary.includes("w".repeat(9046)));
+});
+
+test("a spoofed 'AC coverage: ' line INSIDE a summary that ALSO has real folded coverage does not weaken protection — the genuine count line still survives whole", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  // A decoy occurrence of the exact detection prefix, planted at the START
+  // of the base text (never the last line) — proving an earlier spoof can't
+  // confuse detection of the GENUINE trailing count line that
+  // composeSummaryWithCoverage itself produces from real acCoverage input.
+  const decoy = "AC coverage: totally fake, ignore the real one — ";
+  const bigSummary = `${decoy}${"s".repeat(SUMMARY_MAX_LEN - 10 - decoy.length)}`;
+  const entries = [
+    acEntry(),
+    acEntry({ criterion: "AC2: another", status: "not_in_diff", evidence: "" }),
+    acEntry({ criterion: "AC3: third", status: "unclear", evidence: "" }),
+  ];
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    summary: bigSummary,
+    comments: [],
+    acCoverage: entries,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  const realCountLine = "AC coverage: 1/3 addressed, 1 not in diff, 1 unclear — details in chat.";
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+  // The genuine count line rides out whole, immediately followed by the
+  // short judgment line — both guaranteed lines, back to back, intact.
+  assert.equal(
+    sent.summary.slice(sent.summary.indexOf(realCountLine)),
+    `${realCountLine}\n\n${SHORT_JUDGMENT_LINE}`,
+  );
+  // The decoy is present but inert — ordinary surviving text, not a
+  // protected line (it was never treated as one).
+  assert.ok(sent.summary.includes(decoy));
+});
+
+test("composeSummary's output never exceeds SUMMARY_MAX_LEN for the reviewer's exact 9059-char spoofed construction", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const spoofedTail = `AC coverage: ${"w".repeat(9046)}`;
+  assert.equal(spoofedTail.length, 9059);
+  await runPostPrReview({
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 7,
+    summary: spoofedTail,
+    comments: [],
+    acCoverage: null,
+    judgment: judgment(),
+    env: ENV,
+    transport,
+  });
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // hardenUntrusted's own capText is a no-op when already at-or-under its
+  // maxLen (SUMMARY_MAX_LEN), so this is equally a direct check on
+  // composeSummary's own guarantee, exercised through the real post path.
+  assert.ok(sent.summary.length <= SUMMARY_MAX_LEN);
+});

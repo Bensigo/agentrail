@@ -91,29 +91,54 @@ adversarial review of loop PRs continues — the audit showed the internal
 step's verdict was one unproven model line, so its absence removes theater,
 not protection.
 
-### 5. Pre-merge behavioral verification (preview QA chaining)
+### 5. Pre-merge behavioral verification — one review, one verdict
 
-When a PR needs its running behavior seen — frontend work, anything only a
-browser can judge — the reviewer does NOT get a VM. The division of labor
-stands: the reviewer thinks over code and context; **QA already owns
-isolated live verification** (its browser sidecar containers are the "VM",
-and its spec's rule — the service never clones, builds, or executes repo
-code — is a security boundary, not a gap, because any contributor can open
-a PR).
+**Product rule (owner, 2026-07-31): there is ONE review job and ONE posted
+verdict per PR.** When a PR needs its running behavior seen — frontend
+work, anything only a browser can judge — the review job runs a
+**behavioral stage** and folds its per-AC results into the same posted
+review and the same `(repo, prNumber, headSha)` evidence key. The owner
+never "calls QA" for a PR; behavior verification is part of what a review
+IS.
 
-What this arc adds is the chain: a review job whose PR has a **preview
-environment URL** (Railway PR environments, or a Vercel/Netlify preview
-surfaced via the GitHub deployments API / PR comments) enqueues a follow-on
-**QA job against that preview URL**, carrying the issue's ACs plus the
-reviewer's `hiddenRisks`/`unclear` items as the Priority focus. Its
-`ac_results` attach to the same `(repo, prNumber, headSha)` evidence key.
-Zero new execution infrastructure — if no preview URL exists, the chain is
-skipped with a visible reason.
+Internally, the behavioral stage is executed by the QA specialist — the
+browser sidecar containers and the observed-evidence contract
+(`ac_results`) already exist there, and reuse means one browser stack, one
+honesty vocabulary, one prompt to maintain. It is an implementation detail
+of the review job, not a separate product surface. The reviewer subagent
+itself does NOT gain browser tools: its primary input is the hostile diff,
+and coupling diff-reading with browser-driving in one prompt widens the
+injection surface while slowing every review that needs no browser. The
+job composes the two specialists; the PR sees one verdict.
 
-Booting previews ourselves for repos without preview deploys (an isolated,
-fleet-style sandbox that builds the PR branch) is a possible LATER arc —
-it reuses the runner's existing untrusted-code isolation, never Jace's
-process — and is deliberately out of scope here.
+**The environment ladder — every branch terminates in evidence or an
+honest recorded gap, never a silent skip:**
+
+1. **Preview URL exists** (Railway PR environments; Vercel/Netlify
+   previews via the GitHub deployments API or PR comments) → the
+   behavioral stage browses it directly. Cheapest, preferred.
+2. **No preview URL → sandbox boot (this arc, phase B2).** An ephemeral,
+   isolated sandbox — the fleet runner's existing untrusted-code isolation
+   tier, never Jace's process — clones the PR head, installs, and starts
+   the app via a run recipe: `jace.preview` config when the repo declares
+   one, else detected (`package.json` dev/start script and framework
+   defaults). The app is reachable ONLY from the browser sidecar (private
+   network), runs with public-safe env only (NEVER production secrets or
+   databases), is resource- and time-capped, and is destroyed after the
+   stage. Boot logs attach to the evidence.
+3. **Boot impossible or insufficient** (no recipe detectable, build fails,
+   the app requires credentials/backing services we will not provide) →
+   the affected ACs return `not_testable` with the concrete reason, the
+   posted review says which environment rung was reached, and the gap is
+   recorded on the Change Record — reviewable by a human, countable by
+   Arc E's calibration.
+
+Rung 2 is real infrastructure with real security surface (arbitrary
+contributor code executes in the sandbox): it ships as **phase B2** behind
+its own flag, after B1 (intake + queue + review + rung 1/3) proves the
+seam — but it is part of THIS arc's committed scope, not a deferred maybe,
+because most repos have no preview deploys and rung 3 alone would leave
+the common case unverified.
 
 ## Evidence & reuse
 

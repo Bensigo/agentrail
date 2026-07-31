@@ -22,7 +22,7 @@ type SidebarUser = {
 // Streams in the workspace list for the switcher without blocking the page
 // shell: the surrounding Suspense fallback renders the full sidebar (nav,
 // user, sign-out) immediately with an empty switcher.
-async function SidebarWithWorkspaces({
+export async function SidebarWithWorkspaces({
   userId,
   workspaceId,
   user,

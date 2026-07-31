@@ -71,20 +71,29 @@ test("instructions.md forbids root passing its own outputSchema to the reviewer"
   );
 });
 
-test("instructions.md states the reviewer sees only the diff, so a review is not an audit", () => {
+test("instructions.md states a review is a bounded investigation, not a full audit", () => {
   const src = instructions();
+  // Superseded 2026-08-01: the reviewer now has mandatory repo investigation
+  // (search_code/read_repo_file/file_history/fetch_wiki), so "sees ONLY the
+  // diff, has no repo access" is no longer true — the honest bound is a
+  // BOUNDED, declared read budget, not zero repo access.
   assert.match(
     src,
-    /[Aa] review is not an\s+audit/,
-    "must bound what a diff-only pass can establish",
+    /review is not a full\s+audit/i,
+    "must bound what the reviewer's investigation can establish",
   );
-  // `\s+`, not a literal space: markdown wraps this section at ~72 cols, so
-  // the phrase straddles a newline today and could straddle a different one
-  // after any reflow. The rule is what must survive, not the line breaks.
+  // `\s+`/`[^.]*`, not literal spacing: markdown wraps this section at ~75
+  // cols, so a phrase can straddle a newline today and a different one after
+  // any reflow. The rule is what must survive, not the line breaks.
   assert.match(
     src,
-    /no\s+repo\s+access/i,
-    "must name the actual limitation, not just caution generally",
+    /bounded[^.]*read budget/i,
+    "must name the actual limitation — a bounded read budget, not full repo access",
+  );
+  assert.match(
+    src,
+    /investigation trail/i,
+    "must point at the investigation trail as the record of what was actually consulted",
   );
 });
 
@@ -138,8 +147,8 @@ test("root instructions: null coverage is reported as a diff-only review, echoin
 test("root instructions: the chat coverage rundown carries the reviewer's evidence for not_in_diff/unclear entries", () => {
   const prose = instructions();
   // `\s+`, not a literal space — same reflow-tolerant idiom as the
-  // "review is not an audit" / "no repo access" pin above: the rule must
-  // survive a rewrap, not pin today's exact line break.
+  // "review is not a full audit" / "bounded ... read budget" pin above: the
+  // rule must survive a rewrap, not pin today's exact line break.
   assert.ok(
     /include\s+the\s+reviewer's\s+`evidence`/.test(prose),
     "must say the chat rundown carries the reviewer's evidence for not_in_diff/unclear entries",
@@ -150,9 +159,9 @@ test("root instructions: the chat coverage rundown carries the reviewer's eviden
 //
 // Same posture as the pins above: these assert the PROSE states the rule,
 // not that a model follows it. Multi-word phrases use `\s+` between words
-// (not a literal space) for the same reason as the "no repo access" pin —
-// this file wraps at ~75 cols, so a phrase can straddle a line break after
-// a future reword without the rule itself having changed.
+// (not a literal space) for the same reason as the "bounded ... read budget"
+// pin — this file wraps at ~75 cols, so a phrase can straddle a line break
+// after a future reword without the rule itself having changed.
 
 function reviewerInstructions() {
   return readFileSync(reviewerInstructionsPath, "utf8");

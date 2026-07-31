@@ -394,6 +394,24 @@ test(`investigated is capped at ${MAX_INVESTIGATED} entries, matching the schema
   assert.ok(badResult.errors.some((e) => e.includes(`at most ${MAX_INVESTIGATED} entries`)));
 });
 
+test("judgment basis is capped at 5 entries per field, matching the schema's maxItems (basis-cap literal pin)", () => {
+  for (const field of JUDGMENT_FIELDS) {
+    assert.equal(REVIEW_SCHEMA.properties.judgment.properties[field].properties.basis.maxItems, 5, field);
+  }
+
+  // One over-cap rejection, mirroring the MAX_INVESTIGATED pin above — the
+  // full malformed-basis sweep (non-array, non-string items, over-cap) already
+  // lives in "validateReview rejects a judgment basis that isn't an array of
+  // at most 5 strings"; this just proves the literal pinned above is the
+  // number the validator actually enforces.
+  const overCap = Array.from({ length: 6 }, (_, i) => `i${i + 1}`);
+  const result = validateReview(
+    reviewedReview({ judgment: validJudgment({ simplest: judgmentField({ basis: overCap }) }) }),
+  );
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => /judgment\.simplest\.basis must be an array of at most 5 strings/.test(e)));
+});
+
 // ---------------------------------------------------------------------------
 // validateReview — judgment (the grounded judgment block)
 // ---------------------------------------------------------------------------

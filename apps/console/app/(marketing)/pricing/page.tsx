@@ -210,10 +210,10 @@ export default function PricingPage() {
                 className="flex h-full flex-col rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-6"
               >
                 <div>
-                  <h2 className="text-body font-bold text-[var(--gray-12)]">{tier.name}</h2>
+                  <h2 className="text-label font-bold text-[var(--gray-12)]">{tier.name}</h2>
                   <p className="mt-1 font-mono text-heading-2 text-[var(--gray-12)]">{tier.price}</p>
                 </div>
-                <dl className="mt-4 flex flex-col gap-3 font-mono text-body">
+                <dl className="mt-4 flex flex-col gap-3 font-mono text-body-sm">
                   <div>
                     <dt className="text-[var(--gray-11)]">Seats</dt>
                     <dd className="text-[var(--gray-12)]">{tier.seats}</dd>

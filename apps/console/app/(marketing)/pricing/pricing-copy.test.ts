@@ -69,6 +69,28 @@ const RETIRED_PHRASES = [
   "charged when the task is done",
 ];
 
+/**
+ * Spec §10 feature-line vocabulary not already covered by its own dedicated
+ * `it()` below (`architecture assistance` / `premium reasoning` /
+ * `dedicated support` were named individually since the task brief called
+ * them out by name) — the remaining 10 of the full 13-phrase vocabulary (4
+ * Starter + 4 Growth + 5 Enterprise). Array-driven, same convention as
+ * `RETIRED_PHRASES` above, so all 13 are covered without 10 near-duplicate
+ * hand-written its.
+ */
+const REMAINING_FEATURE_LINES = [
+  "PR reviews",
+  "bug fixes",
+  "documentation",
+  "everyday engineering",
+  "everything in Starter",
+  "large refactors",
+  "custom AI policies",
+  "SSO",
+  "self-hosting",
+  "SLA",
+];
+
 describe("pricing page + landing §6b never reintroduce the retired anti-subscription claims", () => {
   for (const phrase of RETIRED_PHRASES) {
     it(`pricing/page.tsx source has no "${phrase}"`, () => {
@@ -119,6 +141,12 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).toContain("dedicated support");
   });
 
+  for (const phrase of REMAINING_FEATURE_LINES) {
+    it(`pricing page names "${phrase}" (spec §10 feature vocabulary)`, () => {
+      expect(pricingSource).toContain(phrase);
+    });
+  }
+
   it("pricing page's Enterprise CTA is a mailto link built from the ENTERPRISE_CONTACT_EMAIL const (hello@heyjace.com)", () => {
     // Raw-source pin, not a rendered-string pin (see this file's own
     // doc-comment on why raw text): the const is interpolated into the
@@ -138,6 +166,17 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
 
   it('pricing page\'s Growth CTA reads "Start with Growth"', () => {
     expect(pricingSource).toContain("Start with Growth");
+  });
+
+  it("pricing page's CTA render site actually renders tier.ctaLabel, not a hardcoded string", () => {
+    // Review fix (round 1): the two its above pass even if `ctaLabel` goes
+    // orphaned in the TIERS data and both render branches hardcode a
+    // different label instead (e.g. "Get started") — the literal strings
+    // "Start with Starter"/"Start with Growth" would still exist SOMEWHERE
+    // in source (the now-dead data fields), so those pins alone can't catch
+    // that mutation. Same fix shape as the mailto pin above: anchor the
+    // RENDER-SITE expression itself, not just the data value.
+    expect(pricingSource).toContain("{tier.ctaLabel}");
   });
 
   it("pricing page's Starter/Growth CTA links to a real route, not an invented /signin path", () => {

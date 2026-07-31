@@ -5,49 +5,9 @@ import { isGoalLoopEnabled } from "@agentrail/db-postgres";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
 import { TopBarBreadcrumb } from "../../../components/breadcrumb";
-import {
-  getSession,
-  getWorkspacesForUser,
-  getMembership,
-} from "../../../../lib/cached";
+import { getSession, getMembership } from "../../../../lib/cached";
 import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
-
-type SidebarUser = {
-  name?: string | null;
-  email?: string | null;
-  image?: string | null;
-};
-
-// Streams in the workspace list for the switcher without blocking the page
-// shell: the surrounding Suspense fallback renders the full sidebar (nav,
-// user, sign-out) immediately with an empty switcher.
-export async function SidebarWithWorkspaces({
-  userId,
-  workspaceId,
-  user,
-  signOutAction,
-  chatEnabled,
-  goalsEnabled,
-}: {
-  userId: string;
-  workspaceId: string;
-  user: SidebarUser;
-  signOutAction: () => Promise<void>;
-  chatEnabled: boolean;
-  goalsEnabled: boolean;
-}) {
-  const workspaces = await getWorkspacesForUser(userId);
-  return (
-    <Sidebar
-      workspaces={workspaces}
-      workspaceId={workspaceId}
-      user={user}
-      signOutAction={signOutAction}
-      chatEnabled={chatEnabled}
-      goalsEnabled={goalsEnabled}
-    />
-  );
-}
+import { SidebarWithWorkspaces } from "./sidebar-with-workspaces";
 
 export default async function WorkspaceLayout({
   children,

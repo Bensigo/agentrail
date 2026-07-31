@@ -9,11 +9,12 @@ vi.mock("../../../../lib/cached", () => ({
   getMembership: vi.fn(),
 }));
 
-// loadPlanCardData does its own flag/degraded/error handling (Task 2) —
-// page.tsx just awaits it and threads the result through as a prop. Mocked
-// here so this file's tests control the resolved value directly rather
-// than depending on ambient env (BILLING_SUBSCRIPTIONS_ENFORCED) to decide
-// it implicitly.
+// loadPlanCardData does its own degraded/no-account/error handling (no flag
+// gate anymore — 2026-07-31 owner ruling retired the early
+// subscriptionsEnforced() return) — page.tsx just awaits it and threads the
+// result through as a prop. Mocked here so this file's tests control the
+// resolved value directly rather than depending on real DB/policy
+// resolution to produce each case.
 vi.mock("../../../../lib/plan-card-data", () => ({
   loadPlanCardData: vi.fn(),
 }));
@@ -190,7 +191,7 @@ describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 
     expect(loadPlanCardData).toHaveBeenCalledExactlyOnceWith(WORKSPACE_ID);
   });
 
-  it("threads an undefined loadPlanCardData result straight through as DigestPanel's planCard prop (flag off / degraded / error)", async () => {
+  it("threads an undefined loadPlanCardData result straight through as DigestPanel's planCard prop (degraded workspace / no billing account / a swallowed read error)", async () => {
     vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
 
     const digestPanel = await renderDigestPanel();
@@ -239,7 +240,7 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     mockHappyPath();
   });
 
-  it("planCard undefined (flag off / degraded / error): mounts no HealthRatesPanel anywhere in the tree", async () => {
+  it("planCard undefined (degraded workspace / no billing account / a swallowed read error): mounts no HealthRatesPanel anywhere in the tree", async () => {
     vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
 
     const root = await WorkspaceDashboardPage({

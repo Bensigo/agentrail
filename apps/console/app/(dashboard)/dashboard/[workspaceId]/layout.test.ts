@@ -21,7 +21,12 @@ vi.mock("../../../../lib/chat/feature-flags", () => ({
 import { getSession, getMembership, getWorkspacesForUser } from "../../../../lib/cached";
 import { isGoalLoopEnabled } from "@agentrail/db-postgres";
 import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
-import WorkspaceLayout, { SidebarWithWorkspaces } from "./layout";
+import WorkspaceLayout from "./layout";
+// `SidebarWithWorkspaces` moved to its own module (2026-07-31 hotfix — see
+// that file's own header comment): a layout.tsx may only carry its default
+// export, so this import is split from `WorkspaceLayout`'s even though both
+// still come out of this same [workspaceId] directory.
+import { SidebarWithWorkspaces } from "./sidebar-with-workspaces";
 import { Sidebar } from "../../../components/sidebar";
 
 // This repo's vitest config runs with `environment: "node"` — no DOM/render

@@ -91,6 +91,30 @@ adversarial review of loop PRs continues — the audit showed the internal
 step's verdict was one unproven model line, so its absence removes theater,
 not protection.
 
+### 5. Pre-merge behavioral verification (preview QA chaining)
+
+When a PR needs its running behavior seen — frontend work, anything only a
+browser can judge — the reviewer does NOT get a VM. The division of labor
+stands: the reviewer thinks over code and context; **QA already owns
+isolated live verification** (its browser sidecar containers are the "VM",
+and its spec's rule — the service never clones, builds, or executes repo
+code — is a security boundary, not a gap, because any contributor can open
+a PR).
+
+What this arc adds is the chain: a review job whose PR has a **preview
+environment URL** (Railway PR environments, or a Vercel/Netlify preview
+surfaced via the GitHub deployments API / PR comments) enqueues a follow-on
+**QA job against that preview URL**, carrying the issue's ACs plus the
+reviewer's `hiddenRisks`/`unclear` items as the Priority focus. Its
+`ac_results` attach to the same `(repo, prNumber, headSha)` evidence key.
+Zero new execution infrastructure — if no preview URL exists, the chain is
+skipped with a visible reason.
+
+Booting previews ourselves for repos without preview deploys (an isolated,
+fleet-style sandbox that builds the PR branch) is a possible LATER arc —
+it reuses the runner's existing untrusted-code isolation, never Jace's
+process — and is deliberately out of scope here.
+
 ## Evidence & reuse
 
 `review_jobs` rows + posted reviews keyed `(repo, prNumber, headSha)` are

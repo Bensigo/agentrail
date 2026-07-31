@@ -57,9 +57,48 @@ function asConnectorProvider(provider: string): ConnectorProvider {
  * is removed once the attempt settles (success OR failure), so the NEXT
  * call — whether moments later or on the next request — always starts a
  * fresh attempt rather than being stuck behind a resolved promise.
+ *
+ * REFRESH TIMEOUT (W3-T1 fix round, review MINOR-1): `adapter.refresh()` is
+ * an arbitrary implementation (a W3-T2/T3 provider adapter, or a test
+ * fake) this file does not control — a hung call that never settles at all
+ * (no internal fetch timeout of its own) would otherwise leave its
+ * `(workspaceId,provider)` key in `inFlightRefreshes` FOREVER, wedging
+ * every subsequent `resolveProviderAuth` call for that connector behind a
+ * permanently-pending promise until process restart. `withRefreshTimeout`
+ * bounds it via `Promise.race` against a rejecting timer — the ONLY
+ * general-purpose way to bound an arbitrary externally-supplied promise
+ * that exposes no cancellation hook of its own (unlike, say, wiring an
+ * `AbortSignal` into a fetch call this file makes directly — the interface
+ * here (`OauthProviderAdapter.refresh`) has no signal parameter). A timeout
+ * is treated exactly like any other rejection by the existing `catch`
+ * below (degrades to `{ok:false}` → `unauthorized`) and the `finally`
+ * cleanup still clears the map key — the underlying `adapter.refresh()`
+ * call may keep running in the background after "losing" the race (JS
+ * cannot force-cancel an arbitrary promise), but it can no longer wedge a
+ * future caller.
  */
 
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
+const REFRESH_TIMEOUT_MS = 30 * 1000;
+
+/** Bounds `promise` to `ms` — rejects if it hasn't settled by then. Clears
+ * its own timer on either outcome so a fast-settling promise never leaves a
+ * dangling timer behind. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 export type ResolveProviderAuthResult =
   | { ok: true; secret: string }
@@ -93,7 +132,7 @@ function refreshSingleFlight(
     const adapter = oauthAdapterFor(provider);
     if (!adapter) return { ok: false };
     try {
-      const rotated = await adapter.refresh(credential);
+      const rotated = await withTimeout(adapter.refresh(credential), REFRESH_TIMEOUT_MS);
       await setConnectorSecret(workspaceId, asConnectorProvider(provider), serializeOauthEnvelope(rotated));
       return { ok: true, access: rotated.access };
     } catch {

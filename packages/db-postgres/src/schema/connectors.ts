@@ -329,24 +329,41 @@ export interface ConnectorConfig {
   cloudflareAccountId?: string;
   /**
    * OAuth Connect Wave 3, W3-T1 (`.superpowers/sdd/plan-oauth.md`):
-   * server-minted single-use OAuth state (see
-   * `queries/connectors.ts`'s `mintConnectorOauthState`/
-   * `consumeConnectorOauthState` for the full design) — a no-migration
-   * generalization of `mintGithubInstallState`'s own dedicated-columns
-   * mechanism, scoped per (workspaceId, provider) into THIS row's config
-   * instead. EPHEMERAL and DELIBERATELY EXCLUDED from `completeConfig`'s
-   * preserved-fields whitelist in this file below: unlike every other field
-   * on this interface, these two are never read back through
-   * `getConnector`/`getConnectors`/`upsertConnector`'s returned
-   * `ConnectorRowView.config` — they exist in the raw jsonb column only
-   * between mint and (single-use) consume, written/cleared exclusively by
-   * the two functions above via a surgical jsonb patch, never through this
-   * file's normal typed merge path. Declared here only so `ConnectorConfig`
-   * stays the complete, honest shape of what the column can ever hold.
+   * server-minted single-use OAuth state (see `queries/connectors.ts`'s
+   * `mintConnectorOauthState`/`consumeConnectorOauthState` for the full
+   * design) — a no-migration generalization of `mintGithubInstallState`'s
+   * own dedicated-columns mechanism, scoped per (workspaceId, provider)
+   * into THIS row's config instead. EPHEMERAL, two-tier visibility (W3-T1
+   * fix round, review IMPORTANT-1 + CRITICAL-1):
+   *   - IN STORAGE: `completeConfig` (this file, below) now PRESERVES this
+   *     field across an unrelated write (an admin's pending consent tab
+   *     must survive a teammate's own, different connector edit landing on
+   *     the same row) — unlike every field ABOVE it on this interface,
+   *     which `completeConfig` preserves unconditionally, this one is only
+   *     ever WRITTEN by `mintConnectorOauthState`'s own surgical jsonb
+   *     patch, never through this file's normal typed merge path.
+   *   - IN THE READ MODEL: still never reaches a `ConnectorRowView` a route
+   *     hands back to a browser — `toClientSafeConfig` (this file's own
+   *     query-layer sibling) strips it (and its two siblings below) from
+   *     every returned view, regardless of which function produced it.
+   * Declared here only so `ConnectorConfig` stays the complete, honest
+   * shape of what the column can ever hold.
    */
   oauthState?: string;
   /** ISO-8601 — see {@link oauthState}'s own doc-comment. */
   oauthStateExpiresAt?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T1 fix round (review CRITICAL-1): the id of
+   * the user who MINTED this pending state — the callback route's tenant-
+   * binding gate requires the redeeming session to equal this id (and
+   * still hold owner/admin membership on the workspace) before it will
+   * exchange a code, closing a login-CSRF-style misdirection attack where
+   * the minter and redeemer were never otherwise required to be the same
+   * person. Same two-tier visibility as {@link oauthState}: preserved
+   * across an unrelated config write, never surfaced in any
+   * `ConnectorRowView`.
+   */
+  oauthUserId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

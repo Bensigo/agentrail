@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+
+// Renders a raw drizzle `SQL` fragment to its query text — the SAME idiom
+// `investigations.test.ts` establishes for inspecting a `sql\`...\`` value
+// passed to `.set()`/`.where()` (a bare `String(sqlFragment)` does NOT
+// produce readable SQL; the fragment must go through the dialect renderer).
+const renderSql = (q: unknown): string => new PgDialect().sqlToQuery(q as never).sql;
 
 // W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`) adds two
 // I/O-touching functions (`mintConnectorOauthState`/`consumeConnectorOauthState`)
@@ -334,10 +341,29 @@ describe("validateConnectorUpdate — Evidence Providers Wave 2 extra config fie
 // the mechanism instead, into the EXISTING `connectors.config` jsonb column,
 // scoped per (workspaceId, provider) — see `connectors.ts`'s own doc-comment
 // on both functions for the full design (surgical jsonb merge/delete, never
-// routed through `upsertConnector`'s whole-column replace, so a concurrent
-// unrelated connector write can't silently wipe a pending state, and the
-// state never leaks back through any GET response since it is never added to
-// `completeConfig`'s whitelist).
+// routed through `upsertConnector`'s whole-column replace).
+//
+// W3-T1 FIX ROUND (independent review, `.superpowers/sdd/review-W3T1.md`):
+//   - CRITICAL-1: state now ALSO binds the minting user's id
+//     (`oauthUserId`) — `mintConnectorOauthState` takes a third `userId`
+//     arg; `consumeConnectorOauthState` returns it alongside `workspaceId`
+//     so the callback route (the actual enforcement point) can require the
+//     redeeming session to match. See the mint/consume tests below and
+//     `apps/console/app/api/v1/connectors/oauth/callback/[provider]/route.test.ts`
+//     for the full tenant-binding coverage.
+//   - IMPORTANT-1: `completeConfig` now PRESERVES all three ephemeral keys
+//     across an unrelated write (a pending state used to be silently wiped
+//     by, e.g., a teammate's own connector edit landing on the same row) —
+//     see the real-Postgres integration test
+//     (`src/__tests__/oauth-state-consume-race.integration.test.ts`) for
+//     the "config write during pending state → state survives" proof (a
+//     mocked unit test can't meaningfully prove a multi-step storage
+//     round-trip, so this is integration-tested, matching how this
+//     package's OTHER real-Postgres claims are proven —
+//     `queue-retry-backoff.integration.test.ts`). The client-facing LEAK
+//     protection is unchanged: `toClientSafeConfig` strips all three keys
+//     from every `ConnectorRowView`, so preserving them in storage does not
+//     reopen the original "never reaches a browser" property.
 // --------------------------------------------------------------------------- //
 
 function insertChain() {
@@ -357,11 +383,11 @@ function updateChain(returned: unknown[]) {
 describe("mintConnectorOauthState (W3-T1)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("issues one INSERT … ON CONFLICT DO UPDATE scoped to (workspaceId, provider)", async () => {
+  it("issues one INSERT … ON CONFLICT DO UPDATE scoped to (workspaceId, provider), binding the minting userId (CRITICAL-1)", async () => {
     const chain = insertChain();
     mockDb.insert.mockReturnValue(chain as never);
 
-    const state = await mintConnectorOauthState("ws-1", "railway");
+    const state = await mintConnectorOauthState("ws-1", "railway", "user-1");
 
     expect(typeof state).toBe("string");
     expect(state.length).toBeGreaterThanOrEqual(32); // high-entropy, mirrors mintGithubInstallState's 24 bytes hex
@@ -369,30 +395,80 @@ describe("mintConnectorOauthState (W3-T1)", () => {
     const inserted = (chain.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       workspaceId: string;
       provider: string;
+      config: { oauthUserId?: string };
     };
     expect(inserted.workspaceId).toBe("ws-1");
     expect(inserted.provider).toBe("railway");
+    expect(inserted.config.oauthUserId).toBe("user-1");
     expect(chain.onConflictDoUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("mints a fresh, distinct state on every call (never reused)", async () => {
     mockDb.insert.mockReturnValue(insertChain() as never);
-    const a = await mintConnectorOauthState("ws-1", "railway");
-    const b = await mintConnectorOauthState("ws-1", "railway");
+    const a = await mintConnectorOauthState("ws-1", "railway", "user-1");
+    const b = await mintConnectorOauthState("ws-1", "railway", "user-1");
     expect(a).not.toBe(b);
+  });
+
+  it("binds a DIFFERENT minting user distinctly from another mint (no cross-user bleed in the patch)", async () => {
+    const chainA = insertChain();
+    mockDb.insert.mockReturnValueOnce(chainA as never);
+    await mintConnectorOauthState("ws-1", "railway", "user-A");
+    const insertedA = (chainA.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      config: { oauthUserId?: string };
+    };
+    expect(insertedA.config.oauthUserId).toBe("user-A");
+
+    const chainB = insertChain();
+    mockDb.insert.mockReturnValueOnce(chainB as never);
+    await mintConnectorOauthState("ws-1", "railway", "user-B");
+    const insertedB = (chainB.values as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      config: { oauthUserId?: string };
+    };
+    expect(insertedB.config.oauthUserId).toBe("user-B");
   });
 });
 
 describe("consumeConnectorOauthState (W3-T1)", () => {
-  it("resolves the workspace on a live, matching, unexpired state (atomic UPDATE … RETURNING)", async () => {
-    mockDb.update.mockReturnValue(updateChain([{ workspaceId: "ws-1" }]) as never);
+  it("resolves {workspaceId, userId} on a live, matching, unexpired state (atomic UPDATE … RETURNING)", async () => {
+    mockDb.update.mockReturnValue(
+      updateChain([
+        {
+          workspaceId: "ws-1",
+          config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60, oauthUserId: "user-1" },
+        },
+      ]) as never
+    );
     expect(await consumeConnectorOauthState("railway", "deadbeef")).toEqual({
       workspaceId: "ws-1",
+      userId: "user-1",
     });
   });
 
   it("returns null for an unknown / expired / already-consumed state — never throws", async () => {
     mockDb.update.mockReturnValue(updateChain([]) as never);
     expect(await consumeConnectorOauthState("railway", "deadbeef")).toBeNull();
+  });
+
+  it("fails CLOSED — returns null — when the matched row has no bound oauthUserId (defensive; should not occur post-fix)", async () => {
+    mockDb.update.mockReturnValue(
+      updateChain([
+        { workspaceId: "ws-1", config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 } },
+      ]) as never
+    );
+    expect(await consumeConnectorOauthState("railway", "deadbeef")).toBeNull();
+  });
+
+  it("clears oauthState/oauthStateExpiresAt but NOT oauthUserId in the same SET (so RETURNING can still read it)", async () => {
+    const chain = updateChain([
+      { workspaceId: "ws-1", config: { oauthUserId: "user-1" } },
+    ]);
+    mockDb.update.mockReturnValue(chain as never);
+    await consumeConnectorOauthState("railway", "deadbeef");
+    const setArg = (chain.set as ReturnType<typeof vi.fn>).mock.calls[0][0] as { config: unknown };
+    const rendered = renderSql(setArg.config);
+    expect(rendered).toContain("oauthState");
+    expect(rendered).toContain("oauthStateExpiresAt");
+    expect(rendered).not.toContain("oauthUserId");
   });
 });

@@ -59,30 +59,62 @@ never inside it: encryption doesn't care what's inside the plaintext.
 columns on `workspaces`, one in-flight state per *workspace*, no provider
 dimension) — not generic enough to reuse, and the plan pins no migration.
 The chosen no-migration alternative: mint into `connectors.config` (the
-plan's own offered fallback), keyed per `(workspaceId, provider)` via two
-ephemeral jsonb fields, `oauthState`/`oauthStateExpiresAt`, written and
+plan's own offered fallback), keyed per `(workspaceId, provider)` via three
+ephemeral jsonb fields — `oauthState`, `oauthStateExpiresAt`, and
+`oauthUserId` (the third, added in the fix round below) — written and
 cleared with a **surgical** jsonb `||`-merge / `-`-delete (the same idiom
-`queries/investigations.ts`'s `claimLessonPromotion` already established) —
-never through `upsertConnector`'s whole-column replace, so an unrelated
-connector write can't silently wipe a pending state, and the state can never
-leak back out through any GET response (it is deliberately excluded from
-`completeConfig`'s preserved-fields whitelist). Single-use is enforced by one
-atomic `UPDATE … WHERE state matches AND unexpired … RETURNING` — verified
-live against Postgres: a replay of an already-consumed state resolves
-`null`, never twice.
+`queries/investigations.ts`'s `claimLessonPromotion` already established).
+Two independent protections, BOTH directions (fix round — an independent
+review caught the original design only had the first):
+  - `mintConnectorOauthState`/`consumeConnectorOauthState` never route
+    through `upsertConnector`'s whole-column replace, so minting/consuming a
+    state can't clobber an unrelated config field.
+  - `completeConfig` now PRESERVES these three keys across an unrelated
+    write (the reverse direction — a pending state used to be silently
+    wiped by, e.g., a teammate's own connector edit landing on the same
+    row), while a separate `toClientSafeConfig` strip still ensures none of
+    the three ever reach a `ConnectorRowView` a route hands back to a
+    browser — preserved in storage, invisible in the read model.
+Single-use is enforced by one atomic
+`UPDATE … WHERE state matches AND unexpired … RETURNING` — proven against a
+REAL Postgres concurrent race (not just a mock) by an automated
+`.integration.test.ts` (mirroring this package's `queue-retry-backoff`
+precedent): N genuinely concurrent redemption attempts against the same
+state resolve exactly once.
+
+`oauthUserId` (fix round, CRITICAL-1 below) binds the MINTING user's id
+alongside the workspace — `consumeConnectorOauthState` returns it so the
+callback route can enforce that only the minter (still an owner/admin) may
+redeem what they minted.
 
 **Callback** — `GET /api/v1/connectors/oauth/callback/[provider]` is the ONE
 route every OAuth-capable provider registers, reachable by anyone on the
-internet. No session check: unlike GitHub's App-install callback (global URL
-+ a low-entropy, guessable `installation_id` — its own anti-IDOR problem),
-this flow's entire security boundary is the single-use, 30-minute,
-high-entropy server-minted `state`, which is also the ONLY source of the
-workspace id (never a round-tripped query param) — mirrors
-`connectors/slack/callback/route.ts`, the closest real third-party-OAuth2
-precedent in this codebase, which is session-less for the identical reason.
-Failure reasons are a closed, six-value set —
+internet. State alone binds the WORKSPACE (single-use, 30-minute,
+high-entropy, server-minted — the ONLY source of the workspace id, never a
+round-tripped query param), but that is not enough on its own: it defeats
+*forgery* (a state can't be guessed or replayed) but nothing about
+*misdirection* — nothing originally required the person who *minted* a
+state and the person who *redeems* it to be the same person. An
+independent review caught this (CRITICAL-1, fix round): an attacker,
+legitimately owner/admin of their own workspace, could mint a real
+authorize URL and send it to an unrelated victim as a phishing pretext,
+landing the victim's own OAuth grant in the attacker's workspace. The
+callback now requires an authenticated session AND binds the MINTING
+user's id into the state itself
+(`mintConnectorOauthState`'s third argument) — redemption requires the
+session to (a) equal that bound minter and (b) still hold owner/admin
+membership on the bound workspace (re-checked fresh, never trusted from
+mint time), mirroring `connectors/github/install-callback/route.ts`'s own
+session+membership gate for the same class of public, tenant-writing
+OAuth-style callback (the actually-analogous precedent — NOT
+`connectors/slack/callback/route.ts`, which never binds a workspace at
+OAuth-completion time in the first place, so has no equivalent gate to
+mirror). Failure reasons are a closed, six-value set —
 `state_invalid | provider_unknown | provider_unconfigured | denied |
-exchange_failed | store_failed` — never the vendor's own error text.
+exchange_failed | store_failed` — never the vendor's own error text, and
+the tenant-binding failure collapses into the SAME `state_invalid` reason
+as a genuinely-expired state (anti-enumeration: a prober cannot
+distinguish "wrong person" from "never existed" from the redirect alone).
 Success redirects to `?connected=<provider>`; every failure redirects to
 `?oauth_error=<reason>` (workspace-scoped once the state has resolved a
 workspace id; the workspace-less `/dashboard` root before that).
@@ -113,7 +145,11 @@ already speaks. Single-flight: an in-process `Map<"workspaceId:provider",
 Promise>` (console runs one replica) so two concurrent callers never fire
 two competing refreshes against a vendor that rotates the refresh token on
 use — verified with two simultaneous callers triggering exactly one
-`refresh()` call.
+`refresh()` call. Bounded to ~30s (fix round — a hung `refresh()` with no
+internal timeout of its own would otherwise wedge that
+`(workspaceId,provider)` key's map entry forever): a timeout is treated
+exactly like any other rejection, degrading to `unauthorized` and clearing
+the map key so the next call starts fresh.
 
 ## Sheet UX
 

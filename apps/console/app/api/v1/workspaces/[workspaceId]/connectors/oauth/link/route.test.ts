@@ -132,6 +132,14 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
     expect(body.url).toContain(
       encodeURIComponent("https://heyjace.com/api/v1/connectors/oauth/callback/railway")
     );
-    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway");
+    // CRITICAL-1 (W3-T1 fix round): the state binds the MINTING session's
+    // user id — the callback route requires the redeeming session to match.
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", USER);
+  });
+
+  it("binds the CURRENT session's user id, not some other id — a different admin's own click mints their OWN binding", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "different-admin-user" } } as never);
+    await POST(req({ provider: "railway" }), params());
+    expect(mintConnectorOauthState).toHaveBeenCalledWith(WS, "railway", "different-admin-user");
   });
 });

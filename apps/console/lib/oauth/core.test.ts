@@ -274,4 +274,80 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
     expect(callsA).toBe(1);
     expect(callsB).toBe(1);
   });
+
+  // -----------------------------------------------------------------------
+  // W3-T1 fix round — review MINOR-1: a refresh() that never settles must
+  // not wedge the (workspaceId,provider) key forever. Mirrors
+  // `channel-dispatch.test.ts`'s own "aborts a hanging fetch after the
+  // bounded timeout" idiom: fake timers + a promise that only resolves via
+  // an external signal (here, never — it hangs until the timeout fires).
+  // -----------------------------------------------------------------------
+  it("a refresh() that never settles times out (~30s), degrades to unauthorized, and clears the map key for the NEXT call", async () => {
+    vi.useFakeTimers();
+    try {
+      const stale = expiringEnvelope();
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+
+      let refreshCalls = 0;
+      registerOauthAdapter({
+        provider: "hanging-refresh-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => stale,
+        refresh: () => {
+          refreshCalls += 1;
+          return new Promise<OauthEnvelope>(() => {}); // never settles on its own
+        },
+      });
+
+      const pending = resolveProviderAuth(WS, "hanging-refresh-provider");
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+
+      expect(result).toEqual({ ok: false, reason: "unauthorized" });
+      expect(mockSetConnectorSecret).not.toHaveBeenCalled();
+      expect(refreshCalls).toBe(1);
+
+      // The map key was cleared on timeout (not left permanently wedged) —
+      // the NEXT call for the SAME (workspaceId,provider) starts a fresh
+      // attempt, proven by a second refresh() invocation rather than
+      // hanging on the first's already-abandoned (never-settling) promise.
+      const secondPending = resolveProviderAuth(WS, "hanging-refresh-provider");
+      await vi.advanceTimersByTimeAsync(30_000);
+      const secondResult = await secondPending;
+      expect(secondResult).toEqual({ ok: false, reason: "unauthorized" });
+      expect(refreshCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a refresh() that settles WELL BEFORE the timeout is unaffected (no spurious timeout race)", async () => {
+    vi.useFakeTimers();
+    try {
+      const stale = expiringEnvelope();
+      const rotated: OauthEnvelope = { access: "acc-fast", refresh: "r2", expiresAt: "2099-01-01T00:00:00.000Z" };
+      mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
+      mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
+      mockSerializeOauthEnvelope.mockReturnValue("x");
+      mockSetConnectorSecret.mockResolvedValue({
+        provider: "fast-refresh-provider" as never,
+        enabled: true,
+        config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+        hasSecret: true,
+        updatedAt: null,
+      });
+      registerOauthAdapter({
+        provider: "fast-refresh-provider",
+        authorizeUrl: () => "url",
+        exchange: async () => rotated,
+        refresh: async () => rotated,
+      });
+
+      const result = await resolveProviderAuth(WS, "fast-refresh-provider");
+      expect(result).toEqual({ ok: true, secret: "acc-fast" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

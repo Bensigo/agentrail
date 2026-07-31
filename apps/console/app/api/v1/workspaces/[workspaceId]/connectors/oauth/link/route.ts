@@ -21,7 +21,12 @@ const ADMIN_ROLES = ["owner", "admin"];
  * atomically, so a tampered or replayed state can never bind a token to a
  * workspace the clicker isn't an admin of (see
  * `packages/db-postgres/src/queries/connectors.ts`'s
- * `mintConnectorOauthState`/`consumeConnectorOauthState`).
+ * `mintConnectorOauthState`/`consumeConnectorOauthState`). The state also
+ * binds THIS session's user id (review CRITICAL-1, W3-T1 fix round) — the
+ * callback route requires the redeeming session to match it, closing a
+ * login-CSRF-style misdirection where the minter and redeemer were never
+ * otherwise required to be the same person (see the callback route's own
+ * doc-comment for the full attack + fix).
  *
  * `provider` travels in the BODY (not the URL, unlike github's install-link)
  * — this route is generic across every OAuth-capable provider, per the
@@ -94,7 +99,7 @@ export async function POST(
     );
   }
 
-  const state = await mintConnectorOauthState(workspaceId, body.provider);
+  const state = await mintConnectorOauthState(workspaceId, body.provider, session.user.id);
   const redirectUri = oauthCallbackUri(consolePublicUrl, body.provider);
   const url = adapter.authorizeUrl({ state, redirectUri });
 

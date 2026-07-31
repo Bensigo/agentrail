@@ -387,10 +387,69 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     ...(stored?.cloudflareAccountId
       ? { cloudflareAccountId: stored.cloudflareAccountId }
       : {}),
+    // OAuth Connect Wave 3, W3-T1 fix round (review IMPORTANT-1): the three
+    // ephemeral oauth-state fields now survive an UNRELATED config patch
+    // (e.g. re-saving triggerLabel, or a teammate's own connect attempt on a
+    // DIFFERENT field) the same way railwayProjectId/chatId/etc. do above —
+    // an admin who has a Railway consent tab open must not have their
+    // pending state silently wiped by an unrelated write landing on the
+    // SAME row in the meantime. This is the reverse-direction fix to
+    // `mintConnectorOauthState`'s own surgical jsonb patch (which already
+    // protects the OTHER direction: an oauth-state mint/consume never
+    // clobbers railwayProjectId/etc.). Preserving them here does NOT
+    // reintroduce the client-leak this task's original doc-comment warned
+    // about: {@link toClientSafeConfig}, applied at every function in this
+    // file that returns a `ConnectorRowView` to a caller, strips these
+    // three keys again before anything reaches a route response — they
+    // survive in STORAGE (this function) but never in the READ MODEL.
+    ...(stored?.oauthState ? { oauthState: stored.oauthState } : {}),
+    ...(stored?.oauthStateExpiresAt
+      ? { oauthStateExpiresAt: stored.oauthStateExpiresAt }
+      : {}),
+    ...(stored?.oauthUserId ? { oauthUserId: stored.oauthUserId } : {}),
   };
 }
 
-function toView(row: {
+/**
+ * The ephemeral, server-internal-only config keys `completeConfig` now
+ * preserves across an unrelated write (review IMPORTANT-1, above) but which
+ * must NEVER reach a `ConnectorRowView` a route hands back to a browser —
+ * `mintConnectorOauthState`/`consumeConnectorOauthState` are the only
+ * legitimate readers/writers of them (via their own targeted jsonb
+ * patches, never through this whitelist). Applied at every point in this
+ * file that turns a stored config into a `ConnectorRowView`: {@link toView}
+ * (backs `getConnector`/`getConnectors`) and the return values of
+ * {@link upsertConnector}/{@link setConnectorSecret} (both of which build
+ * their OWN merged config for the DB write, independently of `toView`).
+ */
+const EPHEMERAL_CONFIG_KEYS = [
+  "oauthState",
+  "oauthStateExpiresAt",
+  "oauthUserId",
+] as const;
+
+function toClientSafeConfig(config: ConnectorConfig): ConnectorConfig {
+  const safe: ConnectorConfig = { ...config };
+  for (const key of EPHEMERAL_CONFIG_KEYS) delete safe[key];
+  return safe;
+}
+
+/**
+ * Internal, NEVER exported: the full row view with `config` normalized via
+ * `completeConfig` but NOT stripped of the ephemeral oauth keys. This is
+ * the FIX for a bug this fix round's own integration test caught
+ * (`oauth-state-consume-race.integration.test.ts`): `upsertConnector`/
+ * `setConnectorSecret` need to read the EXISTING row before merging in a
+ * caller's partial update, and merging over an ALREADY-STRIPPED config
+ * (i.e. one that went through `toClientSafeConfig`) would silently drop a
+ * pending `oauthState` on its next unrelated write — exactly the
+ * IMPORTANT-1 bug, reintroduced one layer up if these two functions read
+ * "existing" through the public, client-safe `getConnector` instead of
+ * this raw path. Every EXTERNAL caller still goes through `getConnector`/
+ * `getConnectors` (below), which strip via `toClientSafeConfig` before
+ * returning — this function is the query layer's own internal detail.
+ */
+function toRawView(row: {
   provider: string;
   enabled: boolean;
   config: Partial<ConnectorConfig> | null;
@@ -407,6 +466,34 @@ function toView(row: {
         ? row.updatedAt.toISOString()
         : (row.updatedAt as string | null),
   };
+}
+
+/** Public shape: {@link toRawView} plus the client-safe strip. Backs every
+ * EXTERNALLY-visible read (`getConnector`, `getConnectors`). */
+function toView(row: Parameters<typeof toRawView>[0]): ConnectorRowView {
+  const raw = toRawView(row);
+  return { ...raw, config: toClientSafeConfig(raw.config) };
+}
+
+/** Internal: read one connector row RAW (ephemeral oauth keys intact, if
+ * present) — see {@link toRawView}'s own doc-comment for why this exists
+ * as a distinct path from the public {@link getConnector}. Not exported. */
+async function getConnectorRaw(
+  workspaceId: string,
+  provider: ConnectorProvider
+): Promise<ConnectorRowView | null> {
+  const rows = await db
+    .select()
+    .from(connectors)
+    .where(
+      and(
+        eq(connectors.workspaceId, workspaceId),
+        eq(connectors.provider, provider)
+      )
+    )
+    .limit(1);
+  const row = rows[0];
+  return row ? toRawView(row) : null;
 }
 
 /**
@@ -460,23 +547,15 @@ export async function listEnabledConnectors(
     }));
 }
 
-/** Read a single connector row, or null when the workspace hasn't connected it. */
+/** Read a single connector row, or null when the workspace hasn't connected
+ * it. Client-safe (built on {@link getConnectorRaw} + `toClientSafeConfig`
+ * — never surfaces the ephemeral oauth keys). */
 export async function getConnector(
   workspaceId: string,
   provider: ConnectorProvider
 ): Promise<ConnectorRowView | null> {
-  const rows = await db
-    .select()
-    .from(connectors)
-    .where(
-      and(
-        eq(connectors.workspaceId, workspaceId),
-        eq(connectors.provider, provider)
-      )
-    )
-    .limit(1);
-  const row = rows[0];
-  return row ? toView(row) : null;
+  const raw = await getConnectorRaw(workspaceId, provider);
+  return raw ? { ...raw, config: toClientSafeConfig(raw.config) } : null;
 }
 
 /**
@@ -494,9 +573,13 @@ export async function upsertConnector(
 ): Promise<ConnectorRowView> {
   const now = new Date();
 
-  // Read the existing row so we can merge config keys (drizzle's jsonb set
-  // replaces the whole value; we want a per-key merge to preserve repos/label).
-  const existing = await getConnector(workspaceId, provider);
+  // Read the existing row RAW (via getConnectorRaw, NOT the public
+  // getConnector) so a pending oauthState is visible to completeConfig's
+  // preserve-list below — reading through the client-safe getConnector
+  // here would silently re-strip it before completeConfig ever saw it,
+  // reintroducing the IMPORTANT-1 clobber bug one layer up (this fix
+  // round's own integration test caught exactly this).
+  const existing = await getConnectorRaw(workspaceId, provider);
   const mergedConfig: ConnectorConfig = {
     ...completeConfig(existing?.config),
     ...(update.config ?? {}),
@@ -520,7 +603,12 @@ export async function upsertConnector(
   return {
     provider,
     enabled,
-    config: mergedConfig,
+    // The DB write above persists the un-stripped `mergedConfig` (so a
+    // pending oauthState survives this unrelated write — review
+    // IMPORTANT-1); the RETURNED view strips it again so it never reaches
+    // whatever route/caller invoked this (e.g. the connectors PUT route's
+    // JSON response) — see `toClientSafeConfig`'s own doc-comment.
+    config: toClientSafeConfig(mergedConfig),
     hasSecret: existing?.hasSecret ?? false,
     updatedAt: now.toISOString(),
   };
@@ -540,7 +628,9 @@ export async function setConnectorSecret(
   opts: { chatId?: string | null; webhookSecret?: string | null } = {}
 ): Promise<ConnectorRowView> {
   const now = new Date();
-  const existing = await getConnector(workspaceId, provider);
+  // Raw read — see upsertConnector's identical comment just above for why
+  // this must NOT be the client-safe getConnector.
+  const existing = await getConnectorRaw(workspaceId, provider);
   const connecting = secret !== null && secret.length > 0;
 
   // Merge chatId into config when provided; clearing the secret also clears it.
@@ -586,7 +676,10 @@ export async function setConnectorSecret(
   return {
     provider,
     enabled,
-    config: mergedConfig,
+    // Same split as `upsertConnector` above: the DB write persists the
+    // un-stripped `mergedConfig`, the returned view strips the ephemeral
+    // oauth keys again.
+    config: toClientSafeConfig(mergedConfig),
     hasSecret: connecting,
     updatedAt: now.toISOString(),
   };
@@ -635,41 +728,60 @@ export async function getConnectorSecret(
 // EXISTING per-(workspaceId, provider) jsonb column, keyed by two ephemeral
 // fields, `oauthState`/`oauthStateExpiresAt`.
 //
-// SURGICAL, NEVER `upsertConnector` — both functions write via a raw jsonb
-// `||` merge / `-` key-delete (the SAME idiom `queries/investigations.ts`'s
-// `claimLessonPromotion`/`unclaimLessonPromotion` already established for
-// `investigation_items.data`), never through `upsertConnector`'s
-// read-completeConfig-then-replace-the-whole-column path. Two reasons:
-//   1. `upsertConnector`/`setConnectorSecret` always rewrite the ENTIRE
-//      config column from `completeConfig(existing)` — an unrelated write
-//      (e.g. toggling the heartbeat, or connecting a DIFFERENT extra field)
-//      racing a pending mint would silently wipe the state, since
-//      `completeConfig` only preserves an explicit whitelist of fields.
-//   2. The inverse matters more: `oauthState`/`oauthStateExpiresAt` are
-//      DELIBERATELY never added to that whitelist, so they can NEVER leak
-//      back out through `getConnector`/`getConnectors`/`upsertConnector`'s
-//      returned `ConnectorRowView.config` — those routes return the full
-//      config object verbatim (e.g. the connectors PUT route's JSON
-//      response), and a pending state string has no business reaching a
-//      browser response even for the SAME workspace's own admin.
+// SURGICAL, NEVER `upsertConnector` for the WRITE side — both functions
+// write via a raw jsonb `||` merge / `-` key-delete (the SAME idiom
+// `queries/investigations.ts`'s `claimLessonPromotion`/
+// `unclaimLessonPromotion` already established for `investigation_items.data`),
+// never through `upsertConnector`'s read-completeConfig-then-replace-the-
+// whole-column path — an unrelated write (toggling the heartbeat, connecting
+// a different extra field) racing a pending mint must never wipe it. As of
+// the W3-T1 fix round (review IMPORTANT-1), the REVERSE is also now true:
+// `completeConfig` (used by `upsertConnector`/`setConnectorSecret`)
+// preserves these ephemeral keys across ITS OWN unrelated writes, so the
+// protection is bidirectional. They still never leak to a browser —
+// `toClientSafeConfig` (this file, above) strips them from every returned
+// `ConnectorRowView` regardless of which function produced it.
 //
 // Single-use is enforced the SAME way `consumeGithubInstallState` enforces
 // it: one atomic `UPDATE … WHERE <state matches AND unexpired> RETURNING`.
 // Two callers racing the same state can never both get a match — Postgres
 // serializes the row-level UPDATE, so the first clears the key before the
 // second's WHERE can still match it (identical reasoning to
-// `claimLessonPromotion`'s own doc-comment on this exact race).
+// `claimLessonPromotion`'s own doc-comment on this exact race; proven
+// against a REAL Postgres race, not just this claim, by
+// `src/__tests__/oauth-state-consume-race.integration.test.ts`).
+//
+// TENANT-BINDING FIX (review CRITICAL-1, W3-T1 fix round): the ORIGINAL
+// shape bound state to (workspaceId, provider) alone. That is enough to
+// defeat FORGERY (state can't be guessed/replayed) but nothing about
+// MISDIRECTION — the person who *mints* a state and the person who
+// *redeems* it were never required to be the same person, so an attacker
+// who is legitimately owner/admin of their OWN workspace could mint a
+// state, send the real vendor authorize URL to an unrelated victim as a
+// phishing pretext, and have the victim's own OAuth grant land in the
+// attacker's workspace when the victim (who need not even have an
+// AgentRail account) completes the vendor's consent screen. A THIRD
+// ephemeral field, `oauthUserId`, now binds the MINTING user's id
+// alongside workspaceId/provider; the callback route (the actual
+// enforcement point — see its own doc-comment) requires the redeeming
+// session's user to equal this bound id AND still hold owner/admin
+// membership on the bound workspace before it will exchange the code,
+// mirroring `connectors/github/install-callback/route.ts`'s own
+// session+membership gate for the same class of public, tenant-writing
+// OAuth-style callback.
 // --------------------------------------------------------------------------- //
 
 const OAUTH_STATE_BYTES = 24;
 const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
 
 /**
- * Mint a fresh single-use OAuth state for (workspaceId, provider) and store
- * it (with its 30-minute expiry) into that row's `config`, creating the row
- * first if this is the workspace's first-ever attempt at this provider
- * (`enabled: true`, otherwise-default config — mirrors `upsertConnector`'s
- * own create-on-first-touch default; a real credential is only ever written
+ * Mint a fresh single-use OAuth state for (workspaceId, provider), bound to
+ * the MINTING user's id (review CRITICAL-1 — see this section's own
+ * doc-comment, "TENANT-BINDING FIX"), and store it (with its 30-minute
+ * expiry) into that row's `config`, creating the row first if this is the
+ * workspace's first-ever attempt at this provider (`enabled: true`,
+ * otherwise-default config — mirrors `upsertConnector`'s own
+ * create-on-first-touch default; a real credential is only ever written
  * later, by `setConnectorSecret`, so this alone never flips `hasSecret`).
  * Re-minting while a prior state is still pending simply overwrites it (the
  * prior state stops working) — same one-in-flight-state tradeoff
@@ -677,11 +789,12 @@ const OAUTH_STATE_TTL_MS = 30 * 60 * 1000;
  */
 export async function mintConnectorOauthState(
   workspaceId: string,
-  provider: ConnectorProvider
+  provider: ConnectorProvider,
+  userId: string
 ): Promise<string> {
   const state = randomBytes(OAUTH_STATE_BYTES).toString("hex");
   const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
-  const patch = sql`jsonb_build_object('oauthState', ${state}::text, 'oauthStateExpiresAt', ${expiresAt}::text)`;
+  const patch = sql`jsonb_build_object('oauthState', ${state}::text, 'oauthStateExpiresAt', ${expiresAt}::text, 'oauthUserId', ${userId}::text)`;
 
   await db
     .insert(connectors)
@@ -689,11 +802,16 @@ export async function mintConnectorOauthState(
       workspaceId,
       provider,
       enabled: true,
-      config: { ...CONNECTOR_CONFIG_DEFAULTS, oauthState: state, oauthStateExpiresAt: expiresAt },
+      config: {
+        ...CONNECTOR_CONFIG_DEFAULTS,
+        oauthState: state,
+        oauthStateExpiresAt: expiresAt,
+        oauthUserId: userId,
+      },
     })
     .onConflictDoUpdate({
       target: [connectors.workspaceId, connectors.provider],
-      // Surgical merge — touches ONLY these two keys on an existing row's
+      // Surgical merge — touches ONLY these three keys on an existing row's
       // config, never replaces it wholesale. See this section's own
       // doc-comment for why that matters.
       set: { config: sql`${connectors.config} || ${patch}`, updatedAt: new Date() },
@@ -707,17 +825,35 @@ export async function mintConnectorOauthState(
  * every workspace (the caller — the callback route — does not yet know
  * which workspace this is; that is exactly what this lookup reveals, never
  * a round-tripped query param — see the plan's "never trust round-tripped
- * workspace ids" pin). Clears BOTH ephemeral keys on match (jsonb `-`
- * key-delete, ONE atomic statement with the match check in the same WHERE)
- * so a replay of the same state — expired or not — can never resolve twice.
- * `null` on no match (unknown / expired / already-consumed state), covering
- * all three identically, same anti-enumeration posture
- * `consumeGithubInstallState` already takes for its own column.
+ * workspace ids" pin). Clears the two expiry/single-use keys on match (jsonb
+ * `-` key-delete, ONE atomic statement with the match check in the SAME
+ * WHERE, unchanged by this fix round) so a replay of the same state —
+ * expired or not — can never resolve twice; proven against a real Postgres
+ * concurrent race by `oauth-state-consume-race.integration.test.ts`. `null`
+ * on no match (unknown / expired / already-consumed state), covering all
+ * three identically, same anti-enumeration posture `consumeGithubInstallState`
+ * already takes for its own column.
+ *
+ * Returns the bound `userId` ALONGSIDE `workspaceId` (review CRITICAL-1) —
+ * the callback route's real enforcement point compares it against the
+ * redeeming session. `oauthUserId` is deliberately NOT cleared by this
+ * statement's own `SET` (only `oauthState`/`oauthStateExpiresAt` are): a
+ * jsonb column's `RETURNING` reflects the POST-update value, so reading a
+ * key requires leaving it untouched by the SAME statement's `SET` — see the
+ * `- 'oauthState' - 'oauthStateExpiresAt'` expression below, which
+ * deliberately does not include `- 'oauthUserId'`. The value has no further
+ * use once read here and is superseded by the next mint's own patch
+ * regardless, so leaving it in place after consumption is a harmless,
+ * disclosed simplification (it is not part of the client-facing read
+ * model either way — {@link toClientSafeConfig} strips it from every
+ * `ConnectorRowView`). A row whose `oauthUserId` is somehow absent (should
+ * never happen post-fix; defensive only) fails CLOSED — `null`, never a
+ * partial/unbound result the callback route might mistakenly trust.
  */
 export async function consumeConnectorOauthState(
   provider: ConnectorProvider,
   state: string
-): Promise<{ workspaceId: string } | null> {
+): Promise<{ workspaceId: string; userId: string } | null> {
   const now = new Date().toISOString();
   const [row] = await db
     .update(connectors)
@@ -732,8 +868,11 @@ export async function consumeConnectorOauthState(
         sql`(${connectors.config} ->> 'oauthStateExpiresAt') > ${now}`
       )
     )
-    .returning({ workspaceId: connectors.workspaceId });
-  return row ? { workspaceId: row.workspaceId } : null;
+    .returning();
+  if (!row) return null;
+  const userId = (row.config as ConnectorConfig | null)?.oauthUserId;
+  if (!userId) return null;
+  return { workspaceId: row.workspaceId, userId };
 }
 
 /** The MCP providers whose keys are materialized into a run's codebase config. */

@@ -428,6 +428,27 @@
       "when": 1786600000000,
       "tag": "0064_slack_installations",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1786700000000,
+      "tag": "0059_investigations",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1786800000000,
+      "tag": "0060_jace_sessions_investigation_anchor",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1786900000000,
+      "tag": "0063_investigation_issue_links_unique",
+      "breakpoints": true
     }
   ]
 }

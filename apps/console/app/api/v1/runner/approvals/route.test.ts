@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   recordApprovalRequest: vi.fn(),
+  getInvestigationById: vi.fn(),
 }));
 vi.mock("../../../../../lib/approval-message", () => ({
   renderApprovalMessage: vi.fn(),
@@ -17,6 +18,7 @@ import { POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   recordApprovalRequest,
+  getInvestigationById,
 } from "@agentrail/db-postgres";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
 import {
@@ -29,6 +31,7 @@ const mockRecord = vi.mocked(recordApprovalRequest);
 const mockRender = vi.mocked(renderApprovalMessage);
 const mockSend = vi.mocked(sendTelegramMessage);
 const mockBuildKeyboard = vi.mocked(buildApprovalKeyboard);
+const mockGetInvestigation = vi.mocked(getInvestigationById);
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
 const ORIGINAL_TOKEN_ENV = process.env["TELEGRAM_BOT_TOKEN"];
@@ -78,6 +81,39 @@ const MOCK_SESSION_INTRO = {
   workspaceId: null,
 };
 
+// Task 12 (investigation issue-link stamping): a session anchored to an
+// investigation via jace_sessions.anchored_investigation_id — read straight
+// off the SAME row getJaceSessionByEveSessionId already fetches, no second
+// query (mirrors runner/investigations' own anchor-mode reasoning).
+const MOCK_SESSION_ANCHORED = {
+  ...MOCK_SESSION_WS,
+  anchoredInvestigationId: "inv-1",
+};
+
+const MOCK_INVESTIGATION = {
+  investigation: {
+    id: "inv-1",
+    workspaceId: "ws-1",
+    repositoryId: null,
+    slug: "checkout-500s",
+    title: "Checkout returns 500",
+    status: "investigating",
+    severity: "high",
+    openedBy: "chat",
+    symptomStatement: "checkout returns 500 intermittently",
+    symptomSignature: "checkout 500 intermittent",
+    affectedSurface: "",
+    firstSeenAt: null,
+    verdict: null,
+    confidence: null,
+    depthBudget: 8,
+    jaceSessionIds: ["session-1"],
+    createdAt: NOW,
+    updatedAt: NOW,
+  },
+  items: [],
+};
+
 const MOCK_APPROVAL = {
   id: "approval-1",
   workspaceId: "ws-1",
@@ -103,6 +139,7 @@ beforeEach(() => {
   mockRender.mockReturnValue("rendered approval text");
   mockBuildKeyboard.mockReturnValue({ inline_keyboard: [[]] } as never);
   mockSend.mockResolvedValue({ ok: true } as never);
+  mockGetInvestigation.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -540,6 +577,240 @@ describe("POST /api/v1/runner/approvals — #1274 PR ② chat-born enrichment (c
     );
 
     expect(res.status).toBe(201);
+  });
+});
+
+describe("POST /api/v1/runner/approvals — Task 12 investigation issue-link stamping (create_issue only)", () => {
+  it("INJECTION GUARD: a caller-supplied _investigation is stripped even when the session is unanchored — never passed through as-is", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never); // no anchoredInvestigationId
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          acceptanceCriteria: ["y"],
+          _investigation: { id: "attacker-inv", role: "mitigative" },
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).not.toHaveProperty("_investigation");
+    expect(mockGetInvestigation).not.toHaveBeenCalled();
+  });
+
+  it("INJECTION GUARD: a caller-supplied _investigation is stripped and replaced with the server-computed one when the session IS anchored — attacker cannot pick their own investigation id or role", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          acceptanceCriteria: ["y"],
+          requiredContext: "Role: mitigative",
+          _investigation: { id: "attacker-inv", role: "preventative" },
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    const stamped = (recordArgs?.toolInput as Record<string, unknown>)?._investigation;
+    expect(stamped).toEqual({ id: "inv-1", role: "mitigative" });
+  });
+
+  it("stamps _investigation with role: mitigative parsed from an explicit Role line in requiredContext", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Fix checkout 500",
+          requiredContext: "Some context first.\nRole: mitigative\nMore context after.",
+          acceptanceCriteria: [],
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect((recordArgs?.toolInput as Record<string, unknown>)?._investigation).toEqual({
+      id: "inv-1",
+      role: "mitigative",
+    });
+  });
+
+  it("stamps _investigation with role: preventative parsed from an explicit Role line in requiredContext", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Prevent this class of bug",
+          requiredContext: "Role: preventative",
+          acceptanceCriteria: [],
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect((recordArgs?.toolInput as Record<string, unknown>)?._investigation).toEqual({
+      id: "inv-1",
+      role: "preventative",
+    });
+  });
+
+  it("DEFAULT CASE: defaults role to preventative when requiredContext has no Role line at all", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "x",
+          requiredContext: "Just some prose, no role stated anywhere.",
+          acceptanceCriteria: [],
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect((recordArgs?.toolInput as Record<string, unknown>)?._investigation).toEqual({
+      id: "inv-1",
+      role: "preventative",
+    });
+  });
+
+  it("MALFORMED LINE: defaults role to preventative when a Role line is present but its value isn't exactly mitigative|preventative", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: { title: "x", requiredContext: "Role: fixit-now", acceptanceCriteria: [] },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect((recordArgs?.toolInput as Record<string, unknown>)?._investigation).toEqual({
+      id: "inv-1",
+      role: "preventative",
+    });
+  });
+
+  it("does NOT stamp when the session has no anchored investigation (anchoredInvestigationId absent) — no _investigation key at all, getInvestigationById never called", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: { title: "x", requiredContext: "Role: mitigative", acceptanceCriteria: [] },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).not.toHaveProperty("_investigation");
+    expect(mockGetInvestigation).not.toHaveBeenCalled();
+  });
+
+  it("does NOT stamp when the anchored investigation belongs to a DIFFERENT workspace (T3/T4 precedent: stale/foreign anchor treated identically to unanchored)", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue({
+      ...MOCK_INVESTIGATION,
+      investigation: { ...MOCK_INVESTIGATION.investigation, workspaceId: "ws-foreign-tenant" },
+    } as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: { title: "x", requiredContext: "Role: mitigative", acceptanceCriteria: [] },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).not.toHaveProperty("_investigation");
+  });
+
+  it("does NOT stamp (and does not throw) when the anchor points at an investigation id that no longer resolves", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(null);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    const res = await POST(req({ ...MOCK_BODY, toolInput: { title: "x", acceptanceCriteria: [] } }));
+
+    expect(res.status).toBe(201);
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).not.toHaveProperty("_investigation");
+  });
+
+  it("degrades gracefully (still 201, no _investigation) when getInvestigationById throws — mirrors _brief's own fail-safe direction, same catch-and-fall-back posture", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockRejectedValue(new Error("db down"));
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    const res = await POST(req({ ...MOCK_BODY, toolInput: { title: "x", acceptanceCriteria: [] } }));
+
+    expect(res.status).toBe(201);
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).not.toHaveProperty("_investigation");
+  });
+
+  it("does not affect non-create_issue tools even with an anchored session — no _investigation stamped, getInvestigationById never called", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        eveSessionId: "eve-session-1",
+        toolName: "create_workspace",
+        toolInput: { name: "Acme Corp" },
+        idempotencyKey: "k-workspace-anchored",
+      })
+    );
+
+    expect(mockGetInvestigation).not.toHaveBeenCalled();
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).toEqual({ name: "Acme Corp" });
+  });
+
+  it("REGRESSION: _brief enrichment is untouched by the _investigation stamp — both keys coexist correctly on the same call", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_ANCHORED as never);
+    mockGetInvestigation.mockResolvedValue(MOCK_INVESTIGATION as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          whatToBuild: "A settings toggle that persists across reload.",
+          acceptanceCriteria: ["Toggle in settings"],
+          requiredContext: "Role: mitigative",
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    const toolInput = recordArgs?.toolInput as Record<string, unknown>;
+    const brief = toolInput._brief as Record<string, unknown>;
+    expect(brief).toBeDefined();
+    expect(typeof brief.taskType).toBe("string");
+    expect(toolInput._investigation).toEqual({ id: "inv-1", role: "mitigative" });
   });
 });
 

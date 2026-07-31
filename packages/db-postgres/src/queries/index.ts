@@ -2564,6 +2564,9 @@ export {
   setSessionBriefAnchor,
   clearSessionBriefAnchor,
   getSessionBriefAnchor,
+  setSessionInvestigationAnchor,
+  clearSessionInvestigationAnchor,
+  getSessionInvestigationAnchor,
   getThreadEngagement,
   setThreadEngagement,
   recordApprovalRequest,
@@ -2904,6 +2907,75 @@ export {
   type RecordGuardrailEventInput,
 } from "./guardrail_events.js";
 
+// Investigations (debugging design spec:
+// docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md, spec PR
+// #1501): `investigations`/`investigation_items`/`investigation_links`/
+// `investigation_issue_links` system of record — see `queries/investigations.ts`
+// for the full design (upsert-by-slug identity, delta item patching with the
+// human-authority/evidence-immutability/hypothesis-evidence-gating invariants
+// enforced at the store, FTS search mirroring `searchBriefs`, and the
+// server-computed, fail-closed verdict gate). `upsertInvestigation`/
+// `getInvestigationBySlug`/`getInvestigationById`/`listInvestigations`/
+// `searchInvestigations` back `fetch_investigations`'s modes;
+// `patchInvestigationItems` backs `save_investigation`; `appendEvidenceItem`
+// is the evidence route's own writer — the ONLY function allowed to insert
+// `kind: 'evidence'`. `computeVerdictEligibility`/`recordVerdict` back
+// `POST .../investigations/verdict`; `linkInvestigations`/
+// `linkInvestigationIssue` record recurrence edges and handoff results —
+// `linkInvestigationIssue` (Task 12, fix round 1) is idempotent at the
+// DATABASE level (`ON CONFLICT DO NOTHING` against the
+// `investigation_issue_links_unique` index, migration 0063), the same
+// mechanism `stampPublishedIssueUrl` relies on for its own sibling
+// idempotent-replay guarantee — `POST .../approvals/[id]/published` can
+// genuinely call this twice for the same approval with no read-check ahead
+// of it.
+// `updateInvestigationItemAsHuman`/`createInvestigationItemAsHuman`/
+// `deleteInvestigationItem` are the console's human-edit write path — the gap
+// `patchInvestigationItems` deliberately leaves open, mirroring
+// `updateBriefItemAsHuman`'s own reasoning. `confirmVerdictAsHuman` (Task 13)
+// is the console-only human confirmation gate on the LATEST verdict item —
+// see its own doc-comment for why it does NOT reuse
+// `updateInvestigationItemAsHuman` (it must not flip `authority`).
+// `claimLessonPromotion`/`unclaimLessonPromotion` (Task 13 Fix round 1) are
+// the atomic claim-then-insert pair backing lesson promotion — the guard
+// lives on the UPDATE's own WHERE, not an earlier read; see
+// `claimLessonPromotion`'s own doc-comment.
+export {
+  upsertInvestigation,
+  getInvestigationBySlug,
+  getInvestigationById,
+  listInvestigations,
+  searchInvestigations,
+  patchInvestigationItems,
+  appendEvidenceItem,
+  computeVerdictEligibility,
+  recordVerdict,
+  confirmVerdictAsHuman,
+  claimLessonPromotion,
+  unclaimLessonPromotion,
+  linkInvestigations,
+  linkInvestigationIssue,
+  updateInvestigationItemAsHuman,
+  createInvestigationItemAsHuman,
+  deleteInvestigationItem,
+  INVESTIGATION_SEARCH_DEFAULT_LIMIT,
+  INVESTIGATION_SEARCH_MAX_LIMIT,
+  type InvestigationRow,
+  type InvestigationIndexRow,
+  type InvestigationWithItems,
+  type UpsertInvestigationInput,
+  type PatchInvestigationItemInput,
+  type PatchInvestigationItemsResult,
+  type AppendEvidenceItemInput,
+  type RecordVerdictInput,
+  type RecordVerdictResult,
+  type ConfirmVerdictAsHumanResult,
+  type ClaimLessonPromotionResult,
+  type UpdateInvestigationItemAsHumanInput,
+  type UpdateInvestigationItemAsHumanResult,
+  type CreateInvestigationItemAsHumanInput,
+  type CreateInvestigationItemAsHumanResult,
+} from "./investigations.js";
 // Billing account queries (subscription-platform-design spec §3, §5, §9;
 // see `queries/billing_accounts.ts` for the full WHY, including why these
 // take `db` as an explicit parameter and use raw SQL). getBillingAccountForWorkspace

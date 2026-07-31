@@ -14,6 +14,14 @@ import {
   LinearBrand,
   FigmaBrand,
   Context7Brand,
+  RailwayBrand,
+  LangfuseBrand,
+  SentryBrand,
+  DatadogBrand,
+  PrometheusBrand,
+  GrafanaBrand,
+  VercelBrand,
+  CloudflareBrand,
   type BrandIconProps,
 } from "./brand-icons";
 import {
@@ -21,10 +29,26 @@ import {
   capabilitySummary,
   CONNECTOR_TYPE_META,
   validateConnectorCredential,
+  type ConnectorConnectMeta,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
+
+/**
+ * `factory` (Task 5, `availability: "internal"`) is filtered out of the grid
+ * entirely by `projectConnectors` before a `ConnectorView` ever reaches this
+ * component (see that function's own doc-comment) — this glyph is dead code,
+ * present only so `KIND_ICON`/`KIND_TINT` below (typed `Record<ConnectorKind,
+ * …>`) stay total now that `ConnectorKind` includes `"factory"`. Wraps the
+ * already-imported `Radio` rather than assigning it directly so the map
+ * entry's type is exactly `BrandIconProps`, matching every other entry,
+ * instead of relying on lucide's own (wider) prop type being structurally
+ * compatible.
+ */
+function FactoryGlyph({ size = 18, className }: BrandIconProps) {
+  return <Radio size={size} className={className} aria-hidden="true" />;
+}
 
 /** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
 const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
@@ -32,6 +56,15 @@ const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
   linear: LinearBrand,
   figma: FigmaBrand,
   context7: Context7Brand,
+  factory: FactoryGlyph,
+  railway: RailwayBrand,
+  langfuse: LangfuseBrand,
+  sentry: SentryBrand,
+  datadog: DatadogBrand,
+  prometheus: PrometheusBrand,
+  grafana: GrafanaBrand,
+  vercel: VercelBrand,
+  cloudflare: CloudflareBrand,
 };
 
 /** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
@@ -40,9 +73,41 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   linear: "text-[#5e6ad2]",
   figma: "text-[#f24e1e]",
   context7: "text-[var(--gray-11)]",
+  factory: "text-[var(--gray-11)]",
+  // Railway's mark is monochrome (like GitHub's) — the gray var, not a
+  // literal brand hex (Task 7 could not confirm one against public docs).
+  railway: "text-[var(--gray-12)]",
+  // Task P2: same fallback as Railway — Langfuse's mark here is a generic
+  // stand-in (brand-icons.tsx's own doc-comment), so no brand hex to pin.
+  langfuse: "text-[var(--gray-12)]",
+  // Task P3: Sentry's real brand purple, confirmed against simple-icons'
+  // own data/simple-icons.json ("hex": "362D59") — unlike Railway/Langfuse
+  // above, a real mark exists, so a real hex is pinned too.
+  sentry: "text-[#362d59]",
+  // Task P4: Datadog's real brand purple ("Daisy Bush", #632CA6) — same
+  // "real mark exists, so a real hex is pinned" precedent as Sentry above.
+  datadog: "text-[#632ca6]",
+  // Task P5: Prometheus's real brand orange (#E6522C, "Cinnabar", confirmed
+  // against simple-icons' own data) — same "real mark exists, so a real hex
+  // is pinned" precedent as Sentry/Datadog above.
+  prometheus: "text-[#e6522c]",
+  // Task P6: Grafana's real brand orange (#F46800, confirmed against
+  // simple-icons' own data) — same "real mark exists, so a real hex is
+  // pinned" precedent as Sentry/Datadog/Prometheus above.
+  grafana: "text-[#f46800]",
+  // Task P7: Vercel's mark is monochrome (like GitHub's/Railway's/
+  // Langfuse's) — the gray var, not a literal brand hex (Vercel's own
+  // identity is pure black-in-light/white-in-dark, which a fixed hex
+  // cannot represent across both themes).
+  vercel: "text-[var(--gray-12)]",
+  // Task P8 (final Wave-2 provider): Cloudflare's real brand orange
+  // (#F38020, confirmed against simple-icons' own data) — same "real mark
+  // exists, so a real hex is pinned" precedent as Sentry/Datadog/
+  // Prometheus/Grafana above.
+  cloudflare: "text-[#f38020]",
 };
 
-const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp"];
+const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
 
 // --------------------------------------------------------------------------- //
 // Trigger controls (#816) — folded into each connected ingest connector card.
@@ -223,6 +288,15 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
 // context7). Posts the credential to the write-only /connectors/secret route;
 // the value is never read back.
 // --------------------------------------------------------------------------- //
+
+// Module-level (not per-render) empty-array fallbacks for `secretParts` /
+// `extraConfigFields` when a catalog entry declares neither — reusing the
+// SAME reference on every render (rather than a fresh `?? []` literal each
+// time) keeps `save`'s useCallback dependency array referentially stable for
+// every provider that predates this wave (react-hooks/exhaustive-deps).
+const NO_SECRET_PARTS: NonNullable<ConnectorConnectMeta["secretParts"]> = [];
+const NO_EXTRA_FIELDS: NonNullable<ConnectorConnectMeta["extraConfigFields"]> = [];
+
 function SecretManage({
   connector,
   workspaceId,
@@ -235,29 +309,101 @@ function SecretManage({
   onChanged: () => void;
 }) {
   const isConnected = connector.status === "connected";
+  const meta = connector.connect;
+
+  // Task P0: composite secrets — a catalog entry declaring `secretParts`
+  // renders ONE password input PER PART instead of the single credential
+  // input; the parts are joined `partA:partB` right before the PUT (see
+  // `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment).
+  // Absent (every provider before this wave) → `secretParts` is `[]` and
+  // the original single-input rendering below is completely unaffected.
+  const secretParts = meta?.secretParts ?? NO_SECRET_PARTS;
+  const isComposite = secretParts.length > 0;
   const [secret, setSecret] = useState("");
+  const [partValues, setPartValues] = useState<string[]>(() => secretParts.map(() => ""));
+
+  // Task P0 (generalizes Task 7's single `extraValue` string): N generic
+  // extra config fields, driven entirely by the catalog entry's
+  // `connect.extraConfigFields` — this component never hardcodes which
+  // provider needs one or how many, so the NEXT provider needing extra
+  // fields is catalog-only. See connector-helpers.ts's own doc-comment on
+  // ConnectorConnectMeta.extraConfigFields.
+  const extraFields = meta?.extraConfigFields ?? NO_EXTRA_FIELDS;
+  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const meta = connector.connect;
 
   const save = useCallback(
     async (body: { secret: string | null }) => {
       setSaving(true);
       setErr(null);
       try {
+        // Computed BEFORE the secret PUT (Task P2 — see this component's own
+        // note below at the persistence call for why the SAME entries also
+        // ride ALONGSIDE the secret in the request below, not just here).
+        const configEntries = extraFields
+          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
+          .filter(([, v]) => v.length > 0);
+
         const res = await fetch(
           `/api/v1/workspaces/${workspaceId}/connectors/secret`,
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ provider: connector.kind, ...body }),
+            // Task P2: a catalog entry's extraConfigFields values ride
+            // ALONGSIDE the secret in this SAME request (in addition to the
+            // dedicated persistence call below) — some providers' live
+            // verify needs a not-yet-persisted extra field (Langfuse's host:
+            // `verify.ts` calls `GET {host}/api/public/projects`, and at
+            // THIS point in the flow no config PUT has run yet — see
+            // `verify.ts`'s own doc-comment). secret/route.ts reads these
+            // ONLY to hand to verify; it never persists them itself (the
+            // dedicated config PUT below remains the sole persistence
+            // path), so this is harmless for every provider whose secret
+            // route doesn't consume them (every provider before this task,
+            // including Railway's own `railwayProjectId`). Never sent on a
+            // disconnect (`body.secret === null`).
+            body: JSON.stringify({
+              provider: connector.kind,
+              ...body,
+              ...(body.secret !== null ? Object.fromEntries(configEntries) : {}),
+            }),
           }
         );
         if (!res.ok) {
           const b = await res.json().catch(() => ({}));
           throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
         }
+
+        // The extra fields (when the catalog entry declares any) ALSO save
+        // via the connectors CONFIG route (the sole persistence path for
+        // them — see the note above), and only once the credential itself
+        // is accepted, so a rejected token never leaves an orphaned config
+        // value behind. Never attempted on a disconnect (`body.secret ===
+        // null`). Only non-empty values are sent, so an optional field left
+        // blank never overwrites a previously-stored one with an empty
+        // string.
+        if (body.secret !== null && configEntries.length > 0) {
+          const configRes = await fetch(
+            `/api/v1/workspaces/${workspaceId}/connectors`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                provider: connector.kind,
+                ...Object.fromEntries(configEntries),
+              }),
+            }
+          );
+          if (!configRes.ok) {
+            const b = await configRes.json().catch(() => ({}));
+            throw new Error((b as { error?: string }).error ?? `HTTP ${configRes.status}`);
+          }
+        }
+
         setSecret("");
+        setPartValues(secretParts.map(() => ""));
+        setExtraValues({});
         onChanged();
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Failed to save");
@@ -265,7 +411,7 @@ function SecretManage({
         setSaving(false);
       }
     },
-    [workspaceId, connector.kind, onChanged]
+    [workspaceId, connector.kind, extraFields, extraValues, secretParts, onChanged]
   );
 
   if (isConnected) {
@@ -292,35 +438,109 @@ function SecretManage({
     );
   }
 
+  const missingRequiredExtra = extraFields.find(
+    (f) => f.required !== false && (extraValues[f.key] ?? "").trim().length === 0
+  );
+
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        const check = validateConnectorCredential(connector.kind, secret);
+
+        // Task P0: a composite provider joins its N part inputs into the
+        // single `partA:partB` string right here, client-side, before any
+        // validation runs — see composite-secret.ts's own doc-comment on
+        // why a raw part must never contain the `:` delimiter.
+        let credential: string;
+        if (isComposite) {
+          const emptyIdx = partValues.findIndex((v) => v.trim().length === 0);
+          if (emptyIdx !== -1) {
+            setErr(`${secretParts[emptyIdx].name} is required.`);
+            return;
+          }
+          const colonIdx = partValues.findIndex((v) => v.includes(":"));
+          if (colonIdx !== -1) {
+            setErr(`${secretParts[colonIdx].name} must not contain ":".`);
+            return;
+          }
+          credential = partValues.map((v) => v.trim()).join(":");
+        } else {
+          credential = secret;
+        }
+
+        const check = validateConnectorCredential(connector.kind, credential);
         if (!check.ok) {
           setErr(check.error);
           return;
         }
-        save({ secret: secret.trim() });
+        if (missingRequiredExtra) {
+          setErr(`${missingRequiredExtra.label} is required.`);
+          return;
+        }
+        save({ secret: credential.trim() });
       }}
       className="flex flex-col gap-2"
     >
-      <input
-        aria-label={meta?.credentialLabel ?? "Credential"}
-        type="password"
-        autoComplete="off"
-        placeholder={meta?.credentialPlaceholder}
-        value={secret}
-        disabled={!canManage}
-        onChange={(e) => setSecret(e.target.value)}
-        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-      />
+      {isComposite ? (
+        secretParts.map((part, i) => (
+          <input
+            key={part.name}
+            aria-label={part.name}
+            type="password"
+            autoComplete="off"
+            placeholder={part.name}
+            value={partValues[i] ?? ""}
+            disabled={!canManage}
+            onChange={(e) =>
+              setPartValues((prev) => {
+                const next = [...prev];
+                next[i] = e.target.value;
+                return next;
+              })
+            }
+            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+          />
+        ))
+      ) : (
+        <input
+          aria-label={meta?.credentialLabel ?? "Credential"}
+          type="password"
+          autoComplete="off"
+          placeholder={meta?.credentialPlaceholder}
+          value={secret}
+          disabled={!canManage}
+          onChange={(e) => setSecret(e.target.value)}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      )}
       {meta?.credentialHint && (
         <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
       )}
+      {extraFields.map((field) => (
+        <input
+          key={field.key}
+          aria-label={field.label}
+          type="text"
+          autoComplete="off"
+          placeholder={field.placeholder}
+          value={extraValues[field.key] ?? ""}
+          disabled={!canManage}
+          onChange={(e) =>
+            setExtraValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+          }
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      ))}
       <button
         type="submit"
-        disabled={!canManage || saving || secret.trim().length === 0}
+        disabled={
+          !canManage ||
+          saving ||
+          (isComposite
+            ? partValues.some((v) => v.trim().length === 0)
+            : secret.trim().length === 0) ||
+          Boolean(missingRequiredExtra)
+        }
         className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
       >
         {saving ? "Connecting…" : "Connect"}

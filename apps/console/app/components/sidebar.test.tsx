@@ -39,6 +39,7 @@ describe("filterEngineRoomItems (subscription slice 6 Task 4 — Costs/Budget/Wa
       "model-selection",
       "memory",
       "briefs",
+      "investigations",
       "wiki",
       "failures",
     ]);

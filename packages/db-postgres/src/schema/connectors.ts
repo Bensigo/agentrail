@@ -47,6 +47,93 @@ export const connectorProviderEnum = [
   // SEPARATE `github` provider row, so disabling `jace` cannot affect it.
   // (Free-text column, so this is a TS-union addition only — no migration.)
   "jace",
+  // observability — Task 7 (debugging design spec): railway, the first
+  // EXTERNAL credentialed evidence provider (`lib/evidence/railway.ts`).
+  // Stores a per-workspace account/team token in `secret` exactly like
+  // linear/figma/context7 above; its non-secret companion field is
+  // `config.railwayProjectId` (see {@link ConnectorConfig.railwayProjectId}).
+  // Same precedent as `jace`: a free-text column, so this is a TS-union
+  // addition only — no migration.
+  "railway",
+  // observability — Task P2 (Evidence Providers Wave 2): langfuse, the
+  // first Wave-2 provider (`apps/console/lib/evidence/langfuse.ts`). Stores
+  // a COMPOSITE `pk-lf-…:sk-lf-…` credential in `secret` (see
+  // `apps/console/lib/evidence/composite-secret.ts`), same single-column
+  // convention as every other provider here; its non-secret companion
+  // field is `config.langfuseHost` (already added by Task P0 — see
+  // {@link ConnectorConfig.langfuseHost}). Same precedent as `railway`: a
+  // free-text column, so this is a TS-union addition only — no migration.
+  "langfuse",
+  // observability — Task P3 (Evidence Providers Wave 2): sentry, the second
+  // Wave-2 provider (`apps/console/lib/evidence/sentry.ts`). Stores a
+  // SINGLE org/user auth token in `secret` (no composite split, unlike
+  // `langfuse` above — same single-column shape as `railway`); its two
+  // non-secret companion fields are `config.sentryOrg` + `config.sentryProject`
+  // (already added by Task P0 — see {@link ConnectorConfig.sentryOrg}).
+  // Same precedent as `railway`/`langfuse`: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "sentry",
+  // observability — Task P4 (Evidence Providers Wave 2): datadog, the third
+  // Wave-2 provider (`apps/console/lib/evidence/datadog.ts`). Stores a
+  // COMPOSITE `apiKey:appKey` credential in `secret` (see
+  // `apps/console/lib/evidence/composite-secret.ts`), same convention as
+  // `langfuse` above; its non-secret companion field is
+  // `config.datadogSite` (already added by Task P0 — see
+  // {@link ConnectorConfig.datadogSite}). Same precedent as
+  // `railway`/`langfuse`/`sentry`: a free-text column, so this is a
+  // TS-union addition only — no migration.
+  "datadog",
+  // observability — Task P5 (Evidence Providers Wave 2): prometheus, the
+  // fourth Wave-2 provider (`apps/console/lib/evidence/prometheus.ts`).
+  // Stores a SINGLE secret in `secret` — EITHER a bearer token OR a
+  // `user:pass` composite for HTTP Basic auth, disambiguated at READ time
+  // by a colon-presence heuristic (see that adapter's own doc-comment,
+  // "AUTH HEURISTIC") rather than a declared composite split — no
+  // `secretParts`/`secretPartPatterns` on this provider's catalog entry,
+  // unlike `langfuse`/`datadog` above. Its non-secret companion field is
+  // `config.prometheusUrl` (already added by Task P0 — see
+  // {@link ConnectorConfig.prometheusUrl}). Same precedent as
+  // `railway`/`langfuse`/`sentry`/`datadog`: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "prometheus",
+  // observability — Task P6 (Evidence Providers Wave 2): grafana, the fifth
+  // Wave-2 provider (`apps/console/lib/evidence/grafana.ts`). Stores a
+  // SINGLE service-account-token (or legacy API key) secret in `secret` —
+  // no `secretParts`/`secretPartPatterns` on this provider's catalog entry,
+  // same single-secret shape as `prometheus` above. Its non-secret
+  // companion field is `config.grafanaUrl` (already added by Task P0 — see
+  // {@link ConnectorConfig.grafanaUrl}). PIVOTED from the plan's believed
+  // `signals` (datasource-proxy query) to `search_events`
+  // (alerts+annotations) — see that adapter's own doc-comment for the full
+  // doc-verify trail. Same precedent as every provider above: a free-text
+  // column, so this is a TS-union addition only — no migration.
+  "grafana",
+  // observability — Task P7 (Evidence Providers Wave 2): vercel, the sixth
+  // Wave-2 provider (`apps/console/lib/evidence/vercel.ts`). Stores a
+  // SINGLE Access Token in `secret` — no `secretParts`/`secretPartPatterns`
+  // on this provider's catalog entry, same single-secret shape as
+  // `prometheus`/`grafana` above. Its non-secret companion fields are
+  // `config.vercelProjectId` (required) and `config.vercelTeamId`
+  // (OPTIONAL — the wave's first optional extra config field; a
+  // personal-account-scoped project has no team) — both already added by
+  // Task P0 (see {@link ConnectorConfig.vercelProjectId}). Same precedent
+  // as every provider above: a free-text column, so this is a TS-union
+  // addition only — no migration.
+  "vercel",
+  // observability — Task P8 (Evidence Providers Wave 2): cloudflare, the
+  // FINAL Wave-2 provider (`apps/console/lib/evidence/cloudflare.ts`).
+  // Stores a SINGLE API Token in `secret` — no `secretParts`/
+  // `secretPartPatterns` on this provider's catalog entry, same
+  // single-secret shape as `prometheus`/`grafana`/`vercel` above. Its
+  // non-secret companion field is `config.cloudflareZoneId` (already added
+  // by Task P0 — see {@link ConnectorConfig.cloudflareZoneId});
+  // `config.cloudflareAccountId` (also already added by Task P0) is
+  // DELIBERATELY left unused — confirmed both GraphQL Analytics datasets
+  // this adapter reads are reachable via `zoneTag` alone, no `accountTag`
+  // needed (see cloudflare.ts's own doc-comment, "ACCOUNT TAG NOT NEEDED").
+  // Same precedent as every provider above: a free-text column, so this is
+  // a TS-union addition only — no migration.
+  "cloudflare",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 
@@ -186,6 +273,60 @@ export interface ConnectorConfig {
    * (blocked on the deployed sidecar, #1038). See `jaceOwnsIMessageNotify`.
    */
   imessageNotify?: boolean;
+  /**
+   * Railway evidence connector (Task 7, debugging design spec): the
+   * workspace's Railway project id, scoping `lib/evidence/railway.ts`'s
+   * `deployments`/`deploymentLogs` GraphQL queries. Non-secret display
+   * field — the account/team token is the secret (this column's sibling).
+   * Saved via the connectors PUT (config path,
+   * `api/v1/workspaces/[workspaceId]/connectors/route.ts`), NOT the secret
+   * route — the connect card's expanded form posts token and project id to
+   * two different routes on connect (`connectors-panel.tsx`'s
+   * `SecretManage`). Absent until the workspace connects Railway; the
+   * railway adapter degrades `config_missing` when absent (its own
+   * doc-comment explains why that reason, not `bad_request`). Absent for
+   * every other provider.
+   */
+  railwayProjectId?: string;
+  // Evidence Providers Wave 2 (Task P0, `.superpowers/sdd/plan-providers.md`)
+  // — non-secret companion fields for the wave's seven providers, ALL added
+  // at once here so P2–P8 never touch this schema package again. Each
+  // mirrors `railwayProjectId` above (Task 7): optional string, saved via
+  // the connectors PUT (config path — now generic, see
+  // `connector-helpers.ts`'s `ConnectorConnectMeta.extraConfigFields` and
+  // `extraConfigFieldKeys`), never a secret (the provider's actual
+  // credential lives in `connectors.secret`, possibly composite — see
+  // `apps/console/lib/evidence/composite-secret.ts`). Every field is absent
+  // until its provider's connect form is used; no provider task after P0
+  // needs to add a new field here.
+  /** Langfuse: base URL for the workspace's Langfuse deployment/region
+   * (`https://cloud.langfuse.com`, `https://jp.cloud.langfuse.com`, or a
+   * self-host origin). */
+  langfuseHost?: string;
+  /** Sentry: the organization slug the workspace's project(s) live under. */
+  sentryOrg?: string;
+  /** Sentry: the project slug within {@link sentryOrg}. */
+  sentryProject?: string;
+  /** Datadog: the account's site (`datadoghq.com`, `us3.datadoghq.com`,
+   * `us5.datadoghq.com`, `datadoghq.eu`, …). */
+  datadogSite?: string;
+  /** Prometheus: the base URL of the workspace's Prometheus (or
+   * Prometheus-compatible) query endpoint. */
+  prometheusUrl?: string;
+  /** Grafana: the base URL of the workspace's Grafana instance. */
+  grafanaUrl?: string;
+  /** Vercel: the team id scoping the workspace's deployments (optional — a
+   * personal-account Vercel project has none). */
+  vercelTeamId?: string;
+  /** Vercel: the project id the debugging investigator reads deployments
+   * from. */
+  vercelProjectId?: string;
+  /** Cloudflare: the zone id scoping the workspace's analytics/security
+   * queries. */
+  cloudflareZoneId?: string;
+  /** Cloudflare: the account id (needed alongside the zone id for some
+   * GraphQL analytics queries). */
+  cloudflareAccountId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

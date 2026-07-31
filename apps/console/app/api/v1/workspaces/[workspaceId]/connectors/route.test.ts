@@ -27,8 +27,17 @@ import { GET, PUT } from "./route";
 
 // Minimal real implementations mirrored from db-postgres/queries/connectors.ts
 // so the route's validation is genuinely exercised in this hermetic test.
+// Task 7 adds "railway" to isConnectorProvider (connectorProviderEnum).
+// Task P0 (Fix Round 1): the ROUTE's PUT handler no longer hand-lists
+// `railwayProjectId` — it forwards any catalog-declared extraConfigFields
+// key generically (`EXTRA_CONFIG_KEYS`, `route.ts`) to `validateConnectorUpdate`.
+// This MOCK still validates `railwayProjectId` as its own named branch
+// because it's a simplified stand-in for db-postgres's REAL
+// `validateConnectorUpdate` (which itself validates each Wave 2 field by
+// name, per `queries/connectors.ts` — the route's genericity is about which
+// keys it FORWARDS, not about how the query layer validates them).
 function realIsProvider(v: unknown): boolean {
-  return v === "github" || v === "linear" || v === "discord";
+  return v === "github" || v === "linear" || v === "discord" || v === "railway";
 }
 function realValidate(u: { enabled?: unknown; config?: Record<string, unknown> }) {
   const value: Record<string, unknown> = {};
@@ -50,6 +59,11 @@ function realValidate(u: { enabled?: unknown; config?: Record<string, unknown> }
       const t = String(c.triggerLabel).trim();
       if (!t || t.length > 50) return { ok: false, error: "bad label" };
       out.triggerLabel = t;
+    }
+    if (c.railwayProjectId !== undefined) {
+      const t = String(c.railwayProjectId).trim();
+      if (!t || t.length > 64) return { ok: false, error: "bad railwayProjectId" };
+      out.railwayProjectId = t;
     }
     value.config = out;
   }
@@ -148,6 +162,78 @@ describe("PUT /connectors", () => {
     });
     const json = (await res.json()) as { connector: { enabled: boolean } };
     expect(json.connector.enabled).toBe(true);
+  });
+
+  // Task 7 (debugging design spec): the railway connect card's project-id
+  // field saves via THIS route (config path), not the secret route — see
+  // connector-helpers.ts's ConnectorConnectMeta.extraConfigField doc-comment.
+  it("saves railwayProjectId for owner/admin (Task 7 — config path, not the secret route)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    const res = await PUT(
+      putReq({ provider: "railway", railwayProjectId: "proj-123" }),
+      { params: params() }
+    );
+    expect(res.status).toBe(200);
+    expect(upsertConnector).toHaveBeenCalledWith(WS, "railway", {
+      config: { railwayProjectId: "proj-123" },
+    });
+  });
+
+  it("400 for railway with an out-of-bounds railwayProjectId", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "admin" } as never);
+    const res = await PUT(
+      putReq({ provider: "railway", railwayProjectId: "x".repeat(65) }),
+      { params: params() }
+    );
+    expect(res.status).toBe(400);
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------
+// GET — railway's projected row (Task 7): hasSecret + railwayProjectId must
+// actually reach projectConnectors, or the card would always render
+// disconnected regardless of a stored credential (the gap this task's
+// "check the GET route's hand-enumerated secretConfig() calls" note warns
+// about).
+// -----------------------------------------------------------------------
+describe("GET /connectors — railway row projection (Task 7)", () => {
+  beforeEach(() => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+  });
+
+  function railwayRow() {
+    return {
+      provider: "railway" as const,
+      enabled: true,
+      config: {
+        repos: [],
+        triggerLabel: "ready-for-agent",
+        pollIntervalSeconds: 60,
+        railwayProjectId: "proj-abc",
+      },
+      hasSecret: true,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    };
+  }
+
+  it("is disconnected with no stored row (never silently 'connected')", async () => {
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    const railway = json.connectors.find((c) => c.kind === "railway");
+    expect(railway).toBeDefined();
+    expect(railway!.status).toBe("disconnected");
+  });
+
+  it("shows connected once a railway connector row with hasSecret is stored", async () => {
+    vi.mocked(getConnectors).mockResolvedValue([railwayRow()] as never);
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    const railway = json.connectors.find((c) => c.kind === "railway");
+    expect(railway!.status).toBe("connected");
   });
 });
 

@@ -6,10 +6,26 @@ import {
   type ConnectorProvider,
 } from "@agentrail/db-postgres";
 import {
+  CONNECTOR_CATALOG,
+  extraConfigFieldKeys,
   validateConnectorCredential,
   type ConnectorKind,
 } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { verifyConnectorCredential } from "./verify";
+
+/**
+ * Every non-secret config key any catalog entry declares via
+ * `connect.extraConfigFields` (Task P0) — computed once at module load,
+ * mirroring `connectors/route.ts`'s own `EXTRA_CONFIG_KEYS`. Task P2: read
+ * off THIS route's own request body (below) and handed to
+ * `verifyConnectorCredential`'s optional 4th `config` param — see
+ * `verify.ts`'s own doc-comment ("LANGFUSE HOST — THE ORDERING GAP") for
+ * why a provider's live-verify can need a value that has not been persisted
+ * yet. This route itself never writes any of these keys — the dedicated
+ * connectors PUT route (`connectors/route.ts`) remains the sole
+ * persistence path; this is a read-and-forward only.
+ */
+const EXTRA_CONFIG_KEYS = extraConfigFieldKeys();
 
 /**
  * Credential-based connector management (M038 catalog expansion; Gateway →
@@ -24,15 +40,44 @@ import { verifyConnectorCredential } from "./verify";
  * here — so none of the three is in this route's allowlist. Discord's former
  * dedicated webhook route is deleted for the same reason.
  *
- * Body: `{ provider, secret }`. A null / empty `secret` disconnects.
+ * Body: `{ provider, secret }`. A null / empty `secret` disconnects. For a
+ * composite-secret provider (Task P0, `connect.secretParts` — Langfuse
+ * `pk-lf-…:sk-lf-…`, Datadog `apiKey:appKey`, …) `secret` is the CLIENT-JOINED
+ * `partA:partB` string; this route stores it whole in the single
+ * `connectors.secret` column exactly like a single-part credential — the
+ * splitting only happens downstream, in `validateConnectorCredential` and
+ * `verifyConnectorCredential` (both consume
+ * `apps/console/lib/evidence/composite-secret.ts`'s `splitCompositeSecret`).
+ * This route itself needs no composite-aware branch.
+ *
+ * Task 7 (debugging design spec, spec PR #1501) — THE BEHAVIOR-DRIVING
+ * CHANGE: the allowlist below is now DERIVED from `CONNECTOR_CATALOG`
+ * (every `connectMethod: "secret"` entry) instead of a hand-enumerated
+ * literal. This is the proof that "add a provider = catalog entry + adapter
+ * + credential pair" — Railway's catalog entry alone is what makes this
+ * route accept it; no second hand-list to remember.
+ *
+ * Fix Round 1, FIX 4: the derivation ALSO excludes `availability:
+ * "internal"` entries — structurally, not incidentally. The initial
+ * submission filtered on `connectMethod === "secret"` alone, which let
+ * `factory` (Task 5's `availability: "internal"` entry — ALSO
+ * `connectMethod: "secret"`) technically clear this gate too; it was still
+ * rejected one gate later by `validateConnectorCredential`'s own `case
+ * "factory"` (no real credential exists to validate), so this was never a
+ * live security hole, but it meant the allowlist's own correctness relied
+ * on that second gate rather than being self-evidently correct. Now
+ * `availability !== "internal"` is part of THIS gate's own filter — an
+ * internal-only entry (this one, or any future one) can never reach
+ * `setConnectorSecret` regardless of what any credential validator would
+ * say about it, proven by a dedicated test
+ * (`secret/route.test.ts`, "factory is excluded from the allowlist
+ * itself").
  */
-
-/** Providers this route manages — the credential-based ones only. */
-const CREDENTIAL_PROVIDERS = new Set<ConnectorProvider>([
-  "linear",
-  "figma",
-  "context7",
-]);
+const CREDENTIAL_PROVIDERS = new Set(
+  CONNECTOR_CATALOG.filter(
+    (e) => e.connectMethod === "secret" && e.availability !== "internal"
+  ).map((e) => e.kind)
+);
 
 export async function PUT(
   request: NextRequest,
@@ -55,7 +100,15 @@ export async function PUT(
     );
   }
 
-  let body: { provider?: unknown; secret?: unknown };
+  let body: {
+    provider?: unknown;
+    secret?: unknown;
+    // Task P2: any catalog-declared extraConfigFields key (langfuseHost,
+    // and — once P4-P6 land — datadogSite, prometheusUrl, grafanaUrl, …)
+    // MAY ride alongside the secret in this same request body — see
+    // EXTRA_CONFIG_KEYS above and this route's own read of it below.
+    [key: string]: unknown;
+  };
   try {
     body = await request.json();
   } catch {
@@ -65,10 +118,10 @@ export async function PUT(
   const provider = body.provider;
   if (
     typeof provider !== "string" ||
-    !CREDENTIAL_PROVIDERS.has(provider as ConnectorProvider)
+    !CREDENTIAL_PROVIDERS.has(provider as ConnectorKind)
   ) {
     return NextResponse.json(
-      { error: "provider must be one of linear, figma, context7" },
+      { error: `provider must be one of ${Array.from(CREDENTIAL_PROVIDERS).join(", ")}` },
       { status: 400 }
     );
   }
@@ -104,8 +157,15 @@ export async function PUT(
   }
 
   // Gate 2 (real): the provider must actually accept the credential, so a
-  // well-formed-but-wrong key is rejected before we ever store it.
-  const verified = await verifyConnectorCredential(kind, rawSecret);
+  // well-formed-but-wrong key is rejected before we ever store it. Task P2:
+  // any extraConfigFields values riding in THIS request (see
+  // EXTRA_CONFIG_KEYS above) are forwarded generically — read-and-forward
+  // only, never persisted by this route (see verify.ts's own doc-comment).
+  const extraConfig: Record<string, unknown> = {};
+  for (const key of EXTRA_CONFIG_KEYS) {
+    if (body[key] !== undefined) extraConfig[key] = body[key];
+  }
+  const verified = await verifyConnectorCredential(kind, rawSecret, CONNECTOR_CATALOG, extraConfig);
   if (!verified.ok) {
     return NextResponse.json({ error: verified.error }, { status: 400 });
   }

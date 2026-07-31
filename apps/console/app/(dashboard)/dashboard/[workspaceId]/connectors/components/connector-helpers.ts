@@ -33,18 +33,72 @@
  * input-contract gate's job, server-side).
  */
 
-/** The external tools AgentRail can connect (M038 catalog). */
-export type ConnectorKind = "github" | "linear" | "figma" | "context7";
+import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
+import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-secret";
+
+/**
+ * The external tools AgentRail can connect (M038 catalog), plus `factory` —
+ * Task 5's `availability: "internal"` evidence-only entry (this console's
+ * own runs/failure-events; nothing to connect, see
+ * {@link ConnectorAvailability}'s own doc-comment) — `railway` (Task 7),
+ * the first EXTERNAL evidence-only-role connector: deployments + logs for
+ * the debugging investigator, over the workspace's Railway account/team
+ * token — `langfuse` (Task P2, Evidence Providers Wave 2,
+ * `.superpowers/sdd/plan-providers.md`), the first Wave-2 provider: traces +
+ * observation-level signals over a per-workspace public/secret API key
+ * pair — `sentry` (Task P3, Evidence Providers Wave 2), the second
+ * Wave-2 provider: issue search + RED-shaped signals over a per-workspace
+ * SINGLE auth token (org or user), scoped by org+project extra config — and
+ * `datadog` (Task P4, Evidence Providers Wave 2), the third Wave-2 provider:
+ * USE-shaped host signals + log search over a per-workspace apiKey+appKey
+ * composite pair, scoped by a site extra config — and `prometheus` (Task P5,
+ * Evidence Providers Wave 2), the fourth Wave-2 provider: RED/USE-shaped
+ * instant-query signals over a per-workspace SINGLE secret (bearer token OR
+ * `user:pass` for Basic auth, disambiguated at read time — no declared
+ * composite split), scoped by a base-URL extra config — and `grafana`
+ * (Task P6, Evidence Providers Wave 2), the fifth Wave-2 provider:
+ * Grafana-managed alert state changes + annotations as `search_events`
+ * (PIVOTED from the plan's believed `signals`-via-datasource-proxy shape —
+ * see `lib/evidence/grafana.ts`'s own doc-comment, "PIVOT DECISION," for the
+ * doc-verify trail) over a per-workspace SINGLE service-account-token
+ * secret, scoped by a base-URL extra config — `vercel` (Task P7,
+ * Evidence Providers Wave 2), the sixth Wave-2 provider: deployments as
+ * `changes`, deployment build/runtime events as `search_events`, over a
+ * per-workspace SINGLE Access Token, scoped by a required project id and
+ * an OPTIONAL team id (the first Wave-2 provider with an optional extra
+ * config field — a personal-account-scoped Vercel project has no team) —
+ * and `cloudflare` (Task P8, Evidence Providers Wave 2), the FINAL Wave-2
+ * provider: edge-traffic signals + firewall/security events as
+ * `search_events`, both over Cloudflare's GraphQL Analytics API, a
+ * per-workspace SINGLE API Token, scoped by a required zone id (no account
+ * id needed — see `lib/evidence/cloudflare.ts`'s own doc-comment).
+ */
+export type ConnectorKind =
+  | "github"
+  | "linear"
+  | "figma"
+  | "context7"
+  | "factory"
+  | "railway"
+  | "langfuse"
+  | "sentry"
+  | "datadog"
+  | "prometheus"
+  | "grafana"
+  | "vercel"
+  | "cloudflare";
 
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
  * by ROLE: `issue-source` (GitHub, Linear — feed the Issue Queue), `mcp`
- * (Figma, Context7 — tools only). (#1292 renamed the former connect-mechanism
- * `https` group to the role-based `issue-source`, and moved Linear into it
- * from `mcp`. Gateways-page T4 removed the third group, `channel` — chat
- * channels live on their own Gateways surface now, see the module doc-comment.)
+ * (Figma, Context7 — tools only), `observability` (Task 7: Railway — evidence
+ * for debugging investigations, no ingest). (#1292 renamed the former
+ * connect-mechanism `https` group to the role-based `issue-source`, and moved
+ * Linear into it from `mcp`. Gateways-page T4 removed the third group,
+ * `channel` — chat channels live on their own Gateways surface now, see the
+ * module doc-comment.)
  */
-export type ConnectorType = "issue-source" | "mcp";
+export type ConnectorType = "issue-source" | "mcp" | "observability";
 
 /**
  * How a connector's catalog entry is classified for its connect flow:
@@ -54,8 +108,17 @@ export type ConnectorType = "issue-source" | "mcp";
  */
 export type ConnectorConnectMethod = "oauth" | "secret";
 
-/** Whether an adapter is implemented today, vs. planned in a follow-up. */
-export type ConnectorAvailability = "available" | "planned";
+/**
+ * Whether an adapter is implemented today, vs. planned in a follow-up, vs.
+ * `"internal"` — a capability-only entry over this console's OWN data (Task
+ * 5's `factory` evidence adapter: runs/failure-events, nothing to connect).
+ * An `internal` entry exists in the catalog purely so `evidenceCapabilities`
+ * (`lib/evidence/registry.ts`) can find its declared evidence verbs; it is
+ * filtered OUT of the connectors page grid ({@link projectConnectors}) — a
+ * card with no connect flow and nothing to show status for would only
+ * confuse the surface it's not meant to appear on.
+ */
+export type ConnectorAvailability = "available" | "planned" | "internal";
 
 /** A connector's connection state on this workspace. */
 export type ConnectorStatus = "connected" | "disconnected";
@@ -70,6 +133,15 @@ export interface ConnectorCapabilities {
   notify: boolean;
   /** Exposes MCP tools / context to a run. */
   tools?: boolean;
+  /**
+   * The evidence verbs (debugging design spec) this connector can answer
+   * once connected — read by `evidenceCapabilities` (`lib/evidence/registry.ts`)
+   * to derive, per workspace, which providers can answer which question-shape.
+   * Absent for every connector that isn't also an evidence source (this task
+   * adds the field; no existing catalog entry populates it yet — Task 7 adds
+   * the first real one).
+   */
+  evidence?: EvidenceVerb[];
 }
 
 /** Per-provider connect metadata the card renders (label, placeholder, how-to). */
@@ -84,6 +156,57 @@ export interface ConnectorConnectMeta {
   helpUrl: string;
   /** Short, ordered "how to create the app / key" steps. */
   setupSteps: string[];
+  /**
+   * Task P0 (generalizes Task 7's single `extraConfigField`, a
+   * reviewer-flagged nit — the target derivation used to hardcode
+   * `railwayProjectId`): the non-secret config fields the connect form
+   * renders alongside the credential input, IN ORDER (Railway declares one
+   * — its project id; the wave's other providers, P2-P8, declare one or
+   * more — org, site, host, ids). Saved via the connectors PUT (config
+   * path), NOT the secret route — the accept-list there is derived from
+   * every catalog entry's declared keys generically (`extraConfigFieldKeys`
+   * below), never hand-listed. `connectors-panel.tsx`'s `SecretManage`
+   * renders N inputs off this array alone; `projectConnectors` derives a
+   * connected card's displayed `target` from the FIRST declared field's
+   * value (`firstExtraConfigValue`), also generically. Absent for every
+   * provider that needs only the credential itself.
+   */
+  extraConfigFields?: Array<{
+    key: string;
+    label: string;
+    placeholder: string;
+    /** Defaults to required (true) when absent — matches Railway's
+     * original always-required single field. Set `false` for an optional
+     * companion field. */
+    required?: boolean;
+  }>;
+  /**
+   * Task P0: composite-secret display metadata — an entry declaring this
+   * stores a TWO-OR-MORE-PART credential (Langfuse `pk-lf-…:sk-lf-…`,
+   * Datadog `apiKey:appKey`, …) in the single `connectors.secret` column,
+   * joined by `:` (see `apps/console/lib/evidence/composite-secret.ts`'s
+   * own doc-comment for the full contract). `connectors-panel.tsx`'s
+   * `SecretManage` renders one password input PER declared part instead of
+   * the single credential input; the parts are joined client-side right
+   * before the PUT. Absent (every provider before this wave) → the
+   * original single-input behavior, unaffected.
+   */
+  secretParts?: Array<{ name: string }>;
+  /**
+   * Task P0: optional per-part validation, index-aligned with
+   * {@link secretParts} — a RegExp SOURCE string (not a RegExp instance, so
+   * catalog entries stay plain data) tested against each split part by
+   * `validateConnectorCredential`'s generic composite path. A missing
+   * entry at an index skips validation for that part (count/non-empty is
+   * still enforced by `splitCompositeSecret`). This is what lets a NEW
+   * composite (or even single-part) provider add its own credential-shape
+   * check WITHOUT a hand-written switch case in `validateConnectorCredential`
+   * — declare `secretParts` + `secretPartPatterns` and the generic path
+   * handles it. The four providers that predate this wave
+   * (linear/figma/context7/railway) declare neither and keep their
+   * original hand-written `switch` cases, unaffected.
+   */
+  secretPartPatterns?: string[];
 }
 
 /** Static catalog entry for a connector kind. */
@@ -112,7 +235,7 @@ export interface ConnectorConfigInput {
    * `connected` is already true. Defaults false when absent.
    */
   appInstalled?: boolean;
-  /** Secret connectors (Linear, Figma, Context7): a credential is stored. */
+  /** Secret connectors (Linear, Figma, Context7, Railway): a credential is stored. */
   hasSecret?: boolean;
   /** The label a connector ingests issues by (GitHub: the AFK ready label). */
   ingestLabel?: string | null;
@@ -125,6 +248,19 @@ export interface ConnectorConfigInput {
   enabled?: boolean;
   triggerLabel?: string | null;
   pollIntervalSeconds?: number | null;
+  /**
+   * Task P0 (generalizes Task 7's single hand-typed `railwayProjectId`
+   * field): a generic bag for a catalog entry's declared
+   * `extraConfigFields` values, keyed by each field's `key` (e.g.
+   * `railwayProjectId`, and — once P2-P8 land — `langfuseHost`,
+   * `sentryOrg`, …). `projectConnectors` reads a provider's fields off THIS
+   * index generically (`cfg?.[fields[0].key]`, see `firstExtraConfigValue`)
+   * to derive `ConnectorView.target` — no provider-specific field needed
+   * here, ever again. The connectors GET route populates it via
+   * `projectExtraConfigValues`. Absent/undefined for a key the workspace
+   * hasn't stored, or that no catalog entry declares.
+   */
+  [key: string]: unknown;
 }
 
 /** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
@@ -169,6 +305,11 @@ export const CONNECTOR_TYPE_META: Record<
     description:
       "Model-Context-Protocol tool servers — codebase-level. Adding an API key writes the server into your repo's MCP config (.mcp.json) at run time, so the coding agent can call its tools during a run.",
   },
+  observability: {
+    label: "Observability",
+    description:
+      "Give the debugging investigator evidence about what shipped and what the logs say — deployments and log search, read-only, never used for ingest.",
+  },
 };
 
 /**
@@ -187,7 +328,17 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     description:
       "Ingest labeled issues into the Issue Queue and post run results back on the issue.",
     availability: "available",
-    capabilities: { ingest: true, postResult: true, notify: false },
+    capabilities: {
+      ingest: true,
+      postResult: true,
+      notify: false,
+      // Task 6: merged PRs + Actions workflow runs as "changes" evidence.
+      // Read by `evidenceCapabilities` (`lib/evidence/registry.ts`) — see
+      // that file's own doc-comment for why an oauth entry like this one
+      // needs its own `connectMethod === "oauth"` credentialed branch
+      // (this row never carries a stored `connectors.secret`).
+      evidence: ["changes"],
+    },
   },
   {
     kind: "linear",
@@ -253,6 +404,464 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- observability (Task 7, debugging design spec) ------------------------ //
+  {
+    kind: "railway",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Railway",
+    description:
+      "Give the debugging investigator visibility into your Railway project's deployments and logs.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The first EXTERNAL credentialed evidence provider (Task 5's factory
+      // is internal; Task 6's github is oauth) — proves "add a provider =
+      // catalog entry + adapter + credential pair" end to end. See
+      // `lib/evidence/railway.ts`.
+      evidence: ["changes", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Railway API token",
+      credentialPlaceholder: "00000000-0000-0000-0000-000000000000",
+      credentialHint: "A Railway Account or Team token — a UUID, created at railway.com/account/tokens.",
+      helpUrl: "https://docs.railway.com/reference/public-api",
+      setupSteps: [
+        "Open Railway → your avatar → Account Settings → Tokens (railway.com/account/tokens).",
+        "Click “Create Token”, name it “AgentRail”, and copy the token (shown once).",
+        "Open your Railway project → Settings to find the project id, then paste both the token and the project id here and connect.",
+      ],
+      // Generic extra field (Task P0: array shape — see
+      // ConnectorConnectMeta.extraConfigFields's own doc-comment) — the
+      // token alone doesn't scope which project the investigator reads
+      // from. Railway is the array shape's first (and, before this wave,
+      // only) user; behavior-identical to the single-field shape it
+      // replaces.
+      extraConfigFields: [
+        {
+          key: "railwayProjectId",
+          label: "Railway project ID",
+          placeholder: "your Railway project id",
+        },
+      ],
+    },
+  },
+  // -- observability (Task P2, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "langfuse",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Langfuse",
+    description:
+      "Give the debugging investigator visibility into your Langfuse traces and observation-level signals (error rate, latency).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The first Wave-2 evidence provider (Task P2) — proves the same
+      // "add a provider = catalog entry + adapter" property Task 7 proved
+      // for railway, now for a COMPOSITE-secret provider. See
+      // `lib/evidence/langfuse.ts`.
+      evidence: ["traces", "signals"],
+    },
+    connect: {
+      credentialLabel: "Langfuse API keys",
+      credentialPlaceholder: "pk-lf-… / sk-lf-…",
+      credentialHint:
+        "A Langfuse project's public + secret API key pair — pk-lf-… and sk-lf-….",
+      helpUrl:
+        "https://langfuse.com/docs/api-and-data-platform/features/public-api",
+      setupSteps: [
+        "Open your Langfuse project → Settings → API Keys.",
+        "Click “Create new API keys” and copy both the pk-lf-… public key and the sk-lf-… secret key (shown once).",
+        "Paste both here, along with your Langfuse host (e.g. https://cloud.langfuse.com, https://jp.cloud.langfuse.com, or your self-hosted origin), and connect.",
+      ],
+      // Task P0's composite-secret mechanism (see composite-secret.ts's own
+      // doc-comment): Langfuse's public+secret key pair is stored as ONE
+      // `publicKey:secretKey` string in `connectors.secret`, split back
+      // apart generically by `validateConnectorCredential` (format gate)
+      // and `verifyConnectorCredential` (live gate) — neither needs a
+      // langfuse-specific parsing branch.
+      secretParts: [{ name: "Public key" }, { name: "Secret key" }],
+      secretPartPatterns: ["^pk-lf-", "^sk-lf-"],
+      // The workspace's Langfuse region/self-host origin — required (unlike
+      // Railway's project id, every workspace needs SOME host; there is no
+      // sensible default across cloud regions/self-host — see
+      // `lib/evidence/langfuse.ts`'s own doc-comment). Scheme-gated at
+      // write time by `validateUrlConfigString` (Task P0 Fix Round 1,
+      // `packages/db-postgres/src/queries/connectors.ts`).
+      extraConfigFields: [
+        {
+          key: "langfuseHost",
+          label: "Langfuse host",
+          placeholder: "https://cloud.langfuse.com",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P3, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "sentry",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Sentry",
+    description:
+      "Give the debugging investigator visibility into your Sentry error events and RED-shaped signals (error rate, p95 duration).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The second Wave-2 evidence provider (Task P3) — a SINGLE-secret
+      // provider (unlike langfuse's composite pair), proving the catalog +
+      // adapter pattern generalizes to that shape too. See
+      // `lib/evidence/sentry.ts`.
+      evidence: ["search_events", "signals"],
+    },
+    connect: {
+      credentialLabel: "Sentry auth token",
+      credentialPlaceholder: "sntrys_… or sntryu_…",
+      credentialHint:
+        "A Sentry organization or user auth token — starts with sntrys_ or sntryu_.",
+      helpUrl: "https://docs.sentry.io/api/auth/",
+      setupSteps: [
+        "Open Sentry → Settings → Auth Tokens (organization-level) or your own User Settings → API Tokens (user-level).",
+        "Create a token with event:read, project:read, and org:read scopes, and copy the sntrys_… or sntryu_… value (shown once).",
+        "Paste it here, along with your Sentry organization slug and project slug, and connect.",
+      ],
+      // Both required (Task P3's own pinned decision) — unlike Railway's
+      // single project id, Sentry has no sensible default project within an
+      // org, and the chosen verify/adapter endpoints need both to scope
+      // every call — see `lib/evidence/sentry.ts`'s own doc-comment.
+      extraConfigFields: [
+        {
+          key: "sentryOrg",
+          label: "Sentry organization",
+          placeholder: "your-org-slug",
+          required: true,
+        },
+        {
+          key: "sentryProject",
+          label: "Sentry project",
+          placeholder: "your-project-slug",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P4, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "datadog",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Datadog",
+    description:
+      "Give the debugging investigator visibility into your Datadog host signals (CPU, load, memory) and log search.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The third Wave-2 evidence provider (Task P4) — a COMPOSITE-secret
+      // provider (like langfuse) that ALSO needs a non-secret companion
+      // config value (like sentry, though only one — the account site). See
+      // `lib/evidence/datadog.ts`.
+      evidence: ["signals", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Datadog API keys",
+      credentialPlaceholder: "32-hex API key / 40-hex Application key",
+      credentialHint:
+        "A Datadog API key (32 hex chars) and Application key (40 hex chars, or the newer ddapp_… form).",
+      helpUrl: "https://docs.datadoghq.com/account_management/api-app-keys/",
+      setupSteps: [
+        "Open Datadog → Organization Settings → API Keys, create a key, and copy the 32-character value.",
+        "Open Organization Settings → Application Keys, create a key, and copy its value (shown once).",
+        "Paste both here, along with your Datadog site (e.g. datadoghq.com, us5.datadoghq.com), and connect.",
+      ],
+      // Task P0's composite-secret mechanism (see composite-secret.ts's own
+      // doc-comment): Datadog's api+application key pair is stored as ONE
+      // `apiKey:appKey` string in `connectors.secret`, split back apart
+      // generically by `validateConnectorCredential` (format gate) and
+      // `verifyConnectorCredential` (live gate) — neither needs a
+      // datadog-specific parsing branch. Per-part patterns: the API key is
+      // CONFIRMED 32 hex chars (docs.datadoghq.com/account_management/
+      // api-app-keys/ itself does not state a format, but Datadog's own
+      // AWS Secrets Manager partner integration doc and this task's own
+      // believed shape agree); the Application key accepts EITHER the
+      // confirmed-shape legacy 40-hex form OR the newer `ddapp_`-prefixed
+      // form — Fix Round 1: tightened to the cited source's own fixed
+      // length (`ddapp_` + 34 alphanumeric chars = 40 total, the SAME total
+      // length as the legacy hex form) rather than an open-ended
+      // `ddapp_[A-Za-z0-9]+` — the 34-char figure comes from the same
+      // secondary source (Datadog's own AWS Secrets Manager partner
+      // integration doc; Datadog's first-party docs page states no format
+      // at all), so this is still "cheap format gate, not cryptographic
+      // correctness" (same spirit as every pattern in this file), just
+      // precise about the one concrete number that source actually gives —
+      // see `lib/evidence/datadog.ts`'s own doc-comment for the full
+      // citation trail.
+      secretParts: [{ name: "API key" }, { name: "Application key" }],
+      secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]{34})$"],
+      // The workspace's Datadog site — required (every workspace needs
+      // SOME site; there is no sensible default across Datadog's 9 regional
+      // deployments). Unlike langfuseHost/prometheusUrl/grafanaUrl, this is
+      // NOT one of `validateUrlConfigString`'s three scheme-gated fields
+      // (confirmed by reading `packages/db-postgres/src/queries/
+      // connectors.ts` directly — datadogSite goes through the plain
+      // `validateSimpleConfigString`) — the adapter itself validates it
+      // against a documented-site allowlist before ever using it as a
+      // fetch target (see `lib/evidence/datadog.ts`'s own doc-comment,
+      // "SITE ROUTING").
+      extraConfigFields: [
+        {
+          key: "datadogSite",
+          label: "Site",
+          placeholder: "datadoghq.com",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P5, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "prometheus",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Prometheus",
+    description:
+      "Give the debugging investigator visibility into your Prometheus request rate, error rate, p95 latency, and target health (RED/USE-shaped signals).",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The fourth Wave-2 evidence provider (Task P5) — `signals` ONLY (no
+      // search_events/traces/changes: Prometheus is a time-series store,
+      // not a log/event/deploy history). See `lib/evidence/prometheus.ts`.
+      evidence: ["signals"],
+    },
+    connect: {
+      credentialLabel: "Prometheus credential",
+      credentialPlaceholder: "a bearer token, or user:pass for Basic auth",
+      credentialHint:
+        "A bearer token, OR a user:pass pair for HTTP Basic auth. If the value contains a colon, it's read as user:pass; otherwise as a bearer token (Authorization: Bearer <value>). Prometheus itself has no built-in login — this authenticates to whatever reverse proxy or web.yml basic_auth guards your instance. If your instance is unauthenticated, any non-empty value here works.",
+      helpUrl: "https://prometheus.io/docs/prometheus/latest/querying/api/",
+      setupSteps: [
+        "Prometheus has no login system of its own — this credential authenticates to whatever sits in front of it (a reverse proxy's Basic auth, an oauth2-proxy bearer token, or Prometheus's own web.yml basic_auth users).",
+        "If your instance is protected by HTTP Basic auth, paste it here as user:pass. If it's protected by a bearer token instead, paste the token alone.",
+        "Paste your Prometheus base URL (e.g. https://prometheus.internal:9090) below and connect — AgentRail queries /api/v1/query for RED/USE-shaped signals.",
+      ],
+      // Task P5: a SINGLE secret field (NOT composite — unlike
+      // langfuse/datadog's declared secretParts above). The adapter (and
+      // verify.ts) decide bearer-vs-Basic-auth by inspecting the secret's
+      // OWN shape at read time (does it contain a `:`?), never from a
+      // second declared field — see `lib/evidence/prometheus.ts`'s own
+      // doc-comment ("AUTH HEURISTIC") for the full reasoning and its
+      // disclosed limitation. No secretParts/secretPartPatterns here; the
+      // format gate lives in `validateConnectorCredential`'s own hand-written
+      // `case "prometheus"` below (non-empty, ≤512 chars, no whitespace —
+      // a shape both a bearer token and a user:pass pair satisfy).
+      extraConfigFields: [
+        {
+          key: "prometheusUrl",
+          label: "Base URL",
+          placeholder: "https://prometheus.internal:9090",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P6, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "grafana",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Grafana",
+    description:
+      "Give the debugging investigator visibility into your Grafana alert state changes and annotations.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The fifth Wave-2 evidence provider (Task P6) — PIVOTED from the
+      // plan's believed `signals` (datasource-proxy query via
+      // /api/ds/query) to `search_events` over Grafana-managed alert state
+      // changes + annotations (GET /api/annotations) — see
+      // `lib/evidence/grafana.ts`'s own doc-comment ("PIVOT DECISION") for
+      // the full doc-verify trail behind this switch.
+      evidence: ["search_events"],
+    },
+    connect: {
+      credentialLabel: "Grafana service account token",
+      credentialPlaceholder: "glsa_…",
+      credentialHint:
+        "A Grafana service account token — starts with glsa_. A legacy API key (starts with eyJ, deprecated but still accepted by Grafana) also works. Viewer role is enough — this connector only reads alert and annotation events.",
+      helpUrl: "https://grafana.com/docs/grafana/latest/administration/service-accounts/",
+      setupSteps: [
+        "Open Grafana → Administration → Users and access → Service accounts, and create one (Viewer role is enough for read-only evidence).",
+        "Add a service account token to it and copy the glsa_… value (shown once).",
+        "Paste it here, along with your Grafana base URL (e.g. https://grafana.example.com), and connect — AgentRail reads GET /api/annotations for alert and annotation events.",
+      ],
+      // Task P6: a SINGLE secret field (NOT composite — like prometheus
+      // above, unlike langfuse/datadog). Both accepted token shapes (glsa_
+      // service-account tokens and legacy eyJ… API keys) use the IDENTICAL
+      // Authorization: Bearer scheme, so — unlike prometheus's
+      // bearer-vs-Basic heuristic — no read-time disambiguation is needed
+      // here at all; the format gate in `validateConnectorCredential`'s own
+      // hand-written `case "grafana"` below just accepts either documented
+      // prefix. See `lib/evidence/grafana.ts`'s own doc-comment for the
+      // doc-verify trail behind both prefixes.
+      extraConfigFields: [
+        {
+          key: "grafanaUrl",
+          label: "Grafana base URL",
+          placeholder: "https://grafana.example.com",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P7, Evidence Providers Wave 2) ------------------- //
+  {
+    kind: "vercel",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Vercel",
+    description:
+      "Give the debugging investigator visibility into your Vercel deployments and build/runtime events.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The sixth Wave-2 evidence provider (Task P7) — deployments as
+      // `changes`, deployment build/runtime events as `search_events`,
+      // mirroring railway's own "deployments + logs" shape closely (the
+      // task's own closest-sibling template). See `lib/evidence/vercel.ts`.
+      evidence: ["changes", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Vercel access token",
+      credentialPlaceholder: "your Vercel personal or team Access Token",
+      credentialHint:
+        "A Vercel Access Token (Settings → Tokens) — either the newer vcp_-prefixed format or an older, still-valid token without a prefix. Both are accepted here; the live check against api.vercel.com is the real gate.",
+      helpUrl: "https://vercel.com/docs/rest-api/authentication",
+      setupSteps: [
+        "Open Vercel → Settings → Tokens (vercel.com/account/tokens), and create a token scoped to your personal account or the team this project belongs to.",
+        "Copy the token (shown once).",
+        "Open the project → Settings to find its Project ID (and, if it's team-owned, the Team ID), then paste the token and both ids here and connect.",
+      ],
+      // Task P7's own pinned decision: TWO extra config fields — unlike
+      // every prior Wave-2 provider (which declared either one required
+      // field, like grafana/prometheus/langfuse above, or two BOTH-required
+      // fields, like sentry above), vercelTeamId is the wave's first
+      // OPTIONAL extra config field: a personal-account-scoped Vercel
+      // project legitimately has no team id, and every API call this
+      // adapter makes documents `teamId` as an optional query param (see
+      // `lib/evidence/vercel.ts`'s own doc-comment, "TEAM SCOPING") — its
+      // absence degrades nothing, it simply falls back to the token's own
+      // personal/team-bound scope. `vercelProjectId` is first-declared
+      // (drives `projectConnectors`' displayed card target, P0 mechanics)
+      // and required — there is no sensible default project within an
+      // account/team, mirroring railway's own single required project id.
+      extraConfigFields: [
+        {
+          key: "vercelProjectId",
+          label: "Project ID",
+          placeholder: "prj_…",
+          required: true,
+        },
+        {
+          key: "vercelTeamId",
+          label: "Team ID",
+          placeholder: "team_… (optional for personal scope)",
+          required: false,
+        },
+      ],
+    },
+  },
+  // -- observability (Task P8, Evidence Providers Wave 2 — FINAL provider) - //
+  {
+    kind: "cloudflare",
+    type: "observability",
+    connectMethod: "secret",
+    label: "Cloudflare",
+    description:
+      "Give the debugging investigator visibility into your Cloudflare edge traffic signals and firewall/security events.",
+    availability: "available",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      // The SEVENTH and final Wave-2 evidence provider (Task P8) — edge
+      // request/error/byte signals as `signals`, firewall/security events as
+      // `search_events`, both over Cloudflare's GraphQL Analytics API. See
+      // `lib/evidence/cloudflare.ts`.
+      evidence: ["signals", "search_events"],
+    },
+    connect: {
+      credentialLabel: "Cloudflare API token",
+      credentialPlaceholder: "your Cloudflare API token",
+      credentialHint:
+        "A Cloudflare API Token (My Profile → API Tokens) scoped to the zone's Analytics: Read permission. Both the newer cfut_-prefixed format and the older, still-valid unprefixed format are accepted here; the live check against api.cloudflare.com is the real gate.",
+      helpUrl: "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
+      setupSteps: [
+        "Open Cloudflare → My Profile → API Tokens (dash.cloudflare.com/profile/api-tokens), and create a token with Zone → Analytics → Read on the zone below.",
+        "Copy the token (shown once).",
+        "Open the zone's Overview page to find its Zone ID (right sidebar), then paste both the token and the zone id here and connect.",
+      ],
+      // Task P8's own pinned decision: a SINGLE secret field (no
+      // secretParts — like sentry/prometheus/grafana/vercel above), a
+      // single REQUIRED extra config field. UNLIKE every provider above
+      // that needed exactly one field, Cloudflare's schema ALSO already
+      // carries a second, adjacent field (`cloudflareAccountId`, added by
+      // Task P0 alongside `cloudflareZoneId`) — deliberately NOT declared
+      // here: both GraphQL Analytics datasets this adapter reads
+      // (`httpRequestsAdaptiveGroups`, `firewallEventsAdaptive`) are
+      // confirmed reachable via `zoneTag` alone, no `accountTag` needed
+      // (see `lib/evidence/cloudflare.ts`'s own doc-comment, "ACCOUNT TAG
+      // NOT NEEDED"). `cloudflareAccountId` stays in `ConnectorConfig`,
+      // validated and preservable, simply never read by this connector's
+      // own connect form, adapter, or verify path — an intentional,
+      // documented non-use of an already-provisioned schema field.
+      extraConfigFields: [
+        {
+          key: "cloudflareZoneId",
+          label: "Zone ID",
+          placeholder: "your Cloudflare zone id",
+          required: true,
+        },
+      ],
+    },
+  },
+  // -- internal (evidence-only; never rendered — see ConnectorAvailability's
+  // own doc-comment and projectConnectors' filter below) ------------------- //
+  {
+    kind: "factory",
+    // `type`/`connectMethod` are inert for an `internal` entry — this row is
+    // filtered out of the grid (projectConnectors) before either is ever
+    // read; the values here mirror the shape connector-helpers.test.ts's own
+    // internal-availability filter test uses (cloning an existing `mcp`/
+    // `secret` entry), not a claim that factory IS an MCP tool server.
+    type: "mcp",
+    connectMethod: "secret",
+    label: "Factory",
+    description:
+      "This console's own runs, failures, and events — no connection required.",
+    availability: "internal",
+    capabilities: {
+      ingest: false,
+      postResult: false,
+      notify: false,
+      evidence: ["changes", "search_events"],
+    },
+  },
 ];
 
 /** Default ingest label, matching the AFK CLI's ready label / GitHubConnector. */
@@ -262,6 +871,77 @@ export const DEFAULT_INGEST_LABEL = "ready-for-agent";
 export function catalogEntry(kind: ConnectorKind): ConnectorCatalogEntry {
   // Safe: every ConnectorKind has exactly one catalog entry.
   return CONNECTOR_CATALOG.find((e) => e.kind === kind)!;
+}
+
+// --------------------------------------------------------------------------- //
+// Generic `extraConfigFields` machinery (Task P0). These three pieces are what
+// let P2-P8 add a provider needing one or more non-secret config companions
+// (org, site, host, ids) as a CATALOG ENTRY ONLY — no route, no component
+// branch, per provider. Each takes a minimal structural param (not the full
+// `ConnectorCatalogEntry`) so a test can prove genericity with a synthetic
+// multi-field fixture instead of needing a second real provider in the
+// catalog.
+// --------------------------------------------------------------------------- //
+
+/** Minimal shape the `extraConfigFields` helpers need from a catalog entry —
+ * looser than {@link ConnectorCatalogEntry} so a test can pass a fully
+ * synthetic array without constructing every other catalog field. */
+export interface ExtraConfigFieldsCarrier {
+  connect?: { extraConfigFields?: ConnectorConnectMeta["extraConfigFields"] };
+}
+
+/**
+ * Every non-secret config key ANY catalog entry declares via
+ * `connect.extraConfigFields` — the connectors PUT route
+ * (`api/v1/workspaces/[workspaceId]/connectors/route.ts`) accepts any key in
+ * this set generically instead of hand-listing each provider's field name
+ * (Task 7's `railwayProjectId` was the last hand-listed one). `catalog`
+ * defaults to the real {@link CONNECTOR_CATALOG}.
+ */
+export function extraConfigFieldKeys(
+  catalog: ExtraConfigFieldsCarrier[] = CONNECTOR_CATALOG
+): Set<string> {
+  return new Set(
+    catalog.flatMap((entry) => entry.connect?.extraConfigFields?.map((f) => f.key) ?? [])
+  );
+}
+
+/**
+ * A catalog entry's declared `extraConfigFields` VALUES, read off a raw
+ * stored config object and keyed the same way — the generic replacement for
+ * Task 7's single hand-written `railwayProjectId: row?.config.railwayProjectId
+ * ?? null` line in the connectors GET route. A declared field absent from
+ * `config` (or present but not a string) projects as `null`; an entry with
+ * no declared fields projects an empty bag. `config` is intentionally a
+ * loose `Record<string, unknown>` (not the DB-only `ConnectorConfig` type)
+ * so this pure-model module never has to import `packages/db-postgres`.
+ */
+export function projectExtraConfigValues(
+  entry: ExtraConfigFieldsCarrier,
+  config: Record<string, unknown> | undefined
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const field of entry.connect?.extraConfigFields ?? []) {
+    const v = config?.[field.key];
+    out[field.key] = typeof v === "string" ? v : null;
+  }
+  return out;
+}
+
+/**
+ * The value of a catalog entry's FIRST declared `extraConfigFields` entry,
+ * read off an already-projected `ConnectorConfigInput` bag — used by
+ * `projectConnectors` to derive `ConnectorView.target` generically (see that
+ * function's own doc-comment). No declared fields → null.
+ */
+function firstExtraConfigValue(
+  entry: ExtraConfigFieldsCarrier,
+  cfg: ConnectorConfigInput | undefined
+): string | null {
+  const fields = entry.connect?.extraConfigFields;
+  if (!fields || fields.length === 0) return null;
+  const value = cfg?.[fields[0].key];
+  return typeof value === "string" ? value : null;
 }
 
 /**
@@ -286,51 +966,74 @@ function isConnected(
  * rows the surface renders. Pure and total: a kind with no config is
  * `disconnected`; only an `available` connector that is actually connected per
  * its connect method shows `connected`.
+ *
+ * `availability: "internal"` entries (Task 5's `factory` evidence adapter) are
+ * filtered OUT here — they exist in the catalog purely for
+ * `evidenceCapabilities` to find, never to render as a card on this page (see
+ * {@link ConnectorAvailability}'s doc-comment). `catalog` defaults to the real
+ * {@link CONNECTOR_CATALOG} — the optional param exists only so a test can
+ * inject a synthetic `internal` entry before Task 5 adds a real one; every
+ * production call site keeps calling `projectConnectors(configs)` unchanged.
  */
 export function projectConnectors(
-  configs: ConnectorConfigInput[]
+  configs: ConnectorConfigInput[],
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
 ): ConnectorView[] {
   const byKind = new Map<ConnectorKind, ConnectorConfigInput>();
   for (const c of configs) byKind.set(c.kind, c);
 
-  return CONNECTOR_CATALOG.map((entry) => {
-    const cfg = byKind.get(entry.kind);
+  return catalog
+    .filter((entry) => entry.availability !== "internal")
+    .map((entry) => {
+      const cfg = byKind.get(entry.kind);
 
-    const connected =
-      entry.availability === "available" && isConnected(entry, cfg);
-    const status: ConnectorStatus = connected ? "connected" : "disconnected";
+      const connected =
+        entry.availability === "available" && isConnected(entry, cfg);
+      const status: ConnectorStatus = connected ? "connected" : "disconnected";
 
-    // A notify-only / tools-only connector has no ingest label; only ingest
-    // does.
-    const ingestLabel =
-      status === "connected" && entry.capabilities.ingest
-        ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
-        : null;
+      // A notify-only / tools-only connector has no ingest label; only ingest
+      // does.
+      const ingestLabel =
+        status === "connected" && entry.capabilities.ingest
+          ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
+          : null;
 
-    // Display target: oauth → the stored target (repo); everything else → none.
-    const target = entry.connectMethod === "oauth" ? cfg?.target ?? null : null;
+      // Display target: oauth → the stored target (repo); a secret-connected
+      // entry that declares extraConfigFields → the FIRST declared field's
+      // stored value (Task P0 — generalizes Fix Round 1 FIX 3's
+      // Railway-specific `cfg?.railwayProjectId`, the reviewer-flagged
+      // hardcoding this task fixes; same generic render slot in
+      // `SecretManage`'s connected-state summary, no new UI code needed per
+      // provider); every other kind → none. `firstExtraConfigValue` reads
+      // generically off `cfg`'s bag, so a future provider WITHOUT any
+      // declared field never accidentally surfaces an unrelated stored
+      // value here.
+      const target =
+        entry.connectMethod === "oauth"
+          ? cfg?.target ?? null
+          : firstExtraConfigValue(entry, cfg);
 
-    return {
-      kind: entry.kind,
-      type: entry.type,
-      connectMethod: entry.connectMethod,
-      label: entry.label,
-      description: entry.description,
-      availability: entry.availability,
-      status,
-      capabilities: entry.capabilities,
-      ingestLabel,
-      target,
-      connect: entry.connect ?? null,
-      appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
-      // Heartbeat trigger config the card manages (folded in #816). Defaults when
-      // no connector row exists: a connector defaults enabled once connected.
-      enabled: cfg?.enabled ?? connected,
-      triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
-      pollIntervalSeconds:
-        cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
-    };
-  });
+      return {
+        kind: entry.kind,
+        type: entry.type,
+        connectMethod: entry.connectMethod,
+        label: entry.label,
+        description: entry.description,
+        availability: entry.availability,
+        status,
+        capabilities: entry.capabilities,
+        ingestLabel,
+        target,
+        connect: entry.connect ?? null,
+        appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
+        // Heartbeat trigger config the card manages (folded in #816). Defaults when
+        // no connector row exists: a connector defaults enabled once connected.
+        enabled: cfg?.enabled ?? connected,
+        triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
+        pollIntervalSeconds:
+          cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
+      };
+    });
 }
 
 /** The connectors counted as actively driving the heartbeat (connected + enabled). */
@@ -369,16 +1072,65 @@ export function capabilitySummary(caps: ConnectorCapabilities): string {
 export type CredentialCheck = { ok: true } | { ok: false; error: string };
 
 /**
+ * Generic UUID SHAPE (8-4-4-4-12 hex), not RFC4122-version-specific — Railway
+ * does not publicly document which UUID version its Account/Team tokens use
+ * (confirmed shape only: displayed as a UUID at railway.com/account/tokens),
+ * so this validates the shape, not a specific version's bit pattern. Matches
+ * this function's own "cheap format gate, not a claim of cryptographic
+ * correctness" spirit for every other provider below.
+ */
+const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * Validate a connector's credential for connect. `secret` is the API key /
- * token. Returns `{ok:true}` or a human error. OAuth (GitHub) has no
- * credential to validate here.
+ * token (single-secret providers) or the client-joined `partA:partB`
+ * composite (see `apps/console/lib/evidence/composite-secret.ts`). Returns
+ * `{ok:true}` or a human error. OAuth (GitHub) has no credential to
+ * validate here.
+ *
+ * Task P0: a catalog entry declaring `connect.secretParts` is validated
+ * GENERICALLY — split via `splitCompositeSecret`, then each part checked
+ * against the index-aligned `connect.secretPartPatterns` (a part with no
+ * pattern at its index is accepted on count/non-empty alone). This is the
+ * mechanism that lets a NEW provider (single- or multi-part) validate its
+ * credential shape as CATALOG DATA, with no switch case added here. The
+ * four providers below that predate this wave declare neither
+ * `secretParts` nor `secretPartPatterns` and keep their original
+ * hand-written cases, unaffected. `catalog` defaults to the real
+ * {@link CONNECTOR_CATALOG} — the optional param exists so a test can
+ * prove the generic path with a synthetic entry, without a second real
+ * composite provider in the catalog (P0 adds none).
  */
 export function validateConnectorCredential(
   kind: ConnectorKind,
-  secret: string
+  secret: string,
+  catalog: ConnectorCatalogEntry[] = CONNECTOR_CATALOG
 ): CredentialCheck {
   const s = secret.trim();
   if (s.length === 0) return { ok: false, error: "A credential is required." };
+
+  const entry = catalog.find((e) => e.kind === kind);
+  const connectMeta = entry?.connect;
+  const partSpecs = connectMeta?.secretParts ?? [];
+  if (connectMeta && partSpecs.length > 0) {
+    const split = splitCompositeSecret(connectMeta, s);
+    if (!split.ok) return { ok: false, error: split.error };
+    const patterns = connectMeta.secretPartPatterns;
+    if (patterns) {
+      for (let i = 0; i < split.parts.length; i++) {
+        const pattern = patterns[i];
+        if (!pattern) continue;
+        if (!new RegExp(pattern).test(split.parts[i])) {
+          return {
+            ok: false,
+            error: `${partSpecs[i].name} has an unexpected format.`,
+          };
+        }
+      }
+    }
+    return { ok: true };
+  }
+
   switch (kind) {
     case "linear":
       return s.startsWith("lin_api_")
@@ -392,8 +1144,155 @@ export function validateConnectorCredential(
       return /^ctx7sk[-_]/.test(s)
         ? { ok: true }
         : { ok: false, error: "Context7 keys start with ctx7sk." };
+    case "railway":
+      // Task 7: Railway Account/Team tokens are UUIDs.
+      return UUID_SHAPE_RE.test(s)
+        ? { ok: true }
+        : { ok: false, error: "Railway tokens are UUIDs." };
+    case "langfuse":
+      // Task P2: the real catalog entry declares `secretParts` (two parts),
+      // so every real call is intercepted by the generic composite-secret
+      // branch ABOVE this switch and never reaches this case — this is this
+      // function's own defense in depth regardless (same reasoning as
+      // `factory` below): the switch must stay total over every
+      // ConnectorKind, and this is the operative rejection for a direct
+      // caller (this module's own tests included, or a hypothetical future
+      // catalog edit that strips `secretParts`) that reaches it anyway.
+      return {
+        ok: false,
+        error: "Langfuse requires both API keys (public + secret).",
+      };
+    case "sentry":
+      // Task P3: a SINGLE secret (no secretParts) — org auth tokens
+      // (`sntrys_…`) and user auth tokens (`sntryu_…`) are both accepted;
+      // confirmed prefixes against Sentry's own source
+      // (`src/sentry/types/token.py`: USER="sntryu_", ORG="sntrys_",
+      // also USER_APP="sntrya_"/INTEGRATION="sntryi_", both DELIBERATELY
+      // out of scope for v1 — see `lib/evidence/sentry.ts`'s own
+      // doc-comment for why only these two, most-common-for-this-use-case
+      // kinds are accepted).
+      return s.startsWith("sntrys_") || s.startsWith("sntryu_")
+        ? { ok: true }
+        : {
+            ok: false,
+            error: "Sentry tokens start with sntrys_ (organization) or sntryu_ (user).",
+          };
+    case "datadog":
+      // Task P4: the real catalog entry declares `secretParts` (two parts),
+      // so every real call is intercepted by the generic composite-secret
+      // branch ABOVE this switch and never reaches this case — this is this
+      // function's own defense in depth regardless (same reasoning as
+      // `langfuse` above): the switch must stay total over every
+      // ConnectorKind, and this is the operative rejection for a direct
+      // caller (this module's own tests included, or a hypothetical future
+      // catalog edit that strips `secretParts`) that reaches it anyway.
+      return {
+        ok: false,
+        error: "Datadog requires both an API key and an application key.",
+      };
+    case "prometheus": {
+      // Task P5: a SINGLE secret — EITHER a bearer token OR a `user:pass`
+      // composite for Basic auth, disambiguated at READ time (see
+      // `lib/evidence/prometheus.ts`'s own doc-comment, "AUTH HEURISTIC") —
+      // NOT a declared `secretParts` composite, so (unlike langfuse/datadog
+      // above) this case IS the operative gate for every real call, not
+      // just a defensive fallback. Prometheus itself defines no fixed token
+      // shape for either form (a bearer token could be anything a reverse
+      // proxy/oauth2-proxy issues; a Basic-auth pair is just two operator-
+      // chosen strings), so the format gate is the widest cheap check both
+      // shapes legitimately share: no embedded whitespace (a real token
+      // never contains any; a real user:pass pair's own parts shouldn't
+      // either) and a generous ≤512-char bound (well above any realistic
+      // token or credential pair). Real security lives at Gate 2 (live
+      // verify), unaffected by this format gate's own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Prometheus credentials must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Prometheus credentials must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
+    case "grafana":
+      // Task P6: a SINGLE secret, EITHER a service-account token (`glsa_`
+      // prefix, confirmed current — see `lib/evidence/grafana.ts`'s own
+      // doc-comment) OR a legacy API key (`eyJ` prefix, confirmed
+      // deprecated but still functioning per Grafana's own migration docs:
+      // "will continue working as before"). Unlike prometheus's
+      // shape-agnostic whitespace/length gate above, both Grafana token
+      // generations DO have confirmed, documented prefixes — mirrors
+      // sentry's simpler prefix-only gate rather than prometheus's own
+      // wider one.
+      return s.startsWith("glsa_") || s.startsWith("eyJ")
+        ? { ok: true }
+        : {
+            ok: false,
+            error: "Grafana tokens start with glsa_ (service account) or eyJ (legacy API key).",
+          };
+    case "vercel": {
+      // Task P7 (Fix Round 1 correction — see `lib/evidence/vercel.ts`'s
+      // own doc-comment, "AUTH," for the full citation trail): Vercel's
+      // Feb 2026 changelog DOES now document a prefix for freshly-created
+      // tokens (`vcp_`, "personal access tokens"), but the LEGACY,
+      // unprefixed personal/team Access Token shape this connector has
+      // always accepted remains independently valid — Vercel did not
+      // retire or reissue existing tokens. This gate stays shape-agnostic
+      // DELIBERATELY (not from an absence of documentation): requiring
+      // `vcp_` would reject every still-valid legacy token a workspace may
+      // already hold. Mirrors prometheus's identical "no single confirmed
+      // shape to gate on" precedent: no embedded whitespace, a generous
+      // ≤512-char bound wide enough for either generation. Real security
+      // lives at Gate 2 (live verify), unaffected by this format gate's
+      // own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Vercel tokens must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Vercel tokens must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
+    case "cloudflare": {
+      // Task P8 (see `lib/evidence/cloudflare.ts`'s own doc-comment, "AUTH"
+      // for the full citation trail): Cloudflare's own token-formats page
+      // documents TWO new scannable, checksummed prefixes covering the
+      // credential type this connector asks for — `cfut_` (User API Token)
+      // and `cfat_` (Account API Token), both just "an API Token" from this
+      // connector's point of view — but the LEGACY, UNPREFIXED 40-char
+      // shape "continue[s] to work" per that same page; Cloudflare did not
+      // retire or reissue existing tokens. This gate stays shape-agnostic
+      // DELIBERATELY (not from an absence of documentation, and not from
+      // only ONE prefix being ambiguous — TWO independently-valid new
+      // prefixes exist here): requiring either would reject every
+      // still-valid legacy token a workspace may already hold. Mirrors
+      // vercel's/prometheus's identical "no single confirmed shape to gate
+      // on" precedent: no embedded whitespace, a generous ≤512-char bound
+      // wide enough for either generation. Real security lives at Gate 2
+      // (live verify), unaffected by this format gate's own permissiveness.
+      if (/\s/.test(s)) {
+        return { ok: false, error: "Cloudflare tokens must not contain whitespace." };
+      }
+      if (s.length > 512) {
+        return { ok: false, error: "Cloudflare tokens must be at most 512 characters." };
+      }
+      return { ok: true };
+    }
     case "github":
       // GitHub is OAuth — nothing to paste here.
+      return { ok: false, error: "This connector is not credential-based." };
+    case "factory":
+      // Internal (Task 5) — no credential exists to validate. Never reaches
+      // the connect flow in practice through TWO independent gates: (1)
+      // `projectConnectors` filters `availability: "internal"` entries out
+      // of the grid entirely, so there is no card to submit from; (2)
+      // secret/route.ts's CREDENTIAL_PROVIDERS allowlist (catalog-derived,
+      // Task 7) itself excludes `availability: "internal"` entries
+      // structurally (Fix Round 1, FIX 4) — the allowlist rejects "factory"
+      // before this function is ever called through the route. THIS case is
+      // this function's own defense in depth regardless: the switch must
+      // stay total over every ConnectorKind, and this is the format gate's
+      // own operative rejection for a direct caller (this module's own
+      // tests included) that reaches it anyway, bypassing the route.
       return { ok: false, error: "This connector is not credential-based." };
   }
 }

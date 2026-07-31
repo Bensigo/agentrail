@@ -4,7 +4,38 @@
  * simple-icons, CC0) rendered with `currentColor` so they inherit the card's
  * text color. Each component mirrors lucide's `{ size, className }` props so it
  * is a drop-in inside the `KIND_ICON` map. Context7 has no published logo, so its
- * mark is a small docs glyph that reads as "documentation".
+ * mark is a small docs glyph that reads as "documentation". Langfuse (Task P2,
+ * Evidence Providers Wave 2) is likewise not present in simple-icons as of this
+ * task (confirmed via search — no simple-icons entry exists for it), so its
+ * mark is a small hand-drawn pulse/trace-line glyph in the SAME stroke style as
+ * Context7's — an honest stand-in, not a claim of Langfuse's actual trademark.
+ * Sentry (Task P3) DOES have a simple-icons entry — its official mark (path
+ * data confirmed against TWO independent CDN mirrors of the same npm package,
+ * jsdelivr and unpkg, byte-identical) is used directly, same as
+ * Github/Linear/Figma/Railway above. Datadog (Task P4) likewise has a
+ * simple-icons entry — path data confirmed byte-identical across the same
+ * two independent CDN mirrors (jsdelivr, unpkg). Prometheus (Task P5)
+ * likewise has a simple-icons entry — path data AND brand hex both confirmed
+ * byte-identical across the same two independent CDN mirrors. Grafana
+ * (Task P6) likewise has a simple-icons entry — path data confirmed
+ * byte-identical across THREE independent sources (jsdelivr, unpkg, and
+ * raw.githubusercontent.com), brand hex confirmed byte-identical across the
+ * same jsdelivr/unpkg pair. Vercel (Task P7) likewise has a simple-icons
+ * entry (a plain triangle) — path data confirmed byte-identical across the
+ * same jsdelivr/unpkg pair; its mark is MONOCHROME (pure black/white,
+ * theme-dependent — Vercel's own brand identity), so — mirroring
+ * GitHub's/Railway's/Langfuse's identical "monochrome brand → the
+ * theme-aware gray var, not a literal hex" precedent below — its tint in
+ * `connectors-panel.tsx`'s `KIND_TINT` is `text-[var(--gray-12)]`, not a
+ * hardcoded `#000000` (which would render invisible-ish in dark mode).
+ * Cloudflare (Task P8, the final Wave-2 provider) likewise has a
+ * simple-icons entry — path data confirmed byte-identical via direct `curl`
+ * against both jsdelivr and unpkg (a full-fidelity fetch, avoiding the
+ * truncation risk of a summarizing web-fetch tool on a long path
+ * attribute); brand hex `#F38020` confirmed via simple-icons' own
+ * `data/simple-icons.json`. Cloudflare's mark IS colored (unlike GitHub's/
+ * Railway's/Langfuse's/Vercel's monochrome marks), so its tint is the
+ * literal hex, same as Sentry/Datadog/Prometheus/Grafana below.
  */
 import type { SVGProps } from "react";
 
@@ -62,6 +93,71 @@ export const TelegramBrand = makeBrand(
   "TelegramBrand"
 );
 
+export const RailwayBrand = makeBrand(
+  "M.113 10.27A13.026 13.026 0 000 11.48h18.23c-.064-.125-.15-.237-.235-.347-3.117-4.027-4.793-3.677-7.19-3.78-.8-.034-1.34-.048-4.524-.048-1.704 0-3.555.005-5.358.01-.234.63-.459 1.24-.567 1.737h9.342v1.216H.113v.002zm18.26 2.426H.009c.02.326.05.645.094.961h16.955c.754 0 1.179-.429 1.315-.96zm-17.318 4.28s2.81 6.902 10.93 7.024c4.855 0 9.027-2.883 10.92-7.024H1.056zM11.988 0C7.5 0 3.593 2.466 1.531 6.108l4.75-.005v-.002c3.71 0 3.849.016 4.573.047l.448.016c1.563.052 3.485.22 4.996 1.364.82.621 2.007 1.99 2.712 2.965.654.902.842 1.94.396 2.934-.408.914-1.289 1.458-2.353 1.458H.391s.099.42.249.886h22.748A12.026 12.026 0 0024 12.005C24 5.377 18.621 0 11.988 0z",
+  "RailwayBrand"
+);
+
+/** Sentry's official simple-icons mark (Task P3) — see this file's own
+ * doc-comment for the two-CDN confirmation. Brand hex `#362D59` (confirmed
+ * against simple-icons' own `data/simple-icons.json`) lives in
+ * `connectors-panel.tsx`'s `KIND_TINT`, not here (this file only carries
+ * path geometry, mirroring every other `makeBrand` entry above). */
+export const SentryBrand = makeBrand(
+  "M13.91 2.505c-.873-1.448-2.972-1.448-3.844 0L6.904 7.92a15.478 15.478 0 0 1 8.53 12.811h-2.221A13.301 13.301 0 0 0 5.784 9.814l-2.926 5.06a7.65 7.65 0 0 1 4.435 5.848H2.194a.365.365 0 0 1-.298-.534l1.413-2.402a5.16 5.16 0 0 0-1.614-.913L.296 19.275a2.182 2.182 0 0 0 .812 2.999 2.24 2.24 0 0 0 1.086.288h6.983a9.322 9.322 0 0 0-3.845-8.318l1.11-1.922a11.47 11.47 0 0 1 4.95 10.24h5.915a17.242 17.242 0 0 0-7.885-15.28l2.244-3.845a.37.37 0 0 1 .504-.13c.255.14 9.75 16.708 9.928 16.9a.365.365 0 0 1-.327.543h-2.287c.029.612.029 1.223 0 1.831h2.297a2.206 2.206 0 0 0 1.922-3.31z",
+  "SentryBrand"
+);
+
+/** Datadog's official simple-icons mark (Task P4) — see this file's own
+ * doc-comment for the two-CDN confirmation. Brand hex `#632CA6` (confirmed
+ * against multiple independent sources describing Datadog's brand purple)
+ * lives in `connectors-panel.tsx`'s `KIND_TINT`, not here (this file only
+ * carries path geometry, mirroring every other `makeBrand` entry above). */
+export const DatadogBrand = makeBrand(
+  "M19.57 17.04l-1.997-1.316-1.665 2.782-1.937-.567-1.706 2.604.087.82 9.274-1.71-.538-5.794zm-8.649-2.498l1.488-.204c.241.108.409.15.697.223.45.117.97.23 1.741-.16.18-.088.553-.43.704-.625l6.096-1.106.622 7.527-10.444 1.882zm11.325-2.712l-.602.115L20.488 0 .789 2.285l2.427 19.693 2.306-.334c-.184-.263-.471-.581-.96-.989-.68-.564-.44-1.522-.039-2.127.53-1.022 3.26-2.322 3.106-3.956-.056-.594-.15-1.368-.702-1.898-.02.22.017.432.017.432s-.227-.289-.34-.683c-.112-.15-.2-.199-.319-.4-.085.233-.073.503-.073.503s-.186-.437-.216-.807c-.11.166-.137.48-.137.48s-.241-.69-.186-1.062c-.11-.323-.436-.965-.343-2.424.6.421 1.924.321 2.44-.439.171-.251.288-.939-.086-2.293-.24-.868-.835-2.16-1.066-2.651l-.028.02c.122.395.374 1.223.47 1.625.293 1.218.372 1.642.234 2.204-.116.488-.397.808-1.107 1.165-.71.358-1.653-.514-1.713-.562-.69-.55-1.224-1.447-1.284-1.883-.062-.477.275-.763.445-1.153-.243.07-.514.192-.514.192s.323-.334.722-.624c.165-.109.262-.178.436-.323a9.762 9.762 0 0 0-.456.003s.42-.227.855-.392c-.318-.014-.623-.003-.623-.003s.937-.419 1.678-.727c.509-.208 1.006-.147 1.286.257.367.53.752.817 1.569.996.501-.223.653-.337 1.284-.509.554-.61.99-.688.99-.688s-.216.198-.274.51c.314-.249.66-.455.66-.455s-.134.164-.259.426l.03.043c.366-.22.797-.394.797-.394s-.123.156-.268.358c.277-.002.838.012 1.056.037 1.285.028 1.552-1.374 2.045-1.55.618-.22.894-.353 1.947.68.903.888 1.609 2.477 1.259 2.833-.294.295-.874-.115-1.516-.916a3.466 3.466 0 0 1-.716-1.562 1.533 1.533 0 0 0-.497-.85s.23.51.23.96c0 .246.03 1.165.424 1.68-.039.076-.057.374-.1.43-.458-.554-1.443-.95-1.604-1.067.544.445 1.793 1.468 2.273 2.449.453.927.186 1.777.416 1.997.065.063.976 1.197 1.15 1.767.306.994.019 2.038-.381 2.685l-1.117.174c-.163-.045-.273-.068-.42-.153.08-.143.241-.5.243-.572l-.063-.111c-.348.492-.93.97-1.414 1.245-.633.359-1.363.304-1.838.156-1.348-.415-2.623-1.327-2.93-1.566 0 0-.01.191.048.234.34.383 1.119 1.077 1.872 1.56l-1.605.177.759 5.908c-.337.048-.39.071-.757.124-.325-1.147-.946-1.895-1.624-2.332-.599-.384-1.424-.47-2.214-.314l-.05.059a2.851 2.851 0 0 1 1.863.444c.654.413 1.181 1.481 1.375 2.124.248.822.42 1.7-.248 2.632-.476.662-1.864 1.028-2.986.237.3.481.705.876 1.25.95.809.11 1.577-.03 2.106-.574.452-.464.69-1.434.628-2.456l.714-.104.258 1.834 11.827-1.424zM15.05 6.848c-.034.075-.085.125-.007.37l.004.014.013.032.032.073c.14.287.295.558.552.696.067-.011.136-.019.207-.023.242-.01.395.028.492.08.009-.048.01-.119.005-.222-.018-.364.072-.982-.626-1.308-.264-.122-.634-.084-.757.068a.302.302 0 0 1 .058.013c.186.066.06.13.027.207m1.958 3.392c-.092-.05-.52-.03-.821.005-.574.068-1.193.267-1.328.372-.247.191-.135.523.047.66.511.382.96.638 1.432.575.29-.038.546-.497.728-.914.124-.288.124-.598-.058-.698m-5.077-2.942c.162-.154-.805-.355-1.556.156-.554.378-.571 1.187-.041 1.646.053.046.096.078.137.104a4.77 4.77 0 0 1 1.396-.412c.113-.125.243-.345.21-.745-.044-.542-.455-.456-.146-.749",
+  "DatadogBrand"
+);
+
+/** Prometheus's official simple-icons mark (Task P5) — see this file's own
+ * doc-comment for the two-CDN confirmation. Brand hex `#E6522C` (confirmed
+ * against simple-icons' own data/simple-icons.json via both jsdelivr and
+ * unpkg, byte-identical) lives in `connectors-panel.tsx`'s `KIND_TINT`, not
+ * here (this file only carries path geometry, mirroring every other
+ * `makeBrand` entry above). */
+export const PrometheusBrand = makeBrand(
+  "M12 0C5.373 0 0 5.372 0 12c0 6.627 5.373 12 12 12s12-5.373 12-12c0-6.628-5.373-12-12-12zm0 22.46c-1.885 0-3.414-1.26-3.414-2.814h6.828c0 1.553-1.528 2.813-3.414 2.813zm5.64-3.745H6.36v-2.046h11.28v2.046zm-.04-3.098H6.391c-.037-.043-.075-.086-.111-.13-1.155-1.401-1.427-2.133-1.69-2.879-.005-.025 1.4.287 2.395.511 0 0 .513.119 1.262.255-.72-.843-1.147-1.915-1.147-3.01 0-2.406 1.845-4.508 1.18-6.207.648.053 1.34 1.367 1.387 3.422.689-.951.977-2.69.977-3.755 0-1.103.727-2.385 1.454-2.429-.648 1.069.168 1.984.894 4.256.272.854.237 2.29.447 3.201.07-1.892.395-4.652 1.595-5.605-.529 1.2.079 2.702.494 3.424.671 1.164 1.078 2.047 1.078 3.716a4.642 4.642 0 01-1.11 2.996c.792-.149 1.34-.283 1.34-.283l2.573-.502s-.374 1.538-1.81 3.019z",
+  "PrometheusBrand"
+);
+
+/** Grafana's official simple-icons mark (Task P6) — see this file's own
+ * doc-comment for the three-source path confirmation. Brand hex `#F46800`
+ * (confirmed against simple-icons' own data/simple-icons.json via both
+ * jsdelivr and unpkg, byte-identical) lives in `connectors-panel.tsx`'s
+ * `KIND_TINT`, not here (this file only carries path geometry, mirroring
+ * every other `makeBrand` entry above). */
+export const GrafanaBrand = makeBrand(
+  "M23.02 10.59a8.578 8.578 0 0 0-.862-3.034 8.911 8.911 0 0 0-1.789-2.445c.337-1.342-.413-2.505-.413-2.505-1.292-.08-2.113.4-2.416.62-.052-.02-.102-.044-.154-.064-.22-.089-.446-.172-.677-.247-.231-.073-.47-.14-.711-.197a9.867 9.867 0 0 0-.875-.161C14.557.753 12.94 0 12.94 0c-1.804 1.145-2.147 2.744-2.147 2.744l-.018.093c-.098.029-.2.057-.298.088-.138.042-.275.094-.413.143-.138.055-.275.107-.41.166a8.869 8.869 0 0 0-1.557.87l-.063-.029c-2.497-.955-4.716.195-4.716.195-.203 2.658.996 4.33 1.235 4.636a11.608 11.608 0 0 0-.607 2.635C1.636 12.677.953 15.014.953 15.014c1.926 2.214 4.171 2.351 4.171 2.351.003-.002.006-.002.006-.005.285.509.615.994.986 1.446.156.19.32.371.488.548-.704 2.009.099 3.68.099 3.68 2.144.08 3.553-.937 3.849-1.173a9.784 9.784 0 0 0 3.164.501h.08l.055-.003.107-.002.103-.005.003.002c1.01 1.44 2.788 1.646 2.788 1.646 1.264-1.332 1.337-2.653 1.337-2.94v-.058c0-.02-.003-.039-.003-.06.265-.187.52-.387.758-.6a7.875 7.875 0 0 0 1.415-1.7c1.43.083 2.437-.885 2.437-.885-.236-1.49-1.085-2.216-1.264-2.354l-.018-.013-.016-.013a.217.217 0 0 1-.031-.02c.008-.092.016-.18.02-.27.011-.162.016-.323.016-.48v-.253l-.005-.098-.008-.135a1.891 1.891 0 0 0-.01-.13c-.003-.042-.008-.083-.013-.125l-.016-.124-.018-.122a6.215 6.215 0 0 0-2.032-3.73 6.015 6.015 0 0 0-3.222-1.46 6.292 6.292 0 0 0-.85-.048l-.107.002h-.063l-.044.003-.104.008a4.777 4.777 0 0 0-3.335 1.695c-.332.4-.592.84-.768 1.297a4.594 4.594 0 0 0-.312 1.817l.003.091c.005.055.007.11.013.164a3.615 3.615 0 0 0 .698 1.82 3.53 3.53 0 0 0 1.827 1.282c.33.098.66.14.971.137.039 0 .078 0 .114-.002l.063-.003c.02 0 .041-.003.062-.003.034-.002.065-.007.099-.01.007 0 .018-.003.028-.003l.031-.005.06-.008a1.18 1.18 0 0 0 .112-.02c.036-.008.072-.013.109-.024a2.634 2.634 0 0 0 .914-.415c.028-.02.056-.041.085-.065a.248.248 0 0 0 .039-.35.244.244 0 0 0-.309-.06l-.078.042c-.09.044-.184.083-.283.116a2.476 2.476 0 0 1-.475.096c-.028.003-.054.006-.083.006l-.083.002c-.026 0-.054 0-.08-.002l-.102-.006h-.012l-.024.006c-.016-.003-.031-.003-.044-.006-.031-.002-.06-.007-.091-.01a2.59 2.59 0 0 1-.724-.213 2.557 2.557 0 0 1-.667-.438 2.52 2.52 0 0 1-.805-1.475 2.306 2.306 0 0 1-.029-.444l.006-.122v-.023l.002-.031c.003-.021.003-.04.005-.06a3.163 3.163 0 0 1 1.352-2.29 3.12 3.12 0 0 1 .937-.43 2.946 2.946 0 0 1 .776-.101h.06l.07.002.045.003h.026l.07.005a4.041 4.041 0 0 1 1.635.49 3.94 3.94 0 0 1 1.602 1.662 3.77 3.77 0 0 1 .397 1.414l.005.076.003.075c.002.026.002.05.002.075 0 .024.003.052 0 .07v.065l-.002.073-.008.174a6.195 6.195 0 0 1-.08.639 5.1 5.1 0 0 1-.267.927 5.31 5.31 0 0 1-.624 1.13 5.052 5.052 0 0 1-3.237 2.014 4.82 4.82 0 0 1-.649.066l-.039.003h-.287a6.607 6.607 0 0 1-1.716-.265 6.776 6.776 0 0 1-3.4-2.274 6.75 6.75 0 0 1-.746-1.15 6.616 6.616 0 0 1-.714-2.596l-.005-.083-.002-.02v-.056l-.003-.073v-.096l-.003-.104v-.07l.003-.163c.008-.22.026-.45.054-.678a8.707 8.707 0 0 1 .28-1.355c.128-.444.286-.872.473-1.277a7.04 7.04 0 0 1 1.456-2.1 5.925 5.925 0 0 1 .953-.763c.169-.111.343-.213.524-.306.089-.05.182-.091.273-.135.047-.02.093-.042.138-.062a7.177 7.177 0 0 1 .714-.267l.145-.045c.049-.015.098-.026.148-.041.098-.029.197-.052.296-.076.049-.013.1-.02.15-.033l.15-.032.151-.028.076-.013.075-.01.153-.024c.057-.01.114-.013.171-.023l.169-.021c.036-.003.073-.008.106-.01l.073-.008.036-.003.042-.002c.057-.003.114-.008.171-.01l.086-.006h.023l.037-.003.145-.007a7.999 7.999 0 0 1 1.708.125 7.917 7.917 0 0 1 2.048.68 8.253 8.253 0 0 1 1.672 1.09l.09.077.089.078c.06.052.114.107.171.159.057.052.112.106.166.16.052.055.107.107.159.164a8.671 8.671 0 0 1 1.41 1.978c.012.026.028.052.04.078l.04.078.075.156c.023.051.05.1.07.153l.065.15a8.848 8.848 0 0 1 .45 1.34.19.19 0 0 0 .201.142.186.186 0 0 0 .172-.184c.01-.246.002-.532-.024-.856z",
+  "GrafanaBrand"
+);
+
+/** Vercel's official simple-icons mark (Task P7) — see this file's own
+ * doc-comment for the two-CDN confirmation. NO brand hex is pinned in
+ * `connectors-panel.tsx`'s `KIND_TINT` for this one (unlike Sentry/Datadog/
+ * Prometheus/Grafana above) — Vercel's own mark is monochrome black/white,
+ * so it uses the theme-aware gray var instead, same as GitHub/Railway/
+ * Langfuse's identical precedent (see this file's own doc-comment). */
+export const VercelBrand = makeBrand("m12 1.608 12 20.784H0Z", "VercelBrand");
+
+/** Cloudflare's official simple-icons mark (Task P8) — see this file's own
+ * doc-comment for the direct-curl two-CDN confirmation. Brand hex
+ * `#F38020` (confirmed against simple-icons' own data/simple-icons.json)
+ * lives in `connectors-panel.tsx`'s `KIND_TINT`, not here (this file only
+ * carries path geometry, mirroring every other `makeBrand` entry above). */
+export const CloudflareBrand = makeBrand(
+  "M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727",
+  "CloudflareBrand"
+);
+
 /** Context7 has no published brand mark — a compact "docs" glyph stands in. */
 export function Context7Brand({ size = 18, className, ...rest }: BrandIconProps) {
   return (
@@ -81,6 +177,29 @@ export function Context7Brand({ size = 18, className, ...rest }: BrandIconProps)
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
       <path d="M9 7h7M9 11h7" />
+    </svg>
+  );
+}
+
+/** Langfuse has no simple-icons entry — a compact pulse/trace-line glyph
+ * stands in (see this file's own doc-comment). */
+export function LangfuseBrand({ size = 18, className, ...rest }: BrandIconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+      {...rest}
+    >
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path d="M7 13.5h2.5L11 8l2 8 1.5-5.5H17" />
     </svg>
   );
 }

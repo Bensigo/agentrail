@@ -242,3 +242,178 @@ export function validateDiagnosisAgainstBundle(d, bundle) {
   });
   return { ok: errors.length === 0, errors };
 }
+
+// ---------------------------------------------------------------------------
+// DEBUGGER_SCHEMA — the mode union (Task 9, debugging design spec:
+// docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md; spec PR
+// #1501). `triage` becomes Jace's DEBUGGER: the SAME subagent, the SAME
+// directory/tool name (Global Constraints: "the subagent directory/tool name
+// triage is unchanged" — root's delegation, the langfuse-verdict-score
+// hook's SCORE_NAME_BY_SUBAGENT.triage, and the calibration join on run_id
+// all key on this exact name), now with TWO modes:
+//
+//   - run mode  — TODAY's behavior, byte-stable. TRIAGE_SCHEMA above is
+//     UNCHANGED — same required fields, same property shapes, still
+//     exported. A run-mode output MAY carry `mode: "run"`, but nothing may
+//     ever REQUIRE it: every caller that already produces the pre-Task-9
+//     shape (no `mode` field at all) must keep validating exactly as before.
+//   - deep mode — a production-investigation ROUND_REPORT (below): findings,
+//     proposed hypothesis updates, evidence gaps, a suggested next step.
+//     Always carries `mode: "deep"`.
+//
+// DEBUGGER_SCHEMA is `agent.ts`'s new `outputSchema` — the union of both
+// shapes, discriminated by `mode`. The task brief's own first sketch,
+// `{ allOf: [TRIAGE_SCHEMA, { properties: { mode: { const: "run" } } }] }`,
+// does NOT work: TRIAGE_SCHEMA declares `additionalProperties: false` over
+// its OWN `properties`, which does not list `mode` — so a value that
+// includes a `mode` key fails THAT branch of the `allOf` on its own terms,
+// independent of the sibling branch that adds `mode` to the allowed set.
+// (This is a well-known JSON Schema `additionalProperties`-vs-`allOf`
+// interaction, not a bug in TRIAGE_SCHEMA — the two branches of an `allOf`
+// are each validated independently against the FULL instance, so
+// `additionalProperties: false` on one branch cannot "see" properties a
+// sibling branch introduces.) So DEBUGGER_RUN_MODE_SCHEMA below is instead
+// an INLINE, self-contained object schema: the SAME `required` array and
+// the SAME property SCHEMA OBJECTS as TRIAGE_SCHEMA (spread by reference at
+// module-load time, never re-typed — so a future edit to TRIAGE_SCHEMA's
+// fields is picked up automatically, not just by a test), plus one
+// additional, NEVER-required `mode` property. Belt-and-suspenders:
+// debugger-schema.test.mjs also asserts the two field sets and required
+// arrays stay equal, so drift is impossible even if this composition is
+// ever rewritten to stop being a live spread.
+
+/**
+ * The run-mode branch of {@link DEBUGGER_SCHEMA} — TRIAGE_SCHEMA's exact
+ * required fields and property shapes (by reference, not by copy — see the
+ * module doc-comment above), plus an optional, never-required `mode: "run"`
+ * discriminator.
+ */
+export const DEBUGGER_RUN_MODE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [...TRIAGE_SCHEMA.required],
+  properties: {
+    ...TRIAGE_SCHEMA.properties,
+    mode: {
+      const: "run",
+      description:
+        "Optional. A run-mode diagnosis MAY carry mode:\"run\", but nothing ever " +
+        "requires it — the pre-Task-9 shape (no mode field at all) is exactly as " +
+        "valid and is what every existing caller (the Langfuse verdict-score " +
+        "hook, the calibration join on run_id) already expects.",
+    },
+  },
+};
+
+/**
+ * A deep-mode investigation ROUND_REPORT — the debugger's return shape for
+ * ONE round of a production investigation (spec: "One debugger, two modes").
+ * `findings[].evidence_refs` requires at least one ref (a claim with no
+ * evidence is a guess, not a finding); `proposed_hypotheses[].evidence_refs`
+ * deliberately carries NO such floor — an `open`/`inconclusive` proposal may
+ * have no evidence yet, and it is the ROUTE (patchInvestigationItems' own
+ * guard), not this schema, that refuses a `supported`/`refuted` STATE
+ * transition with empty evidence_refs once root actually tries to persist
+ * one via `save_investigation`.
+ */
+export const ROUND_REPORT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["mode", "round_summary", "findings", "proposed_hypotheses", "evidence_gaps", "suggested_next"],
+  properties: {
+    mode: {
+      const: "deep",
+      description:
+        "Always \"deep\" for a round report — the discriminator that separates this from a run-mode diagnosis.",
+    },
+    round_summary: {
+      type: "string",
+      minLength: 1,
+      description: "One paragraph: what this round investigated and what it found, in plain language.",
+    },
+    findings: {
+      type: "array",
+      description:
+        "Claims THIS round's evidence actually supports. Every finding cites evidence_refs to an envelope or " +
+        "nested-investigator ref actually seen THIS round — never a ref from the ledger digest you were only " +
+        "told about, and never an invented one.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["claim", "evidence_refs"],
+        properties: {
+          claim: {
+            type: "string",
+            minLength: 1,
+            description: "The claim, grounded only in evidence actually seen this round.",
+          },
+          evidence_refs: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string", minLength: 1 },
+            description: "At least one ref — a finding with no evidence is not a finding, it's a guess.",
+          },
+        },
+      },
+    },
+    proposed_hypotheses: {
+      type: "array",
+      description:
+        "Hypothesis updates you PROPOSE, never adjudicate — root and the human decide whether one actually " +
+        "lands on the investigation's ledger as supported/refuted.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["statement", "mechanism", "proposed_state", "evidence_refs"],
+        properties: {
+          statement: { type: "string", minLength: 1, description: "The hypothesis, stated plainly." },
+          mechanism: {
+            type: "string",
+            minLength: 1,
+            description: "The causal mechanism — how the statement would actually produce the observed symptom.",
+          },
+          proposed_state: {
+            enum: ["open", "supported", "refuted", "inconclusive"],
+            description: "Your best read this round — a PROPOSAL, not a verdict.",
+          },
+          evidence_refs: {
+            type: "array",
+            items: { type: "string", minLength: 1 },
+            description: "Refs backing this proposal, when there are any yet. May be empty for an open/inconclusive proposal.",
+          },
+          what_would_settle_it: {
+            type: "string",
+            minLength: 1,
+            description: "Optional: the discriminating test that would move this from proposed to settled.",
+          },
+        },
+      },
+    },
+    evidence_gaps: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+      description:
+        "Every gap this round hit, honestly — a verb that came back no_provider, a degraded provider, a " +
+        "question this round couldn't touch at all. Never silently omitted.",
+    },
+    suggested_next: {
+      type: "string",
+      minLength: 1,
+      description:
+        "The single cheapest next step that would most discriminate between the open hypotheses right now " +
+        "— one concrete move, not a wishlist.",
+    },
+  },
+};
+
+/**
+ * `agent.ts`'s `outputSchema` — the mode union. `run` mode (no `mode` field,
+ * or `mode: "run"`) and `deep` mode (`mode: "deep"`, a ROUND_REPORT) are
+ * mutually exclusive by their `required`/`additionalProperties` shapes
+ * alone, so a `oneOf` of the two flat, self-contained branches above is
+ * unambiguous — see debugger-schema.test.mjs for the regression pins this
+ * composition is checked against.
+ */
+export const DEBUGGER_SCHEMA = {
+  oneOf: [DEBUGGER_RUN_MODE_SCHEMA, ROUND_REPORT_SCHEMA],
+};

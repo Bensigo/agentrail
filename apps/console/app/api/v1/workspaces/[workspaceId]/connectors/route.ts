@@ -9,11 +9,26 @@ import {
   validateConnectorUpdate,
   isConnectorProvider,
   type ConnectorUpdate,
+  type ConnectorProvider,
 } from "@agentrail/db-postgres";
 import {
+  CONNECTOR_CATALOG,
+  extraConfigFieldKeys,
   projectConnectors,
+  projectExtraConfigValues,
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+
+/**
+ * Every non-secret config key any catalog entry declares via
+ * `connect.extraConfigFields` (Task P0, generalizes Task 7's single
+ * hand-listed `railwayProjectId`) — computed once at module load, mirroring
+ * `secret/route.ts`'s `CREDENTIAL_PROVIDERS`. The PUT handler below accepts
+ * any key in this set generically instead of hand-listing each provider's
+ * field name, so a NEW provider's field (P2-P8) reaches
+ * `validateConnectorUpdate` with zero route changes.
+ */
+const EXTRA_CONFIG_KEYS = extraConfigFieldKeys();
 
 /**
  * Connectors read + management surface (M038 AC3; heartbeat folded in, #816).
@@ -68,22 +83,35 @@ export async function GET(
     // module doc-comment above for why this is an OR, not a replacement.
     const githubConnected = githubInstallation !== null || repos.length > 0;
 
-    // Project a credential (mcp) connector from its stored row: connected iff
-    // a credential is stored (`hasSecret`), with the folded-in trigger config.
-    // The raw secret never leaves the DB layer.
-    const secretConfig = (
-      kind: ConnectorConfigInput["kind"]
-    ): ConnectorConfigInput => {
-      const row = byProvider.get(kind);
+    // Project every credential (mcp/observability) connector from its
+    // stored row, generically (Task P0 generalization of Task 7's
+    // hand-picked secretConfig("linear")/("figma")/("context7")/("railway")
+    // call sites — the exact hand-list gap that task's own brief called
+    // out): connected iff a credential is stored (`hasSecret`), with the
+    // folded-in trigger config, plus whatever `extraConfigFields` values its
+    // row's config carries (`projectExtraConfigValues`). A NEW provider
+    // (P2-P8) needs only its catalog entry + `connectorProviderEnum` member
+    // for this to project it correctly — no route change. The raw secret
+    // never leaves the DB layer.
+    const secretConnectors: ConnectorConfigInput[] = CONNECTOR_CATALOG.filter(
+      (entry) => entry.connectMethod === "secret" && entry.availability !== "internal"
+    ).map((entry) => {
+      // Safe cast: filtered to real credential-based, non-internal catalog
+      // entries above — exactly the ConnectorProvider members `byProvider`
+      // is keyed by. (Task 5's internal-only `factory` kind — NOT a real
+      // ConnectorProvider — is excluded by the `availability !== "internal"`
+      // filter just above, so it never reaches `byProvider.get`.)
+      const row = byProvider.get(entry.kind as ConnectorProvider);
       return {
-        kind,
+        kind: entry.kind,
         hasSecret: Boolean(row?.hasSecret),
         ingestLabel: row?.config.triggerLabel ?? "ready-for-agent",
         enabled: row?.enabled,
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
+        ...projectExtraConfigValues(entry, row?.config as Record<string, unknown> | undefined),
       };
-    };
+    });
 
     const configs: ConnectorConfigInput[] = [
       {
@@ -110,10 +138,7 @@ export async function GET(
         triggerLabel: githubRow?.config.triggerLabel,
         pollIntervalSeconds: githubRow?.config.pollIntervalSeconds,
       },
-      // MCP key connectors — connected once an API key is stored.
-      secretConfig("linear"),
-      secretConfig("figma"),
-      secretConfig("context7"),
+      ...secretConnectors,
     ];
     return NextResponse.json({
       connectors: projectConnectors(configs),
@@ -160,6 +185,10 @@ export async function PUT(
     enabled?: unknown;
     triggerLabel?: unknown;
     pollIntervalSeconds?: unknown;
+    // Task P0: any catalog-declared extraConfigFields key (railwayProjectId,
+    // and — once P2-P8 land — langfuseHost, sentryOrg, …) arrives here
+    // generically; see EXTRA_CONFIG_KEYS above.
+    [key: string]: unknown;
   };
   try {
     body = await request.json();
@@ -181,6 +210,16 @@ export async function PUT(
   if (body.triggerLabel !== undefined) config.triggerLabel = body.triggerLabel;
   if (body.pollIntervalSeconds !== undefined)
     config.pollIntervalSeconds = body.pollIntervalSeconds;
+  // Generic extra-config acceptance (Task P0 generalization of Task 7's
+  // single hand-listed `railwayProjectId` check): every key ANY catalog
+  // entry declares via `connect.extraConfigFields` is accepted here,
+  // generically — a NEW provider's field (P2-P8) reaches
+  // `validateConnectorUpdate` with zero route changes. See
+  // connector-helpers.ts's own doc-comment on
+  // `ConnectorConnectMeta.extraConfigFields`.
+  for (const key of EXTRA_CONFIG_KEYS) {
+    if (body[key] !== undefined) config[key] = body[key];
+  }
   if (Object.keys(config).length > 0)
     update.config = config as ConnectorUpdate["config"];
 

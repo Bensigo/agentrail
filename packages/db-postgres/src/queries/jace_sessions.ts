@@ -766,6 +766,76 @@ export async function getSessionBriefAnchor(sessionId: string): Promise<string |
   return row?.anchoredBriefId ?? null;
 }
 
+// --- investigation anchor (debugging design spec:
+// docs/superpowers/specs/2026-07-29-jace-debugging-agent-design.md, spec PR
+// #1501, "Investigation artifact" section) -----------------------------
+//
+// A THIRD kind of anchor, alongside the workspace/chat-identity pair and the
+// brief anchor above — see `schema/jace_sessions.ts`'s doc-comment for the
+// full distinction. These three functions mirror the brief-anchor trio
+// immediately above exactly, same reasoning: `runner/investigations` calls
+// `setSessionInvestigationAnchor` once the human confirms which investigation
+// a conversation is about, `getSessionInvestigationAnchor` on every later
+// turn so debugging can skip straight to the anchored investigation instead
+// of re-asking, and `clearSessionInvestigationAnchor` when a later message
+// drifts enough to need re-confirming, or a new investigation starts in the
+// same conversation.
+
+/**
+ * Anchor a Jace session to a confirmed investigation. Idempotent by
+ * construction — see {@link setSessionBriefAnchor}'s doc-comment for the full
+ * reasoning (a plain `UPDATE ... WHERE id = $sessionId`, never an insert
+ * racing a unique constraint; no upstream anchor is ever touched by this
+ * write).
+ *
+ * Returns `true` when `sessionId` matched a row (whether or not the anchor
+ * value actually changed), `false` when no session exists with that id.
+ */
+export async function setSessionInvestigationAnchor(
+  sessionId: string,
+  investigationId: string
+): Promise<boolean> {
+  const result = await db
+    .update(jaceSessions)
+    .set({ anchoredInvestigationId: investigationId, updatedAt: new Date() })
+    .where(eq(jaceSessions.id, sessionId))
+    .returning({ id: jaceSessions.id });
+  return result.length > 0;
+}
+
+/**
+ * Clear a session's investigation anchor (re-confirm on drift, rather than
+ * ever writing to the wrong investigation). Same idempotency and
+ * no-disturbance-to-other-anchors reasoning as {@link setSessionInvestigationAnchor}.
+ */
+export async function clearSessionInvestigationAnchor(sessionId: string): Promise<boolean> {
+  const result = await db
+    .update(jaceSessions)
+    .set({ anchoredInvestigationId: null, updatedAt: new Date() })
+    .where(eq(jaceSessions.id, sessionId))
+    .returning({ id: jaceSessions.id });
+  return result.length > 0;
+}
+
+/**
+ * Read back a session's currently anchored investigation id, or `null` when
+ * the session has none anchored — either because it was never set, it was
+ * explicitly cleared ({@link clearSessionInvestigationAnchor}), or the
+ * anchored investigation was deleted (the column's `ON DELETE SET NULL` FK
+ * handles that case at the database level; this function just reads whatever
+ * value results). Returns `null` (not a thrown error) when `sessionId` itself
+ * doesn't resolve to a row — mirrors {@link getSessionBriefAnchor}'s own
+ * rationale.
+ */
+export async function getSessionInvestigationAnchor(sessionId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ anchoredInvestigationId: jaceSessions.anchoredInvestigationId })
+    .from(jaceSessions)
+    .where(eq(jaceSessions.id, sessionId))
+    .limit(1);
+  return row?.anchoredInvestigationId ?? null;
+}
+
 // --- thread engagement (spec:
 // docs/superpowers/specs/2026-07-28-thread-native-jace-design.md) ----------
 //

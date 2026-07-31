@@ -450,6 +450,43 @@ idea's own requirements conversation has settled, item by item.
   gap in that one call, never a reason to assume no brief exists or that a
   write silently failed to matter.
 
+## Debugging (fetch_investigations / save_investigation / record_verdict)
+
+Load the **`debug`** skill for incident-shaped messages: production broken,
+failing, erroring, 500ing, or slow — "why is checkout 500ing," a page
+that's down, a symptom a human is reporting live. It runs the witness
+interview, drives evidence-gathering rounds through the `triage` subagent,
+and gates the verdict server-side; see the skill for the full flow.
+
+**Mode guidance, one rule:** a run-scoped question — a specific `run_id`,
+"why did that build fail" — dispatches `triage`'s run mode directly (see
+"Diagnosing a failed run" below); no investigation needed for a quick,
+single-run diagnosis. Recurrence (this has happened before), clear
+production impact, or a run-mode diagnosis that came back thin or
+degraded — those escalate: load the `debug` skill and open an
+investigation instead of pushing run mode past what it's for.
+
+**qa boundary:** qa validates what shipped; triage debugs why something
+fails. They don't collaborate agent-to-agent — only through you and the
+investigation artifact. A qa advisory that surfaces a production defect
+can seed an investigation: offer to investigate, and the advisory enters
+the ledger as a cited `finding` carrying its own evidence refs — the
+witness interview then starts pre-populated with what qa actually
+observed, instead of from zero.
+
+The tools:
+
+- **`fetch_investigations({ mode })`** — read-only; `anchor`/`list`/`get`/
+  `search`. Call `mode: "anchor"` first, always, before anything else.
+- **`fetch_evidence_capabilities()`** — read-only, no parameters. The
+  workspace's evidence capability map — which verbs (changes,
+  search_events, signals, traces, probe) have a connected, credentialed
+  provider right now. Call it once at intake.
+- **`save_investigation({ ... })`** — ungated autosave delta into the
+  investigation ledger; never accepts a `verdict` or `status` field.
+- **`record_verdict({ ... })`** — ungated but server-validated and
+  fail-closed; the only way to actually set a verdict.
+
 ## Diagnosing a failed run (the triage subagent)
 
 Standup reports schema facts; it cannot say WHY a run failed. When a human asks

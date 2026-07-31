@@ -44,6 +44,14 @@ function stripComments(source: string): string {
 
 const pricingSource = stripComments(readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8"));
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
+// Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
+// only `_craft-pins.test.ts` reads it, and only for the mechanical style
+// pins), so the nav's new Pricing link is pinned here as a second readFile,
+// same stripped-text idiom as the two sources above. Comment-stripped: the
+// file's own module doc-comment narrates the nav's condensed-state design
+// ("swaps the secondary 'Sign in' link...") and would false-positive a raw
+// ordering check otherwise.
+const navSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_nav.tsx"), "utf8"));
 
 /**
  * Every phrase that promised the retired usage-based, no-subscription
@@ -208,5 +216,34 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
 
   it("landing §6b's new steps mention shipping as a pull request", () => {
     expect(landingSource).toContain("ships as a pull request");
+  });
+
+  // -----------------------------------------------------------------------
+  // Subscription-platform slice 7, Task 2 (`docs/superpowers/sdd/
+  // task-2-brief.md`): §6b's sub now speaks the capacity vocabulary instead
+  // of the bare "not by task" rebuttal, and the marketing nav gains an
+  // ungated Pricing link. Heading, steps, kicker, and the gated "See exact
+  // pricing" link are all pinned already (above / `_craft-pins.test.ts`) and
+  // stay untouched by this task.
+  // -----------------------------------------------------------------------
+
+  it("landing §6b's sub speaks capacity vocabulary — priced by team size, measured in tasks (subscription-platform slice 7, Task 2)", () => {
+    // Whitespace-normalized locally (not the shared `landingSource` other
+    // tests use) so this full-sentence pin survives however the formatter
+    // wraps this long JSX text node across lines — same reasoning as
+    // collapsing JSX text at render time, just done for the string compare.
+    const normalized = landingSource.replace(/\s+/g, " ");
+    expect(normalized).toContain(
+      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. Every plan includes monthly engineering capacity, measured in tasks.",
+    );
+  });
+
+  it("marketing nav carries an ungated Pricing link, placed before Sign in (subscription-platform slice 7, Task 2)", () => {
+    expect(navSource).toMatch(/<Link\s+href="\/pricing"[^>]*>\s*Pricing\s*<\/Link>/);
+    const pricingIdx = navSource.indexOf('href="/pricing"');
+    const signInIdx = navSource.indexOf("Sign in");
+    expect(pricingIdx).toBeGreaterThan(-1);
+    expect(signInIdx).toBeGreaterThan(-1);
+    expect(pricingIdx).toBeLessThan(signInIdx);
   });
 });

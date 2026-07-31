@@ -28,7 +28,7 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
  * reaches GitHub, never left to the caller to add or omit.
  *
  * GITHUB ERROR CLASSIFICATION: GitHub's own statuses are never passed
- * through raw — mostly the same table as issue/repo-file (429 /
+ * through raw — mostly the same table as issue/repo-file (404 / 429 /
  * reconnect-409 / else 502), with two deltas: a 422 (GitHub's "unparseable
  * search query" response) classifies to an honest 400
  * `invalid search query` instead of a generic 502; the 401/403 rate-limit
@@ -107,6 +107,7 @@ function classifyGithubError(status: number, body: unknown): { status: number; e
   if (!Number.isFinite(status) || status <= 0) {
     return { status: 502, error: "Could not reach GitHub." };
   }
+  if (status === 404) return { status: 404, error: "repo not found on GitHub" };
   if (status === 422) return { status: 400, error: "invalid search query" };
   if (status === 429) return { status: 429, error: "GitHub rate limit exceeded — try again later" };
   if (status === 401 || status === 403) {

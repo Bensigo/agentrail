@@ -341,6 +341,13 @@ describe("GET /api/v1/runner/code-search", () => {
     expect(await res.json()).toEqual({ error: "invalid search query" });
   });
 
+  it("404 'repo not found on GitHub' when GitHub 404s", async () => {
+    mockFetchOnce(githubJsonResponse(404, { message: "Not Found" }));
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", q: "x" }));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "repo not found on GitHub" });
+  });
+
   it("429 on 429, and on a 403 whose message names a (secondary) rate limit", async () => {
     mockFetchOnce(githubJsonResponse(429, { message: "rate limit exceeded" }));
     let res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", q: "x" }));

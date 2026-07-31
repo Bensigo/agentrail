@@ -29,8 +29,9 @@ single source of truth, and the weaker one certifies the riskiest code.
 One reviewer of record: Jace's. PRs flow to it through events, as **queued
 jobs, not turns** — per-PR serialization with supersede semantics, cross-PR
 concurrency, and per-workspace fairness, so no review blocks, obstructs, or
-cancels another. The pipeline keeps its mechanical gate and retires its
-model-review step behind a flag.
+cancels another. The pipeline keeps its mechanical gate; its model-review
+step is **removed — deleted, not flagged** (owner ruling 2026-07-31: a
+lingering second review path defeats the single source of truth).
 
 ## Design
 
@@ -77,12 +78,18 @@ The worker posts through the existing COMMENT-only seam and then notifies
 the owner's channel through the existing notify path: one line + link, the
 judgment verdicts, and anything `blocker`.
 
-### 4. Pipeline retirement
+### 4. Pipeline removal — one source of truth
 
-Behind `REVIEWER_OF_RECORD` (default off → staged on): the factory's
-model-review step becomes a no-op stub emitting a pointer ("review happens
-at the PR"), while its mechanical verify gate (tests, trail, Arc C's AC
-evidence) is untouched. Rollback = flag off.
+The factory's model-review step is **removed outright in this arc** —
+deleted, not flagged, not stubbed. The mechanical verify gate (tests,
+red-green trail, Arc C's AC evidence) is untouched: machine checks belong
+where the build runs; judgment does not. Removal lands in the same wave as
+intake + worker going live, so every PR's automatic review switches seams
+without a gap; rollback, if ever needed, is a git revert. Interim (until
+this arc lands): Jace review stays on-request and the standing human
+adversarial review of loop PRs continues — the audit showed the internal
+step's verdict was one unproven model line, so its absence removes theater,
+not protection.
 
 ## Evidence & reuse
 
@@ -97,8 +104,9 @@ vs. outcomes). The queue table is deliberately the shape a future
 Signature verification (reject unsigned/wrong-secret), event filtering,
 debounce, idempotency + supersede transitions (SQL-level, EvalPlanQual
 lesson applied), claim contention, budget skip visibility, worker
-happy-path against a fake console, flag-off inertness of the pipeline
-stub.
+happy-path against a fake console, and a pipeline regression pin that the
+removed model-review step stays removed (no dangling config or dead step
+references).
 
 ## Rollout
 

@@ -262,6 +262,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     }
 
     it("enforced + at the seat limit — 409 with the exact copy, createInvite not called", async () => {
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       enforcedAtSeats(5, 5);
 
@@ -281,6 +282,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     });
 
     it("enforced + below the seat limit — 201 unchanged", async () => {
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       mockCreateInvite.mockResolvedValue(MOCK_INVITE);
       enforcedAtSeats(5, 4);
@@ -301,6 +303,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     });
 
     it("flag off (the default) — resolvePolicyForWorkspace is never called, 201 unchanged", async () => {
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       mockCreateInvite.mockResolvedValue(MOCK_INVITE);
       mockSubscriptionsEnforced.mockReturnValue(false);
@@ -318,6 +321,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     });
 
     it("degraded resolution — skips the gate entirely, 201", async () => {
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       mockCreateInvite.mockResolvedValue(MOCK_INVITE);
       mockSubscriptionsEnforced.mockReturnValue(true);
@@ -338,8 +342,46 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
       expect(mockCountActiveSeats).not.toHaveBeenCalled();
     });
 
+    it("degraded: false + null billingAccountId (trialPolicyResult(false) — the pre-checkout default every workspace starts in, NOT an error path) — skips the gate entirely, 201, createInvite called, countActiveSeats never reached", async () => {
+      // Distinct from "degraded resolution" above: that test proves the
+      // `resolved.degraded` half of `if (!resolved.degraded &&
+      // resolved.billingAccountId)` skips the gate; this one proves the
+      // `resolved.billingAccountId` half does too, on its own, with
+      // `degraded: false`. Both sibling gates pin this exact case
+      // separately from the degraded one for the same reason:
+      // channel-dispatch.test.ts's "(d) null billingAccountId" case,
+      // runner/claim/route.test.ts's "null billingAccountId (no degraded
+      // flag)" case. Without this test, a future edit narrowing the guard
+      // to `resolved.billingAccountId!` (or otherwise dropping the null
+      // check) would compile clean and pass every other case here, while
+      // silently reintroducing a null-account bypass.
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
+      mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
+      mockCreateInvite.mockResolvedValue(MOCK_INVITE);
+      mockSubscriptionsEnforced.mockReturnValue(true);
+      mockResolvePolicy.mockResolvedValue({
+        policy: { seatLimit: 10 } as never, // trial's real seatLimit (plan-policies.ts) — unread on this path, kept realistic rather than an arbitrary number
+        billingAccountId: null,
+        degraded: false,
+      });
+
+      const req = makeRequest(
+        `http://localhost/api/v1/workspaces/${WORKSPACE_ID}/invites`,
+        "POST",
+        { email: "invited@example.com" }
+      );
+      const res = await POST(req, PARAMS_WS);
+
+      expect(res.status).toBe(201);
+      expect(mockCreateInvite).toHaveBeenCalledWith(
+        expect.objectContaining({ email: "invited@example.com" })
+      );
+      expect(mockCountActiveSeats).not.toHaveBeenCalled();
+    });
+
     it("resolvePolicyForWorkspace throws — fails open, 201", async () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       mockCreateInvite.mockResolvedValue(MOCK_INVITE);
       mockSubscriptionsEnforced.mockReturnValue(true);
@@ -361,6 +403,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
     });
 
     it("uses the zero-spend fetchMonthSpendUsd stub — this gate never reads policy.economics, matching the chat seat gate and the runner capacity gate", async () => {
+      mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
       mockGetWorkspaceMembership.mockResolvedValue(OWNER_MEMBERSHIP);
       mockCreateInvite.mockResolvedValue(MOCK_INVITE);
       enforcedAtSeats(5, 2);
@@ -381,6 +424,14 @@ describe("POST /api/v1/workspaces/[workspaceId]/invites", () => {
       };
       await expect(deps.fetchMonthSpendUsd()).resolves.toBe(0);
     });
+
+    // Hygiene note for whoever appends a test after this block: several
+    // cases above call mockSubscriptionsEnforced.mockReturnValue(true)
+    // (directly or via enforcedAtSeats), and the outer beforeEach's
+    // vi.clearAllMocks() only clears call history — it does NOT reset a
+    // return value a prior mockReturnValue call configured. A new test that
+    // never calls mockSubscriptionsEnforced.mockReturnValue(false) itself
+    // will silently inherit `true` from whichever case above ran last.
   });
 });
 

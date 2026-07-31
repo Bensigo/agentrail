@@ -3101,7 +3101,18 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
 
     const result = await dispatchQueuedChannelMessages();
 
-    expect(mockResolvePolicy).toHaveBeenCalledWith("ws-1");
+    // Review round 1, hot-path cost finding: the gate must pass an injected
+    // zero-spend `fetchMonthSpendUsd` dep so a served turn never pays for a
+    // real ClickHouse economics aggregation it doesn't read. Asserted here
+    // (rather than only the shape) by actually invoking the captured
+    // function and confirming it resolves to 0 — proving the stub, not just
+    // its presence.
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
+    const resolvePolicyDeps = mockResolvePolicy.mock.calls[0]?.[1] as { fetchMonthSpendUsd: () => Promise<number> };
+    await expect(resolvePolicyDeps.fetchMonthSpendUsd()).resolves.toBe(0);
     // hasActiveSeat/recordUpgradePromptOnce both take the mocked `db` (the
     // module's `db: {}` fixture) as their FIRST argument.
     expect(mockHasActiveSeat).toHaveBeenCalledWith(
@@ -3157,6 +3168,20 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
     expect(mockSendSystemDiscord).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockComplete).toHaveBeenCalledWith("row-1");
+    // Order hardening (review round 1): `deliverSeatLimitPromptForChatRow`'s
+    // own doc-comment calls this ordering MUST — the credential read (baked
+    // into the arguments above) and the send itself have to happen before
+    // `completeChannelMessage` scrubs `interactionToken`/`applicationId` from
+    // the STORED row. Pinning the actual call order (not just "both
+    // happened") is what would catch a future refactor that silently
+    // reorders them — today that reorder would be harmless (nothing re-reads
+    // this row's payload from the DB afterward), but it stops being harmless
+    // the moment something does.
+    const sendCallOrder = mockSendSystemDiscordPreferFollowup.mock.invocationCallOrder[0];
+    const completeCallOrder = mockComplete.mock.invocationCallOrder[0];
+    expect(sendCallOrder).toBeTypeOf("number");
+    expect(completeCallOrder).toBeTypeOf("number");
+    expect(sendCallOrder as number).toBeLessThan(completeCallOrder as number);
   });
 
   it("(b) enforced + at-cap (console): delivers via appendJaceMessage as a jace-role message, completes the row, never invokes Eve", async () => {
@@ -3167,7 +3192,10 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
 
     await dispatchQueuedChannelMessages();
 
-    expect(mockResolvePolicy).toHaveBeenCalledWith("ws-console-1");
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-console-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
     expect(mockHasActiveSeat).toHaveBeenCalledWith(
       {},
       { billingAccountId: "acct-1", subject: { userId: "user-1" } }
@@ -3181,6 +3209,42 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockClaimSeat).not.toHaveBeenCalled();
     expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("(delivery-throw hardening, review round 1) a deliver() throw still blocks the turn: row completed, Eve NOT invoked, no seat claimed over cap, failure logged with the '[seat-gate] prompt delivery failed' prefix — not swallowed into a generic fail-open", async () => {
+    mockSubsEnforced.mockReturnValue(true);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // The console path's real delivery mechanism (appendJaceMessage) is
+    // exactly the "bare db.insert with no internal catch" the finding calls
+    // out — the most realistic vehicle for this scenario.
+    mockAppendJaceMessage.mockRejectedValueOnce(new Error("db insert failed"));
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+    mockCountActiveIdentitySeats.mockResolvedValue(0);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    // Delivery was attempted exactly once (the gate's own prompt) — never a
+    // second time, and never reaching the (later, unrelated) guardrail
+    // notice's own appendJaceMessage call, since the gate already
+    // completed-and-returned before guardrails ever run.
+    expect(mockAppendJaceMessage).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockClaimSeat).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[seat-gate] prompt delivery failed"),
+      expect.anything()
+    );
+    // The OUTER, generic "[seat-gate] applySeatGateForServedTurn failed"
+    // fail-open log must NOT also have fired — this is the inner catch
+    // handling it, not the throw bubbling past the decision.
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("applySeatGateForServedTurn failed"),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
   });
 
   it("(c) enforced + existing seat-holder: served normally (Eve runs), and the count/membership reads are skipped entirely (hot-path short-circuit)", async () => {
@@ -3237,7 +3301,10 @@ describe("dispatchQueuedChannelMessages — chat seat gate (slice 5 Task 4)", ()
 
     const result = await dispatchQueuedChannelMessages();
 
-    expect(mockResolvePolicy).toHaveBeenCalledWith("ws-1");
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      "ws-1",
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
     expect(mockHasActiveSeat).not.toHaveBeenCalled();
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockComplete).toHaveBeenCalledWith("row-1");

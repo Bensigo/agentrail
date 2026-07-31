@@ -767,12 +767,20 @@ function utcDayPeriodKey(now: Date): string {
  * (`packages/db-postgres/src/queries/channel_inbox.ts`'s own
  * `completeChannelMessage` doc-comment); calling this from inside
  * `applySeatGateForServedTurn`, which the caller always `await`s BEFORE its
- * own `completeChannelMessage`, is what guarantees that ordering here.
- * Telegram/slack reuse the existing `sendSystemChannelMessage` seam, with
- * the EXACT SAME argument derivation as the guardrail-block notice elsewhere
- * in `processRow` (`channel-dispatch.ts`'s guardrail `!guard.allowed` branch)
- * — copied verbatim rather than factored out, so the two call sites can
- * never silently drift apart from a partial edit to one.
+ * own `completeChannelMessage`, is what guarantees that ordering here. Pinned
+ * by a `mock.invocationCallOrder` assertion in `channel-dispatch.test.ts`'s
+ * discord seat-gate wiring test (review round 1, order-hardening finding) —
+ * today the ordering is incidental (this reads the row's already-parsed,
+ * in-memory `payload`, which `completeChannelMessage`'s scrub can't touch
+ * either way), and only becomes load-bearing if a FUTURE refactor ever
+ * re-reads this row's payload from the DB after completing it — that pinned
+ * test is what would catch a reorder that silently reintroduces the
+ * dependency. Telegram/slack reuse the existing `sendSystemChannelMessage`
+ * seam, with the EXACT SAME argument derivation as the guardrail-block
+ * notice elsewhere in `processRow` (`channel-dispatch.ts`'s guardrail
+ * `!guard.allowed` branch) — copied verbatim rather than factored out, so
+ * the two call sites can never silently drift apart from a partial edit to
+ * one.
  */
 function deliverSeatLimitPromptForChatRow(
   channel: string,
@@ -816,7 +824,9 @@ function deliverSeatLimitPromptForChatRow(
  *    `resolvePolicyForWorkspace` itself — a thrown error anywhere below must
  *    never turn into a blocked customer, only a loud, namespaced
  *    `console.error` and a served turn.
- * 3. `resolvePolicyForWorkspace` is the ONE billing read. `degraded` or a
+ * 3. `resolvePolicyForWorkspace` is the ONE billing read — called with a
+ *    zeroed `fetchMonthSpendUsd` dep (review round 1, hot-path cost finding;
+ *    see that call site's own doc-comment for the full why). `degraded` or a
  *    `null` `billingAccountId` skips the gate outright (the same "not safe
  *    to enforce against" contract that function's own doc-comment states) —
  *    neither `hasActiveSeat` nor `countActiveSeats` is even callable with a
@@ -828,10 +838,16 @@ function deliverSeatLimitPromptForChatRow(
  *    inputs moot once `subjectHasSeat` is `true` — so skipping those two
  *    extra round-trips costs nothing but latency on the hot path.
  * 5. On `"gate"`: `recordUpgradePromptOnce` is the CAS. Only the caller that
- *    wins it (`won === true`) builds and delivers the prompt — a lost CAS
+ *    wins it (`won === true`) builds and delivers the prompt. A lost CAS
  *    (another concurrent turn in the same conversation already prompted
- *    today) still returns `"gated"`, just silently: the gate always blocks,
- *    the cooldown only stops prompt spam, it never re-opens the door.
+ *    today) still returns `"gated"`, just silently — and so does a WON CAS
+ *    whose `deliver` call then throws (review round 1, delivery-throw
+ *    finding): the CAS row is already committed by the time delivery runs,
+ *    so the decision is final, and `deliver`'s own inner try/catch (below)
+ *    is what stops that throw from reaching the outer catch and flipping an
+ *    already-decided `"gate"` back into `"pass"`. Either way, the gate
+ *    ALWAYS blocks once decided; only whether a prompt was actually shown
+ *    varies.
  */
 async function applySeatGateForServedTurn(params: {
   workspaceId: string;
@@ -843,7 +859,26 @@ async function applySeatGateForServedTurn(params: {
   if (!subscriptionsEnforced()) return "pass";
 
   try {
-    const resolved = await resolvePolicyForWorkspace(params.workspaceId);
+    // Skip the real economics hydration (ClickHouse `aggregateWorkspaceCosts`,
+    // one call per account workspace, `resolve-policy.ts`'s own
+    // `defaultFetchMonthSpendUsd`) — this gate reads only
+    // `billingAccountId`/`degraded`/`policy.seatLimit` off the resolved
+    // policy, never `economics`, so paying for a real spend aggregation on
+    // EVERY served turn (while the flag is on) is pure waste — and since the
+    // dispatch drain loop is single-threaded/serial, a ClickHouse slowdown
+    // would queue every chat turn in the process behind it (review round 1,
+    // hot-path cost finding). `fetchMonthSpendUsd: async () => 0` still runs
+    // the SAME resolver: the real account fetch, the real plan/override
+    // merge, the real workspace-id fan-out — `degraded` only flips `true` on
+    // a genuine throw from one of those, so this stub doesn't change when
+    // the gate fails open. It only short-circuits the one sub-step this
+    // caller never reads. Any FUTURE consumer of the `ResolvedPolicy`
+    // returned HERE that starts reading `policy.economics` MUST remove this
+    // stub first — as written, `currentSpendUsd`/`remainingBudgetUsd` on
+    // this particular result are always a lie (0 spent / full budget).
+    const resolved = await resolvePolicyForWorkspace(params.workspaceId, {
+      fetchMonthSpendUsd: async () => 0,
+    });
     if (resolved.degraded || resolved.billingAccountId === null) {
       return "pass";
     }
@@ -896,7 +931,29 @@ async function applySeatGateForServedTurn(params: {
 
     if (won) {
       const hasUnlinkedIdentitySeats = (await countActiveIdentitySeats(db, billingAccountId)) > 0;
-      await params.deliver(buildSeatLimitPrompt(hasUnlinkedIdentitySeats));
+      try {
+        await params.deliver(buildSeatLimitPrompt(hasUnlinkedIdentitySeats));
+      } catch (deliverErr) {
+        // Inner try/catch, deliberately narrower than the outer one (review
+        // round 1, delivery-throw finding): by this point
+        // `recordUpgradePromptOnce` has already WON the CAS — the row is
+        // committed in Postgres — so the decision to gate this turn is
+        // final. The outer catch's fail-open contract exists for BILLING
+        // READS (a Postgres/ClickHouse hiccup should never block a paying
+        // customer); it was never meant to cover a delivery failure AFTER a
+        // good-data decision. `deliver` is realistically throwable — the
+        // console path's `appendJaceMessage` is a bare `db.insert` with no
+        // internal catch — and letting that throw reach the outer catch
+        // would flip an already-decided `"gate"` back to `"pass"`: the
+        // person gets served, a seat gets claimed over cap, and the CAS slot
+        // stays burned for the rest of the period with no prompt ever having
+        // been shown. Catching here instead keeps the turn blocked, exactly
+        // like a lost CAS — silently, but still blocked.
+        console.error(
+          `[seat-gate] prompt delivery failed (workspace=${params.workspaceId}, channel=${params.channel}):`,
+          deliverErr instanceof Error ? deliverErr.message : String(deliverErr)
+        );
+      }
     }
 
     return "gated";

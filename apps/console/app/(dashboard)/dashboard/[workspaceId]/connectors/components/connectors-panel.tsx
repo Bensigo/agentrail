@@ -1,739 +1,98 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ComponentType } from "react";
-import {
-  Radio,
-  AlertCircle,
-  ChevronDown,
-  ExternalLink,
-  CheckCircle2,
-} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Radio, AlertCircle } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
-import {
-  GithubBrand,
-  LinearBrand,
-  FigmaBrand,
-  Context7Brand,
-  RailwayBrand,
-  LangfuseBrand,
-  SentryBrand,
-  DatadogBrand,
-  PrometheusBrand,
-  GrafanaBrand,
-  VercelBrand,
-  CloudflareBrand,
-  type BrandIconProps,
-} from "./brand-icons";
+import { ConnectorSheet } from "./connector-sheet";
+import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   activeHeartbeatConnectors,
-  capabilitySummary,
   CONNECTOR_TYPE_META,
-  validateConnectorCredential,
-  type ConnectorConnectMeta,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
 
 /**
- * `factory` (Task 5, `availability: "internal"`) is filtered out of the grid
- * entirely by `projectConnectors` before a `ConnectorView` ever reaches this
- * component (see that function's own doc-comment) — this glyph is dead code,
- * present only so `KIND_ICON`/`KIND_TINT` below (typed `Record<ConnectorKind,
- * …>`) stay total now that `ConnectorKind` includes `"factory"`. Wraps the
- * already-imported `Radio` rather than assigning it directly so the map
- * entry's type is exactly `BrandIconProps`, matching every other entry,
- * instead of relying on lucide's own (wider) prop type being structurally
- * compatible.
+ * The Connectors page (Connectors UX v2, Track A — the owner's "the design
+ * we have in the console is not consistent, the height can change, so
+ * poor"). Previously every card was an accordion: a connected card opened
+ * INLINE by default and expanded in place, so a grid row could hold one
+ * tall expanded card beside short collapsed ones — height varied per row,
+ * per section, per connected/disconnected state.
+ *
+ * Now every provider, in every section (issue sources / MCP /
+ * observability), renders as the SAME fixed-height `ConnectorTile` — brand
+ * icon, name, one-line description, status pill, nothing else. No inline
+ * expansion means no tile can ever be taller than its neighbors; height
+ * variance is impossible by construction, not by convention. Clicking a
+ * tile (a `planned` one is inert) opens `ConnectorSheet`, a single overlay
+ * instance mounted once here and reused for whichever connector is open —
+ * every provider's connect form, live-verify errors, connected details, and
+ * heartbeat controls render into that ONE surface instead of each card's
+ * own expand region.
+ *
+ * `projectConnectors` / the catalog (`connector-helpers.ts`) are untouched —
+ * this file is a render-layer restructure over the exact same data shape.
  */
-function FactoryGlyph({ size = 18, className }: BrandIconProps) {
-  return <Radio size={size} className={className} aria-hidden="true" />;
-}
-
-/** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
-const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
-  github: GithubBrand,
-  linear: LinearBrand,
-  figma: FigmaBrand,
-  context7: Context7Brand,
-  factory: FactoryGlyph,
-  railway: RailwayBrand,
-  langfuse: LangfuseBrand,
-  sentry: SentryBrand,
-  datadog: DatadogBrand,
-  prometheus: PrometheusBrand,
-  grafana: GrafanaBrand,
-  vercel: VercelBrand,
-  cloudflare: CloudflareBrand,
-};
-
-/** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
-const KIND_TINT: Record<ConnectorKind, string> = {
-  github: "text-[var(--gray-12)]",
-  linear: "text-[#5e6ad2]",
-  figma: "text-[#f24e1e]",
-  context7: "text-[var(--gray-11)]",
-  factory: "text-[var(--gray-11)]",
-  // Railway's mark is monochrome (like GitHub's) — the gray var, not a
-  // literal brand hex (Task 7 could not confirm one against public docs).
-  railway: "text-[var(--gray-12)]",
-  // Task P2: same fallback as Railway — Langfuse's mark here is a generic
-  // stand-in (brand-icons.tsx's own doc-comment), so no brand hex to pin.
-  langfuse: "text-[var(--gray-12)]",
-  // Task P3: Sentry's real brand purple, confirmed against simple-icons'
-  // own data/simple-icons.json ("hex": "362D59") — unlike Railway/Langfuse
-  // above, a real mark exists, so a real hex is pinned too.
-  sentry: "text-[#362d59]",
-  // Task P4: Datadog's real brand purple ("Daisy Bush", #632CA6) — same
-  // "real mark exists, so a real hex is pinned" precedent as Sentry above.
-  datadog: "text-[#632ca6]",
-  // Task P5: Prometheus's real brand orange (#E6522C, "Cinnabar", confirmed
-  // against simple-icons' own data) — same "real mark exists, so a real hex
-  // is pinned" precedent as Sentry/Datadog above.
-  prometheus: "text-[#e6522c]",
-  // Task P6: Grafana's real brand orange (#F46800, confirmed against
-  // simple-icons' own data) — same "real mark exists, so a real hex is
-  // pinned" precedent as Sentry/Datadog/Prometheus above.
-  grafana: "text-[#f46800]",
-  // Task P7: Vercel's mark is monochrome (like GitHub's/Railway's/
-  // Langfuse's) — the gray var, not a literal brand hex (Vercel's own
-  // identity is pure black-in-light/white-in-dark, which a fixed hex
-  // cannot represent across both themes).
-  vercel: "text-[var(--gray-12)]",
-  // Task P8 (final Wave-2 provider): Cloudflare's real brand orange
-  // (#F38020, confirmed against simple-icons' own data) — same "real mark
-  // exists, so a real hex is pinned" precedent as Sentry/Datadog/
-  // Prometheus/Grafana above.
-  cloudflare: "text-[#f38020]",
-};
 
 const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
 
 // --------------------------------------------------------------------------- //
-// Trigger controls (#816) — folded into each connected ingest connector card.
+// A fixed-height tile — every provider, in every section, is dimensionally
+// identical. `disabled` (planned) tiles are inert and visually muted; every
+// other tile opens the connect/manage sheet on click.
 // --------------------------------------------------------------------------- //
-function TriggerControls({
+function ConnectorTile({
   connector,
-  workspaceId,
-  canManage,
-  onChanged,
+  onOpen,
 }: {
   connector: ConnectorView;
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
-}) {
-  const [label, setLabel] = useState(connector.triggerLabel);
-  const [interval, setIntervalValue] = useState(
-    String(connector.pollIntervalSeconds)
-  );
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const dirty =
-    label.trim() !== connector.triggerLabel ||
-    Number(interval) !== connector.pollIntervalSeconds;
-
-  const put = useCallback(
-    async (patch: {
-      enabled?: boolean;
-      triggerLabel?: string;
-      pollIntervalSeconds?: number;
-    }) => {
-      setSaving(true);
-      setErr(null);
-      try {
-        const res = await fetch(`/api/v1/workspaces/${workspaceId}/connectors`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: connector.kind, ...patch }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(
-            (body as { error?: string }).error ?? `HTTP ${res.status}`
-          );
-        }
-        onChanged();
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Failed to save");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [workspaceId, connector.kind, onChanged]
-  );
-
-  if (!connector.capabilities.ingest) return null;
-
-  return (
-    <div className="mt-3 flex flex-col gap-2.5 border-t border-[var(--gray-04)] pt-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Radio size={12} className="text-[var(--gray-09)]" />
-          <span className="text-xs font-medium text-[var(--gray-11)]">
-            Heartbeat trigger
-          </span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={connector.enabled}
-          aria-label="Toggle heartbeat for this connector"
-          disabled={!canManage || saving}
-          onClick={() => put({ enabled: !connector.enabled })}
-          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-            connector.enabled ? "bg-[var(--green-09)]" : "bg-[var(--gray-06)]"
-          }`}
-        >
-          <span
-            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-              connector.enabled ? "translate-x-4" : "translate-x-0"
-            }`}
-          />
-        </button>
-      </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          put({
-            triggerLabel: label.trim(),
-            pollIntervalSeconds: Number(interval),
-          });
-        }}
-        className="flex flex-col gap-2"
-      >
-        <div className="flex items-center gap-2">
-          <input
-            aria-label="Trigger label"
-            type="text"
-            maxLength={50}
-            value={label}
-            disabled={!canManage}
-            placeholder="ready-for-agent"
-            onChange={(e) => setLabel(e.target.value)}
-            className="h-7 flex-1 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-          <input
-            aria-label="Poll interval (seconds)"
-            type="number"
-            min={10}
-            max={86400}
-            step={1}
-            value={interval}
-            disabled={!canManage}
-            title="Poll interval (seconds, 10–86400)"
-            onChange={(e) => setIntervalValue(e.target.value)}
-            className="h-7 w-20 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={!canManage || saving || !dirty || !label.trim()}
-            className="h-7 shrink-0 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] transition-colors hover:border-[var(--gray-08)] disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      </form>
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// "How to set up" — collapsible per-provider steps + docs link.
-// --------------------------------------------------------------------------- //
-function SetupHelp({ connector }: { connector: ConnectorView }) {
-  const [open, setOpen] = useState(false);
-  if (!connector.connect) return null;
-  const { setupSteps, helpUrl } = connector.connect;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1 self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)]"
-      >
-        <ChevronDown
-          size={12}
-          className={`transition-transform ${open ? "rotate-180" : ""}`}
-        />
-        How to set up {connector.label}
-      </button>
-      {open && (
-        <div className="flex flex-col gap-1.5 rounded border border-[var(--gray-04)] bg-[var(--gray-02)] p-2.5">
-          <ol className="ml-3.5 list-decimal space-y-1 text-xs leading-relaxed text-[var(--gray-10)]">
-            {setupSteps.map((s, i) => (
-              <li key={i}>{s}</li>
-            ))}
-          </ol>
-          <a
-            href={helpUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
-          >
-            Open {connector.label} docs
-            <ExternalLink size={11} />
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// Secret connector management — MCP-key connectors only (linear/figma/
-// context7). Posts the credential to the write-only /connectors/secret route;
-// the value is never read back.
-// --------------------------------------------------------------------------- //
-
-// Module-level (not per-render) empty-array fallbacks for `secretParts` /
-// `extraConfigFields` when a catalog entry declares neither — reusing the
-// SAME reference on every render (rather than a fresh `?? []` literal each
-// time) keeps `save`'s useCallback dependency array referentially stable for
-// every provider that predates this wave (react-hooks/exhaustive-deps).
-const NO_SECRET_PARTS: NonNullable<ConnectorConnectMeta["secretParts"]> = [];
-const NO_EXTRA_FIELDS: NonNullable<ConnectorConnectMeta["extraConfigFields"]> = [];
-
-function SecretManage({
-  connector,
-  workspaceId,
-  canManage,
-  onChanged,
-}: {
-  connector: ConnectorView;
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
-}) {
-  const isConnected = connector.status === "connected";
-  const meta = connector.connect;
-
-  // Task P0: composite secrets — a catalog entry declaring `secretParts`
-  // renders ONE password input PER PART instead of the single credential
-  // input; the parts are joined `partA:partB` right before the PUT (see
-  // `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment).
-  // Absent (every provider before this wave) → `secretParts` is `[]` and
-  // the original single-input rendering below is completely unaffected.
-  const secretParts = meta?.secretParts ?? NO_SECRET_PARTS;
-  const isComposite = secretParts.length > 0;
-  const [secret, setSecret] = useState("");
-  const [partValues, setPartValues] = useState<string[]>(() => secretParts.map(() => ""));
-
-  // Task P0 (generalizes Task 7's single `extraValue` string): N generic
-  // extra config fields, driven entirely by the catalog entry's
-  // `connect.extraConfigFields` — this component never hardcodes which
-  // provider needs one or how many, so the NEXT provider needing extra
-  // fields is catalog-only. See connector-helpers.ts's own doc-comment on
-  // ConnectorConnectMeta.extraConfigFields.
-  const extraFields = meta?.extraConfigFields ?? NO_EXTRA_FIELDS;
-  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const save = useCallback(
-    async (body: { secret: string | null }) => {
-      setSaving(true);
-      setErr(null);
-      try {
-        // Computed BEFORE the secret PUT (Task P2 — see this component's own
-        // note below at the persistence call for why the SAME entries also
-        // ride ALONGSIDE the secret in the request below, not just here).
-        const configEntries = extraFields
-          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
-          .filter(([, v]) => v.length > 0);
-
-        const res = await fetch(
-          `/api/v1/workspaces/${workspaceId}/connectors/secret`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            // Task P2: a catalog entry's extraConfigFields values ride
-            // ALONGSIDE the secret in this SAME request (in addition to the
-            // dedicated persistence call below) — some providers' live
-            // verify needs a not-yet-persisted extra field (Langfuse's host:
-            // `verify.ts` calls `GET {host}/api/public/projects`, and at
-            // THIS point in the flow no config PUT has run yet — see
-            // `verify.ts`'s own doc-comment). secret/route.ts reads these
-            // ONLY to hand to verify; it never persists them itself (the
-            // dedicated config PUT below remains the sole persistence
-            // path), so this is harmless for every provider whose secret
-            // route doesn't consume them (every provider before this task,
-            // including Railway's own `railwayProjectId`). Never sent on a
-            // disconnect (`body.secret === null`).
-            body: JSON.stringify({
-              provider: connector.kind,
-              ...body,
-              ...(body.secret !== null ? Object.fromEntries(configEntries) : {}),
-            }),
-          }
-        );
-        if (!res.ok) {
-          const b = await res.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
-        }
-
-        // The extra fields (when the catalog entry declares any) ALSO save
-        // via the connectors CONFIG route (the sole persistence path for
-        // them — see the note above), and only once the credential itself
-        // is accepted, so a rejected token never leaves an orphaned config
-        // value behind. Never attempted on a disconnect (`body.secret ===
-        // null`). Only non-empty values are sent, so an optional field left
-        // blank never overwrites a previously-stored one with an empty
-        // string.
-        if (body.secret !== null && configEntries.length > 0) {
-          const configRes = await fetch(
-            `/api/v1/workspaces/${workspaceId}/connectors`,
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                provider: connector.kind,
-                ...Object.fromEntries(configEntries),
-              }),
-            }
-          );
-          if (!configRes.ok) {
-            const b = await configRes.json().catch(() => ({}));
-            throw new Error((b as { error?: string }).error ?? `HTTP ${configRes.status}`);
-          }
-        }
-
-        setSecret("");
-        setPartValues(secretParts.map(() => ""));
-        setExtraValues({});
-        onChanged();
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Failed to save");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [workspaceId, connector.kind, extraFields, extraValues, secretParts, onChanged]
-  );
-
-  if (isConnected) {
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          {meta?.credentialLabel ?? "Credential"} stored
-          {connector.target ? (
-            <code className="font-mono text-[var(--gray-11)]">
-              · {connector.target}
-            </code>
-          ) : null}
-        </p>
-        <button
-          onClick={() => save({ secret: null })}
-          disabled={!canManage || saving}
-          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-        >
-          {saving ? "Disconnecting…" : "Disconnect"}
-        </button>
-        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      </div>
-    );
-  }
-
-  const missingRequiredExtra = extraFields.find(
-    (f) => f.required !== false && (extraValues[f.key] ?? "").trim().length === 0
-  );
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-
-        // Task P0: a composite provider joins its N part inputs into the
-        // single `partA:partB` string right here, client-side, before any
-        // validation runs — see composite-secret.ts's own doc-comment on
-        // why a raw part must never contain the `:` delimiter.
-        let credential: string;
-        if (isComposite) {
-          const emptyIdx = partValues.findIndex((v) => v.trim().length === 0);
-          if (emptyIdx !== -1) {
-            setErr(`${secretParts[emptyIdx].name} is required.`);
-            return;
-          }
-          const colonIdx = partValues.findIndex((v) => v.includes(":"));
-          if (colonIdx !== -1) {
-            setErr(`${secretParts[colonIdx].name} must not contain ":".`);
-            return;
-          }
-          credential = partValues.map((v) => v.trim()).join(":");
-        } else {
-          credential = secret;
-        }
-
-        const check = validateConnectorCredential(connector.kind, credential);
-        if (!check.ok) {
-          setErr(check.error);
-          return;
-        }
-        if (missingRequiredExtra) {
-          setErr(`${missingRequiredExtra.label} is required.`);
-          return;
-        }
-        save({ secret: credential.trim() });
-      }}
-      className="flex flex-col gap-2"
-    >
-      {isComposite ? (
-        secretParts.map((part, i) => (
-          <input
-            key={part.name}
-            aria-label={part.name}
-            type="password"
-            autoComplete="off"
-            placeholder={part.name}
-            value={partValues[i] ?? ""}
-            disabled={!canManage}
-            onChange={(e) =>
-              setPartValues((prev) => {
-                const next = [...prev];
-                next[i] = e.target.value;
-                return next;
-              })
-            }
-            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-        ))
-      ) : (
-        <input
-          aria-label={meta?.credentialLabel ?? "Credential"}
-          type="password"
-          autoComplete="off"
-          placeholder={meta?.credentialPlaceholder}
-          value={secret}
-          disabled={!canManage}
-          onChange={(e) => setSecret(e.target.value)}
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-        />
-      )}
-      {meta?.credentialHint && (
-        <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
-      )}
-      {extraFields.map((field) => (
-        <input
-          key={field.key}
-          aria-label={field.label}
-          type="text"
-          autoComplete="off"
-          placeholder={field.placeholder}
-          value={extraValues[field.key] ?? ""}
-          disabled={!canManage}
-          onChange={(e) =>
-            setExtraValues((prev) => ({ ...prev, [field.key]: e.target.value }))
-          }
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-        />
-      ))}
-      <button
-        type="submit"
-        disabled={
-          !canManage ||
-          saving ||
-          (isComposite
-            ? partValues.some((v) => v.trim().length === 0)
-            : secret.trim().length === 0) ||
-          Boolean(missingRequiredExtra)
-        }
-        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-      >
-        {saving ? "Connecting…" : "Connect"}
-      </button>
-      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      <SetupHelp connector={connector} />
-    </form>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// GitHub — a GitHub App installation, not a pasted credential: the button
-// round-trips to mint a single-use install link, then sends the browser to
-// GitHub's own install screen. (spec 2026-07-24-jace-github-app-identity §5)
-// --------------------------------------------------------------------------- //
-function GithubManage({
-  connector,
-  workspaceId,
-}: {
-  connector: ConnectorView;
-  workspaceId: string;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function connect() {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/v1/workspaces/${workspaceId}/connectors/github/install-link`,
-        { method: "POST" }
-      );
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error ?? "Could not start the install");
-      window.location.href = body.url;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start the install");
-      setBusy(false);
-    }
-  }
-
-  // Install button + error, shared by the two states that need it (not
-  // connected at all, and connected-via-repos-only with no App installed) —
-  // one handler, rendered from both branches instead of duplicated.
-  const installButton = (
-    <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={connect}
-        disabled={busy}
-        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-      >
-        {busy ? "Connecting…" : "Connect GitHub"}
-      </button>
-      {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
-    </div>
-  );
-
-  if (connector.status === "connected" && connector.appInstalled) {
-    return (
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Jace is installed on your GitHub. Issues labeled{" "}
-        <code className="font-mono text-[var(--gray-11)]">
-          {connector.ingestLabel}
-        </code>{" "}
-        are ingested into the Issue Queue; run results post back on the issue.
-      </p>
-    );
-  }
-
-  if (connector.status === "connected" && !connector.appInstalled) {
-    return (
-      <div className="flex flex-col gap-2">
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Repos are linked from the legacy flow, but the Jace GitHub App
-          isn&apos;t installed yet — install it so Jace can review, push, and
-          open PRs as itself.
-        </p>
-        {installButton}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Install the Jace GitHub App to let Jace review, push, and open PRs on
-        the repos you pick — every action shows as Jace, not you.
-      </p>
-      {installButton}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// A compact connector card. Header is always visible; the manage body expands.
-// --------------------------------------------------------------------------- //
-function ConnectorCard({
-  connector,
-  workspaceId,
-  canManage,
-  onChanged,
-}: {
-  connector: ConnectorView;
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
+  onOpen: (kind: ConnectorKind) => void;
 }) {
   const Icon = KIND_ICON[connector.kind];
-  const isConnected = connector.status === "connected";
-  // Connected cards open by default (so the trigger/disconnect is one glance
-  // away); unconnected cards stay collapsed to keep the grid compact.
-  const [open, setOpen] = useState(isConnected);
+  const isPlanned = connector.availability === "planned";
 
   return (
-    <div className="flex flex-col rounded-lg border border-[var(--gray-05)] bg-[var(--gray-01)]">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2.5 p-3 text-left"
-      >
+    <button
+      type="button"
+      onClick={() => onOpen(connector.kind)}
+      disabled={isPlanned}
+      aria-haspopup="dialog"
+      title={
+        isPlanned
+          ? `${connector.label} — coming soon`
+          : `Manage ${connector.label}`
+      }
+      className={`flex h-28 w-full flex-col justify-between rounded-lg border p-3 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-text)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--gray-01)] ${
+        isPlanned
+          ? "cursor-not-allowed border-[var(--gray-04)] bg-[var(--gray-01)] opacity-60"
+          : "cursor-pointer border-[var(--gray-05)] bg-[var(--gray-01)] hover:border-[var(--gray-08)]"
+      }`}
+    >
+      <div className="flex items-center gap-2.5">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--gray-05)] bg-[var(--gray-03)]">
           <Icon size={17} className={KIND_TINT[connector.kind]} />
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-sm font-semibold text-[var(--gray-12)]">
-              {connector.label}
-            </span>
-            <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                isConnected ? "bg-[var(--green-11)]" : "bg-[var(--gray-07)]"
-              }`}
-              aria-hidden="true"
-            />
-          </div>
-          <p className="truncate text-xs text-[var(--gray-09)]">
-            {capabilitySummary(connector.capabilities)}
-          </p>
-        </div>
-        <ChevronDown
-          size={15}
-          className={`shrink-0 text-[var(--gray-09)] transition-transform ${
-            open ? "rotate-180" : ""
-          }`}
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--gray-12)]">
+          {connector.label}
+        </span>
+      </div>
+      <p className="truncate text-xs text-[var(--gray-09)]">
+        {connector.description}
+      </p>
+      <div className="self-start">
+        <ConnectorStatusBadge
+          status={connector.status}
+          availability={connector.availability}
         />
-      </button>
-
-      {open && (
-        <div className="flex flex-col gap-3 border-t border-[var(--gray-04)] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <ConnectorStatusBadge
-              status={connector.status}
-              availability={connector.availability}
-            />
-            {connector.target && connector.connectMethod === "oauth" && (
-              <code className="truncate font-mono text-xs text-[var(--gray-10)]">
-                {connector.target}
-              </code>
-            )}
-          </div>
-          <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-            {connector.description}
-          </p>
-
-          {connector.connectMethod === "oauth" ? (
-            <GithubManage connector={connector} workspaceId={workspaceId} />
-          ) : (
-            <SecretManage
-              connector={connector}
-              workspaceId={workspaceId}
-              canManage={canManage}
-              onChanged={onChanged}
-            />
-          )}
-
-          {isConnected && connector.capabilities.ingest && (
-            <TriggerControls
-              connector={connector}
-              workspaceId={workspaceId}
-              canManage={canManage}
-              onChanged={onChanged}
-            />
-          )}
-        </div>
-      )}
-    </div>
+      </div>
+    </button>
   );
 }
 
 // --------------------------------------------------------------------------- //
-// Heartbeat status header (#816 folded in).
+// Heartbeat status header (#816 folded in). Unchanged by this redesign.
 // --------------------------------------------------------------------------- //
 function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) {
   const active = activeHeartbeatConnectors(connectors);
@@ -787,20 +146,18 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
 }
 
 // --------------------------------------------------------------------------- //
-// One catalog-type section (Issue sources / MCP) of compact cards.
+// One catalog-type section (Issue sources / MCP / Observability) of tiles —
+// same heading + blurb as before the redesign, uniform tiles instead of
+// accordion cards.
 // --------------------------------------------------------------------------- //
 function ConnectorSection({
   type,
   connectors,
-  workspaceId,
-  canManage,
-  onChanged,
+  onOpen,
 }: {
   type: ConnectorType;
   connectors: ConnectorView[];
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
+  onOpen: (kind: ConnectorKind) => void;
 }) {
   if (connectors.length === 0) return null;
   const meta = CONNECTOR_TYPE_META[type];
@@ -820,16 +177,9 @@ function ConnectorSection({
       <p className="-mt-1 text-xs leading-relaxed text-[var(--gray-09)]">
         {meta.description}
       </p>
-      {/* items-start so expanding one card never stretches its row-mates. */}
-      <div className="grid grid-cols-1 items-start gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {connectors.map((c) => (
-          <ConnectorCard
-            key={c.kind}
-            connector={c}
-            workspaceId={workspaceId}
-            canManage={canManage}
-            onChanged={onChanged}
-          />
+          <ConnectorTile key={c.kind} connector={c} onOpen={onOpen} />
         ))}
       </div>
     </section>
@@ -841,6 +191,12 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
   const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The open sheet is tracked by KIND, not by holding the ConnectorView
+  // object itself — `connectors` gets replaced wholesale on every refetch
+  // (new object identities), so deriving `openConnector` below always shows
+  // fresh data (e.g. a just-stored secret's "Connected" state) without any
+  // manual re-sync after `onChanged` fires.
+  const [openKind, setOpenKind] = useState<ConnectorKind | null>(null);
 
   const fetchConnectors = useCallback(async () => {
     setLoading(true);
@@ -870,6 +226,8 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
     fetchConnectors();
   }, [fetchConnectors]);
 
+  const openConnector = connectors.find((c) => c.kind === openKind) ?? null;
+
   return (
     <div className="flex flex-col gap-4">
       {!loading && !error && connectors.length > 0 && (
@@ -890,7 +248,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
           {[0, 1, 2, 3, 4, 5].map((i) => (
             <div
               key={i}
-              className="h-14 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-01)] animate-pulse"
+              className="h-28 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-01)] animate-pulse"
             />
           ))}
         </div>
@@ -909,13 +267,19 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
               key={type}
               type={type}
               connectors={connectors.filter((c) => c.type === type)}
-              workspaceId={workspaceId}
-              canManage={canManage}
-              onChanged={fetchConnectors}
+              onOpen={setOpenKind}
             />
           ))}
         </div>
       )}
+
+      <ConnectorSheet
+        connector={openConnector}
+        workspaceId={workspaceId}
+        canManage={canManage}
+        onChanged={fetchConnectors}
+        onClose={() => setOpenKind(null)}
+      />
     </div>
   );
 }

@@ -20,6 +20,18 @@ const read = (name) =>
     "utf8",
   );
 
+// slack.ts's header/inline comments deliberately quote things like
+// `startTyping` and `channel.state.pendingToolCallMessage` in backticks
+// while EXPLAINING eve's defaults it no longer calls — strip full-line `//`
+// comments (every comment in slack.ts is its own line) before asserting an
+// ABSENCE of something, so prose describing the old/eve behavior can't
+// false-positive an assertion about the real code below it.
+const stripComments = (code) =>
+  code
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+
 // slack.ts is deliberately NOT here: it is the one ack-less channel, because
 // eve's own default `actions.requested` already sets a native thread typing
 // status naming the running tools, and eve resolves ONE handler per event on
@@ -142,16 +154,33 @@ for (const name of CHANNELS) {
   });
 }
 
-// This non-override is load-bearing on EVERY channel including slack
-// (overriding would clobber eve's own error message and drop its error id —
-// see each channel's own header comment / the ack module's header comment).
-for (const name of [...CHANNELS, "slack.ts"]) {
+// This non-override is load-bearing on telegram/discord/console (overriding
+// would clobber eve's own error message and drop its error id — see each
+// channel's own header comment / the ack module's header comment). slack.ts
+// is DELIBERATELY excluded from this loop: unlike these three, it has NO bot
+// token at all (Task 4, multi-workspace design), so eve's own default
+// `turn.failed`/`session.failed` posts throw `SLACK_BOT_TOKEN is required.`
+// uncaught — the prod outage this arc fixed. See the slack-specific tests
+// below (and slack-channel.test.mjs / slack-defaults-coverage.test.mjs) for
+// what it does instead.
+for (const name of CHANNELS) {
   test(`${name}: does NOT override turn.failed / session.failed (keeps Eve's error posts)`, () => {
     const code = read(name);
     assert.doesNotMatch(code, /["']turn\.failed["']/);
     assert.doesNotMatch(code, /["']session\.failed["']/);
   });
 }
+
+test("slack: DOES override turn.failed (routes the notice through the console) and session.failed (documented no-op) — the opposite of telegram/discord/console", () => {
+  // slack.ts has no bot token to fall back on (Task 4), so leaving eve's
+  // defaults in place for these two events means every failure throws
+  // `SLACK_BOT_TOKEN is required.` uncaught instead of notifying the user.
+  // See slack.ts's header comment and slack-channel.test.mjs for the full
+  // reasoning on each.
+  const code = read("slack.ts");
+  assert.match(code, /["']turn\.failed["']/);
+  assert.match(code, /["']session\.failed["']/);
+});
 
 test("telegram + discord: typing.stop also sits below the tool-calls guard", () => {
   for (const name of ["telegram.ts", "discord.ts"]) {
@@ -212,15 +241,26 @@ test("console: the ack posts through postConsoleChatReply, not a raw transport c
 
 // --- slack: the deliberate exception ------------------------------------
 
-test("slack: declares NO actions.requested handler, leaving eve's native tool status intact", () => {
-  // eve resolves one handler per event on slack (`events[e] ?? defaultEvents[e]`),
-  // so declaring this would REPLACE a default that already sets the thread
-  // typing status to `Running <toolName>...` — the same information our ack
-  // carries, shown live and per-step without cluttering the thread. Reproducing
-  // it would mean copying `truncateTypingStatus`/`stripTypingStatusMarkdown`
-  // out of eve's #public/channels/slack/limits.js, which it does not re-export.
-  const code = read("slack.ts");
-  assert.doesNotMatch(code, /["']actions\.requested["']/);
+test("slack: DOES declare an actions.requested handler, but as a no-op (not the telegram/discord-style ack)", () => {
+  // eve resolves one handler per event on slack (`events[e] ?? defaultEvents[e]`).
+  // eve's own default `actions.requested` sets the thread typing status to
+  // `Running <toolName>...` via `channel.thread.startTyping(...)` — the same
+  // information our ack carries elsewhere, shown live and per-step. That
+  // default doesn't THROW (startTyping swallows its own errors), so this
+  // handler isn't here to fix an outage — it's here so the zero-Slack-I/O
+  // invariant (slack-defaults-coverage.test.mjs) holds even for defaults
+  // that were already safe. It stays a no-op, not a ported ack: reproducing
+  // eve's status text would mean copying
+  // `truncateTypingStatus`/`stripTypingStatusMarkdown` out of eve's
+  // #public/channels/slack/limits.js, which it does not re-export.
+  const code = stripComments(read("slack.ts"));
+  assert.match(code, /["']actions\.requested["']/);
+  const actionsRequested = code.slice(
+    code.indexOf('"actions.requested"'),
+    code.indexOf('"message.completed"'),
+  );
+  assert.doesNotMatch(actionsRequested, /ack\.(arm|stop)\(/);
+  assert.doesNotMatch(actionsRequested, /startTyping/);
 });
 
 test("slack: carries no ack wiring at all", () => {
@@ -233,14 +273,20 @@ test("slack: carries no ack wiring at all", () => {
   assert.doesNotMatch(code, /ack\.(arm|stop)\(/);
 });
 
-test("slack: still reproduces eve's default turn.started, which it DOES override", () => {
-  // Unchanged by this work, and independently load-bearing: losing the state
-  // clears makes reasoning.appended wrongly suppress the first status of a new
-  // turn. See slack.ts's header comment.
-  const code = read("slack.ts");
-  const turnStarted = code.slice(code.indexOf('"turn.started"'));
-  assert.match(turnStarted, /channel\.state\.pendingToolCallMessage\s*=\s*null/);
-  assert.match(turnStarted, /channel\.state\.lastReasoningTypingAtMs\s*=\s*null/);
-  assert.match(turnStarted, /channel\.state\.lastReasoningTypingStatus\s*=\s*null/);
-  assert.match(turnStarted, /startTyping\(\s*["']Working\.\.\.["']\s*\)/);
+test("slack: turn.started is now a no-op — no startTyping, no state resets (fix/jace-no-slack-api-calls)", () => {
+  // Superseded by this arc's outage fix: an earlier version of slack.ts
+  // reproduced eve's default turn.started (state resets + a "Working..."
+  // startTyping call) because startTyping swallows its own errors. That
+  // reasoning was correct but left a guaranteed-to-fail Slack API attempt on
+  // every turn, and the state it reset is read only by reasoning.appended /
+  // actions.requested, which are now no-ops too and never read it. See
+  // slack.ts's header comment and slack-channel.test.mjs for the full
+  // reasoning.
+  const code = stripComments(read("slack.ts"));
+  const turnStarted = code.slice(
+    code.indexOf('"turn.started"'),
+    code.indexOf('"reasoning.appended"'),
+  );
+  assert.doesNotMatch(turnStarted, /channel\.state\.pendingToolCallMessage\s*=\s*null/);
+  assert.doesNotMatch(turnStarted, /startTyping/);
 });

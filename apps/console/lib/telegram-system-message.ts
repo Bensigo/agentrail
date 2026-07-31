@@ -22,25 +22,37 @@ import { sendTelegramMessage, type SendResult } from "../app/api/v1/workspaces/[
  * unset or the send itself fails, matching `sendTelegramMessage`'s own
  * best-effort contract.
  *
- * `messageThreadId` is accepted for signature parity with a future
- * forum-thread reply path (v1's door is DM-first — see
- * annex-eve-internals.md point 5 — so channel_inbox never carries one
- * today), but is not yet forwarded: `sendTelegramMessage` has no thread
- * parameter, and adding one is out of this PR's surface
- * (packages/db-postgres queries are frozen here; this file only reuses
- * the existing connector helper as-is).
+ * `messageThreadId` (subscription-platform spec §6, "delivery trap #2":
+ * `docs/superpowers/specs/2026-07-29-subscription-platform-design.md`) is
+ * forwarded straight through to `sendTelegramMessage`'s own 5th param, which
+ * owns the actual validation (numeric-string check, `message_thread_id` body
+ * key — see that function's own doc-comment); this wrapper does no parsing
+ * of its own. Until this fix the value was accepted but silently discarded
+ * (`void messageThreadId`), even though `channel-dispatch.ts`'s
+ * `sendSystemChannelMessage` is already fully wired to carry a real one
+ * through from the inbound row's payload the moment one is ever present.
+ * NOTE: the console webhook door (`connectors/telegram/webhook/route.ts`)
+ * now captures `message.message_thread_id` into the enqueued row's payload
+ * — see that file's own `TelegramMessage.message_thread_id` doc-comment for
+ * exactly which downstream paths receive a real value and their differing
+ * safety margins. The legacy sidecar door
+ * (`runner/telegram-inbound/route.ts`, the Jace Gateway-forward path, cut
+ * over 2026-07-26) deliberately does NOT capture it — its own header
+ * comment explains why (the shim feeding it never shapes the field; that
+ * door was out of scope for this fix). `replyMarkup` is explicitly passed
+ * as `undefined` below to reach the 5th slot — this wrapper has no
+ * keyboard of its own to offer.
  */
 export async function sendSystemTelegramMessage(
   chatId: string,
   text: string,
   messageThreadId?: string
 ): Promise<SendResult> {
-  void messageThreadId;
   const token = process.env["TELEGRAM_BOT_TOKEN"];
   if (!token) {
     return { ok: false, error: "TELEGRAM_BOT_TOKEN is not configured." };
   }
-  return sendTelegramMessage(token, chatId, text);
+  return sendTelegramMessage(token, chatId, text, undefined, messageThreadId);
 }
 
 /** One reachable workspace, as rendered in the choice list (structural — no db-postgres dependency). */

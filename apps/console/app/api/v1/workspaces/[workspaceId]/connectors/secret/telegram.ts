@@ -125,13 +125,36 @@ export function parseApprovalCallbackData(
  * `undefined`-valued but ABSENT from the request body — existing callers
  * (welcome, run-outcome, system messages) send the exact same body they
  * always have.
+ *
+ * `messageThreadId` (subscription-platform spec §6, delivery trap #2 — see
+ * `telegram-system-message.ts`'s `sendSystemTelegramMessage` doc-comment for
+ * the caller-facing story) is a 5th param, not a 4th: `replyMarkup` already
+ * held that slot (issue #1273 landed first), and two call sites
+ * (`runner/approvals/route.ts`, `alignment-reconciler.ts`) already pass a
+ * keyboard positionally there, so inserting ahead of it would silently
+ * reorder their arguments. Same all-or-nothing shape as `replyMarkup`: when
+ * present and a valid POSITIVE integer string, the body gains
+ * `message_thread_id` as a NUMBER (Telegram's Bot API wants an Integer, not
+ * a numeric string); when omitted OR not a valid positive integer (`"0"`,
+ * `"-5"`, non-numeric), the key is absent entirely — Telegram thread ids
+ * are never zero or negative, matching the same positive-integer shape
+ * used elsewhere in this codebase (e.g. `lib/chat/conversation-key.ts`'s
+ * `parseThreadN`) — so a malformed value is dropped rather than forwarded
+ * broken.
  */
 export async function sendTelegramMessage(
   token: string,
   chatId: string,
   text: string,
-  replyMarkup?: TelegramInlineKeyboardMarkup
+  replyMarkup?: TelegramInlineKeyboardMarkup,
+  messageThreadId?: string
 ): Promise<SendResult> {
+  const threadId =
+    messageThreadId !== undefined &&
+    Number.isInteger(Number(messageThreadId)) &&
+    Number(messageThreadId) > 0
+      ? Number(messageThreadId)
+      : undefined;
   try {
     const res = await fetchWithTimeout(apiUrl(token, "sendMessage"), {
       method: "POST",
@@ -140,6 +163,7 @@ export async function sendTelegramMessage(
         chat_id: chatId,
         text,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+        ...(threadId !== undefined ? { message_thread_id: threadId } : {}),
       }),
     });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean };

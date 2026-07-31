@@ -8,7 +8,11 @@ import type { Db } from "../db.js";
  * table shape and the WHY behind soft-release + the two partial unique
  * indexes). Slice 4 Task 1 — the claim/release/read side over `seats`;
  * slice 1's `countActiveSeats` (`queries/billing_accounts.ts`) already
- * covers the account-wide `COUNT(*)` read, so it isn't repeated here.
+ * covers the account-wide `COUNT(*)` read, so it isn't repeated here. Slice 5
+ * Task 1 (spec §6 "Enforcement seams") adds two more reads: `hasActiveSeat`
+ * is the chat seat gate's admission check — an existing seat-holder is never
+ * blocked, only a new person beyond the cap; `countActiveIdentitySeats` is
+ * the seat-limit prompt's `/connect` hint input (spec §5 rule 3).
  *
  * Same conventions as `billing_accounts.ts` (read that file's own top
  * doc-comment for the full rationale, only summarized here): `db` is an
@@ -377,6 +381,72 @@ export async function listActiveSeatsWithHolders(
       holderKind,
     };
   });
+}
+
+/**
+ * True when `subject` currently holds an ACTIVE seat in `billingAccountId` —
+ * the chat seat gate's admission check (spec §6 point 1: block a NEW
+ * seat-claiming turn once the account is at its plan's seat cap, but an
+ * EXISTING seat-holder is "never affected" by the gate). Branches on the
+ * `SeatSubject` variant exactly as {@link claimSeat} does — see that
+ * function's own doc-comment for why a plain truthy/`in` check can't replace
+ * the `!== undefined` narrowing here. `LIMIT 1` + `rows.length > 0`:
+ * existence-only, there is never a value to read back.
+ */
+export async function hasActiveSeat(
+  db: Db,
+  args: { billingAccountId: string; subject: SeatSubject }
+): Promise<boolean> {
+  const { billingAccountId, subject } = args;
+
+  if (subject.userId !== undefined) {
+    const rows = (await db.execute(sql`
+      SELECT 1
+      FROM seats
+      WHERE billing_account_id = ${billingAccountId}
+        AND released_at IS NULL
+        AND user_id = ${subject.userId}
+      LIMIT 1
+    `)) as unknown as unknown[];
+    return Array.from(rows).length > 0;
+  }
+
+  const rows = (await db.execute(sql`
+    SELECT 1
+    FROM seats
+    WHERE billing_account_id = ${billingAccountId}
+      AND released_at IS NULL
+      AND chat_identity_id = ${subject.chatIdentityId}
+    LIMIT 1
+  `)) as unknown as unknown[];
+  return Array.from(rows).length > 0;
+}
+
+/**
+ * Count of ACTIVE seats in `billingAccountId` held by an UNLINKED platform
+ * identity (`chat_identity_id IS NOT NULL`) — narrower than
+ * `countActiveSeats` (`billing_accounts.ts`), which counts every active seat
+ * regardless of holder kind. Feeds the seat-limit prompt's `/connect` hint
+ * (spec §5 rule 3 / §6: "already have a seat? /connect to link your
+ * account" is only worth saying when this is nonzero). `::int` cast for the
+ * same reason `countActiveSeats` casts — postgres.js returns an uncast
+ * `COUNT(*)` as a string over the wire, not a number; the `Number(...)`
+ * below is the same defensive second pass that function documents.
+ */
+export async function countActiveIdentitySeats(
+  db: Db,
+  billingAccountId: string
+): Promise<number> {
+  const rows = (await db.execute(sql`
+    SELECT count(*)::int AS count
+    FROM seats
+    WHERE billing_account_id = ${billingAccountId}
+      AND released_at IS NULL
+      AND chat_identity_id IS NOT NULL
+  `)) as unknown as Array<{ count: number }>;
+
+  const row = Array.from(rows)[0];
+  return Number(row?.count ?? 0);
 }
 
 /**

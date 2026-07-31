@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  db,
   claimQueueEntry,
   touchApiKeyLastUsed,
   hasActiveSelfHostedRunner,
@@ -11,11 +12,19 @@ import {
   isBillingEnabled,
   peekNextClaimEstimateUsd,
   walletCanAdmit,
+  // Monthly engineering-capacity gate (subscription platform spec §6 point
+  // 2 / §7) — see the gate block's own comment below, ahead of the wallet
+  // admission block, for the full orchestration.
+  countAccountRunsStartedInWindow,
+  recordUpgradePromptOnce,
+  latestChatSessionForWorkspace,
 } from "@agentrail/db-postgres";
 import { resolveGithubAppConfig, botCommitIdentity } from "@agentrail/github-app";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
-import { notifyWorkspaceBudgetExhausted } from "./notify";
+import { resolvePolicyForWorkspace } from "../../../../../lib/policy/resolve-policy";
+import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
+import { notifyWorkspaceBudgetExhausted, notifyAccountCapacity } from "./notify";
 
 /** Response header naming the reason an empty 204 was returned. Set ONLY
  * when the workspace's monthly budget ceiling is why — never on an ordinary
@@ -45,6 +54,101 @@ function currentBudgetWindow(now: Date = new Date()): {
   const periodEndIso = new Date(Date.UTC(year, month + 1, 1)).toISOString();
   const period = `${year}-${String(month + 1).padStart(2, "0")}`;
   return { period, periodStartIso, periodEndIso };
+}
+
+/**
+ * CAS-then-send for a capacity notice (subscription platform spec §6 point
+ * 2 / §7): decides whether THIS call is the one that gets to notify
+ * (`recordUpgradePromptOnce`'s insert-wins CAS — the same pattern
+ * `markBudgetExhaustedNotified`'s UPDATE-CAS gives the workspace-budget
+ * block above, insert-based rather than update-based since there is no
+ * pre-existing row to flip), and only the winner calls into `notify.ts`'s
+ * `notifyAccountCapacity` to actually deliver.
+ *
+ * `periodKey`: `"capacity"` cools down DAILY (UTC `YYYY-MM-DD`, computed
+ * fresh here rather than derived from `period`) — a paused workspace
+ * re-polls this route continuously, so without a daily reset the very
+ * first blocked poll would burn the ONLY prompt for the rest of the month.
+ * `"capacity_warning"` cools down MONTHLY (`period`, UTC `YYYY-MM`, passed
+ * straight through) — exactly ONE soft notice per period
+ * (`schema/upgrade_prompt_events.ts`'s own `periodKey` doc-comment).
+ *
+ * `conversationKey`: the delivered session's own `conversationKey` when
+ * `latestChatSessionForWorkspace` finds one, else the sentinel
+ * `workspace:${workspaceId}` — a dedup key is still required even when
+ * there is nobody to actually tell (no chat session bound yet), so the CAS
+ * has something stable to key on rather than skipping the row entirely.
+ * `channel` is audit-trail only (that schema's own doc-comment: it sits
+ * OUTSIDE the four-column dedup index), so `"none"` for the no-session case
+ * is safe — it never affects who gets deduped against whom.
+ *
+ * SINGLE session resolution (review round 1 fix): `latestChatSessionForWorkspace`
+ * is read exactly ONCE, right here, and the SAME resolved `session` value is
+ * used for both the CAS row above and passed straight into
+ * `notifyAccountCapacity` for delivery below — never re-resolved. The
+ * original version had `notifyAccountCapacity` call
+ * `latestChatSessionForWorkspace` a SECOND, independent time for delivery,
+ * with `recordUpgradePromptOnce`'s write sitting between the two reads: a
+ * session-activity change in that gap (e.g. a message lands on a different
+ * bound channel between the CAS read and the delivery read) could make the
+ * persisted `upgrade_prompt_events` row — spec §8's calibration input —
+ * misrepresent where the prompt actually went, AND could let a LATER poll's
+ * CAS win again under a different conversationKey (the session having since
+ * changed again), producing a duplicate same-day prompt the CAS exists
+ * specifically to prevent. Threading one resolution through both call sites
+ * closes that window entirely; `notifyAccountCapacity`'s signature was
+ * changed to accept the resolved session directly rather than a
+ * `workspaceId` it re-looks-up (it's this same commit's own new function —
+ * no external caller to preserve compatibility for).
+ *
+ * The CAS is attempted — and, on a win, `notifyAccountCapacity` is still
+ * called — even when `session` is `null` (no chat session bound at all).
+ * This is deliberate, not an oversight: without recording the sentinel-keyed
+ * row, a sessionless workspace would get NO dedup protection and this
+ * function would re-attempt the CAS insert on every single poll for the
+ * rest of the period (a paused workspace polls continuously) instead of
+ * settling into the same "already prompted this period, nothing to do"
+ * no-op every other workspace gets after its first attempt.
+ * `notifyAccountCapacity` itself still no-ops on a `null` session (there is
+ * nobody to actually tell), so the cost of this choice is exactly one wasted
+ * `recordUpgradePromptOnce` INSERT attempt per period, never a repeated one.
+ *
+ * Called `void`-fire-and-forget from the gate block below — the claim
+ * response must never wait on chat delivery — so this function IS the
+ * error boundary: EVERYTHING here runs inside one try/catch. Nothing
+ * upstream of a bare `void` call ever sees a rejection, so a failure here
+ * that escaped this catch would surface only as an unhandled promise
+ * rejection, not as anything the route's own try/catch (which wraps the
+ * gate block, not this fire-and-forget tail) could ever observe.
+ */
+async function maybeNotifyCapacity(
+  billingAccountId: string,
+  workspaceId: string,
+  kind: "capacity" | "capacity_warning",
+  period: string
+): Promise<void> {
+  try {
+    const session = await latestChatSessionForWorkspace(workspaceId);
+    const conversationKey = session?.conversationKey ?? `workspace:${workspaceId}`;
+    const periodKey =
+      kind === "capacity" ? new Date().toISOString().slice(0, 10) : period;
+
+    const won = await recordUpgradePromptOnce(db, {
+      billingAccountId,
+      kind,
+      conversationKey,
+      channel: session?.channel ?? "none",
+      periodKey,
+    });
+    if (!won) return;
+
+    await notifyAccountCapacity(workspaceId, kind, session);
+  } catch (err) {
+    console.error(
+      `[capacity-notify] failed to notify workspace ${workspaceId} (${kind}):`,
+      err
+    );
+  }
 }
 
 /**
@@ -131,6 +235,69 @@ export async function GET(request: NextRequest) {
         status: 204,
         headers: { [CLAIM_BLOCKED_HEADER]: "workspace-budget" },
       });
+    }
+  }
+
+  // Monthly engineering-capacity gate (subscription platform spec §6 point 2
+  // / §7): ACCOUNT-wide admitted-run count (every workspace on the billing
+  // account — countAccountRunsStartedInWindow joins out through
+  // workspaces.billing_account_id, unlike the WORKSPACE-scoped budget block
+  // above) against policy.monthlyCapacity, over the same UTC-calendar-month
+  // window currentBudgetWindow() already gives the budget block above. At
+  // 100% new tasks pause: this 204 + header, BEFORE claimQueueEntry —
+  // queue_entries stays untouched, so the entry stays queued and the gate
+  // self-heals at month rollover, exactly like the workspace-budget block.
+  // Running work is unaffected (this gate sits before claimQueueEntry only).
+  // At >=80% (and still under 100%) one soft notice fires, but the claim
+  // still proceeds.
+  //
+  // subscriptionsEnforced() gates the WHOLE block first (spec §6: one
+  // kill-switch, four gates) — flag off costs nothing beyond that one
+  // boolean read, byte-identical to today. `degraded` or a null
+  // `billingAccountId` skips entirely (resolvePolicyForWorkspace's own
+  // contract: not safe to enforce against possibly-wrong data). The
+  // zero-spend `fetchMonthSpendUsd` stub matches the chat seat gate's own
+  // (`applySeatGateForServedTurn`, `apps/console/lib/channel-dispatch.ts`) —
+  // this gate never reads `policy.economics`, only
+  // `monthlyCapacity`/`billingAccountId`/`degraded`, so paying for the real
+  // ClickHouse fan-out on every claim poll (while the flag is on) is pure
+  // waste. Any future reader of THIS resolution that starts touching
+  // `policy.economics` must remove the stub first.
+  //
+  // Everything below lives inside ONE try/catch: §6's fail-open rule — a
+  // thrown error anywhere here must never block a claim, only log loudly
+  // (namespaced, matching every other best-effort block in this route) and
+  // fall through to the wallet admission / normal claim path below.
+  if (subscriptionsEnforced()) {
+    try {
+      const resolved = await resolvePolicyForWorkspace(workspaceId, {
+        fetchMonthSpendUsd: async () => 0,
+      });
+      if (!resolved.degraded && resolved.billingAccountId) {
+        const billingAccountId = resolved.billingAccountId;
+        const { period, periodStartIso, periodEndIso } = currentBudgetWindow();
+        const used = await countAccountRunsStartedInWindow(db, {
+          billingAccountId,
+          fromIso: periodStartIso,
+          toIso: periodEndIso,
+        });
+        const capacity = resolved.policy.monthlyCapacity;
+        if (used >= capacity) {
+          // Fire-and-forget: the claim response never waits on chat
+          // delivery — maybeNotifyCapacity owns its own error boundary (see
+          // that function's own doc-comment).
+          void maybeNotifyCapacity(billingAccountId, workspaceId, "capacity", period);
+          return new NextResponse(null, {
+            status: 204,
+            headers: { [CLAIM_BLOCKED_HEADER]: "capacity" },
+          });
+        }
+        if (used >= Math.ceil(capacity * 0.8)) {
+          void maybeNotifyCapacity(billingAccountId, workspaceId, "capacity_warning", period);
+        }
+      }
+    } catch (err) {
+      console.error("[runner/claim] capacity gate failed open:", err);
     }
   }
 

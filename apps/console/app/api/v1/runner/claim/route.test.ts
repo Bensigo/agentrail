@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  db: {},
   claimQueueEntry: vi.fn(),
   touchApiKeyLastUsed: vi.fn(),
   hasActiveSelfHostedRunner: vi.fn(),
@@ -16,6 +17,13 @@ vi.mock("@agentrail/db-postgres", () => ({
   isBillingEnabled: vi.fn(),
   peekNextClaimEstimateUsd: vi.fn(),
   walletCanAdmit: vi.fn(),
+  // Monthly engineering-capacity gate (subscription platform spec §6 point
+  // 2). Defaulted to flag-OFF in beforeEach so every PRE-existing test above
+  // stays byte-identical (the whole block short-circuits before
+  // resolvePolicyForWorkspace is ever called).
+  countAccountRunsStartedInWindow: vi.fn(),
+  recordUpgradePromptOnce: vi.fn(),
+  latestChatSessionForWorkspace: vi.fn(),
 }));
 vi.mock("@agentrail/github-app", () => ({
   resolveGithubAppConfig: vi.fn(),
@@ -27,8 +35,15 @@ vi.mock("@agentrail/db-clickhouse", () => ({
 vi.mock("../../../../../lib/bearer-auth", () => ({
   requireBearer: vi.fn(),
 }));
+vi.mock("../../../../../lib/policy/resolve-policy", () => ({
+  resolvePolicyForWorkspace: vi.fn(),
+}));
+vi.mock("../../../../../lib/policy/feature-flags", () => ({
+  subscriptionsEnforced: vi.fn(),
+}));
 vi.mock("./notify", () => ({
   notifyWorkspaceBudgetExhausted: vi.fn(),
+  notifyAccountCapacity: vi.fn(),
 }));
 
 import { GET } from "./route";
@@ -44,11 +59,16 @@ import {
   isBillingEnabled,
   peekNextClaimEstimateUsd,
   walletCanAdmit,
+  countAccountRunsStartedInWindow,
+  recordUpgradePromptOnce,
+  latestChatSessionForWorkspace,
 } from "@agentrail/db-postgres";
 import { resolveGithubAppConfig, botCommitIdentity } from "@agentrail/github-app";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
-import { notifyWorkspaceBudgetExhausted } from "./notify";
+import { resolvePolicyForWorkspace } from "../../../../../lib/policy/resolve-policy";
+import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
+import { notifyWorkspaceBudgetExhausted, notifyAccountCapacity } from "./notify";
 
 const mockClaim = vi.mocked(claimQueueEntry);
 const mockTouch = vi.mocked(touchApiKeyLastUsed);
@@ -66,6 +86,12 @@ const mockNotifyBudgetExhausted = vi.mocked(notifyWorkspaceBudgetExhausted);
 const mockIsBillingEnabled = vi.mocked(isBillingEnabled);
 const mockPeekEstimate = vi.mocked(peekNextClaimEstimateUsd);
 const mockWalletCanAdmit = vi.mocked(walletCanAdmit);
+const mockCountAccountRuns = vi.mocked(countAccountRunsStartedInWindow);
+const mockRecordUpgradePromptOnce = vi.mocked(recordUpgradePromptOnce);
+const mockLatestChatSession = vi.mocked(latestChatSessionForWorkspace);
+const mockResolvePolicy = vi.mocked(resolvePolicyForWorkspace);
+const mockSubscriptionsEnforced = vi.mocked(subscriptionsEnforced);
+const mockNotifyAccountCapacity = vi.mocked(notifyAccountCapacity);
 
 const CLAIM_BLOCKED_HEADER = "X-Agentrail-Claim-Blocked";
 
@@ -142,6 +168,21 @@ beforeEach(() => {
   mockIsBillingEnabled.mockResolvedValue(false);
   mockPeekEstimate.mockResolvedValue(null);
   mockWalletCanAdmit.mockResolvedValue(true);
+  // Capacity gate OFF by default (subscriptionsEnforced's real-world
+  // default — see the #6-point-2 suite below for every enforced-path
+  // behavior) so every test above stays byte-identical: the whole block
+  // short-circuits on the first boolean check, before resolvePolicyForWorkspace
+  // is ever called.
+  mockSubscriptionsEnforced.mockReturnValue(false);
+  mockResolvePolicy.mockResolvedValue({
+    policy: { monthlyCapacity: 1000 } as never,
+    billingAccountId: "acct-1",
+    degraded: false,
+  });
+  mockCountAccountRuns.mockResolvedValue(0);
+  mockRecordUpgradePromptOnce.mockResolvedValue(true);
+  mockLatestChatSession.mockResolvedValue(null);
+  mockNotifyAccountCapacity.mockResolvedValue(undefined);
 });
 
 describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
@@ -668,5 +709,447 @@ describe("GET /api/v1/runner/claim — prepaid wallet admission (#1290 PR ①)",
     // The budget gate returned first; the wallet block was never reached.
     expect(mockPeekEstimate).not.toHaveBeenCalled();
     expect(mockWalletCanAdmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/v1/runner/claim — monthly engineering-capacity gate (subscription platform spec §6 point 2)", () => {
+  function enforcedWithCapacity(capacity: number, used: number) {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue({
+      policy: { monthlyCapacity: capacity } as never,
+      billingAccountId: "acct-1",
+      degraded: false,
+    });
+    mockCountAccountRuns.mockResolvedValue(used);
+  }
+
+  // A `void`-fire-and-forget call (route.ts's `maybeNotifyCapacity`) has no
+  // guaranteed relationship to when `GET`'s own returned promise settles —
+  // it is deliberately never awaited by the route (the claim response must
+  // never wait on chat delivery). `vi.waitFor` polls the assertion until it
+  // passes rather than asserting on a fixed number of microtask hops, which
+  // is the only non-flaky way to observe a fire-and-forget chain's effects.
+  async function waitForRecordUpgradePromptOnce() {
+    await vi.waitFor(() => {
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalled();
+    });
+  }
+
+  it("flag off (the default) — resolvePolicyForWorkspace is never called, claims normally", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(false);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockResolvePolicy).not.toHaveBeenCalled();
+    expect(mockCountAccountRuns).not.toHaveBeenCalled();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("enforced + at 100% capacity — 204 + capacity header, claimQueueEntry never called", async () => {
+    enforcedWithCapacity(1000, 1000);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockRecordLifecycle).not.toHaveBeenCalled();
+  });
+
+  it("enforced + already over 100% capacity — still 204 + capacity header", async () => {
+    enforcedWithCapacity(1000, 1200);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+  });
+
+  it("enforced + 80-99% capacity — claim proceeds AND the warning CAS is attempted once with the month periodKey", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    enforcedWithCapacity(1000, 850); // 85% — inside [80%, 100%)
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(200);
+      expect(mockClaim).toHaveBeenCalledWith(WS);
+
+      await waitForRecordUpgradePromptOnce();
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({
+          billingAccountId: "acct-1",
+          kind: "capacity_warning",
+          periodKey: "2026-07",
+        })
+      );
+      await vi.waitFor(() => {
+        // No session bound in this test (mockLatestChatSession defaults to
+        // null in beforeEach) — the CAS's own null-session `session` arg
+        // must be the SAME `null` passed to notifyAccountCapacity.
+        expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity_warning", null);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("enforced + exactly 80% — treated as the warning threshold (>=, not >)", async () => {
+    enforcedWithCapacity(1000, 800);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    await waitForRecordUpgradePromptOnce();
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ kind: "capacity_warning" })
+    );
+  });
+
+  it("enforced + under 80% — claims normally, no CAS attempted at all", async () => {
+    enforcedWithCapacity(1000, 799);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+    // Let any stray fire-and-forget microtask run before asserting the
+    // negative — there should be nothing to wait for either way.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalled();
+    expect(mockNotifyAccountCapacity).not.toHaveBeenCalled();
+  });
+
+  it("degraded resolution — skips the gate entirely, claims normally", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue({
+      policy: { monthlyCapacity: 10 } as never,
+      billingAccountId: "acct-1",
+      degraded: true,
+    });
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockCountAccountRuns).not.toHaveBeenCalled();
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("null billingAccountId (no degraded flag) — skips the gate entirely, claims normally", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue({
+      policy: { monthlyCapacity: 10 } as never,
+      billingAccountId: null,
+      degraded: false,
+    });
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockCountAccountRuns).not.toHaveBeenCalled();
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("resolvePolicyForWorkspace throws — fails open, claims normally", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockRejectedValue(new Error("db blip"));
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+  });
+
+  it("countAccountRunsStartedInWindow throws — fails open, claims normally", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockResolvePolicy.mockResolvedValue({
+      policy: { monthlyCapacity: 10 } as never,
+      billingAccountId: "acct-1",
+      degraded: false,
+    });
+    mockCountAccountRuns.mockRejectedValue(new Error("db blip"));
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("uses the zero-spend fetchMonthSpendUsd stub — this gate never reads policy.economics, so it never pays for the real ClickHouse fan-out", async () => {
+    enforcedWithCapacity(1000, 500);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    await GET(req(WS));
+
+    expect(mockResolvePolicy).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ fetchMonthSpendUsd: expect.any(Function) })
+    );
+    const deps = mockResolvePolicy.mock.calls[0]?.[1] as {
+      fetchMonthSpendUsd: () => Promise<number>;
+    };
+    await expect(deps.fetchMonthSpendUsd()).resolves.toBe(0);
+  });
+
+  it("counts admitted runs over the current UTC calendar month, account-wide (reuses currentBudgetWindow)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-31T23:59:00.000Z"));
+    enforcedWithCapacity(1000, 500);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    try {
+      await GET(req(WS));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(mockCountAccountRuns).toHaveBeenCalledWith(
+      {},
+      {
+        billingAccountId: "acct-1",
+        fromIso: "2026-01-01T00:00:00.000Z",
+        toIso: "2026-02-01T00:00:00.000Z",
+      }
+    );
+  });
+
+  it("sits AFTER the workspace-budget ceiling — a ceiling-blocked claim never reaches the capacity gate", async () => {
+    mockSubscriptionsEnforced.mockReturnValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(mockResolvePolicy).not.toHaveBeenCalled();
+  });
+
+  it("sits BEFORE the wallet admission block — an at-capacity claim never reaches the wallet read", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockIsBillingEnabled.mockResolvedValue(true);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockPeekEstimate).not.toHaveBeenCalled();
+    expect(mockWalletCanAdmit).not.toHaveBeenCalled();
+  });
+
+  it("the at-capacity (100%) CAS uses a DAILY periodKey — re-prompts once per UTC day while paused", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00.000Z"));
+    enforcedWithCapacity(1000, 1000);
+
+    try {
+      await GET(req(WS));
+
+      await waitForRecordUpgradePromptOnce();
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({ kind: "capacity", periodKey: "2026-07-15" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a second poll on the SAME UTC day only attempts the CAS again — it does not need to re-check via a separate read (the insert-CAS is the check)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T09:00:00.000Z"));
+    enforcedWithCapacity(1000, 1000);
+    mockRecordUpgradePromptOnce.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    try {
+      await GET(req(WS));
+      await waitForRecordUpgradePromptOnce();
+      await GET(req(WS));
+      await vi.waitFor(() => {
+        expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(2);
+      });
+
+      await vi.waitFor(() => {
+        expect(mockNotifyAccountCapacity).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("conversationKey for the CAS falls back to the workspace sentinel when no chat session is bound — and the CAS is still attempted (sentinel dedup, not a skip)", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockLatestChatSession.mockResolvedValue(null);
+
+    await GET(req(WS));
+
+    await waitForRecordUpgradePromptOnce();
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ conversationKey: `workspace:${WS}`, channel: "none" })
+    );
+    // Single-resolution fix (review round 1): exactly one session lookup
+    // even on the no-session path.
+    expect(mockLatestChatSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity", null);
+    });
+  });
+
+  it("conversationKey for the CAS uses the delivered session's own key + channel when one is bound, AND the identical session object is what gets threaded to delivery — single resolution, no re-read race (review round 1 fix)", async () => {
+    enforcedWithCapacity(1000, 1000);
+    const session = { channel: "telegram", conversationKey: "tg-99" };
+    mockLatestChatSession.mockResolvedValue(session as never);
+
+    await GET(req(WS));
+
+    await waitForRecordUpgradePromptOnce();
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ conversationKey: "tg-99", channel: "telegram" })
+    );
+    // The CAS row's conversationKey/channel and the session handed to
+    // delivery must come from the SAME read — this is the exact race the
+    // fix closes: latestChatSessionForWorkspace is called exactly ONCE per
+    // notify attempt, never once for the CAS and again for delivery.
+    expect(mockLatestChatSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(mockNotifyAccountCapacity).toHaveBeenCalledWith(WS, "capacity", session);
+    });
+    const [, , deliveredSession] = mockNotifyAccountCapacity.mock.calls[0] as [
+      string,
+      string,
+      { channel: string; conversationKey: string } | null,
+    ];
+    const casArgs = mockRecordUpgradePromptOnce.mock.calls[0]?.[1] as {
+      conversationKey: string;
+      channel: string;
+    };
+    expect(deliveredSession).toEqual({
+      channel: casArgs.channel,
+      conversationKey: casArgs.conversationKey,
+    });
+  });
+
+  it("latestChatSessionForWorkspace throws — the capacity gate still fails open (fire-and-forget error boundary covers the session read too, not just recordUpgradePromptOnce/notifyAccountCapacity)", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockLatestChatSession.mockRejectedValue(new Error("db blip"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const res = await GET(req(WS));
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+      await vi.waitFor(() => {
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining("[capacity-notify] failed to notify workspace"),
+          expect.any(Error)
+        );
+      });
+      expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalled();
+      expect(mockNotifyAccountCapacity).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("a lost CAS (already prompted) never attempts delivery", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockRecordUpgradePromptOnce.mockResolvedValue(false);
+
+    await GET(req(WS));
+
+    await waitForRecordUpgradePromptOnce();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockNotifyAccountCapacity).not.toHaveBeenCalled();
+  });
+
+  it("a notify-send failure inside the fire-and-forget notify path never surfaces — still 204s with the header", async () => {
+    enforcedWithCapacity(1000, 1000);
+    mockNotifyAccountCapacity.mockRejectedValue(new Error("telegram down"));
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    // The rejection must not become an unhandled promise rejection either —
+    // give it a tick to settle and confirm the process is still here to ask.
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  // Threshold-edge pins (review round 1, Minor finding): a policy override
+  // could plausibly set monthlyCapacity this low (0 during an incident, 1 on
+  // a heavily-restricted trial), and the two thresholds (100% / >=80%) can
+  // mathematically collide at small integers — these pin that the early
+  // `return` inside the `used >= capacity` branch is what prevents a
+  // double-fire, not any explicit mutual-exclusion check.
+  it("monthlyCapacity=0 — always blocks (0 admitted runs already meets/exceeds a 0 cap); the warning branch is unreachable", async () => {
+    enforcedWithCapacity(0, 0);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({ kind: "capacity" })
+      );
+    });
+    // Give any stray second fire-and-forget call a chance to land before
+    // asserting the negative.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ kind: "capacity_warning" })
+    );
+  });
+
+  it("monthlyCapacity=1, used=1 — the 100% pause wins over the colliding 80% warning threshold (Math.ceil(1*0.8)=1, same value as the cap); no warning CAS is attempted", async () => {
+    enforcedWithCapacity(1, 1);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("capacity");
+    expect(mockClaim).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(mockRecordUpgradePromptOnce).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({ kind: "capacity" })
+      );
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    // Only the pause CAS fires — the early `return` inside the `used >=
+    // capacity` branch means the `used >= Math.ceil(capacity * 0.8)` check
+    // is never even reached, despite both thresholds evaluating to the same
+    // number at capacity=1.
+    expect(mockRecordUpgradePromptOnce).toHaveBeenCalledTimes(1);
+    expect(mockRecordUpgradePromptOnce).not.toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ kind: "capacity_warning" })
+    );
   });
 });

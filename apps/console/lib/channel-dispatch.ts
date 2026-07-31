@@ -46,6 +46,16 @@ import {
   // `claimSeatForServedTurn`'s own doc-comment below for the full wiring.
   getBillingAccountIdForWorkspace,
   claimSeat,
+  // Chat seat GATE (spec §6 "Enforcement seams" point 1, slice 5 Task 4) —
+  // see `applySeatGateForServedTurn`'s own doc-comment below for the full
+  // wiring. `getWorkspaceMembership` is the owner/admin bypass read (spec §5
+  // rule 4); the other four are `packages/db-postgres/src/queries/seats.ts` /
+  // `upgrade_prompts.ts`'s own admission-check + CAS-dedup primitives.
+  hasActiveSeat,
+  countActiveSeats,
+  countActiveIdentitySeats,
+  recordUpgradePromptOnce,
+  getWorkspaceMembership,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
@@ -55,8 +65,14 @@ import {
 // jace-design.md) — the ONE decision function shared by Discord and Slack.
 import { decideEngagement, type ThreadInbound, type EngagementState } from "./thread-engagement";
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
-import { sendSystemDiscordMessage } from "./discord-system-message";
+import { sendSystemDiscordMessage, sendSystemDiscordMessagePreferFollowup } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
+// The subscription-platform billing seam (spec
+// docs/superpowers/specs/2026-07-29-subscription-platform-design.md §3/§6) —
+// `applySeatGateForServedTurn` below is this dispatcher's ONE consumer of
+// both.
+import { resolvePolicyForWorkspace } from "./policy/resolve-policy";
+import { subscriptionsEnforced } from "./policy/feature-flags";
 // Jace-opens-threads Task 2: relocate a Discord channel mention into its own
 // thread — the mechanics built in Task 1 (createDiscordThreadFromMessage
 // never throws; deriveThreadName is pure text shaping).
@@ -641,6 +657,337 @@ function claimSeatForServedTurn(params: {
 }
 
 /**
+ * Chat SEAT GATE (spec §6 "Enforcement seams" point 1, slice 5 Task 4): once
+ * a billing account is at its plan's seat cap, a brand-new person's chat
+ * turn gets an upgrade prompt instead of service. An EXISTING seat-holder
+ * (the claim `claimSeatForServedTurn` above already covers, spec §5 rule 1)
+ * and a workspace owner/admin (spec §5 rule 4) are never blocked by this.
+ *
+ * Pure truth-table, no I/O: `"gate"` ONLY when every one of these holds
+ * SIMULTANEOUSLY — `enforced` (the arc kill-switch), NOT `degraded` (billing
+ * data must be trustworthy to enforce against — same hard contract
+ * `resolvePolicyForWorkspace`'s own doc-comment states), a real
+ * `billingAccountId`, the subject does NOT already hold a seat, the subject
+ * is NOT a workspace owner/admin, and the account is already at-or-over its
+ * `seatLimit`. Every other combination is `"pass"` — there is no third,
+ * "ambiguous" outcome.
+ *
+ * `activeSeatCount >= seatLimit`, not `>`: the count fed in here is always
+ * taken BEFORE any claim for the CURRENT turn, so "already at the limit"
+ * already means "no room left for one more" — the boundary itself blocks,
+ * it does not wait for the account to go one seat over first.
+ *
+ * Known semantics (documented here, not enforced by this function, since
+ * neither is this function's job): accepted invites claim UNCONDITIONALLY
+ * (slice 4's `claimSeatForServedTurn`/console invite-accept path) — a
+ * pending invite accepted while the account is already at cap can push
+ * `activeSeatCount` over `seatLimit`. Those members hold real seats and are
+ * never re-blocked here (`subjectHasSeat` short-circuits them to `"pass"`
+ * regardless of the count); an over-cap account resolves by removing a
+ * member or upgrading the plan, never by locking out someone who already has
+ * a seat. Separately: this function has no lock, so two brand-new people
+ * racing for the last open seat can both independently observe
+ * `activeSeatCount < seatLimit` and both `"pass"` this gate (a plain
+ * count-then-claim read, not a compare-and-swap) — an accepted fail-open
+ * bias, same spirit as the CAS below only deduping the PROMPT, never the
+ * admission decision itself.
+ */
+export function decideSeatGate(params: {
+  enforced: boolean;
+  degraded: boolean;
+  billingAccountId: string | null;
+  seatLimit: number;
+  subjectHasSeat: boolean;
+  activeSeatCount: number;
+  isWorkspaceAdmin: boolean;
+}): "pass" | "gate" {
+  const shouldGate =
+    params.enforced &&
+    !params.degraded &&
+    params.billingAccountId !== null &&
+    !params.subjectHasSeat &&
+    !params.isWorkspaceAdmin &&
+    params.activeSeatCount >= params.seatLimit;
+  return shouldGate ? "gate" : "pass";
+}
+
+/**
+ * The seat-limit upgrade-prompt copy (spec §6) — byte-exact, never
+ * paraphrased at a call site. Customer-facing copy never mentions dollars, a
+ * model name, or the word "budget" (spec §6's own copy rule): this prompt is
+ * entirely about SEATS, so neither would even come up naturally, but the
+ * rule is worth restating here since a future edit to this string is the one
+ * place that could accidentally violate it.
+ *
+ * The `/connect` hint is appended ONLY when the account holds at least one
+ * active IDENTITY-keyed seat (`hasUnlinkedIdentitySeats`, sourced from
+ * `countActiveIdentitySeats` — spec §5 rule 3): telling someone to `/connect`
+ * is only useful when there is a real chance the blocked person already has
+ * an unlinked identity-seat sitting in THIS SAME account that `/connect`
+ * would collapse into a user-seat, freeing capacity
+ * (`collapseIdentitySeatsForUser`, `queries/seats.ts`). An account with only
+ * user-seats never shows this second sentence — there is nothing for
+ * `/connect` to free there.
+ */
+export function buildSeatLimitPrompt(hasUnlinkedIdentitySeats: boolean): string {
+  const base =
+    "You've reached your team's seat limit. Upgrade your plan or remove an inactive member.";
+  if (!hasUnlinkedIdentitySeats) return base;
+  return `${base} Already have a seat? Use /connect to link your account.`;
+}
+
+/** Owner/admin bypass (spec §5 rule 4) — the house per-file pattern (see
+ * e.g. `app/api/v1/workspaces/[workspaceId]/api-keys/[keyId]/route.ts`'s own
+ * `ADMIN_ROLES`), duplicated here rather than imported: every existing
+ * instance of this constant lives in the API-route tree, and this
+ * dispatcher has no reason to reach into it for one shared literal. */
+const ADMIN_ROLES = ["owner", "admin"] as const;
+
+/**
+ * UTC `YYYY-MM-DD` — the seat-limit prompt's daily cooldown key
+ * (`schema/upgrade_prompt_events.ts`'s own `periodKey` doc-comment:
+ * `'seat_limit'` is one of the two daily-cooldown kinds). `toISOString()` is
+ * always UTC regardless of the host's local timezone, matching
+ * `digest-panel-helpers.ts`'s own `shiftWeek` idiom for the identical
+ * "date-only, UTC" shape. Takes `now` as a parameter (rather than calling
+ * `new Date()` internally) purely so a future caller/test can pin the clock;
+ * every current call site passes a freshly-constructed `Date`.
+ */
+function utcDayPeriodKey(now: Date): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Seat-gate prompt delivery for a chat-channel row — `processRow`'s own
+ * `deliver` callback into {@link applySeatGateForServedTurn}. Discord prefers
+ * the interaction-followup webhook (Task 3, `sendSystemDiscordMessagePreferFollowup`)
+ * over the shared bot post, reading `interactionToken`/`applicationId`
+ * straight off the row's already-parsed `payload` — this MUST be read before
+ * `completeChannelMessage` scrubs both keys from the STORED row
+ * (`packages/db-postgres/src/queries/channel_inbox.ts`'s own
+ * `completeChannelMessage` doc-comment); calling this from inside
+ * `applySeatGateForServedTurn`, which the caller always `await`s BEFORE its
+ * own `completeChannelMessage`, is what guarantees that ordering here. Pinned
+ * by a `mock.invocationCallOrder` assertion in `channel-dispatch.test.ts`'s
+ * discord seat-gate wiring test (review round 1, order-hardening finding) —
+ * today the ordering is incidental (this reads the row's already-parsed,
+ * in-memory `payload`, which `completeChannelMessage`'s scrub can't touch
+ * either way), and only becomes load-bearing if a FUTURE refactor ever
+ * re-reads this row's payload from the DB after completing it — that pinned
+ * test is what would catch a reorder that silently reintroduces the
+ * dependency. Telegram/slack reuse the existing `sendSystemChannelMessage`
+ * seam, with the EXACT SAME argument derivation as the guardrail-block
+ * notice elsewhere in `processRow` (`channel-dispatch.ts`'s guardrail
+ * `!guard.allowed` branch) — copied verbatim rather than factored out, so
+ * the two call sites can never silently drift apart from a partial edit to
+ * one.
+ */
+function deliverSeatLimitPromptForChatRow(
+  channel: string,
+  payload: TelegramInboxPayload,
+  text: string
+): Promise<unknown> {
+  if (channel === "discord") {
+    return sendSystemDiscordMessagePreferFollowup({
+      channelId: String(payload.chatId),
+      text,
+      interactionToken: payload.interactionToken,
+      applicationId: payload.applicationId,
+    });
+  }
+  return sendSystemChannelMessage(
+    channel,
+    String(payload.chatId),
+    text,
+    payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined,
+    payload.threadTs,
+    payload.teamId
+  );
+}
+
+/**
+ * Impure, DB-backed orchestration behind {@link decideSeatGate} (spec §6
+ * point 1) — SHARED by both call sites (`processRow` for telegram/discord/
+ * slack, `processConsoleRow` for console), the same sharing shape
+ * {@link claimSeatForServedTurn} above uses. Unlike that function, this one
+ * is AWAITED and gates the turn: a `"gated"` result means the caller must
+ * NOT proceed to the seat claim, guardrails, or Eve — only
+ * `completeChannelMessage` + return `"completed"`.
+ *
+ * 1. The arc kill-switch, `subscriptionsEnforced()`, is read FIRST — before
+ *    any billing read at all — so flag-off is byte-identical to this
+ *    function never having been called (spec §6: a single kill-switch gates
+ *    all four enforcement seams; every existing caller's behavior must be
+ *    unchanged while it's off).
+ * 2. Everything after that lives inside ONE try/catch: §6's fail-open rule
+ *    applies to the seat gate exactly as it does inside
+ *    `resolvePolicyForWorkspace` itself — a thrown error anywhere below must
+ *    never turn into a blocked customer, only a loud, namespaced
+ *    `console.error` and a served turn.
+ * 3. `resolvePolicyForWorkspace` is the ONE billing read — called with a
+ *    zeroed `fetchMonthSpendUsd` dep (review round 1, hot-path cost finding;
+ *    see that call site's own doc-comment for the full why). `degraded` or a
+ *    `null` `billingAccountId` skips the gate outright (the same "not safe
+ *    to enforce against" contract that function's own doc-comment states) —
+ *    neither `hasActiveSeat` nor `countActiveSeats` is even callable with a
+ *    `null` account id, so this is a hard requirement, not just caution.
+ * 4. `hasActiveSeat` runs BEFORE `countActiveSeats`/`getWorkspaceMembership`,
+ *    and short-circuits them entirely when it resolves `true`: an existing
+ *    seat-holder is the common case on every turn after a conversation's
+ *    first, and `decideSeatGate`'s own truth table makes the other two
+ *    inputs moot once `subjectHasSeat` is `true` — so skipping those two
+ *    extra round-trips costs nothing but latency on the hot path.
+ * 5. On `"gate"`: `recordUpgradePromptOnce` is the CAS. Only the caller that
+ *    wins it (`won === true`) builds and delivers the prompt. A lost CAS
+ *    (another concurrent turn in the same conversation already prompted
+ *    today) still returns `"gated"`, just silently — and so does a WON CAS
+ *    whose `countActiveIdentitySeats` or `deliver` call then throws (review
+ *    rounds 1 and 2, delivery-throw / identity-seat-count-failure findings):
+ *    the CAS row is already committed by the time either runs, so the
+ *    decision is final, and each has its OWN narrow inner try/catch (below)
+ *    that stops its throw from reaching the outer catch and flipping an
+ *    already-decided `"gate"` back into `"pass"`. A count failure defaults
+ *    `hasUnlinkedIdentitySeats` to `false` (drop the /connect hint rather
+ *    than guess) and still attempts delivery. Either way, the gate ALWAYS
+ *    blocks once decided; only whether a prompt was shown, and whether it
+ *    carried the hint, varies.
+ */
+async function applySeatGateForServedTurn(params: {
+  workspaceId: string;
+  channel: string;
+  conversationKey: string;
+  identity: { userId: string | null; chatIdentityId: string | null };
+  deliver: (text: string) => Promise<unknown>;
+}): Promise<"pass" | "gated"> {
+  if (!subscriptionsEnforced()) return "pass";
+
+  try {
+    // Skip the real economics hydration (ClickHouse `aggregateWorkspaceCosts`,
+    // one call per account workspace, `resolve-policy.ts`'s own
+    // `defaultFetchMonthSpendUsd`) — this gate reads only
+    // `billingAccountId`/`degraded`/`policy.seatLimit` off the resolved
+    // policy, never `economics`, so paying for a real spend aggregation on
+    // EVERY served turn (while the flag is on) is pure waste — and since the
+    // dispatch drain loop is single-threaded/serial, a ClickHouse slowdown
+    // would queue every chat turn in the process behind it (review round 1,
+    // hot-path cost finding). `fetchMonthSpendUsd: async () => 0` still runs
+    // the SAME resolver: the real account fetch, the real plan/override
+    // merge, the real workspace-id fan-out — `degraded` only flips `true` on
+    // a genuine throw from one of those, so this stub doesn't change when
+    // the gate fails open. It only short-circuits the one sub-step this
+    // caller never reads. Any FUTURE consumer of the `ResolvedPolicy`
+    // returned HERE that starts reading `policy.economics` MUST remove this
+    // stub first — as written, `currentSpendUsd`/`remainingBudgetUsd` on
+    // this particular result are always a lie (0 spent / full budget).
+    const resolved = await resolvePolicyForWorkspace(params.workspaceId, {
+      fetchMonthSpendUsd: async () => 0,
+    });
+    if (resolved.degraded || resolved.billingAccountId === null) {
+      return "pass";
+    }
+    const billingAccountId = resolved.billingAccountId;
+
+    if (!params.identity.userId && !params.identity.chatIdentityId) {
+      // Defensive only — unreachable from this function's two real call
+      // sites (processRow always supplies a real chatIdentityId;
+      // processConsoleRow always supplies a real userId). There is no
+      // subject to check or gate against otherwise.
+      return "pass";
+    }
+    const subject: SeatSubject = params.identity.userId
+      ? { userId: params.identity.userId }
+      : { chatIdentityId: params.identity.chatIdentityId as string };
+
+    const subjectHasSeat = await hasActiveSeat(db, { billingAccountId, subject });
+
+    let activeSeatCount = 0;
+    let isWorkspaceAdmin = false;
+    if (!subjectHasSeat) {
+      activeSeatCount = await countActiveSeats(db, billingAccountId);
+      if (params.identity.userId) {
+        const membership = await getWorkspaceMembership(params.identity.userId, params.workspaceId);
+        isWorkspaceAdmin =
+          membership !== null &&
+          ADMIN_ROLES.includes(membership.role as (typeof ADMIN_ROLES)[number]);
+      }
+    }
+
+    const verdict = decideSeatGate({
+      enforced: true,
+      degraded: resolved.degraded,
+      billingAccountId,
+      seatLimit: resolved.policy.seatLimit,
+      subjectHasSeat,
+      activeSeatCount,
+      isWorkspaceAdmin,
+    });
+
+    if (verdict === "pass") return "pass";
+
+    const won = await recordUpgradePromptOnce(db, {
+      billingAccountId,
+      kind: "seat_limit",
+      conversationKey: params.conversationKey,
+      channel: params.channel,
+      periodKey: utcDayPeriodKey(new Date()),
+    });
+
+    if (won) {
+      // Two DELIBERATELY NARROW inner try/catches follow, both narrower than
+      // the outer one above — and both exist for the same reason (review
+      // rounds 1 and 2): by this point `recordUpgradePromptOnce` has already
+      // WON the CAS, the row is committed in Postgres, so the decision to
+      // gate this turn is final. The outer catch's fail-open contract exists
+      // for BILLING READS, where serving a paying customer beats blocking on
+      // a Postgres/ClickHouse hiccup — it was never meant to cover a failure
+      // AFTER a good-data decision has already been made and recorded.
+      // Letting either of the two calls below throw past this point would
+      // flip an already-decided `"gate"` back to `"pass"`: the person gets
+      // served, a seat gets claimed over cap, and the CAS slot stays burned
+      // for the rest of the period with no prompt ever having been shown —
+      // exactly the bug each of these two catches closes for its own call.
+
+      // Narrow catch #1 (review round 2, identity-seat-count-failure
+      // finding): defaults `hasUnlinkedIdentitySeats` to `false` (omit the
+      // /connect hint rather than guess at it) and falls through to STILL
+      // attempt delivery — a failed count is a reason to drop one sentence
+      // of copy, never a reason to skip showing the prompt at all.
+      let hasUnlinkedIdentitySeats = false;
+      try {
+        hasUnlinkedIdentitySeats = (await countActiveIdentitySeats(db, billingAccountId)) > 0;
+      } catch (countErr) {
+        console.error(
+          `[seat-gate] countActiveIdentitySeats failed (workspace=${params.workspaceId}, channel=${params.channel}), defaulting to no /connect hint:`,
+          countErr instanceof Error ? countErr.message : String(countErr)
+        );
+      }
+
+      // Narrow catch #2 (review round 1, delivery-throw finding): `deliver`
+      // is realistically throwable — the console path's `appendJaceMessage`
+      // is a bare `db.insert` with no internal catch. Catching here keeps
+      // the turn blocked regardless of outcome, exactly like a lost CAS —
+      // silently, but still blocked.
+      try {
+        await params.deliver(buildSeatLimitPrompt(hasUnlinkedIdentitySeats));
+      } catch (deliverErr) {
+        console.error(
+          `[seat-gate] prompt delivery failed (workspace=${params.workspaceId}, channel=${params.channel}):`,
+          deliverErr instanceof Error ? deliverErr.message : String(deliverErr)
+        );
+      }
+    }
+
+    return "gated";
+  } catch (err) {
+    console.error(
+      `[seat-gate] applySeatGateForServedTurn failed (workspace=${params.workspaceId}, channel=${params.channel}):`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return "pass";
+  }
+}
+
+/**
  * Log a structured line on each engagement TRANSITION only — `entered
  * dormant` and `reactivated` — never per skipped message (spec: "a dormant
  * thread can absorb many messages and must not spam the logs"). A thread
@@ -1115,6 +1462,38 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
       userId: row.senderId,
       conversationKey: row.conversationKey,
     });
+
+    // row.workspaceId is guaranteed non-null past the check above; aliased
+    // to a plain const here so the narrowed type survives inside the
+    // `deliver` closure below — TypeScript discards a property's control-flow
+    // narrowing across a nested function boundary, but never for a `const`
+    // local (see applySeatGateForServedTurn's own call in processRow, which
+    // needs no such alias because its `deliver` closure never touches
+    // `workspaceId` at all).
+    const workspaceId = row.workspaceId;
+
+    // --- seat gate (spec §6 "Enforcement seams" point 1, slice 5 Task 4): a
+    // gated member must not reach the seat claim below. Console has no
+    // engagement gate and no group/DM concept (see this function's own
+    // doc-comment) — every row that reaches this line is, by construction, a
+    // served turn from an authenticated workspace member — so unlike
+    // processRow there is no workspaceId-null skip to apply here either
+    // (row.workspaceId was already checked non-null above). Prompt delivery
+    // rides the same appendJaceMessage seam the guardrail notice just below
+    // uses (this function has no out-of-band sender — see this function's
+    // own doc-comment on that).
+    const seatGateResult = await applySeatGateForServedTurn({
+      workspaceId,
+      channel: row.channel,
+      conversationKey: row.conversationKey,
+      identity: { userId: row.senderId, chatIdentityId: null },
+      deliver: (text) =>
+        appendJaceMessage({ workspaceId, conversationKey: row.conversationKey, role: "jace", text }),
+    });
+    if (seatGateResult === "gated") {
+      await completeChannelMessage(row.id);
+      return "completed";
+    }
 
     // --- seat claim (spec §5 rule 1, slice 4 Task 2): a console row is
     // ALWAYS a served turn once the checks above pass — an authenticated
@@ -1653,6 +2032,33 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           return "completed";
         }
         engagementSaidTurn = true;
+      }
+    }
+
+    // --- seat gate (spec §6 "Enforcement seams" point 1, slice 5 Task 4): a
+    // gated person must not reach the seat claim below, let alone guardrails
+    // or Eve — see applySeatGateForServedTurn's own doc-comment for the full
+    // orchestration. Placed here, BEFORE the seat claim, for the same reason
+    // as that block's own placement: every path reaching this line IS being
+    // served (the engagement block above already completed-and-returned for
+    // anything it filtered out), so this is the earliest point a real
+    // workspaceId exists to gate against. Skipped entirely when workspaceId
+    // is null (the 'intro' path) — a conversation with no pinned workspace
+    // has no billing account to count seats against, the exact same
+    // null-workspaceId skip decideSeatClaimForServedTurn applies just below.
+    // A blocked person's turn must never itself claim the seat it was just
+    // denied, which is why this runs strictly BEFORE that hook, not after.
+    if (workspaceId) {
+      const seatGateResult = await applySeatGateForServedTurn({
+        workspaceId,
+        channel: row.channel,
+        conversationKey: row.conversationKey,
+        identity: { userId: identity.userId, chatIdentityId },
+        deliver: (text) => deliverSeatLimitPromptForChatRow(row.channel, payload, text),
+      });
+      if (seatGateResult === "gated") {
+        await completeChannelMessage(row.id);
+        return "completed";
       }
     }
 

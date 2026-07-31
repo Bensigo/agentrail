@@ -76,9 +76,10 @@ function fmtCost(costUsd: number | undefined): string {
  * is unchanged. Deliberately a PARAMETER, not an internal `process.env` read
  * — this function stays pure (see outcome-format.test.ts's own determinism
  * pin), so every caller decides FOR it. The real product's call site
- * (`runner/result/notify.ts`'s `notifyRunOutcome`) passes
- * `hideCost: subscriptionsEnforced()`; the landing demo
- * (`_conversation-demo-data.ts`) passes `hideCost: true` UNCONDITIONALLY.
+ * (`runner/result/notify.ts`'s `notifyRunOutcome`) now passes
+ * `hideCost: true` unconditionally too (owner ruling 2026-07-31), matching
+ * the landing demo (`_conversation-demo-data.ts`), which has always passed
+ * `hideCost: true` UNCONDITIONALLY.
  * Omitting `opts` (or passing `{}` / `hideCost: false`) is byte-identical to
  * this function's pre-Task-3 output — pinned in outcome-format.test.ts.
  */

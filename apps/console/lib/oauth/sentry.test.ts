@@ -243,8 +243,11 @@ describe("sentryOauthAdapter — exchange", () => {
   });
 
   it("throws on a non-2xx response, without leaking the response body into the thrown message", async () => {
+    // ZZPROBE8 is an arbitrary, distinctive canary (orientation-probe
+    // retrieval-collision cleanup, W3-T4 follow-up) — only the bait VALUE
+    // was arbitrary.
     global.fetch = vi.fn(async () =>
-      errorResponse(400, { detail: "SUPER-SECRET-DETAIL" })
+      errorResponse(400, { detail: "ZZPROBE8" })
     ) as unknown as typeof fetch;
 
     let caught: unknown;
@@ -254,7 +257,7 @@ describe("sentryOauthAdapter — exchange", () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(Error);
-    expect(String(caught)).not.toContain("SUPER-SECRET-DETAIL");
+    expect(String(caught)).not.toContain("ZZPROBE8");
   });
 
   it("throws when token is missing from an otherwise-200 response", async () => {

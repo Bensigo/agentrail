@@ -274,15 +274,18 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
 
     it("logs a fixed, value-free message naming provider+workspaceId when getConnectorSecret itself throws — never the raw error", async () => {
       const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // ZZPROBE4 is an arbitrary, distinctive canary (orientation-probe
+      // retrieval-collision cleanup, W3-T4 follow-up) — only the bait VALUE
+      // was arbitrary; the real "enc:v1:" ciphertext-envelope prefix stays.
       mockGetConnectorSecret.mockRejectedValue(
-        new Error("decrypt failed, ciphertext: enc:v1:SECRET_CIPHERTEXT_BYTES")
+        new Error("decrypt failed, ciphertext: enc:v1:ZZPROBE4")
       );
       await resolveProviderAuth(WS, "logging-decrypt-fail-provider");
       expect(errSpy).toHaveBeenCalled();
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("logging-decrypt-fail-provider");
       expect(logged).toContain(WS);
-      expect(logged).not.toContain("SECRET_CIPHERTEXT_BYTES");
+      expect(logged).not.toContain("ZZPROBE4");
       errSpy.mockRestore();
     });
 
@@ -296,7 +299,7 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
         authorizeUrl: () => "url",
         exchange: async () => stale,
         refresh: vi.fn(async () => {
-          throw new Error("vendor said: refresh_token=SECRET_REFRESH_VALUE is invalid");
+          throw new Error("vendor said: refresh_token=ZZPROBE5 is invalid");
         }),
       });
 
@@ -305,7 +308,7 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("logging-refresh-reject-provider");
       expect(logged).toContain(WS);
-      expect(logged).not.toContain("SECRET_REFRESH_VALUE");
+      expect(logged).not.toContain("ZZPROBE5");
       errSpy.mockRestore();
     });
 
@@ -316,7 +319,10 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
       mockGetConnectorSecret.mockResolvedValue("enc-plaintext");
       mockParseSecretEnvelope.mockReturnValue({ kind: "oauth", credential: stale });
       mockSerializeOauthEnvelope.mockReturnValue("serialized-rotated");
-      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed, near value: ref-rotated-SECRET"));
+      // Only the appended "-ZZPROBE6" suffix is an arbitrary canary
+      // (orientation-probe retrieval-collision cleanup, W3-T4 follow-up);
+      // "ref-rotated" itself is the same real fixture value used above.
+      mockSetConnectorSecret.mockRejectedValue(new Error("db write failed, near value: ref-rotated-ZZPROBE6"));
       registerOauthAdapter({
         provider: "logging-persist-fail-provider",
         authorizeUrl: () => "url",
@@ -329,7 +335,7 @@ describe("resolveProviderAuth — oauth envelope within the refresh skew", () =>
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("logging-persist-fail-provider");
       expect(logged).toContain(WS);
-      expect(logged).not.toContain("ref-rotated-SECRET");
+      expect(logged).not.toContain("ref-rotated-ZZPROBE6");
       errSpy.mockRestore();
     });
   });

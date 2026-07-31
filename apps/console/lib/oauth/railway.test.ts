@@ -217,8 +217,12 @@ describe("railwayOauthAdapter — exchange", () => {
   });
 
   it("throws on a non-2xx response, without leaking the response body into the thrown message", async () => {
+    // ZZPROBE7 is an arbitrary, distinctive canary (orientation-probe
+    // retrieval-collision cleanup, W3-T4 follow-up) — the real
+    // invalid_grant/error_description field names stay, since those mirror
+    // the actual response shape; only the bait VALUE was arbitrary.
     global.fetch = vi.fn(async () =>
-      errorResponse(400, { error: "invalid_grant", error_description: "SUPER-SECRET-DETAIL" })
+      errorResponse(400, { error: "invalid_grant", error_description: "ZZPROBE7" })
     ) as unknown as typeof fetch;
 
     let caught: unknown;
@@ -228,7 +232,7 @@ describe("railwayOauthAdapter — exchange", () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(Error);
-    expect(String(caught)).not.toContain("SUPER-SECRET-DETAIL");
+    expect(String(caught)).not.toContain("ZZPROBE7");
   });
 
   it("throws when access_token is missing from an otherwise-200 response", async () => {

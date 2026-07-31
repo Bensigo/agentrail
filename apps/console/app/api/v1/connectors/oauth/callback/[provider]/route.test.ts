@@ -251,8 +251,14 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
   describe("failure logging (review MINOR-2)", () => {
     it("logs a fixed, value-free message naming provider+workspaceId on exchange_failed — never the raw error", async () => {
       const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      // Marker values (ZZPROBE*) are arbitrary, distinctive canaries — the
+      // assertion only cares that the caught error's own text never reaches
+      // the log, not what the placeholder says (orientation-probe
+      // retrieval-collision cleanup, W3-T4 follow-up: real vendor field
+      // names like access_token=/refresh_token= stay, since those mirror
+      // the actual response shape; only the bait VALUES were arbitrary).
       vi.mocked(fakeAdapter.exchange).mockRejectedValue(
-        new Error("vendor said: access_token=SECRET_TOKEN_VALUE, refresh_token=SECRET_REFRESH")
+        new Error("vendor said: access_token=ZZPROBE1, refresh_token=ZZPROBE2")
       );
       const res = await GET(req({ state: "s", code: "c" }), params("railway"));
       const loc = new URL(res.headers.get("location")!);
@@ -261,15 +267,15 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("railway");
       expect(logged).toContain(WS);
-      expect(logged).not.toContain("SECRET_TOKEN_VALUE");
-      expect(logged).not.toContain("SECRET_REFRESH");
+      expect(logged).not.toContain("ZZPROBE1");
+      expect(logged).not.toContain("ZZPROBE2");
       errSpy.mockRestore();
     });
 
     it("logs a fixed, value-free message naming provider+workspaceId on store_failed — never the raw error", async () => {
       const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       vi.mocked(setConnectorSecret).mockRejectedValue(
-        new Error("insert failed, offending value: enc:v1:abcdefTOKENDATA")
+        new Error("insert failed, offending value: enc:v1:abcdefZZPROBE3")
       );
       const res = await GET(req({ state: "s", code: "c" }), params("railway"));
       const loc = new URL(res.headers.get("location")!);
@@ -278,7 +284,7 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
       const logged = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toContain("railway");
       expect(logged).toContain(WS);
-      expect(logged).not.toContain("TOKENDATA");
+      expect(logged).not.toContain("ZZPROBE3");
       errSpy.mockRestore();
     });
   });

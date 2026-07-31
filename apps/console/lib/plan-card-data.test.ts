@@ -10,9 +10,6 @@ vi.mock("@agentrail/db-postgres", () => ({
 vi.mock("./policy/resolve-policy", () => ({
   resolvePolicyForWorkspace: vi.fn(),
 }));
-vi.mock("./policy/feature-flags", () => ({
-  subscriptionsEnforced: vi.fn(),
-}));
 
 import { loadPlanCardData } from "./plan-card-data";
 import {
@@ -24,21 +21,21 @@ import {
   type BillingAccountRow,
 } from "@agentrail/db-postgres";
 import { resolvePolicyForWorkspace, type ResolvedPolicy } from "./policy/resolve-policy";
-import { subscriptionsEnforced } from "./policy/feature-flags";
 import { PLAN_POLICIES } from "./policy/plan-policies";
 
 /**
  * `loadPlanCardData` (subscription platform slice 6 plan
  * `docs/superpowers/plans/2026-07-31-subscription-console-slice6.md` Task
- * 2) — the server-side read behind the digest's plan-card (a later task in
- * the same slice mounts it; this file only proves the LOADER). Mirrors the
- * three existing enforcement gates' own test shape (`channel-dispatch.test.ts`'s
- * "chat seat gate" describe block, `route.test.ts`'s capacity-gate tests):
- * flag-gate-first, fail-open try/catch, degraded/null-account skip, and the
- * zero-spend `fetchMonthSpendUsd` stub — same conventions, new call site.
+ * 2; 2026-07-31 owner ruling / slice 8 retired the flag gate below) — the
+ * server-side read behind the digest's plan-card. Mirrors the three
+ * existing enforcement gates' own test shape (`channel-dispatch.test.ts`'s
+ * "chat seat gate" describe block, `route.test.ts`'s capacity-gate tests)
+ * for its remaining fail-open posture: fail-open try/catch, degraded/
+ * null-account skip, and the zero-spend `fetchMonthSpendUsd` stub — same
+ * conventions, new call site. Unlike those three enforcement gates, this
+ * loader itself is no longer flag-gated — it always attempts a real read.
  */
 describe("loadPlanCardData", () => {
-  const mockSubsEnforced = vi.mocked(subscriptionsEnforced);
   const mockResolvePolicy = vi.mocked(resolvePolicyForWorkspace);
   const mockGetBillingAccount = vi.mocked(getBillingAccountForWorkspace);
   const mockCountActiveSeats = vi.mocked(countActiveSeats);
@@ -73,20 +70,9 @@ describe("loadPlanCardData", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Off by default, matching every other gate's test-file convention —
-    // each test that wants the loader live flips this on itself.
-    mockSubsEnforced.mockReturnValue(false);
-  });
-
-  it("flag off: returns undefined without ever calling the policy resolver", async () => {
-    const result = await loadPlanCardData("ws-1");
-
-    expect(result).toBeUndefined();
-    expect(mockResolvePolicy).not.toHaveBeenCalled();
   });
 
   it("degraded resolution: returns undefined, never reads seats/capacity/outcomes/account", async () => {
-    mockSubsEnforced.mockReturnValue(true);
     mockResolvePolicy.mockResolvedValue(resolved({ degraded: true }));
 
     const result = await loadPlanCardData("ws-1");
@@ -99,7 +85,6 @@ describe("loadPlanCardData", () => {
   });
 
   it("any thrown error fails safe: returns undefined with a namespaced [plan-card] console.error", async () => {
-    mockSubsEnforced.mockReturnValue(true);
     mockResolvePolicy.mockRejectedValue(new Error("boom: policy resolver down"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
@@ -114,7 +99,6 @@ describe("loadPlanCardData", () => {
   });
 
   it("trial plan: renewalText reads 'Trial ends <date>' from trialEndsAt, ignoring currentPeriodEnd entirely", async () => {
-    mockSubsEnforced.mockReturnValue(true);
     mockResolvePolicy.mockResolvedValue(
       resolved({ policy: { ...PLAN_POLICIES.trial, seatLimit: 10, monthlyCapacity: 1000 } })
     );
@@ -144,7 +128,6 @@ describe("loadPlanCardData", () => {
   });
 
   it("non-trial plan (growth): renewalText uses renewalLabel(currentPeriodEnd), ignoring trialEndsAt entirely", async () => {
-    mockSubsEnforced.mockReturnValue(true);
     mockResolvePolicy.mockResolvedValue(resolved());
     mockCountActiveSeats.mockResolvedValue(5);
     mockCountAccountRuns.mockResolvedValue(120);
@@ -174,7 +157,6 @@ describe("loadPlanCardData", () => {
   it("wires every read to the right arguments, including the current UTC billing-period bounds", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-31T23:59:00.000Z"));
-    mockSubsEnforced.mockReturnValue(true);
     mockResolvePolicy.mockResolvedValue(resolved({ billingAccountId: "acct-42" }));
     mockCountActiveSeats.mockResolvedValue(1);
     mockCountAccountRuns.mockResolvedValue(1);

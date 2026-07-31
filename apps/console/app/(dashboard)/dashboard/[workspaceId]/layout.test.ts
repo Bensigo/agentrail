@@ -18,19 +18,15 @@ vi.mock("../../../../lib/chat/feature-flags", () => ({
   isConsoleChatEnabled: vi.fn(),
 }));
 
-// Mocked (rather than left real + toggled via process.env) so each test
-// controls billingSwapEnabled's resolved value directly — same reasoning
-// page.tsx's own test file gives for mocking loadPlanCardData instead of
-// depending on ambient BILLING_SUBSCRIPTIONS_ENFORCED.
-vi.mock("../../../../lib/policy/feature-flags", () => ({
-  subscriptionsEnforced: vi.fn(),
-}));
-
 import { getSession, getMembership, getWorkspacesForUser } from "../../../../lib/cached";
 import { isGoalLoopEnabled } from "@agentrail/db-postgres";
 import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
-import { subscriptionsEnforced } from "../../../../lib/policy/feature-flags";
-import WorkspaceLayout, { SidebarWithWorkspaces } from "./layout";
+import WorkspaceLayout from "./layout";
+// `SidebarWithWorkspaces` moved to its own module (2026-07-31 hotfix — see
+// that file's own header comment): a layout.tsx may only carry its default
+// export, so this import is split from `WorkspaceLayout`'s even though both
+// still come out of this same [workspaceId] directory.
+import { SidebarWithWorkspaces } from "./sidebar-with-workspaces";
 import { Sidebar } from "../../../components/sidebar";
 
 // This repo's vitest config runs with `environment: "node"` — no DOM/render
@@ -44,14 +40,20 @@ import { Sidebar } from "../../../components/sidebar";
 // the one test below that calls `SidebarWithWorkspaces` itself directly
 // (it, too, is hook-free — an async server component, safe to call).
 //
-// This file exists specifically to close a review gap `sidebar.test.tsx`
-// and `tsc --noEmit` cannot: `billingSwapEnabled` is an *optional* prop on
-// `Sidebar` (default `false`), so dropping the
+// This file used to exist specifically to close a review gap
+// `sidebar.test.tsx` and `tsc --noEmit` couldn't: `billingSwapEnabled` used
+// to be an *optional* prop on `Sidebar` (default `false`), so dropping the
 // `billingSwapEnabled={billingSwapEnabled}` line from either JSX call site
-// in layout.tsx is a silent, type-checked-clean regression — tsc has
-// nothing to complain about, since the prop simply falls back to its
-// default. Only an assertion on the actual prop value threaded through
-// each call site catches that mutation.
+// in layout.tsx was a silent, type-checked-clean regression — tsc had
+// nothing to complain about, since the prop simply fell back to its
+// default. That gap is closed differently now (2026-07-31 owner ruling —
+// subscription slice 8): `billingSwapEnabled` is deleted from
+// `SidebarProps` entirely, not just defaulted, so *re-adding* it to either
+// call site below is a real `tsc --noEmit` excess-property error, not a
+// silent no-op. The tests below pin the positive-space absence anyway
+// (same props-walk technique as before) so a partial revert — the prop
+// wired back in here AND re-added to `SidebarProps` — still fails loudly
+// here even though it would no longer fail typecheck.
 
 interface ReactElementLike {
   type: unknown;
@@ -106,41 +108,30 @@ async function renderSidebarSites(): Promise<{
   };
 }
 
-describe("WorkspaceLayout billingSwapEnabled threading (subscription slice 6 Task 4 — review fix: mutation-tested gap)", () => {
+describe("WorkspaceLayout Sidebar threading (subscription slice 8 — billingSwapEnabled retired 2026-07-31, sidebar filter is unconditional now)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHappyPath();
   });
 
-  it("subscriptionsEnforced()=true: the Suspense fallback's <Sidebar> carries billingSwapEnabled=true", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+  it("the Suspense fallback's <Sidebar> carries no billingSwapEnabled prop", async () => {
     const { fallback } = await renderSidebarSites();
 
     expect(fallback.type).toBe(Sidebar);
-    expect(fallback.props.billingSwapEnabled).toBe(true);
+    expect(fallback.props.billingSwapEnabled).toBeUndefined();
+    expect("billingSwapEnabled" in fallback.props).toBe(false);
   });
 
-  it("subscriptionsEnforced()=true: the <SidebarWithWorkspaces> element (the Suspense children) carries billingSwapEnabled=true", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+  it("the <SidebarWithWorkspaces> element (the Suspense children) carries no billingSwapEnabled prop", async () => {
     const { sidebarWithWorkspaces } = await renderSidebarSites();
 
     expect(sidebarWithWorkspaces.type).toBe(SidebarWithWorkspaces);
-    expect(sidebarWithWorkspaces.props.billingSwapEnabled).toBe(true);
+    expect(sidebarWithWorkspaces.props.billingSwapEnabled).toBeUndefined();
+    expect("billingSwapEnabled" in sidebarWithWorkspaces.props).toBe(false);
   });
 
-  it("subscriptionsEnforced()=false: both the fallback <Sidebar> and the <SidebarWithWorkspaces> element carry billingSwapEnabled=false", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(false);
-
-    const { fallback, sidebarWithWorkspaces } = await renderSidebarSites();
-
-    expect(fallback.props.billingSwapEnabled).toBe(false);
-    expect(sidebarWithWorkspaces.props.billingSwapEnabled).toBe(false);
-  });
-
-  it("the hop real traffic actually renders: SidebarWithWorkspaces, invoked directly and awaited, passes billingSwapEnabled through unchanged to its inner <Sidebar>", async () => {
-    const withFlagOn = asElement(
+  it("the hop real traffic actually renders: SidebarWithWorkspaces, invoked directly and awaited, passes no billingSwapEnabled through to its inner <Sidebar>", async () => {
+    const rendered = asElement(
       await SidebarWithWorkspaces({
         userId: USER_ID,
         workspaceId: WORKSPACE_ID,
@@ -148,24 +139,10 @@ describe("WorkspaceLayout billingSwapEnabled threading (subscription slice 6 Tas
         signOutAction: vi.fn(async () => {}),
         chatEnabled: false,
         goalsEnabled: false,
-        billingSwapEnabled: true,
       })
     );
-    expect(withFlagOn.type).toBe(Sidebar);
-    expect(withFlagOn.props.billingSwapEnabled).toBe(true);
-
-    const withFlagOff = asElement(
-      await SidebarWithWorkspaces({
-        userId: USER_ID,
-        workspaceId: WORKSPACE_ID,
-        user: { name: "Test User" },
-        signOutAction: vi.fn(async () => {}),
-        chatEnabled: false,
-        goalsEnabled: false,
-        billingSwapEnabled: false,
-      })
-    );
-    expect(withFlagOff.type).toBe(Sidebar);
-    expect(withFlagOff.props.billingSwapEnabled).toBe(false);
+    expect(rendered.type).toBe(Sidebar);
+    expect(rendered.props.billingSwapEnabled).toBeUndefined();
+    expect("billingSwapEnabled" in rendered.props).toBe(false);
   });
 });

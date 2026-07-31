@@ -239,6 +239,8 @@ PR-sized slices, in order; each lands behind the kill-switch and none flips cust
 2. The anti-subscription copy retirement (the list below) moves forward from slice 7 **into slice 3's scope** — the public pricing surface must stop promising "No seats, no subscription" the moment real subscriptions can be sold. The full outcome-led pricing-page rewrite can still follow in slice 7; slice 3 ships the minimal truth-up.
 3. Until slice 5 lands, the only active enforcement is the slice-2 routing entitlement filter; seat/capacity gates and upgrade prompts follow behind the live flag, and slice 6's console swap follows behind those.
 
+**Owner ruling 2026-07-31:** the display swap (slice 6 surfaces + scope copy) ships unconditionally ahead of the flag; `BILLING_SUBSCRIPTIONS_ENFORCED` continues to gate enforcement only (seats/capacity/invite/routing + budget-notice suppression).
+
 **Copy that must be retired** (all currently promise the opposite of this spec):
 - `apps/console/app/(marketing)/pricing/page.tsx:74` — "No seats, no subscription." — and `:124-126` — "no per-seat charge, no monthly minimum."
 - `apps/console/app/(marketing)/page.tsx:336-337` — "No seats. No subscription. Every run shows its cost next to its PR."

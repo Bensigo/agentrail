@@ -16,23 +16,16 @@ import { describe, expect, it } from "vitest";
 //
 // NOT covered here, for lack of a render harness (proven by TypeScript +
 // browser verification instead, same posture as `digest-panel.test.ts`'s
-// documented `data && planCard` gap): `Sidebar`'s own
-// `billingSwapEnabled = false` default-prop wiring, and the
+// documented `data && planCard` gap): the
 // `{ ...ENGINE_ROOM_ZONE, items: engineRoomItems }` splice that feeds
 // `EngineRoomGroup`.
 
 import { filterEngineRoomItems } from "./sidebar";
 import { ENGINE_ROOM_ZONE } from "./sidebar-nav";
 
-describe("filterEngineRoomItems (subscription slice 6 Task 4 — Costs/Budget/Wallet leave the customer sidebar behind the billing flag)", () => {
-  it("billingSwapEnabled=false: every Engine room item passes through unchanged, in order (today's snapshot)", () => {
-    expect(filterEngineRoomItems(ENGINE_ROOM_ZONE.items, false)).toEqual(
-      ENGINE_ROOM_ZONE.items
-    );
-  });
-
-  it("billingSwapEnabled=true: drops exactly costs/budget/wallet, keeps every other item in its original order", () => {
-    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items, true);
+describe("filterEngineRoomItems (2026-07-31 owner ruling — Costs/Budget/Wallet leave the customer sidebar unconditionally, the earlier billing-swap flag retired)", () => {
+  it("drops exactly costs/budget/wallet, keeps every other item in its original order", () => {
+    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
     expect(result.map((item) => item.href)).toEqual([
       "runs",
       "review-gates",
@@ -45,14 +38,14 @@ describe("filterEngineRoomItems (subscription slice 6 Task 4 — Costs/Budget/Wa
     ]);
   });
 
-  it("billingSwapEnabled=true: none of the surviving items are costs/budget/wallet", () => {
-    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items, true);
+  it("none of the surviving items are costs/budget/wallet", () => {
+    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
     const hidden = new Set(["costs", "budget", "wallet"]);
     expect(result.every((item) => !hidden.has(item.href))).toBe(true);
   });
 
-  it("billingSwapEnabled=true: surviving items are the exact same object references as in ENGINE_ROOM_ZONE.items (a filter, not a remap/clone)", () => {
-    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items, true);
+  it("surviving items are the exact same object references as in ENGINE_ROOM_ZONE.items (a filter, not a remap/clone)", () => {
+    const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
     for (const item of result) {
       expect(ENGINE_ROOM_ZONE.items).toContain(item);
     }
@@ -60,7 +53,7 @@ describe("filterEngineRoomItems (subscription slice 6 Task 4 — Costs/Budget/Wa
 
   it("is a pure function: never mutates the input array", () => {
     const before = [...ENGINE_ROOM_ZONE.items];
-    filterEngineRoomItems(ENGINE_ROOM_ZONE.items, true);
+    filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
     expect(ENGINE_ROOM_ZONE.items).toEqual(before);
   });
 });

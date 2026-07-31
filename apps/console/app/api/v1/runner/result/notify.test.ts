@@ -21,13 +21,6 @@ vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
 vi.mock("../../workspaces/[workspaceId]/connectors/secret/discord", () => ({
   sendDiscordMessage: vi.fn(),
 }));
-// Subscription platform Task 3: notifyRunOutcome reads this kill-switch to
-// decide hideCost. Mocked (like every other subscriptionsEnforced call site's
-// own test suite — route.test.ts, approval-message.test.ts) so these tests
-// never depend on ambient BILLING_SUBSCRIPTIONS_ENFORCED.
-vi.mock("../../../../../lib/policy/feature-flags", () => ({
-  subscriptionsEnforced: vi.fn(),
-}));
 
 import { buildOutcomeMessage, notifyRunOutcome } from "./notify";
 import {
@@ -37,14 +30,12 @@ import {
 } from "@agentrail/db-postgres";
 import { sendTelegramMessage } from "../../workspaces/[workspaceId]/connectors/secret/telegram";
 import { sendDiscordMessage } from "../../workspaces/[workspaceId]/connectors/secret/discord";
-import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
 
 const mockGetConnector = vi.mocked(getConnector);
 const mockGetSecret = vi.mocked(getConnectorSecret);
 const mockGetDiscordWebhook = vi.mocked(getDiscordWebhookUrl);
 const mockSend = vi.mocked(sendTelegramMessage);
 const mockSendDiscord = vi.mocked(sendDiscordMessage);
-const mockSubscriptionsEnforced = vi.mocked(subscriptionsEnforced);
 
 const WS = "ws-1";
 
@@ -67,10 +58,6 @@ beforeEach(() => {
   // test opts into a webhook. Keeps the existing Telegram tests unaffected by the
   // added Discord channel.
   mockGetDiscordWebhook.mockResolvedValue(null);
-  // subscriptionsEnforced's real-world default (off) — every pre-Task-3 test
-  // above stays byte-identical: notifyRunOutcome's built text still carries
-  // cost exactly like before this flag existed.
-  mockSubscriptionsEnforced.mockReturnValue(false);
 });
 
 describe("buildOutcomeMessage", () => {
@@ -201,25 +188,8 @@ describe("notifyRunOutcome", () => {
   });
 });
 
-describe("notifyRunOutcome — subscription platform Task 3: hideCost follows subscriptionsEnforced()", () => {
-  it("flag off (the default) — the sent text carries cost exactly as today", async () => {
-    mockSubscriptionsEnforced.mockReturnValue(false);
-    mockGetConnector.mockResolvedValue(telegramConnected("999"));
-    mockGetSecret.mockResolvedValue("bot-token");
-
-    await notifyRunOutcome(WS, {
-      issueNumber: "42",
-      outcome: "green",
-      prUrl: "https://github.com/o/r/pull/9",
-      costUsd: 1.2,
-    });
-
-    const [, , text] = mockSend.mock.calls[0]!;
-    expect(text).toBe("AgentRail: PR ready — issue #42 (https://github.com/o/r/pull/9 · $1.20)");
-  });
-
-  it("flag on — the sent text drops the cost segment, PR link stays", async () => {
-    mockSubscriptionsEnforced.mockReturnValue(true);
+describe("notifyRunOutcome — hideCost is always true (unconditional since 2026-07-31 owner ruling)", () => {
+  it("the sent text always drops the cost segment — PR link stays", async () => {
     mockGetConnector.mockResolvedValue(telegramConnected("999"));
     mockGetSecret.mockResolvedValue("bot-token");
 

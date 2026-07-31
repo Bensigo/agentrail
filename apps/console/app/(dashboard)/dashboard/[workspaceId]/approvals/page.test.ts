@@ -13,15 +13,6 @@ vi.mock("../../../../../lib/cached", () => ({
   getMembership: vi.fn(),
 }));
 
-// Mocked (rather than left real + toggled via process.env) so this file's
-// tests control the resolved value directly — same reasoning
-// `layout.test.ts`'s own header comment gives for mocking
-// `subscriptionsEnforced` instead of depending on ambient
-// BILLING_SUBSCRIPTIONS_ENFORCED.
-vi.mock("../../../../../lib/policy/feature-flags", () => ({
-  subscriptionsEnforced: vi.fn(),
-}));
-
 import {
   deadLettersForWorkspace,
   getWorkspace,
@@ -29,7 +20,6 @@ import {
   pendingApprovalsForWorkspace,
 } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
-import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
 import ApprovalsPage from "./page";
 import { PendingApprovalsList } from "./components/pending-approvals-list";
 
@@ -40,14 +30,14 @@ import { PendingApprovalsList } from "./components/pending-approvals-list";
 // its own, so it's safe to call directly: the returned value is a plain
 // React element tree walkable via `.type`/`.props`, without a renderer.
 //
-// This file exists specifically for the subscription slice 6 Task 5 prop
-// threading: `hideDollars` is an *optional* prop on `PendingApprovalsList`
-// (default `false`), so dropping the `hideDollars={hideDollars}` line from
-// page.tsx's JSX is a silent, type-checked-clean regression — tsc has
-// nothing to complain about, since the prop simply falls back to its
-// default. Only an assertion on the actual prop value threaded through
-// catches that mutation (mirrors `layout.test.ts`'s identical rationale for
-// `billingSwapEnabled`, slice 6 Task 4).
+// This file exists for the `hideDollars` prop threading: it's an *optional*
+// prop on `PendingApprovalsList` (default `false`), so dropping the
+// `hideDollars={hideDollars}` line from page.tsx's JSX is a silent,
+// type-checked-clean regression — tsc has nothing to complain about, since
+// the prop simply falls back to its default. Only an assertion on the
+// actual prop value threaded through catches that mutation. Unconditional
+// since 2026-07-31 owner ruling — `hideDollars` is always `true`, no flag
+// involved anymore.
 
 interface ReactElementLike {
   type: unknown;
@@ -95,32 +85,20 @@ async function renderPendingApprovalsListElement(): Promise<ReactElementLike> {
   return asElement(list);
 }
 
-describe("ApprovalsPage hideDollars threading (subscription slice 6 Task 5)", () => {
+describe("ApprovalsPage hideDollars threading (unconditional since 2026-07-31 owner ruling)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHappyPath();
   });
 
-  it("subscriptionsEnforced()=true: PendingApprovalsList carries hideDollars=true", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+  it("PendingApprovalsList always carries hideDollars=true", async () => {
     const list = await renderPendingApprovalsListElement();
 
     expect(list.type).toBe(PendingApprovalsList);
     expect(list.props.hideDollars).toBe(true);
   });
 
-  it("subscriptionsEnforced()=false: PendingApprovalsList carries hideDollars=false", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(false);
-
-    const list = await renderPendingApprovalsListElement();
-
-    expect(list.props.hideDollars).toBe(false);
-  });
-
-  it("still threads rows/workspaceId/canManage unchanged alongside the new prop", async () => {
-    vi.mocked(subscriptionsEnforced).mockReturnValue(false);
-
+  it("still threads rows/workspaceId/canManage unchanged alongside the prop", async () => {
     const list = await renderPendingApprovalsListElement();
 
     expect(list.props.workspaceId).toBe(WORKSPACE_ID);

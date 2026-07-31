@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   capacityText,
-  formatCostUsd,
   formatNeedsYouBreakdown,
-  formatTrendPct,
   formatWeekRangeLabel,
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
@@ -18,38 +16,6 @@ describe("inProgressStateLabel", () => {
 
   it("maps queued to 'Assigned' (spec §3 vocabulary)", () => {
     expect(inProgressStateLabel("queued")).toBe("Assigned");
-  });
-});
-
-describe("formatCostUsd", () => {
-  it("renders a whole-cent amount with two decimals", () => {
-    expect(formatCostUsd(12.5)).toBe("$12.50");
-  });
-
-  it("renders exactly $0 without extra precision", () => {
-    expect(formatCostUsd(0)).toBe("$0.00");
-  });
-
-  it("renders sub-cent amounts with four decimals so they don't round to zero", () => {
-    expect(formatCostUsd(0.0042)).toBe("$0.0042");
-  });
-});
-
-describe("formatTrendPct", () => {
-  it("renders a positive trend with a plus sign", () => {
-    expect(formatTrendPct(24.6)).toBe("+25% vs last week");
-  });
-
-  it("renders a negative trend with the sign already on the number", () => {
-    expect(formatTrendPct(-13.2)).toBe("-13% vs last week");
-  });
-
-  it("renders no-change copy for a 0% trend", () => {
-    expect(formatTrendPct(0)).toBe("No change vs last week");
-  });
-
-  it("renders no-baseline copy when trend is null", () => {
-    expect(formatTrendPct(null)).toBe("No prior-week data to compare");
   });
 });
 

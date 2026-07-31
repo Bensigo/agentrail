@@ -6,7 +6,6 @@ import {
   getBillingAccountForWorkspace,
 } from "@agentrail/db-postgres";
 import { resolvePolicyForWorkspace } from "./policy/resolve-policy";
-import { subscriptionsEnforced } from "./policy/feature-flags";
 import { currentBudgetWindow } from "./billing-period";
 import {
   formatUtcDate,
@@ -40,27 +39,32 @@ export type PlanCardData = {
 };
 
 /**
- * `undefined` means "render today's card instead" (the digest's existing
- * cost card, per Task 3) — never an error the caller has to branch on
- * specially. Three ways to land there, same fail-open contract as the
- * three existing enforcement gates (`applySeatGateForServedTurn` in
+ * `undefined` means "render the dollar-free empty card instead"
+ * (`digest-panel.tsx`'s `PlanCardEmpty` — 2026-07-31 owner ruling retired
+ * the legacy cost card this used to fall back to; there is no cost card
+ * left on this surface) — never an error the caller has to branch on
+ * specially. Two ways to land there, same fail-open contract as the three
+ * existing enforcement gates (`applySeatGateForServedTurn` in
  * `channel-dispatch.ts`; the capacity/wallet gates in
  * `app/api/v1/runner/claim/route.ts`):
  *
- *   1. `subscriptionsEnforced()` is read FIRST, before any billing read at
- *      all — flag-off is byte-identical to this function never having been
- *      called (Global Constraints: "Flag-off must be byte-identical
- *      everywhere"), and `resolvePolicyForWorkspace` is never invoked.
- *   2. `resolved.degraded || !resolved.billingAccountId` — the resolved
+ *   1. `resolved.degraded || !resolved.billingAccountId` — the resolved
  *      policy isn't safe to build a card from (a transitional workspace
  *      with no billing account yet, or billing-infra hiccuped resolving
  *      it); Global Constraints: "Degraded or null billing account ⇒ same
  *      [as a read error]".
- *   3. The whole body below the flag check is ONE try/catch: any thrown
- *      error (Postgres hiccup, a `null` account row despite a resolved
- *      `billingAccountId`) is logged loudly, namespaced `[plan-card]`
- *      (matching `[seat-gate]`/`[capacity-notify]`'s own convention), and
+ *   2. The whole body is ONE try/catch: any thrown error (Postgres hiccup,
+ *      a `null` account row despite a resolved `billingAccountId`) is
+ *      logged loudly, namespaced `[plan-card]` (matching
+ *      `[seat-gate]`/`[capacity-notify]`'s own convention), and
  *      swallowed — "Never let billing reads break the dashboard."
+ *
+ * Unlike those three enforcement gates, this loader is no longer flag-gated
+ * (2026-07-31 owner ruling / subscription slice 8 retired the
+ * `subscriptionsEnforced()` early return that used to make flag-off
+ * byte-identical to this function never having been called): it now always
+ * attempts a real read, flag or no flag. Enforcement (seat/capacity/wallet
+ * gates) stays behind its own flag, untouched by this change.
  *
  * `resolvePolicyForWorkspace` is called with the SAME zero-spend
  * `fetchMonthSpendUsd` stub the capacity/seat gates use (their own
@@ -85,19 +89,17 @@ export type PlanCardData = {
 export async function loadPlanCardData(
   workspaceId: string
 ): Promise<PlanCardData | undefined> {
-  if (!subscriptionsEnforced()) return undefined;
-
   try {
     const resolved = await resolvePolicyForWorkspace(workspaceId, {
       fetchMonthSpendUsd: async () => 0,
     });
-    // Accepted cross-surface asymmetry (subscription slice 6 whole-slice
-    // review): with the flag ON, degraded/no-account fails OPEN here — the
-    // digest shows the legacy cost card — while the sidebar
-    // (`billingSwapEnabled`) and approvals (`hideDollars`) read the raw flag
-    // with no degraded check of their own, so they stay nav-hidden /
-    // scope-only regardless. Fail-open for data, fail-simple for nav — both
-    // self-heal the moment billing resolution recovers.
+    // Degraded or no resolved billing account: not safe to build a plan
+    // card from (a transitional workspace with no billing account yet, or
+    // billing-infra hiccuped resolving it). Falls through to the digest's
+    // dollar-free `PlanCardEmpty` card — the legacy-cost-card fail-open
+    // this comment used to describe is retired (2026-07-31 owner ruling):
+    // there is no cost card left to fall open to, on this surface or any
+    // other (the sidebar's Engine room filter is unconditional now too).
     if (resolved.degraded || !resolved.billingAccountId) {
       return undefined;
     }

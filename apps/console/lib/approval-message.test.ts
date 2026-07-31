@@ -1,29 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// Subscription-platform slice 6 Task 5: `renderAlignmentBrief` reads
-// `subscriptionsEnforced()` directly (server lib — `channel-dispatch.ts`'s
-// own precedent; see that file's test for the identical partial-mock
-// idiom). Mocked here (rather than mutating the real `process.env`) so this
-// file controls the flag's resolved value per test instead of depending on
-// ambient `BILLING_SUBSCRIPTIONS_ENFORCED`.
-vi.mock("./policy/feature-flags", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./policy/feature-flags")>();
-  return { ...actual, subscriptionsEnforced: vi.fn() };
-});
+import { describe, it, expect } from "vitest";
 
 import {
   renderApprovalMessage,
   TELEGRAM_TEXT_LIMIT,
 } from "./approval-message";
-import { subscriptionsEnforced } from "./policy/feature-flags";
-
-// Every test in this file defaults to flag OFF unless it explicitly
-// overrides — keeps every pre-existing (flag-unaware) test below exercising
-// the exact pre-Task-5 dollar-line path, regardless of declaration order
-// relative to the flag-on tests in the "scope line" describe block below.
-beforeEach(() => {
-  vi.mocked(subscriptionsEnforced).mockReturnValue(false);
-});
 
 describe("renderApprovalMessage — create_issue", () => {
   it("renders the title and every acceptance criterion as a bullet", () => {
@@ -130,7 +110,7 @@ describe("renderApprovalMessage — create_issue WITH _brief (#1274 PR ②, chat
     expect(text).not.toContain("anthropic/claude-sonnet-5");
     expect(text).toContain("- Toggle in settings");
     expect(text).toContain("- Persists across reload");
-    expect(text).toContain("Approving sets this run's budget: ~$1.35");
+    expect(text).toContain("Approving starts a small task.");
   });
 
   it("#1338 PR②: a modelSelectionReason inside _brief flattens through and renders the 'Why:' line", () => {
@@ -276,11 +256,6 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
     expect(text).toContain("- Persists across reload");
   });
 
-  it("renders the exact sanction line with the dollar estimate to two decimal places", () => {
-    const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
-    expect(text).toContain("Approving sets this run's budget: ~$1.35");
-  });
-
   it("renders the approach (whatToBuild) and the assumptions as fine print", () => {
     const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
     expect(text).toContain("Add a settings toggle that persists across reload.");
@@ -372,16 +347,14 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
     });
   });
 
-  // Subscription-platform slice 6 Task 5 — the sanction line's dollar
-  // estimate becomes a scope sentence (`approval-scope.ts`'s
-  // `scopeSentence`, single-sourced thresholds) when
-  // `BILLING_SUBSCRIPTIONS_ENFORCED` is on. Flag off (every test above this
-  // block, including the byte-exact :260/:270-274 pins) renders the EXACT
-  // pre-existing dollar line, untouched by this block's mock.
-  describe("scope line, not dollars, behind the flag (subscription slice 6 Task 5)", () => {
-    it("flag on: renders the scope sentence instead of the dollar line, with no '$' anywhere in the output", () => {
-      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+  // Subscription-platform fast-follow, owner ruling 2026-07-31: the
+  // sanction line ALWAYS speaks scope (`approval-scope.ts`'s
+  // `scopeSentence`, single-sourced thresholds) — no longer gated behind
+  // `BILLING_SUBSCRIPTIONS_ENFORCED`. The dollar-denominated line
+  // ("Approving sets this run's budget: ~$X.XX") no longer exists anywhere
+  // in this renderer.
+  describe("scope line (unconditional since 2026-07-31 owner ruling)", () => {
+    it("renders the scope sentence instead of a dollar line, with no '$' anywhere in the output", () => {
       const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
 
       expect(text).toContain("Approving starts a small task.");
@@ -389,9 +362,7 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
       expect(text).not.toContain("$");
     });
 
-    it("flag on: still omits any scope/budget line when estimateUsd is missing/malformed, exactly like flag off", () => {
-      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+    it("still omits any scope/budget line when estimateUsd is missing/malformed", () => {
       const text = renderApprovalMessage("alignment_brief", { title: "x" });
 
       expect(text.toLowerCase()).not.toContain("budget");
@@ -399,9 +370,7 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
       expect(text).not.toContain("$");
     });
 
-    it("flag on: the create_issue _brief-flattening path also renders the scope sentence (delegates to the same renderer)", () => {
-      vi.mocked(subscriptionsEnforced).mockReturnValue(true);
-
+    it("the create_issue _brief-flattening path also renders the scope sentence (delegates to the same renderer)", () => {
       const text = renderApprovalMessage("create_issue", {
         title: "Add dark mode toggle",
         acceptanceCriteria: [],
@@ -410,6 +379,20 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
 
       expect(text).toContain("Approving starts a small task.");
       expect(text).not.toContain("$");
+    });
+
+    it("sweep: every scope bucket (small/medium/large) renders with no '$' anywhere in the brief output", () => {
+      const cases: Array<[number, "small" | "medium" | "large"]> = [
+        [1.99, "small"],
+        [2, "medium"],
+        [5.99, "medium"],
+        [6, "large"],
+      ];
+      for (const [estimateUsd, scope] of cases) {
+        const text = renderApprovalMessage("alignment_brief", { ...BRIEF_INPUT, estimateUsd });
+        expect(text).toContain(`Approving starts a ${scope} task.`);
+        expect(text).not.toContain("$");
+      }
     });
   });
 });

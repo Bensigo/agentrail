@@ -53,6 +53,7 @@ import {
   type NotifyOutcome,
   type OutcomeMessageParams,
 } from "../../../../../lib/outcome-format";
+import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
 
 /** A terminal queue outcome, in the queue state-machine vocabulary. */
 export type { NotifyOutcome };
@@ -264,7 +265,13 @@ export async function notifyRunOutcome(
   workspaceId: string,
   params: NotifyParams
 ): Promise<void> {
-  const text = buildOutcomeMessage(params);
+  // Subscription platform Task 3: under subscriptions the run-outcome ping
+  // speaks scope, not dollars — the same posture the workspace-budget notice
+  // adopts (flag-gated) and the landing demo adopts (unconditionally).
+  // `buildOutcomeMessage` itself stays pure (no env read, see its own
+  // doc-comment); this real call site is what decides FOR it, from server
+  // code. Flag off (the default) is byte-identical to pre-Task-3 output.
+  const text = buildOutcomeMessage(params, { hideCost: subscriptionsEnforced() });
 
   // Resolve the jace connector ONCE. Isolated: a lookup blip falls back to the
   // all-legacy route (never throws, never dark by default), matching the

@@ -26,10 +26,17 @@ import { scopeSentence } from "../../lib/approval-scope";
  * mirrors the flag-on product, deliberately not gated on the flag itself —
  * a visitor never sees a raw dollar estimate here even while the console's
  * own flag defaults off). The run-outcome ping below is a SEPARATE message
- * (sent after a run finishes, reporting real spend) and is untouched by
- * Task 5 — it stays byte-identical to what `buildOutcomeMessage` actually
- * sends over Telegram — see `_conversation-demo-data.ts` for the
- * drift-guarded numbers. The "✅ Approve" button's wording matches the real
+ * (sent after a run finishes, reporting real spend). Subscription platform
+ * Task 3 gives it the SAME unconditional posture as the brief bubble above:
+ * `getDemoOutcomeMessage` (`_conversation-demo-data.ts`) now calls the real
+ * `buildOutcomeMessage` with `{ hideCost: true }`, so this ping never shows
+ * a dollar figure either — byte-identical to what `notifyRunOutcome`
+ * (`runner/result/notify.ts`) actually sends over Telegram ONLY once
+ * `BILLING_SUBSCRIPTIONS_ENFORCED` is on (the flag-off product ping still
+ * carries `· $X.XX`, which a visitor here never sees) — see
+ * `_conversation-demo-data.ts` for the drift-guarded numbers, including its
+ * own companion pin proving the dollar-bearing shape is unchanged when
+ * `hideCost` is omitted. The "✅ Approve" button's wording matches the real
  * Telegram inline keyboard exactly (`.../connectors/secret/telegram.ts`,
  * which also renders a "❌ Deny" button not reproduced here — this demo only
  * walks the approve path).

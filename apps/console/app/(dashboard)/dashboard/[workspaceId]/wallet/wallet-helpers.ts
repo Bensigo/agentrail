@@ -2,6 +2,8 @@
  * #1415 (Stripe top-up) — pure display/formatting helpers for the Wallet
  * page, split out for unit testing (mirrors `../budget/budget-helpers.ts`'s
  * own split).
+ *
+ * Internal-only since slice 6 (sidebar-hidden staff telemetry, spec §8) — this page's dollar copy is deliberately kept.
  */
 
 /** Integer cents -> a plain-dollars string ("$12.34"), never bare cents or a

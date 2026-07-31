@@ -28,16 +28,23 @@ describe("getDemoBrief", () => {
 });
 
 describe("getDemoOutcomeMessage", () => {
-  it("is byte-identical to the real outcome-format builder's output", () => {
+  // Subscription platform Task 3: the landing demo hides cost UNCONDITIONALLY
+  // (`{ hideCost: true }`), so the drift guard's expected value must pass the
+  // SAME opts the real function now does — otherwise this would only prove
+  // getDemoOutcomeMessage matches a builder call it no longer makes.
+  it("is byte-identical to the real outcome-format builder's output (hideCost: true)", () => {
     const brief = estimateBrief(DEMO_TASK_INPUT);
     expect(getDemoOutcomeMessage()).toBe(
-      buildOutcomeMessage({
-        issueNumber: DEMO_ISSUE_NUMBER,
-        outcome: "green",
-        prUrl: DEMO_PR_URL,
-        costUsd: brief.estimateUsd,
-        merged: false,
-      })
+      buildOutcomeMessage(
+        {
+          issueNumber: DEMO_ISSUE_NUMBER,
+          outcome: "green",
+          prUrl: DEMO_PR_URL,
+          costUsd: brief.estimateUsd,
+          merged: false,
+        },
+        { hideCost: true }
+      )
     );
   });
 
@@ -45,9 +52,32 @@ describe("getDemoOutcomeMessage", () => {
   // permission off — `workspaces.merge_permission` defaults false), so the
   // stranger's one Approve never implies merge-on-approve. See the data
   // file's own comment (review fix round, 2026-07-19).
-  it("matches the real template shape: AgentRail: PR ready — issue #N (pr-url · $X.XX)", () => {
-    expect(getDemoOutcomeMessage()).toMatch(
-      /^AgentRail: PR ready — issue #482 \(https:\/\/github\.com\/acme\/webhooks\/pull\/128 · \$\d+\.\d{2}\)$/
+  //
+  // Subscription platform Task 3: no dollar segment at all — the landing
+  // demo never shows a raw $ figure, matching the brief bubble above it
+  // (`scopeSentence`, `approval-scope.ts`) and the real product's own ping
+  // once subscriptions are enforced.
+  it("matches the real template shape: AgentRail: PR ready — issue #N (pr-url) — no dollar segment", () => {
+    expect(getDemoOutcomeMessage()).toBe(
+      "AgentRail: PR ready — issue #482 (https://github.com/acme/webhooks/pull/128)"
+    );
+  });
+
+  // Companion pin (binding constraint): the SAME params, called WITHOUT
+  // `hideCost`, still reproduce the exact PRE-Task-3 ($-bearing) shape,
+  // byte-for-byte — proof that Task 3 only changed the demo's OWN call site,
+  // never the builder's default (opts-omitted) behavior.
+  it("companion pin: the same params WITHOUT hideCost reproduce the pre-Task-3 dollar-bearing shape byte-for-byte", () => {
+    const brief = estimateBrief(DEMO_TASK_INPUT);
+    const withCost = buildOutcomeMessage({
+      issueNumber: DEMO_ISSUE_NUMBER,
+      outcome: "green",
+      prUrl: DEMO_PR_URL,
+      costUsd: brief.estimateUsd,
+      merged: false,
+    });
+    expect(withCost).toBe(
+      `AgentRail: PR ready — issue #482 (https://github.com/acme/webhooks/pull/128 · $${brief.estimateUsd.toFixed(2)})`
     );
   });
 });

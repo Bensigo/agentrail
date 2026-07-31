@@ -108,11 +108,43 @@ happy-path against a fake console, and a pipeline regression pin that the
 removed model-review step stays removed (no dangling config or dead step
 references).
 
+## Scale posture (1K–10K reviews/hour)
+
+The v1 defaults are dogfood-sized; the architecture is the scale shape.
+The ceilings, in order, and what overcomes each:
+
+1. **LLM tokens/cost (dominant).** A review is a multi-turn tool loop —
+   effective tokens per review are large. Levers: prompt caching across
+   the loop's turns (the re-sent context is the multiplier), **tiered
+   reviews** (docs-only/bot/tiny diffs → light pass or stated skip; full
+   judgment for substantive changes), multi-provider spread, per-customer
+   keys / enterprise limits, per-review pricing pass-through.
+2. **GitHub per-installation limits.** ~5K REST/hour and ~10 code
+   searches/min per installation ≈ 200–250 full reviews/hour/workspace —
+   which is fine, because 10K/hour only occurs across many installations
+   (embarrassingly parallel), and GitHub's cap conveniently bounds
+   per-customer cost too. Hot-spot fix: console read-through cache —
+   file-at-SHA immutable (cache forever), wiki already local, search
+   cached per head SHA, ETag/304s don't count against the limit.
+3. **Worker fleet.** At ~4 min/review, 10K/hour ≈ 670 in flight: the
+   review worker is a stateless, horizontally scaled service (replicas ×
+   per-process session cap), not a loop inside the chat Jace process. The
+   queue's claim semantics already support any number of workers.
+4. **The queue (non-issue).** 10K/hour ≈ 8 writes/sec — Postgres with
+   SKIP LOCKED claims, a partial index on `state='queued'`, and archival
+   of terminal rows holds far beyond this.
+
+Already scale-correct in v1: supersede + debounce (push storms collapse),
+per-workspace fairness (no noisy-neighbor starvation), budget caps
+(bounded worst case per customer).
+
 ## Rollout
 
 Flagged intake per workspace (start with agentrail's own repos — dogfood),
 advisory-only, budget-capped. Deploy order safe: intake without workers
-queues; workers without intake idle.
+queues; workers without intake idle. Worker-service extraction (scale
+posture #3) happens when demand approaches the single-process ceiling —
+the queue contract makes it a topology change, not a redesign.
 
 ## North-star note
 

@@ -138,9 +138,10 @@ describe("PlanCardBlock (subscription slice 6 — digest plan card)", () => {
     );
     // CTA text and the ArrowUpRight icon are sibling JSX children (same
     // text-node-plus-icon pattern as NeedsYouBlock's own CTA), so the
-    // text leaf carries a trailing space before the icon — join rather
-    // than compare a single array element.
-    expect(collectText(cta).join("")).toContain("Upgrade plan");
+    // text leaf carries a trailing space before the icon — join (the icon
+    // itself contributes no text leaf) and compare the exact string,
+    // trailing space included, rather than a loose substring match.
+    expect(collectText(cta).join("")).toBe("Upgrade plan ");
   });
 
   it("never mentions a dollar sign anywhere in its output", () => {

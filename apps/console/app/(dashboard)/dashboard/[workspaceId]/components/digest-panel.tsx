@@ -16,6 +16,7 @@ import {
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
   shiftWeek,
+  shippedStripText,
   type DigestData,
   type PlanCardData,
 } from "./digest-panel-helpers";
@@ -378,10 +379,13 @@ export function DigestPanel({ workspaceId, planCard }: DigestPanelProps) {
       {/* All-time-shipped strip (subscription slice 6 plan, Task 3) — only
           alongside the plan card, directly under the grid it belongs to;
           gated on `data` too so it never appears ahead of/without the grid
-          during the loading or error states above. */}
+          during the loading or error states above. This `data && planCard`
+          gate has no render-harness test (this repo's vitest environment
+          has no DOM harness and DigestPanel's hooks can't be called
+          directly) — it's proven by browser verification instead. */}
       {data && planCard && (
         <p className="text-xs text-[var(--gray-09)]">
-          {`${planCard.shippedAllTime} tasks shipped all-time`}
+          {shippedStripText(planCard.shippedAllTime)}
         </p>
       )}
     </section>

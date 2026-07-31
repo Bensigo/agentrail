@@ -133,3 +133,14 @@ export function isAtOrPastCurrentWeek(week: { end: string }, now: Date): boolean
 export function capacityText(used: number, total: number): string {
   return `${used} of ${total} tasks this month`;
 }
+
+/**
+ * Pinned copy for the digest's all-time-shipped strip (subscription slice 6
+ * plan, Task 3): `n` is `PlanCardData.shippedAllTime` (all-time `success`
+ * run outcomes for the workspace), never dollars. No singular/plural
+ * branching — matches this file's other counters (`formatNeedsYouBreakdown`)
+ * and the house "never editorializes" posture (`goalStatusLabel` etc.).
+ */
+export function shippedStripText(n: number): string {
+  return `${n} tasks shipped all-time`;
+}

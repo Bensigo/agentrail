@@ -83,8 +83,15 @@ export function seatLimitForPlan(plan: string): number {
  * `renewalLabel` ("Renews <date>") and `seatClaimedLabel` ("Claimed <date>")
  * below — same date format, different prefix — so the two never drift apart
  * on the actual `toLocaleDateString` options.
+ *
+ * Exported (subscription-platform slice 6 plan, Task 2's own Global
+ * Constraints — the plan-card's pinned trial renewal string,
+ * `` `Trial ends ${formatUtcDate(trialEndsAt)}` ``): `plan-card-data.ts`
+ * (`apps/console/lib/`) needs the SAME date formatting `renewalLabel` uses
+ * so the trial and non-trial renewal strings read identically, without a
+ * second, drift-prone copy of this `toLocaleDateString` call.
  */
-function formatUtcDate(date: Date): string {
+export function formatUtcDate(date: Date): string {
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",

@@ -185,9 +185,9 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "Task type:")).toBe(true);
   });
 
-  it("the demo's dollar-estimate line is mono", () => {
+  it("the demo's scope line is mono (subscription slice 6 Task 5 — was the dollar-estimate line pre-swap)", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "budget: ~$")).toBe(true);
+    expect(monoAppliesBefore(source, "{scopeSentence(brief.estimateUsd)}")).toBe(true);
   });
 
   it("the demo's outcome ping is mono", () => {

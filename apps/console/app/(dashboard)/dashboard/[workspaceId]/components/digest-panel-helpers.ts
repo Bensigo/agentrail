@@ -5,6 +5,17 @@
 // cross-route-boundary import — the same choice `health-panel-helpers.ts`
 // makes for the health-rates panel.
 
+/**
+ * Re-exported here (type-only — erased at compile time, zero runtime cost)
+ * so `digest-panel.tsx` can pull every digest-related type from this one
+ * sibling module instead of reaching past it into `apps/console/lib/`.
+ * Subscription slice 6 plan, Task 3
+ * (`docs/superpowers/plans/2026-07-31-subscription-console-slice6.md`):
+ * the client file must NEVER import `loadPlanCardData` or the
+ * `subscriptionsEnforced` flag itself (server-only) — only this type.
+ */
+export type { PlanCardData } from "../../../../../lib/plan-card-data";
+
 export interface DigestShippedItem {
   id: string;
   title: string;
@@ -111,4 +122,25 @@ export function shiftWeek(weekStartIso: string, deltaWeeks: number): string {
  */
 export function isAtOrPastCurrentWeek(week: { end: string }, now: Date): boolean {
   return new Date(week.end).getTime() > now.getTime();
+}
+
+/**
+ * Pinned capacity copy for the digest plan card (subscription slice 6 plan,
+ * Global Constraints — byte-exact): tasks, never dollars — `used`/`total`
+ * are plain run counts (`PlanCardData.capacityUsed`/`capacityTotal`), not
+ * spend.
+ */
+export function capacityText(used: number, total: number): string {
+  return `${used} of ${total} tasks this month`;
+}
+
+/**
+ * Pinned copy for the digest's all-time-shipped strip (subscription slice 6
+ * plan, Task 3): `n` is `PlanCardData.shippedAllTime` (all-time `success`
+ * run outcomes for the workspace), never dollars. No singular/plural
+ * branching — matches this file's other counters (`formatNeedsYouBreakdown`)
+ * and the house "never editorializes" posture (`goalStatusLabel` etc.).
+ */
+export function shippedStripText(n: number): string {
+  return `${n} tasks shipped all-time`;
 }

@@ -30,10 +30,20 @@ export function PendingApprovalsList({
   rows,
   workspaceId,
   canManage,
+  hideDollars = false,
 }: {
   rows: PendingApprovalRow[];
   workspaceId: string;
   canManage: boolean;
+  /** Subscription-platform billing swap (slice 6 Task 5), default OFF —
+   *  computed server-side (`subscriptionsEnforced`) by `page.tsx` and
+   *  threaded down as a prop; this component never imports the flag module
+   *  itself, same "undefined reads as off" posture as `Sidebar`'s
+   *  `billingSwapEnabled` (slice 6 Task 4). Forwarded straight through to
+   *  `summarizeApprovalToolInput` as `{ hideDollars }` — every dollar-shaped
+   *  summary field (the alignment brief's Estimate, the create_issue
+   *  brief's tolerant suffix) swaps to the scope vocabulary instead. */
+  hideDollars?: boolean;
 }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -101,7 +111,9 @@ export function PendingApprovalsList({
         </thead>
         <tbody>
           {rows.map((row) => {
-            const summary = summarizeApprovalToolInput(row.toolName, row.toolInput);
+            const summary = summarizeApprovalToolInput(row.toolName, row.toolInput, {
+              hideDollars,
+            });
             const age = formatRelativeTime(row.createdAt);
             const busy = pendingId === row.id;
             const rowError = errorById[row.id];

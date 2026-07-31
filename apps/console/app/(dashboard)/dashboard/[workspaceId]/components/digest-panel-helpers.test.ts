@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  capacityText,
   formatCostUsd,
   formatNeedsYouBreakdown,
   formatTrendPct,
@@ -7,6 +8,7 @@ import {
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
   shiftWeek,
+  shippedStripText,
 } from "./digest-panel-helpers";
 
 describe("inProgressStateLabel", () => {
@@ -104,5 +106,29 @@ describe("isAtOrPastCurrentWeek", () => {
     const now = new Date("2026-07-15T12:00:00.000Z");
     const week = { end: "2026-07-13T00:00:00.000Z" };
     expect(isAtOrPastCurrentWeek(week, now)).toBe(false);
+  });
+});
+
+describe("capacityText (subscription slice 6 plan card — pinned copy)", () => {
+  it("renders the pinned 'used of total tasks this month' phrasing", () => {
+    expect(capacityText(3, 10)).toBe("3 of 10 tasks this month");
+  });
+
+  it("renders zero usage without special-casing", () => {
+    expect(capacityText(0, 200)).toBe("0 of 200 tasks this month");
+  });
+});
+
+describe("shippedStripText (subscription slice 6 all-time-shipped strip — pinned copy)", () => {
+  it("renders the pinned 'n tasks shipped all-time' phrasing", () => {
+    expect(shippedStripText(128)).toBe("128 tasks shipped all-time");
+  });
+
+  it("renders zero without special-casing", () => {
+    expect(shippedStripText(0)).toBe("0 tasks shipped all-time");
+  });
+
+  it("renders singular count with the same plural phrasing (house style: never editorializes grammar)", () => {
+    expect(shippedStripText(1)).toBe("1 tasks shipped all-time");
   });
 });

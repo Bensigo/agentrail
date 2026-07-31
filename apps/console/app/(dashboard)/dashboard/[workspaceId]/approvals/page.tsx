@@ -8,7 +8,6 @@ import {
 } from "@agentrail/db-postgres";
 import { isAlignmentLocked } from "./approvals-helpers";
 import { getMembership, getSession } from "../../../../../lib/cached";
-import { subscriptionsEnforced } from "../../../../../lib/policy/feature-flags";
 import { PageHeader } from "../../../../components/page-header";
 import { PendingApprovalsList } from "./components/pending-approvals-list";
 import { ParkedWorkList } from "./components/parked-work-list";
@@ -36,12 +35,11 @@ import { DeadLettersList } from "./components/dead-letters-list";
  * the workspace layout already guards session + membership, this re-checks
  * defensively.
  *
- * Subscription-platform slice 6 Task 5: `hideDollars` is read from
- * `subscriptionsEnforced()` HERE — the ONE place this page touches the flag
- * — and threaded down as a prop into `PendingApprovalsList` only (the other
- * two lists never render a dollar amount). See that component's own prop
- * comment and `approvals-helpers.ts`'s header comment for why the flag
- * itself never crosses into client-bundled code.
+ * Subscription-platform fast-follow (owner ruling 2026-07-31): `hideDollars`
+ * is unconditionally `true` — threaded down as a prop into
+ * `PendingApprovalsList` only (the other two lists never render a dollar
+ * amount). See that component's own prop comment and `approvals-helpers.ts`'s
+ * header comment for the (still flag-free) `opts` machinery this reuses.
  */
 export default async function ApprovalsPage({
   params,
@@ -61,14 +59,8 @@ export default async function ApprovalsPage({
   // here — see this page's own doc-comment).
   const canManage = membership.role === "owner" || membership.role === "admin";
 
-  // Subscription-platform slice 6 Task 5: computed HERE, server-side — the
-  // ONE place this page reads the flag — and threaded down as a plain
-  // boolean prop into `PendingApprovalsList`, which never imports the flag
-  // module itself (same "server computes it, client receives a prop"
-  // posture as `layout.tsx`'s `billingSwapEnabled`, Task 4). When true,
-  // every dollar-shaped summary field the list renders swaps to the scope
-  // vocabulary (`lib/approval-scope.ts`) instead.
-  const hideDollars = subscriptionsEnforced();
+  // Unconditional since 2026-07-31 owner ruling (scope vocabulary always wins).
+  const hideDollars = true;
 
   const [pending, parked, deadLetters, workspace] = await Promise.all([
     pendingApprovalsForWorkspace(workspaceId),

@@ -28,7 +28,6 @@
  * spoofing and message-structure integrity, not markup injection.
  */
 
-import { subscriptionsEnforced } from "./policy/feature-flags";
 import { scopeSentence } from "./approval-scope";
 
 /** Telegram's real per-message character cap (Bot API `sendMessage`). */
@@ -93,15 +92,14 @@ function safeJsonStringify(value: unknown): string {
  * page's summaries (`approvals/approvals-helpers.ts`) render the SAME
  * model-authored toolInput fields on the exact surface where a human decides
  * Approve/Deny, so they must run through this exact sanitizer — a second
- * hand-rolled copy would drift. This module's only imports (added
- * subscription-platform slice 6 Task 5: `./policy/feature-flags`'s
- * `subscriptionsEnforced`, `./approval-scope`) are themselves pure — no
- * fetch/db/node-builtins, unlike `@agentrail/db-postgres`'s
- * `node:crypto`/`net`/`tls`/`fs` pulls (the actual hazard
- * `approvals-helpers.ts`'s header comment warns about) — so the client
- * bundle importing `sanitizeField` here stays safe; the chat renderers below
- * are byte-identical to before the export (regression-pinned by this file's
- * own test suite).
+ * hand-rolled copy would drift. This module's only import (added
+ * subscription-platform slice 6 Task 5, flag-free since the 2026-07-31
+ * owner ruling: `./approval-scope`) is itself pure — no fetch/db/node-
+ * builtins, unlike `@agentrail/db-postgres`'s `node:crypto`/`net`/`tls`/`fs`
+ * pulls (the actual hazard `approvals-helpers.ts`'s header comment warns
+ * about) — so the client bundle importing `sanitizeField` here stays safe;
+ * the chat renderers below are byte-identical to before the export
+ * (regression-pinned by this file's own test suite).
  */
 export function sanitizeField(value: unknown, maxLen: number): string {
   const raw =
@@ -200,20 +198,21 @@ function renderUpdateIssue(input: Record<string, unknown>): string {
  * (`../lib/alignment-brief.ts`) documents the shape `composeAlignmentBrief`
  * actually writes.
  *
- * The sanction line's literal wording ("Approving sets this run's budget: ~$X")
- * is the OWNER RULE made visible: confirming this message is what activates
- * #1333's dormant estimated_budget_usd/model_override threading — see
- * `github_intake.ts::confirmAlignmentBrief`. That activation is UNCHANGED by
- * the flag swap below — only the visible wording differs; approving still
- * does the exact same thing underneath either way.
+ * The sanction line's literal wording ("Approving starts a small/medium/large
+ * task.") is the OWNER RULE made visible: confirming this message is what
+ * activates #1333's dormant estimated_budget_usd/model_override threading —
+ * see `github_intake.ts::confirmAlignmentBrief`. That activation is
+ * UNCHANGED by the wording below — only the visible copy differs; approving
+ * still does the exact same thing underneath.
  *
- * Subscription-platform slice 6 Task 5: when `subscriptionsEnforced()`, this
- * line speaks scope instead of dollars — `approval-scope.ts`'s
+ * Subscription-platform fast-follow, owner ruling 2026-07-31: this line
+ * ALWAYS speaks scope, never dollars — `approval-scope.ts`'s
  * `scopeSentence(estimateUsd)` ("Approving starts a small/medium/large
- * task.") replaces the `~$X.XX` wording, so a subscription customer never
- * sees a dollar figure here. Flag off (the default) renders the EXACT
- * original dollar line, byte-for-byte — regression-pinned in
- * `approval-message.test.ts`. Either way the line is omitted entirely when
+ * task.") is unconditional (cost display is redundant under the
+ * subscription flow). The former `BILLING_SUBSCRIPTIONS_ENFORCED`-gated
+ * dollar line ("Approving sets this run's budget: ~$X.XX") no longer exists
+ * anywhere in this renderer — regression-pinned in
+ * `approval-message.test.ts`. The line is still omitted entirely when
  * `estimateUsd` is missing/malformed, unchanged from before this task.
  *
  * `Why: ...` line (#1338 PR②): renders `input["modelSelectionReason"]` —
@@ -286,12 +285,7 @@ function renderAlignmentBrief(input: Record<string, unknown>): string {
   }
 
   if (estimateUsd !== null) {
-    lines.push(
-      "",
-      subscriptionsEnforced()
-        ? scopeSentence(estimateUsd)
-        : `Approving sets this run's budget: ~$${estimateUsd.toFixed(2)}`
-    );
+    lines.push("", scopeSentence(estimateUsd));
   }
 
   if (assumptions.length > 0) {

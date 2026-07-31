@@ -8,7 +8,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   linkInvestigationIssue: vi.fn(),
 }));
 
-import { POST, parseGithubIssueUrl, stampInvestigationIssueLink } from "./route";
+import { POST } from "./route";
+import { parseGithubIssueUrl, stampInvestigationIssueLink } from "./published-helpers";
 import {
   getApprovalById,
   getJaceSessionByEveSessionId,

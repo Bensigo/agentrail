@@ -23,7 +23,7 @@ import type {
  * report for the full quoted trail.
  *
  * ============================================================================
- * STATE CANNOT ROUND-TRIP — READ THIS BEFORE CHANGING THIS FILE'S WIRING.
+ * STATE CANNOT ROUND-TRIP — read this before changing this file's wiring.
  * ============================================================================
  * The plan's own vendor-facts table (`plan-oauth.md`, and this repo's spec
  * doc) carried a provisional belief: "docs historically say state is
@@ -69,36 +69,42 @@ import type {
  * adapter is correctly scoped to Public Integration, and Public
  * Integration's own docs confirm-absent a `state` param, full stop.
  *
- * CONSEQUENCE (per this task's own binding instruction: stop and say so
- * instead of shipping a stateless flow): T1's generic callback
- * (`connectors/oauth/callback/[provider]/route.ts`) HARD-REQUIRES both
- * `state` and `code` on every hit, for every provider, before it even
- * looks up which provider adapter to use — a security-load-bearing gate
- * (tenant binding, CSRF), not a per-provider option. Sentry's redirect can
- * never satisfy it. This file therefore implements the COMPLETE adapter —
- * `authorizeUrl`/`exchange`/`refresh`/`postExchange` are all correct,
- * doc-verified, and fully tested standalone — but is DELIBERATELY NOT
- * wired into live reachability: unlike `lib/oauth/railway.ts`, this
- * module's `registerOauthAdapter` call below is never triggered in
- * production, because the three routes that make a provider adapter
- * reachable (`connectors/oauth/{link,callback/[provider]}/route.ts`,
- * `workspaces/[workspaceId]/connectors/route.ts`) do NOT side-effect-import
- * this file — see the "NOT LIVE" comment at each of those three files'
- * own existing `import "./railway"` line for the pointer back here.
- * `oauthReady` (the connectors GET route's own derivation,
- * `oauthAdapterFor(kind) !== null && oauthConfigFor(kind) !== null`) is
- * therefore structurally `false` for `"sentry"` today, REGARDLESS of
- * whether `SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/
- * `_INTEGRATION_SLUG` are set on the deployment — the "Connect Sentry"
- * button cannot appear until a follow-up task gives the callback route an
- * alternate, non-state tenant-binding mechanism for a vendor that can't
- * round-trip one (e.g. a short-lived first-party HttpOnly cookie set at
- * link time, read back at callback time instead of/alongside `state` — NOT
- * implemented here; a shared-callback-route change is out of THIS task's
- * scope and deserves its own reviewed design, not a solo mid-task
- * improvisation). Token-paste remains the ONLY way to connect Sentry today
- * — unaffected, unchanged, and (per the Global Constraints) permanent
- * regardless.
+ * ============================================================================
+ * SESSION-TRANSPORT TENANT BINDING (W3-T3 fix round — coordinator ruling,
+ * option B: do not defer, do not ship stateless — implement a mechanism).
+ * ============================================================================
+ * `stateTransport: "session"` (declared on this adapter below — see
+ * `types.ts`'s own doc-comment for the full, provider-agnostic contract).
+ * Since the vendor cannot echo a `state` token, the callback route resolves
+ * which workspace a hit belongs to by a DIFFERENT, still session-bound
+ * mechanism: it requires an authenticated session (exactly like the
+ * `"param"` path, same position — BEFORE resolving anything), then looks
+ * up the pending record by the REDEEMING SESSION'S OWN user id
+ * (`consumeConnectorOauthStateBySessionUser(provider, session.user.id)`,
+ * `@agentrail/db-postgres`) instead of by an opaque token pulled off the
+ * URL. EXACTLY ONE unexpired pending record for that (provider, userId)
+ * pair, across every workspace, is required — zero or multiple is the
+ * SAME closed `state_invalid` reason as every other tenant-binding
+ * failure, and (critically) NOTHING is consumed on an ambiguous multiple
+ * match. The full CSRF-equivalence argument lives on the callback route's
+ * own `stateTransport === "session"` branch (search
+ * "SESSION-TRANSPORT CSRF ANALYSIS" there) and is mirrored in the spec
+ * doc's Sentry section — not restated here to avoid two copies drifting.
+ *
+ * The link route mints the SAME state-record shape either way
+ * (`mintConnectorOauthState`, `oauthState`/`oauthStateExpiresAt`/
+ * `oauthUserId` — unchanged), but for a `"session"` provider it FIRST
+ * clears every OTHER pending record this user has for this provider,
+ * across every workspace (`clearPendingConnectorOauthStatesForUser`,
+ * last-mint-wins per (user, provider) — see that function's own
+ * doc-comment for the bounded-query shape) — this is what keeps the
+ * callback's "exactly one" resolution actually exactly-one in the common
+ * case (a user retrying, or double-clicking Connect, doesn't leave a
+ * second stale candidate behind to manufacture false ambiguity).
+ * `authorizeUrl()` below still never embeds the `state`/`codeChallenge`
+ * inputs it's handed (harmless — the link route mints them unconditionally
+ * for every provider regardless of transport, mirroring how PKCE is always
+ * minted even for a provider that ignores it).
  *
  * ============================================================================
  * INSTALLATION ID THREADING — disclosed choice (task explicitly offered two:
@@ -195,9 +201,11 @@ import type {
  * `https://sentry.io/sentry-apps/<your-integration-slug>/external-install/`,
  * that you can expose to users." — the slug comes from
  * `SENTRY_OAUTH_INTEGRATION_SLUG` (this task's own new env var, alongside
- * `SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET` — all three gate a fully-wired
- * Sentry OAuth connect once the state-round-trip gap above is resolved;
- * see `requireSentryConfig` below).
+ * `SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET` — all three gate `oauthReady`
+ * for sentry: the generic two-var pair via `oauthConfigFor` PLUS this
+ * adapter's own `envReady()` below, which the connectors GET route/link
+ * route both check alongside it, generically, via the interface's own
+ * `envReady?()` capability — see `types.ts`'s own doc-comment).
  *
  * ============================================================================
  * REFRESH METHOD — disclosed deviation from the doc's OWN top recommendation.
@@ -278,11 +286,10 @@ const SENTRY_API_BASE = "https://sentry.io/api/0";
 const SENTRY_OAUTH_TIMEOUT_MS = 8000;
 
 /** Reads sentry's client id/secret (the two vars `oauthConfigFor` already
- * knows how to gate generically). Both routes that would ever call into
- * this adapter gate on `oauthConfigFor` themselves first (mirrors
- * `railway.ts`'s identical defense-in-depth reasoning) — but see this
- * module's own "STATE CANNOT ROUND-TRIP" section: today, no route actually
- * reaches this adapter in production at all. */
+ * knows how to gate generically). Both routes that call into this adapter
+ * gate on `oauthConfigFor` themselves first (mirrors `railway.ts`'s
+ * identical defense-in-depth reasoning) — this is a second, redundant
+ * check for a direct caller (this module's own tests included). */
 function requireSentryClientCredentials(): { clientId: string; clientSecret: string } {
   const config = oauthConfigFor("sentry");
   if (!config) {
@@ -432,11 +439,25 @@ async function verifyInstallBestEffort(installationId: string, accessToken: stri
 export const sentryOauthAdapter: OauthProviderAdapter = {
   provider: "sentry",
 
+  // W3-T3 fix round — see this module's own doc-comment
+  // ("SESSION-TRANSPORT TENANT BINDING") and `types.ts`'s `stateTransport`
+  // doc-comment for the full contract.
+  stateTransport: "session",
+
+  // W3-T3 fix round — the third env var (SENTRY_OAUTH_INTEGRATION_SLUG)
+  // beyond the generic oauthConfigFor pair; read generically by the
+  // connectors GET route/link route alongside oauthConfigFor.
+  envReady(): boolean {
+    return Boolean(process.env["SENTRY_OAUTH_INTEGRATION_SLUG"]);
+  },
+
   /** Pure and synchronous per `OauthProviderAdapter`'s own contract. See
    * this module's own doc-comment ("STATE CANNOT ROUND-TRIP") for why
    * `state`/`codeChallenge` are both deliberately IGNORED — embedding
    * either would be silently misleading, since Sentry's external-install
-   * URL neither accepts nor echoes them back. */
+   * URL neither accepts nor echoes them back (tenant binding for this
+   * provider happens a different way entirely — see
+   * "SESSION-TRANSPORT TENANT BINDING" immediately below that section). */
   authorizeUrl(_input: AuthorizeUrlInput): string {
     requireSentryClientCredentials();
     const slug = requireSentryIntegrationSlug();
@@ -506,11 +527,11 @@ export const sentryOauthAdapter: OauthProviderAdapter = {
   },
 };
 
-// See this module's own doc-comment ("STATE CANNOT ROUND-TRIP") — this
-// call registers the adapter into the shared in-process registry (so THIS
-// file's own tests, and any future direct import, can prove it's correct
-// and registered), but no live route imports this module today, so the
-// registration never actually takes effect in production — mirrors
-// `types.ts`'s own "REACHABILITY" doc-comment: an unreached module's
-// top-level code never runs.
+// Registers the adapter into the shared in-process registry — mirrors
+// `railway.ts`'s identical call. W3-T3 fix round: this module IS now
+// side-effect-imported by the three live routes (see each route's own
+// `import "./sentry"` line) — `oauthReady` for sentry reflects the real
+// three-env-var gate (`oauthConfigFor` + this adapter's own `envReady()`)
+// once this module is reachable, matching `types.ts`'s own "REACHABILITY"
+// doc-comment.
 registerOauthAdapter(sentryOauthAdapter);

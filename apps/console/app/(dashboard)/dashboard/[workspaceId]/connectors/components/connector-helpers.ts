@@ -574,13 +574,16 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Paste it here, along with your Sentry organization slug and project slug, and connect.",
       ],
       // OAuth Connect Wave 3, W3-T3 — see ConnectorConnectMeta.oauthHint's
-      // own doc-comment. Written now, per this task's own brief, even
-      // though `oauthReady` is structurally false for sentry today (and
-      // stays that way until a follow-up resolves the state-round-trip gap
-      // `lib/oauth/sentry.ts`'s own doc-comment discloses) — inert until
-      // then, correctly pre-positioned for when it flips on. Wording
-      // echoes railway's own oauthHint's calm, no-apology tone and its
-      // "use a token instead" pointer to the disclosure immediately below.
+      // own doc-comment. LIVE (W3-T3 fix round): `oauthReady` reflects the
+      // real three-env-var gate (`oauthConfigFor` + `sentryOauthAdapter`'s
+      // own `envReady()`) once `SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/
+      // `_INTEGRATION_SLUG` are all set — Sentry's redirect can't carry a
+      // vendor-echoed `state`, so the callback route resolves tenant
+      // binding by the redeeming session's own user id instead (see
+      // `lib/oauth/sentry.ts`'s own doc-comment, "SESSION-TRANSPORT TENANT
+      // BINDING"). Wording echoes railway's own oauthHint's calm,
+      // no-apology tone and its "use a token instead" pointer to the
+      // disclosure immediately below.
       oauthHint:
         "Connecting via Sentry installs the integration with read-only access to your issues and events — you can use an API token instead if you'd rather not.",
       // Both required (Task P3's own pinned decision) — unlike Railway's

@@ -189,6 +189,50 @@ export interface OauthProviderAdapter {
    * check this method exists to make possible.
    */
   postExchange?(input: PostExchangeInput): Promise<PostExchangeResult>;
+  /**
+   * OPTIONAL, additive (W3-T3 fix round — coordinator ruling on the
+   * state-round-trip finding, `.superpowers/sdd/task-W3T3-report.md`).
+   * `"param"` (the default when absent — every provider before this one,
+   * and Railway explicitly): the vendor round-trips the server-minted
+   * `state` on its redirect; the callback route resolves which workspace a
+   * hit belongs to by consuming that exact single-use token
+   * (`consumeConnectorOauthState`). `"session"` (Sentry, so far the only
+   * one): the vendor's redirect CANNOT carry `state` at all (doc-confirmed
+   * absence for Sentry's Public Integration flow — see `lib/oauth/
+   * sentry.ts`'s own doc-comment) — the callback instead resolves the
+   * pending record by the REDEEMING SESSION's own user id
+   * (`consumeConnectorOauthStateBySessionUser`, `@agentrail/db-postgres`),
+   * requiring EXACTLY ONE unexpired pending record for
+   * (provider, session.user.id) across every workspace; zero or multiple
+   * is closed `state_invalid`, nothing consumed either way. See the
+   * callback route's own doc-comment ("SESSION-TRANSPORT CSRF ANALYSIS")
+   * for why this is CSRF-equivalent to the param-transport mechanism, not
+   * a weaker substitute forced by necessity. The link route mints the SAME
+   * state-record shape either way (`mintConnectorOauthState`, unchanged);
+   * a `"session"` provider's link-time mint is additionally preceded by
+   * `clearPendingConnectorOauthStatesForUser` (last-mint-wins per
+   * (user, provider) across workspaces — bounded, since pending records
+   * are rare and TTL'd) and its `authorizeUrl()` simply never embeds the
+   * `state` input it's still (harmlessly) handed, mirroring how a
+   * `"param"` adapter is free to ignore `ExchangeInput.params`.
+   */
+  stateTransport?: "param" | "session";
+  /**
+   * OPTIONAL, additive (W3-T3 fix round) — whether this provider's OWN
+   * extra, provider-specific env vars (beyond the generic
+   * `oauthConfigFor`-checked `<PROVIDER>_OAUTH_CLIENT_ID`/
+   * `_CLIENT_SECRET` pair every provider already needs) are set. Absent →
+   * treated as `true` (no extra requirement — every provider before Sentry
+   * needs nothing beyond the generic pair). Sentry declares one
+   * (`SENTRY_OAUTH_INTEGRATION_SLUG`, needed to build the external-install
+   * URL) — see `lib/oauth/sentry.ts`'s own `envReady`. Read by the
+   * connectors GET route's `oauthReady` derivation and the link route's
+   * env-gate, ALONGSIDE (never instead of) `oauthConfigFor` — kept generic/
+   * adapter-driven rather than a provider name hardcoded into either
+   * shared route, mirroring this whole interface's own "additive adapter
+   * capability" pattern (`postExchange`, `stateTransport` above).
+   */
+  envReady?(): boolean;
 }
 
 const registry = new Map<string, OauthProviderAdapter>();

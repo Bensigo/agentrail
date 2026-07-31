@@ -393,6 +393,12 @@ async function fetchGrantedProjects(accessToken: string): Promise<RailwayGranted
 
 export const railwayOauthAdapter: OauthProviderAdapter = {
   provider: "railway",
+  // W3-T3 fix round: explicit, even though "param" is the interface's own
+  // default when absent — Railway's redirect DOES carry a vendor-echoed
+  // `state` (doc-confirmed, W3-T2), so the callback resolves it by
+  // consuming that single-use token, unchanged by this fix round. See
+  // `types.ts`'s own `stateTransport` doc-comment.
+  stateTransport: "param",
 
   /** Pure and synchronous per `OauthProviderAdapter`'s own contract — the
    * one I/O this does is a `process.env` read (via `oauthConfigFor`), not

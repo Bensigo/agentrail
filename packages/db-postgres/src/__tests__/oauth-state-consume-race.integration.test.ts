@@ -9,6 +9,8 @@ import {
   consumeConnectorOauthState,
   upsertConnector,
   getConnector,
+  clearPendingConnectorOauthStatesForUser,
+  consumeConnectorOauthStateBySessionUser,
 } from "../queries/connectors.js";
 
 /**
@@ -216,6 +218,137 @@ describe.skipIf(!DB_AVAILABLE)(
       });
 
       await deleteConnectorRow(provider);
+    });
+
+    // -------------------------------------------------------------------
+    // OAuth Connect Wave 3, W3-T3 fix round (coordinator ruling) —
+    // SESSION-TRANSPORT tenant binding: the same single-use/race guarantees
+    // as `consumeConnectorOauthState` above, but resolved by (provider,
+    // userId) instead of an opaque `state` token — proven against a REAL
+    // Postgres, not just the mocked SQL-shape coverage in
+    // `connectors-session-transport.test.ts`. Uses a SECOND workspace
+    // (`workspaceId2`) alongside the describe block's own `workspaceId` so
+    // the "same-user, two-workspace ambiguity" scenario has two genuinely
+    // different rows to be ambiguous BETWEEN.
+    // -------------------------------------------------------------------
+    describe("session-transport (W3-T3 fix round) — consumeConnectorOauthStateBySessionUser / clearPendingConnectorOauthStatesForUser", () => {
+      let workspaceId2: string;
+
+      beforeAll(async () => {
+        const rows = await db
+          .insert(workspaces)
+          .values({
+            name: "oauth-session-transport test workspace 2",
+            slug: `test-oauth-session-transport-2-${randomUUID()}`,
+          })
+          .returning({ id: workspaces.id });
+        workspaceId2 = rows[0]!.id;
+      });
+
+      afterAll(async () => {
+        if (workspaceId2) {
+          await db.delete(workspaces).where(eq(workspaces.id, workspaceId2));
+        }
+      });
+
+      it("N genuinely concurrent session-transport consumes of the SAME single pending record resolve exactly once — the rest see null (mirrors the param-transport race above)", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+        await mintConnectorOauthState(workspaceId, provider, "user-session-race");
+
+        const CONCURRENCY = 6;
+        const results = await Promise.all(
+          Array.from({ length: CONCURRENCY }, () =>
+            consumeConnectorOauthStateBySessionUser(provider, "user-session-race")
+          )
+        );
+
+        const wins = results.filter((r) => r !== null);
+        expect(wins).toHaveLength(1);
+        expect(wins[0]).toEqual({ workspaceId, userId: "user-session-race", codeVerifier: null });
+
+        // Genuinely gone afterward — a later, non-concurrent attempt also
+        // sees null.
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-session-race")).toBeNull();
+
+        await deleteConnectorRow(provider);
+      });
+
+      it("zero pending records for this user resolves null, no throw", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-nothing-pending")).toBeNull();
+      });
+
+      it("same-user, two-workspace ambiguity: TWO pending records for the SAME (provider, userId) resolve null and consume NEITHER", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+        await db.delete(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+
+        await mintConnectorOauthState(workspaceId, provider, "user-ambiguous");
+        await mintConnectorOauthState(workspaceId2, provider, "user-ambiguous");
+
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-ambiguous")).toBeNull();
+
+        // Neither was consumed — BOTH still resolve via the param-transport
+        // path if their real state token is known (proving the rows were
+        // genuinely untouched, not just "the function returned null while
+        // secretly picking one").
+        const view1 = await getConnector(workspaceId, provider);
+        const view2 = await getConnector(workspaceId2, provider);
+        // toClientSafeConfig strips oauthState from the read model, but
+        // hasSecret/enabled being unaffected plus a direct raw check below
+        // confirms the row wasn't silently cleared.
+        expect(view1).not.toBeNull();
+        expect(view2).not.toBeNull();
+        const raw1 = await db.select().from(connectors).where(sql`${connectors.workspaceId} = ${workspaceId} AND ${connectors.provider} = ${provider}`);
+        const raw2 = await db.select().from(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+        expect((raw1[0]?.config as Record<string, unknown> | undefined)?.["oauthState"]).toBeTruthy();
+        expect((raw2[0]?.config as Record<string, unknown> | undefined)?.["oauthState"]).toBeTruthy();
+
+        await deleteConnectorRow(provider);
+        await db.delete(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+      });
+
+      it("clearPendingConnectorOauthStatesForUser (last-mint-wins): clears a prior pending record in ANOTHER workspace, so a fresh mint resolves cleanly instead of hitting the ambiguity above", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+        await db.delete(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+
+        // An earlier, still-pending attempt in workspace 2...
+        await mintConnectorOauthState(workspaceId2, provider, "user-last-mint-wins");
+
+        // ...the link route's own sequence for a session-transport provider:
+        // clear-then-mint, for a NEW attempt in workspace 1.
+        await clearPendingConnectorOauthStatesForUser(provider, "user-last-mint-wins");
+        await mintConnectorOauthState(workspaceId, provider, "user-last-mint-wins");
+
+        // Resolves cleanly to the NEW (workspace 1) attempt — no ambiguity,
+        // because the stale workspace-2 record was cleared first.
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-last-mint-wins")).toEqual({
+          workspaceId,
+          userId: "user-last-mint-wins",
+          codeVerifier: null,
+        });
+
+        await deleteConnectorRow(provider);
+        await db.delete(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+      });
+
+      it("clearPendingConnectorOauthStatesForUser does not touch a DIFFERENT user's pending record for the same provider", async () => {
+        const provider = "sentry";
+        await deleteConnectorRow(provider);
+        await db.delete(connectors).where(sql`${connectors.workspaceId} = ${workspaceId2} AND ${connectors.provider} = ${provider}`);
+
+        await mintConnectorOauthState(workspaceId, provider, "user-untouched");
+        await clearPendingConnectorOauthStatesForUser(provider, "a-totally-different-user");
+
+        expect(await consumeConnectorOauthStateBySessionUser(provider, "user-untouched")).toEqual({
+          workspaceId,
+          userId: "user-untouched",
+          codeVerifier: null,
+        });
+      });
     });
 
     // -------------------------------------------------------------------

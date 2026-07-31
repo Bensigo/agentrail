@@ -89,6 +89,18 @@ describe("sentryOauthAdapter — shape + registration", () => {
   it("declares postExchange", () => {
     expect(typeof sentryOauthAdapter.postExchange).toBe("function");
   });
+
+  // W3-T3 fix round (coordinator ruling, option B) — SESSION-TRANSPORT.
+  it("declares stateTransport: 'session' — its redirect cannot carry a vendor-echoed state token", () => {
+    expect(sentryOauthAdapter.stateTransport).toBe("session");
+  });
+
+  it("declares envReady, true only when SENTRY_OAUTH_INTEGRATION_SLUG is set (the third env var beyond the generic client id/secret pair)", () => {
+    delete process.env[SLUG_KEY];
+    expect(sentryOauthAdapter.envReady?.()).toBe(false);
+    process.env[SLUG_KEY] = SLUG;
+    expect(sentryOauthAdapter.envReady?.()).toBe(true);
+  });
 });
 
 describe("sentryOauthAdapter — authorizeUrl", () => {
@@ -180,6 +192,26 @@ describe("sentryOauthAdapter — exchange", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     const body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty("redirect_uri");
+  });
+
+  // W3-T3 fix round (coordinator's own explicit ask: "PKCE not demanded for
+  // sentry — verify the shared callback path doesn't"). The shared callback
+  // route threads whatever codeVerifier the consumed state carried (`undefined`
+  // when none, per its own doc-comment) straight into ExchangeInput — this
+  // adapter must succeed regardless, since Public Integration's exchange
+  // payload has no code_verifier field at all (doc-confirmed).
+  it("ignores ExchangeInput.codeVerifier entirely — succeeds whether it's supplied or undefined, never sent to Sentry", async () => {
+    global.fetch = vi.fn(async () => authorizationResponse()) as unknown as typeof fetch;
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>;
+
+    await expect(
+      sentryOauthAdapter.exchange(exchangeInput({ codeVerifier: "some-real-verifier-value" }))
+    ).resolves.toBeDefined();
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("code_verifier");
+
+    await expect(sentryOauthAdapter.exchange(exchangeInput({ codeVerifier: undefined }))).resolves.toBeDefined();
   });
 
   it("throws a clear error when params.installationId is missing, without ever calling fetch", async () => {

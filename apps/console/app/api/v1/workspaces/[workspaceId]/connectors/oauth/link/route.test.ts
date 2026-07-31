@@ -6,6 +6,9 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   isConnectorProvider: vi.fn(),
   mintConnectorOauthState: vi.fn(),
+  // W3-T3 fix round — session-transport pre-mint clearing (last-mint-wins
+  // per user across workspaces).
+  clearPendingConnectorOauthStatesForUser: vi.fn(),
 }));
 vi.mock("../../../../../../../../lib/oauth/types", () => ({
   oauthAdapterFor: vi.fn(),
@@ -22,6 +25,7 @@ import {
   getWorkspaceMembership,
   isConnectorProvider,
   mintConnectorOauthState,
+  clearPendingConnectorOauthStatesForUser,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { computeCodeChallengeS256 } from "../../../../../../../../lib/oauth/pkce";
@@ -189,6 +193,59 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
       await POST(req({ provider: "railway" }), params());
       const [firstCall, secondCall] = vi.mocked(mintConnectorOauthState).mock.calls;
       expect(firstCall![3]).not.toBe(secondCall![3]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // W3-T3 fix round (coordinator ruling, option B) — envReady() (the third
+  // env var beyond the generic oauthConfigFor pair) and session-transport
+  // pre-mint clearing.
+  // -----------------------------------------------------------------------
+  describe("envReady (W3-T3 fix round — the adapter's own extra env gate)", () => {
+    it("200 (unaffected) when the adapter declares no envReady at all — defaults to ready, matches every provider before sentry", async () => {
+      const res = await POST(req({ provider: "railway" }), params());
+      expect(res.status).toBe(200);
+    });
+
+    it("200 when the adapter declares envReady() returning true", async () => {
+      const fakeAdapterWithEnvReady = { ...fakeAdapter, envReady: vi.fn().mockReturnValue(true) };
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeAdapterWithEnvReady as never);
+      const res = await POST(req({ provider: "sentry" }), params());
+      expect(res.status).toBe(200);
+    });
+
+    it("409 with the SAME clear-message shape as the oauthConfigFor gate when envReady() returns false — even though oauthConfigFor itself is satisfied", async () => {
+      const fakeAdapterWithEnvReady = { ...fakeAdapter, envReady: vi.fn().mockReturnValue(false) };
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeAdapterWithEnvReady as never);
+      const res = await POST(req({ provider: "sentry" }), params());
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/oauth/i);
+      expect(body.error).toMatch(/api token instead/i);
+      expect(mintConnectorOauthState).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("session-transport pre-mint clearing (W3-T3 fix round — last-mint-wins per user, across workspaces)", () => {
+    it("calls clearPendingConnectorOauthStatesForUser(provider, userId) BEFORE mintConnectorOauthState when the adapter declares stateTransport: 'session'", async () => {
+      const fakeSessionAdapter = { ...fakeAdapter, stateTransport: "session" as const };
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSessionAdapter as never);
+      await POST(req({ provider: "sentry" }), params());
+      expect(clearPendingConnectorOauthStatesForUser).toHaveBeenCalledWith("sentry", USER);
+      const clearOrder = vi.mocked(clearPendingConnectorOauthStatesForUser).mock.invocationCallOrder[0]!;
+      const mintOrder = vi.mocked(mintConnectorOauthState).mock.invocationCallOrder[0]!;
+      expect(clearOrder).toBeLessThan(mintOrder);
+    });
+
+    it("does NOT call clearPendingConnectorOauthStatesForUser for a 'param'-transport provider (railway) — no-op, unaffected", async () => {
+      await POST(req({ provider: "railway" }), params());
+      expect(clearPendingConnectorOauthStatesForUser).not.toHaveBeenCalled();
+    });
+
+    it("does NOT call clearPendingConnectorOauthStatesForUser when the adapter declares no stateTransport at all (defaults to 'param')", async () => {
+      await POST(req({ provider: "railway" }), params());
+      expect(clearPendingConnectorOauthStatesForUser).not.toHaveBeenCalled();
+      expect(mintConnectorOauthState).toHaveBeenCalled();
     });
   });
 });

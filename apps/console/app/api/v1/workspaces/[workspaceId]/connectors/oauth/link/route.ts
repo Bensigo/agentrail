@@ -4,20 +4,16 @@ import {
   getWorkspaceMembership,
   isConnectorProvider,
   mintConnectorOauthState,
+  clearPendingConnectorOauthStatesForUser,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
 import { computeCodeChallengeS256, generateCodeVerifier } from "../../../../../../../../lib/oauth/pkce";
 // W3-T2: registers the `railway` OAuth adapter — see the callback route's
-// identical import for the full "REACHABILITY" reasoning.
-//
-// W3-T3 (Sentry) deliberately does NOT add a sibling sentry import here —
-// see the callback route's own identical comment, and
-// `lib/oauth/sentry.ts`'s doc-comment ("STATE CANNOT ROUND-TRIP"). Without
-// this import, `oauthAdapterFor("sentry")` stays null, so a POST here with
-// `{provider: "sentry"}` 400s ("This connector does not support OAuth
-// connect") rather than minting a state for a flow that can never complete.
+// identical import for the full "REACHABILITY" reasoning. W3-T3:
+// `lib/oauth/sentry.ts` registers the same way.
 import "../../../../../../../../lib/oauth/railway";
+import "../../../../../../../../lib/oauth/sentry";
 
 const ADMIN_ROLES = ["owner", "admin"];
 
@@ -43,6 +39,12 @@ const ADMIN_ROLES = ["owner", "admin"];
  * — this route is generic across every OAuth-capable provider, per the
  * plan's pinned route shape. Every validation happens BEFORE any DB write:
  * a bad request never mints a state that then goes unused.
+ *
+ * SESSION-TRANSPORT (W3-T3 fix round, Sentry — `types.ts`'s
+ * `stateTransport`): for a provider whose vendor redirect cannot carry
+ * `state` at all, this route's job is UNCHANGED in shape (mint the same
+ * state-record, return the vendor authorize URL) but adds one extra
+ * step — see the call site's own comment below.
  */
 export async function POST(
   request: NextRequest,
@@ -88,8 +90,15 @@ export async function POST(
   // message, never a half-configured authorize attempt. Checked AFTER the
   // adapter-registered check above (a provider with no adapter at all is a
   // different, earlier failure than one whose adapter exists but isn't
-  // enabled on this deployment yet).
-  if (!oauthConfigFor(body.provider)) {
+  // enabled on this deployment yet). The generic two-var pair
+  // (`oauthConfigFor`) PLUS the adapter's OWN optional `envReady()` (W3-T3
+  // fix round — Sentry's third var, `SENTRY_OAUTH_INTEGRATION_SLUG`; absent
+  // `envReady` on an adapter defaults to ready, matching every provider
+  // before Sentry) — see `types.ts`'s own doc-comment. Both checked here so
+  // a slug-missing sentry connect attempt 409s cleanly instead of reaching
+  // `authorizeUrl()`'s own throw (which `requireSentryIntegrationSlug`
+  // would raise, surfacing as an unhandled 500).
+  if (!oauthConfigFor(body.provider) || !(adapter.envReady?.() ?? true)) {
     const label = body.provider.charAt(0).toUpperCase() + body.provider.slice(1);
     return NextResponse.json(
       {
@@ -122,6 +131,21 @@ export async function POST(
   // regardless of whether a specific adapter reads it.
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = computeCodeChallengeS256(codeVerifier);
+
+  // SESSION-TRANSPORT (W3-T3 fix round, Sentry) — see `types.ts`'s
+  // `stateTransport` doc-comment and the callback route's own
+  // "SESSION-TRANSPORT CSRF ANALYSIS" for the full contract this exists to
+  // support: last-mint-wins per (user, provider), across every workspace,
+  // BEFORE minting the new one — so a user who opens the connect flow
+  // twice (two tabs, a retry) never leaves an earlier, still-pending
+  // record around to manufacture false ambiguity for the callback's own
+  // "exactly one match" requirement. No-op for `"param"`-transport
+  // providers (the mechanism they use — `consumeConnectorOauthState`,
+  // keyed by the single-use `state` token itself — has no equivalent
+  // ambiguity to guard against).
+  if (adapter.stateTransport === "session") {
+    await clearPendingConnectorOauthStatesForUser(body.provider, session.user.id);
+  }
 
   const state = await mintConnectorOauthState(workspaceId, body.provider, session.user.id, codeVerifier);
   const redirectUri = oauthCallbackUri(consolePublicUrl, body.provider);

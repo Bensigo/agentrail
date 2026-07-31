@@ -5,6 +5,10 @@ vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
 vi.mock("@agentrail/db-postgres", () => ({
   isConnectorProvider: vi.fn(),
   consumeConnectorOauthState: vi.fn(),
+  // W3-T3 fix round — SESSION-TRANSPORT tenant binding (Sentry), used
+  // INSTEAD OF consumeConnectorOauthState when the registered adapter
+  // declares stateTransport: "session".
+  consumeConnectorOauthStateBySessionUser: vi.fn(),
   setConnectorSecret: vi.fn(),
   serializeOauthEnvelope: vi.fn(),
   getWorkspaceMembership: vi.fn(),
@@ -30,6 +34,7 @@ import { auth } from "@agentrail/auth";
 import {
   isConnectorProvider,
   consumeConnectorOauthState,
+  consumeConnectorOauthStateBySessionUser,
   setConnectorSecret,
   serializeOauthEnvelope,
   getWorkspaceMembership,
@@ -298,49 +303,60 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
   });
 
   // -----------------------------------------------------------------------
-  // W3-T3 — the sentry param shape over this SAME generic callback: `code` +
-  // `installationId`, no PKCE. Uses a SEPARATE fixture shaped like the real
-  // `sentryOauthAdapter` (provider "sentry", no PKCE requirement of its own
-  // — mirrors the postExchange block's identical "separate fixture, doesn't
-  // disturb fakeAdapter's tests above" convention) rather than the real
-  // `lib/oauth/sentry.ts` module, since this route file mocks
-  // `lib/oauth/types` wholesale (this route test's job is the GENERIC
-  // callback mechanism, not sentry.ts's own exchange() logic — that's
-  // `lib/oauth/sentry.test.ts`'s job). The test above ("passes code + ...")
-  // already proves `installationId` forwards generically for ANY provider
-  // segment against the shared `fakeAdapter`; THIS block additionally
-  // proves the full round trip succeeds end-to-end for a sentry-SHAPED
-  // adapter with no codeVerifier ever supplied — i.e. the callback itself
-  // never demands one (only an adapter's OWN internal check would, the way
-  // Railway's does; a sentry-shaped adapter simply has none).
+  // W3-T3 fix round (coordinator ruling, option B) — SESSION-TRANSPORT: a
+  // provider (Sentry) whose redirect carries `code`+`installationId` but NO
+  // `state` at all. Uses a SEPARATE fixture declaring
+  // `stateTransport: "session"` (mirrors the postExchange block's identical
+  // "separate fixture, doesn't disturb fakeAdapter's tests above"
+  // convention) rather than the real `lib/oauth/sentry.ts` module, since
+  // this route file mocks `lib/oauth/types` wholesale (this route test's
+  // job is the GENERIC session-transport MECHANISM, not sentry.ts's own
+  // exchange() logic — that belongs to `lib/oauth/sentry.test.ts`).
+  // `consumeConnectorOauthStateBySessionUser` is used INSTEAD OF
+  // `consumeConnectorOauthState` for every test in this block — asserted
+  // explicitly where it matters.
   // -----------------------------------------------------------------------
-  describe("sentry param shape (code + installationId, no PKCE)", () => {
-    const fakeSentryAdapter = {
+  describe("session-transport (W3-T3 fix round) — code + installationId, no state, resolved by session user", () => {
+    const fakeSessionAdapter = {
       provider: "sentry",
+      stateTransport: "session" as const,
       authorizeUrl: vi.fn(),
       exchange: vi.fn(),
       refresh: vi.fn(),
     };
 
     beforeEach(() => {
-      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSentryAdapter as never);
-      vi.mocked(fakeSentryAdapter.exchange).mockResolvedValue({
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSessionAdapter as never);
+      vi.mocked(fakeSessionAdapter.exchange).mockResolvedValue({
         access: "sentry-acc-1",
         refresh: JSON.stringify({ installationId: "42", refreshToken: "sentry-ref-1" }),
         expiresAt: "2099-01-01T00:00:00.000Z",
       });
-      vi.mocked(consumeConnectorOauthState).mockResolvedValue({ workspaceId: WS, userId: USER, codeVerifier: null });
+      vi.mocked(consumeConnectorOauthStateBySessionUser).mockResolvedValue({
+        workspaceId: WS,
+        userId: USER,
+        codeVerifier: null,
+      });
     });
 
-    it("exchanges code + installationId (from params) with codeVerifier: undefined, and completes successfully — the shared callback never demands a verifier for sentry", async () => {
-      const res = await GET(req({ state: "s", code: "auth-code-1", installationId: "42" }), params("sentry"));
+    it("happy path: exchanges code + installationId with codeVerifier: undefined, stores the envelope, and completes successfully — no state param anywhere in the request", async () => {
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
 
-      expect(fakeSentryAdapter.exchange).toHaveBeenCalledWith({
+      expect(consumeConnectorOauthStateBySessionUser).toHaveBeenCalledWith("sentry", USER);
+      expect(consumeConnectorOauthState).not.toHaveBeenCalled();
+      expect(fakeSessionAdapter.exchange).toHaveBeenCalledWith({
         code: "auth-code-1",
         redirectUri: "https://heyjace.com/api/v1/connectors/oauth/callback/sentry",
         params: { installationId: "42" },
         codeVerifier: undefined,
       });
+      expect(setConnectorSecret).toHaveBeenCalledWith(
+        WS,
+        "sentry",
+        // serializeOauthEnvelope's mocked return value (see the outer
+        // beforeEach) — not the raw envelope object.
+        "serialized-envelope"
+      );
 
       const loc = new URL(res.headers.get("location")!);
       expect(loc.pathname).toBe("/dashboard/ws-1/connectors");
@@ -348,16 +364,103 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
       expect(loc.searchParams.has("oauth_error")).toBe(false);
     });
 
+    it("happy path with postExchange's configPatch (sentryInstallationId) persisted after the credential — mirrors railway's own configPatch flow", async () => {
+      const fakeSessionAdapterWithPostExchange = {
+        ...fakeSessionAdapter,
+        postExchange: vi.fn().mockResolvedValue({ ok: true, configPatch: { sentryInstallationId: "42" } }),
+      };
+      vi.mocked(oauthAdapterFor).mockReturnValue(fakeSessionAdapterWithPostExchange as never);
+      vi.mocked(getConnector).mockResolvedValue({
+        provider: "sentry",
+        enabled: true,
+        config: {},
+        hasSecret: false,
+        updatedAt: null,
+      } as never);
+
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+
+      expect(fakeSessionAdapterWithPostExchange.postExchange).toHaveBeenCalled();
+      expect(upsertConnector).toHaveBeenCalledWith(WS, "sentry", { config: { sentryInstallationId: "42" } });
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.searchParams.get("connected")).toBe("sentry");
+    });
+
     it("still succeeds even when Sentry's redirect carries OTHER extra params alongside installationId (e.g. a hypothetical future field) — forwarded, not special-cased", async () => {
-      const res = await GET(
-        req({ state: "s", code: "auth-code-1", installationId: "42", future_field: "x" }),
-        params("sentry")
-      );
-      expect(fakeSentryAdapter.exchange).toHaveBeenCalledWith(
+      const res = await GET(req({ code: "auth-code-1", installationId: "42", future_field: "x" }), params("sentry"));
+      expect(fakeSessionAdapter.exchange).toHaveBeenCalledWith(
         expect.objectContaining({ params: { installationId: "42", future_field: "x" } })
       );
       const loc = new URL(res.headers.get("location")!);
       expect(loc.searchParams.get("connected")).toBe("sentry");
+    });
+
+    it("a stray state param in the request is simply ignored — never checked, never passed to any consume function", async () => {
+      const res = await GET(req({ code: "auth-code-1", installationId: "42", state: "unexpected" }), params("sentry"));
+      expect(consumeConnectorOauthState).not.toHaveBeenCalled();
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.searchParams.get("connected")).toBe("sentry");
+    });
+
+    it("redirects with oauth_error=state_invalid when code is missing (same as param-transport)", async () => {
+      const res = await GET(req({}), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe("/dashboard");
+      expect(loc.searchParams.get("oauth_error")).toBe("state_invalid");
+      expect(consumeConnectorOauthStateBySessionUser).not.toHaveBeenCalled();
+    });
+
+    it("unauthenticated: redirects state_invalid, workspace-less, WITHOUT ever calling consumeConnectorOauthStateBySessionUser", async () => {
+      vi.mocked(auth).mockResolvedValue(null as never);
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe("/dashboard");
+      expect(loc.searchParams.get("oauth_error")).toBe("state_invalid");
+      expect(consumeConnectorOauthStateBySessionUser).not.toHaveBeenCalled();
+      expect(fakeSessionAdapter.exchange).not.toHaveBeenCalled();
+    });
+
+    it("victim-has-no-pending: the redeeming session's user has ZERO pending records for this provider — rejected, workspace-less (nothing was ever resolved)", async () => {
+      // The attacker minted under a DIFFERENT user id; the redeeming
+      // (victim's own) session finds nothing for ITS user id — exactly
+      // what consumeConnectorOauthStateBySessionUser resolves to null for.
+      vi.mocked(consumeConnectorOauthStateBySessionUser).mockResolvedValue(null);
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe("/dashboard");
+      expect(loc.searchParams.get("oauth_error")).toBe("state_invalid");
+      expect(fakeSessionAdapter.exchange).not.toHaveBeenCalled();
+      expect(setConnectorSecret).not.toHaveBeenCalled();
+    });
+
+    it("two-pending-workspaces (same-user ambiguity): consumeConnectorOauthStateBySessionUser itself resolves null (its own job to detect and refuse ambiguity) — the callback just surfaces state_invalid, same as any other unresolved case", async () => {
+      vi.mocked(consumeConnectorOauthStateBySessionUser).mockResolvedValue(null);
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.searchParams.get("oauth_error")).toBe("state_invalid");
+      expect(fakeSessionAdapter.exchange).not.toHaveBeenCalled();
+    });
+
+    it("membership re-check still applies (session-transport skips the mintedByUserId equality check but NOT the membership check)", async () => {
+      vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "member" } as never);
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe(`/dashboard/${WS}/connectors`);
+      expect(loc.searchParams.get("oauth_error")).toBe("state_invalid");
+      expect(fakeSessionAdapter.exchange).not.toHaveBeenCalled();
+    });
+
+    it("calls getWorkspaceMembership with the redeeming session's user id and the resolved workspaceId", async () => {
+      await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      expect(getWorkspaceMembership).toHaveBeenCalledWith(USER, WS);
+    });
+
+    it("provider_unconfigured still applies (env/adapter re-checked the same as param-transport)", async () => {
+      vi.mocked(oauthConfigFor).mockReturnValue(null);
+      const res = await GET(req({ code: "auth-code-1", installationId: "42" }), params("sentry"));
+      const loc = new URL(res.headers.get("location")!);
+      expect(loc.pathname).toBe(`/dashboard/${WS}/connectors`);
+      expect(loc.searchParams.get("oauth_error")).toBe("provider_unconfigured");
     });
   });
 

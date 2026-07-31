@@ -397,4 +397,34 @@ describe("GET /connectors — oauthReady (W3-T1)", () => {
     const json = (await res.json()) as GetJson;
     expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(false);
   });
+
+  // -----------------------------------------------------------------------
+  // W3-T3 fix round — the adapter's OWN optional envReady() (Sentry's third
+  // env var, beyond the generic oauthConfigFor pair).
+  // -----------------------------------------------------------------------
+  describe("envReady (W3-T3 fix round)", () => {
+    it("stays false when the adapter is registered, generic env IS configured, but envReady() returns false (Sentry's slug var missing)", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "sentry", envReady: () => false } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "sentry")!.oauthReady).toBe(false);
+    });
+
+    it("is true when the adapter is registered, generic env IS configured, AND envReady() returns true", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "sentry", envReady: () => true } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "sentry")!.oauthReady).toBe(true);
+    });
+
+    it("defaults to ready (true) when the adapter declares no envReady at all — matches every provider before sentry, unaffected", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(true);
+    });
+  });
 });

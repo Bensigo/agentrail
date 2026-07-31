@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   isConnectorProvider,
   consumeConnectorOauthState,
+  consumeConnectorOauthStateBySessionUser,
   setConnectorSecret,
   serializeOauthEnvelope,
   getWorkspaceMembership,
@@ -26,19 +27,9 @@ import {
 // doc-comment ("REACHABILITY") for why every route that calls
 // `oauthAdapterFor`/`oauthConfigFor` must import each provider's adapter
 // module directly (mirrors `runner/evidence/route.ts`'s identical idiom for
-// evidence adapters).
-//
-// W3-T3 (Sentry) deliberately does NOT add a sibling
-// `import "../../../../../../../lib/oauth/sentry"` here — Sentry's Public
-// Integration flow cannot round-trip a `state` value (doc-confirmed
-// absence), and this route's `state`/`code` requirement a few lines below
-// is a security-load-bearing gate, not a per-provider option. Importing
-// `lib/oauth/sentry.ts` here would make `oauthReady` flip true and expose a
-// "Connect Sentry" button that can never actually complete. See
-// `lib/oauth/sentry.ts`'s own doc-comment ("STATE CANNOT ROUND-TRIP") for
-// the full finding and the task report for the doc trail. Token-paste is
-// Sentry's only connect path today.
+// evidence adapters). W3-T3: `lib/oauth/sentry.ts` registers the same way.
 import "../../../../../../../lib/oauth/railway";
+import "../../../../../../../lib/oauth/sentry";
 
 const ADMIN_ROLES = ["owner", "admin"];
 
@@ -72,6 +63,16 @@ const ADMIN_ROLES = ["owner", "admin"];
  * membership on the bound workspace — not merely "any member," closing the
  * misdirection path completely rather than narrowing it.
  *
+ * SESSION-TRANSPORT (W3-T3 fix round, Sentry — see `types.ts`'s
+ * `stateTransport` doc-comment): the paragraph above describes
+ * `"param"`-transport tenant binding specifically (state carries the bound
+ * minter id, checked against the redeeming session). A provider whose
+ * vendor redirect cannot carry `state` AT ALL needs a DIFFERENT mechanism
+ * to achieve the SAME property — see step 5 below ("SESSION-TRANSPORT CSRF
+ * ANALYSIS") for the full, separately-argued equivalence; it is not weaker,
+ * just differently keyed (by the redeeming session's own user id instead
+ * of an echoed token).
+ *
  * ORDER OF CHECKS (each its own `oauth_error` reason, closed set, NEVER the
  * vendor's own error text, and NEVER a detail-leaking distinction between
  * causes — plan pin + review CRITICAL-1's "no detail leak" requirement):
@@ -82,30 +83,81 @@ const ADMIN_ROLES = ["owner", "admin"];
  *      -> `denied`. State is NEVER consumed on this branch — a forged hit
  *      must not spend a real single-use state for nothing (mirrors slack's
  *      own "no code exchange even attempted" precedent).
- *   3. `state` or `code` missing -> `state_invalid`. Still no state
- *      consumption (nothing to consume without a state value).
+ *   3. `code` missing -> `state_invalid`. For a `"param"`-transport
+ *      provider (the default — see `types.ts`'s `stateTransport`
+ *      doc-comment), `state` is ALSO required at this same point, checked
+ *      right after `code`. A `"session"`-transport provider (Sentry) has
+ *      no `state` to check at all — its redirect never carries one
+ *      (doc-confirmed absence, `lib/oauth/sentry.ts`'s own doc-comment).
+ *      Neither transport has consumed anything yet at this point.
  *   4. No authenticated session -> `state_invalid`. Checked BEFORE
- *      consuming state, mirroring `install-callback/route.ts`'s own
- *      auth()-before-consume ordering (a signed-out hit — e.g. a stale
- *      browser tab — never burns a single-use state that a legitimate,
- *      still-logged-in retry could otherwise redeem).
- *   5. `consumeConnectorOauthState` finds no live match (unknown / expired /
- *      already-consumed) -> `state_invalid`. Collapses all three causes
- *      identically (anti-enumeration, mirrors `consumeGithubInstallState`'s
- *      own posture).
+ *      resolving any pending record, for BOTH transports, mirroring
+ *      `install-callback/route.ts`'s own auth()-before-consume ordering (a
+ *      signed-out hit — e.g. a stale browser tab — never burns a
+ *      single-use state that a legitimate, still-logged-in retry could
+ *      otherwise redeem).
+ *   5. Resolving the pending record fails -> `state_invalid`, collapsing
+ *      every cause identically (anti-enumeration, mirrors
+ *      `consumeGithubInstallState`'s own posture) — HOW this resolution
+ *      happens differs by transport, and this is the fix round's actual
+ *      new mechanism:
+ *        - `"param"`: `consumeConnectorOauthState(provider, state)` finds
+ *          no live match (unknown / expired / already-consumed).
+ *        - `"session"`: `consumeConnectorOauthStateBySessionUser(provider,
+ *          session.user.id)` — SESSION-TRANSPORT CSRF ANALYSIS (why this is
+ *          CSRF-EQUIVALENT to the param-transport mechanism, not a weaker
+ *          substitute forced by necessity): tenant binding here is "does
+ *          the REDEEMING session's own user id have EXACTLY ONE pending
+ *          record for this provider," not "does the redeeming session
+ *          match a token the vendor echoed back" (there is none to echo).
+ *          Walk the misdirection attack from `mintConnectorOauthState`'s
+ *          own doc-comment through to completion under this mechanism: an
+ *          attacker mints a state under THEIR OWN session (any user can
+ *          mint for any workspace they admin) and sends the resulting
+ *          authorize URL to a Victim as a phishing pretext.
+ *            - If Victim completes Sentry's consent screen while NOT
+ *              signed into AgentRail, step 4 above already rejects
+ *              (`state_invalid`, nothing resolved) — same as today.
+ *            - If Victim IS signed into AgentRail, THIS step resolves by
+ *              VICTIM's own session user id — the pending record was
+ *              minted under the ATTACKER's user id, so the lookup finds
+ *              ZERO matches for Victim. The grant Sentry just issued is
+ *              discarded, never exchanged, never lands in the attacker's
+ *              workspace. Symmetrically, an attacker cannot complete a
+ *              VICTIM-minted flow either — they'd need the victim's own
+ *              session, which they don't have.
+ *            - The attacker CAN complete their OWN minted flow under
+ *              their OWN session — that is just a normal, legitimate
+ *              connect, not an attack.
+ *            - Same-user, two-workspace ambiguity (this one user has TWO
+ *              pending sentry attempts open at once — e.g. two tabs, two
+ *              workspaces they admin) resolves to MULTIPLE candidates ->
+ *              REJECTED, and — critically —
+ *              `consumeConnectorOauthStateBySessionUser` consumes NEITHER
+ *              (see that function's own doc-comment,
+ *              `@agentrail/db-postgres`): there is no vendor-echoed token
+ *              here to disambiguate which pending attempt this specific
+ *              `code`/`installationId` belongs to, so picking one would
+ *              risk silently connecting the WRONG workspace. A disclosed
+ *              UX tradeoff (finish one connect attempt before starting a
+ *              second), not a security hole — this reasoning is mirrored
+ *              in the spec doc's Sentry section.
  *   6+ WORKSPACE ID (and the bound minter id) ARE NOW KNOWN — every later
  *      failure redirects to THAT workspace's own connectors page, per the
  *      plan's "redirects to the connectors page" contract; steps 1-5 above
  *      redirect to the workspace-LESS `/dashboard` root instead (mirrors
  *      `install-callback/route.ts`'s own two-tier redirect precedent
  *      exactly).
- *   6. The redeeming session's user does not equal the state's bound
- *      minter, OR is not an owner/admin member of the bound workspace (the
- *      membership could have changed since minting — re-checked fresh,
- *      never trusted from mint time) -> `state_invalid`. Collapsed into the
- *      SAME reason as "state genuinely invalid" — deliberately: a prober
- *      must not be able to distinguish "wrong person" from "expired" from
- *      "never existed" from the redirect alone.
+ *   6. PARAM-TRANSPORT ONLY: the redeeming session's user does not equal
+ *      the state's bound minter -> `state_invalid` (collapsed into the
+ *      same reason as "state genuinely invalid," same anti-enumeration
+ *      reasoning as step 5). Not applicable to `"session"` transport — its
+ *      own step-5 lookup is ALREADY keyed by the redeeming session's user
+ *      id, so this equality is tautological there, not a separate check.
+ *      BOTH transports then re-verify the resolved user is STILL an
+ *      owner/admin member of the resolved workspace (the membership could
+ *      have changed since minting — re-checked fresh, never trusted from
+ *      mint time) -> `state_invalid`.
  *   7. No adapter registered for `provider`, OR its OAuth env is unset, OR
  *      `CONSOLE_PUBLIC_URL` is unset (redirect_uri cannot be built) ->
  *      `provider_unconfigured`. Re-checks BOTH independently of the link
@@ -164,37 +216,87 @@ export async function GET(
     return fail(null, "denied");
   }
 
-  const state = params.get("state");
   const code = params.get("code");
-  if (!state || !code) {
+  if (!code) {
     return fail(null, "state_invalid");
   }
 
-  // Auth checked BEFORE consuming state — see this route's own doc-comment
-  // ("ORDER OF CHECKS", step 4) for why (mirrors install-callback.ts).
+  // W3-T3 fix round — peek at the registered adapter's declared transport
+  // (see this route's own doc-comment, "ORDER OF CHECKS" step 3, and
+  // `types.ts`'s `stateTransport` doc-comment for the full contract). A
+  // synchronous, side-effect-free registry lookup — reused below for the
+  // REAL provider_unconfigured check (step 7) so this is only ever called
+  // once per request. Absent adapter / undeclared field -> `"param"`,
+  // today's universal behavior — matches every provider before Sentry and
+  // every existing fixture in this route's own test suite, none of which
+  // declare this field.
+  const adapter = oauthAdapterFor(provider);
+  const stateTransport = adapter?.stateTransport ?? "param";
+
+  // PARAM-TRANSPORT ONLY: `state` is ALSO required at this same point,
+  // right after `code` — see step 3. A `"session"`-transport provider's
+  // redirect never carries one at all (doc-confirmed absence), so nothing
+  // to check here for it.
+  let state: string | null = null;
+  if (stateTransport === "param") {
+    state = params.get("state");
+    if (!state) {
+      return fail(null, "state_invalid");
+    }
+  }
+
+  // Auth checked BEFORE resolving any pending record, for BOTH transports
+  // — see this route's own doc-comment ("ORDER OF CHECKS", step 4) for why
+  // (mirrors install-callback.ts).
   const session = await auth();
   if (!session?.user?.id) {
     return fail(null, "state_invalid");
   }
 
-  const consumed = await consumeConnectorOauthState(provider, state);
-  if (!consumed) {
-    return fail(null, "state_invalid");
-  }
-  const { workspaceId, userId: mintedByUserId, codeVerifier } = consumed;
+  let workspaceId: string;
+  let mintedByUserId: string;
+  let codeVerifier: string | null;
 
-  // TENANT BINDING (review CRITICAL-1) — see this route's own doc-comment
-  // for the full attack this closes. Both checks collapse to the SAME
-  // closed reason so neither is distinguishable from the outside.
-  if (session.user.id !== mintedByUserId) {
-    return fail(workspaceId, "state_invalid");
+  if (stateTransport === "session") {
+    // SESSION-TRANSPORT CSRF ANALYSIS — see this route's own doc-comment
+    // ("ORDER OF CHECKS", step 5) for the full attack-tree walk this
+    // resolution is equivalent-strength against. `mintedByUserId` below
+    // equals `session.user.id` BY CONSTRUCTION (the lookup was keyed by
+    // it) — no separate equality check is needed the way param-transport's
+    // step 6 needs one.
+    const resolved = await consumeConnectorOauthStateBySessionUser(provider, session.user.id);
+    if (!resolved) {
+      return fail(null, "state_invalid");
+    }
+    workspaceId = resolved.workspaceId;
+    mintedByUserId = resolved.userId;
+    codeVerifier = resolved.codeVerifier;
+  } else {
+    const consumed = await consumeConnectorOauthState(provider, state!);
+    if (!consumed) {
+      return fail(null, "state_invalid");
+    }
+    workspaceId = consumed.workspaceId;
+    mintedByUserId = consumed.userId;
+    codeVerifier = consumed.codeVerifier;
+
+    // TENANT BINDING (review CRITICAL-1) — param-transport only, see this
+    // route's own doc-comment ("ORDER OF CHECKS", step 6) for the full
+    // attack this closes. Collapses to the SAME closed reason as every
+    // other tenant-binding failure so neither is distinguishable from the
+    // outside.
+    if (session.user.id !== mintedByUserId) {
+      return fail(workspaceId, "state_invalid");
+    }
   }
+
+  // Re-verified fresh for BOTH transports — never trusted from mint time
+  // (the membership could have changed since).
   const membership = await getWorkspaceMembership(session.user.id, workspaceId);
   if (!membership || !ADMIN_ROLES.includes(membership.role)) {
     return fail(workspaceId, "state_invalid");
   }
 
-  const adapter = oauthAdapterFor(provider);
   if (!adapter || !oauthConfigFor(provider)) {
     return fail(workspaceId, "provider_unconfigured");
   }

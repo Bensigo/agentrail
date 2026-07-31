@@ -2341,6 +2341,11 @@ export {
   // `connectors.ts`'s own doc-comment).
   mintConnectorOauthState,
   consumeConnectorOauthState,
+  // OAuth Connect Wave 3, W3-T3 fix round — session-transport tenant
+  // binding for a provider (Sentry) whose vendor redirect can't carry a
+  // `state` token; see `connectors.ts`'s own doc-comment on both.
+  clearPendingConnectorOauthStatesForUser,
+  consumeConnectorOauthStateBySessionUser,
   type ConnectorUpdate,
   type EnabledConnectorRow,
 } from "./connectors.js";

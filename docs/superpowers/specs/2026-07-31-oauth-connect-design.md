@@ -31,7 +31,8 @@ catalog stays `"secret"` for both providers, unchanged — OAuth is an
 | Flow | Standard authorization-code OAuth2 | Public Integration install flow |
 | Authorize | `GET https://backboard.railway.com/oauth/auth` (confirmed W3-T2 — **corrects** the plan's own placeholder, which guessed `railway.com/oauth/authorize`; see "W3-T2 doc-verification" below) | Vendor-hosted install screen at the FIXED external URL `https://sentry.io/sentry-apps/<slug>/external-install/` (confirmed W3-T3) |
 | Token exchange | `POST https://backboard.railway.com/oauth/token`, HTTP Basic client auth (confirmed W3-T2) | `POST https://sentry.io/api/0/sentry-app-installations/{installationId}/authorizations/`, JSON body, `grant_type=authorization_code` (confirmed W3-T3 — JSON, not form-urlencoded) |
-| Callback params | `code`, `state` | `code`, **`installationId`** — **NO `state`** (confirmed-absent, W3-T3 — **corrects** this table's own prior placeholder; see "W3-T3 doc-verification" below) |
+| Callback params | `code`, `state` | `code`, **`installationId`** — **NO `state`** (confirmed-absent, W3-T3 — **corrects** this table's own prior placeholder; see "W3-T3 doc-verification" below). Tenant binding is resolved a DIFFERENT way instead — see "Session-transport tenant binding" below (W3-T3 fix round). |
+| `stateTransport` | `"param"` (the default) | `"session"` |
 | Scopes | `project:viewer offline_access openid`, `prompt=consent` (required to get a refresh token back) | granted at Public Integration registration time, not per-authorize |
 | Access TTL | 1 hour | 8 hours (confirmed W3-T3) |
 | Refresh | rotates the refresh token on every use; refresh token itself is valid ~1 year | same exchange endpoint, `grant_type=refresh_token` (confirmed W3-T3 — docs' own TOP recommendation is a different JWT-bearer mechanism; this is the documented, supported, "not recommended" alternative — see below) |
@@ -118,11 +119,14 @@ carries NO `state` parameter — confirmed absent, not merely unconfirmed —
 correcting this doc's own prior vendor-facts table (which had carried
 `state` in the Sentry callback-params cell since the planning session).**
 This is the session's headline finding, not a footnote: per this task's own
-binding instruction to stop rather than ship a stateless flow, Sentry's
-`OauthProviderAdapter` (`lib/oauth/sentry.ts`) is implemented and fully
-tested but **deliberately not wired into the live OAuth routes** — see
-"Known gap" immediately below the design section for the full consequence
-and the follow-up this unblocks.
+binding instruction to stop rather than ship a stateless flow, the FIRST
+W3-T3 submission implemented the complete `OauthProviderAdapter`
+(`lib/oauth/sentry.ts`) but deliberately left it unreachable pending a
+coordinator ruling on how tenant binding should work for a vendor that
+cannot round-trip `state`. **Resolved in the W3-T3 fix round** — see
+"Session-transport tenant binding" below the design section for the
+mechanism the coordinator ruled for and Sentry's live status as of that
+round.
 
 - **State — confirmed absent for Public Integration.** The redirect
   section's own worked Flask handler reads exactly two params, nothing
@@ -398,30 +402,109 @@ against the doc-verified facts above:
   ignored by this adapter, mirroring how Railway's adapter ignores
   `ExchangeInput.params`.
 
-### Known gap (W3-T3): Sentry OAuth is implemented but NOT reachable yet
+### Session-transport tenant binding (W3-T3 fix round — coordinator ruling, option B)
 
-Because Sentry's Public Integration redirect cannot carry a `state` value,
-and the callback route's `state`/`code` requirement (above) is a security
-gate applying to every provider identically, `lib/oauth/sentry.ts` is
-**deliberately not wired into live reachability**: the three routes that
-make a provider adapter reachable
-(`connectors/oauth/{link,callback/[provider]}/route.ts`,
-`workspaces/[workspaceId]/connectors/route.ts`) do NOT side-effect-import
-`lib/oauth/sentry.ts` the way they import `lib/oauth/railway.ts` — each has
-its own inline comment pointing back here. Consequence: `oauthReady` is
-structurally `false` for `"sentry"` regardless of whether
-`SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/`_INTEGRATION_SLUG` are set on
-the deployment — token-paste remains Sentry's only connect path.
+The FIRST W3-T3 submission stopped here: Sentry's Public Integration
+redirect cannot carry `state`, and the callback route's `state`/`code`
+requirement is a security gate (tenant binding, CSRF) applying to every
+provider identically — so that submission implemented the complete adapter
+but deliberately left it unreachable (no side-effect import into the three
+routes that make a provider adapter live), pending a coordinator decision
+on how to proceed. **The ruling: do not defer, do not ship stateless —
+implement a session-based mechanism.** Sentry is live as of this fix round.
 
-The adapter itself is complete and fully tested standalone
-(`lib/oauth/sentry.test.ts`) — a follow-up task that gives the callback
-route an alternate, non-state tenant-binding mechanism for a vendor that
-can't round-trip one (e.g. a short-lived first-party HttpOnly cookie set at
-link time, read back at callback time) can wire reachability in with a
-three-line change (the three `import "./sentry"` lines) and zero changes
-to this file. That callback-route redesign is a shared-plumbing decision
-deserving its own reviewed design, not a solo mid-task improvisation —
-explicitly out of scope here.
+**The mechanism.** `OauthProviderAdapter` gains an ADDITIVE, optional
+`stateTransport?: "param" | "session"` capability flag (mirrors
+`postExchange`'s own additive-capability precedent). `"param"` (the
+default when absent — Railway, explicitly, unchanged) is everything above:
+the vendor round-trips `state`; the callback consumes it by that exact
+token. `"session"` (Sentry) replaces the LOOKUP mechanism, not the
+underlying storage: the link route still mints the SAME state-record shape
+(`mintConnectorOauthState` — `oauthState`/`oauthStateExpiresAt`/
+`oauthUserId`, unchanged) into `connectors.config` jsonb, but for a
+session-transport provider it FIRST calls
+`clearPendingConnectorOauthStatesForUser(provider, userId)` — last-mint-
+wins per (user, provider), across every workspace, so a user retrying the
+connect flow (two tabs, backing out of the vendor's consent screen and
+trying again) never leaves an earlier, still-pending record around. The
+authorize URL still carries no `state` param (Sentry's adapter never
+embeds the `state`/`codeChallenge` inputs it's handed — harmless, since the
+link route mints/offers them unconditionally for every provider regardless
+of transport, same as PKCE).
+
+At the callback, a session-transport hit skips the `state` presence check
+entirely (only `code` is required) but is otherwise gated identically:
+session required BEFORE anything else (same position as `"param"`
+transport). The pending record is then resolved by the REDEEMING
+SESSION'S OWN user id instead of an opaque token —
+`consumeConnectorOauthStateBySessionUser(provider, session.user.id)`
+(`@agentrail/db-postgres`) — requiring EXACTLY ONE unexpired match across
+every workspace; zero or multiple is the SAME closed `state_invalid`
+reason as every other tenant-binding failure, and critically, **nothing is
+consumed on an ambiguous multiple match**.
+
+**CSRF-equivalence argument** (why this is not a weaker substitute forced
+by necessity, but a differently-keyed mechanism achieving the same
+property): walk the SAME misdirection attack the "Callback" section above
+describes through to completion under session-transport. An attacker,
+legitimately owner/admin of their own Workspace A, mints a state under
+THEIR OWN session and sends the resulting Sentry authorize URL to a Victim
+as a phishing pretext.
+- If Victim completes Sentry's consent screen while NOT signed into
+  AgentRail, the callback's session requirement already rejects
+  (`state_invalid`) before anything is resolved — same as today.
+- If Victim IS signed into AgentRail, the lookup resolves by VICTIM's own
+  session user id — the pending record was minted under the ATTACKER's
+  user id, so this finds ZERO matches for Victim. The OAuth grant Sentry
+  just issued is discarded: never exchanged, never lands in the attacker's
+  workspace. Symmetrically, an attacker cannot complete a VICTIM-minted
+  flow either — they would need the victim's own authenticated session,
+  which they don't have and cannot forge.
+- The attacker CAN complete their OWN minted flow under their OWN
+  session — that is simply a normal, legitimate connect, not an attack.
+- Same-user, two-workspace ambiguity (one legitimate user has TWO pending
+  Sentry attempts open at once — e.g. two tabs, two workspaces they admin)
+  resolves to MULTIPLE candidates → REJECTED, and neither is consumed:
+  there is no vendor-echoed token to disambiguate which pending attempt
+  this specific `code`/`installationId` belongs to, so picking one would
+  risk silently connecting the WRONG workspace's attempt. A disclosed UX
+  tradeoff (finish one connect attempt before starting a second, or let
+  the first's 30-minute TTL lapse), not a security hole.
+
+**Atomicity under concurrency** — proven against a REAL Postgres, not just
+argued: `consumeConnectorOauthStateBySessionUser` runs `SELECT ... FOR
+UPDATE` (locking every candidate row) inside a `db.transaction`, then a
+guarded `UPDATE ... WHERE id = <locked row> AND oauthState IS NOT NULL` in
+the SAME transaction. This is deliberately NOT this package's own
+documented EvalPlanQual CTE-guard gotcha shape (a CTE's WHERE clause is
+evaluated once at snapshot time and never re-checked when an outer
+statement's write finally acquires the lock) — the qualifying `SELECT`
+itself IS the locking read here, and Postgres's own READ COMMITTED
+locking-read semantics re-evaluate a blocked `SELECT ... FOR UPDATE`'s
+WHERE clause against the freshly-committed row version once unblocked, so
+a second racing caller correctly sees zero candidates once the first has
+consumed the only match. `oauth-state-consume-race.integration.test.ts`
+extends the existing param-transport race proof with a session-transport
+sibling: N genuinely concurrent calls against the same pending record
+resolve exactly once, matching the original mechanism's own guarantee
+exactly.
+
+**Env gating.** `OauthProviderAdapter` also gains an additive, optional
+`envReady?(): boolean` — a provider's own check for EXTRA env vars beyond
+the generic `oauthConfigFor`-checked `<PROVIDER>_OAUTH_CLIENT_ID`/
+`_CLIENT_SECRET` pair. Sentry's implementation checks
+`SENTRY_OAUTH_INTEGRATION_SLUG` (needed to build the external-install
+URL). Read generically — never a provider name hardcoded into either
+shared route — by the connectors GET route's `oauthReady` derivation and
+the link route's 409 env-gate, alongside (never instead of)
+`oauthConfigFor`. Absent `envReady` on an adapter defaults to ready,
+unaffected for every provider before Sentry.
+
+The full attack-tree reasoning above is mirrored in
+`connectors/oauth/callback/[provider]/route.ts`'s own doc-comment
+("SESSION-TRANSPORT CSRF ANALYSIS") and `lib/oauth/sentry.ts`'s own
+("SESSION-TRANSPORT TENANT BINDING") — this section, not restated
+piecemeal, is the canonical version; the code comments point back here.
 
 ## Sheet UX
 
@@ -434,13 +517,15 @@ token instead"** disclosure that reveals the exact same token form on
 demand — a one-way reveal, no re-hide affordance. Without `oauthReady`, the
 component renders *exactly* today's form, byte-identical (the same JSX
 value, not a re-implementation) — zero visual regression for every other
-provider, and for railway/sentry themselves until W3-T2/T3 land.
+provider.
 
-Sentry's catalog entry (`connector-helpers.ts`) DOES declare an `oauthHint`
-now (W3-T3, per this task's own brief) — but it renders nothing today:
-`oauthReady` is structurally `false` for sentry (see "Known gap" above),
-so `SecretManage`'s `!connector.oauthReady` branch is always taken.
-Pre-positioned, inert, correct the moment reachability is restored.
+Sentry's catalog entry (`connector-helpers.ts`) declares an `oauthHint`
+(W3-T3) — LIVE as of the W3-T3 fix round: `oauthReady` for sentry reflects
+the real three-env-var gate (`oauthConfigFor` + `sentryOauthAdapter`'s own
+`envReady()`), so once all three `SENTRY_OAUTH_*` vars are set on a
+deployment, the "Connect Sentry" primary button renders exactly like
+Railway's — session-transport tenant binding (see "Session-transport
+tenant binding" above) makes the whole flow actually completable now.
 
 **Connect-result banner (W3-T2 fix round)** — T1 shipped the callback's
 `?connected=<provider>`/`?oauth_error=<reason>` redirect but nothing ever
@@ -470,20 +555,22 @@ for an unrecognized/missing param. Dismissing strips the query params
    reason; connect-result banner; T1's `core.ts` gained token-free logging
    on every refresh-failure path + a persist-after-vendor-success test.
 3. **W3-T3:** Sentry's Public Integration adapter, `installationId` handling,
-   `lib/evidence/sentry.ts` switched over — **implemented and fully tested,
-   but NOT wired into live reachability**: doc-verification found Sentry's
-   Public Integration flow cannot round-trip a `state` value, which the
-   shared callback route requires for every provider (see "Known gap"
-   above). Sentry stays token-paste-only until a follow-up task adds an
-   alternate tenant-binding mechanism for the callback route.
+   `lib/evidence/sentry.ts` switched over. FIRST submission stopped short of
+   live reachability — doc-verification found Sentry's Public Integration
+   flow cannot round-trip a `state` value, which the (then-only) callback
+   mechanism required for every provider — and flagged it for a coordinator
+   ruling rather than shipping a stateless flow or improvising a fix
+   mid-task. **Fix round (coordinator ruling, option B — do not defer, do
+   not ship stateless): SESSION-TRANSPORT tenant binding implemented and
+   wired live** — see "Session-transport tenant binding" above for the
+   full mechanism and CSRF-equivalence argument. Sentry is live as of this
+   fix round, on equal footing with Railway.
 4. **W3-T4:** token-only sheet copy for the five providers that stay
    token-paste forever, wave-final review, this doc's as-built section.
-5. **Turn-on (ops, after W3-T2 merges):** register the Railway app (below),
-   set its env vars on the deployment — `oauthReady` flips true for Railway
-   automatically, purely env + adapter presence. Sentry's turn-on is
-   BLOCKED on the follow-up callback-route work above; registering the
-   Sentry vendor-side app now is optional prep, not a turn-on step (setting
-   its env vars alone has no effect yet — see "Known gap").
+5. **Turn-on (ops, after W3-T2/T3 merge):** register both vendor apps
+   (below), set their env vars on the deployment. No further code change
+   flips `oauthReady` on for either provider — it is purely env + adapter
+   presence (Sentry's own `envReady()` folded into that same check).
 
 ## Owner registration steps
 
@@ -505,22 +592,20 @@ workspace admins, not an account-level setting) — app type **Web
 id/secret (shown once); set `RAILWAY_OAUTH_CLIENT_ID` /
 `RAILWAY_OAUTH_CLIENT_SECRET` on the deployment.
 
-**Sentry (NOT YET LIVE — see "Known gap" above):** register a **Public
-Integration** (Sentry → Settings → Developer Settings → New Public
-Integration) with the redirect URI above as its Redirect URL; note the
-issued client id/secret and the integration's own slug; set
-`SENTRY_OAUTH_CLIENT_ID` / `SENTRY_OAUTH_CLIENT_SECRET` /
-`SENTRY_OAUTH_INTEGRATION_SLUG`. Doing this now is optional prep, not a
-turn-on step — `lib/oauth/sentry.ts` is not wired into the live routes, so
-these three vars have no effect until a follow-up task resolves the
-state-round-trip gap. The uninstall webhook Sentry also offers is a
-documented v2 follow-up, not part of v1 either way.
+**Sentry:** register a **Public Integration** (Sentry → Settings →
+Developer Settings → New Public Integration) with the redirect URI above
+as its Redirect URL; note the issued client id/secret and the
+integration's own slug; set `SENTRY_OAUTH_CLIENT_ID` /
+`SENTRY_OAUTH_CLIENT_SECRET` / `SENTRY_OAUTH_INTEGRATION_SLUG`. Live as of
+the W3-T3 fix round — see "Session-transport tenant binding" above for how
+tenant binding works without a vendor-echoed `state`. The uninstall
+webhook Sentry also offers is a documented v2 follow-up, not part of v1.
 
-Once Railway's two vars are set (and W3-T2 has merged so its adapter is
-registered), `oauthReady` flips true server-side automatically for Railway
-— no redeploy-time toggle beyond the env vars themselves. Sentry's
-`oauthReady` stays `false` regardless of its three vars until the
-follow-up callback-route work lands.
+Once both providers' env vars are set (and W3-T2/T3 have merged so both
+adapters are registered), `oauthReady` flips true server-side
+automatically for each — no redeploy-time toggle beyond the env vars
+themselves (Sentry's own `envReady()` check folds into the same
+derivation, gating on all three of its vars rather than the generic two).
 
 ## Out of scope
 

@@ -946,6 +946,155 @@ export async function consumeConnectorOauthState(
   return { workspaceId: row.workspaceId, userId, codeVerifier };
 }
 
+// --------------------------------------------------------------------------- //
+// OAuth Connect Wave 3, W3-T3 fix round (coordinator ruling on the
+// state-round-trip finding — `.superpowers/sdd/task-W3T3-report.md`,
+// `apps/console/lib/oauth/types.ts`'s `stateTransport` doc-comment) —
+// SESSION-TRANSPORT tenant binding, for a provider (so far only Sentry)
+// whose vendor redirect cannot carry a `state` token at all. Two functions,
+// used together by the link/callback routes INSTEAD OF
+// mintConnectorOauthState's plain call / consumeConnectorOauthState — the
+// underlying STORAGE mechanism (the same four ephemeral connectors.config
+// jsonb keys, the same mintConnectorOauthState mint) is unchanged; only how
+// the pending record is FOUND at redemption time differs, because there is
+// no vendor-echoed token to look it up by.
+// --------------------------------------------------------------------------- //
+
+/**
+ * Session-transport providers only, called by the link route BEFORE
+ * `mintConnectorOauthState` — clears every OTHER pending oauth state this
+ * user has minted for `provider`, across every workspace. Last-mint-wins
+ * per (user, provider): without this, a user who opens the connect flow
+ * twice (two tabs, a retry after backing out of the vendor's consent
+ * screen) leaves an earlier, still-pending record around, which would
+ * manufacture false ambiguity for {@link consumeConnectorOauthStateBySessionUser}'s
+ * own "exactly one match" requirement — turning an ordinary retry into a
+ * rejected connect. Same "clear only the ephemeral state keys, leave
+ * `oauthUserId`/`oauthPkceVerifier` as a harmless disclosed leftover" shape
+ * as `consumeConnectorOauthState`'s own clear — the discriminating field
+ * for "is this row pending" is `oauthState IS NOT NULL`; nothing else ever
+ * reads the stale leftovers without it.
+ *
+ * BOUNDED QUERY (disclosed): a single UPDATE filtered on `provider` (a
+ * plain text column) AND a jsonb `oauthUserId` match — no dedicated index
+ * on either jsonb key. Acceptable because pending records are RARE (one
+ * per in-flight connect attempt) and TTL'd (30 minutes,
+ * `OAUTH_STATE_TTL_MS` above) — the realistic matching-row count for any
+ * one user is 0 or 1 in the overwhelming common case, and the total
+ * `connectors` row count for one provider is bounded by this deployment's
+ * total workspace count, not global scale. No transaction needed: this is
+ * a single statement, and Postgres's own row-level locking already makes
+ * it atomic with respect to itself; the caller's SUBSEQUENT
+ * `mintConnectorOauthState` call is a separate statement (a benign gap if
+ * a request dies in between — the target workspace simply has no pending
+ * state yet, the same as before either call ran).
+ */
+export async function clearPendingConnectorOauthStatesForUser(
+  provider: ConnectorProvider,
+  userId: string
+): Promise<void> {
+  await db.execute(sql`
+    UPDATE connectors
+    SET config = config - 'oauthState' - 'oauthStateExpiresAt', updated_at = now()
+    WHERE provider = ${provider}
+      AND (config ->> 'oauthUserId') = ${userId}
+      AND (config ->> 'oauthState') IS NOT NULL
+  `);
+}
+
+/**
+ * Session-transport providers only — the callback route's replacement for
+ * `consumeConnectorOauthState` when the vendor's redirect carries no
+ * `state` token to look a pending record up by. Resolves the pending
+ * record by the REDEEMING SESSION's own `userId` instead: finds every
+ * unexpired row across EVERY workspace where `provider` matches and
+ * `config.oauthUserId = userId` and a state is still pending, and requires
+ * EXACTLY ONE such row — zero or multiple is ambiguous and returns `null`
+ * WITHOUT consuming anything (see this function's own "AMBIGUITY MUST NOT
+ * CONSUME" note below). `mintedByUserId` in the result always equals the
+ * `userId` argument by construction (the lookup was keyed by it) — callers
+ * do not need a separate equality check the way `consumeConnectorOauthState`'s
+ * callers do.
+ *
+ * ATOMICITY UNDER CONCURRENCY (proven against a REAL Postgres race, not
+ * just this reasoning — see this package's
+ * `oauth-state-consume-race.integration.test.ts`): `SELECT ... FOR UPDATE`
+ * locks every candidate row up front. Two callers racing the SAME single
+ * pending record: the first to acquire the lock proceeds; the second's
+ * `SELECT ... FOR UPDATE` BLOCKS on that lock, and — this is the important
+ * part, and NOT the same shape as this package's own documented
+ * EvalPlanQual CTE-guard gotcha (`investigations.ts`/`github_intake.ts`'s
+ * own doc-comments: a CTE's WHERE clause is evaluated ONCE at snapshot
+ * time and never re-checked when an OUTER statement's write finally
+ * acquires the lock) — once unblocked, Postgres RE-EVALUATES a blocked
+ * `SELECT ... FOR UPDATE`'s own WHERE clause against the freshly-committed
+ * row version (documented READ COMMITTED locking-read semantics, distinct
+ * from the CTE gotcha: there is no separate outer reference going stale
+ * here, because the qualifying SELECT itself IS the locking read). Since
+ * the first caller already cleared that row's `oauthState`, the second
+ * caller's candidate list correctly drops to zero — no double-consume, no
+ * stale re-read. The second (UPDATE-by-id) statement, run in the SAME
+ * transaction while STILL HOLDING the lock from the first, additionally
+ * repeats the `oauthState IS NOT NULL` guard on its OWN WHERE (belt-and-
+ * braces, matching this package's own "guard the write's own WHERE, not
+ * just an earlier read" doctrine) even though nothing else could have
+ * touched the row in between (the lock never released).
+ *
+ * AMBIGUITY MUST NOT CONSUME: when candidates.length !== 1 (the user has
+ * zero pending records for this provider, or — same-user, two-workspace
+ * ambiguity — more than one open at once), this function returns `null`
+ * and performs NO write at all. Consuming (or worse, picking) one of
+ * several ambiguous candidates would silently connect the WRONG
+ * workspace's pending attempt to whichever code/installationId this
+ * request happens to carry — there is no vendor-echoed token here to
+ * disambiguate which pending attempt this specific redirect belongs to,
+ * so the only safe answer under ambiguity is to leave every candidate
+ * exactly as it was and let the admin complete one connect attempt at a
+ * time (see the callback route's own "SESSION-TRANSPORT CSRF ANALYSIS"
+ * for why this is a disclosed UX tradeoff, not a security hole).
+ */
+export async function consumeConnectorOauthStateBySessionUser(
+  provider: ConnectorProvider,
+  userId: string
+): Promise<{ workspaceId: string; userId: string; codeVerifier: string | null } | null> {
+  const now = new Date().toISOString();
+  return db.transaction(async (tx) => {
+    const candidates = Array.from(
+      (await tx.execute(sql`
+        SELECT id, workspace_id, config
+        FROM connectors
+        WHERE provider = ${provider}
+          AND (config ->> 'oauthUserId') = ${userId}
+          AND (config ->> 'oauthState') IS NOT NULL
+          AND (config ->> 'oauthStateExpiresAt') > ${now}
+        FOR UPDATE
+      `)) as unknown as Array<{ id: string; workspace_id: string; config: ConnectorConfig | null }>
+    );
+
+    if (candidates.length !== 1) {
+      return null;
+    }
+
+    const row = candidates[0]!;
+    const codeVerifier = typeof row.config?.oauthPkceVerifier === "string" ? row.config.oauthPkceVerifier : null;
+
+    const updated = Array.from(
+      (await tx.execute(sql`
+        UPDATE connectors
+        SET config = config - 'oauthState' - 'oauthStateExpiresAt', updated_at = now()
+        WHERE id = ${row.id} AND (config ->> 'oauthState') IS NOT NULL
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>
+    );
+    // Defensive only — should be unreachable given the lock acquired by the
+    // SELECT above is held continuously across both statements in this
+    // transaction, so nothing else could have cleared it in between.
+    if (updated.length === 0) return null;
+
+    return { workspaceId: row.workspace_id, userId, codeVerifier };
+  });
+}
+
 /** The MCP providers whose keys are materialized into a run's codebase config. */
 const MCP_PROVIDERS = ["linear", "figma", "context7"] as const;
 

@@ -12,6 +12,12 @@ vi.mock("@agentrail/db-postgres", () => ({
 vi.mock("../../../../../../../lib/oauth/types", () => ({
   oauthAdapterFor: vi.fn(),
   oauthConfigFor: vi.fn(),
+  // W3-T2: this route now side-effect-imports `lib/oauth/railway.ts`, which
+  // calls `registerOauthAdapter` at module load — the mock needs the export
+  // to exist so that import doesn't throw, even though this file drives
+  // `oauthAdapterFor`/`oauthConfigFor` directly and never asserts on
+  // registration itself.
+  registerOauthAdapter: vi.fn(),
 }));
 
 import { GET } from "./route";

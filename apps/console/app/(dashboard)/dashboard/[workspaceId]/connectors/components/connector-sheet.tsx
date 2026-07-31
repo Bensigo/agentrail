@@ -547,6 +547,9 @@ function SecretManage({
   // different connector, or a full page reload, not by close+reopen alone.
   return (
     <div className="flex flex-col gap-2">
+      {meta?.oauthHint && (
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.oauthHint}</p>
+      )}
       <OauthConnectButton connector={connector} workspaceId={workspaceId} canManage={canManage} />
       {manualOpen ? (
         tokenForm

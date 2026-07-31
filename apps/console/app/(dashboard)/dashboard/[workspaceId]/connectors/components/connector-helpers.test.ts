@@ -443,6 +443,13 @@ describe("connector catalog — railway entry (Task 7)", () => {
     expect(railway.connect?.secretParts).toBeUndefined();
     expect(railway.connect?.secretPartPatterns).toBeUndefined();
   });
+
+  // OAuth Connect Wave 3, W3-T2 — ConnectorConnectMeta.oauthHint.
+  it("declares a calm oauthHint sentence for the OAuth-primary button, mentioning read-only access and the token fallback", () => {
+    expect(railway.connect?.oauthHint).toBeDefined();
+    expect(railway.connect?.oauthHint).toMatch(/read-only/i);
+    expect(railway.connect?.oauthHint).toMatch(/api token/i);
+  });
 });
 
 describe("connector catalog — langfuse entry (Task P2)", () => {

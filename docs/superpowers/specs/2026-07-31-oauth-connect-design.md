@@ -29,8 +29,8 @@ catalog stays `"secret"` for both providers, unchanged — OAuth is an
 | | Railway | Sentry |
 |---|---|---|
 | Flow | Standard authorization-code OAuth2 | Public Integration install flow |
-| Authorize | `railway.com/oauth/authorize`-family (exact URL re-verified in W3-T2 against the quickstart doc) | Vendor-hosted install screen for the registered Public Integration |
-| Token exchange | `POST backboard.railway.com/oauth/token` | `POST /api/0/sentry-app-installations/{installationId}/authorizations/`, `grant_type=authorization_code` |
+| Authorize | `GET https://backboard.railway.com/oauth/auth` (confirmed W3-T2 — **corrects** the plan's own placeholder, which guessed `railway.com/oauth/authorize`; see "W3-T2 doc-verification" below) | Vendor-hosted install screen for the registered Public Integration |
+| Token exchange | `POST https://backboard.railway.com/oauth/token`, HTTP Basic client auth (confirmed W3-T2) | `POST /api/0/sentry-app-installations/{installationId}/authorizations/`, `grant_type=authorization_code` |
 | Callback params | `code`, `state` | `code`, `state`, **`installationId`** (extra — see below) |
 | Scopes | `project:viewer offline_access openid`, `prompt=consent` (required to get a refresh token back) | granted at Public Integration registration time, not per-authorize |
 | Access TTL | 1 hour | 8 hours |
@@ -41,6 +41,55 @@ Sentry's extra `installationId` param is why the callback route forwards
 *every* non-`state`/`code` query param to the adapter (`ExchangeInput.params`)
 instead of hard-coding a two-field shape — Railway's adapter simply ignores
 it.
+
+### W3-T2 doc-verification (Railway)
+
+Raw-fetched (curl, not WebFetch — this session's binding discipline after a
+fabricated citation shipped a fake GraphQL type elsewhere this week) from
+`docs.railway.com/integrations/oauth/{quickstart,login-and-tokens,
+scopes-and-user-consent,creating-an-app,troubleshooting}.md`. One correction,
+everything else confirmed:
+
+- **Corrected:** the authorize endpoint is `GET https://backboard.railway.com/oauth/auth`
+  — *"Redirect the user to the authorization endpoint: `GET
+  https://backboard.railway.com/oauth/auth`"* (login-and-tokens.md). The
+  plan's own "`railway.com/oauth/authorize`-family" was a provisional
+  placeholder (explicitly flagged there as needing re-verification) — wrong
+  on both host and path.
+- **Confirmed**, exact: token endpoint `POST https://backboard.railway.com/oauth/token`,
+  HTTP Basic client auth (`client_secret_basic`) — *"curl -X POST
+  https://backboard.railway.com/oauth/token -u
+  \"YOUR_CLIENT_ID:YOUR_CLIENT_SECRET\" -H \"Content-Type:
+  application/x-www-form-urlencoded\" -d \"grant_type=authorization_code\"
+  ..."* (quickstart.md).
+- **Confirmed**, real and resource-scoped: *"`project:viewer` | Viewer
+  access to user-selected projects"* (scopes-and-user-consent.md) — not an
+  identity-only scope. `offline_access` requires `prompt=consent`: *"The
+  `offline_access` scope grants refresh tokens ... but only when combined
+  with `prompt=consent`"* (same page) — sent unconditionally on every
+  authorize call by the adapter, never only on first connect.
+- **Confirmed**: `expires_in: 3600`; *"Access tokens expire after one
+  hour."* (login-and-tokens.md).
+- **Confirmed, sharper than the plan's summary**: refresh tokens rotate, and
+  *"using a rotated refresh token immediately revokes the entire
+  authorization. This behavior helps detect potentially leaked tokens."*
+  (troubleshooting.md) — not a soft failure, a full disconnect requiring
+  reconnect. ~1-year lifetime and the 100-token cap both confirmed verbatim:
+  *"The new refresh token has a fresh one-year lifetime from the time of
+  issuance."* / *"Each user authorization can have a maximum of 100 refresh
+  tokens. If you exceed this limit, the oldest tokens are revoked
+  automatically."* (login-and-tokens.md). `lib/oauth/railway.ts`'s
+  `refresh()` always returns whatever `refresh_token` the response carries;
+  `core.ts`'s `resolveProviderAuth` already persists exactly that.
+- **PKCE — confirmed optional for this client type, not implemented**:
+  *"Web (Confidential) | Client Secret: Required | PKCE: Recommended"*
+  vs. *"Native (Public) | Client Secret: None | PKCE: Required"*
+  (creating-an-app.md). This console is a confidential client (the secret
+  never leaves the server). Not implemented in W3-T2 — disclosed: T1's
+  `OauthProviderAdapter.exchange()` receives `{code, redirectUri, params}`,
+  never the original `state`, so there is no channel to carry a per-attempt
+  `code_verifier` from the pure `authorizeUrl()` call through to `exchange()`
+  without a T1 interface/route change, out of scope here.
 
 ## Design (pinned)
 
@@ -193,11 +242,13 @@ not "a URL like…", it is the literal string:
   documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`
   and `.../sentry` — substitute your own dev port if it differs.
 
-**Railway:** register an OAuth application (Railway's developer/account
-settings — the exact console path is confirmed alongside the authorize URL
-in W3-T2, since both come from the same doc-verify pass) with the redirect
-URI above; note the issued client id/secret; set
-`RAILWAY_OAUTH_CLIENT_ID` / `RAILWAY_OAUTH_CLIENT_SECRET` on the deployment.
+**Railway:** register an OAuth application from the target **workspace's**
+own settings — **Settings → Developer → New OAuth App** (confirmed W3-T2,
+`creating-an-app.md`: OAuth apps are workspace-scoped and created by
+workspace admins, not an account-level setting) — app type **Web
+(Confidential)**, with the redirect URI above; note the issued client
+id/secret (shown once); set `RAILWAY_OAUTH_CLIENT_ID` /
+`RAILWAY_OAUTH_CLIENT_SECRET` on the deployment.
 
 **Sentry:** register a **Public Integration** (Sentry → Settings →
 Developer Settings → New Public Integration) with the redirect URI above as

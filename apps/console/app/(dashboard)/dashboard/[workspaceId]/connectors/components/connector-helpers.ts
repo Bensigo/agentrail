@@ -207,6 +207,22 @@ export interface ConnectorConnectMeta {
    * original hand-written `switch` cases, unaffected.
    */
   secretPartPatterns?: string[];
+  /**
+   * OAuth Connect Wave 3, W3-T2 (`.superpowers/sdd/plan-oauth.md`): one
+   * calm sentence rendered above the OAuth "Connect {label}" primary button
+   * when `oauthReady` is true (`connector-sheet.tsx`'s `SecretManage`) —
+   * states what the OAuth grant actually covers so an admin clicking
+   * "Connect" isn't surprised by the vendor's own consent screen, and
+   * reminds them token-paste ("Use an API token instead", the disclosure
+   * immediately below it) remains available. Absent for every provider
+   * whose `oauthReady` can never be true yet (every provider before this
+   * wave, and railway/sentry themselves before their own adapter merges) —
+   * `SecretManage` simply renders nothing extra in that case. Provider-
+   * specific prose lives here (catalog data), not hardcoded into the
+   * component, mirroring every other per-provider string in this file
+   * (`credentialHint`, `setupSteps`, …).
+   */
+  oauthHint?: string;
 }
 
 /** Static catalog entry for a connector kind. */
@@ -452,6 +468,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Click “Create Token”, name it “AgentRail”, and copy the token (shown once).",
         "Open your Railway project → Settings to find the project id, then paste both the token and the project id here and connect.",
       ],
+      // OAuth Connect Wave 3, W3-T2 — see ConnectorConnectMeta.oauthHint's
+      // own doc-comment. Wording echoes the disclosure toggle immediately
+      // below it ("Use an API token instead") deliberately.
+      oauthHint:
+        "Connecting via Railway grants read-only access to your project's deployments and logs — you can use an API token instead if you'd rather not.",
       // Generic extra field (Task P0: array shape — see
       // ConnectorConnectMeta.extraConfigFields's own doc-comment) — the
       // token alone doesn't scope which project the investigator reads

@@ -19,6 +19,11 @@ import {
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
+// W3-T2: registers the `railway` OAuth adapter — see the oauth callback
+// route's identical import for the full "REACHABILITY" reasoning (this GET
+// route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
+// called at runtime, deriving `oauthReady` below).
+import "../../../../../../lib/oauth/railway";
 
 /**
  * Every non-secret config key any catalog entry declares via

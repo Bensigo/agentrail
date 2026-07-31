@@ -22,6 +22,10 @@ vi.mock("@agentrail/db-postgres", () => ({
 vi.mock("../../../../../../lib/oauth/types", () => ({
   oauthAdapterFor: vi.fn(),
   oauthConfigFor: vi.fn(),
+  // W3-T2: this route now side-effect-imports `lib/oauth/railway.ts`, which
+  // calls `registerOauthAdapter` at module load — see the oauth callback
+  // route test's identical comment.
+  registerOauthAdapter: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";

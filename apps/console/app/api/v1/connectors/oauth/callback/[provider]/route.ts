@@ -14,6 +14,14 @@ import {
   oauthErrorRedirectUrl,
   type OauthErrorReason,
 } from "../../../../../../../lib/oauth/redirect";
+// W3-T2: registers the `railway` OAuth adapter into `lib/oauth/types.ts`'s
+// shared registry as a side effect of this import — see that file's own
+// doc-comment ("REACHABILITY") for why every route that calls
+// `oauthAdapterFor`/`oauthConfigFor` must import each provider's adapter
+// module directly (mirrors `runner/evidence/route.ts`'s identical idiom for
+// evidence adapters). W3-T3 adds a sibling `"../../../../../../../lib/oauth/sentry"`
+// import here the same way.
+import "../../../../../../../lib/oauth/railway";
 
 const ADMIN_ROLES = ["owner", "admin"];
 

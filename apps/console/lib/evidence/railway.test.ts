@@ -6,12 +6,25 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
 }));
 
+// OAuth Connect Wave 3, W3-T2: this adapter now resolves its bearer
+// credential via `resolveProviderAuth` (`../oauth/core`) instead of using
+// the raw `secret` parameter directly — mocked the same way as
+// `@agentrail/db-postgres` above, and given a passing default in
+// `beforeEach` so every pre-existing test in this file (which passes
+// `TOKEN` as the `secret` param and asserts `Bearer ${TOKEN}`) keeps
+// exercising the exact same GraphQL-call shape unmodified.
+vi.mock("../oauth/core", () => ({
+  resolveProviderAuth: vi.fn(),
+}));
+
 import { getConnector } from "@agentrail/db-postgres";
+import { resolveProviderAuth } from "../oauth/core";
 import { railwayAdapter } from "./railway";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
 
 const mockGetConnector = vi.mocked(getConnector);
+const mockResolveProviderAuth = vi.mocked(resolveProviderAuth);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const TOKEN = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
@@ -102,6 +115,10 @@ const originalFetch = global.fetch;
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetConnector.mockResolvedValue(connectorRow());
+  // Default: resolves to the SAME `TOKEN` constant every pre-existing test
+  // in this file already passes as the `secret` param and asserts against —
+  // see the mock's own doc-comment above.
+  mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: TOKEN });
 });
 
 afterEach(() => {
@@ -161,6 +178,68 @@ describe("railwayAdapter — config_missing", () => {
     global.fetch = routeFetch({}) as unknown as typeof fetch;
     await railwayAdapter.query(WS, q(), TOKEN);
     expect(mockGetConnector).toHaveBeenCalledWith(WS, "railway");
+  });
+});
+
+// -----------------------------------------------------------------------
+// OAuth Connect Wave 3, W3-T2 — auth resolution via resolveProviderAuth.
+// -----------------------------------------------------------------------
+describe("railwayAdapter — auth resolution via resolveProviderAuth (W3-T2)", () => {
+  it("calls resolveProviderAuth(workspaceId, 'railway') once the secret-presence and projectId checks pass", async () => {
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+    await railwayAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).toHaveBeenCalledWith(WS, "railway");
+  });
+
+  it("never calls resolveProviderAuth when secret is null (the cheap existence gate still short-circuits first)", async () => {
+    await railwayAdapter.query(WS, q(), null);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("never calls resolveProviderAuth when railwayProjectId is absent (the config_missing gate still short-circuits first)", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(null));
+    await railwayAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("legacy-token kind: uses resolveProviderAuth's resolved secret as the Bearer credential — NOT the raw secret param passed into query()", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "legacy-resolved-token" });
+    const fetchMock = routeFetch({});
+    global.fetch = fetchMock as unknown as typeof fetch;
+    // The `secret` param below is deliberately a DIFFERENT value than what
+    // resolveProviderAuth resolves — proving the Authorization header comes
+    // from the latter, not the former (the param is only the cheap
+    // existence gate now — see railway.ts's own "CREDENTIAL" doc-comment).
+    await railwayAdapter.query(WS, q(), "raw-param-value-unused-for-auth");
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer legacy-resolved-token" });
+  });
+
+  it("oauth kind, just-refreshed: uses a freshly-rotated access token when resolveProviderAuth reports one", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "rotated-access-after-refresh" });
+    const fetchMock = routeFetch({});
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await railwayAdapter.query(WS, q(), TOKEN);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer rotated-access-after-refresh" });
+  });
+
+  it("degrades config_missing when resolveProviderAuth itself reports config_missing, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "config_missing" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await railwayAdapter.query(WS, q(), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "config_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("degrades unauthorized when resolveProviderAuth reports unauthorized (e.g. a rejected/timed-out refresh) — reuses this adapter's existing closed reason, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "unauthorized" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await railwayAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

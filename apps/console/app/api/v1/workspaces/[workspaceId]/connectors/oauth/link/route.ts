@@ -7,6 +7,9 @@ import {
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
 import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
+// W3-T2: registers the `railway` OAuth adapter — see the callback route's
+// identical import for the full "REACHABILITY" reasoning.
+import "../../../../../../../../lib/oauth/railway";
 
 const ADMIN_ROLES = ["owner", "admin"];
 

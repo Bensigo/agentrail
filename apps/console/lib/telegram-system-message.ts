@@ -31,15 +31,17 @@ import { sendTelegramMessage, type SendResult } from "../app/api/v1/workspaces/[
  * (`void messageThreadId`), even though `channel-dispatch.ts`'s
  * `sendSystemChannelMessage` is already fully wired to carry a real one
  * through from the inbound row's payload the moment one is ever present.
- * NOTE: as of this fix, neither Telegram inbound door
- * (`connectors/telegram/webhook/route.ts` nor
- * `runner/telegram-inbound/route.ts`) actually captures a forum-topic id
- * off the inbound Telegram Update yet, so this closes the drop but not the
- * full loop — nothing upstream populates `messageThreadId` on a real row
- * today, so this fix has no observable effect until a follow-up reads
- * `message.message_thread_id` off the webhook payload and enqueues it.
- * `replyMarkup` is explicitly passed as `undefined` below to reach the 5th
- * slot — this wrapper has no keyboard of its own to offer.
+ * NOTE: the console webhook door (`connectors/telegram/webhook/route.ts`)
+ * now captures `message.message_thread_id` into the enqueued row's payload
+ * — see that file's own `TelegramMessage.message_thread_id` doc-comment for
+ * exactly which downstream paths receive a real value and their differing
+ * safety margins. The legacy sidecar door
+ * (`runner/telegram-inbound/route.ts`, the Jace Gateway-forward path, cut
+ * over 2026-07-26) deliberately does NOT capture it — its own header
+ * comment explains why (the shim feeding it never shapes the field; that
+ * door was out of scope for this fix). `replyMarkup` is explicitly passed
+ * as `undefined` below to reach the 5th slot — this wrapper has no
+ * keyboard of its own to offer.
  */
 export async function sendSystemTelegramMessage(
   chatId: string,

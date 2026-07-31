@@ -167,6 +167,22 @@ describe("sendTelegramMessage (shared sender)", () => {
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).not.toHaveProperty("message_thread_id");
   });
+
+  it("omits message_thread_id for a non-positive value ('0' or '-5') — Telegram thread ids are never zero or negative", async () => {
+    const zeroFn = mockFetchOnce({ ok: true });
+    await sendTelegramMessage(TOKEN, "999", "hi", undefined, "0");
+    const zeroBody = JSON.parse(
+      (zeroFn.mock.calls[0]![1] as RequestInit).body as string
+    );
+    expect(zeroBody).not.toHaveProperty("message_thread_id");
+
+    const negativeFn = mockFetchOnce({ ok: true });
+    await sendTelegramMessage(TOKEN, "999", "hi", undefined, "-5");
+    const negativeBody = JSON.parse(
+      (negativeFn.mock.calls[0]![1] as RequestInit).body as string
+    );
+    expect(negativeBody).not.toHaveProperty("message_thread_id");
+  });
 });
 
 describe("buildApprovalKeyboard (issue #1273)", () => {

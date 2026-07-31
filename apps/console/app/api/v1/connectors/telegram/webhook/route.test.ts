@@ -1307,4 +1307,27 @@ describe("POST /api/v1/connectors/telegram/webhook — message_thread_id capture
     const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
     expect(enqueueArgs.payload).not.toHaveProperty("messageThreadId");
   });
+
+  it("PINS current behavior for a malformed (non-numeric) message_thread_id: presence-only capture stores whatever String() produces, unvalidated — this door does no type-checking of its own (see TelegramMessage.message_thread_id's doc-comment); an internet-reachable endpoint, so a future change here should be deliberate, not silent", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          chat: { id: -100123, type: "supergroup" },
+          // A real Telegram Update always sends an integer here; this is a
+          // forged/malformed body exercising what THIS door actually does
+          // with one today (nothing downstream trusts it blindly — see the
+          // route's own doc-comment on the two consumer paths' differing
+          // safety margins).
+          message_thread_id: {},
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({
+      messageThreadId: "[object Object]",
+    });
+  });
 });

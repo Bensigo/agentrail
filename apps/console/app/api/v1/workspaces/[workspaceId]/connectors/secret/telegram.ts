@@ -133,11 +133,14 @@ export function parseApprovalCallbackData(
  * (`runner/approvals/route.ts`, `alignment-reconciler.ts`) already pass a
  * keyboard positionally there, so inserting ahead of it would silently
  * reorder their arguments. Same all-or-nothing shape as `replyMarkup`: when
- * present and a valid integer string, the body gains `message_thread_id` as
- * a NUMBER (Telegram's Bot API wants an Integer, not a numeric string);
- * when omitted OR not a valid integer, the key is absent entirely — Telegram
- * rejects a non-integer thread id outright, so a malformed value is dropped
- * rather than forwarded broken.
+ * present and a valid POSITIVE integer string, the body gains
+ * `message_thread_id` as a NUMBER (Telegram's Bot API wants an Integer, not
+ * a numeric string); when omitted OR not a valid positive integer (`"0"`,
+ * `"-5"`, non-numeric), the key is absent entirely — Telegram thread ids
+ * are never zero or negative, matching the same positive-integer shape
+ * used elsewhere in this codebase (e.g. `lib/chat/conversation-key.ts`'s
+ * `parseThreadN`) — so a malformed value is dropped rather than forwarded
+ * broken.
  */
 export async function sendTelegramMessage(
   token: string,
@@ -147,7 +150,9 @@ export async function sendTelegramMessage(
   messageThreadId?: string
 ): Promise<SendResult> {
   const threadId =
-    messageThreadId !== undefined && Number.isInteger(Number(messageThreadId))
+    messageThreadId !== undefined &&
+    Number.isInteger(Number(messageThreadId)) &&
+    Number(messageThreadId) > 0
       ? Number(messageThreadId)
       : undefined;
   try {

@@ -327,6 +327,81 @@ export interface ConnectorConfig {
   /** Cloudflare: the account id (needed alongside the zone id for some
    * GraphQL analytics queries). */
   cloudflareAccountId?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T1 (`.superpowers/sdd/plan-oauth.md`):
+   * server-minted single-use OAuth state (see `queries/connectors.ts`'s
+   * `mintConnectorOauthState`/`consumeConnectorOauthState` for the full
+   * design) — a no-migration generalization of `mintGithubInstallState`'s
+   * own dedicated-columns mechanism, scoped per (workspaceId, provider)
+   * into THIS row's config instead. EPHEMERAL, two-tier visibility (W3-T1
+   * fix round, review IMPORTANT-1 + CRITICAL-1):
+   *   - IN STORAGE: `completeConfig` (this file, below) now PRESERVES this
+   *     field across an unrelated write (an admin's pending consent tab
+   *     must survive a teammate's own, different connector edit landing on
+   *     the same row) — unlike every field ABOVE it on this interface,
+   *     which `completeConfig` preserves unconditionally, this one is only
+   *     ever WRITTEN by `mintConnectorOauthState`'s own surgical jsonb
+   *     patch, never through this file's normal typed merge path.
+   *   - IN THE READ MODEL: still never reaches a `ConnectorRowView` a route
+   *     hands back to a browser — `toClientSafeConfig` (this file's own
+   *     query-layer sibling) strips it (and its two siblings below) from
+   *     every returned view, regardless of which function produced it.
+   * Declared here only so `ConnectorConfig` stays the complete, honest
+   * shape of what the column can ever hold.
+   */
+  oauthState?: string;
+  /** ISO-8601 — see {@link oauthState}'s own doc-comment. */
+  oauthStateExpiresAt?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T1 fix round (review CRITICAL-1): the id of
+   * the user who MINTED this pending state — the callback route's tenant-
+   * binding gate requires the redeeming session to equal this id (and
+   * still hold owner/admin membership on the workspace) before it will
+   * exchange a code, closing a login-CSRF-style misdirection attack where
+   * the minter and redeemer were never otherwise required to be the same
+   * person. Same two-tier visibility as {@link oauthState}: preserved
+   * across an unrelated config write, never surfaced in any
+   * `ConnectorRowView`.
+   */
+  oauthUserId?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T2 fix round (independent review, PKCE
+   * upgrade): the PKCE (RFC 7636) `code_verifier` minted alongside `state`
+   * at link time (`lib/oauth/pkce.ts`'s `generateCodeVerifier`) — stored
+   * here so the SAME surgical jsonb patch that already carries
+   * `oauthState`/`oauthStateExpiresAt`/`oauthUserId` carries this too, no
+   * new storage mechanism. `mintConnectorOauthState`'s new optional 4th
+   * argument writes it; `consumeConnectorOauthState` reads it back out
+   * (deliberately NOT cleared on consume, same disclosed simplification as
+   * {@link oauthUserId} — no further use once read, superseded by the next
+   * mint's own patch regardless) so the callback route can hand it to
+   * `adapter.exchange()`'s new optional `codeVerifier` field. Same two-tier
+   * visibility as {@link oauthState}: preserved across an unrelated config
+   * write, never surfaced in any `ConnectorRowView`.
+   */
+  oauthPkceVerifier?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T3 (`.superpowers/sdd/plan-oauth.md`): the
+   * Sentry Public Integration installation id (`installationId` — a UUID,
+   * e.g. `01635075-...-ff9680780a13` per Sentry's own worked examples) this
+   * workspace's OAuth grant belongs to. Mirrors {@link railwayProjectId}'s
+   * own declaration exactly — a non-secret companion field, saved via
+   * `postExchange`'s `configPatch` (`lib/oauth/sentry.ts`), NOT the secret
+   * column (the token/refresh pair live there, inside the encrypted
+   * envelope). UNLIKE the three `oauthState*`/`oauthPkceVerifier` fields
+   * above, this one is NOT ephemeral: `completeConfig` (query layer)
+   * preserves it across every unrelated write exactly like
+   * `railwayProjectId`, and it is NEVER added to `EPHEMERAL_CONFIG_KEYS` —
+   * it survives in storage AND stays visible in every `ConnectorRowView`. It
+   * exists because Sentry's token-refresh endpoint is
+   * `/api/0/sentry-app-installations/{installationId}/authorizations/` —
+   * the installation id is part of the URL, not a response field a stored
+   * OAuth envelope alone carries forward to a LATER refresh call. Absent
+   * for every workspace that hasn't OAuth-connected Sentry (including every
+   * token-paste-only Sentry connection, past or future — token-paste never
+   * touches this field).
+   */
+  sentryInstallationId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

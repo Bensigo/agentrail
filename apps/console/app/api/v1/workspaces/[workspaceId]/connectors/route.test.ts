@@ -14,6 +14,19 @@ vi.mock("@agentrail/db-postgres", () => ({
     realValidate(u),
   isConnectorProvider: (v: unknown) => realIsProvider(v),
 }));
+// W3-T1 (OAuth Connect Wave 3) — the two env/registry reads `oauthReady`'s
+// derivation needs; see the "GET /connectors — oauthReady" describe block
+// below. Defaulted to "nothing is oauth-ready" (null/null) in beforeEach so
+// every OTHER describe block in this file — none of which cares about
+// oauthReady — keeps seeing today's default state.
+vi.mock("../../../../../../lib/oauth/types", () => ({
+  oauthAdapterFor: vi.fn(),
+  oauthConfigFor: vi.fn(),
+  // W3-T2: this route now side-effect-imports `lib/oauth/railway.ts`, which
+  // calls `registerOauthAdapter` at module load — see the oauth callback
+  // route test's identical comment.
+  registerOauthAdapter: vi.fn(),
+}));
 
 import { auth } from "@agentrail/auth";
 import {
@@ -23,6 +36,7 @@ import {
   getGithubInstallation,
   upsertConnector,
 } from "@agentrail/db-postgres";
+import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
 import { GET, PUT } from "./route";
 
 // Minimal real implementations mirrored from db-postgres/queries/connectors.ts
@@ -102,6 +116,14 @@ beforeEach(() => {
   vi.mocked(getConnectors).mockResolvedValue([] as never);
   vi.mocked(getGithubInstallation).mockReset();
   vi.mocked(getGithubInstallation).mockResolvedValue(null);
+  // W3-T1: default to "nothing is oauth-ready" so every pre-existing
+  // describe block below (none of which cares about oauthReady) keeps
+  // seeing today's default state; the dedicated oauthReady describe block
+  // overrides these per-test.
+  vi.mocked(oauthAdapterFor).mockReset();
+  vi.mocked(oauthAdapterFor).mockReturnValue(null);
+  vi.mocked(oauthConfigFor).mockReset();
+  vi.mocked(oauthConfigFor).mockReturnValue(null);
 });
 
 describe("PUT /connectors", () => {
@@ -246,6 +268,7 @@ interface GetJson {
     status: string;
     target: string | null;
     appInstalled?: boolean;
+    oauthReady?: boolean;
   }>;
 }
 
@@ -317,5 +340,91 @@ describe("GET /connectors — github connected signal", () => {
     const json = (await res.json()) as GetJson;
     expect(githubRow(json).status).toBe("connected");
     expect(githubRow(json).appInstalled).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------
+// GET — oauthReady (W3-T1, OAuth Connect Wave 3): a DERIVED,
+// env-computed-server-side flag — see `lib/oauth/types.ts`'s
+// `oauthAdapterFor`/`oauthConfigFor` and `connector-helpers.ts`'s
+// `ConnectorConfigInput.oauthReady` doc-comment. BOTH a registered adapter
+// AND env config are required — W3-T1 ships with NO adapter registered for
+// any provider yet (W3-T2/T3 add railway/sentry), so today this is false
+// for every provider regardless of env; these tests exercise the route's
+// OWN derivation logic directly via the mocked registry/env reader, ahead
+// of any real adapter existing.
+// -----------------------------------------------------------------------
+describe("GET /connectors — oauthReady (W3-T1)", () => {
+  beforeEach(() => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+  });
+
+  it("is false for every secret-method connector by default (no adapter registered, no env set — today's real state)", async () => {
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    for (const c of json.connectors) {
+      if (c.kind === "github") continue; // oauth-native already; not covered by this flag
+      expect(c.oauthReady).toBe(false);
+    }
+  });
+
+  it("is true only for a provider with BOTH a registered adapter AND env configured", async () => {
+    vi.mocked(oauthAdapterFor).mockImplementation((p: string) =>
+      p === "railway" ? ({ provider: "railway" } as never) : null
+    );
+    vi.mocked(oauthConfigFor).mockImplementation((p: string) =>
+      p === "railway" ? { clientId: "id", clientSecret: "secret" } : null
+    );
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(true);
+    expect(json.connectors.find((c) => c.kind === "sentry")!.oauthReady).toBe(false);
+  });
+
+  it("stays false when an adapter is registered but env is not configured", async () => {
+    vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+    vi.mocked(oauthConfigFor).mockReturnValue(null);
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(false);
+  });
+
+  it("stays false when env is configured but no adapter is registered yet (the real W3-T1-only state)", async () => {
+    vi.mocked(oauthAdapterFor).mockReturnValue(null);
+    vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(false);
+  });
+
+  // -----------------------------------------------------------------------
+  // W3-T3 fix round — the adapter's OWN optional envReady() (Sentry's third
+  // env var, beyond the generic oauthConfigFor pair).
+  // -----------------------------------------------------------------------
+  describe("envReady (W3-T3 fix round)", () => {
+    it("stays false when the adapter is registered, generic env IS configured, but envReady() returns false (Sentry's slug var missing)", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "sentry", envReady: () => false } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "sentry")!.oauthReady).toBe(false);
+    });
+
+    it("is true when the adapter is registered, generic env IS configured, AND envReady() returns true", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "sentry", envReady: () => true } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "sentry")!.oauthReady).toBe(true);
+    });
+
+    it("defaults to ready (true) when the adapter declares no envReady at all — matches every provider before sentry, unaffected", async () => {
+      vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+      vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+      const res = await GET(getReq(), { params: params() });
+      const json = (await res.json()) as GetJson;
+      expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(true);
+    });
   });
 });

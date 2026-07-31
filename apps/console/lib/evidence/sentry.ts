@@ -1,5 +1,6 @@
 import { getConnector } from "@agentrail/db-postgres";
 import { registerAdapter } from "./registry";
+import { resolveProviderAuth } from "../oauth/core";
 import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "./types";
 
 /**
@@ -18,8 +19,31 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *
  * CREDENTIAL: a SINGLE secret (no `secretParts` — unlike langfuse.ts's
  * composite pair), an org OR user auth token, sent as
- * `Authorization: Bearer <token>` on every call. This adapter uses its
- * `secret` parameter directly, same shape as railway.ts.
+ * `Authorization: Bearer <token>` on every call. UPDATED (OAuth Connect
+ * Wave 3, W3-T3, `.superpowers/sdd/plan-oauth.md`): the bearer value is no
+ * longer the raw `secret` parameter this function receives — it is now
+ * resolved via `resolveProviderAuth(workspaceId, "sentry")`
+ * (`lib/oauth/core.ts`), identical to `lib/evidence/railway.ts`'s own
+ * W3-T2 switch. A legacy pasted token is returned verbatim (byte-identical
+ * behavior to before this task — token-paste remains a fully supported,
+ * permanent connect path per the Global Constraints); an OAuth-connected
+ * envelope is auto-refreshed when within its 2-minute expiry skew, with
+ * the rotated envelope persisted before the (possibly new) access token is
+ * returned. LIVE (W3-T3 fix round, `c8fdc020`): OAuth connect for Sentry is
+ * reachable today — the initial submission's adapter shipped built-but-
+ * dark pending a coordinator ruling on tenant binding for a vendor whose
+ * redirect can't carry `state`; the fix round implemented session-transport
+ * binding (`lib/oauth/sentry.ts`'s own doc-comment, "SESSION-TRANSPORT
+ * TENANT BINDING") and wired the three reachability sites live, so both
+ * credential kinds below are real, exercised paths, not one live and one
+ * dormant. `secret` itself is kept ONLY as the pre-existing cheap "is
+ * anything stored at all" gate below
+ * (`!secret -> config_missing`) — same reasoning as railway.ts's identical
+ * comment. A `resolveProviderAuth` failure degrades to `unauthorized` via
+ * THIS adapter's existing, closed `EvidenceDegradationReason` set —
+ * `resolveProviderAuth`'s own result type (`"config_missing" |
+ * "unauthorized"`) is already a subset of it, so no new degradation
+ * vocabulary is introduced.
  *
  * SENTRY API SHAPES — confirmed against Sentry's own docs and source during
  * implementation (this task's mandatory first step; NOT trusted from
@@ -748,9 +772,18 @@ export const sentryAdapter: EvidenceAdapter = {
       return { ok: false, reason: "config_missing" };
     }
 
+    // OAuth Connect Wave 3, W3-T3 — see this module's own doc-comment
+    // ("CREDENTIAL") for the full contract. `auth.reason` is already a
+    // member of this adapter's own `EvidenceDegradationReason` union, so it
+    // passes straight through with no mapping.
+    const auth = await resolveProviderAuth(workspaceId, "sentry");
+    if (!auth.ok) {
+      return { ok: false, reason: auth.reason };
+    }
+
     return q.verb === "search_events"
-      ? querySearchEvents(secret, org, project, q)
-      : querySignals(secret, org, project, q);
+      ? querySearchEvents(auth.secret, org, project, q)
+      : querySignals(auth.secret, org, project, q);
   },
 };
 

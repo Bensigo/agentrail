@@ -188,6 +188,69 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
 }
 
 // --------------------------------------------------------------------------- //
+// OAuth-primary button for a `connectMethod: "secret"` provider (W3-T1,
+// OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`) — DISTINCT from
+// `OAuthManage` below: that component is GitHub's own OAuth-native
+// (`connectMethod: "oauth"`) card body; this one is a small ADDITIVE primary
+// action `SecretManage` renders ABOVE its existing token form when
+// `connector.oauthReady` is true (see that component's own doc-comment for
+// why `connectMethod` itself never flips — the plan's own pinned
+// constraint). Posts to the GENERIC `.../connectors/oauth/link` route
+// (provider in the body, not the URL — every OAuth-capable secret-method
+// provider shares this one route) and redirects the browser to the
+// vendor's own authorize screen on success, mirroring `OAuthManage`'s
+// `connect()` shape and button styling exactly (a "Connect X" affordance
+// should look identical regardless of which flow mints the redirect).
+// --------------------------------------------------------------------------- //
+function OauthConnectButton({
+  connector,
+  workspaceId,
+  canManage,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+  canManage: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/v1/workspaces/${workspaceId}/connectors/oauth/link`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: connector.kind }),
+        }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Could not start the connection");
+      window.location.href = body.url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the connection");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={connect}
+        disabled={!canManage || busy}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {busy ? "Connecting…" : `Connect ${connector.label}`}
+      </button>
+      {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
 // Secret connector management — MCP-key connectors only (linear/figma/
 // context7/observability providers). Posts the credential to the write-only
 // /connectors/secret route; the value is never read back.
@@ -236,6 +299,11 @@ function SecretManage({
   const [extraValues, setExtraValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // W3-T1 (OAuth Connect Wave 3): whether the token-paste form has been
+  // explicitly revealed via "Use an API token instead". Only READ when
+  // `connector.oauthReady` is true (see the not-connected branch below) —
+  // declared unconditionally here regardless, per the Rules of Hooks.
+  const [manualOpen, setManualOpen] = useState(false);
 
   const save = useCallback(
     async (body: { secret: string | null }) => {
@@ -346,7 +414,13 @@ function SecretManage({
     (f) => f.required !== false && (extraValues[f.key] ?? "").trim().length === 0
   );
 
-  return (
+  // W3-T1 (OAuth Connect Wave 3): the token-paste form itself, computed ONCE
+  // as a plain JSX value so it can be rendered from EITHER branch below
+  // (unaffected by `oauthReady`) rather than duplicated in source — the
+  // `!connector.oauthReady` branch returns this exact same element, so a
+  // provider without OAuth readiness renders byte-identically to before
+  // this task (no visual regression — the plan's own pinned requirement).
+  const tokenForm = (
     <form
       onSubmit={(e) => {
         e.preventDefault();
@@ -385,6 +459,16 @@ function SecretManage({
       }}
       className="flex flex-col gap-2"
     >
+      {/* OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote's
+          own doc-comment. Renders regardless of `oauthReady` (unlike
+          `oauthHint` below), since the four providers that declare this are
+          never oauthReady — a calm, no-apology "this is the standard way"
+          note, not an error/hint about the input's own shape. */}
+      {meta?.tokenStandardNote && (
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          {meta.tokenStandardNote}
+        </p>
+      )}
       {isComposite ? (
         secretParts.map((part, i) => (
           <input
@@ -452,6 +536,49 @@ function SecretManage({
       {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       <SetupHelp connector={connector} />
     </form>
+  );
+
+  // Without oauthReady: exactly today's UI — the bare token form, nothing
+  // wrapping it (plan's own pinned "no visual regression" requirement).
+  // W3-T4: four providers (grafana/prometheus/langfuse/datadog) now render
+  // one extra static sentence INSIDE `tokenForm` itself via
+  // `tokenStandardNote` — still the same single shared JSX value returned
+  // from both branches below, so "no visual regression" still holds in the
+  // sense that matters (one code path, not a byte-identical string for
+  // those four providers specifically).
+  if (!connector.oauthReady) {
+    return tokenForm;
+  }
+
+  // oauthReady: an OAuth-primary "Connect {label}" button, plus a quiet
+  // disclosure that reveals the SAME token form on demand — the plan's own
+  // pinned sheet contract. One-way reveal (no "hide again" affordance):
+  // once a workspace admin opts into token-paste for this connect attempt,
+  // there is no reason to re-hide it. Like every other piece of local state
+  // in this component (`secret`, `partValues`, `extraValues`), `manualOpen`
+  // persists across closing and reopening the SAME connector's sheet (the
+  // parent `ConnectorSheet` only remounts this component via its
+  // `key={shown.kind}` when the OPEN connector actually changes — see that
+  // component's own doc-comment on `shown`) — it resets by switching to a
+  // different connector, or a full page reload, not by close+reopen alone.
+  return (
+    <div className="flex flex-col gap-2">
+      {meta?.oauthHint && (
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.oauthHint}</p>
+      )}
+      <OauthConnectButton connector={connector} workspaceId={workspaceId} canManage={canManage} />
+      {manualOpen ? (
+        tokenForm
+      ) : (
+        <button
+          type="button"
+          onClick={() => setManualOpen(true)}
+          className="self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)] underline-offset-2 hover:underline"
+        >
+          Use an API token instead
+        </button>
+      )}
+    </div>
   );
 }
 

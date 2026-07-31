@@ -1,5 +1,6 @@
 import { getConnector } from "@agentrail/db-postgres";
 import { registerAdapter } from "./registry";
+import { resolveProviderAuth } from "../oauth/core";
 import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "./types";
 
 /**
@@ -20,9 +21,30 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  * `verbs: ["changes", "search_events"]`: `changes` lists deployments in the
  * window; `search_events` searches those same deployments' logs.
  *
- * CREDENTIAL: unlike `factory`/`github`, this adapter DOES use its `secret`
- * parameter directly — it IS the Railway Account/Team token, sent as
- * `Authorization: Bearer <token>` on every GraphQL call.
+ * CREDENTIAL: unlike `factory`/`github`, this adapter DOES use a real
+ * per-workspace credential, sent as `Authorization: Bearer <token>` on
+ * every GraphQL call. UPDATED (OAuth Connect Wave 3, W3-T2,
+ * `.superpowers/sdd/plan-oauth.md`): the bearer value is no longer the raw
+ * `secret` parameter this function receives — it is now resolved via
+ * `resolveProviderAuth(workspaceId, "railway")` (`lib/oauth/core.ts`),
+ * which discriminates what's actually stored: a legacy pasted token is
+ * returned verbatim (byte-identical behavior to before this task), while an
+ * OAuth-connected envelope (`lib/oauth/railway.ts`) is auto-refreshed when
+ * within its 2-minute expiry skew, with the ROTATED envelope persisted
+ * before the (possibly new) access token is returned. `secret` itself is
+ * kept ONLY as the pre-existing cheap "is anything stored at all" gate
+ * below (`!secret -> config_missing`) — the route
+ * (`runner/evidence/route.ts`) still resolves and hands it in for every
+ * provider generically, and skipping the (slightly more expensive)
+ * `resolveProviderAuth` call entirely when nothing is connected is free to
+ * keep. A `resolveProviderAuth` failure — no adapter, a rejected refresh,
+ * or a timed-out one (`core.ts`'s own 30s bound) — degrades to
+ * `unauthorized` via THIS adapter's existing, closed
+ * `EvidenceDegradationReason` set; `resolveProviderAuth`'s own result type
+ * (`"config_missing" | "unauthorized"`) is already a subset of it, so no
+ * new degradation vocabulary is introduced. The GraphQL queries themselves
+ * (`queryChanges`/`querySearchEvents` and everything they call) are
+ * UNCHANGED by this task — only how the bearer value reaches them differs.
  *
  * CONFIG_MISSING, NOT bad_request / unauthorized (pinned decision): a null
  * `secret` OR an absent `railwayProjectId` on the connector row both degrade
@@ -622,9 +644,18 @@ export const railwayAdapter: EvidenceAdapter = {
       return { ok: false, reason: "config_missing" };
     }
 
+    // OAuth Connect Wave 3, W3-T2 — see this module's own doc-comment
+    // ("CREDENTIAL") for the full contract. `auth.reason` is already a
+    // member of this adapter's own `EvidenceDegradationReason` union, so it
+    // passes straight through with no mapping.
+    const auth = await resolveProviderAuth(workspaceId, "railway");
+    if (!auth.ok) {
+      return { ok: false, reason: auth.reason };
+    }
+
     return q.verb === "changes"
-      ? queryChanges(secret, projectId, q)
-      : querySearchEvents(secret, projectId, q);
+      ? queryChanges(auth.secret, projectId, q)
+      : querySearchEvents(auth.secret, projectId, q);
   },
 };
 

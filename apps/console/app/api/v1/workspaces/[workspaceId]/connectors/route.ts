@@ -18,6 +18,14 @@ import {
   projectExtraConfigValues,
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
+// W3-T2: registers the `railway` OAuth adapter — see the oauth callback
+// route's identical import for the full "REACHABILITY" reasoning (this GET
+// route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
+// called at runtime, deriving `oauthReady` below). W3-T3: `lib/oauth/
+// sentry.ts` registers the same way.
+import "../../../../../../lib/oauth/railway";
+import "../../../../../../lib/oauth/sentry";
 
 /**
  * Every non-secret config key any catalog entry declares via
@@ -110,6 +118,21 @@ export async function GET(
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
         ...projectExtraConfigValues(entry, row?.config as Record<string, unknown> | undefined),
+        // W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`):
+        // derived, env-computed-server-side — a registered adapter
+        // (`oauthAdapterFor`) AND the provider's generic
+        // `<KIND>_OAUTH_CLIENT_ID`/`_OAUTH_CLIENT_SECRET` env pair
+        // (`oauthConfigFor`) AND — W3-T3 fix round — the adapter's OWN
+        // optional `envReady()` (Sentry's third var,
+        // `SENTRY_OAUTH_INTEGRATION_SLUG`; absent on an adapter defaults to
+        // ready, matching every provider before Sentry) must ALL be
+        // present. Never hardcoded client-side — see `connector-helpers.ts`'s
+        // `ConnectorConfigInput.oauthReady` doc-comment for why these
+        // checks, not env alone.
+        oauthReady:
+          oauthAdapterFor(entry.kind) !== null &&
+          oauthConfigFor(entry.kind) !== null &&
+          (oauthAdapterFor(entry.kind)?.envReady?.() ?? true),
       };
     });
 

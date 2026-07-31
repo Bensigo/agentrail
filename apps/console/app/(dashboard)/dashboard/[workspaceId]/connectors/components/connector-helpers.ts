@@ -207,6 +207,37 @@ export interface ConnectorConnectMeta {
    * original hand-written `switch` cases, unaffected.
    */
   secretPartPatterns?: string[];
+  /**
+   * OAuth Connect Wave 3, W3-T2 (`.superpowers/sdd/plan-oauth.md`): one
+   * calm sentence rendered above the OAuth "Connect {label}" primary button
+   * when `oauthReady` is true (`connector-sheet.tsx`'s `SecretManage`) —
+   * states what the OAuth grant actually covers so an admin clicking
+   * "Connect" isn't surprised by the vendor's own consent screen, and
+   * reminds them token-paste ("Use an API token instead", the disclosure
+   * immediately below it) remains available. Absent for every provider
+   * whose `oauthReady` can never be true yet (every provider before this
+   * wave, and railway/sentry themselves before their own adapter merges) —
+   * `SecretManage` simply renders nothing extra in that case. Provider-
+   * specific prose lives here (catalog data), not hardcoded into the
+   * component, mirroring every other per-provider string in this file
+   * (`credentialHint`, `setupSteps`, …).
+   */
+  oauthHint?: string;
+  /**
+   * OAuth Connect Wave 3, W3-T4 (`.superpowers/sdd/plan-oauth.md`): one
+   * calm sentence stating that API-token connect is this provider's
+   * standard integration method — never a "coming soon"/apology framing.
+   * UNLIKE {@link oauthHint}, this renders unconditionally in the shared
+   * `tokenForm` value (`connector-sheet.tsx`'s `SecretManage`), not gated
+   * on `oauthReady` — these four providers' `oauthReady` is never true, so
+   * gating it the same way `oauthHint` is would mean it never rendered.
+   * Declared by exactly the four providers this wave leaves token-only
+   * (Grafana, Prometheus, Langfuse, Datadog — see the design spec's "Out
+   * of scope"); absent for every other entry, including railway/sentry
+   * (their own `oauthHint` already covers this ground) and every provider
+   * that predates this wave.
+   */
+  tokenStandardNote?: string;
 }
 
 /** Static catalog entry for a connector kind. */
@@ -261,6 +292,18 @@ export interface ConnectorConfigInput {
    * hasn't stored, or that no catalog entry declares.
    */
   [key: string]: unknown;
+  /**
+   * W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`): whether
+   * this provider is ready to offer the OAuth "Connect {label}" primary
+   * button today — an adapter is registered for it AND its
+   * `<PROVIDER>_OAUTH_CLIENT_ID`/`_OAUTH_CLIENT_SECRET` env pair is set (see
+   * `apps/console/lib/oauth/types.ts`'s `oauthAdapterFor`/`oauthConfigFor`).
+   * Computed server-side by the connectors GET route (an env read has no
+   * business in this "no I/O" pure model — see the module doc-comment) and
+   * passed in exactly like `hasSecret`/`enabled`. Absent → `false` (see
+   * {@link ConnectorView.oauthReady}).
+   */
+  oauthReady?: boolean;
 }
 
 /** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
@@ -288,6 +331,13 @@ export interface ConnectorView {
   enabled: boolean;
   triggerLabel: string;
   pollIntervalSeconds: number;
+  /** W3-T1 (OAuth Connect Wave 3) — see
+   * {@link ConnectorConfigInput.oauthReady}'s own doc-comment. Always
+   * present (never optional) on a projected row: `false` for every
+   * `oauth`-connectMethod entry (github — OAuth-native already, nothing
+   * additive to offer) and for every `secret`-connectMethod entry until its
+   * adapter + env are both ready. */
+  oauthReady: boolean;
 }
 
 /** Human-facing section metadata for each connector type. */
@@ -433,6 +483,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Click “Create Token”, name it “AgentRail”, and copy the token (shown once).",
         "Open your Railway project → Settings to find the project id, then paste both the token and the project id here and connect.",
       ],
+      // OAuth Connect Wave 3, W3-T2 — see ConnectorConnectMeta.oauthHint's
+      // own doc-comment. Wording echoes the disclosure toggle immediately
+      // below it ("Use an API token instead") deliberately.
+      oauthHint:
+        "Connecting via Railway grants read-only access to your project's deployments and logs — you can use an API token instead if you'd rather not.",
       // Generic extra field (Task P0: array shape — see
       // ConnectorConnectMeta.extraConfigFields's own doc-comment) — the
       // token alone doesn't scope which project the investigator reads
@@ -487,6 +542,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // langfuse-specific parsing branch.
       secretParts: [{ name: "Public key" }, { name: "Secret key" }],
       secretPartPatterns: ["^pk-lf-", "^sk-lf-"],
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Langfuse has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Langfuse.",
       // The workspace's Langfuse region/self-host origin — required (unlike
       // Railway's project id, every workspace needs SOME host; there is no
       // sensible default across cloud regions/self-host — see
@@ -533,6 +593,19 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Create a token with event:read, project:read, and org:read scopes, and copy the sntrys_… or sntryu_… value (shown once).",
         "Paste it here, along with your Sentry organization slug and project slug, and connect.",
       ],
+      // OAuth Connect Wave 3, W3-T3 — see ConnectorConnectMeta.oauthHint's
+      // own doc-comment. LIVE (W3-T3 fix round): `oauthReady` reflects the
+      // real three-env-var gate (`oauthConfigFor` + `sentryOauthAdapter`'s
+      // own `envReady()`) once `SENTRY_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`/
+      // `_INTEGRATION_SLUG` are all set — Sentry's redirect can't carry a
+      // vendor-echoed `state`, so the callback route resolves tenant
+      // binding by the redeeming session's own user id instead (see
+      // `lib/oauth/sentry.ts`'s own doc-comment, "SESSION-TRANSPORT TENANT
+      // BINDING"). Wording echoes railway's own oauthHint's calm,
+      // no-apology tone and its "use a token instead" pointer to the
+      // disclosure immediately below.
+      oauthHint:
+        "Connecting via Sentry installs the integration with read-only access to your issues and events — you can use an API token instead if you'd rather not.",
       // Both required (Task P3's own pinned decision) — unlike Railway's
       // single project id, Sentry has no sensible default project within an
       // org, and the chosen verify/adapter endpoints need both to scope
@@ -607,6 +680,14 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // citation trail.
       secretParts: [{ name: "API key" }, { name: "Application key" }],
       secretPartPatterns: ["^[0-9a-f]{32}$", "^([0-9a-f]{40}|ddapp_[A-Za-z0-9]{34})$"],
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Datadog has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology,
+      // and names WHY the form asks for two values (the composite pair
+      // declared via secretParts above), since that's the one genuinely
+      // provider-specific fact worth surfacing here beyond the generic claim.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Datadog — its API splits access across a key and an application key, which is why this form asks for both.",
       // The workspace's Datadog site — required (every workspace needs
       // SOME site; there is no sensible default across Datadog's 9 regional
       // deployments). Unlike langfuseHost/prometheusUrl/grafanaUrl, this is
@@ -666,6 +747,12 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // format gate lives in `validateConnectorCredential`'s own hand-written
       // `case "prometheus"` below (non-empty, ≤512 chars, no whitespace —
       // a shape both a bearer token and a user:pass pair satisfy).
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Prometheus has no OAuth surface in this wave (see
+      // the design spec's "Out of scope"); this states that plainly, no
+      // apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Prometheus.",
       extraConfigFields: [
         {
           key: "prometheusUrl",
@@ -717,6 +804,11 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // hand-written `case "grafana"` below just accepts either documented
       // prefix. See `lib/evidence/grafana.ts`'s own doc-comment for the
       // doc-verify trail behind both prefixes.
+      // OAuth Connect Wave 3, W3-T4 — see ConnectorConnectMeta.tokenStandardNote's
+      // own doc-comment. Grafana has no OAuth surface in this wave (see the
+      // design spec's "Out of scope"); this states that plainly, no apology.
+      tokenStandardNote:
+        "API-token connect is the standard integration method for Grafana.",
       extraConfigFields: [
         {
           key: "grafanaUrl",
@@ -1032,6 +1124,9 @@ export function projectConnectors(
         triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
         pollIntervalSeconds:
           cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
+        // W3-T1 (OAuth Connect Wave 3) — see ConnectorConfigInput.oauthReady's
+        // own doc-comment. Absent input → false.
+        oauthReady: cfg?.oauthReady ?? false,
       };
     });
 }

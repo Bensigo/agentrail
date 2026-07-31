@@ -443,6 +443,13 @@ describe("connector catalog — railway entry (Task 7)", () => {
     expect(railway.connect?.secretParts).toBeUndefined();
     expect(railway.connect?.secretPartPatterns).toBeUndefined();
   });
+
+  // OAuth Connect Wave 3, W3-T2 — ConnectorConnectMeta.oauthHint.
+  it("declares a calm oauthHint sentence for the OAuth-primary button, mentioning read-only access and the token fallback", () => {
+    expect(railway.connect?.oauthHint).toBeDefined();
+    expect(railway.connect?.oauthHint).toMatch(/read-only/i);
+    expect(railway.connect?.oauthHint).toMatch(/api token/i);
+  });
 });
 
 describe("connector catalog — langfuse entry (Task P2)", () => {
@@ -477,6 +484,15 @@ describe("connector catalog — langfuse entry (Task P2)", () => {
         required: true,
       },
     ]);
+  });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(langfuse.connect?.tokenStandardNote).toBeDefined();
+    expect(langfuse.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(langfuse.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
   });
 });
 
@@ -616,6 +632,16 @@ describe("connector catalog — datadog entry (Task P4)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, and names the API+app key pair", () => {
+    expect(datadog.connect?.tokenStandardNote).toBeDefined();
+    expect(datadog.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(datadog.connect?.tokenStandardNote).toMatch(/application key/i);
+    expect(datadog.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
+  });
 });
 
 describe("validateConnectorCredential — datadog (Task P4)", () => {
@@ -701,6 +727,15 @@ describe("connector catalog — prometheus entry (Task P5)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(prometheus.connect?.tokenStandardNote).toBeDefined();
+    expect(prometheus.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(prometheus.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
+  });
 });
 
 describe("validateConnectorCredential — prometheus (Task P5)", () => {
@@ -767,6 +802,15 @@ describe("connector catalog — grafana entry (Task P6)", () => {
         required: true,
       },
     ]);
+  });
+
+  // OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote.
+  it("declares a calm tokenStandardNote stating API-token connect is the standard method, no apology/coming-soon framing", () => {
+    expect(grafana.connect?.tokenStandardNote).toBeDefined();
+    expect(grafana.connect?.tokenStandardNote).toMatch(/standard/i);
+    expect(grafana.connect?.tokenStandardNote).not.toMatch(
+      /coming soon|sorry|unfortunately|not yet|apologi/i
+    );
   });
 });
 
@@ -877,6 +921,27 @@ describe("connector catalog — cloudflare entry (Task P8, FINAL Wave-2 provider
         required: true,
       },
     ]);
+  });
+});
+
+describe("connector catalog — tokenStandardNote scope (OAuth Connect Wave 3, W3-T4)", () => {
+  // Exactly four entries declare it — the providers this wave leaves
+  // token-only (see the design spec's "Out of scope"). Railway/sentry have
+  // their own `oauthHint` instead (covers the same "why token-paste" ground
+  // for a provider that DOES have an OAuth option); every provider that
+  // predates this wave, plus github/factory, declare neither.
+  it("is declared by exactly grafana, prometheus, langfuse, datadog", () => {
+    const withNote = CONNECTOR_CATALOG.filter((e) => e.connect?.tokenStandardNote).map(
+      (e) => e.kind
+    );
+    expect(withNote.sort()).toEqual(["datadog", "grafana", "langfuse", "prometheus"]);
+  });
+
+  it("is absent for every other catalog entry, railway/sentry included", () => {
+    for (const entry of CONNECTOR_CATALOG) {
+      if (["grafana", "prometheus", "langfuse", "datadog"].includes(entry.kind)) continue;
+      expect(entry.connect?.tokenStandardNote).toBeUndefined();
+    }
   });
 });
 
@@ -1166,5 +1231,46 @@ describe("projectConnectors — sentry's target (Task P3)", () => {
     ]).find((r) => r.kind === "sentry")!;
     expect(sentry.status).toBe("connected");
     expect(sentry.target).toBeNull();
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// W3-T1 (OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`): `oauthReady`
+// is a DERIVED, ENV-COMPUTED-SERVER-SIDE flag (adapter registered AND
+// `<PROVIDER>_OAUTH_CLIENT_ID`/`_SECRET` both set — see
+// `apps/console/lib/oauth/types.ts`'s `oauthAdapterFor`/`oauthConfigFor`) —
+// this pure model never computes it itself (no `process.env` read belongs in
+// a "no I/O" projection file); the connectors GET route computes it and
+// passes it in like every other per-row boolean (`hasSecret`, `enabled`).
+// Absent from the input → false, so a route that hasn't been updated yet (or
+// a provider the route never bothered to check) never accidentally shows the
+// OAuth-primary sheet UI.
+// --------------------------------------------------------------------------- //
+describe("projectConnectors — oauthReady (W3-T1)", () => {
+  it("defaults to false when the config input omits oauthReady", () => {
+    const railway = projectConnectors([{ kind: "railway", hasSecret: true }]).find(
+      (r) => r.kind === "railway"
+    )!;
+    expect(railway.oauthReady).toBe(false);
+  });
+
+  it("carries oauthReady: true through from the config input", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: false, oauthReady: true },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.oauthReady).toBe(true);
+  });
+
+  it("is false for every row with no config input at all (disconnected, never queried)", () => {
+    const rows = projectConnectors([]);
+    for (const r of rows) expect(r.oauthReady).toBe(false);
+  });
+
+  it("is independent of connection status — a connected row can still be oauthReady:false (e.g. connected via legacy token before the env was ever set)", () => {
+    const railway = projectConnectors([
+      { kind: "railway", hasSecret: true, oauthReady: false },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.status).toBe("connected");
+    expect(railway.oauthReady).toBe(false);
   });
 });

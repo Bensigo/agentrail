@@ -7,7 +7,20 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
 }));
 
+// OAuth Connect Wave 3, W3-T3: this adapter now resolves its bearer
+// credential via `resolveProviderAuth` (`../oauth/core`) instead of using
+// the raw `secret` parameter directly — mocked the same way as
+// `@agentrail/db-postgres` above, and given a passing default in
+// `beforeEach` so every pre-existing test in this file (which passes
+// `TOKEN` as the `secret` param and asserts `Bearer ${TOKEN}`) keeps
+// exercising the exact same HTTP-call shape unmodified. Mirrors
+// `railway.test.ts`'s identical mock exactly.
+vi.mock("../oauth/core", () => ({
+  resolveProviderAuth: vi.fn(),
+}));
+
 import { getConnector } from "@agentrail/db-postgres";
+import { resolveProviderAuth } from "../oauth/core";
 import { sentryAdapter } from "./sentry";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
@@ -20,6 +33,7 @@ import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]
 import { verifyConnectorCredential } from "../../app/api/v1/workspaces/[workspaceId]/connectors/secret/verify";
 
 const mockGetConnector = vi.mocked(getConnector);
+const mockResolveProviderAuth = vi.mocked(resolveProviderAuth);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const TOKEN = "sntrys_abc123";
@@ -121,6 +135,10 @@ const originalFetch = global.fetch;
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetConnector.mockResolvedValue(connectorRow());
+  // Default: resolves to the SAME `TOKEN` constant every pre-existing test
+  // in this file already passes as the `secret` param and asserts against —
+  // see the mock's own doc-comment above.
+  mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: TOKEN });
 });
 
 afterEach(() => {
@@ -186,6 +204,101 @@ describe("sentryAdapter — config_missing", () => {
     global.fetch = routeFetch({}) as unknown as typeof fetch;
     await sentryAdapter.query(WS, q(), TOKEN);
     expect(mockGetConnector).toHaveBeenCalledWith(WS, "sentry");
+  });
+});
+
+// -----------------------------------------------------------------------
+// OAuth Connect Wave 3, W3-T3 — auth resolution via resolveProviderAuth.
+// Mirrors `railway.test.ts`'s identical describe block.
+// -----------------------------------------------------------------------
+describe("sentryAdapter — auth resolution via resolveProviderAuth (W3-T3)", () => {
+  it("calls resolveProviderAuth(workspaceId, 'sentry') once the secret-presence and org/project checks pass", async () => {
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+    await sentryAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).toHaveBeenCalledWith(WS, "sentry");
+  });
+
+  it("never calls resolveProviderAuth when secret is null (the cheap existence gate still short-circuits first)", async () => {
+    await sentryAdapter.query(WS, q(), null);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("never calls resolveProviderAuth when sentryOrg is absent (the config_missing gate still short-circuits first)", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(null, PROJECT));
+    await sentryAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("never calls resolveProviderAuth when sentryProject is absent (the config_missing gate still short-circuits first)", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(ORG, null));
+    await sentryAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("legacy-token kind: uses resolveProviderAuth's resolved secret as the Bearer credential — NOT the raw secret param passed into query()", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "legacy-resolved-token" });
+    const fetchMock = routeFetch({ issues: () => ({ status: 200, body: [] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    // The `secret` param below is deliberately a DIFFERENT value than what
+    // resolveProviderAuth resolves — proving the Authorization header comes
+    // from the latter, not the former (the param is only the cheap
+    // existence gate now — see sentry.ts's own "CREDENTIAL" doc-comment).
+    await sentryAdapter.query(WS, q(), "raw-param-value-unused-for-auth");
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer legacy-resolved-token" });
+  });
+
+  it("oauth kind, just-refreshed: uses a freshly-rotated access token when resolveProviderAuth reports one", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "rotated-access-after-refresh" });
+    const fetchMock = routeFetch({ issues: () => ({ status: 200, body: [] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await sentryAdapter.query(WS, q(), TOKEN);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer rotated-access-after-refresh" });
+  });
+
+  it("degrades config_missing when resolveProviderAuth itself reports config_missing, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "config_missing" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await sentryAdapter.query(WS, q(), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "config_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("degrades unauthorized when resolveProviderAuth reports unauthorized (e.g. a rejected/timed-out refresh) — reuses this adapter's existing closed reason, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "unauthorized" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await sentryAdapter.query(WS, q({ verb: "signals" }), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------
+  // "401-refresh-retry bounded" (this task's own brief): a Sentry-side 401
+  // on the RESOLVED credential (a genuinely-rejected token, as opposed to
+  // resolveProviderAuth's own pre-flight "unauthorized" above) must not
+  // trigger any internal retry loop in THIS adapter — resolveProviderAuth
+  // is called EXACTLY ONCE and fetch is called EXACTLY ONCE per query()
+  // call, even on a 401. Retrying/re-resolving belongs to
+  // resolveProviderAuth's own single-flight refresh machinery
+  // (`core.ts`, already tested there), never duplicated here.
+  // ---------------------------------------------------------------------
+  it("a 401 from Sentry itself (on an already-resolved credential) degrades unauthorized WITHOUT retrying — resolveProviderAuth and fetch are each called exactly once", async () => {
+    const fetchMock = routeFetch({ issues: () => ({ status: 401, body: [] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await sentryAdapter.query(WS, q(), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    expect(mockResolveProviderAuth).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounded even for signals' three-metric fan-out: a 401 across all three still calls resolveProviderAuth exactly once (resolved before the fan-out, not per-metric)", async () => {
+    const fetchMock = routeFetch({ stats: () => ({ status: 401, body: {} }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await sentryAdapter.query(WS, q({ verb: "signals" }), TOKEN);
+    expect(mockResolveProviderAuth).toHaveBeenCalledTimes(1);
   });
 });
 

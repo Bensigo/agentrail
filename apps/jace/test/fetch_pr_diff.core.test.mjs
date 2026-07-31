@@ -107,6 +107,35 @@ test("degraded carries a stable reason + cause-free note and no free-form text",
   assert.equal(typeof degraded("who_knows").note, "string");
 });
 
+// Regression pin: pr-review's classifyGithubError reclassifies GitHub's own
+// 401/403 into EITHER 409 (stale/revoked GitHub App install — "reconnect
+// GitHub from the console") or 429 (rate limit) — it never passes a raw
+// 401/403 through. The ONLY 401/403 this core can actually see is
+// requireJaceConsoleSecret rejecting the shared JACE_CONSOLE_TOKEN (a
+// deployment config problem, not a workspace one), so the unauthorized note
+// must name THAT cause, never "GitHub credentials".
+test("degraded(unauthorized) names the shared console token, never GitHub credentials", () => {
+  const d = degraded("unauthorized");
+  assert.match(d.note, /JACE_CONSOLE_TOKEN/, `should name the shared JACE_CONSOLE_TOKEN, got: ${d.note}`);
+  assert.doesNotMatch(
+    d.note,
+    /GitHub credentials/i,
+    `must not blame GitHub credentials — a raw 401/403 from GitHub never reaches this core (it's ` +
+      `reclassified to 409/429 first), got: ${d.note}`,
+  );
+});
+
+// Companion pin: the conflict (409) note must name BOTH honest possibilities
+// pr-review's resolveWorkspaceRepoToken/classifyGithubError can produce —
+// not-yet-set-up (no workspace / no GitHub App installed) AND a
+// previously-installed GitHub App's credentials going stale/revoked
+// (reclassified from GitHub's own 401/403).
+test("degraded(conflict) names both the not-set-up-yet and the stale/revoked GitHub App possibilities", () => {
+  const d = degraded("conflict");
+  assert.match(d.note, /isn't fully set up/i, `should mention the not-set-up-yet case, got: ${d.note}`);
+  assert.match(d.note, /stale\/revoked/i, `should mention the stale/revoked GitHub App case, got: ${d.note}`);
+});
+
 // ---------------------------------------------------------------------------
 // fetchPrDiff — success
 // ---------------------------------------------------------------------------

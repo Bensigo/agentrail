@@ -79,6 +79,11 @@ const CASES = [
       assert.equal(res.ref, "");
     },
     notFoundNoteChecks: [/path/i, /repo is not connected/i],
+    // repo-file's classifyGithubError reclassifies GitHub's own 401/403 into
+    // EITHER 409 (stale/revoked GitHub App install) or 429 (rate limit) — it
+    // never passes a raw 401/403 through. So this core's conflict (409) note
+    // must name that reclassified possibility alongside "not set up yet".
+    conflictNoteChecks: [/isn't fully set up/i, /stale\/revoked/i],
   },
   {
     name: "search_code",
@@ -107,6 +112,9 @@ const CASES = [
       assert.deepEqual(res.results, []);
     },
     notFoundNoteChecks: [/repo is not connected/i],
+    // Same reclassification as repo-file (shared resolveWorkspaceRepoToken +
+    // classifyGithubError shape) — see that case's own comment.
+    conflictNoteChecks: [/isn't fully set up/i, /stale\/revoked/i],
   },
   {
     name: "file_history",
@@ -134,6 +142,9 @@ const CASES = [
       assert.deepEqual(res.commits, []);
     },
     notFoundNoteChecks: [/path|history/i, /repo is not connected/i],
+    // Same reclassification as repo-file/code-search (shared
+    // resolveWorkspaceRepoToken + classifyGithubError shape).
+    conflictNoteChecks: [/isn't fully set up/i, /stale\/revoked/i],
   },
   {
     name: "fetch_wiki",
@@ -158,6 +169,10 @@ const CASES = [
       assert.deepEqual(res.pages, []);
     },
     notFoundNoteChecks: [/slug/i, /repo is not connected/i],
+    // UNLIKE its three siblings above: repo-wiki never itself calls GitHub
+    // (a pure Postgres read), so it has no reclassified-401/403 conflict
+    // case — its 409 is honestly JUST "workspace not fully set up".
+    conflictNoteChecks: [/not fully set up/i],
   },
 ];
 
@@ -237,6 +252,36 @@ for (const c of CASES) {
     const d = c.degradedFn("not_found");
     for (const re of c.notFoundNoteChecks) {
       assert.match(d.note, re, `${c.name} not_found note should match ${re}, got: ${d.note}`);
+    }
+  });
+
+  // Regression pin: none of these routes' classifyGithubError ever passes a
+  // raw GitHub 401/403 through — GitHub's own 401/403 is always reclassified
+  // to 409 (stale/revoked install) or 429 (rate limit) before it reaches
+  // Jace. The ONLY 401/403 a core can actually see is requireJaceConsoleSecret
+  // rejecting the shared JACE_CONSOLE_TOKEN (a deployment config problem, not
+  // a workspace one) — so the unauthorized note must name THAT cause, never
+  // "GitHub credentials".
+  test(`${c.name}: unauthorized note names the shared console token, never GitHub credentials`, () => {
+    const d = c.degradedFn("unauthorized");
+    assert.match(
+      d.note,
+      /JACE_CONSOLE_TOKEN/,
+      `${c.name} unauthorized note should name the shared JACE_CONSOLE_TOKEN, got: ${d.note}`,
+    );
+    assert.doesNotMatch(
+      d.note,
+      /GitHub credentials/i,
+      `${c.name} unauthorized note must not blame GitHub credentials — a raw 401/403 from GitHub never ` +
+        `reaches this core (it's reclassified to 409/429 first), so only the shared console token can be the ` +
+        `cause here, got: ${d.note}`,
+    );
+  });
+
+  test(`${c.name}: conflict note names this route's own honest 409 possibilities`, () => {
+    const d = c.degradedFn("conflict");
+    for (const re of c.conflictNoteChecks) {
+      assert.match(d.note, re, `${c.name} conflict note should match ${re}, got: ${d.note}`);
     }
   });
 }
@@ -579,4 +624,21 @@ test("fetch_wiki: both slug and query given -> slug wins (mode=get), query dropp
   assert.match(transport.calls[0].url, /mode=get/);
   assert.match(transport.calls[0].url, /slug=runner-routes/);
   assert.doesNotMatch(transport.calls[0].url, /query=/);
+});
+
+// ---------------------------------------------------------------------------
+// fetch_wiki's conflict note is DELIBERATELY narrower than its three siblings
+// (see its own conflictNoteChecks comment above): repo-wiki never calls
+// GitHub, so it has no reclassified-401/403 case to name. This pins that the
+// distinction is intentional, not a copy/paste miss when the sibling cores'
+// conflict notes were widened to mention stale/revoked GitHub App installs.
+// ---------------------------------------------------------------------------
+
+test("fetch_wiki: conflict note stays workspace-only — no stale/revoked GitHub App language (repo-wiki never calls GitHub)", () => {
+  const d = FetchWiki.degraded("conflict");
+  assert.doesNotMatch(
+    d.note,
+    /stale|revoked|GitHub App/i,
+    `fetch_wiki's conflict note must not invent a GitHub-credentials case repo-wiki cannot produce, got: ${d.note}`,
+  );
 });

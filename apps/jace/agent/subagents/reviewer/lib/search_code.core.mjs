@@ -35,11 +35,11 @@ const DEGRADED_NOTES = {
   unreachable:
     "The console code-search endpoint could not be reached (network error); no search could be run. Do not retry from here.",
   unauthorized:
-    "The console rejected the request (401/403) — the stored GitHub credentials for this workspace may be stale or revoked.",
+    "The console rejected the request (401/403) — the shared JACE_CONSOLE_TOKEN this Jace deployment presents to the console may be invalid, rotated, or unset. This is a deployment configuration problem, not a workspace-specific one.",
   not_found:
     "The console found no session for this conversation, or this repo is not connected to the workspace (404).",
   conflict:
-    "The workspace or its GitHub connection is not fully set up yet (409).",
+    "The workspace isn't fully set up yet (no workspace, or no GitHub App installed), or the console rejected a previously-stored GitHub App installation as stale/revoked — either way, reconnect GitHub for this workspace from the console (409).",
   rate_limited: "GitHub's code-search rate limit was hit; no search could be run right now.",
   upstream_error: "The console or GitHub errored (5xx); no search could be run.",
   unexpected_status: "The console returned an unexpected status.",

@@ -74,6 +74,16 @@ const RETIRED_PHRASES = [
   // contradiction this whole task exists to retire, just spelled
   // differently. Both lines are gone from the STEPS content on both pages.
   "Top up",
+  // Arc-closing review (slice 7, Task 2 fix round): the HOW_WE_WORK band's
+  // Brief/Approve step bodies still promised the retired per-run billing
+  // model — a "dollar estimate" and a run-level "budget" cap — unconditional
+  // on the landing page, contradicting the demo's scope sentence, §6b, and
+  // /pricing. Confirmed pricing/page.tsx never carried either phrase (it's
+  // already covered by the dedicated "never budget or per-task language"
+  // check below), so folding into this shared both-files loop is safe and
+  // gives the landing side the check it was missing.
+  "dollar estimate",
+  "sets the run's budget",
   "charged when the task is done",
 ];
 

@@ -33,9 +33,9 @@ const HOW_WE_WORK = [
   { name: "Message", line: "Send me a task in chat, or hand me a GitHub issue." },
   {
     name: "Brief",
-    line: "Before I touch code you get a brief: task type, model, and a dollar estimate.",
+    line: "Before I touch code you get a brief: task type, scope, and exactly what I'll build.",
   },
-  { name: "Approve", line: "Your approval sets the run's budget. That number is the cap." },
+  { name: "Approve", line: "Your approval starts the task. Nothing ships without it." },
   {
     name: "Pull request",
     line: "I write the code, a second model reviews it, and your own tests have to pass. Then the PR opens.",

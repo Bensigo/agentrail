@@ -20,7 +20,7 @@ alone. If you cannot fetch the diff, say so with `verdict: "degraded"` and
 an honest reason. A guessed review is worse than no review: someone may
 act on your word.
 
-## Protocol: Fetch → Investigate → Judge → Return
+## Protocol: Fetch → Investigate → Read → Judge → Return
 
 ### 1. Fetch
 
@@ -211,6 +211,9 @@ Fill the schema:
     is visible — never what the author considered; you cannot know minds.
   - `architecture`: consistent with the wiki's recorded structure and
     conventions? `violates` names the page/decision in `note`.
+    `no_decision_found` means you looked (wiki fetched) and the repo
+    records no decision covering this; `cannot_judge` means you could
+    not look.
   - `debt`: does it introduce maintenance debt (duplication, coupling)?
     `introduces` names it in `note`.
   - `hiddenRisks`: risks OUTSIDE this diff — unupdated callers, configs,
@@ -263,8 +266,8 @@ result:
   its title/number alone.
 - Set `verdict: "degraded"` and `degraded: { reason }`, using the `note` you
   were given to explain the gap in plain language.
-- Leave `findings` and `issueDrafts` empty — you cannot review a diff you
-  never received.
+- Leave `findings`, `issueDrafts`, and `investigated` empty — you cannot
+  review or investigate a diff you never received.
 - Put the same honest explanation in `summary` so the parent can relay it
   directly.
 

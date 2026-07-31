@@ -227,3 +227,11 @@ test("reviewer instructions state the reviewer judges only what's visible — it
     "must bound judgment to what's visible, never the author's intent",
   );
 });
+
+test("reviewer instructions' protocol heading names all five phases, Read included", () => {
+  const prose = reviewerInstructions();
+  assert.ok(
+    prose.includes("Fetch → Investigate → Read → Judge → Return"),
+    "the heading must not undercount the numbered sections that actually exist",
+  );
+});

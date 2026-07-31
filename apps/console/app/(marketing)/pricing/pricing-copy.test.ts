@@ -92,6 +92,69 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).toContain("Contact us");
   });
 
+  // ---------------------------------------------------------------------
+  // Slice 7 (subscription-platform, `docs/superpowers/plans/
+  // 2026-07-31-subscription-marketing-slice7.md`, Task 1) — the pricing
+  // page's outcome-led rewrite. Global Constraints pins the capacity
+  // vocabulary and Growth/Enterprise feature-line terms verbatim; a
+  // dedicated CTA section below pins the working Starter/Growth/Enterprise
+  // actions.
+  // ---------------------------------------------------------------------
+
+  it('pricing page names the capacity vocabulary customers actually see ("included monthly engineering capacity"), never budget or per-task language', () => {
+    expect(pricingSource).toContain("included monthly engineering capacity");
+    expect(pricingSource.toLowerCase()).not.toContain("budget");
+    expect(pricingSource).not.toMatch(/\$\d+(\.\d{2})?\s*(per|\/)\s*task/i);
+  });
+
+  it("pricing page's Growth tier names architecture assistance (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("architecture assistance");
+  });
+
+  it("pricing page's Growth tier names premium reasoning (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("premium reasoning");
+  });
+
+  it("pricing page's Enterprise tier names dedicated support (spec §10 feature vocabulary)", () => {
+    expect(pricingSource).toContain("dedicated support");
+  });
+
+  it("pricing page's Enterprise CTA is a mailto link built from the ENTERPRISE_CONTACT_EMAIL const (hello@heyjace.com)", () => {
+    // Raw-source pin, not a rendered-string pin (see this file's own
+    // doc-comment on why raw text): the const is interpolated into the
+    // href (`mailto:${ENTERPRISE_CONTACT_EMAIL}`), so the literal joined
+    // string "mailto:hello@heyjace.com" never appears contiguously in
+    // source — only the evaluated DOM attribute would show that. Pinning
+    // both halves (the const's exact value + the interpolation site) gives
+    // the same regression protection a single toContain would, without
+    // forcing the page to hardcode the address a second time.
+    expect(pricingSource).toContain('ENTERPRISE_CONTACT_EMAIL = "hello@heyjace.com"');
+    expect(pricingSource).toContain("mailto:${ENTERPRISE_CONTACT_EMAIL}");
+  });
+
+  it('pricing page\'s Starter CTA reads "Start with Starter"', () => {
+    expect(pricingSource).toContain("Start with Starter");
+  });
+
+  it('pricing page\'s Growth CTA reads "Start with Growth"', () => {
+    expect(pricingSource).toContain("Start with Growth");
+  });
+
+  it("pricing page's Starter/Growth CTA links to a real route, not an invented /signin path", () => {
+    // The task brief that drove this rewrite named `href="/signin"` as the
+    // example CTA target, but no such route exists anywhere in this app
+    // (confirmed: no apps/console/app/**/signin/page.tsx, no href="/signin"
+    // reference anywhere else in the codebase). The real route, traced from
+    // `_nav.tsx`'s `signInAction` prop through `page.tsx`'s `signInWithGithub`
+    // through NextAuth's own `pages.signIn` config
+    // (`packages/auth/src/index.ts`), is "/login" — confirmed live at
+    // `app/(auth)/login/page.tsx`, which runs the identical
+    // `signIn("github", { redirectTo: "/" })` call. Pin the real target so a
+    // future edit can't silently revert to the never-real "/signin".
+    expect(pricingSource).toContain('href="/login"');
+    expect(pricingSource).not.toContain("/signin");
+  });
+
   it("landing §6b carries its new subscription heading", () => {
     expect(landingSource).toContain("One subscription for your whole team");
   });

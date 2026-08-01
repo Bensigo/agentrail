@@ -245,6 +245,47 @@ describe.skipIf(!DB_AVAILABLE)(
         expect((await readReviewJob(otherPr.id)).state).toBe("queued");
         expect((await readReviewJob(otherRepo.id)).state).toBe("queued");
       });
+
+      // Arc B review fix — mutual-supersede race (Important defect): the
+      // insert and the supersede were two separate, non-transactional round
+      // trips with no recency guard. Two concurrent enqueues for the SAME PR
+      // (GitHub redeliveries / a synchronize burst) could each commit their
+      // own insert, then each run their own supersede against the OTHER's
+      // now-queued row — `head_sha <> own` + `state = 'queued'` matches the
+      // sibling for BOTH callers, so both flip each other to `superseded`
+      // and the PR silently gets zero eligible jobs. Looped 5x with a fresh
+      // PR number per iteration to give the race a real chance to land —
+      // `Promise.all` starts both calls in the same tick, but a single
+      // unlucky iteration proves nothing either way.
+      it("concurrent enqueues for the SAME PR never mutually-supersede — exactly one survivor every time", async () => {
+        for (let i = 0; i < 5; i++) {
+          const prNumber = 500 + i;
+          const [a, b] = await Promise.all([
+            enqueueReviewJob({
+              workspaceId: wsId,
+              repo: "acme/widgets",
+              prNumber,
+              headSha: `race-a-${i}`,
+              event: "opened",
+            }),
+            enqueueReviewJob({
+              workspaceId: wsId,
+              repo: "acme/widgets",
+              prNumber,
+              headSha: `race-b-${i}`,
+              event: "opened",
+            }),
+          ]);
+
+          const rowA = await readReviewJob(a.id);
+          const rowB = await readReviewJob(b.id);
+          const states = [rowA.state, rowB.state].sort();
+          // Exactly one survivor — either order is fine, but NEVER both
+          // 'superseded' (the bug) and NEVER both 'queued' (would mean the
+          // supersede silently failed to run at all).
+          expect(states).toEqual(["queued", "superseded"]);
+        }
+      });
     });
 
     // -----------------------------------------------------------------

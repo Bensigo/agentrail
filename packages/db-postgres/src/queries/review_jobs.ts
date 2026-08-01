@@ -135,7 +135,51 @@ export type EnqueueReviewJobResult = {
  * rapid-fire push storm's LATER heads get a chance to land their OWN row and
  * run the supersede below against still-ineligible OLDER heads before any of
  * them is actually claimable. `opened`/`reopened`/other events are eligible
- * immediately (`next_eligible_at` stays null).
+ * immediately (`next_eligible_at` stays null). Computed with the DB's own
+ * `now()` (not the app server's `Date.now()`) so every time comparison in
+ * this module shares one clock.
+ *
+ * ARC B REVIEW FIX — mutual-supersede race (Important defect): the insert
+ * and the supersede used to be two separate, non-transactional round trips.
+ * Two concurrent enqueues for the SAME PR (GitHub redeliveries, or a
+ * `synchronize` burst) could each commit their own insert, then each run
+ * their own supersede against the OTHER's now-queued row — `head_sha <>
+ * own` + `state = 'queued'` matches the sibling for BOTH callers under
+ * READ COMMITTED, since each transaction's supersede is a separate
+ * statement that only ever excludes ITS OWN head. Both rows end
+ * `superseded` and the PR silently gets zero eligible jobs — reproduced
+ * directly (see this task's report) before this fix, on the very first
+ * `Promise.all([enqueueReviewJob(shaA), enqueueReviewJob(shaB)])` iteration.
+ *
+ * Fix: the insert + supersede now run inside ONE `db.transaction`, whose
+ * FIRST statement takes a per-PR `pg_advisory_xact_lock` (blocking, not the
+ * `_try_` variant — an enqueue is rare and latency-tolerant, so waiting for
+ * a same-PR peer to finish is simpler than deciding what to do on a failed
+ * try-lock; contrast `channel_inbox.ts`'s `pg_try_advisory_xact_lock`
+ * embedded inline in a single hot claim statement, a different shape for a
+ * different problem — that lock lets a busy claim loop skip contended work
+ * instantly rather than block). The lock key is `review-job:<workspaceId>:
+ * <repo>:<prNumber>` — scoped to the PR, not the head — so ANY two
+ * concurrent enqueues for the same PR (regardless of head) are fully
+ * serialized: whichever acquires the lock first runs its ENTIRE
+ * insert+supersede pair, commits (which releases the advisory lock), and
+ * only then does the second transaction proceed against the now-committed,
+ * fully-consistent state. `pg_advisory_xact_lock` auto-releases at
+ * transaction end (commit or rollback) — no manual unlock needed.
+ *
+ * The supersede's own WHERE keeps ALL FOUR original predicates plus the
+ * EvalPlanQual doctrine (`confirmAlignmentBrief` precedent, github_intake.ts
+ * :996-1057): `state = 'queued'` is repeated on the UPDATE's OWN WHERE
+ * rather than left to a CTE alone, so Postgres's EvalPlanQual re-checks it
+ * against the freshly-locked row version at lock time, not a stale
+ * statement-start snapshot. There is no CTE here at all (a single flat
+ * UPDATE), but the predicate placement is preserved for the same reason:
+ * if this is ever refactored to use a CTE to compute the candidate set, the
+ * `state = 'queued'` predicate MUST stay on the UPDATE's own WHERE too, not
+ * move solely into the CTE. The advisory lock serializes ACROSS
+ * transactions (closing the race above); this repeated predicate is what
+ * still guards correctness WITHIN one transaction/statement — the two are
+ * complementary, neither replaces the other.
  */
 export async function enqueueReviewJob(input: {
   workspaceId: string;
@@ -145,55 +189,43 @@ export async function enqueueReviewJob(input: {
   event: string;
 }): Promise<EnqueueReviewJobResult> {
   const id = reviewJobId(input);
-  // Computed with the app server's clock (Date.now()), not the DB's own
-  // now() — this INSERT goes through the drizzle query builder (mirroring
-  // enqueueLinearIssue/enqueueOnboard's own plain-INSERT precedent), and no
-  // existing idiom in this package passes a `sql` fragment as a `.values()`
-  // field. A few ms/sec of app<->DB clock skew is immaterial against a 60s
-  // debounce window; the supersede/claim/complete statements below all use
-  // real raw SQL for cross-row/atomicity reasons and use the DB's own now()
-  // throughout.
-  const nextEligibleAt =
-    input.event === "synchronize" ? new Date(Date.now() + 60_000) : null;
+  const lockKey = `review-job:${input.workspaceId}:${input.repo}:${input.prNumber}`;
 
-  const inserted = await db
-    .insert(reviewJobs)
-    .values({
-      id,
-      workspaceId: input.workspaceId,
-      repo: input.repo,
-      prNumber: input.prNumber,
-      headSha: input.headSha,
-      event: input.event,
-      nextEligibleAt,
-    })
-    .onConflictDoNothing({ target: reviewJobs.id })
-    .returning({ id: reviewJobs.id });
-  const deduped = inserted.length === 0;
+  return db.transaction(async (tx) => {
+    // Must be the FIRST statement in the transaction: every concurrent
+    // enqueue for this PR blocks here until the current holder commits
+    // (releasing the lock), so no two insert+supersede pairs for the same
+    // PR ever interleave.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
 
-  // EvalPlanQual doctrine (`confirmAlignmentBrief` precedent, github_intake.ts
-  // :996-1057): `state = 'queued'` is repeated on the UPDATE's OWN WHERE
-  // rather than left to a CTE alone, so Postgres's EvalPlanQual re-checks it
-  // against the freshly-locked row version at lock time, not a stale
-  // statement-start snapshot. There is no CTE here at all (a single flat
-  // UPDATE), but the predicate placement is preserved for the same reason:
-  // if this is ever refactored to use a CTE to compute the candidate set,
-  // the `state = 'queued'` predicate MUST stay on the UPDATE's own WHERE
-  // too, not move solely into the CTE.
-  const superseded = Array.from(
-    await db.execute(sql`
-      UPDATE review_jobs
-      SET state = 'superseded', updated_at = now()
-      WHERE workspace_id = ${input.workspaceId}
-        AND repo = ${input.repo}
-        AND pr_number = ${input.prNumber}
-        AND head_sha <> ${input.headSha}
-        AND state = 'queued'
-      RETURNING id
-    `)
-  );
+    const inserted = Array.from(
+      await tx.execute(sql`
+        INSERT INTO review_jobs (id, workspace_id, repo, pr_number, head_sha, event, next_eligible_at)
+        VALUES (
+          ${id}, ${input.workspaceId}, ${input.repo}, ${input.prNumber}, ${input.headSha}, ${input.event},
+          CASE WHEN ${input.event} = 'synchronize' THEN now() + interval '60 seconds' ELSE NULL END
+        )
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `)
+    );
+    const deduped = inserted.length === 0;
 
-  return { id, deduped, superseded: superseded.length };
+    const superseded = Array.from(
+      await tx.execute(sql`
+        UPDATE review_jobs
+        SET state = 'superseded', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND repo = ${input.repo}
+          AND pr_number = ${input.prNumber}
+          AND head_sha <> ${input.headSha}
+          AND state = 'queued'
+        RETURNING id
+      `)
+    );
+
+    return { id, deduped, superseded: superseded.length };
+  });
 }
 
 // --- claim --------------------------------------------------------------------

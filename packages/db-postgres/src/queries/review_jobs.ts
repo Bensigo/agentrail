@@ -463,6 +463,44 @@ export async function completeReviewJob(
   return raw ? mapReviewJobRow(raw) : null;
 }
 
+// --- release (post-claim, pre-complete escape hatch) -------------------------
+
+/**
+ * Release a claimed review job back to `queued` after a POST-CLAIM failure
+ * that is NOT the worker's fault — Task 4's claim route calls this when its
+ * own `bindReviewJobSession` call throws right after a successful
+ * `claimEligibleReviewJob`: the row is already `running`, but the caller can
+ * make no further progress (no session bound), so it must not be left
+ * dangling forever. Without this, the ONLY recovery would be the 15-minute
+ * stale-running pre-pass (`requeueStaleRunningReviewJobs`) — correct
+ * eventually, but a needless quarter-hour stall for what is usually a
+ * transient bind/db hiccup.
+ *
+ * Guarded exactly like `completeReviewJob`'s own UPDATEs (`WHERE id = $1 AND
+ * state = 'running'`), so this is always safe to call: a job that already
+ * moved on (re-claimed after this call raced with the stale-running
+ * pre-pass, or resolved to a terminal state some other way) is a silent
+ * no-op, never a resurrection/clobber of whatever state it is actually in.
+ * An unknown `jobId` matches zero rows for the same reason — also a no-op,
+ * never a throw (unlike `bindReviewJobSession`'s "unknown id is a caller
+ * bug" contract: a release racing a job's own natural completion is an
+ * expected, ordinary outcome here, not a bug).
+ *
+ * Deliberately does NOT bump `attempts` or set `skip_reason`/
+ * `next_eligible_at`: this is an infra release of the CALLER's own claim,
+ * not a worker-reported review failure (that path is `completeReviewJob`'s
+ * `outcome: 'failed'` branch, which owns the retry/backoff/terminal-escalate
+ * policy). A released job is immediately eligible again, exactly as if it
+ * had never been claimed.
+ */
+export async function releaseReviewJob(input: { jobId: string }): Promise<void> {
+  await db.execute(sql`
+    UPDATE review_jobs
+    SET state = 'queued', claimed_by = NULL, claimed_at = NULL, updated_at = now()
+    WHERE id = ${input.jobId} AND state = 'running'
+  `);
+}
+
 // --- session binding --------------------------------------------------------
 
 /**

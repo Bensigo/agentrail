@@ -22,7 +22,7 @@ vi.mock("../../workspaces/[workspaceId]/connectors/secret/discord", () => ({
   sendDiscordMessage: vi.fn(),
 }));
 
-import { buildOutcomeMessage, notifyRunOutcome } from "./notify";
+import { buildOutcomeMessage, notifyRunOutcome, sendWorkspaceNotification } from "./notify";
 import {
   getConnector,
   getConnectorSecret,
@@ -202,6 +202,102 @@ describe("notifyRunOutcome — hideCost is always true (unconditional since 2026
 
     const [, , text] = mockSend.mock.calls[0]!;
     expect(text).toBe("AgentRail: PR ready — issue #42 (https://github.com/o/r/pull/9)");
+  });
+});
+
+/**
+ * Arc B §3 (review-job notify reuse): `sendWorkspaceNotification` is the
+ * MINIMAL reusable core extracted out of `notifyRunOutcome` — the exact same
+ * per-channel fan-out (Jace handoff XOR legacy sender, one path per channel),
+ * just taking pre-built `text` instead of building it from a run-outcome
+ * `NotifyParams` shape. `review-jobs/complete/route.ts` calls this directly
+ * (a review-job outcome has no issue number / run-outcome vocabulary), while
+ * `notifyRunOutcome` becomes a thin wrapper: build text via
+ * `buildOutcomeMessage`, then delegate here with the run-outcome enrichment
+ * fields. This refactor must be BYTE-IDENTICAL for `notifyRunOutcome`'s own
+ * behavior — every test above/below this block pins that.
+ */
+describe("sendWorkspaceNotification — extracted fan-out core (Arc B §3 review-job notify reuse)", () => {
+  it("sends arbitrary worker-composed text (no run-outcome vocabulary) to the legacy telegram sender unchanged", async () => {
+    mockGetConnector.mockResolvedValue(telegramConnected("999"));
+    mockGetSecret.mockResolvedValue("bot-token");
+
+    const text =
+      "AgentRail review posted for acme/widgets#42 — 3/3 ACs pass, no blockers\n" +
+      "https://github.com/acme/widgets/pull/42#pullrequestreview-1";
+    await sendWorkspaceNotification(WS, text);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const [token, chatId, sentText] = mockSend.mock.calls[0]!;
+    expect(token).toBe("bot-token");
+    expect(chatId).toBe("999");
+    expect(sentText).toBe(text);
+  });
+
+  it("routes via Jace exactly once when migrated, with NO enrichment argument required", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    mockGetConnector.mockImplementation(async (_ws: string, provider: string) =>
+      provider === "jace"
+        ? {
+            provider: "jace" as const,
+            enabled: true,
+            config: {
+              repos: [],
+              triggerLabel: "x",
+              pollIntervalSeconds: 60,
+              telegramNotify: true,
+            },
+            hasSecret: false,
+            updatedAt: null,
+          }
+        : telegramConnected("999")
+    );
+
+    await sendWorkspaceNotification(WS, "a worker-composed line\nhttps://github.com/o/r/pull/1");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+    const [, init] = fetchSpy.mock.calls[0]!;
+    const body = JSON.parse(String((init as RequestInit).body));
+    expect(body.message).toBe("a worker-composed line\nhttps://github.com/o/r/pull/1");
+    // No run-outcome enrichment was passed — Jace's OPTIONAL goal-loop
+    // extension needs all three of workspaceId/issueExternalId/outcome, so
+    // omitting them just means that extension never fires; the platform
+    // notification above is unaffected either way.
+    expect(body.outcome).toBeUndefined();
+    expect(body.issueNumber).toBeUndefined();
+    expect(body.prUrl).toBeUndefined();
+    expect(body.costUsd).toBeUndefined();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("swallows a send failure — best-effort, never throws (same contract as notifyRunOutcome)", async () => {
+    mockGetConnector.mockResolvedValue(telegramConnected("999"));
+    mockGetSecret.mockResolvedValue("bot-token");
+    mockSend.mockRejectedValue(new Error("telegram down"));
+
+    await expect(sendWorkspaceNotification(WS, "text")).resolves.toBeUndefined();
+  });
+
+  it("swallows a connector-lookup throw (never throws)", async () => {
+    mockGetConnector.mockRejectedValue(new Error("db down"));
+    await expect(sendWorkspaceNotification(WS, "text")).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("notifyRunOutcome is a thin wrapper over this core — the exact buildOutcomeMessage text reaches the sender", async () => {
+    mockGetConnector.mockResolvedValue(telegramConnected("999"));
+    mockGetSecret.mockResolvedValue("bot-token");
+
+    await notifyRunOutcome(WS, { issueNumber: "7", outcome: "green" });
+
+    const [, , text] = mockSend.mock.calls[0]!;
+    expect(text).toBe(
+      buildOutcomeMessage({ issueNumber: "7", outcome: "green" }, { hideCost: true })
+    );
   });
 });
 

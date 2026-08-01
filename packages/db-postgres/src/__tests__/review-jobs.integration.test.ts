@@ -11,6 +11,7 @@ import {
   claimReviewJob,
   completeReviewJob,
   bindReviewJobSession,
+  releaseReviewJob,
 } from "../queries/review_jobs.js";
 import { getWorkspaceByGithubInstallationId } from "../queries/github-app-token.js";
 
@@ -604,6 +605,106 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(
           await completeReviewJob({ jobId: id, outcome: "posted", postedReviewUrl: "x", verdict: "approve" })
         ).toBeNull();
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // releaseReviewJob — Task 4's bind-failure escape hatch: flip a claimed
+    // job back to 'queued' (release, not leak) when the CLAIM route's own
+    // post-claim bindReviewJobSession call fails. Guarded exactly like
+    // completeReviewJob's own UPDATEs (WHERE id = $1 AND state = 'running')
+    // so it can never resurrect/clobber a job that already moved on.
+    // -----------------------------------------------------------------
+    describe("releaseReviewJob", () => {
+      let wsId: string;
+      beforeEach(async () => {
+        wsId = await createWorkspace();
+      });
+      afterEach(async () => {
+        await deleteWorkspace(wsId);
+      });
+
+      it("flips a running job back to 'queued' and clears claimed_by/claimed_at", async () => {
+        const id = await insertReviewJob(wsId, {
+          state: "running",
+          claimedBy: "worker-1",
+          claimedAt: new Date(),
+        });
+
+        await releaseReviewJob({ jobId: id });
+
+        const row = await readReviewJob(id);
+        expect(row.state).toBe("queued");
+        expect(row.claimedBy).toBeNull();
+        expect(row.claimedAt).toBeNull();
+      });
+
+      it("does not touch attempts or skip_reason — this is an infra release, not a worker-reported failure", async () => {
+        const id = await insertReviewJob(wsId, {
+          state: "running",
+          claimedBy: "worker-1",
+          claimedAt: new Date(),
+          attempts: 1,
+        });
+
+        await releaseReviewJob({ jobId: id });
+
+        const row = await readReviewJob(id);
+        expect(row.attempts).toBe(1);
+        expect(row.skipReason).toBeNull();
+      });
+
+      it("leaves the job immediately eligible (does not set next_eligible_at)", async () => {
+        const id = await insertReviewJob(wsId, {
+          state: "running",
+          claimedBy: "worker-1",
+          claimedAt: new Date(),
+        });
+
+        await releaseReviewJob({ jobId: id });
+
+        expect(await claimReviewJob({ workerId: "w2", dailyBudget: 100 })).toMatchObject({
+          id,
+          state: "running",
+          claimedBy: "w2",
+        });
+      });
+
+      it("is guarded: a no-op against a job that is not 'running' (e.g. already 'queued')", async () => {
+        const id = await insertReviewJob(wsId, { state: "queued" });
+
+        await releaseReviewJob({ jobId: id });
+
+        const row = await readReviewJob(id);
+        expect(row.state).toBe("queued");
+      });
+
+      it("is guarded: a no-op against a job that already reached a terminal state (e.g. 'posted')", async () => {
+        const id = await insertReviewJob(wsId, {
+          state: "running",
+          claimedBy: "worker-1",
+          claimedAt: new Date(),
+        });
+        await completeReviewJob({
+          jobId: id,
+          outcome: "posted",
+          postedReviewUrl: "https://github.com/acme/widgets/pull/1#pullrequestreview-1",
+          verdict: "approve",
+        });
+
+        await releaseReviewJob({ jobId: id });
+
+        const row = await readReviewJob(id);
+        expect(row.state).toBe("posted"); // untouched — never resurrects a terminal row
+        expect(row.postedReviewUrl).toBe(
+          "https://github.com/acme/widgets/pull/1#pullrequestreview-1"
+        );
+      });
+
+      it("silently no-ops for an unknown jobId (never throws)", async () => {
+        await expect(
+          releaseReviewJob({ jobId: "00000000-0000-0000-0000-000000000000" })
+        ).resolves.toBeUndefined();
       });
     });
 

@@ -223,3 +223,76 @@ def test_verification_evidence_appears_in_trail() -> None:
     )
     names = {e.name for e in result.evidence}
     assert "independent-verification" in names
+
+
+# ---------------------------------------------------------------------------
+# Arc C §4 — AcCoverageDetail: per-AC proof coverage extends evaluate_objective.
+#
+# NOTE on naming: the sync harness's shim re-exports the superset decision
+# function as ``evaluate`` (imported at the top of this file from
+# ``agentrail.run.objective_gate``), but that shim only forwards
+# checks/ac_coverage/red_green_evidence/verification_evidence — it does not
+# (yet) plumb ``ac_coverage_detail`` through. The AC section these tests
+# extend lives in the underlying superset function itself,
+# ``agentrail.guardrails.policies.objective.evaluate_objective`` (there is no
+# bare ``evaluate`` name in that module), so these tests call it directly.
+# ---------------------------------------------------------------------------
+
+from agentrail.guardrails.policies.objective import (
+    AcCoverageDetail,
+    AcEvidenceItem,
+    AcStatus,
+    evaluate_objective,
+)
+
+
+def _detail(*statuses: AcStatus) -> AcCoverageDetail:
+    return AcCoverageDetail(acs=tuple(statuses))
+
+
+def test_detail_derives_coverage_and_unbound_ids() -> None:
+    detail = _detail(
+        AcStatus(id="AC1", text="a", status="proven_test",
+                 evidence=(AcEvidenceItem(type="test", ref="t.py::x", granularity="test"),)),
+        AcStatus(id="AC2", text="b", status="waived"),
+        AcStatus(id="AC3", text="c", status="unbound"),
+    )
+    assert detail.unbound_ids == ["AC3"]
+    cov = detail.to_ac_coverage()
+    assert (cov.total, cov.covered) == (3, 2)
+    assert not cov.is_satisfied
+
+
+def test_evaluate_enforce_names_unbound_acs() -> None:
+    from agentrail.guardrails.policies.objective import CheckResult
+
+    verdict = evaluate_objective(
+        checks=[CheckResult(name="verify", passed=True, detail="exit 0")],
+        ac_coverage=AcCoverage(total=1, covered=1),
+        ac_coverage_detail=_detail(
+            AcStatus(id="AC1", text="a", status="proven_test"),
+            AcStatus(id="AC2", text="b", status="unbound"),
+            AcStatus(id="AC4", text="d", status="unbound"),
+        ),
+    )
+    assert verdict.state == "fail"
+    assert "acceptance-criteria unbound: AC2, AC4" in verdict.failed_reasons
+
+
+def test_evaluate_detail_satisfied_passes_and_legacy_still_gates() -> None:
+    # All ACs waived but ZERO declared verification: legacy coverage must
+    # still red the gate — waive-everything is not a bypass.
+    verdict = evaluate_objective(
+        checks=[],
+        ac_coverage=AcCoverage(total=0, covered=0),
+        ac_coverage_detail=_detail(AcStatus(id="AC1", text="a", status="waived")),
+    )
+    assert verdict.state == "fail"
+    assert "acceptance-criteria not satisfied" in verdict.failed_reasons
+
+
+def test_evaluate_without_detail_is_unchanged() -> None:
+    verdict = evaluate_objective(
+        checks=[], ac_coverage=AcCoverage(total=2, covered=2),
+    )
+    assert verdict.state == "pass"

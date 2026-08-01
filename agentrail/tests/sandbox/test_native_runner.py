@@ -814,6 +814,34 @@ class TestResultFromRunJsonRefusalMarker:
         assert result.status == "red"
         assert "AC2 unverified" in result.gate_reason
 
+    def test_unverifiable_refusal_marker_round_trips_to_prefixed_error(self, tmp_path) -> None:
+        """Arc C §6: the SAME #1267 channel, a different ``kind``. Writing the
+        marker through the REAL writer (``artifacts.write_run_refusal_marker``,
+        not a hand-built dict like the tests above) must round-trip through
+        ``_result_from_run_json`` to the same HOSTED_REFUSAL_PREFIX-prefixed
+        error the independent_review refusal gets."""
+        from agentrail.run import artifacts
+
+        run_dir = tmp_path / "run-1"
+        run_dir.mkdir(parents=True)
+        metadata_file = run_dir / "run.json"
+        metadata_file.write_text(json.dumps({}))
+        message = "unverifiable acceptance criteria: AC3"
+        artifacts.write_run_refusal_marker(
+            metadata_file,
+            kind="unverifiable",
+            status="error",
+            message=message,
+            independent_review_value="active",
+        )
+
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "error"
+        assert result.gate_reason == f"{HOSTED_REFUSAL_PREFIX}{message}"
+
 
 class TestHostedRefusalEndToEnd:
     """Full stack (faked subprocess): the 'agentrail run issue' step exits 1

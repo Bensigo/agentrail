@@ -440,5 +440,117 @@ class AcProofEnforceModeTests(unittest.TestCase):
         self.assertEqual(data["acs"], [])
 
 
+# ---------------------------------------------------------------------------
+# Arc C §6 — the `unverifiable` refusal (Task 8).
+#
+# setUp/_run/_write_agentrail_json below are copied verbatim from
+# AcProofEnforceModeTests above (itself copied from AcProofObserveModeTests /
+# RunPromptTests) — same target/repo fixture, same patch list, same
+# sentinel-flip execute stub. A builder-declared `unverifiable` binding is
+# already unbound at the coverage layer (load_ac_bindings routes it to the
+# separate `unverifiable` dict, never `bindings`), so the gate is red in BOTH
+# modes here; what this class pins is the REFUSAL MARKER, which only enforce
+# mode writes.
+# ---------------------------------------------------------------------------
+
+
+class AcProofUnverifiableRefusalTests(unittest.TestCase):
+    _ONE_AC = "Fix the bug.\n\n## Acceptance criteria\n- [ ] First thing works.\n"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_agentrail_json(self, name: str, data: dict) -> None:
+        (self.target / ".agentrail" / name).write_text(json.dumps(data))
+
+    def _declare_ac1_unverifiable(self) -> None:
+        self._write_agentrail_json(
+            "ac_bindings.json",
+            {"AC1": {"unverifiable": True, "why": "needs prod creds",
+                     "whatWouldProveIt": "a staging login"}},
+        )
+
+    def _run(self, resolution_text: str, *, label: str = "ac-proof-gate"):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
+
+        # subprocess.run is patched so a stray gh/git call cannot fetch an
+        # issue or a real head sha — mirrors RunPromptTests._run exactly.
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_prompt(
+                self.target,
+                resolution_text,
+                label=label,
+                agent="claude",
+                command="c",
+                repo_dir=self.repo,
+            )
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, run_dir
+
+    def test_enforce_declared_unverifiable_writes_refusal_marker(self) -> None:
+        self._declare_ac1_unverifiable()
+
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "enforce"}):
+            result, run_dir = self._run(self._ONE_AC)
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertIn("refusal", run_json)
+        self.assertEqual(run_json["refusal"]["kind"], "unverifiable")
+        self.assertIn("AC1", run_json["refusal"]["message"])
+        self.assertNotEqual(result, 0)
+
+        evidence_path = run_dir / "ac_evidence.json"
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["unverifiable"][0]["ac"], "AC1")
+        self.assertEqual(data["unverifiable"][0]["why_unbound"], "needs prod creds")
+        self.assertEqual(data["unverifiable"][0]["what_would_prove_it"], "a staging login")
+
+    def test_observe_declared_unverifiable_writes_no_refusal_marker(self) -> None:
+        # SAME fixture as the enforce test above — only the mode differs.
+        self._declare_ac1_unverifiable()
+
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "observe"}):
+            result, run_dir = self._run(self._ONE_AC)
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertNotIn("refusal", run_json)
+
+        # The declaration is still recorded in the artifact — observe mode
+        # never gates, but it never hides the builder's declaration either.
+        evidence_path = run_dir / "ac_evidence.json"
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["unverifiable"][0]["ac"], "AC1")
+        self.assertEqual(data["unverifiable"][0]["why_unbound"], "needs prod creds")
+        self.assertEqual(data["unverifiable"][0]["what_would_prove_it"], "a staging login")
+
+
 if __name__ == "__main__":
     unittest.main()

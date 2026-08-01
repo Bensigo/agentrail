@@ -2094,6 +2094,24 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             unverifiable=declared_unverifiable,
         )
 
+        # Arc C §6: the builder declared ACs unverifiable. In enforce mode
+        # that is a REFUSAL — the marker rides the existing channel
+        # (write_run_refusal_marker → 'hosted-refusal: ' prefix → straight to
+        # a human, no retry burn). The gate above is already red (declared-
+        # unverifiable ACs are unbound), so exit codes need no new path; the
+        # marker takes precedence in every result parser.
+        if ac_mode == "enforce" and declared_unverifiable:
+            compact = ", ".join(entry["ac"] for entry in declared_unverifiable)
+            artifacts.write_run_refusal_marker(
+                metadata_file,
+                kind="unverifiable",
+                status="error",
+                message=f"unverifiable acceptance criteria: {compact}",
+                independent_review_value=independent_review_metadata_value(
+                    rc.independent_review_status
+                ),
+            )
+
     # Done is gate-driven: green → exit 0; red → non-zero. Preserve a genuine
     # agent failure code when the agent itself failed, otherwise surface 1 for a
     # red gate on an otherwise-clean run.

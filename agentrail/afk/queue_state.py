@@ -97,12 +97,15 @@ class Event(str, Enum):
     - ``GATE_GREEN`` — Objective Gate + Independent Verification passed.
     - ``GATE_RED`` — the attempt failed the gate (consumes one budget unit).
     - ``SECURITY_BLOCK`` — a security policy block fired (a hard stop).
+    - ``REFUSED`` — the run refused to proceed (hosted startup gap, or Arc C's
+      declared-unverifiable ACs): straight to a human, NO budget consumed.
     """
 
     START = "start"
     GATE_GREEN = "gate_green"
     GATE_RED = "gate_red"
     SECURITY_BLOCK = "security_block"
+    REFUSED = "refused"
 
 
 def admit(entry: QueueEntry, open_blockers: FrozenSet[int]) -> QueueEntry:
@@ -259,6 +262,8 @@ def transition(entry: QueueEntry, event: Event) -> QueueEntry:
       cleared by :func:`admit`, not by an event.
     - ``GATE_GREEN`` → :attr:`Terminal.GREEN`.
     - ``SECURITY_BLOCK`` → :attr:`Terminal.ESCALATED_TO_HUMAN` (a hard stop).
+    - ``REFUSED`` → :attr:`Terminal.ESCALATED_TO_HUMAN`, budget and tier left
+      UNCHANGED (a static gap; no retry could ever fix it).
     - ``GATE_RED`` consumes one budget unit, then either escalates to the next
       tier (re-enqueue at a higher tier with a decremented budget) or, when the
       budget is exhausted or the max tier is already red, hard-stops to
@@ -267,7 +272,9 @@ def transition(entry: QueueEntry, event: Event) -> QueueEntry:
     Termination: the only non-terminal-producing event is ``GATE_RED``, and it
     strictly decreases the non-negative integer ``remaining_budget``. No
     transition increases it. A bounded, strictly-decreasing counter cannot cycle,
-    so the machine always reaches a terminal in finitely many steps.
+    so the machine always reaches a terminal in finitely many steps. ``REFUSED``
+    (like ``GATE_GREEN``/``SECURITY_BLOCK``) always produces a terminal
+    directly, so it never extends this argument.
     """
     if is_terminal(entry.state):
         return entry  # terminals are frozen — no transition out
@@ -290,6 +297,13 @@ def transition(entry: QueueEntry, event: Event) -> QueueEntry:
 
     if event is Event.SECURITY_BLOCK:
         # A security block is a hard stop: preserve state for a human.
+        return replace(entry, state=Terminal.ESCALATED_TO_HUMAN)
+
+    if event is Event.REFUSED:
+        # A refusal (startup config gap, or acceptance criteria the run
+        # declared unverifiable) is a human's decision, not a retryable
+        # failure: budget and tier are preserved untouched — retrying cannot
+        # fix a static gap, and burning budget on it would mask the signal.
         return replace(entry, state=Terminal.ESCALATED_TO_HUMAN)
 
     if event is Event.GATE_RED:

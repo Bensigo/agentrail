@@ -940,3 +940,25 @@ def test_ceiling_trips_on_pricing_derived_dollar_figure():
     # And the cost recorded in the run ledger is exactly the pricing-derived $.
     terminal = [r for r in store.runs if r["status"] == "red"]
     assert terminal and terminal[-1]["cost_usd"] == priced
+
+
+# --------------------------------------------------------------------------- #
+# Arc C §6 — _event_for: a refusal (the #1267 hosted-startup channel Arc C's
+# `unverifiable` also rides) must route to Event.REFUSED BEFORE the ordinary
+# status map, so it never burns retry budget like a real gate failure would.
+# --------------------------------------------------------------------------- #
+def test_event_for_refusal_prefix_routes_to_refused():
+    from agentrail.heartbeat.runtime import _event_for
+    from agentrail.sandbox.native_runner import HOSTED_REFUSAL_PREFIX
+    from agentrail.sandbox.docker_runner import RunResult
+    result = RunResult(status="error", cost_usd=0.0,
+                       gate_reason=f"{HOSTED_REFUSAL_PREFIX}unverifiable acceptance criteria: AC3")
+    assert _event_for(result) is Event.REFUSED
+
+
+def test_event_for_unknown_status_still_defaults_gate_red():
+    # The exploration's sharpest trap, pinned: the default stays GATE_RED for
+    # unknown statuses, and refusal NEVER falls through to it.
+    from agentrail.heartbeat.runtime import _event_for
+    from agentrail.sandbox.docker_runner import RunResult
+    assert _event_for(RunResult(status="banana", cost_usd=0.0)) is Event.GATE_RED

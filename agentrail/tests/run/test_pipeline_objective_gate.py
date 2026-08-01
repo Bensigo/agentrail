@@ -12,12 +12,16 @@ inputs; no real tools run.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from agentrail.run.objective_gate import AcCoverage, CheckResult, evaluate
-from agentrail.run.pipeline import finalize_objective_gate
+from agentrail.run.pipeline import finalize_objective_gate, run_prompt
+from agentrail.run import pipeline as pipeline_mod
+from agentrail.tests.run.test_pipeline import _make_target, _sentinel
 
 
 def _green_result():
@@ -138,6 +142,147 @@ class FinalizeObjectiveGateTest(unittest.TestCase):
         )
         data = json.loads(self.metadata_file.read_text())
         self.assertEqual(data["targetIssue"], 42)
+
+
+# ---------------------------------------------------------------------------
+# Arc C — AC Proof Gate: ac_proof_mode() rollout flag (Task 6).
+# ---------------------------------------------------------------------------
+
+
+def test_ac_proof_mode_default_is_observe(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGENTRAIL_AC_PROOF_GATE", raising=False)
+    assert pipeline_mod.ac_proof_mode(tmp_path) == "observe"
+
+
+def test_ac_proof_mode_env_beats_config(monkeypatch, tmp_path):
+    (tmp_path / ".agentrail").mkdir()
+    (tmp_path / ".agentrail" / "config.json").write_text(json.dumps({"acProofGate": "enforce"}))
+    monkeypatch.setenv("AGENTRAIL_AC_PROOF_GATE", "off")
+    assert pipeline_mod.ac_proof_mode(tmp_path) == "off"
+    monkeypatch.delenv("AGENTRAIL_AC_PROOF_GATE")
+    assert pipeline_mod.ac_proof_mode(tmp_path) == "enforce"
+
+
+def test_ac_proof_mode_typo_falls_through(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTRAIL_AC_PROOF_GATE", "enforcee")
+    assert pipeline_mod.ac_proof_mode(tmp_path) == "observe"
+
+
+# ---------------------------------------------------------------------------
+# Arc C — ac_evidence.json artifact writer (Task 6).
+# ---------------------------------------------------------------------------
+
+
+def test_write_ac_evidence_merges(tmp_path):
+    from agentrail.run.artifacts import write_ac_evidence
+    from agentrail.shared.json import read_json
+    path = tmp_path / "ac_evidence.json"
+    write_ac_evidence(path, mode="observe", issue=7, head_sha="abc",
+                      acs=[{"id": "AC1", "text": "a", "status": "unbound", "evidence": []}],
+                      unbound=["AC1"], waived=[], unverifiable=[])
+    write_ac_evidence(path, mode="observe", issue=7, head_sha="abc",
+                      acs=[], unbound=[], waived=[], unverifiable=[
+                          {"ac": "AC1", "why_unbound": "x", "what_would_prove_it": "y"}])
+    data = read_json(path)
+    assert data["mode"] == "observe" and data["unverifiable"][0]["ac"] == "AC1"
+
+
+# ---------------------------------------------------------------------------
+# Arc C — observe-mode end-to-end wiring through run_prompt (Task 6).
+#
+# NOTE: the closest existing green-path end-to-end fixture that drives
+# run_prompt/_run_pipeline through the real Objective Gate is
+# ``RunPromptTests`` in ``test_pipeline.py`` (this file's own
+# FinalizeObjectiveGateTest above only drives finalize_objective_gate over
+# plain inputs, never the pipeline itself). ``_run`` below copies that
+# fixture's arrange/act body verbatim (same target/repo setup via the
+# imported ``_make_target``/``_sentinel`` helpers, same patch list, same
+# sentinel-flip execute stub, same run_prompt call) with one generalization:
+# resolution_text is a parameter instead of a hardcoded string, so a
+# checkbox AC can be injected for the AC Proof Gate to compute over.
+# ---------------------------------------------------------------------------
+
+
+class AcProofObserveModeTests(unittest.TestCase):
+    """Task 6: observe mode emits ac_evidence.json + a non-gating evidence
+    line but never flips the verdict; off mode emits nothing."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, resolution_text: str, *, label: str = "ac-proof-gate"):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
+
+        # subprocess.run is patched so a stray gh/git call cannot fetch an
+        # issue or a real head sha — mirrors RunPromptTests._run exactly.
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_prompt(
+                self.target,
+                resolution_text,
+                label=label,
+                agent="claude",
+                command="c",
+                repo_dir=self.repo,
+            )
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, run_dir
+
+    def test_observe_mode_emits_ac_evidence_and_never_flips_verdict(self) -> None:
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "observe"}):
+            result, run_dir = self._run(
+                "Fix the bug.\n\n## Acceptance criteria\n- [ ] It works."
+            )
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        # Observe mode changed nothing about the verdict: green here exactly
+        # as in the neighboring green-path test (RunPromptTests in
+        # test_pipeline.py, test_green_gate_returns_zero) — same fixture,
+        # same sentinel-flip, same declared verify check.
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+        self.assertEqual(result, 0)
+        evidence_names = {e["name"] for e in run_json["objectiveGate"]["evidence"]}
+        self.assertIn("ac-proof-observe", evidence_names)
+
+        evidence_path = run_dir / "ac_evidence.json"
+        self.assertTrue(evidence_path.is_file())
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["mode"], "observe")
+        self.assertEqual(data["acs"][0]["status"], "unbound")
+
+    def test_off_mode_writes_no_artifact(self) -> None:
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "off"}):
+            result, run_dir = self._run(
+                "Fix the bug.\n\n## Acceptance criteria\n- [ ] It works."
+            )
+        self.assertFalse((run_dir / "ac_evidence.json").exists())
 
 
 if __name__ == "__main__":

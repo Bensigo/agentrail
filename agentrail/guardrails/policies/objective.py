@@ -499,6 +499,7 @@ class ObjectiveGate:
         verdict = evaluate_objective(
             checks=kwargs.get("checks"),  # type: ignore[arg-type]
             ac_coverage=kwargs.get("ac_coverage"),  # type: ignore[arg-type]
+            ac_coverage_detail=kwargs.get("ac_coverage_detail"),  # type: ignore[arg-type]
             red_green_evidence=kwargs.get("red_green_evidence"),  # type: ignore[arg-type]
             verification_evidence=kwargs.get("verification_evidence"),  # type: ignore[arg-type]
             ci_checks=kwargs.get("ci_checks"),  # type: ignore[arg-type]

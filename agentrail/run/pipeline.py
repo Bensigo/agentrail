@@ -10,18 +10,28 @@ import time
 from dataclasses import dataclass, field
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from agentrail.run import artifacts, budget_leash, context as ctx, prompts, skills, state as state_mod
-from agentrail.guardrails.policies.input_contract import screen_injection
+from agentrail.guardrails.adapters.ac_evidence import (
+    load_ac_bindings,
+    load_ac_waivers,
+    load_junit_results,
+)
+from agentrail.guardrails.adapters.check_runner import _load_config
+from agentrail.guardrails.policies.input_contract import (
+    parse_acceptance_criteria,
+    screen_injection,
+)
 from agentrail.observability.tracer import RunTracer
 from agentrail.run.check_runner import (
+    ac_coverage_for,
     declared_check_coverage,
     load_verify_checks,
     red_green_proof_required,
     run_objective_checks,
 )
-from agentrail.run.objective_gate import CheckResult, GateResult, evaluate
+from agentrail.run.objective_gate import CheckResult, Evidence, GateResult, evaluate
 from agentrail.run.red_green import Observation, gate_evidence, verify_trail
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import (
@@ -160,6 +170,33 @@ def jit_gather_enabled() -> bool:
     default OFF until the gather flow is proven.
     """
     return (os.environ.get("AGENTRAIL_JIT_GATHER") or "").strip() == "1"
+
+
+# Arc C: the AC Proof Gate's three-state rollout flag. Deliberately NOT
+# layer_enabled (that defaults ON, boolean): observe (compute + emit evidence,
+# never gate) is the safe default; enforce is per-repo opt-in; off is the
+# emergency stop. Precedent: jit_gather_enabled above (bespoke rollout flag).
+AC_PROOF_ENV = "AGENTRAIL_AC_PROOF_GATE"
+AC_PROOF_MODES = ("off", "observe", "enforce")
+
+
+def ac_proof_mode(target_dir: Optional[Path] = None) -> str:
+    """Resolve the AC Proof Gate mode: ``off`` | ``observe`` | ``enforce``.
+
+    Precedence: env (evals/tests/emergency stop) → ``.agentrail/config.json``
+    key ``acProofGate`` (per-repo opt-in) → default ``observe``. An
+    unrecognized value falls through to the next source, so a typo can never
+    silently flip enforcement.
+    """
+    raw = (os.environ.get(AC_PROOF_ENV) or "").strip().lower()
+    if raw in AC_PROOF_MODES:
+        return raw
+    if target_dir is not None:
+        config = _load_config(Path(target_dir)) or {}
+        value = str(config.get("acProofGate") or "").strip().lower()
+        if value in AC_PROOF_MODES:
+            return value
+    return "observe"
 
 
 # Set by the hosted fleet runner (#1267) to mark this run as executing on
@@ -1443,6 +1480,18 @@ def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
     )
 
 
+def _head_sha(target_dir: Path) -> str:
+    """Current HEAD sha of the run's working tree (best-effort, '' on failure)."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(target_dir),
+            capture_output=True, text=True, check=False,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 — the artifact key is best-effort
+        return ""
+
+
 def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
                   agent: str, command: str, repo_dir: Path,
                   log_dir: Optional[Path] = None, run_id: str = "",
@@ -1979,16 +2028,71 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             )
             red_green_evidence = gate_evidence(verify_trail(red_green_observations))
 
+    # Arc C: parse ACs with the intake parser, load bindings/waivers, compute
+    # real per-AC coverage. observe = evidence only; enforce = it gates.
+    ac_mode = ac_proof_mode(target_dir)
+    ac_texts: List[str] = parse_acceptance_criteria(resolution_text) if ac_mode != "off" else []
+    ac_detail = None
+    ac_waivers: Dict[str, Dict[str, str]] = {}
+    ac_unverifiable: Dict[str, Dict[str, str]] = {}
+    if ac_mode != "off":
+        ac_bindings, ac_unverifiable = load_ac_bindings(target_dir)
+        ac_waivers = load_ac_waivers(target_dir)
+        ac_detail = ac_coverage_for(
+            ac_texts, ac_bindings, load_junit_results(target_dir),
+            gate_checks, ac_waivers,
+        )
+
     gate_result = evaluate(
         checks=gate_checks,
         ac_coverage=declared_check_coverage(declared),
+        ac_coverage_detail=(ac_detail if ac_mode == "enforce" and ac_texts else None),
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
     )
+
+    # Observe mode: a NON-GATING one-line summary joins the gate evidence so
+    # run.json surfaces coverage without new readers (spec §5). Appended
+    # before finalize so it persists; passed=True — observation, not verdict.
+    if ac_mode == "observe" and ac_detail is not None:
+        derived = ac_detail.to_ac_coverage()
+        unbound_ids = ", ".join(ac_detail.unbound_ids)
+        summary = (
+            f"{derived.covered}/{derived.total} ACs proven or waived"
+            + (f"; unbound: {unbound_ids}" if unbound_ids else "")
+            if ac_texts else "no acceptance criteria parsed"
+        )
+        gate_result.evidence.append(
+            Evidence(name="ac-proof-observe", passed=True, detail=summary)
+        )
+
     outcome = finalize_objective_gate(
         metadata_file, gate_result=gate_result, review_advisory=None,
         independent_review_status=rc.independent_review_status,
     )
+
+    # Arc C §5: every non-off run emits the per-AC evidence artifact.
+    if ac_mode != "off" and ac_detail is not None:
+        parsed_ids = {a.id for a in ac_detail.acs}
+        declared_unverifiable = [
+            {"ac": ac_id, "why_unbound": info.get("why", ""),
+             "what_would_prove_it": info.get("whatWouldProveIt", "")}
+            for ac_id, info in sorted(ac_unverifiable.items())
+            if ac_id in parsed_ids
+        ]
+        artifacts.write_ac_evidence(
+            rc.run_dir / "ac_evidence.json",
+            mode=ac_mode,
+            issue=issue,
+            head_sha=_head_sha(target_dir),
+            acs=[a.to_dict() for a in ac_detail.acs],
+            unbound=ac_detail.unbound_ids,
+            waived=[
+                {"id": a.id, **ac_waivers.get(a.id, {})}
+                for a in ac_detail.acs if a.status == "waived"
+            ],
+            unverifiable=declared_unverifiable,
+        )
 
     # Done is gate-driven: green → exit 0; red → non-zero. Preserve a genuine
     # agent failure code when the agent itself failed, otherwise surface 1 for a

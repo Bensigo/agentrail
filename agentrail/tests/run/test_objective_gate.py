@@ -230,12 +230,13 @@ def test_verification_evidence_appears_in_trail() -> None:
 #
 # NOTE on naming: the sync harness's shim re-exports the superset decision
 # function as ``evaluate`` (imported at the top of this file from
-# ``agentrail.run.objective_gate``), but that shim only forwards
-# checks/ac_coverage/red_green_evidence/verification_evidence — it does not
-# (yet) plumb ``ac_coverage_detail`` through. The AC section these tests
-# extend lives in the underlying superset function itself,
-# ``agentrail.guardrails.policies.objective.evaluate_objective`` (there is no
-# bare ``evaluate`` name in that module), so these tests call it directly.
+# ``agentrail.run.objective_gate``); as of Arc C Task 6 that shim also forwards
+# ``ac_coverage_detail`` through (the pipeline's observe/enforce wiring calls it
+# via that shim). These tests still call the underlying superset function
+# directly, ``agentrail.guardrails.policies.objective.evaluate_objective``
+# (there is no bare ``evaluate`` name in that module) — this section is
+# exercising the pure decision logic in isolation, independent of either
+# harness's shim.
 # ---------------------------------------------------------------------------
 
 from agentrail.guardrails.policies.objective import (

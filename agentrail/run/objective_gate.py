@@ -22,6 +22,7 @@ from typing import Any, List, Mapping, Optional, Sequence
 from agentrail.guardrails.policies.objective import (
     REQUIRED_CHECKS,
     AcCoverage,
+    AcCoverageDetail,
     CheckResult,
     Evidence,
     ObjectiveVerdict,
@@ -31,6 +32,7 @@ from agentrail.guardrails.policies.objective import (
 __all__ = [
     "REQUIRED_CHECKS",
     "AcCoverage",
+    "AcCoverageDetail",
     "CheckResult",
     "Evidence",
     "GateResult",
@@ -48,6 +50,7 @@ def evaluate(
     *,
     checks: Sequence[CheckResult],
     ac_coverage: AcCoverage,
+    ac_coverage_detail: Optional[AcCoverageDetail] = None,
     red_green_evidence: Optional[Mapping[str, Any]] = None,
     verification_evidence: Optional[Mapping[str, Any]] = None,
 ) -> GateResult:
@@ -55,13 +58,19 @@ def evaluate(
 
     Thin pass-through to :func:`agentrail.guardrails.policies.objective.evaluate_objective`
     with exactly the sync harness's inputs (no CI checks, so the verdict is
-    binary pass/fail). Returns the unified :class:`ObjectiveVerdict`, aliased here
-    as ``GateResult``; ``is_green`` is the single done signal and ``failed_reasons``
-    names each failure — identical semantics to the pre-#920 gate.
+    binary pass/fail). ``ac_coverage_detail`` is the Arc C per-AC proof math
+    (:class:`AcCoverageDetail`, the real coverage behind the legacy
+    ``ac_coverage`` proxy) — optional, defaulting to ``None`` so every existing
+    caller is unaffected; the sync pipeline supplies it only under the AC Proof
+    Gate's ``enforce`` mode (Arc C). Returns the unified :class:`ObjectiveVerdict`,
+    aliased here as ``GateResult``; ``is_green`` is the single done signal and
+    ``failed_reasons`` names each failure — identical semantics to the pre-#920
+    gate.
     """
     return evaluate_objective(
         checks=checks,
         ac_coverage=ac_coverage,
+        ac_coverage_detail=ac_coverage_detail,
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
     )

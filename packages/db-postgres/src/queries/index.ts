@@ -3081,3 +3081,21 @@ export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
 // capacity gate's read: runs claimed (not completed), across every
 // workspace on the account, in a caller-supplied half-open window.
 export { countAccountRunsStartedInWindow } from "./capacity.js";
+
+// Reviewer of Record queue (Arc B §2-§3, spec
+// docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The
+// enqueue/supersede/claim/complete/bind query layer over `review_jobs` — see
+// `queries/review_jobs.ts` for the full WHY on each (the deterministic-id
+// dedupe, the EvalPlanQual-safe supersede, the SKIP LOCKED claim + per-
+// workspace running-job bound + daily budget, the fixed-backoff complete,
+// and the jace_sessions binding). Naming: "review job", never "review gate"
+// — `review_gates` (above) is a different, unrelated table.
+export {
+  reviewJobId,
+  enqueueReviewJob,
+  claimReviewJob,
+  completeReviewJob,
+  bindReviewJobSession,
+  type EnqueueReviewJobResult,
+  type CompleteReviewJobInput,
+} from "./review_jobs.js";

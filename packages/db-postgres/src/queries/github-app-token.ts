@@ -48,6 +48,34 @@ export async function getGithubInstallation(workspaceId: string): Promise<{
   };
 }
 
+/**
+ * The reverse of {@link getGithubInstallation}: given a GitHub App
+ * installation id (as delivered on every GitHub webhook payload's
+ * `installation.id`, a JSON NUMBER), find the workspace it is bound to
+ * (Arc B §2/§3 — the review-job webhook's workspace resolution).
+ *
+ * `workspaces.github_installation_id` is a TEXT column (see that column's
+ * own schema comment) — not because GitHub's id is textual, but so it
+ * round-trips without a `numeric`/`bigint` column's precision risk through
+ * the JS driver. `String(installationId)` is therefore the required
+ * coercion at this query's boundary: comparing the raw JS number against a
+ * text column would send a numeric-typed bind parameter that never matches
+ * a text value. Null when no workspace has this installation bound (e.g.
+ * the App is installed on a repo/org whose owner never connected it to a
+ * workspace, or the installation was uninstalled).
+ */
+export async function getWorkspaceByGithubInstallationId(
+  installationId: number
+): Promise<{ workspaceId: string } | null> {
+  const rows = await db
+    .select({ workspaceId: workspaces.id })
+    .from(workspaces)
+    .where(eq(workspaces.githubInstallationId, String(installationId)))
+    .limit(1);
+  const row = rows[0];
+  return row ? { workspaceId: row.workspaceId } : null;
+}
+
 export async function getInstallationToken(
   workspaceId: string
 ): Promise<string | null> {

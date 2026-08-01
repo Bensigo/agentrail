@@ -32,4 +32,8 @@ export {
   mintGithubInstallState,
   consumeGithubInstallState,
   getUserGithubIdentityById,
+  // Arc B §2/§3 reviewer-of-record: the reverse lookup a GitHub PR webhook
+  // needs (installation id -> workspace) — see this function's own
+  // doc-comment for the text-column coercion it owns.
+  getWorkspaceByGithubInstallationId,
 } from "./queries/github-app-token.js";

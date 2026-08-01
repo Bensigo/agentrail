@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agentrail.guardrails.adapters.check_runner import _load_config
-from agentrail.run.verify_gate import DEFAULT_JUNIT_REPORT
+from agentrail.run.verify_gate import DEFAULT_JUNIT_REPORT, JUNIT_ENV
 
 _log = logging.getLogger(__name__)
 
@@ -89,21 +90,31 @@ def load_ac_waivers(target_dir: Path) -> Dict[str, Dict[str, str]]:
 def load_junit_results(target_dir: Path) -> Dict[str, str]:
     """Parse the captured JUnit report → ``{dotted test key: outcome}``.
 
-    Report path: the ``verifyReport`` key of ``.agentrail/config.json`` when
-    declared (repos whose verify command emits its own JUnit file), else the
-    verify-gate default. Keys are ``classname.name`` (the policy's
-    ``_normalize_test_ref`` maps pytest node ids onto the same form); outcomes
-    are ``passed`` / ``failed`` / ``error`` / ``skipped``. Missing or
-    malformed report → ``{}`` (command-level evidence still works).
+    Report path precedence: the ``verifyReport`` key of ``.agentrail/config.json``
+    when declared, else the ``AGENTRAIL_VERIFY_JUNIT_XML`` env override, else the
+    verify-gate default. Rationale: a repo that declares ``verifyReport`` names
+    its OWN runner's report — that runner's command never sees our env var, so
+    the explicit declaration wins. Otherwise the report came from
+    :mod:`agentrail.run.verify_gate`, whose writer
+    (:func:`~agentrail.run.verify_gate.resolve_junit_path`) honors the env
+    override over the default, so this reader mirrors that same precedence
+    instead of silently missing a relocated report. Keys are ``classname.name``
+    (the policy's ``_normalize_test_ref`` maps pytest node ids onto the same
+    form); outcomes are ``passed`` / ``failed`` / ``error`` / ``skipped``.
+    Missing or malformed report → ``{}`` (command-level evidence still works).
     """
     config = _load_config(Path(target_dir)) or {}
     declared = str(config.get("verifyReport") or "").strip()
-    report = Path(target_dir) / (declared or DEFAULT_JUNIT_REPORT)
+    env_path = (os.environ.get(JUNIT_ENV) or "").strip()
+    # declared/env_path may be an absolute path — Path(target_dir) / "/abs/path"
+    # yields the absolute path in Python (the absolute right-hand operand wins),
+    # which is the correct behaviour here.
+    report = Path(target_dir) / (declared or env_path or DEFAULT_JUNIT_REPORT)
     if not report.is_file():
         return {}
     try:
         root = ET.parse(report).getroot()
-    except ET.ParseError as exc:
+    except Exception as exc:  # noqa: BLE001 — defensive: malformed/unreadable report = no data
         _log.warning("could not parse junit report %s: %s", report, exc)
         return {}
     results: Dict[str, str] = {}

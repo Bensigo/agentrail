@@ -77,6 +77,18 @@ TEST_SCOPE_ENV = "AGENTRAIL_VERIFY_TEST_SCOPE"
 TEST_PATHS_ENV = "AGENTRAIL_VERIFY_PYTEST_PATHS"
 DEFAULT_TEST_SCOPE = "dirs"
 
+# Arc C §3: where the pytest run drops its JUnit XML so the AC Proof Gate can
+# bind acceptance criteria to per-test results. Env override for harnesses
+# that relocate it; default lives under .agentrail/run/ beside other run scratch.
+JUNIT_ENV = "AGENTRAIL_VERIFY_JUNIT_XML"
+DEFAULT_JUNIT_REPORT = os.path.join(".agentrail", "run", "pytest-report.xml")
+
+
+def resolve_junit_path() -> str:
+    """The JUnit report path this verify run writes (env override → default)."""
+    return (os.environ.get(JUNIT_ENV) or "").strip() or DEFAULT_JUNIT_REPORT
+
+
 # The directory holding the SEALED hidden answer-key tests. The gate must NEVER
 # execute these — doing so leaks the exam. The eval runner already strips them
 # from the agent's clone (runner._strip_answer_keys_from_clone); excluding them
@@ -324,8 +336,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"verify: running tests (scope={norm or DEFAULT_TEST_SCOPE}):", file=sys.stderr)
         for t in test_files:
             print(f"  {t}", file=sys.stderr)
+        junit_path = resolve_junit_path()
+        junit_dir = os.path.dirname(junit_path)
+        if junit_dir:
+            os.makedirs(junit_dir, exist_ok=True)
         return subprocess.call(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *test_files]
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"--junit-xml={junit_path}", *test_files]
         )
 
     if message:

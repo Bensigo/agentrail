@@ -9,6 +9,7 @@ import {
   SENTRY_WEBHOOK_RESOURCE_HEADER,
   SENTRY_WEBHOOK_SIGNATURE_HEADER,
   parseSentryWebhookPayload,
+  sanitizeForLog,
   verifySentryWebhookSignature,
 } from "./sentry-webhook-helpers";
 
@@ -141,8 +142,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!isInstallationDeleted) {
     // installation.created and every other verified resource/action —
     // token acquisition rides the OAuth redirect flow, never this webhook.
+    // Review W3-T5 LOW-1: both values are attacker-influenced (a signed
+    // caller controls them) — sanitized before interpolation so a signed
+    // caller still can't forge multi-line log records.
     console.log(
-      `[connectors/webhooks/sentry] verified event, no-op (resource=${resourceHeader ?? "unknown"}, action=${payload.action ?? "unknown"})`
+      `[connectors/webhooks/sentry] verified event, no-op (resource=${sanitizeForLog(resourceHeader)}, action=${sanitizeForLog(payload.action)})`
     );
     return jsonResponse({ received: true, status: "ignored" }, 200);
   }

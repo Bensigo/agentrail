@@ -170,3 +170,20 @@ export function parseSentryWebhookPayload(raw: string): SentryWebhookPayload | n
 
   return { action, installationId };
 }
+
+/**
+ * Log-line hygiene for attacker-influenced strings (review W3-T5, LOW-1):
+ * the resource header and `payload.action` are interpolated into one
+ * `console.log` line in the route. Reachable only by a caller who already
+ * holds the HMAC secret, but a signed caller still must not be able to
+ * forge multi-line log records or smuggle control characters into log
+ * pipelines. Strips C0/C1 controls (incl. newlines) and caps length; a
+ * capped value is marked with a trailing `…` so a truncated record is
+ * visibly truncated.
+ */
+export function sanitizeForLog(value: string | null, maxLength = 64): string {
+  if (value == null) return "unknown";
+  // eslint-disable-next-line no-control-regex
+  const stripped = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return stripped.length > maxLength ? `${stripped.slice(0, maxLength)}…` : stripped;
+}

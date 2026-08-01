@@ -2351,6 +2351,12 @@ export {
   // doc-comment on both constants.
   OAUTH_STATE_TTL_MS,
   SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
+  // W3-T5 (unplanned fast-follow) — the Sentry webhook receiver's
+  // cross-workspace installation lookup + guarded teardown; see
+  // connectors.ts's own doc-comment on both.
+  findConnectorsBySentryInstallationId,
+  clearSentryConnectorForInstallation,
+  type SentryInstallationConnectorMatch,
   type ConnectorUpdate,
   type EnabledConnectorRow,
 } from "./connectors.js";

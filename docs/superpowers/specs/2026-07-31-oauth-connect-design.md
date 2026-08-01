@@ -198,6 +198,47 @@ round.
   section below for why this is the safer asymmetry versus Railway's
   fail-closed postExchange.
 
+### W3-T5 doc-verification (Sentry webhooks) — unplanned fast-follow
+
+Raw `curl` (not WebFetch) of `docs.sentry.io/integrations/integration-platform/webhooks.md`
+and its `webhooks/installation.md` child page, fetched fresh this task.
+
+- **Confirmed, quoted — signature header + computation.** The doc's own
+  worked snippet: *"const hmac = crypto.createHmac(\"sha256\", secret);
+  hmac.update(JSON.stringify(request.body), \"utf8\"); const digest =
+  hmac.digest(\"hex\"); return digest ===
+  request.headers[\"sentry-hook-signature\"];"* — header
+  `Sentry-Hook-Signature` (read as `sentry-hook-signature`), HMAC-SHA256 hex
+  digest, keyed by *"your Client Secret"* — the SAME `SENTRY_OAUTH_CLIENT_SECRET`
+  W3-T3's token exchange already reads (one Public Integration, one Client
+  Secret, two uses). Implemented over the RAW request bytes rather than the
+  snippet's own `JSON.stringify(request.body)` re-serialization — disclosed
+  deviation, not a vendor requirement either way (a re-parse/re-stringify
+  round-trip isn't guaranteed byte-identical to the wire body); matches this
+  codebase's existing raw-body-first discipline (`github/webhook`,
+  `billing/stripe/webhook`).
+- **Confirmed, quoted — resource/action.** `Sentry-Hook-Resource` header
+  value for this event family, from `webhooks/installation.md`'s own
+  "Sentry-Hook-Resource Header" section: *"'Sentry-Hook-Resource':
+  'installation'"*. Its `action` field (body, not header): *"type: string,
+  description: `created` or `deleted`"* — the ONLY two values.
+- **Confirmed, quoted — installation uuid location.** The general page:
+  *"installation: An object with the `uuid` of the installation so that you
+  can map the webhook request to the appropriate installation"* (present on
+  every resource type, top-level). The installation resource's own worked
+  payload confirms the exact shape: top-level `"installation": {"uuid":
+  "a8e5d37a-696c-4c54-adb5-b3f28d64c7de"}`, duplicated at
+  `data.installation.uuid` inside the richer resource-specific object. The
+  receiver reads the top-level, resource-agnostic copy.
+- **Not vendor-mandated, disclosed as this codebase's own default —
+  response code.** The docs state only a latency bound (*"Webhooks should
+  respond within 1 second. Otherwise, the response is considered a
+  timeout."*) — no explicit retry-on-non-2xx policy is documented anywhere
+  on either page. "200 for every verified event" is therefore this
+  receiver's own defensive choice (matching `billing/stripe/webhook`'s
+  identical "recognized-but-ignored -> 200" convention), not a quoted
+  vendor fact.
+
 ## Design (pinned)
 
 **Storage** — the encrypted plaintext behind the existing `connectors.secret`
@@ -673,6 +714,13 @@ not "a URL like…", it is the literal string:
   documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`
   and `.../sentry` — substitute your own dev port if it differs.
 
+Sentry additionally needs its **Webhook URL** registered (a separate field
+on the same Public Integration form, W3-T5 — see "W3-T5 doc-verification"
+above): production `https://heyjace.com/api/v1/connectors/webhooks/sentry`,
+local dev `http://localhost:3000/api/v1/connectors/webhooks/sentry`. Same
+Client Secret as the OAuth exchange signs both — no separate credential to
+issue or store.
+
 **Railway:** register an OAuth application from the target **workspace's**
 own settings — **Settings → Developer → New OAuth App** (confirmed W3-T2,
 `creating-an-app.md`: OAuth apps are workspace-scoped and created by
@@ -683,12 +731,17 @@ id/secret (shown once); set `RAILWAY_OAUTH_CLIENT_ID` /
 
 **Sentry:** register a **Public Integration** (Sentry → Settings →
 Developer Settings → New Public Integration) with the redirect URI above
-as its Redirect URL; note the issued client id/secret and the
-integration's own slug; set `SENTRY_OAUTH_CLIENT_ID` /
-`SENTRY_OAUTH_CLIENT_SECRET` / `SENTRY_OAUTH_INTEGRATION_SLUG`. Live as of
-the W3-T3 fix round — see "Session-transport tenant binding" above for how
-tenant binding works without a vendor-echoed `state`. The uninstall
-webhook Sentry also offers is a documented v2 follow-up, not part of v1.
+as its Redirect URL and the webhook URL above as its Webhook URL; note the
+issued client id/secret and the integration's own slug; set
+`SENTRY_OAUTH_CLIENT_ID` / `SENTRY_OAUTH_CLIENT_SECRET` /
+`SENTRY_OAUTH_INTEGRATION_SLUG`. Live as of the W3-T3 fix round — see
+"Session-transport tenant binding" above for how tenant binding works
+without a vendor-echoed `state`. **The uninstall webhook is now LIVE
+(W3-T5, deferred-no-longer):** `installation.deleted` clears the
+affected workspace's stored secret + `sentryInstallationId`, so an
+uninstall on Sentry's own side no longer requires the operator to notice
+and manually disconnect — see
+`apps/console/app/api/v1/connectors/webhooks/sentry/route.ts`.
 
 Once both providers' env vars are set (and W3-T2/T3 have merged so both
 adapters are registered), `oauthReady` flips true server-side
@@ -712,9 +765,8 @@ derivation, gating on all three of its vars rather than the generic two).
   roadmap either way.
 - Datadog's own MCP server / any MCP-based connect mechanism — a different
   integration shape entirely, not evaluated here.
-- Sentry's uninstall webhook (would let a vendor-side uninstall
-  auto-disconnect the connector) — documented follow-up, v1 relies on the
-  operator noticing and disconnecting manually.
+- ~~Sentry's uninstall webhook~~ — **shipped W3-T5** (unplanned fast-follow,
+  see "As-built" below); no longer out of scope.
 - Per-user OAuth identity (this is a per-*workspace* credential, exactly
   like today's pasted tokens — one connection shared by the workspace, not
   one per team member).
@@ -785,3 +837,31 @@ undercounted/overcounted which providers got the `tokenStandardNote` sheet
 note (corrected to the actual four); the Sheet UX section's
 "byte-identical" claim narrowed to account for the four providers that now
 render one extra static sentence in the shared token-form value.
+
+## As-built addendum (W3-T5 — Sentry webhook receiver, unplanned fast-follow)
+
+Not part of the original wave plan (`plan-oauth.md` scoped `installation.deleted`
+as a v2 follow-up — see the "Out of scope" correction above): pulled forward
+because the owner registered Sentry's Public Integration and its form
+requires a Webhook URL immediately, not later.
+
+`POST /api/v1/connectors/webhooks/sentry` (route + a sibling
+`sentry-webhook-helpers.ts`, `apps/console/app/api/v1/connectors/webhooks/sentry/`)
+verifies `Sentry-Hook-Signature` (HMAC-SHA256 hex over the raw request
+body, keyed by the SAME `SENTRY_OAUTH_CLIENT_SECRET` the OAuth exchange
+already reads, timing-safe compare) before parsing anything. Env unset ->
+503 (never a signature bypass); bad/missing signature -> 401; every OTHER
+verified event -> 200 (Sentry's own docs document no explicit
+retry-on-non-2xx policy, so this is a defensive default, not a vendor
+requirement — see "W3-T5 doc-verification" above). `installation.deleted`
+resolves every workspace whose `sentry` connector config carries the
+payload's installation uuid
+(`findConnectorsBySentryInstallationId`, new — `@agentrail/db-postgres`)
+and clears each one's stored secret + `sentryInstallationId`
+(`clearSentryConnectorForInstallation`, new — its own UPDATE re-checks
+workspaceId/provider/installationId in its own WHERE, never trusting the
+lookup's snapshot). `installation.created` and every other resource/action
+are a 200 no-op — this console's token acquisition rides the OAuth
+redirect flow, never the webhook.
+
+**Full report + doc-verification trail:** `.superpowers/sdd/task-W3T5-report.md`.

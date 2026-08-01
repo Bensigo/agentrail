@@ -286,6 +286,53 @@ describe.skipIf(!DB_AVAILABLE)(
           expect(states).toEqual(["queued", "superseded"]);
         }
       });
+
+      // Arc B review fix wave 2 — deduped-supersede guard (Important
+      // defect, the SEQUENTIAL sibling of the concurrent race above — the
+      // advisory lock does not help here since there is no concurrency,
+      // just a stale redelivery arriving late). Sequence: enqueue(head A) ->
+      // enqueue(head B) supersedes A (the normal, correct single-caller
+      // path) -> GitHub REDELIVERS the now-dead head-A webhook -> the
+      // deterministic id hits ON CONFLICT DO NOTHING (deduped=true) -> if
+      // the supersede ran anyway with `head_sha <> 'A'`, it would flip B
+      // (the legitimate, currently-queued survivor) to `superseded` too —
+      // both rows dead, PR silently unreviewed.
+      it("a redelivered webhook for an already-dead head never re-supersedes the current survivor", async () => {
+        const prNumber = 600;
+        const a = await enqueueReviewJob({
+          workspaceId: wsId,
+          repo: "acme/widgets",
+          prNumber,
+          headSha: "dead-head-a",
+          event: "opened",
+        });
+        const b = await enqueueReviewJob({
+          workspaceId: wsId,
+          repo: "acme/widgets",
+          prNumber,
+          headSha: "live-head-b",
+          event: "opened",
+        });
+        // Sanity on the normal (non-redelivery) path before the redelivery.
+        expect(b.superseded).toBe(1);
+        expect((await readReviewJob(a.id)).state).toBe("superseded");
+        expect((await readReviewJob(b.id)).state).toBe("queued");
+
+        // GitHub redelivers the OLD, already-superseded head-A webhook.
+        const redelivered = await enqueueReviewJob({
+          workspaceId: wsId,
+          repo: "acme/widgets",
+          prNumber,
+          headSha: "dead-head-a",
+          event: "opened",
+        });
+
+        expect(redelivered).toEqual({ id: a.id, deduped: true, superseded: 0 });
+        // The survivor is untouched by the redelivery.
+        expect((await readReviewJob(b.id)).state).toBe("queued");
+        // A stays superseded — not resurrected by its own redelivery.
+        expect((await readReviewJob(a.id)).state).toBe("superseded");
+      });
     });
 
     // -----------------------------------------------------------------

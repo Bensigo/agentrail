@@ -180,6 +180,34 @@ export type EnqueueReviewJobResult = {
  * transactions (closing the race above); this repeated predicate is what
  * still guards correctness WITHIN one transaction/statement — the two are
  * complementary, neither replaces the other.
+ *
+ * ARC B REVIEW FIX WAVE 2 — deduped-supersede guard (Important defect, the
+ * SEQUENTIAL sibling of the concurrent race above; the advisory lock does
+ * NOT help here since there is no concurrency, just a stale redelivery
+ * arriving late). Sequence: enqueue(head A) -> enqueue(head B) supersedes A
+ * (the correct, normal single-caller path, B now the queued survivor) ->
+ * GitHub REDELIVERS the now-dead head-A webhook -> the deterministic id
+ * hits `ON CONFLICT (id) DO NOTHING` (`deduped = true`) -> if the supersede
+ * ran anyway, `head_sha <> 'A'` still matches B (still `queued`) and flips
+ * the legitimate survivor to `superseded` too — both rows dead, PR silently
+ * unreviewed, purely sequentially (reproduced directly, see this task's
+ * report). Fix: the supersede now runs ONLY when the insert actually
+ * inserted (`!deduped`) — semantics: an enqueue that created no new row
+ * supersedes nothing, because dedupe means "this exact head is already
+ * tracked; its siblings were already handled back when THIS head first
+ * inserted." A deduped call returns `superseded: 0` unconditionally.
+ *
+ * KNOWN ACCEPTED RESIDUAL (do not attempt to fix): an out-of-order FIRST
+ * delivery of an OLDER head arriving AFTER a newer head's enqueue is a
+ * genuinely NEW id (never seen before) — it will still insert and still
+ * supersede the newer, currently-queued row, because nothing here can tell
+ * "this head is chronologically older" from a bare webhook payload; true
+ * commit/delivery ordering isn't knowable from the GitHub event alone. This
+ * is the supersede-never-cancel design's accepted edge: the wrong head
+ * would get reviewed once, that posted review is honestly labeled with its
+ * own `headSha` (never misrepresented as reviewing the current tip), and
+ * the PR's next real event (its next legitimate push) self-heals the queue
+ * by superseding that stale review's job in turn.
  */
 export async function enqueueReviewJob(input: {
   workspaceId: string;
@@ -211,6 +239,15 @@ export async function enqueueReviewJob(input: {
     );
     const deduped = inserted.length === 0;
 
+    // Deduped-supersede guard (Arc B review fix wave 2 — see this
+    // function's doc-comment for the redelivery scenario this closes): a
+    // redelivery of an already-tracked head must be a hard no-op. Running
+    // the supersede anyway would let a dead head's stale webhook flip the
+    // CURRENT legitimate survivor to `superseded` too.
+    if (deduped) {
+      return { id, deduped: true, superseded: 0 };
+    }
+
     const superseded = Array.from(
       await tx.execute(sql`
         UPDATE review_jobs
@@ -224,7 +261,7 @@ export async function enqueueReviewJob(input: {
       `)
     );
 
-    return { id, deduped, superseded: superseded.length };
+    return { id, deduped: false, superseded: superseded.length };
   });
 }
 

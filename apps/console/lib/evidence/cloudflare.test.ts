@@ -7,7 +7,20 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
 }));
 
+// OAuth Connect Wave 3, W3-T6: this adapter now resolves its bearer
+// credential via `resolveProviderAuth` (`../oauth/core`) instead of using
+// the raw `secret` parameter directly — mocked the same way as
+// `@agentrail/db-postgres` above, and given a passing default in
+// `beforeEach` so every pre-existing test in this file (which passes
+// `SECRET` as the `secret` param and asserts `Bearer ${SECRET}`) keeps
+// exercising the exact same GraphQL-call shape unmodified. Mirrors
+// `railway.test.ts`'s identical W3-T2 mock exactly.
+vi.mock("../oauth/core", () => ({
+  resolveProviderAuth: vi.fn(),
+}));
+
 import { getConnector } from "@agentrail/db-postgres";
+import { resolveProviderAuth } from "../oauth/core";
 import {
   cloudflareAdapter,
   CLOUDFLARE_SIGNALS_QUERY,
@@ -22,6 +35,7 @@ import type { EvidenceQuery, EvidenceVerb } from "./types";
 import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 
 const mockGetConnector = vi.mocked(getConnector);
+const mockResolveProviderAuth = vi.mocked(resolveProviderAuth);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 // FIXTURE, deliberately non-realistic (mirrors vercel.test.ts's/
@@ -135,6 +149,11 @@ const originalFetch = global.fetch;
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetConnector.mockResolvedValue(connectorRow());
+  // OAuth Connect Wave 3, W3-T6 — default resolves to the pre-existing
+  // SECRET constant so every prior test in this file (all of which pass
+  // SECRET as the 3rd query() param and assert Bearer ${SECRET}) is
+  // untouched. Mirrors railway.test.ts's identical default.
+  mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: SECRET });
 });
 
 afterEach(() => {
@@ -217,6 +236,93 @@ describe("cloudflareAdapter — config_missing", () => {
     global.fetch = routeFetch({}) as unknown as typeof fetch;
     await cloudflareAdapter.query(WS, q(), SECRET);
     expect(mockGetConnector).toHaveBeenCalledWith(WS, "cloudflare");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OAuth Connect Wave 3, W3-T6 — auth resolution via resolveProviderAuth.
+// Mirrors railway.test.ts's identical describe block.
+// ---------------------------------------------------------------------------
+describe("cloudflareAdapter — auth resolution via resolveProviderAuth (W3-T6)", () => {
+  it("calls resolveProviderAuth(workspaceId, 'cloudflare') once the secret-presence and zoneId checks pass", async () => {
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+    await cloudflareAdapter.query(WS, q(), SECRET);
+    expect(mockResolveProviderAuth).toHaveBeenCalledTimes(1);
+    expect(mockResolveProviderAuth).toHaveBeenCalledWith(WS, "cloudflare");
+  });
+
+  it("never calls resolveProviderAuth when secret is null (the cheap existence gate still short-circuits first)", async () => {
+    await cloudflareAdapter.query(WS, q(), null);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("never calls resolveProviderAuth when cloudflareZoneId is absent (the config_missing gate still short-circuits first)", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(null));
+    await cloudflareAdapter.query(WS, q(), SECRET);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("legacy-token kind: uses resolveProviderAuth's resolved secret as the Bearer credential — NOT the raw secret param passed into query()", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "resolved-legacy-token" });
+    const fetchMock = routeFetch({});
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    // The raw `secret` param is deliberately a DIFFERENT value than what
+    // resolveProviderAuth resolves — proving the Authorization header comes
+    // from the resolved value, never the raw param.
+    await cloudflareAdapter.query(WS, q(), "raw-secret-param-must-be-ignored");
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer resolved-legacy-token");
+  });
+
+  it("oauth kind, just-refreshed: uses a freshly-rotated access token when resolveProviderAuth reports one", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "freshly-rotated-access-token" });
+    const fetchMock = routeFetch({});
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await cloudflareAdapter.query(WS, q(), SECRET);
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer freshly-rotated-access-token");
+  });
+
+  it("degrades config_missing when resolveProviderAuth itself reports config_missing, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "config_missing" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await cloudflareAdapter.query(WS, q(), SECRET);
+    expect(res).toEqual({ ok: false, reason: "config_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // "Bounded 401-refresh-retry": resolveProviderAuth (core.ts) is what
+  // performs the actual proactive, TTL-driven refresh BEFORE this adapter
+  // ever calls Cloudflare's GraphQL endpoint — a rejected/timed-out refresh
+  // degrades to `unauthorized` from resolveProviderAuth itself, exactly
+  // once, never retried in a loop by this adapter (core.ts's own
+  // single-flight + 30s-bounded refresh is where that boundedness is
+  // actually enforced — see core.test.ts). This adapter's own contribution
+  // to the contract is simply: call resolveProviderAuth exactly once per
+  // query() call, and never attempt a second one if the first fails.
+  it("degrades unauthorized when resolveProviderAuth reports unauthorized (e.g. a rejected/timed-out refresh), without ever calling fetch, and without a second resolveProviderAuth attempt", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "unauthorized" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await cloudflareAdapter.query(WS, q(), SECRET);
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockResolveProviderAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolveProviderAuth is called exactly once per query() call for search_events too — not just signals", async () => {
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+    await cloudflareAdapter.query(WS, searchQuery(), SECRET);
+    expect(mockResolveProviderAuth).toHaveBeenCalledTimes(1);
   });
 });
 

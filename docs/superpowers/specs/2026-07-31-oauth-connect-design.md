@@ -239,6 +239,126 @@ and its `webhooks/installation.md` child page, fetched fresh this task.
   identical "recognized-but-ignored -> 200" convention), not a quoted
   vendor fact.
 
+### W3-T6 doc-verification (Cloudflare) — phase 2, promoted from "planned" to as-built
+
+Raw `curl` of `developers.cloudflare.com/fundamentals/oauth/{index,
+authorizing-an-application,create-an-oauth-client,integrate-with-cloudflare}
+/index.md`, `.../fundamentals/api/reference/permissions/index.md`, `.../
+analytics/graphql-api/getting-started/authentication/api-token-auth/index.md`
+— plus Cloudflare's own LIVE OIDC discovery document at
+`https://dash.cloudflare.com/.well-known/openid-configuration`, fetched
+fresh this task and treated as a primary source (it is the real production
+server's own self-description, more authoritative than prose about it).
+
+- **Confirmed, two independent sources agree verbatim** — endpoints:
+  *"Authorization: `https://dash.cloudflare.com/oauth2/auth`; Token:
+  `https://dash.cloudflare.com/oauth2/token`; Revoke:
+  `https://dash.cloudflare.com/oauth2/revoke`"* (`integrate-with-cloudflare
+  /index.md`), matching the discovery document's own
+  `authorization_endpoint`/`token_endpoint`/`revocation_endpoint` fields
+  exactly. `revoke` has no home on `OauthProviderAdapter` (T1's interface
+  doesn't define one) — not wired, same as every other provider.
+- **CORRECTS a claim already shipped in this doc and in `railway.ts`'s own
+  doc-comment** (W3-T2's PKCE paragraph above: *"Combined with Cloudflare's
+  own OAuth ... REQUIRING PKCE regardless of client type"*). The raw doc's
+  own client-type table says otherwise: *"Server-side web app or backend
+  service | Authorization Code with a client secret | client_secret_basic
+  or client_secret_post | **Optional/not required** | Browser-based,
+  mobile, desktop, or CLI app | Authorization Code with PKCE | none |
+  **Required, S256**"* (`create-an-oauth-client/index.md`, "Choose a
+  flow"). PKCE is required only for a public client with no secret — for a
+  server-side backend service (this console, exactly Railway's own "Web
+  (Confidential)" category), it is optional, mirroring Railway's own
+  "Recommended, not Required" finding almost exactly. **Implemented
+  anyway, REQUIRED by this adapter** — this task's own brief pins it
+  (mirroring Railway's identical fix-round choice, reusing the SAME shared
+  `lib/oauth/pkce.ts` plumbing built partly in anticipation of this task),
+  not because the docs mandate it for this client type.
+- **Confirmed — scopes correspond to API token permission names**: *"OAuth
+  scope names correspond to Cloudflare API token permission names. Use the
+  Cloudflare API documentation to identify the permissions your client
+  needs."* (`create-an-oauth-client/index.md`, "Select scopes"). Two kinds,
+  confirmed separately: universal ones via the live discovery document's
+  own `scopes_supported: ["offline_access", "offline", "openid"]` (this
+  adapter sends `openid offline_access`, the standard OIDC pair, on every
+  authorize call); the RESOURCE/permission scope (what actually grants
+  Analytics read access) is **genuinely undocumented as a fixed string** —
+  the docs are explicit it is discovered per-account, not published:
+  *"Fetch the available scopes from the API. Use the scope ID when you
+  create a client through the API."* / *"Search for and select the scopes
+  required for your client."* (same page). **Never guessed** — shipped as a
+  new, REQUIRED `CLOUDFLARE_OAUTH_SCOPE` env var (mirrors Sentry's own
+  `SENTRY_OAUTH_INTEGRATION_SLUG` third-var precedent) the owner fills in
+  from the same dashboard scope-picker at registration time. The underlying
+  permission needed is the SAME one the pre-existing token-paste path
+  already asks for — confirmed present and human-readable: *"Analytics Read
+  | Grants read access to \[analytics\]... "* under "Zone permissions"
+  (`fundamentals/api/reference/permissions/index.md`), independently
+  reconfirmed via the Analytics API's own token-setup walkthrough: *"select
+  Account in the first drop-down list, Account Analytics from the second
+  drop-down list, and Read from the third"*
+  (`analytics/graphql-api/getting-started/authentication/api-token-auth
+  /index.md`).
+- **Confirmed — auth method**: `token_endpoint_auth_methods_supported:
+  ["client_secret_post", "client_secret_basic", "private_key_jwt", "none"]`
+  (discovery document). This adapter uses `client_secret_basic` (matches
+  Railway's own precedent and the registration form's own worked API
+  example, `"token_endpoint_auth_method": "client_secret_basic"`) — the
+  owner must select the SAME method when registering the client; a mismatch
+  is a registration error this code cannot detect.
+- **NOT shown in a worked example anywhere** (unlike Railway's literal
+  worked `curl` commands) — the exact authorize/token request PARAM NAMES.
+  Inferred from RFC 6749's standard Authorization Code shape, licensed by
+  the discovery document's own internally-consistent declared support
+  (`response_types_supported` includes `"code"`;
+  `grant_types_supported` includes `"authorization_code"`/`"refresh_token"`),
+  cross-confirmed by prose ruling out every other flow for third-party
+  clients: *"Cloudflare OAuth clients support the OAuth 2.0 Authorization
+  Code flow. Cloudflare does not support Client Credentials, Implicit,
+  Resource Owner Password Credentials, Device Authorization, or other OAuth
+  grant types for third-party clients."* (`create-an-oauth-client
+  /index.md`, "Supported OAuth flows").
+- **Genuinely undocumented, confirmed by absence — access TTL.** No fetched
+  page states a number, matching this task's own pre-stated expectation.
+  `expires_in` is treated LENIENTLY (a disclosed, NOT vendor-confirmed
+  300-second fallback when absent/invalid) — a deliberate asymmetry from
+  Railway's stricter "missing expires_in throws," justified because
+  Railway's own docs show a CONFIRMED worked example WITH the field present
+  (so its absence there is a real anomaly), while no such example exists
+  for Cloudflare to be absent from. `access_token`/`refresh_token`
+  themselves remain strictly required either way — there is no safe
+  fallback for "no token at all."
+- **New finding, no equivalent in Railway's or Sentry's own registration
+  steps — PUBLIC vs. PRIVATE client visibility.** *"New OAuth clients
+  default to private visibility. Private clients can only be authorized by
+  members of the parent Cloudflare account."* (`create-an-oauth-client
+  /index.md`). Since every AgentRail workspace's own Cloudflare account is
+  unrelated to whichever account registers this OAuth client, a client left
+  at the PRIVATE default would only work for ONE account's own members.
+  Promoting to PUBLIC requires completing "Client name / Logo / Client URL
+  / Scopes" and **domain ownership verification** — a DNS TXT record:
+  *"Cloudflare polls this DNS record until it is found or until the request
+  times out after two days."* and *"Setting a client's visibility to public
+  is permanent."* — a multi-day-capable, one-time owner action that gates
+  `oauthReady` meaning anything for any workspace outside the registering
+  account. See "Owner registration steps" below.
+- **Confirmed — the OAuth grant IS resource-scoped, at the ACCOUNT level**:
+  *"Account selection: Choose which Cloudflare account(s) the application
+  can access"* (`authorizing-an-application/index.md`), corroborated by a
+  2026-04-14 changelog entry (*"you can now select specific accounts
+  instead of granting access to all your accounts"*). This is WHY there is
+  no `postExchange` for Cloudflare (unlike Railway's): the grant granularity
+  (account) does not map onto this connector's own config granularity
+  (zone) the way Railway's `project:viewer` maps 1:1 onto
+  `railwayProjectId`, verifying it would need a DIFFERENT permission
+  ("Zone Read") than the one this connector's scope already requests
+  ("Analytics Read"), and — most importantly — `lib/evidence/cloudflare.ts`'s
+  own PRE-EXISTING "empty `viewer.zones` despite a configured zone id ->
+  `config_missing`" pin (Task P8, unmodified) already degrades a
+  wrong-account/wrong-zone token LEGIBLY on every single evidence call, not
+  just once at connect time the way Railway's gap needed a one-time check to
+  close.
+
 ## Design (pinned)
 
 **Storage** — the encrypted plaintext behind the existing `connectors.secret`
@@ -701,18 +821,32 @@ for an unrecognized/missing param. Dismissing strips the query params
    (below), set their env vars on the deployment. No further code change
    flips `oauthReady` on for either provider — it is purely env + adapter
    presence (Sentry's own `envReady()` folded into that same check).
+6. **W3-T6 (phase 2, unplanned-timing fast-follow of the plan's own
+   "documented future phase"):** Cloudflare's `OauthProviderAdapter`
+   (PKCE-required, reusing the SAME shared `./pkce.ts` plumbing W3-T2 built
+   partly in anticipation of this), `lib/evidence/cloudflare.ts` switched to
+   `resolveProviderAuth`. No `postExchange` (disclosed decision — see "W3-T6
+   doc-verification" above). New third env var `CLOUDFLARE_OAUTH_SCOPE`
+   (mirrors Sentry's `envReady()` pattern) since the resource-permission
+   scope ID is genuinely undocumented as a fixed string. Registration has a
+   new blocking step neither Railway nor Sentry needed: promoting the OAuth
+   client from Cloudflare's PRIVATE default to PUBLIC visibility, which
+   requires DNS domain verification (up to two days) — see "Owner
+   registration steps" below.
 
 ## Owner registration steps
 
-Both providers need the **exact** redirect URI registered on the vendor
-side — a mismatch is the #1 real-world OAuth integration failure, so this is
-not "a URL like…", it is the literal string:
+All three providers need the **exact** redirect URI registered on the
+vendor side — a mismatch is the #1 real-world OAuth integration failure, so
+this is not "a URL like…", it is the literal string:
 
-- Production: `https://www.heyjace.com/api/v1/connectors/oauth/callback/railway`
-  and `https://www.heyjace.com/api/v1/connectors/oauth/callback/sentry`
+- Production: `https://www.heyjace.com/api/v1/connectors/oauth/callback/railway`,
+  `https://www.heyjace.com/api/v1/connectors/oauth/callback/sentry`, and
+  `https://www.heyjace.com/api/v1/connectors/oauth/callback/cloudflare`
 - Local dev (`CONSOLE_PUBLIC_URL=http://localhost:3000`, this repo's
-  documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`
-  and `.../sentry` — substitute your own dev port if it differs.
+  documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`,
+  `.../sentry`, and `.../cloudflare` — substitute your own dev port if it
+  differs.
 
 Sentry additionally needs its **Webhook URL** registered (a separate field
 on the same Public Integration form, W3-T5 — see "W3-T5 doc-verification"
@@ -743,26 +877,50 @@ uninstall on Sentry's own side no longer requires the operator to notice
 and manually disconnect — see
 `apps/console/app/api/v1/connectors/webhooks/sentry/route.ts`.
 
-Once both providers' env vars are set (and W3-T2/T3 have merged so both
-adapters are registered), `oauthReady` flips true server-side
-automatically for each — no redeploy-time toggle beyond the env vars
-themselves (Sentry's own `envReady()` check folds into the same
-derivation, gating on all three of its vars rather than the generic two).
+**Cloudflare (W3-T6):** register an OAuth client at Cloudflare → **Manage
+Account → OAuth clients → Create client**
+(`dash.cloudflare.com/?to=/:account/oauth-clients`) — Response type `code`,
+Grant type `authorization_code`, Token authentication method
+`client_secret_basic` (must match this adapter's own choice — see "W3-T6
+doc-verification" above), Redirect URL from the list above; search the
+scopes picker for the permission matching "Analytics Read" under Zone
+permissions (same one the token-paste path's own setup steps ask for) — NOT
+the similarly-named, ALSO-real "Account Analytics Read" (a different,
+account-scoped permission) — and note the resulting scope ID(s) for
+`CLOUDFLARE_OAUTH_SCOPE`; note the issued client id/secret;
+set `CLOUDFLARE_OAUTH_CLIENT_ID` / `CLOUDFLARE_OAUTH_CLIENT_SECRET` /
+`CLOUDFLARE_OAUTH_SCOPE` on the deployment. **Then promote the client to
+PUBLIC visibility** (Cloudflare → the client's action menu → Change
+Visibility) — new clients default to PRIVATE (authorizable only by members
+of the registering account), which would make this connect button
+functionally unusable for every OTHER workspace's own Cloudflare account;
+promotion requires completing the client's Logo/Client URL fields and a DNS
+TXT domain-verification record that Cloudflare polls for "until it is found
+or until the request times out after two days" — plan this as a multi-day
+lead time before Cloudflare OAuth is usable wave-wide, not a same-deploy
+toggle. This is a materially bigger registration lift than Railway's or
+Sentry's own steps, both single-session dashboard actions.
+
+Once every provider's env vars are set (and its own task has merged so its
+adapter is registered), `oauthReady` flips true server-side automatically
+for it — no redeploy-time toggle beyond the env vars themselves (Sentry's
+`envReady()` gates on all three of its vars; Cloudflare's own `envReady()`
+gates on `CLOUDFLARE_OAUTH_SCOPE` the same way).
 
 ## Out of scope
 
-- Cloudflare, Vercel, Datadog, Langfuse, Grafana, Prometheus OAuth — none
-  are in this wave; token-paste is the permanent, correct mechanism for all
-  six. **Correction (W3-T4):** the one-line "this is the standard
-  integration method" sheet note (`ConnectorConnectMeta.tokenStandardNote`,
-  not an apology, no "coming soon") went to only FOUR of the six — Grafana,
+- Vercel, Datadog, Langfuse, Grafana, Prometheus OAuth — none are in this
+  wave; token-paste is the permanent, correct mechanism for all five.
+  **Correction (W3-T4):** the one-line "this is the standard integration
+  method" sheet note (`ConnectorConnectMeta.tokenStandardNote`, not an
+  apology, no "coming soon") went to only FOUR of these five — Grafana,
   Prometheus, Langfuse, Datadog, exactly `plan-oauth.md`'s own W3-T4 task
-  line — not all six as an earlier draft of this bullet claimed. Vercel and
-  Cloudflare did not get it: Cloudflare's own OAuth is flagged above (W3-T2
-  doc-verification, the PKCE paragraph) as a documented future phase, so a
-  "this is permanent" claim would be premature for it; Vercel's exclusion is
-  simply the plan's own W3-T4 scope pin, not a claim about its own OAuth
-  roadmap either way.
+  line — not all six original candidates as an earlier draft of this bullet
+  claimed. Vercel's exclusion from the sheet note is simply the plan's own
+  W3-T4 scope pin, not a claim about its own OAuth roadmap either way.
+  **Cloudflare moved OUT of this list (W3-T6)** — its own OAuth phase,
+  previously "documented future," is now built; see "W3-T6
+  doc-verification" above and "As-built addendum (W3-T6)" below.
 - Datadog's own MCP server / any MCP-based connect mechanism — a different
   integration shape entirely, not evaluated here.
 - ~~Sentry's uninstall webhook~~ — **shipped W3-T5** (unplanned fast-follow,
@@ -865,3 +1023,65 @@ are a 200 no-op — this console's token acquisition rides the OAuth
 redirect flow, never the webhook.
 
 **Full report + doc-verification trail:** `.superpowers/sdd/task-W3T5-report.md`.
+
+## As-built addendum (W3-T6 — Cloudflare OAuth adapter, phase 2)
+
+The plan's own "documented future phase" for Cloudflare (referenced
+throughout W3-T2's PKCE reasoning above) — promoted to as-built. Full
+doc-verification trail: "W3-T6 doc-verification (Cloudflare)" above; full
+quoted trail also in `.superpowers/sdd/task-W3T6-report.md`.
+
+`lib/oauth/cloudflare.ts` mirrors `railway.ts`'s shape (`authorizeUrl`/
+`exchange`/`refresh`, `stateTransport: "param"`, PKCE S256 REQUIRED via the
+shared `./pkce.ts` plumbing) with three material deviations, each disclosed
+in the adapter's own doc-comment:
+
+1. **`CLOUDFLARE_OAUTH_SCOPE`, a new required third env var** (`envReady()`,
+   mirrors Sentry's `SENTRY_OAUTH_INTEGRATION_SLUG`) — the resource-
+   permission scope ID is genuinely undocumented as a fixed string
+   (Cloudflare's own docs: discovered per-account via a dashboard
+   scope-picker or an authenticated `GET /oauth/scopes` call, never
+   published in prose) — never guessed, made operator-supplied instead.
+2. **No `postExchange`** — unlike Railway's, closing a project-grant
+   mismatch. Three independent reasons (full reasoning in "W3-T6
+   doc-verification" above): `cloudflareAccountId` is confirmed unused by
+   the evidence adapter; Cloudflare's own consent grant is account-scoped,
+   which doesn't map cleanly onto this connector's zone-scoped config the
+   way Railway's project grant maps onto `railwayProjectId`; and — the
+   decisive reason — `lib/evidence/cloudflare.ts`'s own PRE-EXISTING "empty
+   `viewer.zones` despite a configured zone id → `config_missing`" pin
+   (Task P8, unmodified) already closes the equivalent silent-mismatch risk
+   on EVERY evidence call, not just once at connect time.
+3. **Lenient `expires_in` handling** — a disclosed, NOT vendor-confirmed
+   300-second fallback when the field is absent/invalid, versus Railway's
+   strict throw-on-missing. Justified asymmetry: Railway's docs show a
+   CONFIRMED worked example WITH the field present; no equivalent example
+   exists for Cloudflare. `access_token`/`refresh_token` themselves remain
+   strictly required either way.
+
+`lib/evidence/cloudflare.ts` switches to `resolveProviderAuth(workspaceId,
+"cloudflare")`, byte-identical GraphQL query documents
+(`CLOUDFLARE_SIGNALS_QUERY`/`CLOUDFLARE_SEARCH_EVENTS_QUERY` untouched) —
+mirrors `railway.ts`'s/`sentry.ts`'s identical W3-T2/T3 switch exactly.
+
+**New finding with no Railway/Sentry equivalent:** Cloudflare OAuth clients
+default to PRIVATE visibility (authorizable only by members of the
+registering account) and must be promoted to PUBLIC — a DNS domain-
+verification step that can take up to two days — before any OTHER
+workspace's Cloudflare account can use the connect button at all. See
+"Owner registration steps" above; this is now the long-lead-time item in
+the wave's own rollout, not a same-deploy env-var flip.
+
+**Vendor verification outcome: one correction, everything else confirmed
+or explicitly disclosed as undocumented.** The correction: Cloudflare's own
+docs say PKCE is "Optional/not required" for a server-side confidential
+client (required only for a public client with no secret) — contradicting
+both this session's prior research and a claim already shipped in
+`railway.ts`'s own doc-comment ("Cloudflare's own OAuth ... REQUIRING PKCE
+regardless of client type"). Implemented as REQUIRED anyway, per this
+task's own brief, not because the docs mandate it for this client type.
+Nothing found contradicts the adapter's ability to mint a token the
+evidence adapter's GraphQL queries can actually use — the "cannot grant
+what's needed" stop condition never triggered.
+
+**Full report + doc-verification trail:** `.superpowers/sdd/task-W3T6-report.md`.

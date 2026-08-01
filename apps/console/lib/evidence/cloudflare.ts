@@ -1,5 +1,6 @@
 import { getConnector } from "@agentrail/db-postgres";
 import { registerAdapter } from "./registry";
+import { resolveProviderAuth } from "../oauth/core";
 import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "./types";
 
 /**
@@ -12,8 +13,30 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *
  * CREDENTIAL: a SINGLE secret (no `secretParts`, like sentry/prometheus/
  * grafana/vercel above) — a Cloudflare API Token, sent as `Authorization:
- * Bearer <token>` on every call. This adapter uses its `secret` parameter
- * directly.
+ * Bearer <token>` on every call. UPDATED (OAuth Connect Wave 3, W3-T6,
+ * `.superpowers/sdd/plan-oauth.md`): the bearer value is no longer the raw
+ * `secret` parameter this function receives — it is now resolved via
+ * `resolveProviderAuth(workspaceId, "cloudflare")` (`lib/oauth/core.ts`),
+ * mirroring `lib/evidence/railway.ts`'s identical W3-T2 switch exactly. A
+ * legacy pasted token is returned verbatim (byte-identical behavior to
+ * before this task); an OAuth-connected envelope
+ * (`lib/oauth/cloudflare.ts`) is auto-refreshed when within its 2-minute
+ * expiry skew, with the ROTATED envelope persisted before the (possibly
+ * new) access token is returned. `secret` itself is kept ONLY as the
+ * pre-existing cheap "is anything stored at all" gate below (`!secret ->
+ * config_missing`) — skipping the slightly more expensive
+ * `resolveProviderAuth` call entirely when nothing is connected is free to
+ * keep. A `resolveProviderAuth` failure — no adapter, a rejected refresh,
+ * or a timed-out one (`core.ts`'s own 30s bound) — degrades to
+ * `unauthorized` via THIS adapter's existing, closed
+ * `EvidenceDegradationReason` set; `resolveProviderAuth`'s own result type
+ * (`"config_missing" | "unauthorized"`) is already a subset of it, so no
+ * new degradation vocabulary is introduced. The GraphQL query documents and
+ * every byte of `querySignals`/`querySearchEvents` below are UNCHANGED by
+ * this task — only how the bearer value reaches them differs, exactly the
+ * same "credential acquisition changes, presentation does not" boundary
+ * `lib/oauth/types.ts`'s own top doc-comment establishes for the whole
+ * OAuth Connect architecture.
  *
  * CLOUDFLARE API SHAPES — confirmed against Cloudflare's own docs during
  * implementation (this task's mandatory first step; NOT trusted from
@@ -945,7 +968,19 @@ export const cloudflareAdapter: EvidenceAdapter = {
       return { ok: false, reason: "config_missing" };
     }
 
-    return q.verb === "signals" ? querySignals(secret, zoneId, q) : querySearchEvents(secret, zoneId, q);
+    // OAuth Connect Wave 3, W3-T6 — see this module's own doc-comment
+    // ("CREDENTIAL") for the full contract. `auth.reason` is already a
+    // member of this adapter's own `EvidenceDegradationReason` union, so it
+    // passes straight through with no mapping. Called exactly ONCE per
+    // `query()` call, before either GraphQL query — never retried within
+    // this call (core.ts's own single-flight + bounded-refresh discipline
+    // is where "at most one refresh attempt" is actually enforced).
+    const auth = await resolveProviderAuth(workspaceId, "cloudflare");
+    if (!auth.ok) {
+      return { ok: false, reason: auth.reason };
+    }
+
+    return q.verb === "signals" ? querySignals(auth.secret, zoneId, q) : querySearchEvents(auth.secret, zoneId, q);
   },
 };
 

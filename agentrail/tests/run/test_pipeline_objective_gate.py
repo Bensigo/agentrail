@@ -285,5 +285,160 @@ class AcProofObserveModeTests(unittest.TestCase):
         self.assertFalse((run_dir / "ac_evidence.json").exists())
 
 
+# ---------------------------------------------------------------------------
+# Arc C — enforce-mode end-to-end wiring through run_prompt (Task 7).
+#
+# ``_run`` below copies AcProofObserveModeTests._run above verbatim (itself a
+# copy of RunPromptTests._run in test_pipeline.py — same target/repo setup via
+# the imported _make_target/_sentinel helpers, same patch list, same
+# sentinel-flip execute stub, same run_prompt call). _make_target declares a
+# single verify check named "verify" (see its docstring) — bindings below
+# target that exact name.
+# ---------------------------------------------------------------------------
+
+
+class AcProofEnforceModeTests(unittest.TestCase):
+    """Task 7: enforce is the gate that can fail — an unbound AC blocks done,
+    a waived AC counts as covered, and zero parsed ACs leaves the legacy
+    declared-check gate completely untouched."""
+
+    _THREE_ACS = (
+        "Fix the bug.\n\n"
+        "## Acceptance criteria\n"
+        "- [ ] First thing works.\n"
+        "- [ ] Second thing works.\n"
+        "- [ ] Third thing works.\n"
+    )
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_agentrail_json(self, name: str, data: dict) -> None:
+        (self.target / ".agentrail" / name).write_text(json.dumps(data))
+
+    def _run(self, resolution_text: str, *, label: str = "ac-proof-gate"):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
+
+        # subprocess.run is patched so a stray gh/git call cannot fetch an
+        # issue or a real head sha — mirrors RunPromptTests._run exactly.
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_prompt(
+                self.target,
+                resolution_text,
+                label=label,
+                agent="claude",
+                command="c",
+                repo_dir=self.repo,
+            )
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, run_dir
+
+    def test_enforce_three_acs_two_bindings_cannot_green(self) -> None:
+        """AC1 + AC2 are bound to the passing 'verify' check; AC3 has no
+        binding at all. Enforce mode must red the gate on the one genuinely
+        unbound AC, even though the legacy declared-check coverage (one
+        passing 'verify' check) would otherwise be satisfied."""
+        self._write_agentrail_json(
+            "ac_bindings.json", {"AC1": ["verify"], "AC2": ["verify"]}
+        )
+
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "enforce"}):
+            result, run_dir = self._run(self._THREE_ACS)
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertIn(
+            "acceptance-criteria unbound: AC3",
+            run_json["objectiveGate"]["failedReasons"],
+        )
+        self.assertNotEqual(result, 0)
+
+        evidence_path = run_dir / "ac_evidence.json"
+        self.assertTrue(evidence_path.is_file())
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["mode"], "enforce")
+        self.assertEqual(data["acs"][2]["status"], "unbound")
+
+    def test_enforce_all_bound_and_waived_greens(self) -> None:
+        """AC1 + AC2 are bound to the passing 'verify' check; AC3 is waived.
+        A waived AC counts as covered without proof, so all three ACs read
+        as covered and the gate reaches green — and the waiver itself
+        (reason/by/at) is recorded verbatim on the evidence artifact."""
+        self._write_agentrail_json(
+            "ac_bindings.json", {"AC1": ["verify"], "AC2": ["verify"]}
+        )
+        waiver = {
+            "reason": "manual QA covers this path; no automated hook exists",
+            "by": "alice@example.com",
+            "at": "2026-07-30T12:00:00Z",
+        }
+        self._write_agentrail_json("ac_waivers.json", {"AC3": waiver})
+
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "enforce"}):
+            result, run_dir = self._run(self._THREE_ACS)
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+        self.assertEqual(result, 0)
+
+        evidence_path = run_dir / "ac_evidence.json"
+        self.assertTrue(evidence_path.is_file())
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["waived"][0]["id"], "AC3")
+        self.assertEqual(data["waived"][0]["reason"], waiver["reason"])
+        self.assertEqual(data["waived"][0]["by"], waiver["by"])
+        self.assertEqual(data["waived"][0]["at"], waiver["at"])
+
+    def test_enforce_zero_acs_keeps_legacy_behavior(self) -> None:
+        """No Acceptance-criteria section at all -> parse_acceptance_criteria
+        returns []. Enforce mode must not touch the verdict in this case: per
+        pipeline.py, ac_coverage_detail is only ever handed to evaluate() when
+        `ac_mode == "enforce" and ac_texts` — an empty ac_texts keeps it None,
+        so the legacy declared-check coverage is the sole decider, exactly as
+        in AcProofObserveModeTests.test_observe_mode_emits_ac_evidence_and_never_flips_verdict
+        and RunPromptTests.test_green_gate_returns_zero (both green on this
+        same sentinel-flip fixture). The evidence artifact is still written
+        (every non-off run gets one, spec Sec1) but honestly empty."""
+        with patch.dict(os.environ, {"AGENTRAIL_AC_PROOF_GATE": "enforce"}):
+            result, run_dir = self._run("Fix the bug. No checklist section here.")
+
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+        self.assertEqual(result, 0)
+
+        evidence_path = run_dir / "ac_evidence.json"
+        self.assertTrue(evidence_path.is_file())
+        data = json.loads(evidence_path.read_text())
+        self.assertEqual(data["acs"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

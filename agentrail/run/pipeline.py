@@ -16,7 +16,7 @@ from agentrail.run import artifacts, budget_leash, context as ctx, prompts, skil
 from agentrail.guardrails.policies.input_contract import screen_injection
 from agentrail.observability.tracer import RunTracer
 from agentrail.run.check_runner import (
-    ac_coverage_for,
+    declared_check_coverage,
     load_verify_checks,
     red_green_proof_required,
     run_objective_checks,
@@ -1981,7 +1981,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
 
     gate_result = evaluate(
         checks=gate_checks,
-        ac_coverage=ac_coverage_for(declared),
+        ac_coverage=declared_check_coverage(declared),
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
     )

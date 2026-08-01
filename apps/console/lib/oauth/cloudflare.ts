@@ -137,23 +137,42 @@ import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdap
  *          was ALSO registered with is a no-op under the "defaults to full
  *          registered scope" reading and the REQUIRED explicit request under
  *          the other, so this design is correct under either. The permission
- *          the owner needs to search for and select is the SAME one the
- *          existing token-paste path already asks for — confirmed present,
- *          human-readable, under "Zone permissions" in
+ *          the owner needs to search for and select is **`Analytics Read`**
+ *          (exact string) — the SAME one the existing token-paste path
+ *          already asks for — confirmed present, human-readable, under
+ *          "Zone permissions" (not "Account permissions") in
  *          `fundamentals/api/reference/permissions/index.md`: "| Analytics
  *          Read | Grants read access to [analytics](...zone-analytics/). |"
  *          — matching `connector-helpers.ts`'s own pre-existing
  *          `credentialHint` for this connector's token-paste path ("scoped
- *          to the zone's Analytics: Read permission"), independently
- *          reconfirmed here via
+ *          to the zone's Analytics: Read permission").
+ *
+ *          **DISAMBIGUATION TRAP (W3-T6 fix round, independent review —
+ *          `.superpowers/sdd/review-W3T6.md` Finding 1):** the SAME
+ *          reference table ALSO lists a distinct, real, similarly-named
+ *          `Account Analytics Read` permission under "Account permissions"
+ *          — a DIFFERENT, account-scoped grant this connector's zone-keyed
+ *          queries (`viewer.zones(filter:{zoneTag})`) do NOT need. The
+ *          first submission of this file cited
  *          `analytics/graphql-api/getting-started/authentication/
- *          api-token-auth/index.md`'s own walkthrough: "select _Account_ in
- *          the first drop-down list, _Account Analytics_ from the second
- *          drop-down list, and _Read_ from the third" (that walkthrough is
- *          for a plain API token, not OAuth, but the underlying PERMISSION
- *          — analytics read — is the identical one this adapter's own
- *          GraphQL calls need either way, per "OAuth scope names correspond
- *          to ... API token permission names" above).
+ *          api-token-auth/index.md`'s own token-setup walkthrough — "select
+ *          _Account_ in the first drop-down list, _Account Analytics_ from
+ *          the second drop-down list, and _Read_ from the third" — as
+ *          corroboration; that walkthrough's own next line states plainly
+ *          "This example scopes **account-level** permissions for read
+ *          access to the Analytics API," meaning it actually demonstrates
+ *          creating a token with `Account Analytics Read`, the WRONG
+ *          permission for this connector — not independent confirmation of
+ *          `Analytics Read` at all. Removed as a citation for that reason;
+ *          `permissions/index.md`'s own "Zone permissions" table entry
+ *          (quoted above) is the sole, correct, sufficient source. Recorded
+ *          here, not silently fixed, because a citation mistake on this
+ *          EXACT provider is what this whole file's own doc-comment already
+ *          exists to guard against (the fabricated-GraphQL-type incident,
+ *          `lib/evidence/cloudflare.ts`'s own doc-comment) — this one was a
+ *          real citation that supported the wrong conclusion, not a
+ *          fabrication, but the same discipline applies: catch it, name it,
+ *          don't paper over it.
  *
  *   - REQUEST PARAM NAMES (authorize URL query params, token POST body) —
  *     **NOT shown in a worked example anywhere in Cloudflare's own docs**
@@ -297,8 +316,10 @@ import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdap
  *     drops POSTs, per the wave's own hard-won `docs/oauth-www-urls`
  *     correction, #1555) or `http://localhost:3000/api/v1/connectors/
  *     oauth/callback/cloudflare` in local dev; Scopes — search for and
- *     select the permission matching "Zone Analytics Read" (see "SCOPES"
- *     above), then note the resulting scope ID(s) for `CLOUDFLARE_OAUTH_SCOPE`.
+ *     select the permission matching "Analytics Read" under "Zone
+ *     permissions" — NOT the similarly-named, ALSO-real "Account Analytics
+ *     Read" (a different, account-scoped permission; see "SCOPES" above) —
+ *     then note the resulting scope ID(s) for `CLOUDFLARE_OAUTH_SCOPE`.
  *     Then PROMOTE TO PUBLIC (see "PUBLIC vs. PRIVATE CLIENT VISIBILITY"
  *     above) — required before any workspace outside the registering
  *     account can use this connect button at all, and involves a DNS TXT
@@ -320,6 +341,26 @@ const CLOUDFLARE_OAUTH_BASE_SCOPES = "openid offline_access";
 // number; a short, disclosed fallback used ONLY when a token response omits
 // `expires_in` entirely, biasing toward an earlier refresh rather than
 // trusting an assumed long lifetime.
+//
+// KNOWN, DISCLOSED, NOT-YET-RULED-OUT WINDOW (W3-T6 fix round, independent
+// review Finding 3, `.superpowers/sdd/review-W3T6.md` — accepted-as-
+// documented, no behavior change): when this fallback fires, the envelope
+// is stamped `expiresAt = now + 300s`. `core.ts`'s `REFRESH_SKEW_MS` (2
+// minutes) means `needsRefresh()` only flips true ~180s after mint — for
+// that first ~180s window, `resolveProviderAuth` serves the token as
+// "still fresh" without re-checking it. If Cloudflare's real, undocumented
+// access-token TTL is shorter than ~180s (not confirmed either way — see
+// "ACCESS TTL" above), an evidence call in that window gets a genuine 401
+// from Cloudflare, correctly mapped to a legible `unauthorized` degradation
+// by `cloudflareGraphQL` (never a crash), self-healing once the fallback
+// window naturally elapses and the next proactive refresh fires. This is
+// the SAFER of the two possible fallback biases (erring toward refreshing
+// sooner, per "ACCESS TTL" above) — narrowing the window further (e.g. a
+// smaller fallback constant) would trade this disclosed, self-healing
+// corner case for MORE unnecessary refresh calls in the common case where
+// Cloudflare's real TTL is longer, which nothing fetched suggests it isn't.
+// Not a bug; a documented, accepted property of any undocumented-TTL
+// fallback, kept exactly this way rather than "fixed."
 const CLOUDFLARE_OAUTH_FALLBACK_TTL_SECONDS = 300;
 
 const CLOUDFLARE_OAUTH_SCOPE_ENV_KEY = "CLOUDFLARE_OAUTH_SCOPE";

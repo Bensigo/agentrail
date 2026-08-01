@@ -19,7 +19,7 @@ import {
  * Global Constraints and `task-W3T3-report.md` for the as-built Sentry
  * OAuth flow this sits alongside). Sentry's Public Integration platform
  * (`lib/oauth/sentry.ts`, W3-T3) POSTs installation lifecycle events here —
- * `https://heyjace.com/api/v1/connectors/webhooks/sentry` is the exact
+ * `https://www.heyjace.com/api/v1/connectors/webhooks/sentry` is the exact
  * production Webhook URL registered on the integration (see
  * `docs/superpowers/specs/2026-07-31-oauth-connect-design.md`'s "Owner
  * registration steps"). This route's ONLY functional job today is

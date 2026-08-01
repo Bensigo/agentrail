@@ -400,6 +400,43 @@ def review_prompt(
     )
 
 
+# ---------------------------------------------------------------------------
+# Arc C — AC Proof Gate: builder binding discipline (C3).
+#
+# Tasks 1-8 built the gate that proves acceptance criteria against
+# ``.agentrail/ac_bindings.json`` (agentrail/guardrails/adapters/ac_evidence.py,
+# agentrail/guardrails/policies/check_runner.py) — but proving needs the
+# BUILDER to have written that file first. This is that instruction: TRUSTED
+# standing text (it never goes inside the untrusted issue-context fence) that
+# tells the Test-Author and the Implementer/execute role alike to record a
+# binding the moment they write the test that proves an AC, to declare (never
+# fake) an AC that genuinely cannot be verified this run, and to never touch
+# the human-authored waivers file.
+#
+# No single call path reaches both roles in every mode: ``_shared_inline``
+# below covers the Test-Author's (and Verifier's) cold/default path,
+# ``shared_task_prefix`` covers all three roles' warm-cache path, but
+# execute's cold path builds its own inline body and calls neither (see the
+# "cold-path twin" comment at its call site). The text is defined ONCE here
+# and referenced at each of those insertion points so the wording changes in
+# exactly one place.
+# ---------------------------------------------------------------------------
+_AC_BINDING_DISCIPLINE = """\
+Acceptance-criteria bindings (AC Proof Gate):
+- Maintain `.agentrail/ac_bindings.json` as you work: when you write the test
+  that proves ACn, record it — {"ACn": ["<pytest node id>"]}. Bind to a
+  declared verify-check name only when no per-test id exists.
+- A binding is evidence only if the bound test/check runs and PASSES. Write
+  the red-first test, bind it, then make it pass — the binding is born with
+  the test, not backfilled at the end.
+- If an AC genuinely cannot be verified in this run (needs credentials or
+  services the run will never have), declare it instead of faking it:
+  {"ACn": {"unverifiable": true, "why": "...", "whatWouldProveIt": "..."}}.
+  Never claim done over an AC you could neither prove nor declare.
+- Never write `.agentrail/ac_waivers.json` — waivers are human-authored only.
+"""
+
+
 def shared_task_prefix(
     *,
     issue: int,
@@ -433,6 +470,13 @@ def shared_task_prefix(
     it contributes ZERO bytes — no section header, no separator — so the
     prefix stays byte-for-byte what it was before #1049 (these bytes are live
     cache identity).
+
+    Trailing the base instructions, every prefix also carries
+    ``_AC_BINDING_DISCIPLINE`` (Arc C C3): TRUSTED standing text, not per-task
+    context, but placed here rather than duplicated into each phase's role
+    suffix because it applies identically to every role that leads with this
+    prefix — it does not carry a role verb, a verdict, or any other task's
+    state, so it does not reopen the role-merge/answer-key concerns above.
     """
     # #1049: additive, manifest-gated ONLY. A blank/whitespace manifest maps to
     # the empty string so the no-manifest prefix keeps its exact legacy bytes.
@@ -458,6 +502,8 @@ def shared_task_prefix(
         + manifest_block
         + "Base instructions:\n"
         f"{base_prompt}\n"
+        "\n"
+        + _AC_BINDING_DISCIPLINE
     )
 
 
@@ -545,6 +591,11 @@ def issue_run_phase_prompt(
         + _manifest_inline
         + "Base instructions:\n"
         f"{base_prompt}\n"
+        "\n"
+        # Arc C C3: same discipline shared_task_prefix() carries in warm mode —
+        # this is the cold-path twin for the Test-Author/Verifier (see the
+        # module-level comment above _AC_BINDING_DISCIPLINE's definition).
+        + _AC_BINDING_DISCIPLINE
     )
 
     if phase == "test-author":
@@ -876,6 +927,14 @@ def issue_run_phase_prompt(
             body = (
                 implementer_boundary
                 + ralph_preamble
+                # Arc C C3 cold-path twin: the warm branch above already gets
+                # this same text via shared_task_prefix()'s _AC_BINDING_DISCIPLINE
+                # tail (and the Test-Author/Verifier get it via _shared_inline);
+                # the cold execute layout calls neither helper (see the #1049
+                # cold-path symmetry note below), so inject it directly here,
+                # grouped with the other standing execution limits above it.
+                + _AC_BINDING_DISCIPLINE
+                + "\n"
                 + "This is phase 2 of 2: execute.\n"
                 f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
                 "\n"

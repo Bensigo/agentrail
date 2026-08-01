@@ -1138,6 +1138,117 @@ export async function consumeConnectorOauthStateBySessionUser(
   });
 }
 
+// --------------------------------------------------------------------------- //
+// W3-T5 (unplanned fast-follow, `.superpowers/sdd/task-W3T5-report.md`) — the
+// Sentry integration webhook receiver's own connector lookup/teardown.
+// Sentry POSTs installation lifecycle events (installation.created/.deleted)
+// to a single, provider-scoped-but-not-workspace-scoped URL
+// (`apps/console/app/api/v1/connectors/webhooks/sentry/route.ts`) that knows
+// only the vendor's installation uuid from the payload — NOT which
+// workspace it belongs to, unlike every OTHER function in this file, which
+// always receives a `workspaceId` argument from an already-authenticated
+// caller. These two functions are the cross-workspace resolution + guarded
+// teardown that route needs: `findConnectorsBySentryInstallationId` is the
+// READ half (an installationId resolves to AT MOST ONE workspace in the
+// ordinary case — minted once, by `postExchange`'s own configPatch in
+// `lib/oauth/sentry.ts` — but nothing in this schema enforces that as a
+// hard invariant, so this returns every match rather than assuming
+// exactly one); `clearSentryConnectorForInstallation` is the WRITE half,
+// called ONCE PER MATCH by the route.
+// --------------------------------------------------------------------------- //
+
+/** One workspace whose `sentry` connector's stored `config.sentryInstallationId`
+ * matches a given Sentry installation uuid. */
+export interface SentryInstallationConnectorMatch {
+  workspaceId: string;
+}
+
+/**
+ * Cross-workspace lookup: every `sentry` connector row whose
+ * `config.sentryInstallationId` equals `installationId` exactly (a Sentry
+ * installation uuid — `payload.installation.uuid` on the webhook's own
+ * verified body, doc-confirmed present on every resource type). SERVER
+ * ONLY — the webhook route is the sole caller; there is no browser-facing
+ * use for "which workspace owns this vendor id" (unlike every other read
+ * in this file, this one is NOT scoped by an already-known workspaceId).
+ * Returns `[]` for an unknown or already-disconnected installation — a
+ * benign no-op the caller treats as "nothing to clear", never an error.
+ */
+export async function findConnectorsBySentryInstallationId(
+  installationId: string
+): Promise<SentryInstallationConnectorMatch[]> {
+  const rows = await db
+    .select({ workspaceId: connectors.workspaceId })
+    .from(connectors)
+    .where(
+      and(
+        eq(connectors.provider, "sentry"),
+        sql`(${connectors.config} ->> 'sentryInstallationId') = ${installationId}`
+      )
+    );
+  return rows;
+}
+
+/**
+ * Clears a `sentry` connector's stored secret and removes its
+ * `sentryInstallationId` from config — called once per workspace
+ * {@link findConnectorsBySentryInstallationId} resolved, when Sentry's
+ * `installation.deleted` webhook reports the Public Integration was
+ * uninstalled from Sentry's own side. Mirrors `setConnectorSecret`'s own
+ * "no secret -> disabled" convention (`enabled: false`) so `hasSecret` /
+ * the connectors sheet honestly show "not connected" — and ADDITIONALLY
+ * strips `sentryInstallationId`, which `setConnectorSecret` alone does NOT
+ * do (that function only ever touches `chatId`/`webhookSecret` on clear —
+ * see its own doc-comment; `sentryInstallationId` is declared NOT
+ * ephemeral on `ConnectorConfig` specifically so `completeConfig` always
+ * PRESERVES it across every other write, which makes a raw jsonb `-`
+ * key-delete the ONLY way to ever remove it). Without this, a stale
+ * `sentryInstallationId` would keep pointing at a dead installation:
+ * harmless to `resolveProviderAuth` (its cheap `!secret` gate alone already
+ * makes this connector read as disconnected the instant `secret` is NULL),
+ * but dishonest to anything that reads config directly.
+ *
+ * GUARDED ON THIS UPDATE'S OWN WHERE (house doctrine — mirrors
+ * {@link consumeConnectorOauthStateBySessionUser}'s own doc-comment on
+ * "guard the write, not just an earlier read"): the WHERE re-checks
+ * `installationId` directly, rather than trusting
+ * `findConnectorsBySentryInstallationId`'s earlier snapshot — a benign race
+ * (the workspace reconnected with a FRESH installationId between the
+ * route's lookup and this write) makes the WHERE match nothing, so this
+ * safely no-ops instead of clobbering a live connection that no longer has
+ * anything to do with the uninstalled one. No transaction/locking needed
+ * beyond that: this is a single guarded statement, and Postgres's own
+ * row-level write already serializes it against any concurrent writer, the
+ * same way every other single-UPDATE function in this file already relies
+ * on.
+ *
+ * Returns whether a row actually matched and was cleared — `false` is not
+ * an error (already cleared by a prior delivery, or superseded by a fresh
+ * reconnect racing this one); the route logs accordingly either way.
+ */
+export async function clearSentryConnectorForInstallation(
+  workspaceId: string,
+  installationId: string
+): Promise<boolean> {
+  const [row] = await db
+    .update(connectors)
+    .set({
+      secret: null,
+      enabled: false,
+      config: sql`${connectors.config} - 'sentryInstallationId'`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(connectors.workspaceId, workspaceId),
+        eq(connectors.provider, "sentry"),
+        sql`(${connectors.config} ->> 'sentryInstallationId') = ${installationId}`
+      )
+    )
+    .returning();
+  return Boolean(row);
+}
+
 /** The MCP providers whose keys are materialized into a run's codebase config. */
 const MCP_PROVIDERS = ["linear", "figma", "context7"] as const;
 

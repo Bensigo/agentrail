@@ -14,8 +14,13 @@ const renderSql = (q: unknown): string => new PgDialect().sqlToQuery(q as never)
 // `src/__tests__/github-app-token.test.ts` mocks `mintGithubInstallState`'s
 // own sibling `consumeGithubInstallState` (the closest structural
 // precedent: an atomic single-use-state UPDATE…RETURNING).
+// W3-T5 (unplanned fast-follow) adds `select` to the mock: its two new
+// functions are a plain SELECT (`findConnectorsBySentryInstallationId`) and
+// an UPDATE…RETURNING (`clearSentryConnectorForInstallation`, same shape as
+// `consumeConnectorOauthState` above) — see those describe blocks at the
+// bottom of this file.
 vi.mock("../db.js", () => ({
-  db: { insert: vi.fn(), update: vi.fn() },
+  db: { insert: vi.fn(), update: vi.fn(), select: vi.fn() },
 }));
 
 import { db } from "../db.js";
@@ -24,6 +29,8 @@ import {
   validateConnectorUpdate,
   mintConnectorOauthState,
   consumeConnectorOauthState,
+  findConnectorsBySentryInstallationId,
+  clearSentryConnectorForInstallation,
   OAUTH_STATE_TTL_MS,
   SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "./connectors.js";
@@ -460,6 +467,16 @@ function updateChain(returned: unknown[]) {
   return chain;
 }
 
+// W3-T5 (unplanned fast-follow) — `findConnectorsBySentryInstallationId`'s
+// own `db.select({...}).from(connectors).where(...)` shape; `.where()` is
+// the terminal call (no `.returning()` on a SELECT).
+function selectChain(returned: unknown[]) {
+  const chain: Record<string, unknown> = {};
+  chain.from = vi.fn(() => chain);
+  chain.where = vi.fn(() => Promise.resolve(returned));
+  return chain;
+}
+
 describe("mintConnectorOauthState (W3-T1)", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -687,5 +704,84 @@ describe("consumeConnectorOauthState (W3-T1)", () => {
     expect(rendered).toContain("oauthStateExpiresAt");
     expect(rendered).not.toContain("oauthUserId");
     expect(rendered).not.toContain("oauthPkceVerifier");
+  });
+});
+
+// W3-T5 (unplanned fast-follow, `.superpowers/sdd/task-W3T5-report.md`) —
+// the Sentry webhook receiver's cross-workspace connector lookup + guarded
+// teardown. See connectors.ts's own doc-comment on both functions.
+describe("findConnectorsBySentryInstallationId (W3-T5)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("selects {workspaceId} scoped to provider='sentry' and the exact installationId", async () => {
+    const chain = selectChain([{ workspaceId: "ws-1" }]);
+    mockDb.select.mockReturnValue(chain as never);
+
+    const result = await findConnectorsBySentryInstallationId("install-abc");
+
+    expect(result).toEqual([{ workspaceId: "ws-1" }]);
+    const whereArg = (chain.where as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const rendered = renderSql(whereArg);
+    expect(rendered).toContain("sentryInstallationId");
+    // The installationId VALUE is bound as a parameter, not spliced into the
+    // SQL text — confirms this is a real WHERE-scoped lookup, not an
+    // accidental no-op that would match every sentry row.
+    const params = new PgDialect().sqlToQuery(whereArg as never).params;
+    expect(params).toContain("install-abc");
+  });
+
+  it("returns EVERY match when more than one workspace's config carries the same installationId (defensive — nothing in this schema enforces uniqueness; the route acts on each)", async () => {
+    const chain = selectChain([{ workspaceId: "ws-1" }, { workspaceId: "ws-2" }]);
+    mockDb.select.mockReturnValue(chain as never);
+
+    expect(await findConnectorsBySentryInstallationId("install-shared")).toEqual([
+      { workspaceId: "ws-1" },
+      { workspaceId: "ws-2" },
+    ]);
+  });
+
+  it("returns [] for an unknown/already-disconnected installationId — a benign no-op, never an error", async () => {
+    const chain = selectChain([]);
+    mockDb.select.mockReturnValue(chain as never);
+
+    expect(await findConnectorsBySentryInstallationId("install-unknown")).toEqual([]);
+  });
+});
+
+describe("clearSentryConnectorForInstallation (W3-T5)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("nulls the secret, disables the row, and removes sentryInstallationId from config — guarded on workspaceId+provider+installationId in the UPDATE's own WHERE (house doctrine)", async () => {
+    const chain = updateChain([{ id: "row-1" }]);
+    mockDb.update.mockReturnValue(chain as never);
+
+    const cleared = await clearSentryConnectorForInstallation("ws-1", "install-abc");
+
+    expect(cleared).toBe(true);
+    const setArg = (chain.set as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      secret: unknown;
+      enabled: unknown;
+      config: unknown;
+    };
+    expect(setArg.secret).toBeNull();
+    expect(setArg.enabled).toBe(false);
+    expect(renderSql(setArg.config)).toContain("sentryInstallationId");
+
+    const whereArg = (chain.where as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(renderSql(whereArg)).toContain("sentryInstallationId");
+    const params = new PgDialect().sqlToQuery(whereArg as never).params;
+    // Both the workspace scope AND the installationId re-check are bound —
+    // proves this UPDATE cannot match a different workspace's row, or a
+    // SAME workspace's row that reconnected under a different installation
+    // id since the caller's own lookup.
+    expect(params).toContain("ws-1");
+    expect(params).toContain("install-abc");
+  });
+
+  it("returns false when the WHERE matches nothing — already cleared, or superseded by a fresh reconnect racing this write; never an error", async () => {
+    const chain = updateChain([]);
+    mockDb.update.mockReturnValue(chain as never);
+
+    expect(await clearSentryConnectorForInstallation("ws-1", "install-stale")).toBe(false);
   });
 });

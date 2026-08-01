@@ -922,6 +922,13 @@ describe("connector catalog — cloudflare entry (Task P8, FINAL Wave-2 provider
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T6 — ConnectorConnectMeta.oauthHint.
+  it("declares a calm oauthHint sentence for the OAuth-primary button, mentioning read-only access and the token fallback", () => {
+    expect(cloudflare.connect?.oauthHint).toBeDefined();
+    expect(cloudflare.connect?.oauthHint).toMatch(/read-only/i);
+    expect(cloudflare.connect?.oauthHint).toMatch(/api token/i);
+  });
 });
 
 describe("connector catalog — tokenStandardNote scope (OAuth Connect Wave 3, W3-T4)", () => {

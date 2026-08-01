@@ -908,6 +908,12 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Copy the token (shown once).",
         "Open the zone's Overview page to find its Zone ID (right sidebar), then paste both the token and the zone id here and connect.",
       ],
+      // OAuth Connect Wave 3, W3-T6 — see ConnectorConnectMeta.oauthHint's
+      // own doc-comment. Wording echoes railway's/sentry's own calm,
+      // no-apology tone and "use a token instead" pointer to the disclosure
+      // immediately below it.
+      oauthHint:
+        "Connecting via Cloudflare grants read-only access to your zone's analytics and firewall events — you can use an API token instead if you'd rather not.",
       // Task P8's own pinned decision: a SINGLE secret field (no
       // secretParts — like sentry/prometheus/grafana/vercel above), a
       // single REQUIRED extra config field. UNLIKE every provider above

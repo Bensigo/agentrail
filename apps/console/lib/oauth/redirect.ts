@@ -90,7 +90,7 @@ export function oauthErrorRedirectUrl(
  * links) — trims whitespace and any trailing slash(es) so a copy-pasted env
  * value with or without a trailing `/` produces the identical URL, mirroring
  * `buildSlackRedirectUri` exactly. This is the EXACT string every provider
- * must be registered with on the vendor side (`https://heyjace.com/api/v1/
+ * must be registered with on the vendor side (`https://www.heyjace.com/api/v1/
  * connectors/oauth/callback/railway`, `/sentry`, … — see the spec doc's
  * owner-registration steps).
  */

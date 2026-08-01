@@ -708,15 +708,15 @@ Both providers need the **exact** redirect URI registered on the vendor
 side — a mismatch is the #1 real-world OAuth integration failure, so this is
 not "a URL like…", it is the literal string:
 
-- Production: `https://heyjace.com/api/v1/connectors/oauth/callback/railway`
-  and `https://heyjace.com/api/v1/connectors/oauth/callback/sentry`
+- Production: `https://www.heyjace.com/api/v1/connectors/oauth/callback/railway`
+  and `https://www.heyjace.com/api/v1/connectors/oauth/callback/sentry`
 - Local dev (`CONSOLE_PUBLIC_URL=http://localhost:3000`, this repo's
   documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`
   and `.../sentry` — substitute your own dev port if it differs.
 
 Sentry additionally needs its **Webhook URL** registered (a separate field
 on the same Public Integration form, W3-T5 — see "W3-T5 doc-verification"
-above): production `https://heyjace.com/api/v1/connectors/webhooks/sentry`,
+above): production `https://www.heyjace.com/api/v1/connectors/webhooks/sentry`,
 local dev `http://localhost:3000/api/v1/connectors/webhooks/sentry`. Same
 Client Secret as the OAuth exchange signs both — no separate credential to
 issue or store.

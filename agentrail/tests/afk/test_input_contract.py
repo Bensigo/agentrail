@@ -123,3 +123,34 @@ def test_admit_to_queue_preserves_blocked_by_dependencies():
     entry = admit_to_queue(number=1, issue_body=body, blocked_by=frozenset({42}))
     assert isinstance(entry, QueueEntry)
     assert entry.blocked_by == frozenset({42})
+
+
+# --- Arc C: THE one AC parser, exposed for the run pipeline -------------------
+
+
+from agentrail.afk.input_contract import parse_acceptance_criteria
+
+
+def test_parse_acceptance_criteria_extracts_checkboxes():
+    body = "## Acceptance criteria\n- [ ] AC one works\n- [x] AC two tested\n"
+    assert parse_acceptance_criteria(body) == ["AC one works", "AC two tested"]
+
+
+def test_parse_acceptance_criteria_tolerant_heading_drift_case():
+    # THE drift case: intake admits this, run/state's strict regex missed it.
+    body = "## Acceptance Criteria (P0)\n- [ ] ships behind a flag\n"
+    assert parse_acceptance_criteria(body) == ["ships behind a flag"]
+
+
+def test_parse_acceptance_criteria_empty_cases():
+    assert parse_acceptance_criteria("") == []
+    assert parse_acceptance_criteria("no headings") == []
+    assert parse_acceptance_criteria("## Acceptance criteria\nprose only\n") == []
+
+
+def test_validate_and_parser_agree():
+    body = "## Acceptance criteria\n- [ ] AC1: build exits 0.\n"
+    from agentrail.afk.input_contract import validate, Validated
+    result = validate(body)
+    assert isinstance(result, Validated)
+    assert result.criteria == parse_acceptance_criteria(body)

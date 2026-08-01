@@ -158,6 +158,13 @@ class TestIssueGoalDefaults:
         goal = issue_goal_defaults({}, {}, 7, ISSUE_CONTEXT_FULL, NOW)
         assert goal["successCriteria"] == ["Widget renders", "Widget is tested"]
 
+    def test_acceptance_heading_with_suffix_collected(self):
+        # Parity with intake (Arc C): '## Acceptance Criteria (P0)' passes
+        # queue admission and must not be invisible to run state.
+        text = "## Acceptance Criteria (P0)\n- [ ] do this\n"
+        goal = issue_goal_defaults({}, {}, 7, text, "2026-08-01T00:00:00Z")
+        assert goal["successCriteria"] == ["do this"]
+
     def test_non_goals_from_section(self):
         goal = issue_goal_defaults({}, {}, 7, ISSUE_CONTEXT_FULL, NOW)
         assert goal["nonGoals"] == ["No mobile support"]

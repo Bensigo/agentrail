@@ -365,6 +365,21 @@ def _acceptance_section(body: str) -> str:
     return match.group(1) if match else ""
 
 
+def parse_acceptance_criteria(issue_body: str) -> List[str]:
+    """Checkbox acceptance criteria from the issue body, in document order (pure).
+
+    THE one AC parser (Arc C): the same tolerant section + checkbox extraction
+    queue admission uses, exposed so the run pipeline and intake can never
+    drift. Returns verbatim criterion texts; empty when the section is missing
+    or holds no checkboxes (prompt-only runs, prose bodies).
+    """
+    section = _acceptance_section(issue_body)
+    if not section:
+        return []
+    criteria = [m.group(1).strip() for m in _CHECKBOX.finditer(section)]
+    return [c for c in criteria if c]
+
+
 def validate(issue_body: str) -> Result:
     """Decide whether an issue may enter the Issue Queue (pure).
 
@@ -379,8 +394,7 @@ def validate(issue_body: str) -> Result:
         return Rejected(
             missing_ac="no 'Acceptance criteria' section in the issue body"
         )
-    criteria = [m.group(1).strip() for m in _CHECKBOX.finditer(section)]
-    criteria = [c for c in criteria if c]
+    criteria = parse_acceptance_criteria(issue_body)
     if not criteria:
         return Rejected(
             missing_ac=(

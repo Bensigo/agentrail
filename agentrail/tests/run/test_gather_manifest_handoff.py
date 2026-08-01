@@ -75,7 +75,12 @@ class SharedTaskPrefixManifestTests(unittest.TestCase):
         return shared_task_prefix(**kwargs)
 
     def test_no_manifest_prefix_is_byte_identical_to_legacy_layout(self):
-        # Regression pin: the exact pre-#1049 prefix bytes (cache identity).
+        # Regression pin: the exact pre-#1049 prefix bytes (cache identity),
+        # plus the Arc C C3 AC-binding discipline (builder binding discipline)
+        # that now trails every shared_task_prefix() call unconditionally —
+        # TRUSTED standing text, not gather-manifest-gated. Spelled out
+        # literally (not imported from prompts._AC_BINDING_DISCIPLINE) so this
+        # pin still catches an accidental wording/layout change at the source.
         expected = (
             "Shared task context (issue #7):\n"
             "\n"
@@ -87,6 +92,19 @@ class SharedTaskPrefixManifestTests(unittest.TestCase):
             "\n"
             "Base instructions:\n"
             "SHARED-BASE-PROMPT\n"
+            "\n"
+            "Acceptance-criteria bindings (AC Proof Gate):\n"
+            "- Maintain `.agentrail/ac_bindings.json` as you work: when you write the test\n"
+            "  that proves ACn, record it — {\"ACn\": [\"<pytest node id>\"]}. Bind to a\n"
+            "  declared verify-check name only when no per-test id exists.\n"
+            "- A binding is evidence only if the bound test/check runs and PASSES. Write\n"
+            "  the red-first test, bind it, then make it pass — the binding is born with\n"
+            "  the test, not backfilled at the end.\n"
+            "- If an AC genuinely cannot be verified in this run (needs credentials or\n"
+            "  services the run will never have), declare it instead of faking it:\n"
+            "  {\"ACn\": {\"unverifiable\": true, \"why\": \"...\", \"whatWouldProveIt\": \"...\"}}.\n"
+            "  Never claim done over an AC you could neither prove nor declare.\n"
+            "- Never write `.agentrail/ac_waivers.json` — waivers are human-authored only.\n"
         )
         self.assertEqual(self._prefix(), expected)
 

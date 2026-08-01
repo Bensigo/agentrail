@@ -57,7 +57,7 @@ def issue_goal_defaults(previous: Dict[str, Any], workflow: Dict[str, Any], issu
     Returns a NEW goal dict merging previous with computed fields:
       - id = f"issue-{issue}", kind="issue", source=f"github:issue/{issue}"
       - summary = first_line(issue_context) or f"Issue #{issue}"
-      - successCriteria = section_items(issue_context, /^##\\s+Acceptance criteria\\s*$/i)
+      - successCriteria = section_items(issue_context, /^##\\s+acceptance\\s+criteria\\b/i)
           if non-empty else (previous.successCriteria if a non-empty list else [f"Complete issue #{issue}."])
       - nonGoals = section_items(issue_context, /^##\\s+Non-goals\\s*$/i)
           if non-empty else (previous.nonGoals if list else [])
@@ -67,7 +67,8 @@ def issue_goal_defaults(previous: Dict[str, Any], workflow: Dict[str, Any], issu
       - createdAt = previous.createdAt or now
       - updatedAt = now
     Start from a shallow copy of `previous` then overwrite these keys (legacy `...previous`)."""
-    success_criteria = section_items(issue_context, re.compile(r"^##\s+Acceptance criteria\s*$", re.I))
+    # Tolerant heading (Arc C parity with intake's _AC_SECTION): allows suffixes like '(P0)'. Deeper #-levels remain intake-only.
+    success_criteria = section_items(issue_context, re.compile(r"^##\s+acceptance\s+criteria\b", re.I))
     non_goals = section_items(issue_context, re.compile(r"^##\s+Non-goals\s*$", re.I))
     summary = first_line(issue_context) or f"Issue #{issue}"
 

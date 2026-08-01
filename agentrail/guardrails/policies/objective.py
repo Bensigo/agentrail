@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from agentrail.guardrails.base import Verdict
 from agentrail.guardrails.registry import register
@@ -80,6 +80,66 @@ class AcCoverage:
     @property
     def is_satisfied(self) -> bool:
         return self.total > 0 and self.covered >= self.total
+
+
+AC_STATUSES = ("proven_test", "proven_check", "waived", "unbound")
+
+
+@dataclass(frozen=True)
+class AcEvidenceItem:
+    """One captured proof behind an AC binding (a passed test or check)."""
+
+    type: str          # "test" | "check"
+    ref: str           # pytest node id or declared check name
+    granularity: str   # "test" | "command" — honest capture resolution
+    result: str = "passed"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"type": self.type, "ref": self.ref,
+                "granularity": self.granularity, "result": self.result}
+
+
+@dataclass(frozen=True)
+class AcStatus:
+    """One acceptance criterion's proof state (id is positional: AC1..ACn)."""
+
+    id: str
+    text: str
+    status: str  # one of AC_STATUSES
+    evidence: Tuple["AcEvidenceItem", ...] = ()
+    note: str = ""  # honesty detail, e.g. "bound to tests/x.py::test_y which failed"
+
+    def to_dict(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "id": self.id, "text": self.text, "status": self.status,
+            "evidence": [e.to_dict() for e in self.evidence],
+        }
+        if self.note:
+            data["note"] = self.note
+        return data
+
+
+@dataclass(frozen=True)
+class AcCoverageDetail:
+    """Per-AC coverage — the real math behind :class:`AcCoverage` (Arc C).
+
+    ``AcCoverage`` keeps its exact constructor and meaning (frozen eval
+    answer-keys construct it directly); this detail DERIVES one from per-AC
+    statuses: covered = proven or waived, never unbound.
+    """
+
+    acs: Tuple[AcStatus, ...] = ()
+
+    @property
+    def unbound_ids(self) -> List[str]:
+        return [a.id for a in self.acs if a.status == "unbound"]
+
+    def to_ac_coverage(self) -> AcCoverage:
+        covered = sum(1 for a in self.acs if a.status != "unbound")
+        return AcCoverage(total=len(self.acs), covered=covered)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"acs": [a.to_dict() for a in self.acs], "unbound": self.unbound_ids}
 
 
 @dataclass(frozen=True)
@@ -241,6 +301,7 @@ def evaluate_objective(
     *,
     checks: Optional[Sequence[CheckResult]] = None,
     ac_coverage: Optional[AcCoverage] = None,
+    ac_coverage_detail: Optional[AcCoverageDetail] = None,
     red_green_evidence: Optional[Mapping[str, Any]] = None,
     verification_evidence: Optional[Mapping[str, Any]] = None,
     ci_checks: Optional[Sequence[Mapping[str, Any]]] = None,
@@ -316,6 +377,25 @@ def evaluate_objective(
                 Evidence(name="acceptance-criteria", passed=False, detail=detail)
             )
             failed_reasons.append("acceptance-criteria not satisfied")
+
+    # 3b. Per-AC proof coverage (Arc C, enforce mode). Runs IN ADDITION to the
+    #    legacy declared-check coverage above: that block still guarantees
+    #    "no declared verification → red", so an all-waived AC set can never
+    #    bypass verification entirely.
+    if ac_coverage_detail is not None and ac_coverage_detail.acs:
+        derived = ac_coverage_detail.to_ac_coverage()
+        if derived.is_satisfied:
+            evidence.append(Evidence(
+                name="acceptance-criteria-proof", passed=True,
+                detail=f"{derived.covered}/{derived.total} proven or waived",
+            ))
+        else:
+            unbound = ", ".join(ac_coverage_detail.unbound_ids)
+            evidence.append(Evidence(
+                name="acceptance-criteria-proof", passed=False,
+                detail=f"{derived.covered}/{derived.total} proven; unbound: {unbound}",
+            ))
+            failed_reasons.append(f"acceptance-criteria unbound: {unbound}")
 
     # 4. Red-Green Proof seam (#772): only gates when a proof is explicitly
     #    required. The recorder that produces this evidence is built separately.
@@ -419,6 +499,7 @@ class ObjectiveGate:
         verdict = evaluate_objective(
             checks=kwargs.get("checks"),  # type: ignore[arg-type]
             ac_coverage=kwargs.get("ac_coverage"),  # type: ignore[arg-type]
+            ac_coverage_detail=kwargs.get("ac_coverage_detail"),  # type: ignore[arg-type]
             red_green_evidence=kwargs.get("red_green_evidence"),  # type: ignore[arg-type]
             verification_evidence=kwargs.get("verification_evidence"),  # type: ignore[arg-type]
             ci_checks=kwargs.get("ci_checks"),  # type: ignore[arg-type]

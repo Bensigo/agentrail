@@ -28,6 +28,7 @@ from agentrail.guardrails.policies.input_contract import (  # noqa: F401
     WriterClass,
     admit_to_queue,
     content_hash,
+    parse_acceptance_criteria,
     screen_injection,
     validate,
 )
@@ -43,4 +44,5 @@ __all__ = [
     "WriterClass",
     "content_hash",
     "screen_injection",
+    "parse_acceptance_criteria",
 ]

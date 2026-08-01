@@ -101,6 +101,34 @@ def write_run_refusal_marker(
     write_json(path, data)
 
 
+def write_ac_evidence(
+    path: Path,
+    *,
+    mode: str,
+    issue: int,
+    head_sha: str,
+    acs: List[Dict[str, Any]],
+    unbound: List[str],
+    waived: List[Dict[str, Any]],
+    unverifiable: List[Dict[str, Any]],
+) -> None:
+    """Write/merge the per-run AC evidence artifact (Arc C, spec §5).
+
+    Read-merge-write (the :func:`write_run_refusal_marker` idiom) so the
+    refusal payload can join an already-written artifact — and vice versa —
+    without clobbering. Written beside run.json at gate-finalization time;
+    consumed by Arc D's Change Record and Arc E's calibration.
+    """
+    data = read_json(path) if path.exists() else {}
+    data.update({
+        "mode": mode, "issue": issue, "headSha": head_sha,
+        "acs": acs, "unbound": unbound, "waived": waived,
+    })
+    if unverifiable:
+        data["unverifiable"] = unverifiable
+    write_json(path, data)
+
+
 def write_phase_status(
     path: Path,
     *,

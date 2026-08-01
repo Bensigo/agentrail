@@ -11,7 +11,10 @@ described in ``verify-contract-architecture.md``):
 * :class:`VerifyCheck` — one declared verification command (name + command).
 * :func:`parse_verify_config` — ``verify`` config → check specs.
 * :func:`exit_code_to_check_result` — subprocess exit code → ``CheckResult``.
-* :func:`ac_coverage_for` — declared checks → ``AcCoverage``.
+* :func:`declared_check_coverage` — declared checks → ``AcCoverage`` (the legacy
+  declared-verification-present proxy).
+* :func:`ac_coverage_for` — per-AC bindings/results → ``AcCoverageDetail`` (Arc C
+  real per-AC proof math).
 * :class:`CheckRunnerGuardrail` — the seam adapter: given already-run
   ``CheckResult``s, ``PASS`` iff every check passed (and at least one was run).
 
@@ -31,7 +34,13 @@ from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence
 
 from agentrail.guardrails.base import Verdict
-from agentrail.guardrails.policies.objective import AcCoverage, CheckResult
+from agentrail.guardrails.policies.objective import (
+    AcCoverage,
+    AcCoverageDetail,
+    AcEvidenceItem,
+    AcStatus,
+    CheckResult,
+)
 from agentrail.guardrails.registry import register
 
 # Wall-clock ceiling for a single verify command. A hung check must fail the
@@ -95,16 +104,81 @@ def exit_code_to_check_result(name: str, exit_code: int) -> CheckResult:
     return CheckResult(name=name, passed=False, detail=f"exit {exit_code}")
 
 
-def ac_coverage_for(checks: List[VerifyCheck]) -> AcCoverage:
-    """Compute AcCoverage from the *declared* checks (pure).
+def declared_check_coverage(checks: List[VerifyCheck]) -> AcCoverage:
+    """LEGACY declared-verification proxy (pure) — the pre-Arc-C behavior.
 
-    Coverage here means declared-verification is present — NOT per-AC mapping
-    (deferred to the Verifier #782). >=1 declared check → fully covered so the
-    gate can reach green; zero declared checks → ``AcCoverage(0, 0)`` which the
-    gate treats as red ("no acceptance criteria declared" / can't verify).
+    >=1 declared check → fully covered; zero → ``AcCoverage(0, 0)`` (gate red:
+    "no acceptance criteria declared" / can't verify). Kept byte-identical as
+    the ``off``/``observe`` gate input and the no-verification floor in
+    ``enforce`` — real per-AC math is :func:`ac_coverage_for` below.
     """
     total = len(checks)
     return AcCoverage(total=total, covered=total)
+
+
+def _normalize_test_ref(ref: str) -> str:
+    """Dotted normal form so junit classnames and pytest node ids compare equal.
+
+    ``a/b/test_x.py::TestC::test_y`` and junit ``classname="a.b.test_x.TestC"
+    name="test_y"`` (key ``a.b.test_x.TestC.test_y``) both normalize to the
+    same string.
+    """
+    return ref.replace("/", ".").replace(".py::", "::").replace("::", ".")
+
+
+def ac_coverage_for(
+    acs: Sequence[str],
+    bindings: Mapping[str, Sequence[str]],
+    test_results: Mapping[str, str],
+    check_results: Sequence[CheckResult],
+    waivers: Mapping[str, Mapping[str, str]],
+) -> AcCoverageDetail:
+    """Real per-AC coverage math (pure) — Arc C.
+
+    ids are positional (``AC1``..``ACn`` over ``acs`` in document order). A
+    binding is only evidence if the bound identifier exists in the captured
+    results AND passed — a binding to a missing or failed test is honestly
+    ``unbound`` (with a note saying why). A waived AC counts covered without
+    proof; the waiver itself is recorded by the caller. Statuses:
+    ``proven_test`` | ``proven_check`` | ``waived`` | ``unbound``.
+    """
+    passed_checks = {c.name for c in check_results if getattr(c, "passed", False)}
+    declared_checks = {c.name for c in check_results}
+    normalized_tests = {_normalize_test_ref(str(k)): v for k, v in test_results.items()}
+    statuses: List[AcStatus] = []
+    for index, text in enumerate(acs):
+        ac_id = f"AC{index + 1}"
+        if ac_id in waivers:
+            statuses.append(AcStatus(id=ac_id, text=str(text), status="waived"))
+            continue
+        evidence: List[AcEvidenceItem] = []
+        notes: List[str] = []
+        for raw in bindings.get(ac_id, ()) or ():
+            ref = str(raw).strip()
+            if not ref:
+                continue
+            outcome = normalized_tests.get(_normalize_test_ref(ref))
+            if outcome == "passed":
+                evidence.append(AcEvidenceItem(type="test", ref=ref, granularity="test"))
+            elif outcome is not None:
+                notes.append(f"bound to {ref} which {outcome}")
+            elif ref in passed_checks:
+                evidence.append(AcEvidenceItem(type="check", ref=ref, granularity="command"))
+            elif ref in declared_checks:
+                notes.append(f"bound to check {ref} which failed")
+            else:
+                notes.append(f"bound to {ref}, not found in captured results")
+        if any(e.type == "test" for e in evidence):
+            status = "proven_test"
+        elif evidence:
+            status = "proven_check"
+        else:
+            status = "unbound"
+        statuses.append(AcStatus(
+            id=ac_id, text=str(text), status=status,
+            evidence=tuple(evidence), note="; ".join(notes),
+        ))
+    return AcCoverageDetail(acs=tuple(statuses))
 
 
 # ---------------------------------------------------------------------------

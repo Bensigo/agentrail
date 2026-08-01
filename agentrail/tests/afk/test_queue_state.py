@@ -304,3 +304,18 @@ def test_release_still_blocked_never_even_consults_alignment():
     assert released.state is QueueState.PARKED
     assert "43" in released.reason
     assert released.reason != ALIGNMENT_PARK_REASON
+
+
+# --- Arc C §6: the `unverifiable` refusal — no budget burn, no tier bump -----
+#
+# REFUSED covers both the pre-existing #1267 hosted-startup refusal and Arc
+# C's declared-unverifiable-ACs refusal: neither is a retryable gate failure,
+# so (unlike GATE_RED) it must never touch remaining_budget or tier.
+
+
+def test_refused_event_escalates_without_budget_burn():
+    entry = QueueEntry(number=7, remaining_budget=2, state=QueueState.RUNNING)
+    out = transition(entry, Event.REFUSED)
+    assert out.state is Terminal.ESCALATED_TO_HUMAN
+    assert out.remaining_budget == 2   # refusal never burns budget
+    assert out.tier == entry.tier      # and never bumps tier

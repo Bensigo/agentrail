@@ -92,19 +92,29 @@ run_json = os.path.join(run_dir, "run.json")
 try:
     with open(run_json) as f:
         data = json.load(f)
-    gate = data.get("objectiveGate") or {}
-    verdict = gate.get("verdict")
-    if verdict == "green":
-        status = "green"
-    elif verdict == "red":
-        status = "red"
-        reasons = gate.get("failedReasons") or []
-        reason = "; ".join(str(r) for r in reasons)
+    refusal = data.get("refusal")
+    if isinstance(refusal, dict):
+        # Mirror agentrail/sandbox/native_runner.py::_result_from_run_json
+        # (#1267 + Arc C 'unverifiable'): a refusal marker beats everything.
+        # The prefix is the byte-exact cross-process contract — keep in
+        # lockstep with HOSTED_REFUSAL_PREFIX there and in runner.ts.
+        status = "error"
+        message = str(refusal.get("message") or "hosted run refused at startup")
+        reason = "hosted-refusal: " + message
     else:
-        # No gate recorded: fall back to the process exit status.
-        status = "green" if run_status == 0 else "red"
-        if status == "red":
-            reason = f"agentrail run exited {run_status}"
+        gate = data.get("objectiveGate") or {}
+        verdict = gate.get("verdict")
+        if verdict == "green":
+            status = "green"
+        elif verdict == "red":
+            status = "red"
+            reasons = gate.get("failedReasons") or []
+            reason = "; ".join(str(r) for r in reasons)
+        else:
+            # No gate recorded: fall back to the process exit status.
+            status = "green" if run_status == 0 else "red"
+            if status == "red":
+                reason = f"agentrail run exited {run_status}"
 except FileNotFoundError:
     status = "green" if run_status == 0 else "error"
     if status != "green":

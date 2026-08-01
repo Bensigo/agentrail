@@ -1189,6 +1189,72 @@ class VerifierPromptTests(unittest.TestCase):
         self.assertIn("Add a greet() function.", result)
 
 
+class ACBindingDisciplineTests(unittest.TestCase):
+    """Arc C C3: Tasks 1-8 built the gate that proves acceptance criteria
+    against ``.agentrail/ac_bindings.json`` — but proving requires the BUILDER
+    to have written that file. Both the Test-Author (first to write a test and
+    bind it) and the Implementer/execute role (turns bindings green) must
+    receive this discipline, in cold (default) and warm-cache prompts alike."""
+
+    def _execute_prompt(self, **overrides):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        kwargs = dict(
+            issue=7,
+            issue_context="IC",
+            base_prompt="BASE",
+            context_summary="CS",
+            plan_output="PLAN",
+        )
+        kwargs.update(overrides)
+        return issue_run_phase_prompt("execute", **kwargs)
+
+    def _test_author_prompt(self, **overrides):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        kwargs = dict(
+            issue=7,
+            issue_context="Add a greet() function.\n## Acceptance criteria\n- greets",
+            base_prompt="BASE",
+            context_summary="CS",
+        )
+        kwargs.update(overrides)
+        return issue_run_phase_prompt("test-author", **kwargs)
+
+    def test_execute_prompt_carries_ac_binding_discipline(self):
+        text = self._execute_prompt()
+        self.assertIn(".agentrail/ac_bindings.json", text)
+        self.assertIn("unverifiable", text)
+        self.assertTrue(
+            "waivers are human-authored" in text.lower()
+            or "never write" in text.lower()
+        )
+
+    def test_test_author_prompt_carries_ac_binding_discipline(self):
+        text = self._test_author_prompt()
+        self.assertIn(".agentrail/ac_bindings.json", text)
+
+    def test_execute_prompt_carries_ac_binding_discipline_warm_cache(self):
+        """The discipline must survive the warm-cache reordering (issue #978)
+        too: execute's warm body leads with shared_task_prefix() instead of
+        interleaving ralph_preamble, but the text must still arrive."""
+        text = self._execute_prompt(warm_cache=True)
+        self.assertIn(".agentrail/ac_bindings.json", text)
+        self.assertIn("unverifiable", text)
+
+    def test_test_author_prompt_carries_ac_binding_discipline_warm_cache(self):
+        text = self._test_author_prompt(warm_cache=True)
+        self.assertIn(".agentrail/ac_bindings.json", text)
+
+    def test_plan_phase_does_not_gain_the_binding_block(self):
+        """Task 9 is scoped to the BUILDER roles only — the plan phase's
+        existing 'Acceptance criteria mapping' heading stays untouched."""
+        from agentrail.run.prompts import issue_run_phase_prompt
+        text = issue_run_phase_prompt(
+            "plan", 7, issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertNotIn(".agentrail/ac_bindings.json", text)
+        self.assertIn("- Acceptance criteria mapping", text)
+
+
 class IssueRunPhasePromptUnknownPhaseTests(unittest.TestCase):
     def test_unknown_phase_raises(self):
         from agentrail.run.prompts import issue_run_phase_prompt

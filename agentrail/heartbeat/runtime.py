@@ -46,6 +46,7 @@ from agentrail.run import budget_leash, compaction
 from agentrail.run.budget_leash import Decision
 from agentrail.run.routing import next_tier
 from agentrail.sandbox.docker_runner import RunResult
+from agentrail.sandbox.native_runner import HOSTED_REFUSAL_PREFIX
 
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +59,22 @@ _STATUS_TO_EVENT: Dict[str, Event] = {
     "red": Event.GATE_RED,
     "error": Event.GATE_RED,
 }
+
+
+def _event_for(result: "RunResult") -> Event:
+    """Queue event for a run result — refusals FIRST, then the status map.
+
+    A refusal's ``gate_reason`` starts with the deterministic
+    ``HOSTED_REFUSAL_PREFIX`` (#1267 cross-process contract; Arc C's
+    ``unverifiable`` rides the same channel). It must route to
+    ``Event.REFUSED`` BEFORE the status map: refusals surface as
+    ``status="error"``, and the map's ``GATE_RED`` default would silently
+    burn retry budget on a gap no retry can fix.
+    """
+    if (result.gate_reason or "").startswith(HOSTED_REFUSAL_PREFIX):
+        return Event.REFUSED
+    return _STATUS_TO_EVENT.get(result.status, Event.GATE_RED)
+
 
 # status → the Run-Outcome wording the back-channel + Discord speak. ``green``
 # is the GREEN terminal; ``red``/``error`` surface as escalated-to-human (a run
@@ -470,7 +487,7 @@ class HeartbeatRuntime:
 
             # status → queue Event, transition + re-register with the run cost. The
             # GATE_RED transition itself escalates the tier (or hard-stops at max).
-            event = _STATUS_TO_EVENT.get(result.status, Event.GATE_RED)
+            event = _event_for(result)
             current = self._store.transition(current, event)
             self._store.register_run(
                 entry=current,

@@ -17,15 +17,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agentrail.guardrails.policies.check_runner import (
+    ac_coverage_for,
+    declared_check_coverage,
+)
+from agentrail.guardrails.policies.objective import CheckResult
 from agentrail.run.check_runner import (
     VerifyCheck,
-    ac_coverage_for,
     exit_code_to_check_result,
     parse_verify_config,
     red_green_proof_required,
     run_objective_checks,
 )
-from agentrail.run.objective_gate import AcCoverage, CheckResult
 
 
 class ParseVerifyConfigTest(unittest.TestCase):
@@ -94,29 +97,72 @@ class ExitCodeToCheckResultTest(unittest.TestCase):
         self.assertIn("timed out", result.detail)
 
 
-class AcCoverageForTest(unittest.TestCase):
-    """ac_coverage_for: declared checks → AcCoverage (pure).
+def _cov(**kw):
+    defaults = dict(acs=[], bindings={}, test_results={}, check_results=[], waivers={})
+    defaults.update(kw)
+    return ac_coverage_for(**defaults)
 
-    Coverage is *declared-verification present*, NOT per-AC mapping (deferred to
-    the Verifier #782). >=1 declared check → covered==total; none → (0,0) → RED.
-    """
 
-    def test_no_checks_is_zero_coverage(self) -> None:
-        self.assertEqual(ac_coverage_for([]), AcCoverage(total=0, covered=0))
+def test_declared_check_coverage_keeps_legacy_semantics():
+    assert declared_check_coverage([]).total == 0
+    cov = declared_check_coverage([VerifyCheck(name="verify", command="true")])
+    assert (cov.total, cov.covered) == (1, 1)
 
-    def test_one_check_is_fully_covered(self) -> None:
-        cov = ac_coverage_for([VerifyCheck(name="verify", command="true")])
-        self.assertEqual(cov, AcCoverage(total=1, covered=1))
-        self.assertTrue(cov.is_satisfied)
 
-    def test_n_checks_is_n_covered(self) -> None:
-        cov = ac_coverage_for(
-            [
-                VerifyCheck(name="a", command="true"),
-                VerifyCheck(name="b", command="true"),
-            ]
-        )
-        self.assertEqual(cov, AcCoverage(total=2, covered=2))
+def test_ac_coverage_proven_by_passed_test():
+    detail = _cov(
+        acs=["persists the record"],
+        bindings={"AC1": ["agentrail/tests/run/test_x.py::test_persist"]},
+        test_results={"agentrail.tests.run.test_x.test_persist": "passed"},
+    )
+    assert detail.acs[0].status == "proven_test"
+    assert detail.acs[0].evidence[0].granularity == "test"
+
+
+def test_ac_coverage_binding_to_failed_test_is_unbound_with_note():
+    detail = _cov(
+        acs=["a"], bindings={"AC1": ["t/test_x.py::test_y"]},
+        test_results={"t.test_x.test_y": "failed"},
+    )
+    assert detail.acs[0].status == "unbound"
+    assert "failed" in detail.acs[0].note
+
+
+def test_ac_coverage_binding_to_missing_identifier_is_unbound():
+    detail = _cov(acs=["a"], bindings={"AC1": ["t/test_x.py::test_gone"]})
+    assert detail.acs[0].status == "unbound"
+    assert "not found" in detail.acs[0].note
+
+
+def test_ac_coverage_proven_by_passed_check_is_command_granularity():
+    detail = _cov(
+        acs=["a"], bindings={"AC1": ["verify"]},
+        check_results=[CheckResult(name="verify", passed=True, detail="exit 0")],
+    )
+    assert detail.acs[0].status == "proven_check"
+    assert detail.acs[0].evidence[0].granularity == "command"
+
+
+def test_ac_coverage_waived_and_unbound_mix():
+    detail = _cov(
+        acs=["a", "b", "c"],
+        bindings={"AC1": ["t/test_x.py::test_a"]},
+        test_results={"t.test_x.test_a": "passed"},
+        waivers={"AC2": {"reason": "manual-only", "by": "owner", "at": "2026-08-01"}},
+    )
+    statuses = [a.status for a in detail.acs]
+    assert statuses == ["proven_test", "waived", "unbound"]
+    cov = detail.to_ac_coverage()
+    assert (cov.total, cov.covered) == (3, 2)
+
+
+def test_audit_hole_regression_covered_can_be_less_than_total():
+    # The audit's exact finding: covered==total was unconditional. Pin that a
+    # constructible input now yields covered < total.
+    detail = _cov(acs=["a", "b"], bindings={"AC1": ["verify"]},
+                  check_results=[CheckResult(name="verify", passed=True, detail="exit 0")])
+    cov = detail.to_ac_coverage()
+    assert cov.covered < cov.total
 
 
 class RunObjectiveChecksTest(unittest.TestCase):

@@ -11,6 +11,7 @@ import {
   renderSlackErrorPage,
   signSlackOauthState,
   verifySlackOauthState,
+  readSlackOauthState,
 } from "./slack-oauth";
 
 describe("SLACK_BOT_SCOPES", () => {
@@ -137,6 +138,70 @@ describe("sign/verify Slack OAuth state — CSRF", () => {
     // rejection.
     const state = signSlackOauthState(SECRET, { now: 0 });
     expect(verifySlackOauthState(SECRET, state, { now: 24 * 60 * 60 * 1000 })).toBe(false);
+  });
+});
+
+// The `state` doubles as the ONLY carrier of workspace attribution across
+// Slack's redirect (bugfix: nothing linked a completed install back to the
+// workspace whose page rendered "Add to Slack", so the CTA never went away).
+// It must be tamper-evident for the same reason the CSRF nonce is: a
+// workspace id an attacker could edit would let them point someone else's
+// console at an installation they control.
+describe("readSlackOauthState — workspace attribution", () => {
+  const SECRET = "test-client-secret";
+  const WORKSPACE_ID = "11111111-2222-3333-4444-555555555555";
+
+  it("round-trips the workspaceId a console-started install signed in", () => {
+    const state = signSlackOauthState(SECRET, {
+      now: 1_000_000,
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(readSlackOauthState(SECRET, state, { now: 1_000_001 })).toEqual({
+      workspaceId: WORKSPACE_ID,
+    });
+  });
+
+  it("reads a null workspaceId for an install started with no workspace context", () => {
+    const state = signSlackOauthState(SECRET, { now: 1_000_000 });
+    expect(readSlackOauthState(SECRET, state, { now: 1_000_001 })).toEqual({
+      workspaceId: null,
+    });
+  });
+
+  it("returns null — not an unattributed state — for a tampered workspaceId", () => {
+    const state = signSlackOauthState(SECRET, {
+      now: 1_000_000,
+      workspaceId: WORKSPACE_ID,
+    });
+    const [payload, sig] = state.split(".");
+    const decoded = JSON.parse(
+      Buffer.from(payload!, "base64url").toString("utf8")
+    );
+    decoded.w = "99999999-9999-9999-9999-999999999999";
+    const forged = Buffer.from(JSON.stringify(decoded), "utf8").toString(
+      "base64url"
+    );
+    expect(readSlackOauthState(SECRET, `${forged}.${sig}`, { now: 1_000_001 })).toBeNull();
+  });
+
+  it("returns null for an expired state even though it carries a valid workspaceId", () => {
+    const state = signSlackOauthState(SECRET, {
+      now: 0,
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(
+      readSlackOauthState(SECRET, state, { now: 24 * 60 * 60 * 1000 })
+    ).toBeNull();
+  });
+
+  it("agrees with verifySlackOauthState — the boolean is exactly 'readSlackOauthState returned a value'", () => {
+    const good = signSlackOauthState(SECRET, { now: 1_000_000 });
+    expect(readSlackOauthState(SECRET, good, { now: 1_000_001 }) !== null).toBe(
+      verifySlackOauthState(SECRET, good, { now: 1_000_001 })
+    );
+    expect(readSlackOauthState(SECRET, "a.b.c") !== null).toBe(
+      verifySlackOauthState(SECRET, "a.b.c")
+    );
   });
 });
 

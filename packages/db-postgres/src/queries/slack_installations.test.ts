@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 // Mocked db chain — same "mock the chain, control the terminal value" idiom
@@ -19,6 +19,7 @@ import { encryptSecret, decryptSecret, isEncrypted } from "../crypto.js";
 import {
   upsertSlackInstallation,
   getSlackInstallation,
+  listSlackInstallationsForWorkspace,
   revokeSlackInstallation,
 } from "./slack_installations.js";
 
@@ -48,6 +49,16 @@ function makeSelectLimitChain(rows: unknown) {
   return chain;
 }
 
+/** Chainable select mock whose terminal `orderBy` resolves the given rows. */
+function makeSelectOrderByChain(rows: unknown) {
+  const chain: Record<string, unknown> = {};
+  for (const m of ["select", "from", "where"]) {
+    chain[m] = vi.fn(() => chain);
+  }
+  chain.orderBy = vi.fn(() => Promise.resolve(rows));
+  return chain;
+}
+
 /** Chainable update mock whose terminal `where` resolves. */
 function makeUpdateChain() {
   const chain: Record<string, unknown> = {};
@@ -59,6 +70,7 @@ function makeUpdateChain() {
 
 const TEAM_ID = "T0BLL0VNR9U";
 const PLAINTEXT_TOKEN = "xoxb-plaintext-bot-token";
+const WORKSPACE_ID = "11111111-2222-3333-4444-555555555555";
 
 beforeAll(() => {
   // Deterministic key material for the test (no real CONNECTOR_SECRET_KEY
@@ -165,6 +177,98 @@ describe("upsertSlackInstallation", () => {
     expect(written.installedBySlackUserId).toBeNull();
     expect(written.scopes).toBeNull();
     expect(written.enterpriseId).toBeNull();
+  });
+});
+
+// Workspace attribution (bugfix: the console's Gateways page could never see
+// that a workspace had installed Slack, so "Add to Slack" never went away).
+describe("upsertSlackInstallation — workspace attribution", () => {
+  it("writes workspaceId when the install carried one", async () => {
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+
+    await upsertSlackInstallation({
+      teamId: TEAM_ID,
+      botToken: PLAINTEXT_TOKEN,
+      botUserId: "U0BOTUSER",
+      workspaceId: WORKSPACE_ID,
+    });
+
+    const values = insertChain.values as ReturnType<typeof vi.fn>;
+    const written = values.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(written.workspaceId).toBe(WORKSPACE_ID);
+  });
+
+  it("defaults workspaceId to null for an install with no workspace context (Slack App Directory)", async () => {
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+
+    await upsertSlackInstallation({
+      teamId: TEAM_ID,
+      botToken: PLAINTEXT_TOKEN,
+      botUserId: "U0BOTUSER",
+    });
+
+    const values = insertChain.values as ReturnType<typeof vi.fn>;
+    const written = values.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(written.workspaceId).toBeNull();
+  });
+
+  it("never nulls an existing attribution on conflict — a later contextless reinstall keeps the stored workspace", async () => {
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+
+    await upsertSlackInstallation({
+      teamId: TEAM_ID,
+      botToken: PLAINTEXT_TOKEN,
+      botUserId: "U0BOTUSER",
+    });
+
+    const onConflict = insertChain.onConflictDoUpdate as ReturnType<typeof vi.fn>;
+    const conflictArg = onConflict.mock.calls[0]?.[0] as {
+      set: Record<string, unknown>;
+    };
+    // A plain `null` here would wipe the attribution the console depends on.
+    expect(conflictArg.set.workspaceId).not.toBeNull();
+    expect(renderCondition(conflictArg.set.workspaceId).sql).toContain("coalesce");
+  });
+});
+
+describe("listSlackInstallationsForWorkspace", () => {
+  it("returns the non-secret shape (teamId, teamName) — never the bot token", async () => {
+    const selectChain = makeSelectOrderByChain([
+      { teamId: TEAM_ID, teamName: "HeyJace" },
+    ]);
+    mockDb.select.mockReturnValue(selectChain as never);
+
+    const result = await listSlackInstallationsForWorkspace(WORKSPACE_ID);
+
+    expect(result).toEqual([{ teamId: TEAM_ID, teamName: "HeyJace" }]);
+    const selected = mockDb.select.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.keys(selected).sort()).toEqual(["teamName", "teamId"].sort());
+  });
+
+  it("scopes to the workspace AND excludes revoked installs — an uninstalled team stops counting as connected", async () => {
+    const selectChain = makeSelectOrderByChain([]);
+    mockDb.select.mockReturnValue(selectChain as never);
+
+    await listSlackInstallationsForWorkspace(WORKSPACE_ID);
+
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(slackInstallations.workspaceId, WORKSPACE_ID),
+          isNull(slackInstallations.revokedAt)
+        )
+      )
+    );
+  });
+
+  it("returns [] for a workspace with no installation", async () => {
+    mockDb.select.mockReturnValue(makeSelectOrderByChain([]) as never);
+
+    expect(await listSlackInstallationsForWorkspace(WORKSPACE_ID)).toEqual([]);
   });
 });
 

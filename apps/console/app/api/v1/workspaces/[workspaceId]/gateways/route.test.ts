@@ -5,12 +5,14 @@ vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   listChatIdentitiesForWorkspace: vi.fn(),
+  listSlackInstallationsForWorkspace: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listChatIdentitiesForWorkspace,
+  listSlackInstallationsForWorkspace,
 } from "@agentrail/db-postgres";
 import { GET } from "./route";
 
@@ -37,6 +39,7 @@ interface GatewaysJson {
     actionUrl: string | null;
     openUrl: string | null;
     linkedIdentities: Array<{ displayName: string | null }>;
+    installedTeamNames: Array<string | null>;
   }>;
 }
 
@@ -60,6 +63,8 @@ describe("GET /api/v1/workspaces/:workspaceId/gateways", () => {
     vi.mocked(getWorkspaceMembership).mockReset();
     vi.mocked(listChatIdentitiesForWorkspace).mockReset();
     vi.mocked(listChatIdentitiesForWorkspace).mockResolvedValue([] as never);
+    vi.mocked(listSlackInstallationsForWorkspace).mockReset();
+    vi.mocked(listSlackInstallationsForWorkspace).mockResolvedValue([] as never);
     delete process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
     delete process.env.NEXT_PUBLIC_DISCORD_INVITE_URL;
     delete process.env.NEXT_PUBLIC_DISCORD_CHANNEL_LIVE;
@@ -196,6 +201,58 @@ describe("GET /api/v1/workspaces/:workspaceId/gateways", () => {
       const res = await GET(getReq(), { params: params() });
       const json = (await res.json()) as GatewaysJson;
       expect(gatewayRow(json, "telegram").openUrl).toBeNull();
+    });
+
+    // Bugfix: this route only ever read chat identities, so a workspace that
+    // had completed the Slack install — which writes an installation row and
+    // NO chat identity — projected `disconnected` and the panel rendered
+    // "Add to Slack" forever.
+    describe("slack installs", () => {
+      beforeEach(() => {
+        process.env.NEXT_PUBLIC_SLACK_INSTALL_URL = SLACK_URL;
+        process.env.NEXT_PUBLIC_SLACK_CHANNEL_LIVE = "true";
+      });
+
+      it("reports slack connected from an installation alone, with no chat identity", async () => {
+        vi.mocked(listSlackInstallationsForWorkspace).mockResolvedValue([
+          { teamId: "T0TEAM1", teamName: "HeyJace" },
+        ] as never);
+
+        const res = await GET(getReq(), { params: params() });
+        const slack = gatewayRow((await res.json()) as GatewaysJson, "slack");
+
+        expect(slack.status).toBe("connected");
+        expect(slack.installedTeamNames).toEqual(["HeyJace"]);
+      });
+
+      it("reads installations for THIS workspace only", async () => {
+        await GET(getReq(), { params: params() });
+        expect(listSlackInstallationsForWorkspace).toHaveBeenCalledWith(WS);
+      });
+
+      it("keeps slack disconnected when the workspace has no installation", async () => {
+        const res = await GET(getReq(), { params: params() });
+        const slack = gatewayRow((await res.json()) as GatewaysJson, "slack");
+        expect(slack.status).toBe("disconnected");
+        expect(slack.installedTeamNames).toEqual([]);
+      });
+
+      it("never leaks a bot token into the response, whatever the query returned", async () => {
+        vi.mocked(listSlackInstallationsForWorkspace).mockResolvedValue([
+          {
+            teamId: "T0TEAM1",
+            teamName: "HeyJace",
+            botToken: "xoxb-must-never-appear",
+          },
+        ] as never);
+
+        const res = await GET(getReq(), { params: params() });
+        const text = JSON.stringify(await res.json());
+
+        expect(text).not.toContain("xoxb-must-never-appear");
+        expect(text).not.toContain("botToken");
+        expect(text).not.toContain("T0TEAM1");
+      });
     });
 
     it("never leaks platformUserId into the response", async () => {

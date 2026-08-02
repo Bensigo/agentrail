@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { telegramDeepLink } from "../../../../../../lib/telegram-bot";
 import {
   GATEWAY_CATALOG,
+  connectedSummaryLine,
   isGatewayConfigured,
   projectGateways,
+  withInstallWorkspace,
   type GatewayEnv,
   type GatewayIdentity,
 } from "./gateway-helpers";
@@ -199,6 +201,93 @@ describe("isGatewayConfigured", () => {
   });
 });
 
+// The install CTA has to tell the install route WHICH workspace is asking,
+// or the completed install lands unattributed and the page that rendered the
+// button can never learn it happened — the bug this whole change fixes.
+describe("withInstallWorkspace", () => {
+  const WS = "00000000-0000-0000-0000-000000000001";
+
+  it("adds workspaceId to the slack install URL", () => {
+    const url = new URL(
+      withInstallWorkspace("https://app.example/api/v1/connectors/slack/install", "slack", WS)!
+    );
+    expect(url.searchParams.get("workspaceId")).toBe(WS);
+  });
+
+  it("preserves query params the owner already pasted into the env URL", () => {
+    const url = new URL(
+      withInstallWorkspace("https://app.example/install?foo=bar", "slack", WS)!
+    );
+    expect(url.searchParams.get("foo")).toBe("bar");
+    expect(url.searchParams.get("workspaceId")).toBe(WS);
+  });
+
+  it("leaves every other kind's URL untouched — only slack's CTA hits our own install route", () => {
+    expect(withInstallWorkspace(DISCORD_URL, "discord", WS)).toBe(DISCORD_URL);
+    expect(withInstallWorkspace("https://t.me/jace_bot", "telegram", WS)).toBe(
+      "https://t.me/jace_bot"
+    );
+  });
+
+  it("passes a null actionUrl straight through", () => {
+    expect(withInstallWorkspace(null, "slack", WS)).toBeNull();
+  });
+
+  it("returns the URL unchanged rather than throwing on a malformed env value", () => {
+    expect(withInstallWorkspace("not a url", "slack", WS)).toBe("not a url");
+  });
+});
+
+// What a CONNECTED slack card says when the workspace has installed the app
+// but nobody has messaged Jace yet — the state that previously could not even
+// be reached, and where `linkedIdentitiesLine([])` would have said "0 linked".
+describe("connectedSummaryLine", () => {
+  it("summarizes linked identities when there are any", () => {
+    expect(
+      connectedSummaryLine({
+        linkedIdentities: [{ displayName: "Ben" }],
+        installedTeamNames: [],
+      })
+    ).toBe("Linked: Ben");
+  });
+
+  it("names the installed Slack team when the app is installed but nobody has messaged yet", () => {
+    expect(
+      connectedSummaryLine({
+        linkedIdentities: [],
+        installedTeamNames: ["HeyJace"],
+      })
+    ).toBe("Installed in HeyJace");
+  });
+
+  it("falls back to a nameless phrasing when Slack sent no team name", () => {
+    expect(
+      connectedSummaryLine({
+        linkedIdentities: [],
+        installedTeamNames: [null],
+      })
+    ).toBe("Installed in your Slack workspace");
+  });
+
+  it("lists multiple installed teams", () => {
+    expect(
+      connectedSummaryLine({
+        linkedIdentities: [],
+        installedTeamNames: ["HeyJace", "Acme"],
+      })
+    ).toBe("Installed in HeyJace, Acme");
+  });
+
+  it("prefers the identities line once someone has actually messaged — that is the stronger signal", () => {
+    expect(
+      connectedSummaryLine({
+        linkedIdentities: [{ displayName: "Ben" }],
+        installedTeamNames: ["HeyJace"],
+      })
+    ).toBe("Linked: Ben");
+  });
+});
+
 describe("projectGateways", () => {
   it("returns one row per catalog entry, in catalog order", () => {
     const rows = projectGateways([], NO_ENV);
@@ -275,6 +364,66 @@ describe("projectGateways", () => {
     for (const row of rows) {
       expect(row.linkedIdentities).toEqual([]);
     }
+  });
+
+  // ------------------------------------------------------------------- //
+  // Slack installs (bugfix: "Add to Slack" never went away). Slack's connect
+  // act is the OAuth install, which writes a `slack_installations` row — NOT
+  // a chat identity. Before this, the projection only ever looked at chat
+  // identities, so a workspace that had completed the install and been shown
+  // Slack's own "Jace is connected" page still projected `disconnected`, and
+  // the panel kept rendering the install CTA forever.
+  // ------------------------------------------------------------------- //
+  describe("slack installations", () => {
+    const SLACK_ENV: GatewayEnv = {
+      ...NO_ENV,
+      slackInstallUrl: SLACK_URL,
+      slackChannelLive: "true",
+    };
+
+    it("marks slack connected from a live installation alone, with no chat identity yet", () => {
+      const slack = projectGateways([], SLACK_ENV, [
+        { teamId: "T123", teamName: "Acme" },
+      ]).find((r) => r.kind === "slack")!;
+      expect(slack.status).toBe("connected");
+      expect(slack.linkedIdentities).toEqual([]);
+    });
+
+    it("reports the installed team names so the card can name what it is connected to", () => {
+      const slack = projectGateways([], SLACK_ENV, [
+        { teamId: "T123", teamName: "Acme" },
+        { teamId: "T456", teamName: null },
+      ]).find((r) => r.kind === "slack")!;
+      expect(slack.installedTeamNames).toEqual(["Acme", null]);
+    });
+
+    it("leaves slack disconnected when this workspace has no installation", () => {
+      const slack = projectGateways([], SLACK_ENV, []).find(
+        (r) => r.kind === "slack"
+      )!;
+      expect(slack.status).toBe("disconnected");
+      expect(slack.installedTeamNames).toEqual([]);
+    });
+
+    it("never lets an installation connect a kind other than slack", () => {
+      const rows = projectGateways([], NO_ENV, [
+        { teamId: "T123", teamName: "Acme" },
+      ]);
+      for (const row of rows) {
+        if (row.kind === "slack") continue;
+        expect(row.status).toBe("disconnected");
+        expect(row.installedTeamNames).toEqual([]);
+      }
+    });
+
+    it("still connects slack from a linked chat identity when there is no installation row", () => {
+      const slack = projectGateways(
+        [{ platform: "slack", displayName: "Ben" }],
+        SLACK_ENV,
+        []
+      ).find((r) => r.kind === "slack")!;
+      expect(slack.status).toBe("connected");
+    });
   });
 
   it("actionUrl is null when not configured, even though available", () => {

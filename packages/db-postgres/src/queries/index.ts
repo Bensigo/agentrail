@@ -3029,12 +3029,18 @@ export {
 // per Slack team. upsertSlackInstallation encrypts + reactivates on
 // reinstall; getSlackInstallation decrypts and fails closed (null) for both
 // an unknown AND a revoked team; revokeSlackInstallation never deletes.
+// listSlackInstallationsForWorkspace is the console's read side (migration
+// 0065's `workspace_id` attribution): live installs for one workspace, with
+// no bot token in the projection at all — it is what lets the Gateways page
+// see that Slack is connected, since a Slack install writes no chat identity.
 export {
   upsertSlackInstallation,
   getSlackInstallation,
+  listSlackInstallationsForWorkspace,
   revokeSlackInstallation,
   type UpsertSlackInstallationInput,
   type SlackInstallation,
+  type WorkspaceSlackInstallation,
 } from "./slack_installations.js";
 
 // Seat lifecycle queries (subscription-platform-design spec §3, §5; see

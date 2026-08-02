@@ -47,6 +47,7 @@
 // the @/* alias covers — mirrors connectors-panel.tsx's identical import of
 // this same module.
 import { resolveHostedBotUsername, telegramDeepLink } from "../../../../../../lib/telegram-bot";
+import { linkedIdentitiesLine } from "../../../../../../lib/linked-identities";
 
 /** The five chat surfaces a human can reach Jace through. */
 export type GatewayKind =
@@ -227,6 +228,69 @@ function buildActionUrl(kind: GatewayKind, env: GatewayEnv): string | null {
 }
 
 /**
+ * Stamp the asking workspace onto Slack's install CTA.
+ *
+ * This is the front half of the fix for "the Gateways page shows Add to Slack
+ * even though Slack is connected". Slack's `actionUrl` is the owner-pasted
+ * `NEXT_PUBLIC_SLACK_INSTALL_URL`, which points at this app's own
+ * `/api/v1/connectors/slack/install`; that route needs to know WHICH
+ * workspace is starting the install so the resulting `slack_installations`
+ * row can be attributed back to it (it membership-checks the id and signs it
+ * into the OAuth `state` — see that route). Without this, every install lands
+ * unattributed and the page that rendered the button can never learn it
+ * happened.
+ *
+ * Slack ONLY. Telegram's deep link and Discord's invite go to t.me and
+ * discord.com — appending our own param to a third party's URL would be
+ * meaningless at best. Returns the input unchanged for those, for a null
+ * `actionUrl`, and for an env value that doesn't parse as a URL: a
+ * misconfigured env should degrade to the old behaviour, never throw inside
+ * a render.
+ */
+export function withInstallWorkspace(
+  actionUrl: string | null,
+  kind: GatewayKind,
+  workspaceId: string
+): string | null {
+  if (!actionUrl || kind !== "slack") return actionUrl;
+  try {
+    const url = new URL(actionUrl);
+    url.searchParams.set("workspaceId", workspaceId);
+    return url.toString();
+  } catch {
+    return actionUrl;
+  }
+}
+
+/**
+ * The one line a CONNECTED gateway card shows under its description.
+ *
+ * Linked identities win when there are any — an identity means a real person
+ * has actually talked to Jace through this gateway, which is a stronger claim
+ * than "the app is installed". Slack is the only kind that can reach the
+ * second branch: its install writes an installation row and no identity, so
+ * before this fix that state was unreachable and `linkedIdentitiesLine([])`
+ * would have rendered a bare "0 linked" — technically true, useless to read.
+ */
+export function connectedSummaryLine(gateway: {
+  linkedIdentities: { displayName: string | null }[];
+  installedTeamNames: (string | null)[];
+}): string {
+  if (gateway.linkedIdentities.length > 0) {
+    return linkedIdentitiesLine(
+      gateway.linkedIdentities.map((identity) => identity.displayName)
+    );
+  }
+  const named = gateway.installedTeamNames.filter(
+    (name): name is string => name !== null && name.trim() !== ""
+  );
+  // Slack's `team.name` is optional in the OAuth response, so an install can
+  // legitimately have no name to show.
+  if (named.length === 0) return "Installed in your Slack workspace";
+  return `Installed in ${named.join(", ")}`;
+}
+
+/**
  * Where a CONNECTED gateway's "Open {label}" link should point — distinct
  * from `actionUrl` (whole-branch review fix 1). `actionUrl` is what starts
  * the CONNECT flow: for Telegram that IS a conversation deep link, but for
@@ -259,6 +323,28 @@ export interface GatewayIdentity {
   displayName: string | null;
 }
 
+/**
+ * A Slack installation this workspace owns, as `projectGateways` consumes it
+ * — the non-secret projection of a `slack_installations` row (never the bot
+ * token; see `listSlackInstallationsForWorkspace` in
+ * packages/db-postgres/src/queries/slack_installations.ts, which is already
+ * filtered to LIVE rows, so a revoked/uninstalled team never reaches here).
+ *
+ * WHY THIS EXISTS (the bug this fixes): Slack is the one gateway whose
+ * connect act is an OAuth INSTALL, not a conversation. Clicking "Add to
+ * Slack" and completing consent writes a `slack_installations` row and lands
+ * the user on Slack's own "Jace is connected" page — but it writes NO chat
+ * identity, so a projection that only looked at `identities` reported
+ * `disconnected` forever and the panel kept rendering the install CTA. The
+ * button's own success condition was invisible to the page that renders it.
+ * Telegram/Discord don't have this shape: there, connecting IS messaging the
+ * bot, which is exactly what writes the identity.
+ */
+export interface GatewaySlackInstallation {
+  teamId: string;
+  teamName: string | null;
+}
+
 /** One gateway row as the settings surface renders it. */
 export interface GatewayView {
   kind: GatewayKind;
@@ -285,19 +371,38 @@ export interface GatewayView {
   openUrl: string | null;
   /** That platform's linked identities (`[]` otherwise) — populated regardless of availability, mirroring `projectConnectors`. */
   linkedIdentities: { displayName: string | null }[];
+  /**
+   * Slack ONLY: the team names of this workspace's live Slack installations
+   * (`[]` for every other kind, and for slack with no install). A name may be
+   * null — Slack's `team.name` is optional in the OAuth response — so the
+   * renderer must handle a nameless install rather than assume a string.
+   *
+   * This is a SECOND, independent source of "connected" alongside
+   * `linkedIdentities`: an installed-but-never-messaged workspace has entries
+   * here and none there. See `GatewaySlackInstallation` for why Slack needs
+   * this and the other gateways don't.
+   */
+  installedTeamNames: (string | null)[];
 }
 
 /**
- * Project the catalog against the workspace's linked chat identities into the
- * rows the gateways page renders. Pure and total: a kind with no linked
- * identity is `disconnected`; only an `available` gateway with ≥1 linked
- * identity of its platform shows `connected` (mirrors `projectConnectors`'s
- * availability gate — a `planned` kind never connects even with a matching
- * identity already on file).
+ * Project the catalog against the workspace's linked chat identities — and,
+ * for Slack, its live app installations — into the rows the gateways page
+ * renders. Pure and total.
+ *
+ * An `available` gateway is `connected` when it has ≥1 linked identity of its
+ * platform, OR (slack only) ≥1 live installation attributed to this
+ * workspace. A `planned` kind never connects, whatever is on file (mirrors
+ * `projectConnectors`'s availability gate).
+ *
+ * `slackInstallations` defaults to `[]` so the ~30 call sites that only care
+ * about the env/action-url axes stay one-liners; the two real callers (the T2
+ * route and its tests) pass it.
  */
 export function projectGateways(
   identities: GatewayIdentity[],
-  env: GatewayEnv
+  env: GatewayEnv,
+  slackInstallations: GatewaySlackInstallation[] = []
 ): GatewayView[] {
   const identitiesByPlatform = new Map<string, GatewayIdentity[]>();
   for (const identity of identities) {
@@ -308,9 +413,14 @@ export function projectGateways(
 
   return GATEWAY_CATALOG.map((entry) => {
     const kindIdentities = identitiesByPlatform.get(entry.kind) ?? [];
+    // Installations are a slack-only signal — the other four kinds must never
+    // be flipped connected by one, however the caller populated the array.
+    const kindInstallations =
+      entry.kind === "slack" ? slackInstallations : [];
     const configured = isGatewayConfigured(entry.kind, env);
     const status: GatewayStatus =
-      entry.availability === "available" && kindIdentities.length > 0
+      entry.availability === "available" &&
+      (kindIdentities.length > 0 || kindInstallations.length > 0)
         ? "connected"
         : "disconnected";
     const canAct = entry.availability === "available" && configured;
@@ -329,6 +439,9 @@ export function projectGateways(
       linkedIdentities: kindIdentities.map((identity) => ({
         displayName: identity.displayName,
       })),
+      installedTeamNames: kindInstallations.map(
+        (installation) => installation.teamName
+      ),
     };
   });
 }

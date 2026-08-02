@@ -76,67 +76,107 @@ export function buildSlackAuthorizeUrl(input: BuildSlackAuthorizeUrlInput): stri
 /**
  * Mint a signed, expiring CSRF `state`: `base64url(json payload).base64url(hmac)`.
  * Stateless (no DB row, unlike the GitHub install flow's
- * `consumeGithubInstallState`) — there is no workspace to bind yet at this
- * point in the Slack flow (an install can start before any AgentRail
- * workspace exists, spec §1), so there is nothing to look up server-side;
- * the token carries its own expiry and authenticity.
+ * `consumeGithubInstallState`) — the token carries its own expiry and
+ * authenticity, so there is nothing to look up server-side.
+ *
+ * `opts.workspaceId` (payload field `w`) is the AgentRail workspace that
+ * STARTED the install, present only when the install began from a signed-in
+ * console session that the install route already membership-checked. It rides
+ * INSIDE the signed payload rather than as a second query param precisely
+ * because it must be tamper-evident: an editable workspace id would let
+ * someone attribute an installation they control to a workspace they have no
+ * membership in, and the console would then render it as that workspace's
+ * connected Slack. Absent for an install with no workspace context (Slack's
+ * App Directory), which stays exactly as stateless as before — spec §1's
+ * "an install can start before any AgentRail workspace exists" still holds.
  */
-export function signSlackOauthState(secret: string, opts: { now?: number } = {}): string {
+export function signSlackOauthState(
+  secret: string,
+  opts: { now?: number; workspaceId?: string | null } = {}
+): string {
   const now = opts.now ?? Date.now();
-  const payload = {
+  const payload: { n: string; exp: number; w?: string } = {
     n: randomBytes(STATE_NONCE_BYTES).toString("hex"),
     exp: now + STATE_TTL_MS,
   };
+  if (opts.workspaceId) payload.w = opts.workspaceId;
   const payloadB64 = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const sig = createHmac("sha256", secret).update(payloadB64).digest("base64url");
   return `${payloadB64}.${sig}`;
 }
 
+/** What a VALID `state` token carries beyond its own authenticity. */
+export interface SlackOauthState {
+  /** The workspace that started the install, or null if it carried none. */
+  workspaceId: string | null;
+}
+
 /**
- * Verify a `state` token: well-formed shape, valid HMAC (constant-time
- * compare, same fail-closed idiom as `fleet-auth.ts`'s `verifyFleetBearer`
- * and `jace-console-auth.ts`'s `requireJaceConsoleSecret`), and not expired.
- * Returns a plain boolean — the callback route rejects on `false` without
- * ever explaining which check failed, so a forged token gets no oracle to
- * iterate against. Never throws.
+ * Read a `state` token: well-formed shape, valid HMAC (constant-time compare,
+ * same fail-closed idiom as `fleet-auth.ts`'s `verifyFleetBearer` and
+ * `jace-console-auth.ts`'s `requireJaceConsoleSecret`), and not expired.
+ * Returns the token's contents on success and `null` on ANY failure — one
+ * undifferentiated null, so a forged token gets no oracle telling it which
+ * check it tripped. Never throws.
+ *
+ * This is the primitive; `verifySlackOauthState` below is the boolean view of
+ * it. Because the workspace id is read from the SIGNED payload, a caller that
+ * gets a non-null result can treat `workspaceId` as server-derived — the
+ * property `bindChatIdentityWorkspace`-class writes depend on.
+ */
+export function readSlackOauthState(
+  secret: string,
+  token: string | null | undefined,
+  opts: { now?: number } = {}
+): SlackOauthState | null {
+  if (!secret || !token) return null;
+
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadB64, sig] = parts;
+  if (!payloadB64 || !sig) return null;
+
+  const expectedSig = createHmac("sha256", secret).update(payloadB64).digest("base64url");
+  const expectedBuf = Buffer.from(expectedSig);
+  const actualBuf = Buffer.from(sig);
+  if (expectedBuf.length !== actualBuf.length) return null;
+
+  let sigValid: boolean;
+  try {
+    sigValid = timingSafeEqual(expectedBuf, actualBuf);
+  } catch {
+    return null;
+  }
+  if (!sigValid) return null;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || typeof (payload as { exp?: unknown }).exp !== "number") {
+    return null;
+  }
+
+  const now = opts.now ?? Date.now();
+  if ((payload as { exp: number }).exp <= now) return null;
+
+  const workspaceId = (payload as { w?: unknown }).w;
+  return { workspaceId: typeof workspaceId === "string" ? workspaceId : null };
+}
+
+/**
+ * Boolean view of `readSlackOauthState` — "did this state verify at all",
+ * with no interest in what it carried. Kept because most call sites and the
+ * CSRF tests only ever ask that question.
  */
 export function verifySlackOauthState(
   secret: string,
   token: string | null | undefined,
   opts: { now?: number } = {}
 ): boolean {
-  if (!secret || !token) return false;
-
-  const parts = token.split(".");
-  if (parts.length !== 2) return false;
-  const [payloadB64, sig] = parts;
-  if (!payloadB64 || !sig) return false;
-
-  const expectedSig = createHmac("sha256", secret).update(payloadB64).digest("base64url");
-  const expectedBuf = Buffer.from(expectedSig);
-  const actualBuf = Buffer.from(sig);
-  if (expectedBuf.length !== actualBuf.length) return false;
-
-  let sigValid: boolean;
-  try {
-    sigValid = timingSafeEqual(expectedBuf, actualBuf);
-  } catch {
-    return false;
-  }
-  if (!sigValid) return false;
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
-  } catch {
-    return false;
-  }
-  if (!payload || typeof payload !== "object" || typeof (payload as { exp?: unknown }).exp !== "number") {
-    return false;
-  }
-
-  const now = opts.now ?? Date.now();
-  return (payload as { exp: number }).exp > now;
+  return readSlackOauthState(secret, token, opts) !== null;
 }
 
 export interface BuildSlackOauthAccessBodyInput {

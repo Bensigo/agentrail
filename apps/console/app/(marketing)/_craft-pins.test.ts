@@ -30,6 +30,11 @@ const STYLED_FILES = [
   // rewrite makes it a real styled page (tier cards, feature lists, CTAs) —
   // held to the same mechanical rules as every other marketing surface.
   "pricing/page.tsx",
+  // Subscription-platform slice 10, Task 1: the tier card grid (name,
+  // price, feature lists, CTAs) moved out of pricing/page.tsx into its own
+  // module so the landing can render the identical cards — it carries the
+  // card styling now, so it's held to the same mechanical rules.
+  "pricing/tier-cards.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
@@ -206,8 +211,8 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
   });
 
-  it("§6b's tier price renders in font-mono (subscription-platform slice 9, Task 2)", () => {
-    const source = readSibling("page.tsx");
+  it("the tier price renders in font-mono (subscription-platform slice 10, Task 1 — TierCards is shared verbatim by /pricing and landing §6b, so this pin now anchors the one real render site instead of landing's retired inline copy)", () => {
+    const source = readSibling("pricing/tier-cards.tsx");
     expect(monoAppliesBefore(source, "{tier.price}")).toBe(true);
   });
 

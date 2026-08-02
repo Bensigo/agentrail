@@ -12,6 +12,13 @@
 //    future edit that broke just ONE of them (without necessarily breaking
 //    the full-string pin, e.g. an edit to a DIFFERENT job's rendering) still
 //    fails loudly and names exactly which phrase went missing.
+//
+// UPDATED (B2a's Task 6, 2026-08-02 — docs/superpowers/plans/2026-08-02-b2a-
+// visual-evidence.md): EXPECTED below now carries one sentence beyond the
+// original Arc B brief — "Fold its evidence_images through too, verbatim —
+// the posted review links them per AC." — added to the QA-fold bullet so
+// evidence rides the same fold as ac_results. See review_job_prompt.mjs's
+// own header comment for the full disclosure of this deviation from verbatim.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,7 +31,7 @@ const EXPECTED = [
   "Review PR #7 in ada/widgets at head abc123. Do exactly your normal review choreography:",
   "- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.",
   "- Post the review with post_pr_review. One review, one verdict.",
-  "- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting. If there is no preview URL, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.",
+  "- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting. Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.",
   "- Do not create issues, send channel messages, or take any action beyond the review itself.",
   "Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts).",
 ].join("\n");
@@ -68,6 +75,11 @@ test("PIN: contains 'not_testable with the concrete reason'", () => {
 
 test("PIN: contains 'Do not create issues'", () => {
   assert.match(reviewJobPrompt(JOB), /Do not create issues/);
+});
+
+// B2a's Task 6 (2026-08-02): the QA-fold bullet's one added sentence.
+test("PIN: contains 'Fold its evidence_images through too'", () => {
+  assert.match(reviewJobPrompt(JOB), /Fold its evidence_images through too/);
 });
 
 test("PIN: contains 'Return ONLY the structured result'", () => {
@@ -114,4 +126,21 @@ test("REVIEW_JOB_RESULT_SCHEMA: summaryLine is string", () => {
 test("REVIEW_JOB_RESULT_SCHEMA: posted's description instructs failing loudly rather than reporting posted:false (the honesty coupling review_job_worker.core.mjs depends on)", () => {
   const desc = REVIEW_JOB_RESULT_SCHEMA.properties.posted.description ?? "";
   assert.match(desc, /fail|propagat|do not return/i);
+});
+
+// ---------------------------------------------------------------------------
+// evidenceKeys — B2a §1 Task 3 (spec
+// docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md).
+// OPTIONAL: not in `required` (pinned above as "exactly the five brief
+// fields") — a model that never captured evidence must still validate
+// against this schema exactly as it did before this field existed.
+// ---------------------------------------------------------------------------
+
+test("REVIEW_JOB_RESULT_SCHEMA: evidenceKeys is an array of strings", () => {
+  assert.equal(REVIEW_JOB_RESULT_SCHEMA.properties.evidenceKeys.type, "array");
+  assert.equal(REVIEW_JOB_RESULT_SCHEMA.properties.evidenceKeys.items.type, "string");
+});
+
+test("REVIEW_JOB_RESULT_SCHEMA: evidenceKeys is NOT required — additive, absent must still validate", () => {
+  assert.ok(!REVIEW_JOB_RESULT_SCHEMA.required.includes("evidenceKeys"));
 });

@@ -92,11 +92,216 @@ const AC_STATUS_RENDER = {
   unclear: (c) => `- ❓ ${c.criterion} — can't tell from the diff`,
 };
 
+// Cap on evidence links rendered per AC entry (B2a §3). Mirrors the QA
+// contract's own MAX_EVIDENCE_IMAGES (agent/subagents/qa/lib/qa.core.mjs),
+// but is re-declared here rather than imported — this module stays
+// dependency-free of the others by design (see the file header). Only the
+// first MAX_RENDERED_EVIDENCE_LINKS raw entries are even considered, so a
+// caller that ignores its own cap cannot force unbounded work here either.
+const MAX_RENDERED_EVIDENCE_LINKS = 4;
+
+// Extra invisible/control/bidi code points sanitizeEvidenceUrl strips,
+// beyond the plain C0/DEL range it already handles inline (see that
+// function). Mirrors — rather than imports; this module stays
+// dependency-free of the others, see the file header — hardenUntrusted's
+// own INVISIBLES class in sanitize-untrusted.core.mjs, minus that class's
+// C0/DEL ranges (0x00-0x08/0x0b-0x0c/0x0e-0x1f/0x7f-0x9f's DEL half), which
+// sanitizeEvidenceUrl's own first pass already covers more broadly (it also
+// strips \t/\n/\r, which hardenUntrusted deliberately preserves — no such
+// exception belongs on a URL). So the URL sanitizer is never NARROWER than
+// the prose one: none of these — soft hyphen, combining grapheme joiner,
+// the Arabic letter mark, zero-width space/joiners, bidi embeddings/
+// overrides (Trojan Source), the word-joiner block, variation selectors,
+// ZWNBSP/BOM, interlinear annotation anchors, or the Unicode Tags block —
+// has any more legitimate place in a URL than in a chat message.
+//
+// Expressed as plain numeric ranges + a linear scan, not a regex: several
+// of these ranges are themselves astral (0xE0000+) or line-breaking
+// (U+2028/2029 territory is adjacent to some of these blocks), so building
+// this as a regex literal risks the exact raw-byte-in-source-file mistake
+// LINE_BREAK_CHARS above was written to avoid. A codePointAt/linear-scan
+// check has no such failure mode and needs no `u` flag or escape-sequence
+// authoring at all.
+const EXTRA_INVISIBLE_RANGES = [
+  [0x80, 0x9f], // C1 controls
+  [0xad, 0xad], // soft hyphen
+  [0x34f, 0x34f], // combining grapheme joiner
+  [0x61c, 0x61c], // Arabic letter mark
+  [0x200b, 0x200f], // zero-width space/joiners + LRM/RLM
+  [0x202a, 0x202e], // bidi embeddings/overrides (Trojan Source)
+  [0x2060, 0x206f], // word-joiner / invisible math / deprecated format
+  [0xfe00, 0xfe0e], // variation selectors VS-1..VS-15 (FE0F/VS-16 kept for emoji)
+  [0xfeff, 0xfeff], // ZWNBSP / BOM
+  [0xfff9, 0xfffb], // interlinear annotation anchors
+  [0xe0000, 0xe007f], // Unicode Tags block (invisible ASCII)
+  [0xe0100, 0xe01ef], // variation selectors supplement VS-17..VS-256 (byte smuggling)
+];
+
+function isExtraInvisible(codePoint) {
+  for (const [lo, hi] of EXTRA_INVISIBLE_RANGES) {
+    if (codePoint >= lo && codePoint <= hi) return true;
+  }
+  return false;
+}
+
+/**
+ * Sanitize one `evidence_images` URL before it is embedded in a markdown
+ * link destination, `[text](HERE)`. Never throws; anything that doesn't
+ * come out as a plausible http(s) URL is dropped ("" — the caller skips it)
+ * rather than rendered.
+ *
+ * Two structural defenses, both required — the same class of attack this
+ * module's own composeSummary security fix already documents for `summary`
+ * (see that function's header comment on the `coverageRendered` gate),
+ * arriving through a new field:
+ *
+ *   1. Every control character is stripped, deliberately INCLUDING \n and
+ *      \r (0x0A / 0x0D) — unlike hardenUntrusted's stripInvisibles(), which
+ *      explicitly PRESERVES those two ("handled as whitespace/newlines
+ *      above, not deleted": correct for a chat-rendered prose body, wrong
+ *      for a single-line URL token, which is why this function does not
+ *      reuse that one). A raw newline here would split what composeSummary
+ *      treats as ONE rendered AC line into two — and if the injected second
+ *      "line" were crafted to start with "AC coverage: ", it would be
+ *      indistinguishable, by composeSummary's own text-prefix check, from
+ *      the genuine, code-generated count line that
+ *      composeSummaryWithCoverage's hard guarantee protects from
+ *      truncation. With no newline able to reach the rendered block, no new
+ *      line can ever be forged by this field — closed off structurally,
+ *      not merely by the gate's own correctness. The same pass also drops
+ *      every EXTRA_INVISIBLE_RANGES code point (C1 controls, bidi
+ *      overrides, zero-width smuggling, ...) for parity with
+ *      hardenUntrusted's own INVISIBLES sweep — see that constant's comment.
+ *   2. The scheme is restricted to http(s) (dropping anything else, e.g. a
+ *      `javascript:` URL), and characters that could break out of — or open
+ *      a second — `(...)` destination on the SAME line (parens, backslash,
+ *      angle brackets, residual whitespace) are percent-encoded rather than
+ *      passed through raw.
+ * @param {unknown} url
+ * @returns {string}
+ */
+function sanitizeEvidenceUrl(url) {
+  if (typeof url !== "string") return "";
+  let safe = "";
+  for (const ch of url) {
+    const code = ch.codePointAt(0);
+    // strips \n \r \t + every other C0/DEL control byte, plus the wider
+    // invisible/bidi sweep above.
+    if (code < 0x20 || code === 0x7f || isExtraInvisible(code)) continue;
+    safe += ch;
+  }
+  safe = safe.trim();
+  if (!/^https?:\/\//i.test(safe)) return "";
+  // Two different encoders for two different reasons:
+  //   - `(` `)` `<` `>` `\` are always single-byte ASCII, so a hand-rolled
+  //     two-hex-digit escape is exact — deliberately NOT encodeURIComponent
+  //     for these, since it leaves `(` `)` `!` `*` `'` raw (JS's legacy
+  //     RFC-2396 "unreserved" set), which is exactly wrong here: an
+  //     unescaped `)` is what closes a markdown link destination early.
+  //   - whitespace (`\s`) is different: it can be a MULTI-BYTE code point
+  //     (U+2028, U+3000, ...), where the same single-%XX scheme would emit
+  //     a malformed, non-two-hex-digit escape (e.g. "%2028" for U+2028 —
+  //     not a valid percent-triplet at all). encodeURIComponent has no
+  //     unreserved exception for whitespace, so it's used here instead and
+  //     produces the correct multi-%XX UTF-8 byte sequence for any code
+  //     point, astral or not.
+  return safe.replace(/[()<>\\]|\s/g, (c) =>
+    /\s/.test(c)
+      ? encodeURIComponent(c)
+      : `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
+}
+
+/**
+ * Render an AC entry's `evidence_images` as trailing markdown links, e.g.
+ * " — [evidence 1](url) [evidence 2](url)". Deliberately plain links, never
+ * `![]()` image embeds: these are short-lived signed GETs (B2a's
+ * signedGetUrl; apps/console/lib/artifacts/store.ts clamps the interface's
+ * literal 30-day default to SigV4's own hard 7-day ceiling for static
+ * credentials — MAX_SIGV4_PRESIGN_TTL_SECONDS, that module's own doc-comment
+ * has the full story), and a broken inline image reads as more damning than
+ * a broken link once one expires — GitHub still shows the link text and a
+ * human can tell at a glance it merely went stale, where a dead `<img>`
+ * renders as a conspicuous broken-image icon.
+ *
+ * Only the first MAX_RENDERED_EVIDENCE_LINKS raw entries are even
+ * considered; non-string entries and anything sanitizeEvidenceUrl rejects
+ * are skipped rather than rendered as broken markdown, and the surviving
+ * links are numbered in render order (never the original array index, so a
+ * skipped entry never leaves a gap like "evidence 1 ... evidence 3"). Absent,
+ * non-array, empty, or all-rejected input renders "" — the caller's line is
+ * then byte-identical to a call that never knew about evidence_images.
+ * @param {unknown} evidenceImages
+ * @returns {string}
+ */
+function renderEvidenceLinks(evidenceImages) {
+  if (!Array.isArray(evidenceImages) || evidenceImages.length === 0) return "";
+  const links = [];
+  for (const raw of evidenceImages.slice(0, MAX_RENDERED_EVIDENCE_LINKS)) {
+    const safeUrl = sanitizeEvidenceUrl(raw);
+    if (!safeUrl) continue;
+    links.push(`[evidence ${links.length + 1}](${safeUrl})`);
+  }
+  return links.length ? ` — ${links.join(" ")}` : "";
+}
+
+// Backing character class for stripLineBreaks (below), built from numeric
+// char codes rather than literal source characters: U+2028/U+2029 are
+// themselves ECMAScript line terminators, so embedding them as raw bytes in
+// this file's own source would be, at best, invisible and unreviewable by
+// eye, and at worst a syntax error inside a regex literal (a raw,
+// unescaped line terminator cannot appear inside one).
+const LINE_BREAK_CHARS = new RegExp(
+  "[\\x00-\\x1f\\x7f" + String.fromCharCode(0x2028) + String.fromCharCode(0x2029) + "]",
+  "g",
+);
+
+/**
+ * Collapse every line-breaking or control character in `s` to a single
+ * ASCII space — never deletion, since "AC\ncoverage" must not become
+ * "ACcoverage" and silently re-read as one glued word. Targets: C0 controls
+ * (0x00-0x1F, which already covers \n/\r/\t) + DEL (0x7F) + the Unicode
+ * LINE SEPARATOR / PARAGRAPH SEPARATOR (U+2028/U+2029) — the latter two are
+ * NOT matched by `String.prototype.split("\n")`, but some renderers still
+ * treat them as line breaks, so they're closed off here too rather than
+ * relying on that one detail of one downstream consumer.
+ *
+ * Applied to `criterion` and `evidence` (see renderAcCoverage) — both
+ * reviewer/QA-sourced, untrusted, diff-derived text per this module's own
+ * header — before they are interpolated into AC_STATUS_RENDER's template
+ * strings. Without this, an internal newline in either field could
+ * impersonate a standalone forged line inside the rendered coverage block
+ * (e.g. "AC coverage: 99/99 addressed..." or "**Judgment:** ...") directly
+ * in the posted GitHub comment, on the EVERYDAY unfolded rendering path —
+ * no pathological length engineering required, unlike the double-
+ * pathological branch sanitizeEvidenceUrl's own newline-stripping guards
+ * against for evidence_images. A self-stated AC (`issueNumber: null`,
+ * sourced from the PR description rather than a linked issue) makes
+ * `criterion` attacker-authored directly.
+ * @param {string} s
+ * @returns {string}
+ */
+function stripLineBreaks(s) {
+  return s.replace(LINE_BREAK_CHARS, " ");
+}
+
 /**
  * Render the coverage checklist: issue-numbered groups ascending, then the
  * PR-description group (issueNumber: null) last, labeled as self-stated.
  * Malformed entries are skipped, never guessed at. Returns "" when there is
  * nothing renderable.
+ *
+ * `criterion` and `evidence` are run through stripLineBreaks (see its own
+ * doc comment) before interpolation — this closes the count-line/judgment-
+ * line forgery class off for these two untrusted fields, the same one
+ * sanitizeEvidenceUrl closes for evidence_images below.
+ *
+ * When an entry carries a non-empty `evidence_images` array (QA's per-AC
+ * screenshots, B2a §2 — folded into this same coverage by root before
+ * calling post_pr_review; see instructions.md's "Relay acCoverage verbatim
+ * too" rule), its rendered line gains trailing evidence links (see
+ * renderEvidenceLinks). An entry with no `evidence_images` — absent, null,
+ * or an empty array — renders byte-identically to before that field existed.
  * @param {unknown} acCoverage
  * @returns {string}
  */
@@ -110,10 +315,11 @@ export function renderAcCoverage(acCoverage) {
     if (typeof entry.criterion !== "string" || entry.criterion.trim().length === 0) continue;
     const key = typeof entry.issueNumber === "number" ? entry.issueNumber : null;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(render({
-      criterion: entry.criterion.trim(),
-      evidence: typeof entry.evidence === "string" ? entry.evidence.trim() : "",
-    }));
+    const line = render({
+      criterion: stripLineBreaks(entry.criterion.trim()),
+      evidence: typeof entry.evidence === "string" ? stripLineBreaks(entry.evidence.trim()) : "",
+    });
+    groups.get(key).push(line + renderEvidenceLinks(entry.evidence_images));
   }
   if (groups.size === 0) return "";
   const issueNumbers = [...groups.keys()].filter((k) => k !== null).sort((a, b) => a - b);
@@ -201,7 +407,22 @@ const JUDGMENT_VERDICT_TEXT = {
 const NEGATIVE_JUDGMENT_VERDICTS = new Set(["no", "violates", "introduces", "found"]);
 const JUDGMENT_NOTE_MAX = 200;
 
-/** One compact line; negative verdicts carry their note (capped) and basis ids. */
+/**
+ * One compact line; negative verdicts carry their note (capped) and basis
+ * ids. `note` is run through stripLineBreaks (see its own doc comment)
+ * before capping/interpolation, same as renderAcCoverage's criterion/
+ * evidence: `note` is the reviewer's own free-text justification over
+ * UNTRUSTED, diff-derived content (this module's own header), so an
+ * internal newline could otherwise impersonate a standalone forged line
+ * (e.g. "AC coverage: ..." or a second "**Judgment:**") in the posted
+ * comment — the SAME forgery class, arriving through a third field.
+ * `basis` is also run through it, defense-in-depth: the reviewer's own
+ * validator constrains basis entries to `^i\d+$` before they ever reach
+ * here, but that validation lives in a different module entirely
+ * (reviewer.core.mjs) that this one has no way to verify actually ran —
+ * belt-and-suspenders so a future change to that validator can't silently
+ * reopen this.
+ */
 export function renderJudgmentLine(judgment) {
   if (judgment === null || typeof judgment !== "object" || Array.isArray(judgment)) return "";
   const parts = [];
@@ -212,9 +433,10 @@ export function renderJudgmentLine(judgment) {
     if (!verdict) continue;
     let part = `${JUDGMENT_LABELS[field]}: ${verdict}`;
     if (NEGATIVE_JUDGMENT_VERDICTS.has(j.verdict) && typeof j.note === "string" && j.note.trim()) {
-      const note = j.note.trim();
+      const note = stripLineBreaks(j.note.trim());
       const capped = note.length > JUDGMENT_NOTE_MAX ? `${note.slice(0, JUDGMENT_NOTE_MAX)}…` : note;
-      const basis = Array.isArray(j.basis) && j.basis.length ? ` (${j.basis.join(", ")})` : "";
+      const basis =
+        Array.isArray(j.basis) && j.basis.length ? ` (${stripLineBreaks(j.basis.join(", "))})` : "";
       part += ` — ${capped}${basis}`;
     }
     parts.push(part);
@@ -464,7 +686,11 @@ export function sanitizeReviewInput(summary, comments) {
  * `summary` by `composeSummary` BEFORE this function's call to
  * `sanitizeReviewInput` hardens it, so it is never posted unhardened.
  * Omitted or null leaves the posted body byte-identical to a call that never
- * knew about coverage at all.
+ * knew about coverage at all. An entry may additionally carry
+ * `evidence_images` (B2a §3) — QA's per-AC screenshots, folded into this
+ * same array by root for behavioral ACs — which `renderAcCoverage` renders
+ * as trailing, sanitized markdown links on that entry's line; entries
+ * without it are unaffected.
  *
  * `judgment` (default null): Task 6's structured judgment ({verdict, note,
  * basis} × simplest/architecture/debt/hiddenRisks), relayed by root

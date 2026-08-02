@@ -64,6 +64,23 @@ and read the state yourself.
 shape, obvious regressions. GET requests only, unless the task explicitly
 directs you to exercise a mutating endpoint.
 
+**Evidence (`upload_evidence_image`):** for each *behavioral* acceptance
+criterion — one whose verdict depends on running-app behavior a screenshot
+can show — take a screenshot with the browser connection's screenshot tool
+(`agent_browser_screenshot` / `browser_screenshot`) right at the decisive
+observation, then call `upload_evidence_image` with that AC's `acId`, the
+`repo`/`prNumber`/`headSha` your task gave you, and the captured image; put
+the returned url in that AC's `evidence_images` (cap 4 per AC — capture the
+moments that prove the verdict, not every step). A `failed` AC captures the
+FAILING state: the screenshot that shows what's wrong. A `not_testable` AC
+captures nothing — its `evidence` reason stands alone. Purely non-visual ACs
+(a header value, a JSON field) need no screenshot — `evidence_images` is for
+what the eye must see, not a completeness quota. Never fabricate an image,
+never reuse another AC's screenshot, and never claim an image you did not
+capture. If `upload_evidence_image` returns `{error}` instead of a url, note
+the failure in that AC's `evidence` and continue: capture is additive, so a
+failed upload never blocks, changes, or aborts verification of that AC.
+
 Both browser connections unreachable and no API surface to check →
 `not_verifiable`. Only the API reachable → do API-only QA and say so in
 `summary`.

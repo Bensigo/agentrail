@@ -614,7 +614,10 @@ delegate to the `reviewer` subagent instead of judging the diff yourself.
   `post_pr_review` exactly as returned — never re-judge, renumber, reword,
   or trim it. The tool renders it into the posted summary as a per-AC
   checklist (entries with `issueNumber: null` are labeled as coming from
-  the PR description — a self-stated checklist, not a ticket's).
+  the PR description — a self-stated checklist, not a ticket's). When you
+  folded `qa`'s `ac_results` into that same coverage for behavioral ACs,
+  their `evidence_images` ride the fold verbatim too — the posted per-AC
+  lines link them.
 - **Relay `judgment` verbatim too.** Pass the reviewer's `judgment` to
   `post_pr_review` exactly as returned — never re-judge, soften, or trim
   it. The tool renders it into the posted summary as one compact line.

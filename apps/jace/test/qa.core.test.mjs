@@ -12,6 +12,7 @@ import {
   QA_SEVERITIES,
   AC_RESULT_VERDICTS,
   MAX_AC_RESULTS,
+  MAX_EVIDENCE_IMAGES,
   validateAdvisory,
 } from "../agent/subagents/qa/lib/qa.core.mjs";
 
@@ -266,4 +267,140 @@ test("a not_verifiable advisory must carry ac_results: null — nothing was exer
 
 test("the AC verdict vocabulary is exactly verified|failed|not_testable", () => {
   assert.deepEqual(AC_RESULT_VERDICTS, ["verified", "failed", "not_testable"]);
+});
+
+// ---------------------------------------------------------------------------
+// evidence_images (B2a §2, design: docs/superpowers/specs/
+// 2026-08-02-b2-behavioral-evidence-design.md) — optional string[] per
+// ac_result, populated with signed URLs the upload_evidence_image tool
+// returned. Purely ADDITIVE: every test above (written before this field
+// existed) still passes untouched, proving absence is accepted exactly as
+// before this change landed.
+// ---------------------------------------------------------------------------
+
+test(`QA_SCHEMA.ac_results[*].evidence_images is optional, capped at ${MAX_EVIDENCE_IMAGES}, string[]`, () => {
+  const prop = QA_SCHEMA.properties.ac_results.items.properties.evidence_images;
+  assert.equal(prop.type, "array");
+  assert.equal(prop.maxItems, MAX_EVIDENCE_IMAGES);
+  assert.equal(prop.items.type, "string");
+  assert.ok(
+    !QA_SCHEMA.properties.ac_results.items.required.includes("evidence_images"),
+    "evidence_images must stay optional — not in the per-ac_result required list",
+  );
+});
+
+test("an ac_result with evidence_images (signed URLs) validates", () => {
+  const advisory = validAdvisory({
+    ac_results: [
+      acResult({
+        evidence_images: [
+          "https://console.example.com/evidence/ac1-1.png?sig=abc",
+          "https://console.example.com/evidence/ac1-2.png?sig=def",
+        ],
+      }),
+    ],
+  });
+  const { ok, errors } = validateAdvisory(advisory);
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("an ac_result with NO evidence_images key validates exactly as before — additive, absence is not an error", () => {
+  const advisory = validAdvisory({ ac_results: [acResult()] });
+  assert.ok(!("evidence_images" in advisory.ac_results[0]));
+  const { ok, errors } = validateAdvisory(advisory);
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("an ac_result with an empty evidence_images array validates (nothing was actually captured)", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({ ac_results: [acResult({ evidence_images: [] })] }),
+  );
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("a not_testable ac_result may still carry an (empty) evidence_images — the verdict and the field are independent", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({
+      ac_results: [
+        acResult({
+          verdict: "not_testable",
+          evidence: "internal-only change — not observable from the browser",
+        }),
+      ],
+    }),
+  );
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("rejects evidence_images that isn't an array", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({
+      ac_results: [acResult({ evidence_images: "https://console.example.com/1.png" })],
+    }),
+  );
+  assert.equal(ok, false);
+  assert.ok(
+    errors.some((e) => e.includes("ac_results[0].evidence_images must be an array of non-empty strings")),
+  );
+});
+
+test("rejects evidence_images containing a non-string entry", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({
+      ac_results: [acResult({ evidence_images: ["https://console.example.com/1.png", 7] })],
+    }),
+  );
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("evidence_images must be an array of non-empty strings")));
+});
+
+test("rejects evidence_images containing an empty string", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({ ac_results: [acResult({ evidence_images: [""] })] }),
+  );
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("evidence_images must be an array of non-empty strings")));
+});
+
+test("rejects null as an evidence_images entry (not a string)", () => {
+  const { ok, errors } = validateAdvisory(
+    validAdvisory({
+      ac_results: [acResult({ evidence_images: ["https://console.example.com/1.png", null] })],
+    }),
+  );
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes("evidence_images must be an array of non-empty strings")));
+});
+
+test(`rejects evidence_images beyond the ${MAX_EVIDENCE_IMAGES}-entry cap, in schema and validator`, () => {
+  assert.equal(
+    QA_SCHEMA.properties.ac_results.items.properties.evidence_images.maxItems,
+    MAX_EVIDENCE_IMAGES,
+  );
+  const urls = Array.from(
+    { length: MAX_EVIDENCE_IMAGES + 1 },
+    (_, i) => `https://console.example.com/${i + 1}.png`,
+  );
+  const { ok, errors } = validateAdvisory(validAdvisory({ ac_results: [acResult({ evidence_images: urls })] }));
+  assert.equal(ok, false);
+  assert.ok(errors.some((e) => e.includes(`evidence_images must have at most ${MAX_EVIDENCE_IMAGES} entries`)));
+});
+
+test("an exactly-at-cap evidence_images array validates (boundary: at MAX_EVIDENCE_IMAGES, not over)", () => {
+  const urls = Array.from(
+    { length: MAX_EVIDENCE_IMAGES },
+    (_, i) => `https://console.example.com/${i + 1}.png`,
+  );
+  const { ok, errors } = validateAdvisory(validAdvisory({ ac_results: [acResult({ evidence_images: urls })] }));
+  assert.deepEqual(errors, []);
+  assert.equal(ok, true);
+});
+
+test("evidence_images on a null ac_results advisory stays moot — ac_results itself is null, no per-entry field to validate", () => {
+  const { ok } = validateAdvisory(validAdvisory({ ac_results: null }));
+  assert.equal(ok, true);
 });

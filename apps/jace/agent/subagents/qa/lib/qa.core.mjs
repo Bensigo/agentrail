@@ -17,6 +17,14 @@ export const QA_SEVERITIES = ["low", "medium", "high"];
 export const AC_RESULT_VERDICTS = ["verified", "failed", "not_testable"];
 export const MAX_AC_RESULTS = 20;
 
+// Cap on evidence_images per ac_result (B2a §2, design: docs/superpowers/
+// specs/2026-08-02-b2-behavioral-evidence-design.md) — matches the console
+// review-evidence route's own MAX_INDEX (apps/console/app/api/v1/runner/
+// review-evidence/route.ts), which is the actual enforcement point; this
+// constant only bounds the SHAPE the model may claim, same relationship
+// MAX_AC_RESULTS has to this schema.
+export const MAX_EVIDENCE_IMAGES = 4;
+
 export const QA_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -156,6 +164,18 @@ export const QA_SCHEMA = {
               "verified/failed: the observation this verdict rests on (also " +
               "in evidence_refs); not_testable: the concrete reason.",
           },
+          evidence_images: {
+            type: "array",
+            maxItems: MAX_EVIDENCE_IMAGES,
+            items: { type: "string" },
+            description:
+              "Signed URLs returned by upload_evidence_image, one per " +
+              "screenshot captured for THIS AC's decisive observation (cap " +
+              `${MAX_EVIDENCE_IMAGES}). Optional — additive to the existing ` +
+              "contract: omit entirely when nothing was captured (e.g. " +
+              "verdict is not_testable, or every upload attempt failed). " +
+              "Never invented: only a URL this tool actually returned.",
+          },
         },
       },
     },
@@ -268,6 +288,18 @@ export function validateAdvisory(advisory) {
           push(`ac_results[${i}].verdict must be one of: ${AC_RESULT_VERDICTS.join(", ")}`);
         }
         if (!isStr(a.evidence)) push(`ac_results[${i}].evidence must be a non-empty string`);
+        // evidence_images is OPTIONAL and additive (B2a §2): absence is
+        // exactly today's behavior, never flagged. When present, it must be
+        // an array of non-empty strings (same idiom as evidence_refs below),
+        // capped at MAX_EVIDENCE_IMAGES.
+        if (a.evidence_images !== undefined) {
+          if (!Array.isArray(a.evidence_images) || !a.evidence_images.every(isStr)) {
+            push(`ac_results[${i}].evidence_images must be an array of non-empty strings`);
+          }
+          if (Array.isArray(a.evidence_images) && a.evidence_images.length > MAX_EVIDENCE_IMAGES) {
+            push(`ac_results[${i}].evidence_images must have at most ${MAX_EVIDENCE_IMAGES} entries`);
+          }
+        }
       });
     }
   }

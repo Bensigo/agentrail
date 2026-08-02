@@ -188,9 +188,17 @@ export async function bindReviewJobSession({ jobId, eveSessionId, env = {}, tran
  * the loop already returns; the console's stale-requeue is the documented
  * safety net).
  *
+ * `evidenceKeys` (B2a §1 Task 3): same undefined-omission convention as
+ * `postedReviewUrl`/`verdict`/`summaryLine`/`error` below — present ->
+ * forwarded verbatim; absent -> the key is never added to the body at all,
+ * so a caller that never learned about this field (or the console core's
+ * own `complete()` call on any pre-evidence code path) produces the exact
+ * same wire body as before this field existed.
+ *
  * @param {{ jobId: string, outcome: "posted"|"failed",
  *   postedReviewUrl?: string|null, verdict?: string, summaryLine?: string,
- *   error?: string, env?: Record<string, string|undefined>,
+ *   error?: string, evidenceKeys?: string[],
+ *   env?: Record<string, string|undefined>,
  *   transport?: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}> }} args
  * @returns {Promise<void>}
  */
@@ -201,6 +209,7 @@ export async function completeReviewJob({
   verdict,
   summaryLine,
   error,
+  evidenceKeys,
   env = {},
   transport = realTransport,
 }) {
@@ -217,6 +226,7 @@ export async function completeReviewJob({
   if (verdict !== undefined) body.verdict = verdict;
   if (summaryLine !== undefined) body.summaryLine = summaryLine;
   if (error !== undefined) body.error = error;
+  if (evidenceKeys !== undefined) body.evidenceKeys = evidenceKeys;
 
   const res = await transport(buildCompleteUrl(cfg.baseUrl), {
     method: "POST",

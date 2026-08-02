@@ -47,6 +47,45 @@ test("qa instructions: a not_verifiable verdict returns ac_results null, stated 
   assert.match(prose, /not_verifiable[\s\S]{0,300}`ac_results: null`|`ac_results: null`[\s\S]{0,300}not_verifiable/);
 });
 
+// Capture-protocol pins (B2a §2, design: docs/superpowers/specs/
+// 2026-08-02-b2-behavioral-evidence-design.md) — delete these rules and
+// upload_evidence_image still works mechanically, but QA silently stops
+// calling it, or calls it for the wrong AC, or aborts a whole verification
+// over one failed upload. Same convention as the AC-awareness pins above:
+// match load-bearing keywords, not exact wording.
+
+test("qa instructions: behavioral ACs chain screenshot -> upload_evidence_image -> evidence_images", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /screenshot[\s\S]{0,300}upload_evidence_image[\s\S]{0,300}evidence_images/);
+});
+
+test("qa instructions: a failed AC's screenshot captures the FAILING state", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /`failed`[\s\S]{0,150}FAILING state/);
+});
+
+test("qa instructions: a not_testable AC captures no screenshot — its reason stands alone", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /`not_testable`[\s\S]{0,150}captures nothing/);
+});
+
+test("qa instructions: an upload_evidence_image error is noted per-AC and verification continues", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /upload_evidence_image[\s\S]{0,400}\{error\}[\s\S]{0,300}continue/);
+  assert.match(prose, /never (blocks|abort)/);
+});
+
+test("qa instructions: never fabricate or reuse another AC's evidence image", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /never fabricate/i);
+  assert.match(prose, /never reuse another AC/i);
+});
+
+test("qa instructions: purely non-visual ACs need no screenshot", () => {
+  const prose = qaInstructions();
+  assert.match(prose, /non-visual[\s\S]{0,150}no screenshot/);
+});
+
 const rootInstructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
 
 function rootInstructions() {

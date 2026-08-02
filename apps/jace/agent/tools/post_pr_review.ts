@@ -86,8 +86,10 @@ export default defineTool({
     "folds it into the summary instead so the review still lands — check " +
     "`foldedComments` before assuming every comment landed inline. Pass the " +
     "reviewer's acCoverage verbatim too — it is rendered into the posted " +
-    "summary as a per-AC checklist. Pass its judgment verbatim too — it is " +
-    "rendered as a compact judgment line and is never re-judged here.",
+    "summary as a per-AC checklist. When qa's ac_results were folded into " +
+    "that same coverage, relay their evidence_images too — the checklist " +
+    "links them, capped at 4 per entry. Pass its judgment verbatim too — " +
+    "it is rendered as a compact judgment line and is never re-judged here.",
   inputSchema: z.object({
     repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
     prNumber: z.number().int().positive().describe("The pull request number."),
@@ -135,15 +137,30 @@ export default defineTool({
             .enum(["addressed", "not_in_diff", "unclear"])
             .describe("The reviewer's coverage status, relayed verbatim — never re-judged here."),
           evidence: z.string().default("").describe("The reviewer's one-line evidence."),
+          evidence_images: z
+            .array(z.string())
+            .max(4)
+            .default([])
+            .describe(
+              "Signed screenshot URLs for THIS criterion, when this entry came " +
+                "from folding qa's ac_results in (B2a §3) — relay qa's " +
+                "evidence_images verbatim here, capped at 4. Omit or leave " +
+                "empty for entries that never carried any (e.g. straight from " +
+                "the reviewer, or a not_testable QA verdict). Rendered as " +
+                "trailing markdown links on that entry's posted line.",
+            ),
         }),
       )
       .nullable()
       .default(null)
       .describe(
-        "The reviewer's acCoverage, passed through verbatim. Rendered into " +
-          "the posted summary as a per-AC checklist (folded to a count line " +
-          "if it would overflow the summary cap). Null when the reviewer " +
-          "found no usable ACs.",
+        "The reviewer's acCoverage, passed through verbatim — and, when this " +
+          "conversation folded qa's ac_results in for behavioral ACs, those " +
+          "too, evidence_images included. Rendered into the posted summary " +
+          "as a per-AC checklist (folded to a count line if it would " +
+          "overflow the summary cap); an entry's evidence_images render as " +
+          "trailing links on its line. Null when the reviewer found no " +
+          "usable ACs.",
       ),
     judgment: z
       .object({

@@ -22,9 +22,18 @@ import { sendWorkspaceNotification } from "../../result/notify";
  * — the worker IS Jace, the same guard the sibling `claim` route uses.
  *
  * BODY: `{ jobId, outcome: "posted"|"failed", postedReviewUrl?, verdict?,
- * summaryLine?, error? }`. `jobId`/`outcome` are the only required fields
- * (400 otherwise, before any db call); the rest are pass-through fields
- * `completeReviewJob` itself treats as optional.
+ * summaryLine?, error?, evidenceKeys? }`. `jobId`/`outcome` are the only
+ * required fields (400 otherwise, before any db call); the rest are
+ * pass-through fields `completeReviewJob` itself treats as optional.
+ *
+ * `evidenceKeys` (B2a §1 Task 3): when present, must be an array of strings
+ * — a present-but-malformed value (not an array, or an array with a
+ * non-string element) is a 400, same as a missing required field; ABSENT is
+ * fine (undefined rides straight through to `completeReviewJob`, which
+ * leaves `evidence_keys` untouched at NULL — see that function's own
+ * doc-comment). This route never inspects the array's contents beyond the
+ * type check — it is Task 2's `review-evidence` upload route, not this one,
+ * that owns key-shape validation.
  *
  * CONTENT OWNERSHIP (worker composes, console only routes): the worker's
  * canned choreography (design spec §4) already assembles the human-facing
@@ -55,6 +64,7 @@ interface CompleteBody {
   verdict?: string;
   summaryLine?: string;
   error?: string;
+  evidenceKeys?: string[];
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -65,10 +75,18 @@ function isOutcome(v: unknown): v is Outcome {
   return v === "posted" || v === "failed";
 }
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((item) => typeof item === "string");
+}
+
 function parseCompleteBody(raw: unknown): CompleteBody | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   if (!isNonEmptyString(o.jobId) || !isOutcome(o.outcome)) return null;
+  // Present-but-malformed evidenceKeys is a 400 (same generic parse-failure
+  // shape every other body-shape violation in this route gets); absent
+  // (undefined) is fine and falls through to the mapping below.
+  if (o.evidenceKeys !== undefined && !isStringArray(o.evidenceKeys)) return null;
   return {
     jobId: o.jobId,
     outcome: o.outcome,
@@ -76,6 +94,7 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
     verdict: typeof o.verdict === "string" ? o.verdict : undefined,
     summaryLine: typeof o.summaryLine === "string" ? o.summaryLine : undefined,
     error: typeof o.error === "string" ? o.error : undefined,
+    evidenceKeys: isStringArray(o.evidenceKeys) ? o.evidenceKeys : undefined,
   };
 }
 
@@ -121,6 +140,13 @@ export async function POST(request: NextRequest) {
     postedReviewUrl: body.postedReviewUrl ?? null,
     verdict: body.verdict ?? null,
     error: body.error ?? null,
+    // Deliberately NOT `?? null` like the three fields above: `undefined`
+    // (never coalesced) when absent from the request, so an omitted
+    // evidenceKeys produces the EXACT SAME completeReviewJob call shape as
+    // before this field existed — completeReviewJob's own `== null` check
+    // treats undefined and null identically for the DB write either way, so
+    // this is a style choice for call-shape stability, not a behavior fork.
+    evidenceKeys: body.evidenceKeys,
   });
 
   if (!result) {

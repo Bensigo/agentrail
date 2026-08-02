@@ -22,6 +22,16 @@
 // text exact-string, not just these substrings, so any future wording drift
 // fails loudly regardless of which phrase moved).
 //
+// UPDATED (B2a's Task 6, 2026-08-02 — docs/superpowers/plans/2026-08-02-b2a-
+// visual-evidence.md; a DIFFERENT "Task 6" from the Arc B plan's own Task 6
+// referenced just above, which is what originally wrote this file's body):
+// the QA-fold bullet gained ONE additional sentence — "Fold its
+// evidence_images through too, verbatim — the posted review links them per
+// AC." — so the bulleted body is no longer purely verbatim from the Arc B
+// brief; that one sentence is B2a's own addition, not wording drift.
+// test/review_job_prompt.test.mjs's full-string EXPECTED pin was updated to
+// match, verbatim, and gained one more individual PIN for this sentence.
+//
 // WHAT THIS PROMPT DELIBERATELY DOES NOT SAY: it never tells the model what
 // to do if posting fails. That is intentional, not an oversight. See
 // review_job_worker.mjs's header comment ("THE HONESTY COUPLING") for the
@@ -52,7 +62,7 @@ export function reviewJobPrompt(job) {
     `Review PR #${prNumber} in ${repo} at head ${headSha}. Do exactly your normal review choreography:`,
     `- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.`,
     `- Post the review with post_pr_review. One review, one verdict.`,
-    `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting. If there is no preview URL, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
+    `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting. Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
     `- Do not create issues, send channel messages, or take any action beyond the review itself.`,
     `Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts).`,
   ].join("\n");
@@ -69,6 +79,18 @@ export function reviewJobPrompt(job) {
  * (2026-08-02; see this module's header comment) — IS now read: the core
  * completes `outcome:"failed"` instead of `"posted"` whenever this field is
  * anything but a literal `true`.
+ *
+ * `evidenceKeys` (B2a §1 Task 3, spec
+ * docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md) — NEW,
+ * OPTIONAL (deliberately absent from `required`): the object-store keys
+ * (Task 2's `review-evidence` upload route) the reviewer subagent's relayed
+ * QA evidence actually cited, if any. review_job_worker.core.mjs passes
+ * `result.evidenceKeys` through to `complete()` unchanged, ONLY when
+ * present, on the `posted` path — see that module's own doc-comment. This
+ * task deliberately does NOT touch `reviewJobPrompt`'s own instruction text
+ * above (which fields to ask the model to RETURN is Task 6's "one sentence"
+ * change, per the B2a plan) — only this schema gains the field, so a model
+ * that has no reason to populate it yet still validates cleanly.
  */
 export const REVIEW_JOB_RESULT_SCHEMA = {
   type: "object",
@@ -99,6 +121,14 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
     summaryLine: {
       type: "string",
       description: "One line for the owner: repo, PR, verdict, and the judgment verdicts.",
+    },
+    evidenceKeys: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "The object-store keys of every per-AC evidence screenshot this " +
+        "review cited, if any. Omit this field entirely when no evidence " +
+        "was captured — do not return an empty array to mean the same thing.",
     },
   },
 };

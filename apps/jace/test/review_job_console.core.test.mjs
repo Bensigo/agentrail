@@ -281,6 +281,40 @@ test("completeReviewJob: an explicit null postedReviewUrl is preserved, not omit
   assert.ok("postedReviewUrl" in body);
 });
 
+// B2a §1 Task 3 — evidenceKeys passthrough (spec
+// docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md). Same
+// undefined-omission convention as postedReviewUrl/verdict/summaryLine/
+// error above: present -> forwarded onto the wire; absent -> the key is
+// never added to the body at all (proven by the existing "omits every
+// undefined optional field" test above, left untouched).
+test("completeReviewJob: forwards evidenceKeys onto the wire when present", async () => {
+  const transport = fakeTransport(() => jsonResponse(200, { ok: true }));
+  await completeReviewJob({
+    jobId: "job-8",
+    outcome: "posted",
+    verdict: "approve",
+    summaryLine: "line",
+    evidenceKeys: ["review-evidence/ws-1/ada__widgets/7/abc123/ac-1/1.png"],
+    env: ENV,
+    transport,
+  });
+  const body = JSON.parse(transport.calls[0].init.body);
+  assert.deepEqual(body, {
+    jobId: "job-8",
+    outcome: "posted",
+    verdict: "approve",
+    summaryLine: "line",
+    evidenceKeys: ["review-evidence/ws-1/ada__widgets/7/abc123/ac-1/1.png"],
+  });
+});
+
+test("completeReviewJob: a minimal failed report STILL omits evidenceKeys when absent (undefined, not even sent)", async () => {
+  const transport = fakeTransport(() => jsonResponse(200, { ok: true }));
+  await completeReviewJob({ jobId: "job-9", outcome: "failed", error: "model blew up", env: ENV, transport });
+  const body = JSON.parse(transport.calls[0].init.body);
+  assert.ok(!("evidenceKeys" in body));
+});
+
 test("PIN: completeReviewJob NEVER sends eveSessionId, even if a caller mistakenly passes one", async () => {
   const transport = fakeTransport(() => jsonResponse(200, { ok: true }));
   await completeReviewJob({

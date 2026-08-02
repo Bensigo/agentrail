@@ -534,6 +534,67 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(result?.verdict).toBe("approve");
       });
 
+      // B2a §1 Task 3 — evidence_keys passthrough (spec
+      // docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md).
+      // Additive: a `posted` completion that omits `evidenceKeys` entirely
+      // must leave the column NULL (never `[]`), and `outcome: 'failed'`
+      // must never touch the column at all, even if a caller mistakenly
+      // passes it — see `completeReviewJob`'s own doc-comment and migration
+      // 0067's doc-comment for why NULL/empty-array must stay
+      // distinguishable.
+      it("outcome 'posted' WITH evidenceKeys writes them to evidence_keys", async () => {
+        const id = await insertReviewJob(wsId, { state: "running" });
+        const keys = [
+          "review-evidence/ws-1/acme__widgets/1/headsha/ac-1/1.png",
+          "review-evidence/ws-1/acme__widgets/1/headsha/ac-1/2.png",
+        ];
+
+        const result = await completeReviewJob({
+          jobId: id,
+          outcome: "posted",
+          postedReviewUrl: "https://github.com/acme/widgets/pull/1#pullrequestreview-1",
+          verdict: "approve",
+          evidenceKeys: keys,
+        });
+
+        expect(result?.evidenceKeys).toEqual(keys);
+
+        const row = await readReviewJob(id);
+        expect(row.evidenceKeys).toEqual(keys);
+      });
+
+      it("outcome 'posted' WITHOUT evidenceKeys leaves evidence_keys NULL — additive, byte-identical to before this column existed", async () => {
+        const id = await insertReviewJob(wsId, { state: "running" });
+
+        const result = await completeReviewJob({
+          jobId: id,
+          outcome: "posted",
+          postedReviewUrl: "https://github.com/acme/widgets/pull/1#pullrequestreview-1",
+          verdict: "approve",
+        });
+
+        expect(result?.evidenceKeys).toBeNull();
+
+        const row = await readReviewJob(id);
+        expect(row.evidenceKeys).toBeNull();
+      });
+
+      it("outcome 'failed' NEVER sets evidence_keys, even if a caller mistakenly passes it", async () => {
+        const id = await insertReviewJob(wsId, { state: "running", attempts: 0 });
+
+        const result = await completeReviewJob({
+          jobId: id,
+          outcome: "failed",
+          error: "transient GitHub 502",
+          evidenceKeys: ["should-never-be-written/1.png"],
+        });
+
+        expect(result?.evidenceKeys).toBeNull();
+
+        const row = await readReviewJob(id);
+        expect(row.evidenceKeys).toBeNull();
+      });
+
       it("outcome 'failed' with attempts <= 2 goes back to 'queued' with a ~5 minute backoff and clears skip_reason", async () => {
         const id = await insertReviewJob(wsId, { state: "running", attempts: 0 });
         const before = Date.now();

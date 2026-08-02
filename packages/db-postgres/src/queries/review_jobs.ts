@@ -105,6 +105,16 @@ function mapReviewJobRow(row: Record<string, unknown>): ReviewJobRow {
     postedReviewUrl: (row.posted_review_url as string | null) ?? null,
     verdict: (row.verdict as string | null) ?? null,
     skipReason: (row.skip_reason as string | null) ?? null,
+    // jsonb comes back ALREADY PARSED from `db.execute` — postgres.js (the
+    // underlying driver, see ../db.ts) has a built-in jsonb type parser that
+    // runs regardless of drizzle's own query-builder path, so unlike the
+    // timestamp columns above this needs no explicit conversion (mirrors
+    // channel_inbox.ts's `claimNextChannelMessage`, whose own raw-row
+    // `payload` field is passed through the same way, no JSON.parse). Null
+    // while the column is unset (queued/running, or a posted completion
+    // that didn't carry evidenceKeys — see completeReviewJob's own
+    // doc-comment).
+    evidenceKeys: (row.evidence_keys as string[] | null) ?? null,
     createdAt: toDateOrNull(row.created_at) as Date,
     updatedAt: toDateOrNull(row.updated_at) as Date,
   };
@@ -397,6 +407,15 @@ export type CompleteReviewJobInput = {
   postedReviewUrl?: string | null;
   verdict?: string | null;
   error?: string | null;
+  // B2a §1 Task 3 — the object-store keys (Task 2's `review-evidence`
+  // upload route) a completed review actually cited. Written ONLY on the
+  // `posted` branch below, and only when present (`== null` — covers both
+  // `undefined` and an explicit `null` — leaves the column untouched at SQL
+  // NULL); the `failed` branch never references `evidence_keys` at all, by
+  // construction, so passing this on a failed completion is silently a
+  // no-op, never a write. See schema/review_jobs.ts's own doc-comment for
+  // why NULL and `[]` must stay distinguishable.
+  evidenceKeys?: string[] | null;
 };
 
 /**
@@ -422,17 +441,29 @@ export type CompleteReviewJobInput = {
  * supplied falls back to a fixed message rather than a null `skip_reason` —
  * the schema's own doc-comment says `skip_reason` is never silent for a
  * terminal row.
+ *
+ * B2a §1 Task 3: `evidenceKeys`, when present, is written to `evidence_keys`
+ * ONLY on the `posted` branch — the `failed` branch's UPDATE has no
+ * `evidence_keys` clause at all, so it structurally can never set the
+ * column regardless of what a caller passes. Absent/null `evidenceKeys` on
+ * a `posted` completion writes SQL NULL (`::jsonb` cast on a bound `null`
+ * parameter), never `'null'::jsonb` or `'[]'::jsonb` — additive: a caller
+ * that never learned about this field behaves byte-identically to before
+ * it existed.
  */
 export async function completeReviewJob(
   input: CompleteReviewJobInput
 ): Promise<ReviewJobRow | null> {
   if (input.outcome === "posted") {
+    const evidenceKeysJson =
+      input.evidenceKeys == null ? null : JSON.stringify(input.evidenceKeys);
     const rows = Array.from(
       await db.execute(sql`
         UPDATE review_jobs
         SET state = 'posted',
             posted_review_url = ${input.postedReviewUrl ?? null},
             verdict = ${input.verdict ?? null},
+            evidence_keys = ${evidenceKeysJson}::jsonb,
             updated_at = now()
         WHERE id = ${input.jobId} AND state = 'running'
         RETURNING *

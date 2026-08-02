@@ -167,6 +167,21 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       expect(res.status).toBe(400);
       expect(mockComplete).not.toHaveBeenCalled();
     });
+
+    // B2a §1 Task 3 — evidenceKeys: absent is fine (tested throughout this
+    // file via bodies that simply omit it); PRESENT but malformed is a 400,
+    // never a silent ignore.
+    it("400 when evidenceKeys is present but not an array (e.g. a string)", async () => {
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, evidenceKeys: "not-an-array" }));
+      expect(res.status).toBe(400);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("400 when evidenceKeys is an array containing a non-string element", async () => {
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, evidenceKeys: ["ok-key", 123] }));
+      expect(res.status).toBe(400);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -197,6 +212,37 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
         verdict: "approve",
         error: null,
       });
+    });
+
+    // B2a §1 Task 3 — evidenceKeys passthrough. The test directly above
+    // (unmodified) is the additive proof: a body with no evidenceKeys at all
+    // still produces that exact 5-key completeReviewJob call, with no sixth
+    // key riding along.
+    it("passes evidenceKeys through to completeReviewJob when present", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      await POST(
+        postReq({
+          ...VALID_POSTED_BODY,
+          evidenceKeys: ["review-evidence/ws-1/acme__widgets/42/sha/ac-1/1.png"],
+        })
+      );
+      expect(mockComplete).toHaveBeenCalledWith({
+        jobId: "job-1",
+        outcome: "posted",
+        postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
+        verdict: "approve",
+        error: null,
+        evidenceKeys: ["review-evidence/ws-1/acme__widgets/42/sha/ac-1/1.png"],
+      });
+    });
+
+    it("accepts an empty evidenceKeys array (valid — not the same as absent)", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, evidenceKeys: [] }));
+      expect(res.status).toBe(200);
+      expect(mockComplete).toHaveBeenCalledWith(
+        expect.objectContaining({ evidenceKeys: [] })
+      );
     });
   });
 

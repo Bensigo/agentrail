@@ -9,23 +9,38 @@ import { QA_SCHEMA } from "./lib/qa.core.mjs";
 // FAILED; qa reviews what a run SHIPPED.
 //
 // PURELY ADVISORY (spec §1): it never files issues, never changes run
-// status, never writes anything anywhere. It returns a structured advisory
-// (QA_SCHEMA); root renders it and routes suggests_issue findings through
-// its own gated create_issue — the single write path, unchanged.
+// status, and never writes anywhere outside its own evidence upload — its
+// ONE write (B2a §2, below) is uploading a captured screenshot to the
+// per-AC evidence store via upload_evidence_image. It returns a structured
+// advisory (QA_SCHEMA); root renders it and routes suggests_issue findings
+// through its own gated create_issue — the single write path INTO GITHUB,
+// unchanged.
 //
 //  - Its prompt lives in this directory's instructions.md.
-//  - It authors NO tools. Its capabilities are two allowlisted MCP browser
-//    connections (connections/agent_browser.ts, connections/browser_use.ts)
-//    plus the framework's web_fetch for API-level checks.
-//  - ZERO write capability into Jace's systems (AC3) comes from TWO things,
-//    because either alone is insufficient:
+//  - It authors exactly ONE tool: upload_evidence_image (B2a §2, design:
+//    docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md) —
+//    uploads a screenshot QA already captured to the console's per-AC
+//    evidence store and returns its signed URL for QA_SCHEMA's
+//    ac_results[*].evidence_images; see that tool's own doc-comment for the
+//    full argument. Otherwise its capabilities are two allowlisted MCP
+//    browser connections (connections/agent-browser.ts,
+//    connections/browser-use.ts) plus the framework's web_fetch for
+//    API-level checks.
+//  - ZERO write capability into GitHub or any OTHER Jace system (AC3) comes
+//    from TWO things, because either alone is insufficient:
 //      1. Eve's isolation boundary — a declared subagent inherits nothing
 //         from root, so it cannot see or call root's create_issue.
 //      2. A tools/ directory of disableTool() sentinels — Eve injects a
 //         default harness (bash, write_file, read_file, …) into EVERY agent
 //         at runtime regardless of the authored tools list. The sentinels
-//         strip that harness, keeping ONLY web_fetch (API-level QA) and the
-//         connection_search Eve injects for declared connections.
+//         strip that harness, keeping ONLY web_fetch (API-level QA), the
+//         connection_search Eve injects for declared connections, and the
+//         one authored upload_evidence_image tool alongside them.
+//    upload_evidence_image is the ONE deliberate exception to "zero write
+//    capability" — narrowly scoped to Jace's OWN evidence-image store (never
+//    GitHub, never a workspace, never a second path into the factory), same
+//    class of reasoning as root's post_pr_review/save_brief/save_investigation
+//    UNGATED-but-scoped writes (see no-second-write-path.test.mjs's header).
 //  - `outputSchema: QA_SCHEMA` runs the child in task mode, so its answer is
 //    forced into the structured advisory shape (AC1/AC2).
 //
@@ -66,8 +81,10 @@ const description =
   "focus routes; it drives real browsers over the UI, fetches API " +
   "endpoints, and returns a purely advisory verdict: what was tested, " +
   "findings with repro steps and severity, and house-format issue drafts " +
-  "for anything worth filing. It never files issues or writes anything " +
-  "itself, and reports not_verifiable honestly when the app cannot be " +
+  "for anything worth filing. It never files issues or posts anything to " +
+  "GitHub or any other Jace system itself (the one exception: it uploads " +
+  "its own captured screenshots to Jace's evidence store so the review can " +
+  "link them), and reports not_verifiable honestly when the app cannot be " +
   "reached or the change is not visible.";
 
 export default defineAgent(

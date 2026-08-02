@@ -307,25 +307,24 @@ describe("POST /api/v1/runner/repos", () => {
     const res = await POST(req({ eveSessionId: "unknown-eve-session", name: "widgets" }));
 
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "Chat identity not found" });
+    expect(await res.json()).toEqual({ error: "Session not found" });
     expect(getChatIdentityById).not.toHaveBeenCalled();
   });
 
-  it("404 when the ledgered session has a null chat_identity_id — byte-identical to the unknown-session 404", async () => {
+  it("resolves a workspace-anchored, identity-less session (Arc B review-job worker) without calling getChatIdentityById — the ledgered session's own workspaceId is enough, no chat identity needed", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
       ...PINNED_SESSION,
       chatIdentityId: null,
     } as never);
+    mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
-    const text = await res.text();
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(201);
     expect(getChatIdentityById).not.toHaveBeenCalled();
-
-    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
-    const unknownRes = await POST(req({ eveSessionId: "unknown", name: "widgets" }));
-    expect(await unknownRes.text()).toBe(text);
+    expect(createRepository).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "ws-1" })
+    );
   });
 
   // ---------------------------------------------------------------------

@@ -226,7 +226,21 @@ describe("GET /api/v1/runner/pr-review", () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
     const res = await GET(getReq({ eveSessionId: "unknown", repo: "ada/widgets", prNumber: "98" }));
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "Chat identity not found" });
+    expect(await res.json()).toEqual({ error: "Session not found" });
+  });
+
+  it("resolves a workspace-anchored, identity-less session (Arc B review-job worker) without calling getChatIdentityById — the session's own workspaceId is enough", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...PINNED_SESSION,
+      chatIdentityId: null,
+    } as never);
+    mockFetchSequence(prMetaResponse(), filesPage([fileEntry()]), graphqlIssuesResponse([]));
+
+    const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
+
+    expect(res.status).toBe(200);
+    expect(getChatIdentityById).not.toHaveBeenCalled();
+    expect(getRepositoryByName).toHaveBeenCalledWith("ws-1", "ada/widgets");
   });
 
   it("409 when neither the session nor the identity has a workspace", async () => {

@@ -151,12 +151,24 @@ async function createWorkspaceWithSlugRetry(input: {
  * AgentRail API key, `requireBearer`), then `{ eveSessionId }` resolved
  * through the session ledger (`getJaceSessionByEveSessionId` ->
  * `getChatIdentityById`) — never a caller-supplied `(platform,
- * platformUserId)` pair. A session row with a null `chat_identity_id`, or no
- * session row at all for this `eveSessionId`, collapses into the SAME 404 as
- * "chat identity not found" — the same indistinguishable-by-design posture
+ * platformUserId)` pair. No session row at all for this `eveSessionId` 404s
+ * ("Session not found") — the same indistinguishable-by-design posture
  * connect-link uses for this exact resolution boundary, for the same reason
  * (a distinguishable response would let any valid caller enumerate which
- * sessions exist).
+ * sessions exist). UPDATED (Arc B live smoke, 2026-08-02): a session row
+ * whose `chat_identity_id` is null no longer 404s ahead of the
+ * already-attached check below. Review-job worker sessions (Arc B) are
+ * exactly this shape (workspace-anchored, no chat identity), and
+ * `jace_sessions`'s own `workspaceOrIdentityCheck` CHECK constraint
+ * guarantees such a row always carries a `workspace_id` — so the
+ * already-attached check (which now reads `identity?.workspaceId`, not
+ * `identity.workspaceId`) catches it via `session.workspaceId` alone,
+ * without ever needing an identity. ONLY past that check — both
+ * `workspaceId`s null, so per the same CHECK constraint the ONLY way to get
+ * here is a session that DOES carry a `chat_identity_id` — does a null
+ * `identity` (the lookup came back empty: a broken reference, since a set
+ * `chat_identity_id` should always resolve) still 404 as "Chat identity not
+ * found", unchanged from before.
  *
  * Past that resolution boundary, this route's refusals are deliberately
  * HONEST 409s, not folded into the indistinguishable 404 the way
@@ -283,12 +295,31 @@ export async function POST(request: NextRequest) {
   const chatIdentityId = session?.chatIdentityId ?? null;
   const identity = chatIdentityId ? await getChatIdentityById(chatIdentityId) : null;
 
-  if (!session || !identity) {
-    return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
+  if (!session) {
+    return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  if (session.workspaceId != null || identity.workspaceId != null) {
+  // Already-attached check runs BEFORE the identity-required check below —
+  // deliberately reordered (fix wave) so it can run on `identity?.workspaceId`
+  // alone, without first requiring identity to be resolved. This is what
+  // lets a review-job worker session (Arc B: chatIdentityId null,
+  // workspaceId set — the jace_sessions table's own
+  // workspaceOrIdentityCheck CHECK constraint guarantees the pairing) reach
+  // this refusal via session.workspaceId alone, rather than wrongly 404ing
+  // on a chat identity it was never going to have.
+  if (session.workspaceId != null || identity?.workspaceId != null) {
     return NextResponse.json({ error: ALREADY_ATTACHED_MESSAGE }, { status: 409 });
+  }
+
+  // Past the already-attached check, both workspaceIds are null — every
+  // remaining refusal/creation path below needs a real identity row
+  // (identity.userId, identity.id), so a null `identity` here — whether
+  // chatIdentityId was null to begin with, or was set but the lookup came
+  // back empty (a broken reference) — 404s exactly as it always has. This
+  // also narrows `identity` for TypeScript for the rest of the function,
+  // same idiom `pinResult.ok` uses below.
+  if (!identity) {
+    return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
   }
 
   // Sign-up gate (issue #1364 PR②) — see the POST doc-comment's own section

@@ -95,6 +95,11 @@
 // authority on the guarantee, not this comment.
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
 export const DEFAULT_JOB_TIMEOUT_MS = 15 * 60_000;
+// A posted:false failure's error message folds in the structured result's
+// own summaryLine when present — but summaryLine is documented as "ONE line
+// for the owner", so a value this long is itself a signal something is off
+// and is left out rather than dumped verbatim into a log/console error.
+const MAX_SUMMARY_IN_ERROR_CHARS = 200;
 
 /**
  * @typedef {{ id: string, repo: string, prNumber: number, headSha: string,
@@ -195,28 +200,61 @@ export function createReviewJobWorker({
     }
 
     if (failureMessage === null) {
-      try {
-        // `result` is the model's structured output, shaped by `resultSchema`
-        // (Task 6's REVIEW_JOB_RESULT_SCHEMA: {posted, reviewUrl, verdict,
-        // blockers, summaryLine}). Only `reviewUrl` gets renamed — to
-        // `postedReviewUrl`, matching `complete`'s own documented shape and
-        // the console's complete-route body (Arc B plan Task 4) —
-        // `verdict`/`summaryLine` pass through unchanged. `blockers` is
-        // deliberately dropped here: it is not part of `complete`'s contract
-        // (only `jobId, outcome, postedReviewUrl, verdict, summaryLine,
-        // error`), so nothing in this module ever reads it.
-        await complete({
-          jobId: job.id,
-          outcome: "posted",
-          postedReviewUrl: result?.reviewUrl,
-          verdict: result?.verdict,
-          summaryLine: result?.summaryLine,
-        });
-      } catch (err) {
-        safeLog("review-job-worker: complete() failed after a posted result", err);
+      // HONESTY GATE (Arc B live smoke, 2026-08-02): a non-throwing send()
+      // used to complete unconditionally as outcome:"posted" — this is
+      // exactly what let a real smoke run through: root's post_pr_review
+      // fetch 404'd, the turn honestly resolved
+      // `{posted: false, verdict: "degraded", ...}`, and the job STILL
+      // completed "posted" with a null URL and nothing actually landed on
+      // GitHub. `result.posted` is now the gate: only a literal `true` keeps
+      // today's "posted" behavior below. Anything else — `false`, or the
+      // field absent entirely (the schema REQUIRES it, so an absent field
+      // means the structured turn itself is malformed, never charitably
+      // read as success — no back-compat "absent means posted") — is
+      // reported exactly like a send() rejection would be: see
+      // review_job_worker.mjs's "THE HONESTY COUPLING" header comment for
+      // why the model-side instruction (review_job_prompt.mjs's schema
+      // description, "let the failure propagate instead of reporting
+      // posted:false") alone was not enough — a model that dutifully
+      // REPORTS posted:false instead of throwing, exactly like the smoke's
+      // root turn did, still needs this worker-side backstop.
+      if (result?.posted === true) {
+        try {
+          // `result` is the model's structured output, shaped by `resultSchema`
+          // (Task 6's REVIEW_JOB_RESULT_SCHEMA: {posted, reviewUrl, verdict,
+          // blockers, summaryLine}). Only `reviewUrl` gets renamed — to
+          // `postedReviewUrl`, matching `complete`'s own documented shape and
+          // the console's complete-route body (Arc B plan Task 4) —
+          // `verdict`/`summaryLine` pass through unchanged. `blockers` is
+          // deliberately dropped here: it is not part of `complete`'s contract
+          // (only `jobId, outcome, postedReviewUrl, verdict, summaryLine,
+          // error`), so nothing in this module ever reads it.
+          await complete({
+            jobId: job.id,
+            outcome: "posted",
+            postedReviewUrl: result?.reviewUrl,
+            verdict: result?.verdict,
+            summaryLine: result?.summaryLine,
+          });
+        } catch (err) {
+          safeLog("review-job-worker: complete() failed after a posted result", err);
+        }
+        await safeClose(session);
+        return "done";
       }
+
+      const verdict = result?.verdict;
+      let postedFalseMessage = `review turn reported posted:false (verdict "${verdict}")`;
+      if (
+        typeof result?.summaryLine === "string" &&
+        result.summaryLine.length > 0 &&
+        result.summaryLine.length <= MAX_SUMMARY_IN_ERROR_CHARS
+      ) {
+        postedFalseMessage += `: ${result.summaryLine}`;
+      }
+      await reportFailed(job, postedFalseMessage);
       await safeClose(session);
-      return "done";
+      return "failed";
     }
 
     await reportFailed(job, failureMessage);

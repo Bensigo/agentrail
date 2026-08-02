@@ -149,14 +149,18 @@ async function resolveWorkspaceRepoToken(
   const chatIdentityId = session?.chatIdentityId ?? null;
   const identity = chatIdentityId ? await getChatIdentityById(chatIdentityId) : null;
 
-  if (!session || !identity) {
+  if (!session) {
     return {
       ok: false,
-      response: NextResponse.json({ error: "Chat identity not found" }, { status: 404 }),
+      response: NextResponse.json({ error: "Session not found" }, { status: 404 }),
     };
   }
 
-  const workspaceId = session.workspaceId ?? identity.workspaceId;
+  // review-job worker sessions (Arc B) are workspace-anchored with no chat
+  // identity (chatIdentityId null, workspaceId set) — identity legitimately
+  // stays null for those, so it is read optionally below rather than gating
+  // the whole resolution the way the old `!session || !identity` check did.
+  const workspaceId = session.workspaceId ?? identity?.workspaceId;
   if (!workspaceId) {
     return {
       ok: false,

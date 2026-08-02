@@ -9,9 +9,12 @@ import { QA_SCHEMA } from "./lib/qa.core.mjs";
 // FAILED; qa reviews what a run SHIPPED.
 //
 // PURELY ADVISORY (spec §1): it never files issues, never changes run
-// status, never writes anything anywhere. It returns a structured advisory
-// (QA_SCHEMA); root renders it and routes suggests_issue findings through
-// its own gated create_issue — the single write path, unchanged.
+// status, and never writes anywhere outside its own evidence upload — its
+// ONE write (B2a §2, below) is uploading a captured screenshot to the
+// per-AC evidence store via upload_evidence_image. It returns a structured
+// advisory (QA_SCHEMA); root renders it and routes suggests_issue findings
+// through its own gated create_issue — the single write path INTO GITHUB,
+// unchanged.
 //
 //  - Its prompt lives in this directory's instructions.md.
 //  - It authors exactly ONE tool: upload_evidence_image (B2a §2, design:

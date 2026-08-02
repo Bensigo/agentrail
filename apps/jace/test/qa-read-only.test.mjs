@@ -141,6 +141,48 @@ test("the one authored tool (upload_evidence_image) is a real, narrowly-scoped w
   assert.match(src, /runUploadEvidenceImage\(/, "upload_evidence_image.ts must call runUploadEvidenceImage");
 });
 
+test("upload_evidence_image's inputSchema is EXACTLY the 7 caller-supplied fields — no eveSessionId/workspaceId/key/url the model could use to target a cross-tenant destination or a raw storage key", () => {
+  // Mirrors reviewer-read-only.test.mjs's assertion style (a structural scan
+  // of the tool's own source, not a live call): the session — and therefore
+  // the workspace — is resolved server-side from ctx (see the test above),
+  // never accepted as model input; the destination key/url are computed by
+  // the console (artifactKey) and returned, never supplied. This is an
+  // enumerated ceiling AND floor (ok-listed-fields.md idiom used throughout
+  // this codebase, e.g. no-second-write-path.test.mjs's EXPECTED_TOOL_FILES):
+  // adding a field to the schema is a deliberate edit here, not something
+  // that should slip through silently.
+  const file = path.join(TOOLS_DIR, "upload_evidence_image.ts");
+  const src = readFileSync(file, "utf8");
+
+  const schemaMatch = src.match(/inputSchema:\s*z\.object\(\{([\s\S]*?)\n\s*\}\),\n\s*async execute/);
+  assert.ok(schemaMatch, "could not locate upload_evidence_image.ts's inputSchema: z.object({ ... }) block");
+  const schemaBody = schemaMatch[1];
+
+  const FORBIDDEN_FIELDS = ["eveSessionId", "workspaceId", "key", "url"];
+  for (const field of FORBIDDEN_FIELDS) {
+    assert.doesNotMatch(
+      schemaBody,
+      new RegExp(`\\b${field}\\s*:`),
+      `upload_evidence_image.ts's inputSchema must not accept a model-supplied '${field}' — ` +
+        `the session (and therefore workspace) is resolved server-side from ctx, and the ` +
+        `destination key/url are computed by the console and returned, never accepted`,
+    );
+  }
+
+  // The positive floor: exactly these 7 top-level fields, nothing more,
+  // nothing less. A field name is a line matching `<name>: z` at the
+  // schema body's own indentation — `\b` (not a literal `.`) because some
+  // fields chain onto the next line (e.g. `index: z\n  .number()...`)
+  // rather than opening with `z.` on the same line.
+  const declaredFields = [...schemaBody.matchAll(/^\s*(\w+):\s*z\b/gm)].map((m) => m[1]).sort();
+  const EXPECTED_FIELDS = ["acId", "index", "imageBase64", "contentType", "repo", "prNumber", "headSha"].sort();
+  assert.deepEqual(
+    declaredFields,
+    EXPECTED_FIELDS,
+    `upload_evidence_image.ts's inputSchema must declare exactly ${EXPECTED_FIELDS.join(", ")} — found ${declaredFields.join(", ") || "(none)"}`,
+  );
+});
+
 test("exactly two connections, allowlisted, with no approval gate", () => {
   const files = readdirSync(CONNECTIONS_DIR).filter((f) => f.endsWith(".ts")).sort();
   assert.deepEqual(files, ["agent-browser.ts", "browser-use.ts"]);

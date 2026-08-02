@@ -89,6 +89,51 @@ test("buildReviewEvidenceUrl joins the base url and the review-evidence path; PA
   );
 });
 
+// ---------------------------------------------------------------------------
+// Destination lock (T4 review fix wave): the upload URL is built ONLY from
+// baseUrl + the fixed REVIEW_EVIDENCE_PATH constant — no model-influenced
+// segment can ever reach it. Every model-supplied field (repo/prNumber/
+// headSha/acId/index) rides exclusively in the JSON body. Mirrors
+// reviewer-read-only.test.mjs's destination-lock intent for its GET tools,
+// adapted to a POST-with-fixed-path shape: a regression here (e.g. someone
+// "helpfully" starts building `${baseUrl}${path}/${repo}/${acId}`) fails red
+// instead of waiting for a reviewer.
+// ---------------------------------------------------------------------------
+
+test("buildReviewEvidenceUrl takes ONLY baseUrl — its arity structurally forbids a model-influenced segment", () => {
+  assert.equal(
+    buildReviewEvidenceUrl.length,
+    1,
+    "buildReviewEvidenceUrl must accept exactly one argument (baseUrl) — a second parameter would be a red flag that some other value can reach the URL",
+  );
+});
+
+test("the request URL is ALWAYS exactly baseUrl+REVIEW_EVIDENCE_PATH, even with path-traversal/query-injection-shaped model-supplied fields", async () => {
+  const transport = okTransport();
+  await runUploadEvidenceImage({
+    env: ENV,
+    eveSessionId: "eve-1",
+    repo: "../../../etc/passwd",
+    prNumber: 1,
+    headSha: "../../traversal?workspaceId=evil-tenant",
+    acId: "AC1?admin=true&key=../../other-workspace/secret.png",
+    index: 1,
+    imageBase64: "aGVsbG8=",
+    contentType: "image/png",
+    transport,
+  });
+  assert.equal(transport.calls.length, 1);
+  assert.equal(
+    transport.calls[0].url,
+    `${ENV.JACE_CONSOLE_BASE_URL}${REVIEW_EVIDENCE_PATH}`,
+    "the URL must stay fixed regardless of model-supplied field contents — repo/headSha/acId/etc. ride only in the JSON body",
+  );
+  // Belt-and-suspenders: the URL string itself never contains any of the
+  // adversarial fragments above, even though they DO legitimately appear in
+  // the JSON body (proven by the "exact JSON body shape" test above).
+  assert.doesNotMatch(transport.calls[0].url, /etc\/passwd|workspaceId|admin=true|traversal/);
+});
+
 test("classifyStatus maps the review-evidence route's full status table", () => {
   assert.deepEqual(classifyStatus(200), { ok: true });
   assert.deepEqual(classifyStatus(201), { ok: true });

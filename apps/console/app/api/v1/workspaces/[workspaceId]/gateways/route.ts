@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listChatIdentitiesForWorkspace,
+  listSlackInstallationsForWorkspace,
 } from "@agentrail/db-postgres";
 import {
   projectGateways,
@@ -25,11 +26,23 @@ import {
  * This route is the read side only — any workspace member may call it,
  * mirroring the connectors route's GET (`app/api/v1/workspaces/[workspaceId]/
  * connectors/route.ts`) for auth, membership, and error-body shape. There is
- * no stored credential to read or write here: a gateway's connection state
- * comes entirely from the chat-identity spine
- * (`listChatIdentitiesForWorkspace`) — a platform counts as connected once
- * the workspace has ≥1 linked chat identity for it, recorded when someone
- * DMs the shared Jace bot. `gateway-helpers.ts`'s `projectGateways` is pure
+ * no stored credential to read or write here. A gateway's connection state
+ * comes from the chat-identity spine (`listChatIdentitiesForWorkspace`) — a
+ * platform counts as connected once the workspace has ≥1 linked chat identity
+ * for it, recorded when someone DMs the shared Jace bot — PLUS, for Slack
+ * only, this workspace's live app installations
+ * (`listSlackInstallationsForWorkspace`).
+ *
+ * That second read is a bugfix. Slack is the one gateway whose connect act is
+ * an OAuth INSTALL rather than a conversation: completing "Add to Slack"
+ * writes a `slack_installations` row and NO chat identity, so an
+ * identity-only projection reported `disconnected` however many times the
+ * install succeeded, and the panel rendered the install CTA forever. The
+ * query returns live rows only (revoked installs excluded) and carries no bot
+ * token, so an uninstall correctly flips the page back to offering the
+ * install and no credential can reach this response.
+ *
+ * `gateway-helpers.ts`'s `projectGateways` is pure
  * and never reads `process.env` itself, so this route reads the five
  * `NEXT_PUBLIC_*` vars the contract now spans — telegram's bot username,
  * plus discord/slack's `*_INVITE_URL`/`*_INSTALL_URL` + `*_CHANNEL_LIVE`
@@ -54,7 +67,10 @@ export async function GET(
   }
 
   try {
-    const identities = await listChatIdentitiesForWorkspace(workspaceId);
+    const [identities, slackInstallations] = await Promise.all([
+      listChatIdentitiesForWorkspace(workspaceId),
+      listSlackInstallationsForWorkspace(workspaceId),
+    ]);
 
     const env: GatewayEnv = {
       telegramBotUsername: process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME,
@@ -74,7 +90,16 @@ export async function GET(
           platform: identity.platform,
           displayName: identity.displayName,
         })),
-        env
+        env,
+        // Map to the two fields `projectGateways` consumes — the query
+        // already omits `bot_token`, and re-stating the shape here means a
+        // future column added to that projection cannot ride into this
+        // public response by accident (same defence as the identity map
+        // above).
+        slackInstallations.map((installation) => ({
+          teamId: installation.teamId,
+          teamName: installation.teamName,
+        }))
       ),
     });
   } catch (err) {

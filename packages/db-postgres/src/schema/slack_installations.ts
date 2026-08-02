@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, unique, index } from "drizzle-orm/pg-core";
+import { workspaces } from "./workspaces.js";
 
 /**
  * Slack installations — one row per Slack team (spec §1,
@@ -7,9 +8,23 @@ import { pgTable, uuid, text, timestamp, unique } from "drizzle-orm/pg-core";
  * NULL with a cascading FK, so it structurally cannot hold an install that
  * happens BEFORE any AgentRail workspace exists — which is the normal Slack
  * case (someone installs the app into their Slack, then connects it to an
- * AgentRail workspace later). This table carries no `workspace_id` at all;
- * `team_id` (Slack's own workspace id) is the natural key, exactly like
- * `chat_identities`' (platform, platform_user_id).
+ * AgentRail workspace later). `team_id` (Slack's own workspace id) is the
+ * natural key, exactly like `chat_identities`' (platform, platform_user_id).
+ *
+ * `workspace_id` (migration 0065) is NULLABLE for exactly that reason — it is
+ * an attribution, not the key. It records which AgentRail workspace STARTED
+ * the install, when the install started from a signed-in console session
+ * (`/api/v1/connectors/slack/install?workspaceId=…`, membership-checked
+ * server-side before the state is signed). An install from Slack's App
+ * Directory has no such context and stores null, exactly as before.
+ *
+ * WHY IT WAS ADDED: without it nothing linked a completed install back to the
+ * workspace whose Gateways page rendered the "Add to Slack" button, so that
+ * page could never learn the install had happened and rendered the CTA
+ * forever — the button's own success condition was invisible to it. `ON
+ * DELETE SET NULL`, not cascade: deleting an AgentRail workspace must orphan
+ * the attribution, never drop a live installation whose bot token is still
+ * what Slack expects us to post with.
  *
  * `bot_token` is encrypted at rest via the existing `encryptSecret`
  * (AES-256-GCM, key from `CONNECTOR_SECRET_KEY`, `enc:v1:` stored format) —
@@ -40,6 +55,9 @@ export const slackInstallations = pgTable(
     installedBySlackUserId: text("installed_by_slack_user_id"),
     scopes: text("scopes"),
     enterpriseId: text("enterprise_id"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -50,6 +68,10 @@ export const slackInstallations = pgTable(
   },
   (t) => ({
     teamIdUnique: unique("slack_installations_team_id_unique").on(t.teamId),
+    // The console reads installations BY workspace on every Gateways load.
+    workspaceIdIdx: index("slack_installations_workspace_id_idx").on(
+      t.workspaceId
+    ),
   })
 );
 

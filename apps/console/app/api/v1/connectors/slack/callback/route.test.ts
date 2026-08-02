@@ -255,6 +255,7 @@ describe("GET /api/v1/connectors/slack/callback — happy path", () => {
       installedBySlackUserId: "U0AUTHED1",
       scopes: "chat:write,channels:history",
       enterpriseId: null,
+      workspaceId: null,
     });
 
     expect(res.status).toBe(200);
@@ -262,6 +263,25 @@ describe("GET /api/v1/connectors/slack/callback — happy path", () => {
     expect(text).toContain("/invite @Jace");
     expect(text).toContain("Acme Corp");
     expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
+  // Workspace attribution (bugfix: "Add to Slack" never went away). The
+  // workspace id can only come from the SIGNED state — the install route
+  // membership-checked it before signing — so the callback never has to
+  // re-authorize anything, and a forged state was already rejected upstream.
+  it("attributes the installation to the workspace the signed state carried", async () => {
+    const WS = "00000000-0000-0000-0000-000000000001";
+    fetchMock.mockResolvedValue(jsonResponse(FULL_OK_RESPONSE));
+
+    await GET(
+      req({
+        code: "the-real-auth-code",
+        state: signSlackOauthState(CLIENT_SECRET, { workspaceId: WS }),
+      })
+    );
+
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockUpsert.mock.calls[0]?.[0]).toMatchObject({ workspaceId: WS });
   });
 
   it("never logs the bot token on the success path either", async () => {

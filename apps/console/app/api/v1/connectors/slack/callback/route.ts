@@ -5,9 +5,9 @@ import {
   buildSlackOauthAccessBody,
   buildSlackRedirectUri,
   normalizeSlackOauthResponse,
+  readSlackOauthState,
   renderSlackConnectedPage,
   renderSlackErrorPage,
-  verifySlackOauthState,
 } from "../../../../../../lib/slack-oauth";
 
 function html(body: string, status = 200): NextResponse {
@@ -85,8 +85,18 @@ export async function GET(request: NextRequest) {
   // CSRF: reject on missing/expired/mismatched state BEFORE ever touching
   // `code` — a forged hit on this public URL must never get as far as
   // spending a real authorization code.
+  //
+  // The same signed state is also the ONLY source of the workspace this
+  // install gets attributed to. Reading it here rather than from a query
+  // param is what makes the attribution trustworthy: the install route
+  // already checked that the signed-in caller was a member of that workspace
+  // before signing it in, and any edit to the payload fails the HMAC above,
+  // landing on this very branch. `workspaceId` is null for an install that
+  // started outside the console (Slack's App Directory), which stores
+  // unattributed exactly as it did before.
   const state = params.get("state");
-  if (!verifySlackOauthState(clientSecret, state)) {
+  const verifiedState = readSlackOauthState(clientSecret, state);
+  if (!verifiedState) {
     return html(
       renderSlackErrorPage(
         "Link expired",
@@ -156,6 +166,7 @@ export async function GET(request: NextRequest) {
     installedBySlackUserId: normalized.installation.installedBySlackUserId,
     scopes: normalized.installation.scopes,
     enterpriseId: normalized.installation.enterpriseId,
+    workspaceId: verifiedState.workspaceId,
   });
 
   return html(renderSlackConnectedPage(normalized.installation.teamName));

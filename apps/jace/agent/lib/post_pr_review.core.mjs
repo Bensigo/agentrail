@@ -143,13 +143,24 @@ function sanitizeEvidenceUrl(url) {
   }
   safe = safe.trim();
   if (!/^https?:\/\//i.test(safe)) return "";
-  // NOT encodeURIComponent: it deliberately leaves `(` `)` `!` `*` `'` raw
-  // (JS's legacy RFC-2396 "unreserved" set) — exactly the characters that
-  // matter most here, since an unescaped `)` is what closes a markdown link
-  // destination early. Percent-encode every targeted code unit by hand
-  // instead, so `(`/`)`/`<`/`>`/`\`/whitespace are ALWAYS escaped regardless
-  // of what any URI-encoding helper considers "safe".
-  return safe.replace(/[()<>\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+  // Two different encoders for two different reasons:
+  //   - `(` `)` `<` `>` `\` are always single-byte ASCII, so a hand-rolled
+  //     two-hex-digit escape is exact — deliberately NOT encodeURIComponent
+  //     for these, since it leaves `(` `)` `!` `*` `'` raw (JS's legacy
+  //     RFC-2396 "unreserved" set), which is exactly wrong here: an
+  //     unescaped `)` is what closes a markdown link destination early.
+  //   - whitespace (`\s`) is different: it can be a MULTI-BYTE code point
+  //     (U+2028, U+3000, ...), where the same single-%XX scheme would emit
+  //     a malformed, non-two-hex-digit escape (e.g. "%2028" for U+2028 —
+  //     not a valid percent-triplet at all). encodeURIComponent has no
+  //     unreserved exception for whitespace, so it's used here instead and
+  //     produces the correct multi-%XX UTF-8 byte sequence for any code
+  //     point, astral or not.
+  return safe.replace(/[()<>\\]|\s/g, (c) =>
+    /\s/.test(c)
+      ? encodeURIComponent(c)
+      : `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+  );
 }
 
 /**
@@ -182,11 +193,56 @@ function renderEvidenceLinks(evidenceImages) {
   return links.length ? ` — ${links.join(" ")}` : "";
 }
 
+// Backing character class for stripLineBreaks (below), built from numeric
+// char codes rather than literal source characters: U+2028/U+2029 are
+// themselves ECMAScript line terminators, so embedding them as raw bytes in
+// this file's own source would be, at best, invisible and unreviewable by
+// eye, and at worst a syntax error inside a regex literal (a raw,
+// unescaped line terminator cannot appear inside one).
+const LINE_BREAK_CHARS = new RegExp(
+  "[\\x00-\\x1f\\x7f" + String.fromCharCode(0x2028) + String.fromCharCode(0x2029) + "]",
+  "g",
+);
+
+/**
+ * Collapse every line-breaking or control character in `s` to a single
+ * ASCII space — never deletion, since "AC\ncoverage" must not become
+ * "ACcoverage" and silently re-read as one glued word. Targets: C0 controls
+ * (0x00-0x1F, which already covers \n/\r/\t) + DEL (0x7F) + the Unicode
+ * LINE SEPARATOR / PARAGRAPH SEPARATOR (U+2028/U+2029) — the latter two are
+ * NOT matched by `String.prototype.split("\n")`, but some renderers still
+ * treat them as line breaks, so they're closed off here too rather than
+ * relying on that one detail of one downstream consumer.
+ *
+ * Applied to `criterion` and `evidence` (see renderAcCoverage) — both
+ * reviewer/QA-sourced, untrusted, diff-derived text per this module's own
+ * header — before they are interpolated into AC_STATUS_RENDER's template
+ * strings. Without this, an internal newline in either field could
+ * impersonate a standalone forged line inside the rendered coverage block
+ * (e.g. "AC coverage: 99/99 addressed..." or "**Judgment:** ...") directly
+ * in the posted GitHub comment, on the EVERYDAY unfolded rendering path —
+ * no pathological length engineering required, unlike the double-
+ * pathological branch sanitizeEvidenceUrl's own newline-stripping guards
+ * against for evidence_images. A self-stated AC (`issueNumber: null`,
+ * sourced from the PR description rather than a linked issue) makes
+ * `criterion` attacker-authored directly.
+ * @param {string} s
+ * @returns {string}
+ */
+function stripLineBreaks(s) {
+  return s.replace(LINE_BREAK_CHARS, " ");
+}
+
 /**
  * Render the coverage checklist: issue-numbered groups ascending, then the
  * PR-description group (issueNumber: null) last, labeled as self-stated.
  * Malformed entries are skipped, never guessed at. Returns "" when there is
  * nothing renderable.
+ *
+ * `criterion` and `evidence` are run through stripLineBreaks (see its own
+ * doc comment) before interpolation — this closes the count-line/judgment-
+ * line forgery class off for these two untrusted fields, the same one
+ * sanitizeEvidenceUrl closes for evidence_images below.
  *
  * When an entry carries a non-empty `evidence_images` array (QA's per-AC
  * screenshots, B2a §2 — folded into this same coverage by root before
@@ -208,8 +264,8 @@ export function renderAcCoverage(acCoverage) {
     const key = typeof entry.issueNumber === "number" ? entry.issueNumber : null;
     if (!groups.has(key)) groups.set(key, []);
     const line = render({
-      criterion: entry.criterion.trim(),
-      evidence: typeof entry.evidence === "string" ? entry.evidence.trim() : "",
+      criterion: stripLineBreaks(entry.criterion.trim()),
+      evidence: typeof entry.evidence === "string" ? stripLineBreaks(entry.evidence.trim()) : "",
     });
     groups.get(key).push(line + renderEvidenceLinks(entry.evidence_images));
   }

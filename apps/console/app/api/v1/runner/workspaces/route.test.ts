@@ -212,25 +212,39 @@ describe("POST /api/v1/runner/workspaces", () => {
     const res = await POST(req({ eveSessionId: "unknown-eve-session", name: "Acme" }));
 
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Session not found" });
     expect(getJaceSessionByEveSessionId).toHaveBeenCalledWith("unknown-eve-session");
     expect(getChatIdentityById).not.toHaveBeenCalled();
   });
 
-  it("404 when the ledgered session has a null chat_identity_id — byte-identical to the unknown-session 404", async () => {
+  it("404 'Chat identity not found' when the ledgered session has NEITHER a chat_identity_id NOR a workspaceId — a row this malformed can't exist per the jace_sessions CHECK constraint, but the route must still degrade gracefully rather than crash", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
       ...INTRO_SESSION,
       chatIdentityId: null,
     } as never);
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "Acme" }));
-    const text = await res.text();
 
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Chat identity not found" });
     expect(getChatIdentityById).not.toHaveBeenCalled();
+  });
 
-    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
-    const unknownRes = await POST(req({ eveSessionId: "unknown-eve-session", name: "Acme" }));
-    expect(await unknownRes.text()).toBe(text);
+  it("resolves a workspace-anchored, identity-less session (Arc B review-job worker) to the already-attached 409, not a 404 — chatIdentityId is null but workspaceId is set, never calls getChatIdentityById", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...INTRO_SESSION,
+      workspaceId: "ws-review-job",
+      chatIdentityId: null,
+    } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "Acme" }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "this conversation is already attached to a workspace",
+    });
+    expect(getChatIdentityById).not.toHaveBeenCalled();
+    expect(createWorkspace).not.toHaveBeenCalled();
   });
 
   it("resolves via the session chain with exact arguments: getJaceSessionByEveSessionId(eveSessionId) then getChatIdentityById(session.chatIdentityId)", async () => {

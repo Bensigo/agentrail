@@ -126,10 +126,24 @@ describe("POST /api/v1/runner/goals", () => {
     expect(createGoal).not.toHaveBeenCalled();
   });
 
-  it("404 when the chat identity can't be resolved", async () => {
+  it("404 when no jace_sessions row is bound to this eveSessionId", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null);
     const res = await POST(req({ eveSessionId: "unknown", objective: "reach 80% coverage" }));
     expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Session not found" });
+  });
+
+  it("resolves a workspace-anchored, identity-less session (Arc B review-job worker) without calling getChatIdentityById", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...PINNED_SESSION,
+      chatIdentityId: null,
+    } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", objective: "reach 80% coverage" }));
+
+    expect(res.status).toBe(201);
+    expect(getChatIdentityById).not.toHaveBeenCalled();
+    expect(createGoal).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "ws-1" }));
   });
 
   it("409 when the conversation has no workspace yet", async () => {

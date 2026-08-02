@@ -187,10 +187,15 @@ async function createRepoWebhook(
  * traffic, a residual #1264 accepts, offset by the same compensating
  * controls — `create_repo` never lets the model choose `eveSessionId`, and
  * every call is human-approved in the context of one specific conversation).
- * A session row with a null `chat_identity_id`, or no session row at all,
- * collapses into the SAME 404 as "chat identity not found" — a
- * distinguishable response would let any valid caller enumerate which
- * sessions exist. The GitHub credential is the WORKSPACE's App installation
+ * No session row at all 404s ("Session not found") — a distinguishable
+ * response would let any valid caller enumerate which sessions exist.
+ * UPDATED (Arc B live smoke, 2026-08-02): a session row with a null
+ * `chat_identity_id` no longer collapses into that 404 — review-job worker
+ * sessions (Arc B) are exactly this shape (workspace-anchored, no chat
+ * identity), and `jace_sessions`'s own CHECK constraint guarantees such a
+ * row always carries a `workspace_id`, so `workspaceId` below resolves from
+ * `session.workspaceId` alone without ever needing an identity. The GitHub
+ * credential is the WORKSPACE's App installation
  * token (`getInstallationToken`, spec §5/§6 — Task 6 delta of the drift
  * addendum), minted fresh at the point of use and never returned to the
  * caller or logged.
@@ -310,11 +315,15 @@ export async function POST(request: NextRequest) {
   const chatIdentityId = session?.chatIdentityId ?? null;
   const identity = chatIdentityId ? await getChatIdentityById(chatIdentityId) : null;
 
-  if (!session || !identity) {
-    return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
+  if (!session) {
+    return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  const workspaceId = session.workspaceId ?? identity.workspaceId;
+  // review-job worker sessions (Arc B) are workspace-anchored with no chat
+  // identity (chatIdentityId null, workspaceId set) — identity legitimately
+  // stays null for those, so it is read optionally below rather than gating
+  // the whole resolution the way the old `!session || !identity` check did.
+  const workspaceId = session.workspaceId ?? identity?.workspaceId;
   if (!workspaceId) {
     return NextResponse.json(
       { error: "this conversation has no workspace yet — create one first" },

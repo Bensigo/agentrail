@@ -25,15 +25,19 @@
 // WHAT THIS PROMPT DELIBERATELY DOES NOT SAY: it never tells the model what
 // to do if posting fails. That is intentional, not an oversight. See
 // review_job_worker.mjs's header comment ("THE HONESTY COUPLING") for the
-// full mechanics: review_job_worker.core.mjs (Task 5) resolves EVERY
-// non-throwing `send()` as `outcome:"posted"` — it never reads
-// `result.posted` at all — so `posted:false` and `posted:true` are
-// indistinguishable to that loop. The Task 6 brief is explicit that the
-// structured-result contract (this prompt's text, verbatim above) stays
-// exactly as specified, unchanged — so the honesty instruction ("a failed
-// post must never complete as posted:false; let it fail instead") lives in
-// this schema's own field descriptions below, the one place this task is
-// free to add it without touching the locked prompt text.
+// full mechanics — UPDATED post-live-smoke (2026-08-02):
+// review_job_worker.core.mjs now READS `result.posted` and completes a
+// `posted:false` (or field-absent) turn as `outcome:"failed"` rather than
+// `"posted"`, so it is no longer true that this loop never reads the field.
+// The Task 6 brief is still explicit that the structured-result contract
+// (this prompt's text, verbatim above) stays exactly as specified,
+// unchanged — so the honesty instruction ("a failed post must never
+// complete as posted:false; let it fail instead") still lives in this
+// schema's own field descriptions below as the FIRST line of defense (the
+// one place this task is free to add it without touching the locked prompt
+// text); the core's own read of `result.posted` is now a SECOND, enforced
+// backstop for a model that reports `posted:false` honestly instead of
+// throwing — exactly what live smoke observed root do.
 
 /**
  * Build the one message sent to root for a single claimed review job.
@@ -59,11 +63,12 @@ export function reviewJobPrompt(job) {
  * (eve's `outputSchema`, which forces task mode). Field names and
  * nullability are the Arc B plan's Task 6 contract verbatim — see
  * review_job_worker.core.mjs (Task 5) for exactly how each field is consumed
- * once the turn resolves: `reviewUrl` -> `postedReviewUrl`,
- * `verdict`/`summaryLine` pass through unchanged, and `blockers`/`posted`
- * are read by NOTHING downstream of this schema today (`posted` especially:
- * see this module's header comment — that is a honesty hazard the prompt
- * can't close, not dead weight to "clean up").
+ * once the turn resolves: `reviewUrl` -> `postedReviewUrl`, `verdict`/
+ * `summaryLine` pass through unchanged, `blockers` is read by NOTHING
+ * downstream of this schema, and `posted` — UPDATED post-live-smoke
+ * (2026-08-02; see this module's header comment) — IS now read: the core
+ * completes `outcome:"failed"` instead of `"posted"` whenever this field is
+ * anything but a literal `true`.
  */
 export const REVIEW_JOB_RESULT_SCHEMA = {
   type: "object",

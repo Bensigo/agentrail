@@ -479,6 +479,124 @@ test('complete() throwing after a "failed" result (from send() throwing) is ALSO
 });
 
 // ---------------------------------------------------------------------------
+// tick() — send() resolves with posted:false or posted absent (Arc B live
+// smoke, 2026-08-02): root's post_pr_review fetch 404'd, the turn honestly
+// resolved {posted: false, verdict: "degraded", ...}, and the job STILL
+// completed outcome:"posted" with a null URL and nothing on GitHub. The core
+// now reads result.posted and refuses to report success for anything but a
+// literal `true`.
+// ---------------------------------------------------------------------------
+
+test('send() resolving with posted:false completes outcome:"failed" (never "posted"), with the verdict and summaryLine folded into the error, closes the session, resolves "failed", loop alive', async () => {
+  const job = makeJob();
+  const completeArgs = [];
+  let closed = 0;
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => job,
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "s1",
+        send: async () =>
+          makeResult({
+            posted: false,
+            verdict: "degraded",
+            summaryLine: "ada/widgets#7: degraded — post_pr_review 404'd",
+          }),
+        close: async () => {
+          closed += 1;
+        },
+      }),
+    }),
+  );
+
+  const outcome = await worker.tick();
+
+  assert.equal(outcome, "failed");
+  assert.equal(completeArgs.length, 1);
+  assert.equal(completeArgs[0].jobId, "job-1");
+  assert.equal(completeArgs[0].outcome, "failed");
+  assert.match(completeArgs[0].error, /posted:false/);
+  assert.match(completeArgs[0].error, /degraded/);
+  assert.match(completeArgs[0].error, /post_pr_review 404'd/);
+  assert.equal(closed, 1);
+
+  // Loop alive: a subsequent tick still runs the full flow.
+  const outcome2 = await worker.tick();
+  assert.equal(outcome2, "failed");
+  assert.equal(closed, 2);
+});
+
+test('send() resolving with the posted field absent entirely ALSO completes outcome:"failed" — the schema requires it, so a missing field is never charitably treated as success (no back-compat "absent means posted")', async () => {
+  const job = makeJob();
+  const completeArgs = [];
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => job,
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "s1",
+        send: async () => {
+          const { posted, ...withoutPosted } = makeResult();
+          return withoutPosted;
+        },
+        close: async () => {},
+      }),
+    }),
+  );
+
+  const outcome = await worker.tick();
+
+  assert.equal(outcome, "failed");
+  assert.equal(completeArgs.length, 1);
+  assert.equal(completeArgs[0].outcome, "failed");
+  assert.match(completeArgs[0].error, /posted:false/);
+});
+
+test("posted:false error still builds a sensible message when verdict/summaryLine are missing or empty — never throws while building the failure report", async () => {
+  const job = makeJob();
+  const completeArgs = [];
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => job,
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "s1",
+        send: async () => ({ posted: false, reviewUrl: null, blockers: [] }),
+        close: async () => {},
+      }),
+    }),
+  );
+
+  const outcome = await worker.tick();
+
+  assert.equal(outcome, "failed");
+  assert.equal(completeArgs[0].outcome, "failed");
+  assert.match(completeArgs[0].error, /posted:false/);
+});
+
+test("posted:false error omits an overlong summaryLine (it is meant to be ONE line for the owner — a long one is not folded in verbatim)", async () => {
+  const job = makeJob();
+  const completeArgs = [];
+  const longSummary = "x".repeat(500);
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => job,
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "s1",
+        send: async () => makeResult({ posted: false, verdict: "degraded", summaryLine: longSummary }),
+        close: async () => {},
+      }),
+    }),
+  );
+
+  await worker.tick();
+
+  assert.doesNotMatch(completeArgs[0].error, /x{500}/);
+});
+
+// ---------------------------------------------------------------------------
 // start() / stop()
 // ---------------------------------------------------------------------------
 

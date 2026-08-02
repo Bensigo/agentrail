@@ -162,22 +162,35 @@
 // behaves the way this comment predicts against root's actual instructions
 // (rather than the FAKE client this module's own tests use).
 //
-// THE HONESTY COUPLING (explicit ask): review_job_worker.core.mjs resolves
-// EVERY non-throwing `send()` as `outcome:"posted"` — it never reads
-// `result.posted` at all (see that module's own inline comment: "blockers is
-// deliberately dropped here"; `posted` is dropped the same way, just never
-// called out there by name). That makes `posted:false` indistinguishable
-// from `posted:true` to this loop. review_job_prompt.mjs's schema
-// descriptions carry the honesty instruction instead (the prompt's own TEXT
-// is a locked, verbatim contract — see that module's header): a claimed
-// job's turn must genuinely fail (reject/error) when posting fails, never
-// complete with a dishonest `posted:false`. Nothing in THIS file enforces
-// that — it is root's own standing tool-failure behavior, outside every file
-// this task touches — but the coupling is real and is exactly why `posted`
-// still exists in the schema at all despite this loop never reading it: it
-// is the one field a human reading a stored `review_jobs` row (or a later
-// analytics pass) can use to sanity-check that an `outcome:"posted"` row's
-// own structured result agreed.
+// THE HONESTY COUPLING — UPDATED post-live-smoke (2026-08-02). This section
+// used to document `result.posted` as a field review_job_worker.core.mjs
+// deliberately never read: EVERY non-throwing `send()` completed as
+// `outcome:"posted"` regardless, with `posted:false` indistinguishable from
+// `posted:true` to that loop, and `posted` kept in the schema only as a
+// passive backstop for a human eyeballing a stored `review_jobs` row later.
+// A real run proved that passive backstop insufficient: root's
+// post_pr_review fetch 404'd, the turn honestly resolved
+// `{posted: false, verdict: "degraded", ...}`, and the job STILL completed
+// `outcome:"posted"` with a null URL and nothing actually on GitHub — no
+// human was looking at that row in time for the passive check to catch it.
+//
+// review_job_worker.core.mjs (Task 5 fix-wave) now READS `result.posted`:
+// only a literal `true` completes `outcome:"posted"`; `false`, or the field
+// absent entirely (the schema requires it, so absence is itself treated as
+// a malformed turn, never charitably read as success), completes
+// `outcome:"failed"` instead — mirroring the existing send()-rejection
+// failure path. See that module's own inline comment at the `result.posted`
+// check for the exact logic and the error-message shape. review_job_prompt.mjs's
+// schema descriptions still carry the FIRST line of defense (the prompt's
+// own TEXT is a locked, verbatim contract — see that module's header): a
+// claimed job's turn is still instructed to genuinely fail (reject/error)
+// when posting fails, never complete with a dishonest `posted:false`. The
+// core's own read of `result.posted` is now the SECOND, ENFORCED backstop
+// for exactly the case that first line doesn't close on its own: a model
+// that dutifully REPORTS `posted:false` instead of throwing, precisely what
+// the live smoke observed root do. Nothing in THIS file changed to make
+// that happen — the read lives entirely in the core, called out here only
+// because this paragraph used to promise the opposite.
 //
 // FLAG — this file does NOT check `JACE_REVIEW_WORKER` itself.
 // agent/instrumentation.ts gates the call to `startReviewJobWorker` on that

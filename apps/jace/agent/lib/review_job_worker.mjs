@@ -104,12 +104,15 @@
 // is answered" — an unrelated review prompt landing on a session still
 // waiting on some unexpected approval is a state this worker has no
 // business trying to recover from; safer to fail the tick and retry next
-// poll). `send()` below applies the SAME strict standard to the REAL review
-// turn too: it re-checks `result.sessionId` against the id `openSession()`
-// minted AND requires `result.status === "completed"` (not merely
-// `result.data` being present — a non-terminal turn could in principle
-// carry an interim/partial payload, and only a genuinely completed turn's
-// data is trustworthy), on every call, as defense-in-depth: if eve's session
+// poll). LIVE SMOKE CORRECTION (2026-08-02): with preserveCompletedSessions
+// a HEALTHY finished turn reports status "waiting" (held open for the next
+// send) — requiring "completed" rejected every successful turn. Status alone
+// cannot discriminate healthy-waiting from approval-wedged-waiting; the
+// forced-schema DATA payload can (`data !== undefined` = the turn delivered).
+// Both guards below are therefore DATA-FIRST; a data-less result throws,
+// with the pending inputRequests named when present. `send()` still
+// re-checks `result.sessionId` against the id `openSession()` minted, on
+// every call, as defense-in-depth: if eve's session
 // ever changed out from under this object, or ended in any state other than
 // a clean completion, this throws instead of silently reporting a review as
 // posted under the wrong session or an unfinished turn.
@@ -314,11 +317,9 @@ export function createCompleteFn({ env, completeReviewJobFn = completeReviewJob 
 export function createOpenSessionFn({ client, timeoutMs = SESSION_CREATE_TIMEOUT_MS }) {
   return async function openSession() {
     const session = client.session();
-    const controller = new AbortController();
     let timer;
     const timeoutPromise = new Promise((_resolve, reject) => {
       timer = setTimeout(() => {
-        controller.abort();
         reject(new Error(`review-job-worker: session bootstrap timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     });
@@ -328,11 +329,16 @@ export function createOpenSessionFn({ client, timeoutMs = SESSION_CREATE_TIMEOUT
       // Constructed and raced in the same synchronous step — see this
       // module's header comment ("TIMEOUT") for why that is what makes the
       // losing side of this race safe to abandon.
+      // NO `signal` here — LIVE SMOKE FINDING (2026-08-02): passing an
+      // (un-aborted) AbortSignal into eve@0.19's session.send() wedges
+      // `result()` — it never resolves even though the turn completes
+      // server-side in seconds (reproduced: 3.3s without signal, permanent
+      // hang with one). The Promise.race below is the sole bound; abandoning
+      // the loser is safe per the header comment ("TIMEOUT").
       const bootstrapPromise = session
         .send({
           message: SESSION_BOOTSTRAP_MESSAGE,
           outputSchema: SESSION_BOOTSTRAP_SCHEMA,
-          signal: controller.signal,
         })
         .then((response) => response.result());
       bootstrapResult = await Promise.race([bootstrapPromise, timeoutPromise]);
@@ -340,13 +346,25 @@ export function createOpenSessionFn({ client, timeoutMs = SESSION_CREATE_TIMEOUT
       clearTimeout(timer);
     }
 
+    // DATA-FIRST guard — LIVE SMOKE FINDING (2026-08-02): with
+    // `preserveCompletedSessions: true`, a healthy finished turn reports
+    // status "waiting" (session held open for the next send), NOT
+    // "completed" — requiring "completed" rejects every SUCCESSFUL turn.
+    // And "waiting" alone is ambiguous: a turn that wandered into a HITL
+    // approval also reads "waiting", but with NO structured data. The
+    // reliable health signal is the forced-schema payload itself:
+    // `data !== undefined` means the model delivered the structured field
+    // and the turn genuinely finished its work.
     if (
-      bootstrapResult.status !== "completed" ||
+      bootstrapResult.data === undefined ||
       typeof bootstrapResult.sessionId !== "string" ||
       !bootstrapResult.sessionId
     ) {
+      const pending = Array.isArray(bootstrapResult.inputRequests) && bootstrapResult.inputRequests.length > 0
+        ? " (session has pending inputRequests — likely wedged on an approval)"
+        : "";
       throw new Error(
-        `review-job-worker: session bootstrap ended in status "${bootstrapResult.status}" without a usable completed session`,
+        `review-job-worker: session bootstrap ended in status "${bootstrapResult.status}" without structured data${pending}`,
       );
     }
 
@@ -365,11 +383,11 @@ export function createOpenSessionFn({ client, timeoutMs = SESSION_CREATE_TIMEOUT
             `review-job-worker: review turn ran under session "${result.sessionId}", expected "${sessionId}" — refusing to report a review posted under an unbound session`,
           );
         }
-        // Matches the bootstrap's own strict standard (header comment,
-        // "CONTINUING the SAME session..."): only a genuinely completed
-        // turn's data is trustworthy — a non-terminal status is rejected
-        // even if it happens to carry a data payload.
-        if (result.status !== "completed" || result.data === undefined) {
+        // DATA-FIRST (live smoke 2026-08-02, header comment "CONTINUING the
+        // SAME session..."): a healthy preserved-session terminal reads
+        // "waiting", so status cannot gate — the forced-schema payload can.
+        // A data-less result (any status) is an unfinished/wedged turn.
+        if (result.data === undefined) {
           throw new Error(
             `review-job-worker: review turn ended with status "${result.status}" and no usable structured result`,
           );

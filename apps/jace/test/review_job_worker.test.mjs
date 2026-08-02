@@ -197,16 +197,25 @@ test("createOpenSessionFn: happy path — bootstraps with the dedicated schema, 
   assert.equal(typeof session.send, "function");
   assert.equal(typeof session.close, "function");
 
-  // The bootstrap call itself used the dedicated schema + a signal, not the
-  // (unknown-at-open-time) review prompt.
+  // The bootstrap call itself used the dedicated schema and NO AbortSignal —
+  // LIVE SMOKE FINDING (2026-08-02): a signal passed into eve@0.19's
+  // session.send() wedges result() (never resolves) even though the turn
+  // completes server-side in seconds. The Promise.race timeout is the bound.
   assert.equal(client.sendCalls.length, 1);
   assert.equal(client.sendCalls[0].outputSchema, SESSION_BOOTSTRAP_SCHEMA);
   assert.equal(typeof client.sendCalls[0].message, "string");
   assert.ok(client.sendCalls[0].message.length > 0);
-  assert.ok(client.sendCalls[0].signal instanceof AbortSignal);
+  assert.equal(client.sendCalls[0].signal, undefined);
 });
 
-test("createOpenSessionFn: bootstrap status !== 'completed' (e.g. 'waiting') throws — no id is trusted from a non-terminal bootstrap", async () => {
+test("createOpenSessionFn: bootstrap 'waiting' WITH structured data is HEALTHY — preserveCompletedSessions reports 'waiting' on a finished turn (live smoke 2026-08-02)", async () => {
+  const client = fakeClient(() => ({ status: "waiting", sessionId: "sess-w", data: { ready: true } }));
+  const openSession = createOpenSessionFn({ client });
+  const session = await openSession();
+  assert.equal(session.id, "sess-w");
+});
+
+test("createOpenSessionFn: bootstrap 'waiting' WITHOUT data throws — data-first guard: a data-less waiting session is wedged (likely a HITL approval)", async () => {
   const client = fakeClient(() => ({ status: "waiting", sessionId: "sess-1", data: undefined }));
   const openSession = createOpenSessionFn({ client });
   await assert.rejects(() => openSession(), /waiting/);
@@ -287,19 +296,17 @@ test("the returned session's send(): throws if the turn produced no structured d
   await assert.rejects(() => session.send({ message: "m", outputSchema: {} }), /waiting/);
 });
 
-test("the returned session's send(): throws if the turn's status is NOT 'completed' even though data happens to be present (matches the bootstrap's own strict standard — status is the source of truth, not the presence of data)", async () => {
+test("the returned session's send(): 'waiting' WITH structured data is a VALID result — data-first guard (live smoke 2026-08-02: preserveCompletedSessions' healthy terminal is 'waiting'; requiring 'completed' rejected every successful turn)", async () => {
   let call = 0;
   const client = fakeClient(() => {
     call += 1;
     if (call === 1) return { status: "completed", sessionId: "sess-1", data: { ready: true } };
-    // A "waiting" turn that nonetheless carries a data payload (e.g. a
-    // partial/interim structured emission) must NOT be trusted — only a
-    // genuinely terminal "completed" turn is.
     return { status: "waiting", sessionId: "sess-1", data: { posted: true, reviewUrl: "https://x", verdict: "approve", blockers: [], summaryLine: "line" } };
   });
   const openSession = createOpenSessionFn({ client });
   const session = await openSession();
-  await assert.rejects(() => session.send({ message: "m", outputSchema: {} }), /waiting/);
+  const data = await session.send({ message: "m", outputSchema: {} });
+  assert.equal(data.posted, true);
 });
 
 test("the returned session's close(): resolves without throwing (eve/client's ClientSession has no server-side close call)", async () => {

@@ -233,6 +233,24 @@ export interface OauthProviderAdapter {
    * capability" pattern (`postExchange`, `stateTransport` above).
    */
   envReady?(): boolean;
+  /**
+   * OPTIONAL, additive (W3-T8, owner-visible OAuth setup state,
+   * `.superpowers/sdd/plan-oauth.md`) — the NAMES of this provider's own
+   * extra, provider-specific env vars beyond the generic
+   * `<PROVIDER>_OAUTH_CLIENT_ID`/`_CLIENT_SECRET` pair (mirrors
+   * `envReady`'s own "beyond the generic pair" framing exactly, but
+   * returns the KEYS rather than a boolean — `envReady` answers "is
+   * everything set," `extraEnvKeys` answers "what ELSE, by name, does
+   * this provider need," so `missingOauthEnv` below can report exactly
+   * which vars are absent without a provider name hardcoded anywhere
+   * outside the adapter that owns the requirement). Absent → `[]` (no
+   * extra requirement — every provider before Sentry). Read ONLY by
+   * `missingOauthEnv` below (the owner/admin-only setup-state metadata the
+   * connectors GET route surfaces as `oauthSetup.missingEnv`); never by
+   * `oauthReady`'s own derivation, which keeps using the boolean
+   * `envReady`.
+   */
+  extraEnvKeys?(): string[];
 }
 
 const registry = new Map<string, OauthProviderAdapter>();
@@ -270,4 +288,41 @@ export function oauthConfigFor(provider: string): OauthEnvConfig | null {
   const clientSecret = process.env[`${key}_OAUTH_CLIENT_SECRET`];
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
+}
+
+/**
+ * W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`)
+ * — the NAMES of every env var still missing for `provider` to become
+ * `oauthReady`: the generic `<PROVIDER>_OAUTH_CLIENT_ID`/`_CLIENT_SECRET`
+ * pair `oauthConfigFor` already gates on, PLUS whichever extra
+ * provider-specific vars its registered adapter declares via
+ * `extraEnvKeys()` (Sentry's `SENTRY_OAUTH_INTEGRATION_SLUG`, Cloudflare's
+ * `CLOUDFLARE_OAUTH_SCOPE`) — mirrors `oauthReady`'s own two-gate
+ * derivation (connectors GET route: `oauthAdapterFor` + `oauthConfigFor` +
+ * `envReady?.()`) exactly, but reports WHICH names rather than a boolean.
+ * Returns `[]` once every required var is set (a fully `oauthReady`
+ * provider) — the connectors GET route still includes an empty-array
+ * `oauthSetup.missingEnv` in that case rather than omitting the field, so
+ * `oauthSetup`'s presence answers "is this provider oauth-CAPABLE at all"
+ * independent of "is it ready right now" (`oauthReady` answers that; see
+ * `connector-helpers.ts`'s `ConnectorConfigInput.oauthSetup` doc-comment).
+ * Names only — this never reads a value past checking presence
+ * (`process.env[key]` truthiness), so nothing secret is ever returned, only
+ * which deployment-shape variable is unset. No registered adapter for
+ * `provider` → the generic pair is still checked (harmless, and correct
+ * for a hypothetical provider whose adapter registers later), but
+ * `extraEnvKeys()` contributes nothing (`oauthAdapterFor` returns `null`,
+ * so the optional-chained call short-circuits to `[]`) — in practice the
+ * connectors GET route only ever calls this once it already knows an
+ * adapter is registered (see that route's own `oauthSetup` derivation).
+ */
+export function missingOauthEnv(provider: string): string[] {
+  const key = provider.toUpperCase();
+  const missing: string[] = [];
+  if (!process.env[`${key}_OAUTH_CLIENT_ID`]) missing.push(`${key}_OAUTH_CLIENT_ID`);
+  if (!process.env[`${key}_OAUTH_CLIENT_SECRET`]) missing.push(`${key}_OAUTH_CLIENT_SECRET`);
+  for (const extraKey of oauthAdapterFor(provider)?.extraEnvKeys?.() ?? []) {
+    if (!process.env[extraKey]) missing.push(extraKey);
+  }
+  return missing;
 }

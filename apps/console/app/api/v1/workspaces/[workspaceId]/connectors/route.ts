@@ -18,7 +18,7 @@ import {
   projectExtraConfigValues,
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
-import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
+import { oauthAdapterFor, oauthConfigFor, missingOauthEnv } from "../../../../../../lib/oauth/types";
 // W3-T2: registers the `railway` OAuth adapter — see the oauth callback
 // route's identical import for the full "REACHABILITY" reasoning (this GET
 // route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
@@ -79,6 +79,12 @@ export async function GET(
   if (!membership) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  // Hoisted once so both `oauthSetup`'s own per-provider gate below AND the
+  // response's own `canManage` field read the EXACT same boolean — W3-T8's
+  // own brief calls for "the role check matches how the connectors page
+  // already gates admin-only actions," so this is that check, reused, not
+  // a second hand-copied comparison that could drift from it.
+  const canManage = membership.role === "owner" || membership.role === "admin";
 
   try {
     const [repos, storedConnectors, githubInstallation] = await Promise.all([
@@ -135,6 +141,32 @@ export async function GET(
           oauthAdapterFor(entry.kind) !== null &&
           oauthConfigFor(entry.kind) !== null &&
           (oauthAdapterFor(entry.kind)?.envReady?.() ?? true),
+        // W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/
+        // plan-oauth.md`) — the discoverability fix: `oauthReady` above
+        // renders a provider with a registered-but-unconfigured adapter
+        // BYTE-IDENTICAL to one with no adapter at all, so the deployment
+        // owner had no signal one-click connect existed short of reading
+        // source (the user-reported bug this task fixes). `capable: true`
+        // iff a registered adapter exists (`oauthAdapterFor` — the set of
+        // oauth-CAPABLE providers, derived from the SAME registry
+        // `oauthReady` already reads, never a hardcoded list here or in any
+        // component); `missingEnv` the env var NAMES still unset
+        // (`missingOauthEnv`, never values — metadata, not secrets).
+        // ONLY computed for an owner/admin caller (`canManage`, hoisted
+        // above from the SAME role check this route already uses to gate
+        // `canManage` in the response below) — a member gets `null`, same
+        // as a provider with no adapter at all; this route never leaks
+        // deployment-shape env var names to a non-admin. Not gated on
+        // `oauthReady` itself: `missingEnv` naturally becomes `[]` once
+        // every var is set, so `oauthSetup`'s presence answers "is this
+        // provider oauth-capable, for this caller" independent of "is it
+        // ready right now" — see `connector-helpers.ts`'s
+        // `ConnectorConfigInput.oauthSetup` doc-comment for why the two
+        // stay orthogonal rather than one suppressing the other here.
+        oauthSetup:
+          canManage && oauthAdapterFor(entry.kind) !== null
+            ? { capable: true as const, missingEnv: missingOauthEnv(entry.kind) }
+            : null,
       };
     });
 
@@ -167,7 +199,7 @@ export async function GET(
     ];
     return NextResponse.json({
       connectors: projectConnectors(configs),
-      canManage: membership.role === "owner" || membership.role === "admin",
+      canManage,
     });
   } catch (err) {
     console.error("[connectors] failed to project connectors:", err);

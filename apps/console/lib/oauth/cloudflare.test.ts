@@ -111,6 +111,13 @@ describe("cloudflareOauthAdapter — shape + registration", () => {
       expect(cloudflareOauthAdapter.envReady?.()).toBe(false);
     });
   });
+
+  // W3-T8 (owner-visible OAuth setup state) — the NAME of the same var
+  // envReady checks the presence of, for the connectors GET route's
+  // `oauthSetup.missingEnv` to report by name.
+  it("declares extraEnvKeys as exactly [CLOUDFLARE_OAUTH_SCOPE]", () => {
+    expect(cloudflareOauthAdapter.extraEnvKeys?.()).toEqual(["CLOUDFLARE_OAUTH_SCOPE"]);
+  });
 });
 
 describe("cloudflareOauthAdapter — authorizeUrl", () => {

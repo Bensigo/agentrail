@@ -6,6 +6,7 @@ import { ConnectorStatusBadge } from "./connector-status-badge";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   capabilitySummary,
+  shouldShowOauthSetupHint,
   validateConnectorCredential,
   type ConnectorConnectMeta,
   type ConnectorView,
@@ -246,6 +247,71 @@ function OauthConnectButton({
         {busy ? "Connecting…" : `Connect ${connector.label}`}
       </button>
       {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// OAuth setup state (W3-T8, owner-visible OAuth setup state,
+// `.superpowers/sdd/plan-oauth.md`) — the discoverability fix for the
+// env-gated one-click machinery (#1548-#1552, #1558): BEFORE this task, a
+// provider with a registered adapter (railway/sentry/cloudflare) but
+// incomplete env rendered BYTE-IDENTICAL to a provider with no adapter at
+// all — the bare token form below, nothing more. The deployment owner had
+// zero in-product signal one-click connect existed short of reading
+// source, which is exactly the bug the user reported (twice). Rendered
+// ONLY from `SecretManage`'s `!connector.oauthReady` branch below, gated
+// on `shouldShowOauthSetupHint` (`connector-helpers.ts`) — the connectors
+// GET route already scopes `connector.oauthSetup` to an owner/admin caller
+// (see that field's own doc-comment on `ConnectorConfigInput`), so a
+// member never receives it and this component is unreachable for one; no
+// second, redundant `canManage` check needed here, mirroring how
+// `SetupHelp` above renders unconditionally off data presence alone.
+//
+// Hook-free (props in, JSX out) — deliberately, so it can be called
+// directly and its returned element tree walked in
+// `connector-sheet.test.ts` (this repo's vitest environment is "node", no
+// @testing-library/react/jsdom — same posture as `digest-panel.test.ts`'s
+// `PlanCardBlock`/`PlanCardEmpty`). Exported for exactly that reason.
+// --------------------------------------------------------------------------- //
+export function OauthSetupNotice({
+  connector,
+  setup,
+}: {
+  connector: ConnectorView;
+  setup: NonNullable<ConnectorView["oauthSetup"]>;
+}) {
+  const registrationUrl = connector.connect?.oauthRegistrationUrl;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
+      <p className="text-xs font-semibold text-[var(--gray-12)]">
+        One-click connect available
+      </p>
+      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+        This deployment hasn&apos;t set up one-click {connector.label} connect
+        yet — the environment variables below turn it on. Token-paste still
+        works in the meantime.
+      </p>
+      {setup.missingEnv.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {setup.missingEnv.map((name) => (
+            <li key={name}>
+              <code className="font-mono text-xs text-[var(--gray-11)]">{name}</code>
+            </li>
+          ))}
+        </ul>
+      )}
+      {registrationUrl && (
+        <a
+          href={registrationUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
+        >
+          {connector.label} registration steps
+          <ExternalLink size={11} />
+        </a>
+      )}
     </div>
   );
 }
@@ -538,15 +604,34 @@ function SecretManage({
     </form>
   );
 
-  // Without oauthReady: exactly today's UI — the bare token form, nothing
-  // wrapping it (plan's own pinned "no visual regression" requirement).
-  // W3-T4: four providers (grafana/prometheus/langfuse/datadog) now render
-  // one extra static sentence INSIDE `tokenForm` itself via
-  // `tokenStandardNote` — still the same single shared JSX value returned
-  // from both branches below, so "no visual regression" still holds in the
-  // sense that matters (one code path, not a byte-identical string for
-  // those four providers specifically).
+  // Without oauthReady: today's bare token form, nothing wrapping it (plan's
+  // own pinned "no visual regression" requirement) — now scoped precisely
+  // to a provider with no registered adapter, or one this caller (a
+  // member) gets no `oauthSetup` for. W3-T8 ADDS a calm setup section
+  // ABOVE the token form for the oauth-capable, owner/admin, not-yet-
+  // configured case (`shouldShowOauthSetupHint`, `connector-helpers.ts`)
+  // — the discoverability fix for the user-reported bug that a
+  // registered-but-unconfigured provider looked identical to one with no
+  // one-click path at all; see `OauthSetupNotice`'s own doc-comment. W3-T4:
+  // four providers (grafana/prometheus/langfuse/datadog) render one extra
+  // static sentence INSIDE `tokenForm` itself via `tokenStandardNote` —
+  // still the same single shared JSX value returned from every branch
+  // below, so "no visual regression" still holds in the sense that matters
+  // (one code path, not a byte-identical string for those four providers
+  // specifically).
   if (!connector.oauthReady) {
+    // `setup` re-read into a local so TypeScript narrows it non-null for
+    // the JSX below — `shouldShowOauthSetupHint` alone (a function call)
+    // can't narrow `connector.oauthSetup`'s type at the call site.
+    const setup = connector.oauthSetup;
+    if (setup && shouldShowOauthSetupHint(connector)) {
+      return (
+        <div className="flex flex-col gap-3">
+          <OauthSetupNotice connector={connector} setup={setup} />
+          {tokenForm}
+        </div>
+      );
+    }
     return tokenForm;
   }
 

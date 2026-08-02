@@ -224,6 +224,47 @@ export interface ConnectorConnectMeta {
    */
   oauthHint?: string;
   /**
+   * W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`)
+   * — a pointer to this provider's OWN registration surface (where the
+   * deployment owner registers the vendor OAuth app/integration/client and
+   * obtains the client id/secret this feature's env vars need), rendered
+   * by `OauthSetupNotice` (`connector-sheet.tsx`) alongside the missing
+   * env var names, for a provider that HAS a registered adapter but isn't
+   * `oauthReady` yet. Doc-verified, not invented — every URL here is
+   * either quoted verbatim from the corresponding oauth adapter's own
+   * doc-comment, or the un-suffixed rendering of a doc path already named
+   * there, confirmed live (2026-08-02):
+   *   - railway: the doc page `lib/oauth/railway.ts`'s own doc-comment
+   *     names as its "creating-an-app.md" source — confirmed live, titled
+   *     around "Creating an app," and its own text is the exact source of
+   *     the "Settings → Developer → New OAuth App" click-path ("To
+   *     register a new OAuth app, go to your workspace settings, navigate
+   *     to Developer, and click New OAuth App"). No workspace-agnostic
+   *     in-app URL exists (OAuth apps are workspace-scoped — unlike
+   *     Cloudflare's account-context `?to=/:account/...` shorthand below,
+   *     Railway has no analogous URL shape), so this points at the doc
+   *     page that names the exact steps instead of guessing an app URL.
+   *   - sentry: the doc page `lib/oauth/sentry.ts`'s own doc-comment names
+   *     as its "public-integration.md" source — confirmed live, titled
+   *     "Public Integrations," documents the Redirect URL / Webhook URL
+   *     fields this feature's registration needs. Same reasoning as
+   *     railway: Sentry's own Developer Settings are org-scoped
+   *     (`sentry.io/settings/<org-slug>/developer-settings/`), no
+   *     org-agnostic URL exists to link directly.
+   *   - cloudflare: taken VERBATIM from `lib/oauth/cloudflare.ts`'s own
+   *     doc-comment ("REGISTRATION" section: "direct link
+   *     `https://dash.cloudflare.com/?to=/:account/oauth-clients`"), which
+   *     itself cites `create-an-oauth-client/index.md`'s "Manage Account >
+   *     OAuth clients > Create client" path. Cloudflare's `?to=` shorthand
+   *     resolves the caller's own account context, so — unlike
+   *     railway/sentry — an actual in-app deep link exists and is used
+   *     here directly rather than a docs page.
+   * Absent for every provider without a registered adapter (nothing to
+   * register) — `OauthSetupNotice` renders no link in that case rather
+   * than a broken/invented href.
+   */
+  oauthRegistrationUrl?: string;
+  /**
    * OAuth Connect Wave 3, W3-T4 (`.superpowers/sdd/plan-oauth.md`): one
    * calm sentence stating that API-token connect is this provider's
    * standard integration method — never a "coming soon"/apology framing.
@@ -304,6 +345,29 @@ export interface ConnectorConfigInput {
    * {@link ConnectorView.oauthReady}).
    */
   oauthReady?: boolean;
+  /**
+   * W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`)
+   * — the discoverability fix for `oauthReady` above: before this task, a
+   * provider with a registered adapter but incomplete env rendered
+   * BYTE-IDENTICAL to a provider with no adapter at all (the bare token
+   * form, nothing more) — the deployment owner had zero in-product signal
+   * one-click connect existed short of reading source (the user-reported
+   * bug this task fixes). `capable: true` whenever a provider has a
+   * REGISTERED adapter (`oauthAdapterFor(kind) !== null` — railway,
+   * sentry, cloudflare today, never hardcoded here or in any component;
+   * see {@link ConnectorView.oauthSetup}'s own doc-comment for why this
+   * module never lists providers by name), `missingEnv` the NAMES (never
+   * values) of every env var still unset
+   * (`apps/console/lib/oauth/types.ts`'s `missingOauthEnv`), `[]` once the
+   * provider is fully `oauthReady`. Computed server-side by the connectors
+   * GET route — same "no I/O in this pure model" reasoning as
+   * `oauthReady` — and ONLY populated when the CALLING USER is owner/admin
+   * of the workspace (the SAME `membership.role === "owner" || "admin"`
+   * check the route already uses to compute `canManage`; a member's
+   * response carries `null` here — see the route's own doc-comment).
+   * Absent → `null` (see {@link ConnectorView.oauthSetup}).
+   */
+  oauthSetup?: { capable: true; missingEnv: string[] } | null;
 }
 
 /** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
@@ -338,6 +402,25 @@ export interface ConnectorView {
    * additive to offer) and for every `secret`-connectMethod entry until its
    * adapter + env are both ready. */
   oauthReady: boolean;
+  /**
+   * W3-T8 (owner-visible OAuth setup state) — see
+   * {@link ConnectorConfigInput.oauthSetup}'s own doc-comment. Always
+   * present (never optional) on a projected row, mirroring `oauthReady`:
+   * `null` for every input that doesn't populate it — a member caller (the
+   * route never sends it), a provider with no registered adapter (github,
+   * linear, figma, context7, and every provider before its own adapter
+   * task ships), or a `connectMethod: "oauth"` entry (github is
+   * oauth-native already, nothing additive to set up). Distinct from
+   * `oauthReady`: this answers "is one-click AVAILABLE to set up, and
+   * what's left," independent of whether it's ready RIGHT NOW — a
+   * provider can be `capable` with a non-empty `missingEnv` (not yet
+   * ready) or `capable` with `missingEnv: []` (ready — `oauthReady` is
+   * true for the same provider at that point). The sheet/tile COMBINE both
+   * fields (`shouldShowOauthSetupHint` below) rather than the server
+   * pre-combining them, so `oauthSetup`'s own presence stays a simple,
+   * orthogonal "is this provider oauth-capable, for this caller" fact.
+   */
+  oauthSetup: { capable: true; missingEnv: string[] } | null;
 }
 
 /** Human-facing section metadata for each connector type. */
@@ -488,6 +571,10 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // below it ("Use an API token instead") deliberately.
       oauthHint:
         "Connecting via Railway grants read-only access to your project's deployments and logs — you can use an API token instead if you'd rather not.",
+      // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
+      // doc-comment for the full citation trail (confirmed live
+      // 2026-08-02).
+      oauthRegistrationUrl: "https://docs.railway.com/integrations/oauth/creating-an-app",
       // Generic extra field (Task P0: array shape — see
       // ConnectorConnectMeta.extraConfigFields's own doc-comment) — the
       // token alone doesn't scope which project the investigator reads
@@ -606,6 +693,10 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // disclosure immediately below.
       oauthHint:
         "Connecting via Sentry installs the integration with read-only access to your issues and events — you can use an API token instead if you'd rather not.",
+      // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
+      // doc-comment for the full citation trail (confirmed live
+      // 2026-08-02).
+      oauthRegistrationUrl: "https://docs.sentry.io/integrations/integration-platform/public-integration/",
       // Both required (Task P3's own pinned decision) — unlike Railway's
       // single project id, Sentry has no sensible default project within an
       // org, and the chosen verify/adapter endpoints need both to scope
@@ -914,6 +1005,12 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       // immediately below it.
       oauthHint:
         "Connecting via Cloudflare grants read-only access to your zone's analytics and firewall events — you can use an API token instead if you'd rather not.",
+      // W3-T8 — see ConnectorConnectMeta.oauthRegistrationUrl's own
+      // doc-comment. Taken verbatim from lib/oauth/cloudflare.ts's own
+      // "REGISTRATION" doc-comment, which cites this as a confirmed direct
+      // link (Cloudflare's `?to=` shorthand resolves the caller's own
+      // account context).
+      oauthRegistrationUrl: "https://dash.cloudflare.com/?to=/:account/oauth-clients",
       // Task P8's own pinned decision: a SINGLE secret field (no
       // secretParts — like sentry/prometheus/grafana/vercel above), a
       // single REQUIRED extra config field. UNLIKE every provider above
@@ -1133,8 +1230,36 @@ export function projectConnectors(
         // W3-T1 (OAuth Connect Wave 3) — see ConnectorConfigInput.oauthReady's
         // own doc-comment. Absent input → false.
         oauthReady: cfg?.oauthReady ?? false,
+        // W3-T8 (owner-visible OAuth setup state) — see
+        // ConnectorConfigInput.oauthSetup's own doc-comment. Absent input
+        // (a member caller, or a route that predates this task) → null.
+        oauthSetup: cfg?.oauthSetup ?? null,
       };
     });
+}
+
+/**
+ * W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`)
+ * — whether the "one-click connect available, not yet configured" nudge
+ * should show for this connector: a registered adapter for it
+ * (`oauthSetup` non-null — the connectors GET route already gated this on
+ * the caller being owner/admin, see {@link ConnectorView.oauthSetup}'s own
+ * doc-comment, so this function never needs a separate role check of its
+ * own), not yet `oauthReady`, and not already connected (a connected
+ * provider has nothing left to set up, regardless of env state —
+ * token-paste already got it there). Shared by `connector-sheet.tsx`'s
+ * `SecretManage` (the setup section above the token form) and
+ * `connectors-panel.tsx`'s `ConnectorTile` (the small "Setup" tag) so both
+ * surfaces agree on exactly one definition of "should this nudge appear,"
+ * rather than two hand-copied boolean expressions drifting apart over
+ * time.
+ */
+export function shouldShowOauthSetupHint(connector: ConnectorView): boolean {
+  return (
+    connector.oauthSetup !== null &&
+    !connector.oauthReady &&
+    connector.status !== "connected"
+  );
 }
 
 /** The connectors counted as actively driving the heartbeat (connected + enabled). */

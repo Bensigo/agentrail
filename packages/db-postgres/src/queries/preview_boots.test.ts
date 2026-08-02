@@ -356,29 +356,43 @@ describe.skipIf(!DB_AVAILABLE)(
         expect((await readPreviewBoot(a.id)).status).toBe("torn_down"); // still dead
       });
 
-      it("concurrent enqueues for the SAME PR never mutually-supersede — exactly one survivor", async () => {
-        const prNumber = 900;
-        const [a, b] = await Promise.all([
-          enqueuePreviewBoot({
-            workspaceId: wsId,
-            repo: "acme/widgets",
-            prNumber,
-            headSha: "race-a",
-            ref: "race-a",
-          }),
-          enqueuePreviewBoot({
-            workspaceId: wsId,
-            repo: "acme/widgets",
-            prNumber,
-            headSha: "race-b",
-            ref: "race-b",
-          }),
-        ]);
+      // Fix round 1 (task-2 review, Important #2): looped 5x with a fresh PR
+      // number per iteration to give the race a real chance to land —
+      // Promise.all starts both calls in the same tick, but a single
+      // unlucky iteration proves nothing either way. Mirrors
+      // review-jobs.integration.test.ts's own analogous test ("concurrent
+      // enqueues for the SAME PR never mutually-supersede") byte-for-byte in
+      // structure and intent — this is the single test most directly
+      // guarding against the historical mutual-supersede bug the advisory
+      // lock exists to prevent.
+      it("concurrent enqueues for the SAME PR never mutually-supersede — exactly one survivor every time", async () => {
+        for (let i = 0; i < 5; i++) {
+          const prNumber = 900 + i;
+          const [a, b] = await Promise.all([
+            enqueuePreviewBoot({
+              workspaceId: wsId,
+              repo: "acme/widgets",
+              prNumber,
+              headSha: `race-a-${i}`,
+              ref: `race-a-${i}`,
+            }),
+            enqueuePreviewBoot({
+              workspaceId: wsId,
+              repo: "acme/widgets",
+              prNumber,
+              headSha: `race-b-${i}`,
+              ref: `race-b-${i}`,
+            }),
+          ]);
 
-        const rowA = await readPreviewBoot(a.id);
-        const rowB = await readPreviewBoot(b.id);
-        const statuses = [rowA.status, rowB.status].sort();
-        expect(statuses).toEqual(["pending", "torn_down"]);
+          const rowA = await readPreviewBoot(a.id);
+          const rowB = await readPreviewBoot(b.id);
+          const statuses = [rowA.status, rowB.status].sort();
+          // Exactly one survivor — either order is fine, but NEVER both
+          // 'torn_down' (the mutual-supersede bug) and NEVER both 'pending'
+          // (would mean the supersede silently failed to run at all).
+          expect(statuses).toEqual(["pending", "torn_down"]);
+        }
       });
     });
 
@@ -415,6 +429,10 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(claimed?.claimedAt).not.toBeNull();
         expect(claimed?.lastLivenessAt).not.toBeNull();
         expect(claimed?.expiresAt).not.toBeNull();
+        // Fix round 1 (task-2 review, Minor #1): explicit type check so a
+        // regression to a raw wire string (unmapped timestamptz) fails here
+        // with a clear message, not an incidental TypeError from .getTime().
+        expect(claimed?.expiresAt).toBeInstanceOf(Date);
         const deltaMs = claimed!.expiresAt!.getTime() - before;
         expect(deltaMs).toBeGreaterThan(595_000);
         expect(deltaMs).toBeLessThan(605_000);
@@ -511,6 +529,7 @@ describe.skipIf(!DB_AVAILABLE)(
         });
 
         expect(result?.status).toBe("booting");
+        expect(result?.lastLivenessAt).toBeInstanceOf(Date);
         expect(result!.lastLivenessAt!.getTime()).toBeGreaterThan(
           Date.now() - 5000
         );
@@ -596,9 +615,35 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(result?.status).toBe("ready");
         expect(result?.url).toBe("http://127.0.0.1:5000");
         expect(result?.port).toBe(5000);
+        expect(result?.lastLivenessAt).toBeInstanceOf(Date);
         expect(result!.lastLivenessAt!.getTime()).toBeGreaterThan(
           Date.now() - 5000
         );
+      });
+
+      // Fix round 1 (task-2 review, Minor #2): pins the CURRENT, intentional
+      // behavior — an explicit `null` is indistinguishable from an omitted
+      // `undefined` (COALESCE treats both as "keep the existing value").
+      // There is no way to clear an already-set url/port via this function.
+      it("'ready' report with explicit null url/port preserves existing values — identical to omitting them", async () => {
+        const id = await insertPreviewBoot(wsId, {
+          status: "ready",
+          workerId: "w1",
+          url: "http://127.0.0.1:6000",
+          port: 6000,
+        });
+
+        const result = await reportPreviewBoot({
+          id,
+          workerId: "w1",
+          status: "ready",
+          url: null,
+          port: null,
+        });
+
+        expect(result?.status).toBe("ready");
+        expect(result?.url).toBe("http://127.0.0.1:6000");
+        expect(result?.port).toBe(6000);
       });
 
       it("'ready' is REJECTED from 'pending' (never claimed) — null no-op", async () => {
@@ -782,16 +827,32 @@ describe.skipIf(!DB_AVAILABLE)(
         expect(row.status).toBe("ready");
       });
 
-      it("does NOT touch a 'pending' row regardless of age (no liveness has ever been reported for it)", async () => {
+      it("does NOT touch a fresh 'pending' row (well within the pending-stale threshold)", async () => {
         const id = await insertPreviewBoot(wsId, {
           status: "pending",
-          createdAt: new Date(Date.now() - 60 * 60 * 1000),
+          createdAt: new Date(Date.now() - 10_000), // 10s old, well under 600s
         });
 
         await expireStalePreviewBoots();
 
         const row = await readPreviewBoot(id);
         expect(row.status).toBe("pending");
+      });
+
+      // Fix round 1 (task-2 review, Important #1): a 'pending' row that no
+      // worker ever claims previously had no automatic terminal state — it
+      // would sit 'pending' forever. This pins the new age-based sweep.
+      it("flips a 'pending' row older than the pending-stale threshold to 'failed'/'never_claimed' — nobody ever claimed it", async () => {
+        const id = await insertPreviewBoot(wsId, {
+          status: "pending",
+          createdAt: new Date(Date.now() - 700_000), // > 600s
+        });
+
+        await expireStalePreviewBoots();
+
+        const row = await readPreviewBoot(id);
+        expect(row.status).toBe("failed");
+        expect(row.reason).toBe("never_claimed");
       });
 
       it("does NOT touch an already-terminal row (failed/torn_down are excluded from the sweep's own WHERE)", async () => {

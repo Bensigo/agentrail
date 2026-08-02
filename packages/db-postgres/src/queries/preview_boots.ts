@@ -27,8 +27,9 @@ import type { PreviewBootRow } from "../schema/preview_boots.js";
  * state after a stale timeout — a boot whose liveness goes stale is failed
  * outright (see `expireStalePreviewBoots` below and the schema's own
  * lifecycle doc-comment, which lists no back-to-pending path). This is why
- * `claimPreviewBoot`'s pre-pass is a single sweep (`expireStalePreviewBoots`)
- * rather than review_jobs.ts's two-part
+ * `claimPreviewBoot`'s pre-pass is one function call
+ * (`expireStalePreviewBoots`, which itself runs two independent UPDATE
+ * sweeps — see its own doc-comment) rather than review_jobs.ts's two-part
  * requeue-stale-running-then-fail-exhausted-queued pair.
  */
 
@@ -242,33 +243,55 @@ export async function enqueuePreviewBoot(input: {
 const STALE_SECONDS = 180;
 
 /**
- * Sweep: fail any non-terminal boot whose liveness has gone stale.
+ * A `pending` boot that has sat this long with NO worker ever claiming it is
+ * presumed unclaimable — the worker pool is down, overloaded, or nothing is
+ * currently able to service it. 600s (10 min) is comfortably longer than a
+ * single worker restart/deploy (a routine bounce must not falsely expire a
+ * row that would have been claimed moments later), while still short enough
+ * to keep the queue honest — a request nobody has picked up in 10 minutes is
+ * stuck, not "about to be claimed," and deserves a terminal answer rather
+ * than an indefinite hang.
  *
- * Deliberately UNCONDITIONAL — unlike `review_jobs.ts`'s analogous stale
- * pre-pass (`requeueStaleRunningReviewJobs`), which puts a stale row BACK to
- * `queued` for another attempt, a preview boot is single-attempt (see this
- * module's own top doc-comment): a stale `claimed`/`booting`/`ready` row
- * goes straight to terminal `failed`, never back to `pending`. This matches
- * `schema/preview_boots.ts`'s own lifecycle doc-comment, which lists no
- * back-to-pending path at all.
+ * Fix round 1 (task-2 review, Important #1): the brief's original "pending
+ * ... attempts exhausted" wording is dead as literally written — nothing in
+ * this module ever advances `attempts` for a `pending` row (see this task's
+ * report for the full analysis) — but the underlying PRODUCT gap it was
+ * pointing at is real: without this sweep, a `pending` row nobody ever
+ * claims sits forever with no automatic terminal state. This constant
+ * replaces the source docs' undefined "N min" placeholder with a concrete,
+ * `attempts`-free age check instead.
+ */
+const PENDING_STALE_SECONDS = 600;
+
+/**
+ * Sweep: fail (a) any non-terminal `claimed`/`booting`/`ready` boot whose
+ * liveness has gone stale, and (b) any `pending` boot that has sat unclaimed
+ * too long. Two separate UPDATE statements, one per concern — mirrors
+ * `review_jobs.ts`'s own two-separate-pre-pass-statements idiom
+ * (`requeueStaleRunningReviewJobs` + `failStaleQueuedReviewJobs`) rather than
+ * fusing both into one CASE-driven UPDATE: each sweep has its own WHERE
+ * column (`last_liveness_at` vs `created_at`) and its own terminal `reason`,
+ * so keeping them separate keeps each independently readable and testable.
+ *
+ * (a) Liveness sweep, deliberately UNCONDITIONAL — unlike `review_jobs.ts`'s
+ * analogous stale pre-pass (`requeueStaleRunningReviewJobs`), which puts a
+ * stale row BACK to `queued` for another attempt, a preview boot is
+ * single-attempt (see this module's own top doc-comment): a stale
+ * `claimed`/`booting`/`ready` row goes straight to terminal `failed`, never
+ * back to `pending`. This matches `schema/preview_boots.ts`'s own lifecycle
+ * doc-comment, which lists no back-to-pending path at all.
  *
  * `last_liveness_at` is never NULL for a row this predicate can match:
  * `claimPreviewBoot` itself sets it at claim time, and every
  * `reportPreviewBoot` call bumps it again — so a `claimed`/`booting`/`ready`
  * row always has a real timestamp to compare against.
  *
- * SCOPE NOTE (deliberate, not an oversight): the plan's prose for this
- * function also mentions failing a `pending` boot that has sat unclaimed
- * past some age with its retry budget exhausted. That clause carries no
- * concrete threshold anywhere in the plan or spec, and nothing in this
- * task's own interfaces (`claimPreviewBoot`, `reportPreviewBoot`) ever
- * advances `attempts` for a still-`pending` row — there is no requeue path
- * that bumps it, so "attempts exhausted" has no defined meaning yet for a
- * row that has never been claimed. Inventing an arbitrary age/attempts
- * threshold here would be undocumented, untested behavior a later task
- * would have to reverse-engineer. Left for whichever task actually defines
- * that policy (most likely alongside the request route or the worker's own
- * abandonment handling) — see this task's report for the full call-out.
+ * (b) Pending sweep — a `pending` row has never been claimed, so there is no
+ * liveness signal to check; `created_at` is the only clock available. See
+ * `PENDING_STALE_SECONDS`'s own doc-comment for the threshold's rationale.
+ * `reason = 'never_claimed'` is deliberately distinct from the liveness
+ * sweep's `'stale'` so a caller/operator can tell "nobody ever picked this
+ * up" apart from "a worker picked it up and then went dark" at a glance.
  */
 export async function expireStalePreviewBoots(): Promise<void> {
   await db.execute(sql`
@@ -276,6 +299,13 @@ export async function expireStalePreviewBoots(): Promise<void> {
     SET status = 'failed', reason = 'stale', updated_at = now()
     WHERE status IN ('claimed', 'booting', 'ready')
       AND last_liveness_at < now() - (${STALE_SECONDS} || ' seconds')::interval
+  `);
+
+  await db.execute(sql`
+    UPDATE preview_boots
+    SET status = 'failed', reason = 'never_claimed', updated_at = now()
+    WHERE status = 'pending'
+      AND created_at < now() - (${PENDING_STALE_SECONDS} || ' seconds')::interval
   `);
 }
 
@@ -344,10 +374,15 @@ export type ReportPreviewBootInput = {
    *  current claimant always gets a `null` no-op, never a transition. */
   workerId: string;
   status: "booting" | "ready" | "failed" | "torn_down";
-  /** Written on a 'ready' report; omitted (`undefined`) preserves whatever
-   *  the column already holds (see the 'ready' branch's own comment). */
+  /** Written on a 'ready' report. NOTE (Fix round 1, task-2 review Minor
+   *  #2): an explicit `null` and an omitted `undefined` are indistinguishable
+   *  here — BOTH preserve whatever the column already holds (see the
+   *  'ready' branch's own comment on the `COALESCE` it uses). There is
+   *  currently no way to clear an already-set `url` back to null via this
+   *  function; no caller needs that today. */
   url?: string | null;
-  /** Written on a 'ready' report; same omit-preserves semantics as `url`. */
+  /** Written on a 'ready' report; same omit-and-explicit-null-both-preserve
+   *  semantics as `url` above. */
   port?: number | null;
   /** Written on a 'failed'/'torn_down' report. */
   reason?: string | null;

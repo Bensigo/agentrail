@@ -386,9 +386,10 @@ test("documents that the bootstrap now runs once per claimed job (idle ticks are
   assert.match(code, /idle/i);
 });
 
-test("documents the mechanism as UNVERIFIED against a live eve server and names the recommended smoke test", () => {
-  assert.match(code, /UNVERIFIED/);
-  assert.match(code, /smoke test/i);
+test("documents the live-smoke VERIFIED status, the in-process wedge constraint, and the standalone entrypoint", () => {
+  assert.match(code, /VERIFIED end-to-end OUT-OF-PROCESS/);
+  assert.match(code, /IN-PROCESS worker[\s\S]*WEDGES/);
+  assert.match(code, /scripts\/review-worker\.mjs/);
 });
 
 test("documents the binding-before-real-turn invariant explicitly", () => {

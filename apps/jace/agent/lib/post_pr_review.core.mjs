@@ -92,11 +92,108 @@ const AC_STATUS_RENDER = {
   unclear: (c) => `- ❓ ${c.criterion} — can't tell from the diff`,
 };
 
+// Cap on evidence links rendered per AC entry (B2a §3). Mirrors the QA
+// contract's own MAX_EVIDENCE_IMAGES (agent/subagents/qa/lib/qa.core.mjs),
+// but is re-declared here rather than imported — this module stays
+// dependency-free of the others by design (see the file header). Only the
+// first MAX_RENDERED_EVIDENCE_LINKS raw entries are even considered, so a
+// caller that ignores its own cap cannot force unbounded work here either.
+const MAX_RENDERED_EVIDENCE_LINKS = 4;
+
+/**
+ * Sanitize one `evidence_images` URL before it is embedded in a markdown
+ * link destination, `[text](HERE)`. Never throws; anything that doesn't
+ * come out as a plausible http(s) URL is dropped ("" — the caller skips it)
+ * rather than rendered.
+ *
+ * Two structural defenses, both required — the same class of attack this
+ * module's own composeSummary security fix already documents for `summary`
+ * (see that function's header comment on the `coverageRendered` gate),
+ * arriving through a new field:
+ *
+ *   1. Every control character is stripped, deliberately INCLUDING \n and
+ *      \r (0x0A / 0x0D) — unlike hardenUntrusted's stripInvisibles(), which
+ *      explicitly PRESERVES those two ("handled as whitespace/newlines
+ *      above, not deleted": correct for a chat-rendered prose body, wrong
+ *      for a single-line URL token, which is why this function does not
+ *      reuse that one). A raw newline here would split what composeSummary
+ *      treats as ONE rendered AC line into two — and if the injected second
+ *      "line" were crafted to start with "AC coverage: ", it would be
+ *      indistinguishable, by composeSummary's own text-prefix check, from
+ *      the genuine, code-generated count line that
+ *      composeSummaryWithCoverage's hard guarantee protects from
+ *      truncation. With no newline able to reach the rendered block, no new
+ *      line can ever be forged by this field — closed off structurally,
+ *      not merely by the gate's own correctness.
+ *   2. The scheme is restricted to http(s) (dropping anything else, e.g. a
+ *      `javascript:` URL), and characters that could break out of — or open
+ *      a second — `(...)` destination on the SAME line (parens, backslash,
+ *      angle brackets, residual whitespace) are percent-encoded rather than
+ *      passed through raw.
+ * @param {unknown} url
+ * @returns {string}
+ */
+function sanitizeEvidenceUrl(url) {
+  if (typeof url !== "string") return "";
+  let safe = "";
+  for (const ch of url) {
+    const code = ch.codePointAt(0);
+    if (code < 0x20 || code === 0x7f) continue; // strips \n \r \t + every other control byte
+    safe += ch;
+  }
+  safe = safe.trim();
+  if (!/^https?:\/\//i.test(safe)) return "";
+  // NOT encodeURIComponent: it deliberately leaves `(` `)` `!` `*` `'` raw
+  // (JS's legacy RFC-2396 "unreserved" set) — exactly the characters that
+  // matter most here, since an unescaped `)` is what closes a markdown link
+  // destination early. Percent-encode every targeted code unit by hand
+  // instead, so `(`/`)`/`<`/`>`/`\`/whitespace are ALWAYS escaped regardless
+  // of what any URI-encoding helper considers "safe".
+  return safe.replace(/[()<>\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+
+/**
+ * Render an AC entry's `evidence_images` as trailing markdown links, e.g.
+ * " — [evidence 1](url) [evidence 2](url)". Deliberately plain links, never
+ * `![]()` image embeds: these are short-lived signed GETs (B2a's
+ * signedGetUrl, 30-day TTL), and a broken inline image reads as more
+ * damning than a broken link once one expires — GitHub still shows the link
+ * text and a human can tell at a glance it merely went stale, where a dead
+ * `<img>` renders as a conspicuous broken-image icon.
+ *
+ * Only the first MAX_RENDERED_EVIDENCE_LINKS raw entries are even
+ * considered; non-string entries and anything sanitizeEvidenceUrl rejects
+ * are skipped rather than rendered as broken markdown, and the surviving
+ * links are numbered in render order (never the original array index, so a
+ * skipped entry never leaves a gap like "evidence 1 ... evidence 3"). Absent,
+ * non-array, empty, or all-rejected input renders "" — the caller's line is
+ * then byte-identical to a call that never knew about evidence_images.
+ * @param {unknown} evidenceImages
+ * @returns {string}
+ */
+function renderEvidenceLinks(evidenceImages) {
+  if (!Array.isArray(evidenceImages) || evidenceImages.length === 0) return "";
+  const links = [];
+  for (const raw of evidenceImages.slice(0, MAX_RENDERED_EVIDENCE_LINKS)) {
+    const safeUrl = sanitizeEvidenceUrl(raw);
+    if (!safeUrl) continue;
+    links.push(`[evidence ${links.length + 1}](${safeUrl})`);
+  }
+  return links.length ? ` — ${links.join(" ")}` : "";
+}
+
 /**
  * Render the coverage checklist: issue-numbered groups ascending, then the
  * PR-description group (issueNumber: null) last, labeled as self-stated.
  * Malformed entries are skipped, never guessed at. Returns "" when there is
  * nothing renderable.
+ *
+ * When an entry carries a non-empty `evidence_images` array (QA's per-AC
+ * screenshots, B2a §2 — folded into this same coverage by root before
+ * calling post_pr_review; see instructions.md's "Relay acCoverage verbatim
+ * too" rule), its rendered line gains trailing evidence links (see
+ * renderEvidenceLinks). An entry with no `evidence_images` — absent, null,
+ * or an empty array — renders byte-identically to before that field existed.
  * @param {unknown} acCoverage
  * @returns {string}
  */
@@ -110,10 +207,11 @@ export function renderAcCoverage(acCoverage) {
     if (typeof entry.criterion !== "string" || entry.criterion.trim().length === 0) continue;
     const key = typeof entry.issueNumber === "number" ? entry.issueNumber : null;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(render({
+    const line = render({
       criterion: entry.criterion.trim(),
       evidence: typeof entry.evidence === "string" ? entry.evidence.trim() : "",
-    }));
+    });
+    groups.get(key).push(line + renderEvidenceLinks(entry.evidence_images));
   }
   if (groups.size === 0) return "";
   const issueNumbers = [...groups.keys()].filter((k) => k !== null).sort((a, b) => a - b);
@@ -464,7 +562,11 @@ export function sanitizeReviewInput(summary, comments) {
  * `summary` by `composeSummary` BEFORE this function's call to
  * `sanitizeReviewInput` hardens it, so it is never posted unhardened.
  * Omitted or null leaves the posted body byte-identical to a call that never
- * knew about coverage at all.
+ * knew about coverage at all. An entry may additionally carry
+ * `evidence_images` (B2a §3) — QA's per-AC screenshots, folded into this
+ * same array by root for behavioral ACs — which `renderAcCoverage` renders
+ * as trailing, sanitized markdown links on that entry's line; entries
+ * without it are unaffected.
  *
  * `judgment` (default null): Task 6's structured judgment ({verdict, note,
  * basis} × simplest/architecture/debt/hiddenRisks), relayed by root

@@ -138,6 +138,18 @@ test("root instructions: acCoverage is relayed verbatim to post_pr_review, never
   assert.ok(/acCoverage[^.]*verbatim/i.test(prose));
 });
 
+// B2a's Task 6 (2026-08-02, docs/superpowers/plans/2026-08-02-b2a-visual-
+// evidence.md): when qa's ac_results get folded into acCoverage for
+// behavioral ACs, their evidence_images must ride that same fold verbatim —
+// this is root's only instruction that the field exists at all, so deleting
+// it silently stops evidence from ever reaching post_pr_review's acCoverage
+// argument even though the tool and renderer both support it.
+test("root instructions: qa's evidence_images ride the acCoverage fold verbatim into the posted per-AC lines", () => {
+  const prose = instructions();
+  assert.ok(prose.includes("evidence_images"));
+  assert.match(prose, /evidence_images[^.]*verbatim/i);
+});
+
 test("root instructions: null coverage is reported as a diff-only review, echoing the reviewer's reason", () => {
   const prose = instructions();
   assert.ok(/diff-only/.test(prose));

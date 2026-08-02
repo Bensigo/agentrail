@@ -100,6 +100,50 @@ const AC_STATUS_RENDER = {
 // caller that ignores its own cap cannot force unbounded work here either.
 const MAX_RENDERED_EVIDENCE_LINKS = 4;
 
+// Extra invisible/control/bidi code points sanitizeEvidenceUrl strips,
+// beyond the plain C0/DEL range it already handles inline (see that
+// function). Mirrors — rather than imports; this module stays
+// dependency-free of the others, see the file header — hardenUntrusted's
+// own INVISIBLES class in sanitize-untrusted.core.mjs, minus that class's
+// C0/DEL ranges (0x00-0x08/0x0b-0x0c/0x0e-0x1f/0x7f-0x9f's DEL half), which
+// sanitizeEvidenceUrl's own first pass already covers more broadly (it also
+// strips \t/\n/\r, which hardenUntrusted deliberately preserves — no such
+// exception belongs on a URL). So the URL sanitizer is never NARROWER than
+// the prose one: none of these — soft hyphen, combining grapheme joiner,
+// the Arabic letter mark, zero-width space/joiners, bidi embeddings/
+// overrides (Trojan Source), the word-joiner block, variation selectors,
+// ZWNBSP/BOM, interlinear annotation anchors, or the Unicode Tags block —
+// has any more legitimate place in a URL than in a chat message.
+//
+// Expressed as plain numeric ranges + a linear scan, not a regex: several
+// of these ranges are themselves astral (0xE0000+) or line-breaking
+// (U+2028/2029 territory is adjacent to some of these blocks), so building
+// this as a regex literal risks the exact raw-byte-in-source-file mistake
+// LINE_BREAK_CHARS above was written to avoid. A codePointAt/linear-scan
+// check has no such failure mode and needs no `u` flag or escape-sequence
+// authoring at all.
+const EXTRA_INVISIBLE_RANGES = [
+  [0x80, 0x9f], // C1 controls
+  [0xad, 0xad], // soft hyphen
+  [0x34f, 0x34f], // combining grapheme joiner
+  [0x61c, 0x61c], // Arabic letter mark
+  [0x200b, 0x200f], // zero-width space/joiners + LRM/RLM
+  [0x202a, 0x202e], // bidi embeddings/overrides (Trojan Source)
+  [0x2060, 0x206f], // word-joiner / invisible math / deprecated format
+  [0xfe00, 0xfe0e], // variation selectors VS-1..VS-15 (FE0F/VS-16 kept for emoji)
+  [0xfeff, 0xfeff], // ZWNBSP / BOM
+  [0xfff9, 0xfffb], // interlinear annotation anchors
+  [0xe0000, 0xe007f], // Unicode Tags block (invisible ASCII)
+  [0xe0100, 0xe01ef], // variation selectors supplement VS-17..VS-256 (byte smuggling)
+];
+
+function isExtraInvisible(codePoint) {
+  for (const [lo, hi] of EXTRA_INVISIBLE_RANGES) {
+    if (codePoint >= lo && codePoint <= hi) return true;
+  }
+  return false;
+}
+
 /**
  * Sanitize one `evidence_images` URL before it is embedded in a markdown
  * link destination, `[text](HERE)`. Never throws; anything that doesn't
@@ -124,7 +168,10 @@ const MAX_RENDERED_EVIDENCE_LINKS = 4;
  *      composeSummaryWithCoverage's hard guarantee protects from
  *      truncation. With no newline able to reach the rendered block, no new
  *      line can ever be forged by this field — closed off structurally,
- *      not merely by the gate's own correctness.
+ *      not merely by the gate's own correctness. The same pass also drops
+ *      every EXTRA_INVISIBLE_RANGES code point (C1 controls, bidi
+ *      overrides, zero-width smuggling, ...) for parity with
+ *      hardenUntrusted's own INVISIBLES sweep — see that constant's comment.
  *   2. The scheme is restricted to http(s) (dropping anything else, e.g. a
  *      `javascript:` URL), and characters that could break out of — or open
  *      a second — `(...)` destination on the SAME line (parens, backslash,
@@ -138,7 +185,9 @@ function sanitizeEvidenceUrl(url) {
   let safe = "";
   for (const ch of url) {
     const code = ch.codePointAt(0);
-    if (code < 0x20 || code === 0x7f) continue; // strips \n \r \t + every other control byte
+    // strips \n \r \t + every other C0/DEL control byte, plus the wider
+    // invisible/bidi sweep above.
+    if (code < 0x20 || code === 0x7f || isExtraInvisible(code)) continue;
     safe += ch;
   }
   safe = safe.trim();
@@ -167,10 +216,13 @@ function sanitizeEvidenceUrl(url) {
  * Render an AC entry's `evidence_images` as trailing markdown links, e.g.
  * " — [evidence 1](url) [evidence 2](url)". Deliberately plain links, never
  * `![]()` image embeds: these are short-lived signed GETs (B2a's
- * signedGetUrl, 30-day TTL), and a broken inline image reads as more
- * damning than a broken link once one expires — GitHub still shows the link
- * text and a human can tell at a glance it merely went stale, where a dead
- * `<img>` renders as a conspicuous broken-image icon.
+ * signedGetUrl; apps/console/lib/artifacts/store.ts clamps the interface's
+ * literal 30-day default to SigV4's own hard 7-day ceiling for static
+ * credentials — MAX_SIGV4_PRESIGN_TTL_SECONDS, that module's own doc-comment
+ * has the full story), and a broken inline image reads as more damning than
+ * a broken link once one expires — GitHub still shows the link text and a
+ * human can tell at a glance it merely went stale, where a dead `<img>`
+ * renders as a conspicuous broken-image icon.
  *
  * Only the first MAX_RENDERED_EVIDENCE_LINKS raw entries are even
  * considered; non-string entries and anything sanitizeEvidenceUrl rejects
@@ -355,7 +407,22 @@ const JUDGMENT_VERDICT_TEXT = {
 const NEGATIVE_JUDGMENT_VERDICTS = new Set(["no", "violates", "introduces", "found"]);
 const JUDGMENT_NOTE_MAX = 200;
 
-/** One compact line; negative verdicts carry their note (capped) and basis ids. */
+/**
+ * One compact line; negative verdicts carry their note (capped) and basis
+ * ids. `note` is run through stripLineBreaks (see its own doc comment)
+ * before capping/interpolation, same as renderAcCoverage's criterion/
+ * evidence: `note` is the reviewer's own free-text justification over
+ * UNTRUSTED, diff-derived content (this module's own header), so an
+ * internal newline could otherwise impersonate a standalone forged line
+ * (e.g. "AC coverage: ..." or a second "**Judgment:**") in the posted
+ * comment — the SAME forgery class, arriving through a third field.
+ * `basis` is also run through it, defense-in-depth: the reviewer's own
+ * validator constrains basis entries to `^i\d+$` before they ever reach
+ * here, but that validation lives in a different module entirely
+ * (reviewer.core.mjs) that this one has no way to verify actually ran —
+ * belt-and-suspenders so a future change to that validator can't silently
+ * reopen this.
+ */
 export function renderJudgmentLine(judgment) {
   if (judgment === null || typeof judgment !== "object" || Array.isArray(judgment)) return "";
   const parts = [];
@@ -366,9 +433,10 @@ export function renderJudgmentLine(judgment) {
     if (!verdict) continue;
     let part = `${JUDGMENT_LABELS[field]}: ${verdict}`;
     if (NEGATIVE_JUDGMENT_VERDICTS.has(j.verdict) && typeof j.note === "string" && j.note.trim()) {
-      const note = j.note.trim();
+      const note = stripLineBreaks(j.note.trim());
       const capped = note.length > JUDGMENT_NOTE_MAX ? `${note.slice(0, JUDGMENT_NOTE_MAX)}…` : note;
-      const basis = Array.isArray(j.basis) && j.basis.length ? ` (${j.basis.join(", ")})` : "";
+      const basis =
+        Array.isArray(j.basis) && j.basis.length ? ` (${stripLineBreaks(j.basis.join(", "))})` : "";
       part += ` — ${capped}${basis}`;
     }
     parts.push(part);

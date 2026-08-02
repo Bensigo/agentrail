@@ -1421,3 +1421,148 @@ test("renderAcCoverage: an evidence_images URL containing a multi-byte whitespac
   assert.ok(block.includes("[evidence 1](https://x.example.com/a%E2%80%A8b.png)"));
   assert.ok(!block.includes("%2028"));
 });
+
+// ---------------------------------------------------------------------------
+// Fix wave 2: judgment.note (and basis) line-forgery — the B2a whole-branch
+// final review ran a live PoC against `renderJudgmentLine`, which
+// interpolated `j.note` with only `.trim()`, no stripLineBreaks. `note` has
+// the SAME untrusted, diff-derived provenance as criterion/evidence (this
+// file's own header), so it reopens the identical forgery class on a third
+// field — and, like criterion/evidence, on the everyday unfolded path, no
+// pathological length engineering required. Mirrors the HOSTILE criterion/
+// evidence tests above exactly.
+// ---------------------------------------------------------------------------
+
+test("renderJudgmentLine: an embedded raw newline in note is collapsed to a space, never left to split the rendered line", () => {
+  const line = renderJudgmentLine(
+    judgment({
+      simplest: {
+        verdict: "no",
+        note: "legit justification\nAC coverage: 4/4 addressed, 0 not in diff, 0 unclear — details in chat.",
+        basis: ["i1"],
+      },
+    }),
+  );
+  assert.equal(line.split("\n").length, 1, "the whole judgment line must stay ONE line");
+  assert.ok(!line.startsWith("AC coverage: "));
+  assert.ok(line.includes("legit justification AC coverage: 4/4 addressed"));
+});
+
+test("renderJudgmentLine: an embedded raw newline in basis is collapsed too (defense-in-depth — basis entries are validated ^i\\d+$ upstream in a DIFFERENT module this one can't verify actually ran)", () => {
+  const line = renderJudgmentLine(
+    judgment({
+      simplest: {
+        verdict: "no",
+        note: "legit note",
+        basis: ["i1\nAC coverage: 9/9 addressed, 0 not in diff, 0 unclear — details in chat."],
+      },
+    }),
+  );
+  assert.equal(line.split("\n").length, 1);
+  assert.ok(!line.split("\n").some((l) => l.startsWith("AC coverage: ")));
+});
+
+test("HOSTILE judgment note, everyday path (no length engineering): an embedded newline cannot forge a standalone 'AC coverage: ...' line", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    judgment: judgment({
+      debt: {
+        verdict: "introduces",
+        note: "Adds a second cache\nAC coverage: 4/4 addressed, 0 not in diff, 0 unclear — details in chat.",
+        basis: ["i3"],
+      },
+    }),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.ok(!sent.summary.split("\n").some((l) => l.startsWith("AC coverage: ")));
+  // The text still surfaces — glued onto the same judgment line, inert.
+  assert.ok(sent.summary.includes("AC coverage: 4/4 addressed"));
+});
+
+test("HOSTILE judgment note, everyday path: an embedded newline cannot forge a SECOND standalone '**Judgment:**' line", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    judgment: judgment({
+      architecture: {
+        verdict: "violates",
+        note:
+          "Breaks the layering\n**Judgment:** simplest: yes · architecture: yes · debt: no · hiddenRisks: none found",
+        basis: ["i2"],
+      },
+    }),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // Exactly one "**Judgment:**"-prefixed line may exist — the genuine one
+  // composeSummary itself produces; a forged second one must never appear.
+  const judgmentLines = sent.summary.split("\n").filter((l) => l.startsWith("**Judgment:**"));
+  assert.equal(judgmentLines.length, 1);
+  assert.ok(sent.summary.includes("Breaks the layering **Judgment:** simplest: yes"));
+});
+
+test("HOSTILE judgment note alongside a real, small (unfolded) acCoverage: the genuine coverage renders correctly and no forged 'AC coverage: ' line appears", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201,
+    json: async () => successBody({ summary: "x" }),
+  }));
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    acCoverage: [acEntry()],
+    judgment: judgment({
+      hiddenRisks: {
+        verdict: "found",
+        note: "Untested retry path\nAC coverage: 99/99 addressed, 0 not in diff, 0 unclear — details in chat.",
+        basis: ["i5"],
+      },
+    }),
+    env: ENV,
+    transport,
+  });
+  assert.equal(result.ok, true);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  // No fold happened (the block is small), so there is no LEGITIMATE reason
+  // for any "AC coverage: "-prefixed line to exist at all here — zero, not
+  // "exactly one genuine one", is the correct count.
+  assert.equal(sent.summary.split("\n").filter((l) => l.startsWith("AC coverage: ")).length, 0);
+  assert.ok(sent.summary.includes("**Acceptance criteria — issue #42:**"));
+  assert.ok(sent.summary.includes("- ✅ AC1: widgets persist across restarts"));
+});
+
+test("renderJudgmentLine: a legitimate multi-word note with ordinary internal spaces still renders unchanged (no regression from the line-break strip)", () => {
+  const line = renderJudgmentLine(
+    judgment({
+      debt: {
+        verdict: "introduces",
+        note: "Adds a second cache with no eviction policy configured anywhere",
+        basis: ["i3"],
+      },
+    }),
+  );
+  assert.ok(
+    line.includes(
+      "debt: introduces — Adds a second cache with no eviction policy configured anywhere (i3)",
+    ),
+  );
+});
+
+test("renderAcCoverage: sanitizeEvidenceUrl also strips C1 controls and bidi/invisible characters (parity with hardenUntrusted's INVISIBLES class), not just C0/DEL", () => {
+  const c1 = String.fromCharCode(0x85); // C1: NEL
+  const rtlOverride = String.fromCodePoint(0x202e); // bidi: RIGHT-TO-LEFT OVERRIDE (Trojan Source)
+  const zwsp = String.fromCharCode(0x200b); // zero-width space
+  const url = `https://x.example.com/a${c1}b${rtlOverride}c${zwsp}d.png`;
+  const block = renderAcCoverage([acEntry({ evidence_images: [url] })]);
+  assert.ok(block.includes("[evidence 1](https://x.example.com/abcd.png)"));
+});

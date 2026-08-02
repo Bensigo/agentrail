@@ -236,7 +236,7 @@ def test_issue_status_has_no_reviewing():
 
 **Files:** Test only — `apps/console/app/api/v1/webhooks/github-app/e2e.test.ts` (or the console's integration-test home; mirror its conventions).
 
-One test walking the whole console side with fakes at the DB/notify boundaries the existing route tests already fake: signed webhook payload (opened, enrolled workspace, connected repo) → job row exists queued → claim with an `eveSessionId` → response carries the job AND the `jace_sessions` binding row exists with `channel:'review-job'` → complete `posted` with a summaryLine → job `posted` + notify fake called once with the summaryLine. Plus the storm variant: two `synchronize` deliveries for successive heads → first superseded, second eligible-deferred.
+One test walking the whole console side with fakes at the DB/notify boundaries the existing route tests already fake: signed webhook payload (opened, enrolled workspace, connected repo) → job row exists queued → claim with `{workerId}` (no session) → response carries the job → bind route called with `{jobId, eveSessionId}` → the `jace_sessions` binding row exists with `channel:'review-job'` → complete `posted` with a summaryLine → job `posted` + notify fake called once with the summaryLine. Plus the storm variant: two `synchronize` deliveries for successive heads → first superseded, second eligible-deferred.
 
 - [ ] Steps: write → green (wiring already landed; failures are integration bugs — fix production code, never weaken) → Commit: `test(console): reviewer-of-record e2e — webhook to notify through the queue (Arc B)`
 

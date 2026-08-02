@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   capacityText,
+  capacityUsedText,
   formatNeedsYouBreakdown,
   formatWeekRangeLabel,
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
+  seatsInUseText,
   shiftWeek,
   shippedStripText,
 } from "./digest-panel-helpers";
@@ -82,6 +84,26 @@ describe("capacityText (subscription slice 6 plan card — pinned copy)", () => 
 
   it("renders zero usage without special-casing", () => {
     expect(capacityText(0, 200)).toBe("0 of 200 tasks this month");
+  });
+});
+
+describe("seatsInUseText (2026-08-02 owner ruling — no customer-facing trial; usage-only seats row for the digest's no-plan card)", () => {
+  it("renders '<n> in use'", () => {
+    expect(seatsInUseText(3)).toBe("3 in use");
+  });
+
+  it("renders zero plainly", () => {
+    expect(seatsInUseText(0)).toBe("0 in use");
+  });
+});
+
+describe("capacityUsedText (2026-08-02 owner ruling — usage-only capacity row for the digest's no-plan card; still tasks, never dollars)", () => {
+  it("renders '<n> tasks this month'", () => {
+    expect(capacityUsedText(42)).toBe("42 tasks this month");
+  });
+
+  it("renders zero plainly", () => {
+    expect(capacityUsedText(0)).toBe("0 tasks this month");
   });
 });
 

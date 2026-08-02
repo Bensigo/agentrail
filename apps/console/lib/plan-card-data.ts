@@ -8,7 +8,6 @@ import {
 import { resolvePolicyForWorkspace } from "./policy/resolve-policy";
 import { currentBudgetWindow } from "./billing-period";
 import {
-  formatUtcDate,
   planLabel,
   renewalLabel,
 } from "../app/(dashboard)/dashboard/[workspaceId]/billing/billing-helpers";
@@ -27,8 +26,26 @@ import {
  * `PLAN_POLICIES`/`seatLimitForPlan` directly, so an enterprise account with
  * a `policy_overrides` bump shows its real limits here, exactly as it does
  * everywhere else `resolvePolicyForWorkspace` is the source of truth.
+ *
+ * 2026-08-02 owner ruling: there is no customer-facing trial — the product
+ * only sells Starter/Growth/Enterprise. An un-subscribed account (internal
+ * `plan` enum value `"trial"`) is never shown "Trial" or a fake entitlement
+ * count ("0 of 10" would claim a plan the account doesn't have); `hasPlan`
+ * (`account.plan !== "trial"`) is the one field `PlanCardBlock`
+ * (`digest-panel.tsx`) branches on to render the "No plan yet" usage-only
+ * state instead of today's plan card. The internal `"trial"` enum value,
+ * `PLAN_POLICIES.trial`, and enforcement's grace-limit semantics are
+ * UNCHANGED by this — display only.
  */
 export type PlanCardData = {
+  /**
+   * `false` for an un-subscribed account — see the owner-ruling paragraph
+   * above. `PlanCardBlock` branches on this field alone; every other field
+   * below is still populated for a no-plan account (real seats/capacity
+   * usage), just rendered with the usage-only copy instead of a fraction of
+   * an entitlement the account doesn't have.
+   */
+  hasPlan: boolean;
   planLabel: string;
   seatsUsed: number;
   seatLimit: number;
@@ -126,12 +143,18 @@ export async function loadPlanCardData(
     // rather than a null-deref a moment later.
     if (!account) return undefined;
 
-    const renewalText =
-      account.plan === "trial"
-        ? `Trial ends ${formatUtcDate(account.trialEndsAt)}`
-        : renewalLabel(account.currentPeriodEnd);
+    // 2026-08-02 owner ruling: no customer-facing trial. `hasPlan` is the
+    // single display gate `PlanCardBlock` branches on; the un-subscribed
+    // line is a constant, not a formatted date — `trialEndsAt` is
+    // deliberately never read here anymore (`formatUtcDate` import removed
+    // along with the old "Trial ends <date>" branch it fed).
+    const hasPlan = account.plan !== "trial";
+    const renewalText = hasPlan
+      ? renewalLabel(account.currentPeriodEnd)
+      : "Choose a plan to get started.";
 
     return {
+      hasPlan,
       planLabel: planLabel(account.plan),
       seatsUsed,
       seatLimit: resolved.policy.seatLimit,

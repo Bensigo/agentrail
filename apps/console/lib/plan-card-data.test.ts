@@ -98,7 +98,7 @@ describe("loadPlanCardData", () => {
     errorSpy.mockRestore();
   });
 
-  it("trial plan: renewalText reads 'Trial ends <date>' from trialEndsAt, ignoring currentPeriodEnd entirely", async () => {
+  it("trial plan (un-subscribed account): hasPlan is false, renewalText is the choose-a-plan line, ignoring both trialEndsAt and currentPeriodEnd (2026-08-02 owner ruling: no customer-facing trial — 'Trial ends <date>' is retired entirely, the no-plan line is a constant)", async () => {
     mockResolvePolicy.mockResolvedValue(
       resolved({ policy: { ...PLAN_POLICIES.trial, seatLimit: 10, monthlyCapacity: 1000 } })
     );
@@ -108,8 +108,11 @@ describe("loadPlanCardData", () => {
     mockGetBillingAccount.mockResolvedValue(
       accountRow({
         plan: "trial",
+        // Deliberately non-null on both: proves the no-plan branch reads
+        // neither. `trialEndsAt` used to drive "Trial ends <date>"; that
+        // branch is gone, so this is dead weight the fixture merely
+        // tolerates.
         trialEndsAt: new Date("2026-08-14T00:00:00.000Z"),
-        // Deliberately non-null: proves the trial branch never reads this.
         currentPeriodEnd: new Date("2099-01-01T00:00:00.000Z"),
       })
     );
@@ -117,17 +120,20 @@ describe("loadPlanCardData", () => {
     const result = await loadPlanCardData("ws-1");
 
     expect(result).toEqual({
-      planLabel: "Trial",
+      hasPlan: false,
+      planLabel: "No plan yet",
       seatsUsed: 3,
       seatLimit: 10,
       capacityUsed: 42,
       capacityTotal: 1000,
-      renewalText: "Trial ends Aug 14, 2026",
+      renewalText: "Choose a plan to get started.",
       shippedAllTime: 7,
     });
+    expect(result?.renewalText).not.toContain("Trial");
+    expect(result?.planLabel).not.toContain("Trial");
   });
 
-  it("non-trial plan (growth): renewalText uses renewalLabel(currentPeriodEnd), ignoring trialEndsAt entirely", async () => {
+  it("non-trial plan (growth): hasPlan is true, renewalText uses renewalLabel(currentPeriodEnd), ignoring trialEndsAt entirely", async () => {
     mockResolvePolicy.mockResolvedValue(resolved());
     mockCountActiveSeats.mockResolvedValue(5);
     mockCountAccountRuns.mockResolvedValue(120);
@@ -144,6 +150,7 @@ describe("loadPlanCardData", () => {
     const result = await loadPlanCardData("ws-1");
 
     expect(result).toEqual({
+      hasPlan: true,
       planLabel: "Growth",
       seatsUsed: 5,
       seatLimit: 8,

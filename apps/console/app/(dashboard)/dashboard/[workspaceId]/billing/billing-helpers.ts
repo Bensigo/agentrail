@@ -36,8 +36,18 @@ function humanizeUnknownValue(value: string): string {
     .join(" ");
 }
 
+/**
+ * 2026-08-02 owner ruling: there is no customer-facing trial — the product
+ * only sells Starter/Growth/Enterprise. An un-subscribed account (the
+ * internal `"trial"` plan-enum value; `PLAN_POLICIES.trial` and
+ * enforcement's grace limits are unchanged, this is display only) reads as
+ * "No plan yet", never "Trial" — `plan-card-data.ts`'s `hasPlan` field
+ * (`account.plan !== "trial"`) is the digest plan card's own display gate
+ * for the same ruling; this map is what makes THIS page's "Current plan"
+ * headline (`page.tsx`) agree with it for free, with no branch of its own.
+ */
 const PLAN_LABEL: Record<BillingPlan, string> = {
-  trial: "Trial",
+  trial: "No plan yet",
   starter: "Starter",
   growth: "Growth",
   enterprise: "Enterprise",
@@ -84,12 +94,15 @@ export function seatLimitForPlan(plan: string): number {
  * below — same date format, different prefix — so the two never drift apart
  * on the actual `toLocaleDateString` options.
  *
- * Exported (subscription-platform slice 6 plan, Task 2's own Global
- * Constraints — the plan-card's pinned trial renewal string,
- * `` `Trial ends ${formatUtcDate(trialEndsAt)}` ``): `plan-card-data.ts`
- * (`apps/console/lib/`) needs the SAME date formatting `renewalLabel` uses
- * so the trial and non-trial renewal strings read identically, without a
- * second, drift-prone copy of this `toLocaleDateString` call.
+ * Exported — `plan-card-data.ts` (`apps/console/lib/`) sources its
+ * non-trial renewal string through `renewalLabel` below, not this function
+ * directly, so the two stay byte-identical without a second, drift-prone
+ * copy of this `toLocaleDateString` call. Until 2026-08-02 that module also
+ * called this function directly, for the trial branch's own pinned string
+ * (`` `Trial ends ${formatUtcDate(trialEndsAt)}` ``); the owner ruling that
+ * day retired customer-facing trial entirely — un-subscribed accounts now
+ * render a constant "Choose a plan to get started." line instead, so
+ * `plan-card-data.ts` no longer imports this function at all.
  */
 export function formatUtcDate(date: Date): string {
   return date.toLocaleDateString("en-US", {
@@ -118,6 +131,18 @@ export function renewalLabel(currentPeriodEnd: Date | null): string {
  *  this value, not this function's job. */
 export function seatsLabel(used: number, limit: number): string {
   return `${used} of ${limit}`;
+}
+
+/**
+ * "<used> in use" — the current-plan card's seat count for an un-subscribed
+ * account (2026-08-02 owner ruling: no customer-facing trial). Deliberately
+ * NOT {@link seatsLabel}'s "X of Y": a plan-less account has no seat
+ * ENTITLEMENT to show a fraction against, so this reports raw usage only —
+ * same "0 of 10" would falsely claim a plan the account doesn't have,
+ * `plan-card-data.ts`'s own doc-comment has the full ruling.
+ */
+export function seatsInUseLabel(n: number): string {
+  return `${n} in use`;
 }
 
 export type SubscriptionStatusTone = "positive" | "neutral" | "warning" | "critical";

@@ -202,6 +202,7 @@ describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 
 
   it("threads a resolved PlanCardData object through as DigestPanel's planCard prop, unmodified", async () => {
     const planCard: PlanCardData = {
+      hasPlan: true,
       planLabel: "Growth",
       seatsUsed: 3,
       seatLimit: 10,
@@ -219,6 +220,7 @@ describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 
 
   it("still returns PageHeader as children[0] when a plan card is present (no new sibling inserted above it)", async () => {
     vi.mocked(loadPlanCardData).mockResolvedValue({
+      hasPlan: true,
       planLabel: "Growth",
       seatsUsed: 3,
       seatLimit: 10,
@@ -252,6 +254,7 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
 
   it("planCard present: mounts HealthRatesPanel as the sibling after DigestPanel inside the gap-6 stack, with the workspaceId prop", async () => {
     const planCard: PlanCardData = {
+      hasPlan: true,
       planLabel: "Growth",
       seatsUsed: 3,
       seatLimit: 10,

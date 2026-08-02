@@ -71,6 +71,7 @@ const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
 
 function planCardData(overrides: Partial<PlanCardData> = {}): PlanCardData {
   return {
+    hasPlan: true,
     planLabel: "Growth",
     seatsUsed: 3,
     seatLimit: 10,
@@ -80,6 +81,23 @@ function planCardData(overrides: Partial<PlanCardData> = {}): PlanCardData {
     shippedAllTime: 128,
     ...overrides,
   };
+}
+
+/** The no-plan fixture (2026-08-02 owner ruling — un-subscribed account,
+ *  internal `plan` enum value `"trial"`): every field a real
+ *  `loadPlanCardData` resolution would actually produce for `hasPlan: false`
+ *  — `planLabel`/`renewalText` come from the same `billing-helpers.ts`
+ *  map/`plan-card-data.ts` branch this fixture stands in for, not values
+ *  invented by this test file. */
+function noPlanCardData(overrides: Partial<PlanCardData> = {}): PlanCardData {
+  return planCardData({
+    hasPlan: false,
+    planLabel: "No plan yet",
+    seatsUsed: 3,
+    capacityUsed: 42,
+    renewalText: "Choose a plan to get started.",
+    ...overrides,
+  });
 }
 
 describe("PlanCardBlock (subscription slice 6 — digest plan card)", () => {
@@ -165,6 +183,97 @@ describe("PlanCardBlock (subscription slice 6 — digest plan card)", () => {
     const el = PlanCardBlock({ data: planCardData(), workspaceId: WORKSPACE_ID });
     const text = collectText(el).join(" ").toLowerCase();
     expect(text).not.toContain("budget");
+  });
+});
+
+describe("PlanCardBlock no-plan state (2026-08-02 owner ruling — no customer-facing trial: an un-subscribed account, internal plan enum value 'trial', reads as 'No plan yet' with usage-only numbers, never a fake entitlement fraction like '0 of 10' for a plan it doesn't have)", () => {
+  it("uses the DigestCard shell with the pinned 'Plan' title (same title the paid state uses — the slot never visibly relabels itself)", () => {
+    const el = asElement(PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID }));
+    expect(el.props.title).toBe("Plan");
+  });
+
+  it("renders the pinned 'No plan yet' headline", () => {
+    const el = asElement(PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID }));
+    const body = asElement(el.props.children);
+    const [headline] = body.props.children as ReactElementLike[];
+
+    expect(headline.props.children).toBe("No plan yet");
+    expect(headline.props.className).toBe(
+      "font-mono text-3xl font-bold text-[var(--gray-12)]"
+    );
+  });
+
+  it("renders the usage-only Seats / Capacity rows and the choose-a-plan line with the pinned copy — never seatsLabel's/capacityText's 'X of Y' fraction", () => {
+    const el = asElement(
+      PlanCardBlock({
+        data: noPlanCardData({ seatsUsed: 3, capacityUsed: 42 }),
+        workspaceId: WORKSPACE_ID,
+      })
+    );
+    const body = asElement(el.props.children);
+    const [, seatsRow, capacityRow, chooseLine] = body.props.children as ReactElementLike[];
+
+    expect(seatsRow.props.children).toBe("Seats · 3 in use");
+    expect(capacityRow.props.children).toBe("Capacity · 42 tasks this month");
+    expect(chooseLine.props.children).toBe("Choose a plan to get started.");
+    expect(seatsRow.props.className).toBe("text-xs text-[var(--gray-09)]");
+    expect(capacityRow.props.className).toBe("text-xs text-[var(--gray-09)]");
+    expect(chooseLine.props.className).toBe("text-xs text-[var(--gray-09)]");
+  });
+
+  it("renders zero usage without special-casing (never editorializes — house style)", () => {
+    const el = asElement(
+      PlanCardBlock({
+        data: noPlanCardData({ seatsUsed: 0, capacityUsed: 0 }),
+        workspaceId: WORKSPACE_ID,
+      })
+    );
+    const body = asElement(el.props.children);
+    const [, seatsRow, capacityRow] = body.props.children as ReactElementLike[];
+
+    expect(seatsRow.props.children).toBe("Seats · 0 in use");
+    expect(capacityRow.props.children).toBe("Capacity · 0 tasks this month");
+  });
+
+  it("renders a 'Choose a plan' CTA linking to the SAME billing href as the paid state's 'Upgrade plan' CTA", () => {
+    const el = asElement(PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID }));
+    const body = asElement(el.props.children);
+    const rows = body.props.children as ReactElementLike[];
+    const cta = rows[rows.length - 1];
+
+    expect(cta.props.href).toBe(`/dashboard/${WORKSPACE_ID}/billing`);
+    expect(cta.props.className).toBe(
+      "mt-1 flex items-center gap-0.5 text-xs text-[var(--blue-11)]"
+    );
+    // Trailing space before the ArrowUpRight icon — same text-node-plus-icon
+    // pattern as the paid state's own CTA assertion above.
+    expect(collectText(cta).join("")).toBe("Choose a plan ");
+  });
+
+  it("never mentions a dollar sign anywhere in its output", () => {
+    const el = PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID });
+    const text = collectText(el).join(" ");
+    expect(text).not.toContain("$");
+  });
+
+  it("never mentions the word 'budget'", () => {
+    const el = PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID });
+    const text = collectText(el).join(" ").toLowerCase();
+    expect(text).not.toContain("budget");
+  });
+});
+
+describe("PlanCardBlock sweep — 'Trial' is retired from display in BOTH plan states (2026-08-02 owner ruling)", () => {
+  it("never mentions 'trial' (any case) anywhere in the paid state's output", () => {
+    const el = PlanCardBlock({ data: planCardData(), workspaceId: WORKSPACE_ID });
+    const text = collectText(el).join(" ").toLowerCase();
+    expect(text).not.toContain("trial");
+  });
+
+  it("never mentions 'trial' (any case) anywhere in the no-plan state's output", () => {
+    const el = PlanCardBlock({ data: noPlanCardData(), workspaceId: WORKSPACE_ID });
+    const text = collectText(el).join(" ").toLowerCase();
+    expect(text).not.toContain("trial");
   });
 });
 

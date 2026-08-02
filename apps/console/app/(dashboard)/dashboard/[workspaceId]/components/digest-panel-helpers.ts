@@ -121,6 +121,31 @@ export function capacityText(used: number, total: number): string {
 }
 
 /**
+ * Pinned copy for the digest plan card's no-plan seats row (2026-08-02
+ * owner ruling — no customer-facing trial): an un-subscribed account
+ * (`PlanCardData.hasPlan === false`) has no seat ENTITLEMENT to show a
+ * fraction against, so this reports raw usage only — never
+ * {@link capacityText}'s neighbor `${used} of ${total}` shape, which would
+ * falsely claim a plan the account doesn't have. Mirrors
+ * `billing-helpers.ts`'s `seatsInUseLabel` (same copy, same ruling, kept as
+ * a separate function rather than a shared import — this file's own
+ * doc-comment already states client code here never reaches past
+ * `lib/plan-card-data.ts`'s types into server-only modules).
+ */
+export function seatsInUseText(n: number): string {
+  return `${n} in use`;
+}
+
+/**
+ * Pinned copy for the digest plan card's no-plan capacity row — same
+ * usage-only rationale as {@link seatsInUseText} above; still tasks, never
+ * dollars (Global Constraints).
+ */
+export function capacityUsedText(n: number): string {
+  return `${n} tasks this month`;
+}
+
+/**
  * Pinned copy for the digest's all-time-shipped strip (subscription slice 6
  * plan, Task 3): `n` is `PlanCardData.shippedAllTime` (all-time `success`
  * run outcomes for the workspace), never dollars. No singular/plural

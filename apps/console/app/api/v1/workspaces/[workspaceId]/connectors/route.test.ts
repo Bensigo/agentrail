@@ -18,10 +18,15 @@ vi.mock("@agentrail/db-postgres", () => ({
 // derivation needs; see the "GET /connectors — oauthReady" describe block
 // below. Defaulted to "nothing is oauth-ready" (null/null) in beforeEach so
 // every OTHER describe block in this file — none of which cares about
-// oauthReady — keeps seeing today's default state.
+// oauthReady — keeps seeing today's default state. W3-T8 adds
+// `missingOauthEnv` (the `oauthSetup.missingEnv` derivation — see the "GET
+// /connectors — oauthSetup" describe block below), defaulted to `[]` in
+// beforeEach for the same "every other describe block is unaffected"
+// reason.
 vi.mock("../../../../../../lib/oauth/types", () => ({
   oauthAdapterFor: vi.fn(),
   oauthConfigFor: vi.fn(),
+  missingOauthEnv: vi.fn(),
   // W3-T2: this route now side-effect-imports `lib/oauth/railway.ts`, which
   // calls `registerOauthAdapter` at module load — see the oauth callback
   // route test's identical comment.
@@ -36,7 +41,7 @@ import {
   getGithubInstallation,
   upsertConnector,
 } from "@agentrail/db-postgres";
-import { oauthAdapterFor, oauthConfigFor } from "../../../../../../lib/oauth/types";
+import { oauthAdapterFor, oauthConfigFor, missingOauthEnv } from "../../../../../../lib/oauth/types";
 import { GET, PUT } from "./route";
 
 // Minimal real implementations mirrored from db-postgres/queries/connectors.ts
@@ -124,6 +129,13 @@ beforeEach(() => {
   vi.mocked(oauthAdapterFor).mockReturnValue(null);
   vi.mocked(oauthConfigFor).mockReset();
   vi.mocked(oauthConfigFor).mockReturnValue(null);
+  // W3-T8: default to "nothing missing" so every pre-existing describe
+  // block below (none of which cares about oauthSetup) keeps seeing a
+  // harmless value even on the rare path where `oauthAdapterFor` is
+  // stubbed non-null by a test that isn't itself about oauthSetup; the
+  // dedicated oauthSetup describe block overrides this per-test.
+  vi.mocked(missingOauthEnv).mockReset();
+  vi.mocked(missingOauthEnv).mockReturnValue([]);
 });
 
 describe("PUT /connectors", () => {
@@ -269,7 +281,10 @@ interface GetJson {
     target: string | null;
     appInstalled?: boolean;
     oauthReady?: boolean;
+    // W3-T8 (owner-visible OAuth setup state).
+    oauthSetup?: { capable: true; missingEnv: string[] } | null;
   }>;
+  canManage?: boolean;
 }
 
 function githubRow(json: GetJson) {
@@ -426,5 +441,128 @@ describe("GET /connectors — oauthReady (W3-T1)", () => {
       const json = (await res.json()) as GetJson;
       expect(json.connectors.find((c) => c.kind === "railway")!.oauthReady).toBe(true);
     });
+  });
+});
+
+// -----------------------------------------------------------------------
+// GET — oauthSetup (W3-T8, owner-visible OAuth setup state,
+// `.superpowers/sdd/plan-oauth.md`) — the discoverability fix: before this
+// task, `oauthReady: false` alone gave the deployment owner no signal
+// WHETHER a provider even has a one-click path, or what env would turn it
+// on. `oauthSetup` is DERIVED (adapter registry + `missingOauthEnv`) AND
+// role-gated (owner/admin only — the SAME `membership.role === "owner" ||
+// "admin"` boolean the route already computes as `canManage`, hoisted once
+// in `route.ts` so both read the identical check rather than two
+// hand-copied comparisons).
+// -----------------------------------------------------------------------
+describe("GET /connectors — oauthSetup (W3-T8)", () => {
+  it("owner sees missingEnv populated for a provider with a registered adapter", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    vi.mocked(oauthAdapterFor).mockImplementation((p: string) =>
+      p === "railway" ? ({ provider: "railway" } as never) : null
+    );
+    vi.mocked(missingOauthEnv).mockReturnValue([
+      "RAILWAY_OAUTH_CLIENT_ID",
+      "RAILWAY_OAUTH_CLIENT_SECRET",
+    ]);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthSetup).toEqual({
+      capable: true,
+      missingEnv: ["RAILWAY_OAUTH_CLIENT_ID", "RAILWAY_OAUTH_CLIENT_SECRET"],
+    });
+  });
+
+  it("admin (not just owner) also sees missingEnv populated — canManage's own two-role set", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "admin" } as never);
+    vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+    vi.mocked(missingOauthEnv).mockReturnValue(["RAILWAY_OAUTH_CLIENT_ID"]);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthSetup).toEqual({
+      capable: true,
+      missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"],
+    });
+  });
+
+  it("member sees oauthSetup: null even when the provider has a registered adapter and env is missing — the field the members-see-nothing-new pin is about", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "member" } as never);
+    vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+    vi.mocked(missingOauthEnv).mockReturnValue(["RAILWAY_OAUTH_CLIENT_ID"]);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthSetup).toBeNull();
+    // Belt-and-suspenders: a member's request never even CALLS
+    // missingOauthEnv (the route gates the call itself on `canManage`, not
+    // just the output) — proves this isn't computed-then-discarded, it is
+    // never computed for a member in the first place.
+    expect(missingOauthEnv).not.toHaveBeenCalled();
+  });
+
+  it("canManage in the response matches the exact same role check oauthSetup used (owner true, member false)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+    vi.mocked(missingOauthEnv).mockReturnValue(["RAILWAY_OAUTH_CLIENT_ID"]);
+    const ownerRes = await GET(getReq(), { params: params() });
+    const ownerJson = (await ownerRes.json()) as GetJson;
+    expect(ownerJson.canManage).toBe(true);
+    expect(ownerJson.connectors.find((c) => c.kind === "railway")!.oauthSetup).not.toBeNull();
+
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "member" } as never);
+    const memberRes = await GET(getReq(), { params: params() });
+    const memberJson = (await memberRes.json()) as GetJson;
+    expect(memberJson.canManage).toBe(false);
+    expect(memberJson.connectors.find((c) => c.kind === "railway")!.oauthSetup).toBeNull();
+  });
+
+  it("is null for an owner when NO adapter is registered for the provider (not oauth-capable at all — role alone is not enough)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    vi.mocked(oauthAdapterFor).mockReturnValue(null);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+
+    expect(json.connectors.find((c) => c.kind === "railway")!.oauthSetup).toBeNull();
+    expect(missingOauthEnv).not.toHaveBeenCalled();
+  });
+
+  it("stays non-null with an empty missingEnv once fully configured — oauthSetup answers 'is this provider oauth-capable,' not 'is it ready right now' (oauthReady answers that)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    vi.mocked(oauthAdapterFor).mockReturnValue({ provider: "railway" } as never);
+    vi.mocked(oauthConfigFor).mockReturnValue({ clientId: "id", clientSecret: "secret" });
+    vi.mocked(missingOauthEnv).mockReturnValue([]);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = (await res.json()) as GetJson;
+    const railway = json.connectors.find((c) => c.kind === "railway")!;
+
+    expect(railway.oauthReady).toBe(true);
+    expect(railway.oauthSetup).toEqual({ capable: true, missingEnv: [] });
+  });
+
+  it("calls missingOauthEnv with the provider's own kind (railway), not a hardcoded/mismatched slug", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    vi.mocked(oauthAdapterFor).mockImplementation((p: string) =>
+      p === "sentry" ? ({ provider: "sentry" } as never) : null
+    );
+    vi.mocked(missingOauthEnv).mockReturnValue(["SENTRY_OAUTH_CLIENT_ID"]);
+
+    await GET(getReq(), { params: params() });
+
+    expect(missingOauthEnv).toHaveBeenCalledWith("sentry");
+    expect(missingOauthEnv).not.toHaveBeenCalledWith("railway");
   });
 });

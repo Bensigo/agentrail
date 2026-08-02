@@ -26,6 +26,21 @@
       ],
       "port": 3001,
       "autoPort": false
+    },
+    {
+      "name": "console-w3t8-3003",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@agentrail/console",
+        "exec",
+        "next",
+        "dev",
+        "--port",
+        "3003"
+      ],
+      "port": 3003,
+      "autoPort": false
     }
   ]
 }

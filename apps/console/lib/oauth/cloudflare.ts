@@ -499,6 +499,15 @@ export const cloudflareOauthAdapter: OauthProviderAdapter = {
     return Boolean(process.env[CLOUDFLARE_OAUTH_SCOPE_ENV_KEY]);
   },
 
+  // W3-T8 (owner-visible OAuth setup state) — the NAME of the same third
+  // env var `envReady` above checks the PRESENCE of, so the connectors GET
+  // route's `oauthSetup.missingEnv` can report it by name when absent.
+  // Mirrors sentry.ts's identical `extraEnvKeys`. See `types.ts`'s own
+  // `extraEnvKeys` doc-comment.
+  extraEnvKeys(): string[] {
+    return [CLOUDFLARE_OAUTH_SCOPE_ENV_KEY];
+  },
+
   /** Pure and synchronous per `OauthProviderAdapter`'s own contract — the
    * only I/O this does is `process.env` reads (via `oauthConfigFor`/
    * `requireCloudflareOauthScope`), not network. PKCE REQUIRED (see this

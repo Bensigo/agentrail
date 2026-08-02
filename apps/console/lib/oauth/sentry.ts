@@ -331,17 +331,23 @@ function requireSentryClientCredentials(): { clientId: string; clientSecret: str
   return config;
 }
 
-/** Reads the THIRD env var this provider needs beyond the generic
+/** The THIRD env var this provider needs beyond the generic
  * `oauthConfigFor` pair — the Public Integration's slug, used to build the
- * external-install URL. `oauthConfigFor`/the connectors GET route's
+ * external-install URL. Shared by `requireSentryIntegrationSlug`,
+ * `envReady()`, and `extraEnvKeys()` below (W3-T8) so the literal key name
+ * lives in exactly one place. */
+const SENTRY_OAUTH_INTEGRATION_SLUG_ENV_KEY = "SENTRY_OAUTH_INTEGRATION_SLUG";
+
+/** Reads the THIRD env var this provider needs beyond the generic
+ * `oauthConfigFor` pair. `oauthConfigFor`/the connectors GET route's
  * `oauthReady` derivation only ever check the generic two-var shape (a
  * fixed, provider-agnostic function T1 owns — not modified by this task),
  * so this THIRD gate is enforced here, inside the adapter itself, rather
  * than by widening a shared function for one provider's extra field. */
 function requireSentryIntegrationSlug(): string {
-  const slug = process.env["SENTRY_OAUTH_INTEGRATION_SLUG"];
+  const slug = process.env[SENTRY_OAUTH_INTEGRATION_SLUG_ENV_KEY];
   if (!slug) {
-    throw new Error("sentry OAuth is not configured (SENTRY_OAUTH_INTEGRATION_SLUG unset)");
+    throw new Error(`sentry OAuth is not configured (${SENTRY_OAUTH_INTEGRATION_SLUG_ENV_KEY} unset)`);
   }
   return slug;
 }
@@ -479,7 +485,15 @@ export const sentryOauthAdapter: OauthProviderAdapter = {
   // beyond the generic oauthConfigFor pair; read generically by the
   // connectors GET route/link route alongside oauthConfigFor.
   envReady(): boolean {
-    return Boolean(process.env["SENTRY_OAUTH_INTEGRATION_SLUG"]);
+    return Boolean(process.env[SENTRY_OAUTH_INTEGRATION_SLUG_ENV_KEY]);
+  },
+
+  // W3-T8 (owner-visible OAuth setup state) — the NAME of the same third
+  // env var `envReady` above checks the PRESENCE of, so the connectors GET
+  // route's `oauthSetup.missingEnv` can report it by name when absent. See
+  // `types.ts`'s own `extraEnvKeys` doc-comment.
+  extraEnvKeys(): string[] {
+    return [SENTRY_OAUTH_INTEGRATION_SLUG_ENV_KEY];
   },
 
   /** Pure and synchronous per `OauthProviderAdapter`'s own contract. See

@@ -10,9 +10,11 @@ import {
   extraConfigFieldKeys,
   projectConnectors,
   projectExtraConfigValues,
+  shouldShowOauthSetupHint,
   validateConnectorCredential,
   type ConnectorCatalogEntry,
   type ConnectorConfigInput,
+  type ConnectorView,
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
@@ -1279,5 +1281,141 @@ describe("projectConnectors — oauthReady (W3-T1)", () => {
     ]).find((r) => r.kind === "railway")!;
     expect(railway.status).toBe("connected");
     expect(railway.oauthReady).toBe(false);
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`):
+// `oauthSetup` is a DERIVED, ENV-COMPUTED-SERVER-SIDE, ROLE-GATED flag —
+// mirrors `oauthReady`'s own "this pure model never computes it itself"
+// posture exactly (see that describe block's own comment above): the
+// connectors GET route computes it (adapter registry + env + the caller's
+// role) and passes it in like every other per-row field. Absent from the
+// input → null, so a route that hasn't been updated yet, or a member
+// caller the route deliberately never populates it for, never
+// accidentally shows the setup nudge.
+// --------------------------------------------------------------------------- //
+describe("projectConnectors — oauthSetup (W3-T8)", () => {
+  it("defaults to null when the config input omits oauthSetup", () => {
+    const railway = projectConnectors([{ kind: "railway", hasSecret: true }]).find(
+      (r) => r.kind === "railway"
+    )!;
+    expect(railway.oauthSetup).toBeNull();
+  });
+
+  it("is null for every row with no config input at all (disconnected, never queried)", () => {
+    const rows = projectConnectors([]);
+    for (const r of rows) expect(r.oauthSetup).toBeNull();
+  });
+
+  it("carries oauthSetup through from the config input, missingEnv names intact", () => {
+    const railway = projectConnectors([
+      {
+        kind: "railway",
+        hasSecret: false,
+        oauthSetup: { capable: true, missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"] },
+      },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.oauthSetup).toEqual({
+      capable: true,
+      missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"],
+    });
+  });
+
+  it("carries an empty missingEnv array through unchanged (a fully oauthReady provider still gets a non-null, empty-list oauthSetup)", () => {
+    const railway = projectConnectors([
+      {
+        kind: "railway",
+        hasSecret: false,
+        oauthReady: true,
+        oauthSetup: { capable: true, missingEnv: [] },
+      },
+    ]).find((r) => r.kind === "railway")!;
+    expect(railway.oauthSetup).toEqual({ capable: true, missingEnv: [] });
+    expect(railway.oauthReady).toBe(true);
+  });
+
+  it("is independent per-row — populating it for railway never leaks onto a sibling provider in the same call", () => {
+    const rows = projectConnectors([
+      {
+        kind: "railway",
+        hasSecret: false,
+        oauthSetup: { capable: true, missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"] },
+      },
+      { kind: "sentry", hasSecret: false },
+    ]);
+    expect(rows.find((r) => r.kind === "sentry")!.oauthSetup).toBeNull();
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// W3-T8 — `shouldShowOauthSetupHint` is the ONE shared gate
+// `connector-sheet.tsx` (the setup section above the token form) and
+// `connectors-panel.tsx` (the tile's quiet "Setup" tag) both call, so a
+// thorough sweep here stands in for the render-level "sheet renders all
+// three states" coverage a DOM harness would normally provide — this
+// repo's vitest environment is "node" (no @testing-library/react/jsdom),
+// so the actual JSX these two surfaces render is proven by
+// `connector-sheet.test.ts`/`connectors-panel.test.ts` calling the
+// hook-free `OauthSetupNotice`/`ConnectorTile` directly and walking their
+// returned element trees; THIS describe block is where the underlying
+// boolean logic — the "ready / setup+admin / member" state matrix the
+// task's own brief names — is exhaustively covered.
+// --------------------------------------------------------------------------- //
+describe("shouldShowOauthSetupHint (W3-T8)", () => {
+  function view(overrides: Partial<ConnectorView> = {}): ConnectorView {
+    const railway = projectConnectors([{ kind: "railway", hasSecret: false }]).find(
+      (r) => r.kind === "railway"
+    )!;
+    return { ...railway, ...overrides };
+  }
+
+  it("'setup+admin' state: oauthSetup present, not ready, not connected -> true", () => {
+    const connector = view({
+      oauthSetup: { capable: true, missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"] },
+      oauthReady: false,
+      status: "disconnected",
+    });
+    expect(shouldShowOauthSetupHint(connector)).toBe(true);
+  });
+
+  it("'setup+admin' state still shows even with an empty missingEnv (oauthSetup present is the gate, not missingEnv.length)", () => {
+    const connector = view({
+      oauthSetup: { capable: true, missingEnv: [] },
+      oauthReady: false,
+      status: "disconnected",
+    });
+    expect(shouldShowOauthSetupHint(connector)).toBe(true);
+  });
+
+  it("'ready' state: oauthReady true -> false, regardless of oauthSetup", () => {
+    const connector = view({
+      oauthSetup: { capable: true, missingEnv: [] },
+      oauthReady: true,
+      status: "disconnected",
+    });
+    expect(shouldShowOauthSetupHint(connector)).toBe(false);
+  });
+
+  it("'member' state: oauthSetup null -> false, even when not ready and not connected", () => {
+    const connector = view({ oauthSetup: null, oauthReady: false, status: "disconnected" });
+    expect(shouldShowOauthSetupHint(connector)).toBe(false);
+  });
+
+  it("already connected -> false, regardless of oauthSetup/oauthReady (nothing left to set up)", () => {
+    const connector = view({
+      oauthSetup: { capable: true, missingEnv: ["RAILWAY_OAUTH_CLIENT_ID"] },
+      oauthReady: false,
+      status: "connected",
+    });
+    expect(shouldShowOauthSetupHint(connector)).toBe(false);
+  });
+
+  it("a non-oauth-capable provider (no adapter, oauthSetup always null in practice) -> false", () => {
+    const linear = projectConnectors([{ kind: "linear", hasSecret: false }]).find(
+      (r) => r.kind === "linear"
+    )!;
+    expect(linear.oauthSetup).toBeNull();
+    expect(shouldShowOauthSetupHint(linear)).toBe(false);
   });
 });

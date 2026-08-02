@@ -101,6 +101,13 @@ describe("sentryOauthAdapter — shape + registration", () => {
     process.env[SLUG_KEY] = SLUG;
     expect(sentryOauthAdapter.envReady?.()).toBe(true);
   });
+
+  // W3-T8 (owner-visible OAuth setup state) — the NAME of the same var
+  // envReady checks the presence of, for the connectors GET route's
+  // `oauthSetup.missingEnv` to report by name.
+  it("declares extraEnvKeys as exactly [SENTRY_OAUTH_INTEGRATION_SLUG]", () => {
+    expect(sentryOauthAdapter.extraEnvKeys?.()).toEqual(["SENTRY_OAUTH_INTEGRATION_SLUG"]);
+  });
 });
 
 describe("sentryOauthAdapter — authorizeUrl", () => {

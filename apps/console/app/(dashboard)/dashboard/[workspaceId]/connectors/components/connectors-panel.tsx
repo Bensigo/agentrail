@@ -9,6 +9,7 @@ import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   activeHeartbeatConnectors,
   CONNECTOR_TYPE_META,
+  shouldShowOauthSetupHint,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
@@ -134,8 +135,26 @@ function OauthResultBanner() {
 // A fixed-height tile — every provider, in every section, is dimensionally
 // identical. `disabled` (planned) tiles are inert and visually muted; every
 // other tile opens the connect/manage sheet on click.
+//
+// W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/plan-oauth.md`)
+// adds one small, quiet "Setup" tag alongside the existing status badge —
+// see `shouldShowOauthSetupHint`'s own doc-comment (`connector-helpers.ts`)
+// for the exact gate (oauth-capable for THIS caller, not yet ready, not
+// already connected). It rides in the SAME bottom row as the status badge
+// rather than adding a new row, so the tile's fixed `h-28` (the #1545
+// invariant this redesign exists to guarantee — see the module doc-comment
+// above) never shifts: this is a width change within an existing row, not
+// a height change. Exported — unlike this file's other internal-only
+// pieces (`ConnectorSection`, `HeartbeatStatusHeader`, not exported) —
+// specifically so `connectors-panel.test.ts` can call it directly and walk
+// its returned element tree (this repo's vitest environment is "node", no
+// @testing-library/react/jsdom —
+// see that test file's own doc-comment); `ConnectorTile` itself has no
+// hooks, so this direct-call technique is safe, mirroring
+// `digest-panel.test.ts`'s identical `PlanCardBlock`/`PlanCardEmpty`
+// precedent.
 // --------------------------------------------------------------------------- //
-function ConnectorTile({
+export function ConnectorTile({
   connector,
   onOpen,
 }: {
@@ -173,11 +192,19 @@ function ConnectorTile({
       <p className="truncate text-xs text-[var(--gray-09)]">
         {connector.description}
       </p>
-      <div className="self-start">
+      <div className="flex items-center gap-1.5 self-start">
         <ConnectorStatusBadge
           status={connector.status}
           availability={connector.availability}
         />
+        {shouldShowOauthSetupHint(connector) && (
+          <span
+            title="One-click connect is available once this deployment sets a few environment variables"
+            className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--blue-09)]/10 text-[var(--blue-11-alt)] border border-[var(--blue-09)]/25"
+          >
+            Setup
+          </span>
+        )}
       </div>
     </button>
   );

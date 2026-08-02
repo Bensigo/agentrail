@@ -241,16 +241,24 @@ export async function signedGetUrl(
 /**
  * Clamps to `[1, MAX_SIGV4_PRESIGN_TTL_SECONDS]` — see that constant's own
  * doc-comment. Logs once (never throws) when the requested value had to be
- * lowered, so a caller asking for more than SigV4 can grant is visible in
- * server logs rather than silently getting a shorter-lived link than it
+ * adjusted, so a caller whose request fell outside SigV4's bounds is visible
+ * in server logs rather than silently getting a different-lived link than it
  * thinks it has.
+ *
+ * The wording is direction-agnostic ("adjusted from X to Y"), NOT "exceeds
+ * the ceiling" — this clamp fires in TWO distinct cases (a too-large
+ * `ttlSeconds`, clamped DOWN to the 7-day ceiling; a non-positive
+ * `ttlSeconds`, clamped UP to the 1s floor) and a ceiling-only message would
+ * be actively wrong for the floor case (review fix, B2a T1: the original
+ * wording claimed "exceeds ... ceiling" even when a non-positive value was
+ * being clamped UP, not down).
  */
 function clampPresignTtl(ttlSeconds: number): number {
   const clamped = Math.max(1, Math.min(ttlSeconds, MAX_SIGV4_PRESIGN_TTL_SECONDS));
   if (clamped !== ttlSeconds) {
     console.warn(
-      `[lib/artifacts/store] requested signed-URL ttlSeconds=${ttlSeconds} exceeds SigV4's ` +
-        `${MAX_SIGV4_PRESIGN_TTL_SECONDS}s (7-day) ceiling for static credentials — clamped to ${clamped}s.`
+      `[lib/artifacts/store] signed-URL ttlSeconds adjusted from ${ttlSeconds} to ${clamped}s ` +
+        `(SigV4 bounds: 1-${MAX_SIGV4_PRESIGN_TTL_SECONDS}s for static credentials).`
     );
   }
   return clamped;

@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { randomBytes } from "crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -313,6 +314,23 @@ describe("signedGetUrl — TTL contract (no network — presigning is local)", (
     warnSpy.mockRestore();
   });
 
+  it("clamps a non-positive ttlSeconds UP to the 1s floor, with direction-accurate wording (review fix, B2a T1)", async () => {
+    // The floor case: a too-SMALL (non-positive) ttlSeconds gets clamped UP,
+    // not down — the warn message must not claim it "exceeds" a ceiling,
+    // which was the bug this test pins (the original wording was
+    // ceiling-only and would have been actively wrong here).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const url = await signedGetUrl("review-evidence/ws/o__r/1/sha/AC1/1.png", -100);
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get("X-Amz-Expires")).toBe("1");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = warnSpy.mock.calls[0].join(" ");
+    expect(msg).toContain("-100");
+    expect(msg).toContain("to 1s");
+    expect(msg.toLowerCase()).not.toContain("exceeds");
+    warnSpy.mockRestore();
+  });
+
   it("does NOT warn when the requested ttlSeconds is already within the ceiling", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     await signedGetUrl("review-evidence/ws/o__r/1/sha/AC1/1.png", 60);
@@ -328,6 +346,110 @@ describe("signedGetUrl — TTL contract (no network — presigning is local)", (
     expect(parsed.pathname).toBe(
       "/agentrail-artifacts/review-evidence/ws/o__r/1/sha/AC1/1.png"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// putArtifact — CI-safe coverage, NO minio required (review fix, B2a T1:
+// "Important — putArtifact has zero non-minio coverage"; CI's node job has
+// no minio service, and store.ts intentionally exposes no injectable-client
+// seam of its own — see resolveS3()'s doc-comment — so this mocks the SDK
+// boundary from the test side instead).
+//
+// Uses `vi.doMock` (NOT the hoisted, file-wide `vi.mock`) + `vi.resetModules`
+// + a fresh `await import("./store")`, scoped entirely to this describe
+// block's own `beforeEach`/`afterEach`. A top-level `vi.mock("@aws-sdk/
+// client-s3", ...)` would replace that module for EVERY import in this
+// FILE — including inside store.ts as reached by the "minio integration"
+// block below, which needs the REAL SDK to make a real network call. `vi.
+// doMock` is not hoisted: it only affects module resolutions that happen
+// AFTER it runs, so a fresh dynamic import right after registering it picks
+// up the mock, while every OTHER describe block's own top-level, static
+// `import {...} from "./store"` (resolved once, at file-collection time,
+// long before any test or hook body executes) is never touched. This is
+// vitest's own documented technique for "mock a dependency on a per-test/
+// per-block basis" (see vi.doMock's docs) — the correctly-scoped form of
+// exactly the mocking the reviewer asked for, not a different mechanism.
+// ---------------------------------------------------------------------------
+
+describe("putArtifact — CI-safe coverage via a scoped @aws-sdk/client-s3 mock (no minio required)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  let sendMock: ReturnType<typeof vi.fn>;
+  let constructedConfigs: Array<Record<string, unknown>>;
+  let mockedStore: typeof import("./store");
+
+  beforeEach(async () => {
+    vi.resetModules();
+    constructedConfigs = [];
+    sendMock = vi.fn().mockResolvedValue({});
+
+    // Real PutObjectCommand/GetObjectCommand (spread from `actual`) — only
+    // S3Client is faked, so `sendMock` receives a REAL PutObjectCommand
+    // instance built by store.ts's own real code, and `.input` reflects the
+    // SDK's actual command shape rather than a hand-rolled stand-in.
+    //
+    // The mock implementation MUST be a `function` expression, not an arrow
+    // function — discovered by actually running this test: store.ts invokes
+    // `new S3Client(...)`, and an arrow function has no internal
+    // `[[Construct]]`, so `new` on a `vi.fn().mockImplementation(() => ...)`
+    // throws `TypeError: ... is not a constructor` (vitest's own runtime
+    // warning names this exact pitfall). A plain `function` IS constructible;
+    // JS's `new` then uses whatever object it explicitly returns.
+    vi.doMock("@aws-sdk/client-s3", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@aws-sdk/client-s3")>();
+      return {
+        ...actual,
+        S3Client: vi.fn().mockImplementation(function (config: Record<string, unknown>) {
+          constructedConfigs.push(config);
+          return { send: sendMock, config };
+        }),
+      };
+    });
+
+    process.env.S3_ENDPOINT = "http://minio.internal:9000";
+    process.env.S3_ACCESS_KEY = "mock-access-key";
+    process.env.S3_SECRET_KEY = "mock-secret-key";
+    process.env.S3_BUCKET = "mock-bucket";
+    delete process.env.S3_REGION;
+
+    mockedStore = await import("./store");
+  });
+
+  afterEach(() => {
+    vi.doUnmock("@aws-sdk/client-s3");
+    vi.resetModules();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("sends exactly one PutObjectCommand carrying Bucket (from env)/Key/Body/ContentType, with no real network call", async () => {
+    const bytes = Buffer.from("hello ci-safe coverage");
+    await mockedStore.putArtifact("review-evidence/ws/o__r/1/sha/AC1/1.png", bytes, "image/png");
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const command = sendMock.mock.calls[0][0];
+    expect(command.input).toEqual({
+      Bucket: "mock-bucket",
+      Key: "review-evidence/ws/o__r/1/sha/AC1/1.png",
+      Body: bytes,
+      ContentType: "image/png",
+    });
+  });
+
+  it("constructs the S3Client with forcePathStyle: true and the S3_ENDPOINT value", async () => {
+    await mockedStore.putArtifact("k", Buffer.from("x"), "text/plain");
+
+    expect(constructedConfigs).toHaveLength(1);
+    expect(constructedConfigs[0]).toMatchObject({
+      endpoint: "http://minio.internal:9000",
+      forcePathStyle: true,
+    });
+  });
+
+  it("propagates a rejected send() (e.g. an S3/minio network or auth failure) uncaught", async () => {
+    sendMock.mockRejectedValueOnce(new Error("simulated S3 failure"));
+    await expect(
+      mockedStore.putArtifact("k", Buffer.from("x"), "text/plain")
+    ).rejects.toThrow("simulated S3 failure");
   });
 });
 
@@ -378,7 +500,14 @@ describe.skipIf(!minioReachable)("putArtifact + signedGetUrl — minio integrati
     index: 1,
     ext: "txt",
   });
-  const TEST_BODY = `hello artifact store — ${Date.now()}`;
+  // Random BINARY bytes (review fix, B2a T1) — a text fixture round-trips
+  // through `fetch().text()`'s own UTF-8 decode/encode, which can silently
+  // mask a byte-level corruption (e.g. Buffer vs. stream handling somewhere
+  // in the put/presign/fetch path) that would only surface on real binary
+  // payloads like the PNG screenshots this store actually exists to hold.
+  // 256 bytes is plenty to make an accidental partial-write or off-by-one
+  // truncation detectable while staying a trivially fast test.
+  const TEST_BYTES = randomBytes(256);
 
   beforeEach(() => {
     process.env.S3_ENDPOINT = MINIO_ENDPOINT;
@@ -410,14 +539,20 @@ describe.skipIf(!minioReachable)("putArtifact + signedGetUrl — minio integrati
     });
   });
 
-  it("puts an object, then signedGetUrl's presigned link fetches the same bytes back", async () => {
-    await putArtifact(TEST_KEY, Buffer.from(TEST_BODY, "utf-8"), "text/plain");
+  it("puts an object, then signedGetUrl's presigned link fetches the identical bytes back (binary round-trip)", async () => {
+    // "image/png" — matches the real per-AC-screenshot use case this store
+    // exists for, even though TEST_BYTES isn't a structurally valid PNG
+    // (irrelevant here: S3/minio store and return opaque bytes, they never
+    // parse ContentType's payload).
+    await putArtifact(TEST_KEY, TEST_BYTES, "image/png");
 
     const url = await signedGetUrl(TEST_KEY, 60);
     const res = await fetch(url);
     expect(res.ok).toBe(true);
-    const text = await res.text();
-    expect(text).toBe(TEST_BODY);
+    const roundTripped = Buffer.from(await res.arrayBuffer());
+    // Buffer.compare returns 0 iff every byte matches — a literal
+    // byte-for-byte comparison, not a text/encoding-mediated one.
+    expect(Buffer.compare(roundTripped, TEST_BYTES)).toBe(0);
   });
 
   it("presigns a never-written key too (signing is local) — fetching it predictably 404s from minio, not from a bug here", async () => {

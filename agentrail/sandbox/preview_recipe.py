@@ -21,9 +21,16 @@ Detection order:
      ``install``/``start`` are shell command strings, split with
      :func:`shlex.split`. ``start`` and ``port`` are required; ``install``
      (``None`` skips the install step) and ``readyPath`` (defaults to ``"/"``)
-     are optional. Reading a missing/malformed config.json, or the ``preview``
-     block being absent or missing a required field, is treated as "no
-     explicit config" and falls through to step 2 — this step never raises.
+     are optional. Two failure modes are handled differently, on purpose:
+       - No ``preview`` key expressed at all — file missing, unreadable,
+         malformed JSON, or no dict-shaped ``preview`` key — means "no
+         explicit config", and falls through to step 2. Never raises.
+       - A ``preview`` key that IS present as a dict but is missing a
+         required ``start``/``port`` (or has an invalid ``port``) is
+         expressed-but-broken user intent: detection stops right there and
+         returns ``None`` outright, WITHOUT falling through to step 2 — a
+         typo'd explicit config must never silently boot a different
+         service than the one the user configured.
   2. ``package.json`` heuristics:
        - start: ``scripts.dev`` -> ``["npm", "run", "dev"]``, else
          ``scripts.start`` -> ``["npm", "run", "start"]``; neither present
@@ -62,15 +69,35 @@ _PORT_BY_DEPENDENCY: tuple[tuple[str, int], ...] = (
 _DEFAULT_PORT = 3000
 
 
+def _framework_port(deps: dict[str, Any]) -> int | None:
+    """The port heuristic for a recognized framework dependency in ``deps``,
+    or ``None`` if nothing in :data:`_PORT_BY_DEPENDENCY` matches.
+
+    Deliberately separate from the ``else -> 3000`` default (applied by the
+    caller) and directly unit-tested: ``next`` and ``react-scripts`` both
+    happen to map to the SAME value as the unknown-framework default, so a
+    test that only checks the final port number on a full recipe can't tell
+    "the heuristic matched" apart from "the heuristic never ran and the
+    default fired instead". Testing this function directly closes that gap —
+    deleting a mapping entry now fails a test.
+    """
+    for dep_name, dep_port in _PORT_BY_DEPENDENCY:
+        if dep_name in deps:
+            return dep_port
+    return None
+
+
 def detect_recipe(repo_dir: str) -> PreviewRecipe | None:
     """Best-effort :class:`PreviewRecipe` for the repo at ``repo_dir``.
 
     Returns ``None`` when nothing usable is found. Never raises: any I/O or
     parse error on either candidate file is treated as "not present".
     """
-    explicit = _from_explicit_config(repo_dir)
-    if explicit is not None:
-        return explicit
+    preview = _read_preview_block(repo_dir)
+    if preview is not None:
+        # Explicit intent was expressed: honor it exactly, win-or-fail. A
+        # present-but-broken block must never fall through to guessing.
+        return _recipe_from_preview_block(preview)
     return _from_package_json(repo_dir)
 
 
@@ -91,16 +118,32 @@ def _split_command(value: Any) -> list[str] | None:
     return shlex.split(value)
 
 
-def _from_explicit_config(repo_dir: str) -> PreviewRecipe | None:
-    """The flat ``preview`` key in ``.agentrail/config.json``, if complete."""
+def _read_preview_block(repo_dir: str) -> dict[str, Any] | None:
+    """The raw ``preview`` object from ``.agentrail/config.json``.
+
+    ``None`` means "no explicit intent expressed" — the config file is
+    missing, unreadable, malformed JSON, or has no dict-shaped ``preview``
+    key — which is the signal :func:`detect_recipe` uses to fall through to
+    package.json heuristics. Any OTHER return value (a dict, however
+    incomplete) means the user DID express intent, even if it turns out to
+    be broken; the caller must not fall through in that case.
+    """
     config = _load_json_object(os.path.join(repo_dir, ".agentrail", "config.json"))
     if config is None:
         return None
-
     preview = config.get("preview")
-    if not isinstance(preview, dict):
-        return None
+    return preview if isinstance(preview, dict) else None
 
+
+def _recipe_from_preview_block(preview: dict[str, Any]) -> PreviewRecipe | None:
+    """Build a :class:`PreviewRecipe` from an explicit, present ``preview``
+    block, or ``None`` if it is missing a required field.
+
+    Only called once a ``preview`` block is known to be present (see
+    :func:`_read_preview_block`) — this function's ``None`` is a hard
+    detection failure to its caller (:func:`detect_recipe`), never a cue to
+    try something else.
+    """
     start = _split_command(preview.get("start"))
     if start is None:
         return None
@@ -143,10 +186,6 @@ def _from_package_json(repo_dir: str) -> PreviewRecipe | None:
         if isinstance(section, dict):
             deps.update(section)
 
-    port = _DEFAULT_PORT
-    for dep_name, dep_port in _PORT_BY_DEPENDENCY:
-        if dep_name in deps:
-            port = dep_port
-            break
+    port = _framework_port(deps) or _DEFAULT_PORT
 
     return PreviewRecipe(install=install, start=start, port=port, ready_path="/")

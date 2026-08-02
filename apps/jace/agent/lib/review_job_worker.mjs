@@ -199,7 +199,28 @@ export const DEFAULT_EVE_HOST = "http://127.0.0.1:2000";
 // A real (if minimal) model turn, not a REST call — see this module's header
 // comment ("TIMEOUT") for why this is deliberately larger than
 // review_job_console.mjs's 8000ms house HTTP convention.
-export const SESSION_CREATE_TIMEOUT_MS = 30_000;
+//
+// 120s, not 30s: the FIRST live smoke (2026-08-02, glm-4.6 via OpenRouter)
+// timed out at the original 30_000 on every attempt — a forced-schema turn
+// still pays first-token latency over root's full system prompt + tool
+// schemas, and a busy provider routinely needs >30s cold. The bound exists
+// to catch a HUNG bootstrap, not a slow one; the whole job is separately
+// bounded by the core's jobTimeoutMs.
+export const SESSION_CREATE_TIMEOUT_MS = 120_000;
+
+/**
+ * Env override for the bootstrap bound: `JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS`.
+ * A positive finite number wins; unset/garbage/non-positive falls back to
+ * `SESSION_CREATE_TIMEOUT_MS` — a typo'd knob must never make the bound 0
+ * (instant permanent failure) or NaN (never fires).
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {number}
+ */
+export function resolveBootstrapTimeoutMs(env = {}) {
+  const raw = Number((env.JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS ?? "").toString().trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : SESSION_CREATE_TIMEOUT_MS;
+}
 
 // The bootstrap turn's own dedicated output schema — forces eve's task mode
 // so the reply is fast, minimal, and needs no tool calls. Its CONTENT is
@@ -392,7 +413,7 @@ export async function startReviewJobWorker(env = process.env) {
       claim: createClaimFn({ workerId, env }),
       bind: createBindFn({ env }),
       complete: createCompleteFn({ env }),
-      openSession: createOpenSessionFn({ client }),
+      openSession: createOpenSessionFn({ client, timeoutMs: resolveBootstrapTimeoutMs(env) }),
       promptFor: reviewJobPrompt,
       resultSchema: REVIEW_JOB_RESULT_SCHEMA,
       log: (message, err) => {

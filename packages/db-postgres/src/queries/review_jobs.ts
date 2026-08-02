@@ -504,6 +504,40 @@ export async function releaseReviewJob(input: { jobId: string }): Promise<void> 
 // --- session binding --------------------------------------------------------
 
 /**
+ * Read a review job's CURRENT state, or null if no such row exists.
+ *
+ * Arc B review fix wave (per-job session restructure): claim no longer
+ * binds a session — that moved to its own console route, `bind`, called
+ * once a session has been opened for an actual claimed job. That route
+ * needs to reject binding a job that isn't (or is no longer) `running`
+ * (e.g. reclaimed by the stale-running pre-pass while the worker was
+ * mid-bootstrap) with a 409 — but `bindReviewJobSession` itself has NO
+ * state precondition (a plain SELECT with no `WHERE state = ...`, unlike
+ * `completeReviewJob`/`releaseReviewJob`'s own guarded `UPDATE ... WHERE
+ * id = $1 AND state = 'running'`), so it cannot signal that distinction on
+ * its own. This is the minimal, purely-additive read the bind route
+ * composes with the UNCHANGED `bindReviewJobSession` to make that check
+ * possible — it does not modify `bindReviewJobSession`'s own contract,
+ * behavior, or tests in any way.
+ *
+ * Deliberately returns `null` rather than throwing for an unknown id — the
+ * bind route's own "not running" branch treats `state !== "running"`
+ * (which is true for both "doesn't exist" and "exists but some other
+ * state") as ONE outcome, mirroring `completeReviewJob`'s own established
+ * "unknown job OR not-running -> 409" precedent (see that route's own
+ * doc-comment) rather than inventing a distinct status for an edge case
+ * with the same practical remedy.
+ */
+export async function getReviewJobState(jobId: string): Promise<string | null> {
+  const rows = await db
+    .select({ state: reviewJobs.state })
+    .from(reviewJobs)
+    .where(eq(reviewJobs.id, jobId))
+    .limit(1);
+  return rows[0]?.state ?? null;
+}
+
+/**
  * Bind (or re-bind) the Eve session backing a review job's own
  * (workspace, channel='review-job', conversationKey) row in `jace_sessions`
  * — the same session store every other Jace channel uses, so review-job

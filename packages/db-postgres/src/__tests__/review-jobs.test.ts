@@ -19,7 +19,7 @@ vi.mock("../db.js", () => ({
 }));
 
 import { db } from "../db.js";
-import { reviewJobId, bindReviewJobSession } from "../queries/review_jobs.js";
+import { reviewJobId, bindReviewJobSession, getReviewJobState } from "../queries/review_jobs.js";
 import { getWorkspaceByGithubInstallationId } from "../queries/github-app-token.js";
 
 const mockDb = vi.mocked(db);
@@ -86,5 +86,26 @@ describe("bindReviewJobSession — not-found contract", () => {
     await expect(
       bindReviewJobSession({ jobId: "missing-job", eveSessionId: "sess-1" })
     ).rejects.toThrow(/missing-job/);
+  });
+});
+
+// Arc B review fix wave (per-job session restructure): claim no longer binds
+// a session, so the NEW bind route needs its own way to tell "job not in
+// running" apart from "bind succeeded" — bindReviewJobSession itself has no
+// state precondition (a plain SELECT with no WHERE state=..., unlike
+// completeReviewJob/releaseReviewJob's own guarded UPDATEs), so it cannot
+// signal that distinction on its own. getReviewJobState is the minimal,
+// purely-additive read the bind route composes with the UNCHANGED
+// bindReviewJobSession to make that check possible, without touching
+// bindReviewJobSession's own contract/behavior/tests at all.
+describe("getReviewJobState", () => {
+  it("returns the row's state when jobId names an existing review_jobs row", async () => {
+    mockDb.select.mockReturnValue(selectChain([{ state: "running" }]) as never);
+    expect(await getReviewJobState("job-1")).toBe("running");
+  });
+
+  it("returns null when jobId names no review_jobs row (mirrors completeReviewJob's own 'unknown job' signal, never throws)", async () => {
+    mockDb.select.mockReturnValue(selectChain([]) as never);
+    expect(await getReviewJobState("missing-job")).toBeNull();
   });
 });

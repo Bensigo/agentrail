@@ -3090,12 +3090,16 @@ export { countAccountRunsStartedInWindow } from "./capacity.js";
 // workspace running-job bound + daily budget, the fixed-backoff complete,
 // and the jace_sessions binding). Naming: "review job", never "review gate"
 // — `review_gates` (above) is a different, unrelated table.
-// releaseReviewJob (Task 4, Arc B §3): the claim route's bind-failure escape
-// hatch — flips a claimed job back to `queued` (release, not leak) when the
-// route's own post-claim bindReviewJobSession call fails. See
-// `queries/review_jobs.ts`'s own doc-comment on the function for the guard
-// and why it never bumps attempts/backoff (an infra release, not a
+// releaseReviewJob (Task 4, Arc B §3; caller moved in the Arc B review fix
+// wave from the claim route to the NEW bind route once claim stopped binding
+// a session): the bind route's own escape hatch — flips a claimed job back
+// to `queued` (release, not leak) when its bindReviewJobSession call fails.
+// See `queries/review_jobs.ts`'s own doc-comment on the function for the
+// guard and why it never bumps attempts/backoff (an infra release, not a
 // worker-reported failure).
+// getReviewJobState (Arc B review fix wave): the bind route's own
+// precondition check — see `queries/review_jobs.ts`'s own doc-comment on the
+// function for why bindReviewJobSession itself cannot signal "not running".
 export {
   reviewJobId,
   enqueueReviewJob,
@@ -3103,6 +3107,7 @@ export {
   completeReviewJob,
   bindReviewJobSession,
   releaseReviewJob,
+  getReviewJobState,
   type EnqueueReviewJobResult,
   type CompleteReviewJobInput,
 } from "./review_jobs.js";

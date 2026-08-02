@@ -3,19 +3,11 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   claimReviewJob: vi.fn(),
-  bindReviewJobSession: vi.fn(),
-  releaseReviewJob: vi.fn(),
 }));
 import { POST } from "./route";
-import {
-  claimReviewJob,
-  bindReviewJobSession,
-  releaseReviewJob,
-} from "@agentrail/db-postgres";
+import { claimReviewJob } from "@agentrail/db-postgres";
 
 const mockClaim = vi.mocked(claimReviewJob);
-const mockBind = vi.mocked(bindReviewJobSession);
-const mockRelease = vi.mocked(releaseReviewJob);
 
 // Central-secret auth — same idiom as runner/pr-review/route.test.ts and
 // runner/workspace-memory/route.test.ts.
@@ -73,8 +65,6 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   delete process.env[BUDGET_ENV_KEY];
   mockClaim.mockResolvedValue(null as never);
-  mockBind.mockResolvedValue(undefined as never);
-  mockRelease.mockResolvedValue(undefined as never);
 });
 
 afterEach(() => {
@@ -90,14 +80,14 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
   // ---------------------------------------------------------------------
   describe("auth (central JACE_CONSOLE_TOKEN secret)", () => {
     it("401 when no Authorization header is sent, and never touches claimReviewJob", async () => {
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }, false));
+      const res = await POST(postReq({ workerId: "w1" }, false));
       expect(res.status).toBe(401);
       expect(mockClaim).not.toHaveBeenCalled();
     });
 
     it("401 when JACE_CONSOLE_TOKEN is unset (fail closed)", async () => {
       delete process.env[ENV_KEY];
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
+      const res = await POST(postReq({ workerId: "w1" }));
       expect(res.status).toBe(401);
       expect(mockClaim).not.toHaveBeenCalled();
     });
@@ -110,7 +100,7 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
             "content-type": "application/json",
             Authorization: "Bearer wrong-secret",
           },
-          body: JSON.stringify({ workerId: "w1", eveSessionId: "eve-1" }),
+          body: JSON.stringify({ workerId: "w1" }),
         })
       );
       expect(res.status).toBe(401);
@@ -118,13 +108,13 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
     });
 
     it("401 body is requireJaceConsoleSecret's exact shape: { error: 'Unauthorized' }", async () => {
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }, false));
+      const res = await POST(postReq({ workerId: "w1" }, false));
       expect(await res.json()).toEqual({ error: "Unauthorized" });
     });
   });
 
   // ---------------------------------------------------------------------
-  // body validation (400) — before any claim/bind call
+  // body validation (400) — before any claim call
   // ---------------------------------------------------------------------
   describe("body validation", () => {
     it("400 on invalid JSON", async () => {
@@ -134,31 +124,27 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
     });
 
     it("400 when workerId is missing", async () => {
-      const res = await POST(postReq({ eveSessionId: "eve-1" }));
-      expect(res.status).toBe(400);
-      expect(mockClaim).not.toHaveBeenCalled();
-    });
-
-    it("400 when eveSessionId is missing", async () => {
-      const res = await POST(postReq({ workerId: "w1" }));
+      const res = await POST(postReq({}));
       expect(res.status).toBe(400);
       expect(mockClaim).not.toHaveBeenCalled();
     });
 
     it("400 when workerId is an empty string", async () => {
-      const res = await POST(postReq({ workerId: "", eveSessionId: "eve-1" }));
+      const res = await POST(postReq({ workerId: "" }));
       expect(res.status).toBe(400);
     });
 
-    it("400 when eveSessionId is an empty string", async () => {
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "" }));
-      expect(res.status).toBe(400);
-    });
-
-    it("400 when both fields are missing entirely (empty body)", async () => {
-      const res = await POST(postReq({}));
+    it("400 when the body is empty", async () => {
+      const res = await POST(postReq(undefined));
       expect(res.status).toBe(400);
       expect(mockClaim).not.toHaveBeenCalled();
+    });
+
+    it("a stray eveSessionId in the body is simply ignored (claim no longer accepts or needs one)", async () => {
+      mockClaim.mockResolvedValue(CLAIMED_JOB as never);
+      const res = await POST(postReq({ workerId: "w1", eveSessionId: "should-be-ignored" }));
+      expect(res.status).toBe(200);
+      expect(mockClaim).toHaveBeenCalledWith({ workerId: "w1", dailyBudget: 50 });
     });
   });
 
@@ -167,19 +153,19 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
   // ---------------------------------------------------------------------
   describe("daily budget resolution", () => {
     it("defaults dailyBudget to 50 when REVIEW_JOBS_DAILY_BUDGET is unset", async () => {
-      await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
+      await POST(postReq({ workerId: "w1" }));
       expect(mockClaim).toHaveBeenCalledWith({ workerId: "w1", dailyBudget: 50 });
     });
 
     it("resolves dailyBudget from REVIEW_JOBS_DAILY_BUDGET when set", async () => {
       process.env[BUDGET_ENV_KEY] = "10";
-      await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
+      await POST(postReq({ workerId: "w1" }));
       expect(mockClaim).toHaveBeenCalledWith({ workerId: "w1", dailyBudget: 10 });
     });
 
     it("falls back to the default when REVIEW_JOBS_DAILY_BUDGET is not a valid number", async () => {
       process.env[BUDGET_ENV_KEY] = "not-a-number";
-      await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
+      await POST(postReq({ workerId: "w1" }));
       expect(mockClaim).toHaveBeenCalledWith({ workerId: "w1", dailyBudget: 50 });
     });
   });
@@ -189,29 +175,18 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
   // ---------------------------------------------------------------------
   it("204 with an empty body when no eligible job exists", async () => {
     mockClaim.mockResolvedValue(null as never);
-    const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
+    const res = await POST(postReq({ workerId: "w1" }));
     expect(res.status).toBe(204);
     expect(await res.text()).toBe("");
-    expect(mockBind).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
-  // claimed -> bind -> 200 { job }
+  // claimed -> 200 { job } (no binding here anymore — see ../bind/route.ts)
   // ---------------------------------------------------------------------
   describe("job claimed", () => {
-    it("binds the session with the job id + eveSessionId BEFORE responding", async () => {
-      mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      await POST(postReq({ workerId: "w1", eveSessionId: "eve-session-9" }));
-
-      expect(mockBind).toHaveBeenCalledWith({
-        jobId: "job-1",
-        eveSessionId: "eve-session-9",
-      });
-    });
-
     it("200 with { job: { id, repo, prNumber, headSha, event, workspaceId } }", async () => {
       mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-session-9" }));
+      const res = await POST(postReq({ workerId: "w1" }));
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
@@ -224,46 +199,12 @@ describe("POST /api/v1/runner/review-jobs/claim", () => {
           workspaceId: "ws-1",
         },
       });
-      expect(mockRelease).not.toHaveBeenCalled();
     });
 
     it("passes the claimed job's own workerId through to claimReviewJob", async () => {
       mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      await POST(postReq({ workerId: "worker-xyz", eveSessionId: "eve-1" }));
+      await POST(postReq({ workerId: "worker-xyz" }));
       expect(mockClaim).toHaveBeenCalledWith({ workerId: "worker-xyz", dailyBudget: 50 });
-    });
-  });
-
-  // ---------------------------------------------------------------------
-  // bind failure -> release (not leak) -> 503
-  // ---------------------------------------------------------------------
-  describe("bind failure releases the claim", () => {
-    it("calls releaseReviewJob with the claimed job's id when bindReviewJobSession throws", async () => {
-      mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      mockBind.mockRejectedValue(new Error("session store down"));
-
-      await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
-
-      expect(mockRelease).toHaveBeenCalledWith({ jobId: "job-1" });
-    });
-
-    it("responds 503 when bindReviewJobSession throws", async () => {
-      mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      mockBind.mockRejectedValue(new Error("session store down"));
-
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
-
-      expect(res.status).toBe(503);
-    });
-
-    it("never leaks a claimed job on bind failure: releaseReviewJob itself throwing still yields 503, not a 500 crash", async () => {
-      mockClaim.mockResolvedValue(CLAIMED_JOB as never);
-      mockBind.mockRejectedValue(new Error("session store down"));
-      mockRelease.mockRejectedValue(new Error("db also down"));
-
-      const res = await POST(postReq({ workerId: "w1", eveSessionId: "eve-1" }));
-
-      expect(res.status).toBe(503);
     });
   });
 });

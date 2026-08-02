@@ -1,10 +1,9 @@
-// Console transports for Arc B's headless review-job worker: the two HTTP
-// calls review_job_worker.core.mjs's (Task 5) `claim`/`complete` seams need,
-// hitting the routes Task 4 built
-// (apps/console/app/api/v1/runner/review-jobs/{claim,complete}/route.ts —
-// see that task's own report, .superpowers/sdd/task-4-report.md, for the
-// exact wire contract this mirrors; it was consulted directly rather than
-// re-deriving the shape from this task's brief text alone).
+// Console transports for Arc B's headless review-job worker: the three HTTP
+// calls review_job_worker.core.mjs's `claim`/`bind`/`complete` seams need,
+// hitting the routes Task 4 built plus the fix-wave's new bind route
+// (apps/console/app/api/v1/runner/review-jobs/{claim,bind,complete}/route.ts
+// — see Task 4's own report, .superpowers/sdd/task-4-report.md, and this
+// task's fix-wave report for the exact wire contracts these mirror).
 //
 // `resolveConsoleConfig` is duplicated verbatim from the sibling *.core.mjs
 // modules (fetch_pr_diff.core.mjs, console_gated_approval.core.mjs,
@@ -13,15 +12,23 @@
 // design.
 //
 // TIMEOUT DISCIPLINE (Task 6 brief, obligation 1): review_job_worker.core.mjs
-// races ONLY `send` against `jobTimeoutMs` — `claim`/`complete` are NOT
-// raced by the core at all, so a transport that hangs here wedges the
+// races ONLY `send` against `jobTimeoutMs` — `claim`/`bind`/`complete` are
+// NOT raced by the core at all, so a transport that hangs here wedges the
 // worker's `inFlight` flag forever with no recovery (every subsequent
 // `tick()` call becomes a silent no-op — see the core's own `tick()` doc
 // comment: "A tick already in flight makes any overlapping call a no-op").
-// Both functions below therefore default to `realTransport`, an
+// All three functions below therefore default to `realTransport`, an
 // AbortController-bounded fetch, mirroring console_gated_approval.core.mjs's
 // own `realTransport` (same REQUEST_TIMEOUT_MS=8000 house convention)
 // byte-for-byte.
+//
+// ARC B REVIEW FIX WAVE (per-job session restructure) — `claimReviewJob`'s
+// body is now `{workerId}` ONLY: claim no longer carries or binds an
+// `eveSessionId` (that used to happen atomically inside the claim call; see
+// review_job_worker.core.mjs's own header comment for why it moved). Binding
+// is its own transport now, `bindReviewJobSession({jobId, eveSessionId})`,
+// called by the assembler AFTER a session is opened for an actual claimed
+// job, right before the real review turn is sent.
 //
 // `claimReviewJob`'s 200 body is `{ job: {...} }` (a wrapper key, not the
 // job's fields at the top level) and its 204 body is empty — both verified
@@ -32,12 +39,13 @@
 // `completeReviewJob` NEVER sends `eveSessionId` — it isn't a parameter this
 // function even reads, by construction (Task 6 brief prose pin), matching
 // the core's own `complete(...)` call shape, which never includes one
-// either (review_job_worker.core.mjs's `runOnce`/`runJob` never thread
-// eveSessionId past `claim`).
+// either. `claimReviewJob` likewise never sends `eveSessionId` post-fix-wave,
+// for the same reason: it isn't a parameter either function reads.
 
 const REQUEST_TIMEOUT_MS = 8000;
 
 export const CLAIM_PATH = "/api/v1/runner/review-jobs/claim";
+export const BIND_PATH = "/api/v1/runner/review-jobs/bind";
 export const COMPLETE_PATH = "/api/v1/runner/review-jobs/complete";
 
 /**
@@ -65,6 +73,11 @@ export function buildClaimUrl(baseUrl) {
 }
 
 /** @param {string} baseUrl — already trimmed + de-slashed */
+export function buildBindUrl(baseUrl) {
+  return `${baseUrl}${BIND_PATH}`;
+}
+
+/** @param {string} baseUrl — already trimmed + de-slashed */
 export function buildCompleteUrl(baseUrl) {
   return `${baseUrl}${COMPLETE_PATH}`;
 }
@@ -82,18 +95,20 @@ async function realTransport(url, init) {
 }
 
 /**
- * Claim the next eligible review job, binding `eveSessionId` to it
- * server-side in the same call (Arc B §3). Resolves `null` on 204 (nothing
+ * Claim the next eligible review job. Resolves `null` on 204 (nothing
  * eligible); throws on any non-2xx (the worker core's `runOnce` catches this
  * — see review_job_worker.core.mjs's `claim()` try/catch, which logs and
- * treats it the same as "no job": idle, session closed, loop alive).
+ * treats it the same as "no job": idle, loop alive). Does NOT bind a
+ * session — see this module's header comment (fix wave); use
+ * `bindReviewJobSession` separately, once a session exists for the claimed
+ * job.
  *
- * @param {{ workerId: string, eveSessionId: string,
+ * @param {{ workerId: string,
  *   env?: Record<string, string|undefined>,
  *   transport?: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}> }} args
  * @returns {Promise<{ id: string, repo: string, prNumber: number, headSha: string, event: string, workspaceId: string } | null>}
  */
-export async function claimReviewJob({ workerId, eveSessionId, env = {}, transport = realTransport }) {
+export async function claimReviewJob({ workerId, env = {}, transport = realTransport }) {
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) {
     throw new Error(`claimReviewJob: console not configured (missing ${cfg.missing.join(", ")})`);
@@ -106,10 +121,7 @@ export async function claimReviewJob({ workerId, eveSessionId, env = {}, transpo
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({
-      workerId: String(workerId ?? ""),
-      eveSessionId: String(eveSessionId ?? ""),
-    }),
+    body: JSON.stringify({ workerId: String(workerId ?? "") }),
   });
 
   const status = Number(res && res.status);
@@ -120,6 +132,52 @@ export async function claimReviewJob({ workerId, eveSessionId, env = {}, transpo
 
   const body = await res.json();
   return body && typeof body === "object" ? body.job ?? null : null;
+}
+
+/**
+ * Bind a headless eve session to a claimed job (fix wave — see this
+ * module's header comment). Must be called AFTER `openSession()` succeeds
+ * for an actual claimed job, and BEFORE the real review turn is sent — every
+ * session-resolving tool the review turn calls resolves this job's
+ * workspace through this binding.
+ *
+ * Resolves (void) on 2xx. Throws on non-2xx — the console's bind route maps
+ * "job not in running" to 409 (e.g. reclaimed by the stale-running pre-pass
+ * while this worker was mid-bootstrap) and a genuine bind failure (already
+ * compensated server-side via release) to 503; the worker core's `bind()`
+ * try/catch treats EITHER as "this worker no longer owns the job" and does
+ * NOT call `complete()` — see that module's own header comment for why.
+ * This transport does not need to distinguish 409 from 503 itself; both are
+ * "bind did not succeed."
+ *
+ * @param {{ jobId: string, eveSessionId: string,
+ *   env?: Record<string, string|undefined>,
+ *   transport?: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}> }} args
+ * @returns {Promise<void>}
+ */
+export async function bindReviewJobSession({ jobId, eveSessionId, env = {}, transport = realTransport }) {
+  const cfg = resolveConsoleConfig(env);
+  if (!cfg.ok) {
+    throw new Error(`bindReviewJobSession: console not configured (missing ${cfg.missing.join(", ")})`);
+  }
+
+  const res = await transport(buildBindUrl(cfg.baseUrl), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      jobId: String(jobId ?? ""),
+      eveSessionId: String(eveSessionId ?? ""),
+    }),
+  });
+
+  const status = Number(res && res.status);
+  if (!Number.isFinite(status) || status < 200 || status >= 300) {
+    throw new Error(`bindReviewJobSession: console returned ${Number.isFinite(status) ? status : "an invalid status"}`);
+  }
 }
 
 /**

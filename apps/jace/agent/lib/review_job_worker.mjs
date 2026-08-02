@@ -1,66 +1,91 @@
-// Arc B (Reviewer of Record) Task 6 — the ASSEMBLER. Builds the real
-// `claim`/`complete`/`openSession`/`promptFor`/`resultSchema` seams
-// `createReviewJobWorker` (Task 5, review_job_worker.core.mjs) needs and
-// starts the loop. This file is deliberately thin: every DECISION about how
-// the loop behaves already lives in the core; this file only wires real
-// transports (review_job_console.mjs's `claimReviewJob`/`completeReviewJob`)
-// and a real eve session (`eve/client`) into that core's injected shape.
+// Arc B (Reviewer of Record) — the ASSEMBLER. Builds the real
+// `claim`/`bind`/`complete`/`openSession`/`promptFor`/`resultSchema` seams
+// `createReviewJobWorker` (review_job_worker.core.mjs) needs and starts the
+// loop. This file is deliberately thin: every DECISION about how the loop
+// behaves already lives in the core; this file only wires real transports
+// (review_job_console.mjs's `claimReviewJob`/`bindReviewJobSession`/
+// `completeReviewJob`) and a real eve session (`eve/client`) into that
+// core's injected shape.
 //
-// WORKER IDENTITY — `buildWorkerId`: `review-worker-<hostname>-<pid>`. Per
-// Task 5's own header comment, the core has no configured identity for
-// itself; Task 6 (this file) is where a stable one is resolved. Hostname
-// alone collides across two processes on the same host (unlikely in this
-// deployment, but free to avoid); pid alone collides across container
-// restarts and gives an operator nothing to go on when reading console-side
-// `claimed_by` in a log. The pair is stable for exactly one process's
-// lifetime — all `claimed_by` bookkeeping needs — and self-describing in a
-// log line without a lookup.
+// WORKER IDENTITY — `buildWorkerId`: `review-worker-<hostname>-<pid>`. The
+// core has no configured identity for itself; this file is where a stable
+// one is resolved. Hostname alone collides across two processes on the same
+// host (unlikely in this deployment, but free to avoid); pid alone collides
+// across container restarts and gives an operator nothing to go on when
+// reading console-side `claimed_by` in a log. The pair is stable for exactly
+// one process's lifetime — which is all `claimed_by` bookkeeping needs — and
+// self-describing in a log line without a lookup.
 //
 // EVE CLIENT HOST — `EVE_HOST`, default `http://127.0.0.1:2000`. Copied
 // verbatim from apps/jace/scripts/needs-approval-roundtrip.mjs (the
 // documented `eve/client` precedent this task's brief points at): eve's dev
-// server binds 127.0.0.1:2000 in this container (that script's own header
-// comment: "In one shell, start the sidecar: npm run dev (runs `eve dev` on
-// 127.0.0.1:2000)"), and the review-job worker talks to the SAME in-process
-// eve server the rest of Jace is already running behind, not a remote one —
-// `Client({host: self})` per the design spec
-// (docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md §4).
+// server binds 127.0.0.1:2000 in this container (confirmed by that script's
+// own header comment: "In one shell, start the sidecar: npm run dev (runs
+// `eve dev` on 127.0.0.1:2000)"), and the review-job worker talks to the
+// SAME in-process eve server the rest of Jace is already running behind, not
+// a remote one — `Client({host: self})` per the design spec (§4).
 //
 // *** THE SESSION-MINTING PROBLEM (verified against the installed eve@0.19.0
 // SDK source, not assumed from the design spec's prose) ***
 //
 // The core's contract (review_job_worker.core.mjs's header comment) requires
 // `openSession()` to resolve an `{id, send, close}` object whose `.id` is
-// ALREADY a real, concrete string — `claim({eveSessionId: session.id})`
-// reads it as a plain property, synchronously, before any `send()` has
-// happened. The design spec's own §4 prose glosses over this as "create a
-// fresh eve session... claim already bound it", as if `client.session()`
-// alone produces an addressable id. It does not:
-// node_modules/eve/dist/src/client/session-utils.js's
+// already a real, concrete string — `bind({jobId, eveSessionId: session.id})`
+// reads it as a plain property, synchronously, before the real review turn
+// is ever sent. eve gives no way to obtain a session id without a real
+// round trip: read node_modules/eve/dist/src/client/session-utils.js's
 // `createInitialSessionState()` (what `client.session()` with no arguments
-// constructs) returns bare `{streamIndex: 0}` — no sessionId at all. Per
-// node_modules/eve/dist/src/client/session.js's `send()`, a session's real
-// id is assigned SERVER-SIDE and only becomes known to the client after the
-// first `send()`'s POST resolves — confirmed against the docs too
+// constructs) — it returns bare `{streamIndex: 0}`, no sessionId at all. Per
+// node_modules/eve/dist/src/client/session.js's `send()` (`#n`), a session's
+// real id is assigned SERVER-SIDE and only becomes known to the client after
+// the first `send()`'s POST resolves — confirmed against the docs too
 // (node_modules/eve/docs/concepts/sessions-runs-and-streaming.md, "Start a
 // session": "eve responds right away. The JSON body carries a sessionId...").
-// There is no lower-level "create a bare session" route either — that same
-// session.js throws "Session.send requires a non-empty message..." for an
-// empty first call, and the raw HTTP contract's own "Start a session"
+// There is no lower-level "create a bare session" route either — `createHandleMessageBody`
+// in that same session.js throws "Session.send requires a non-empty message..."
+// for an empty first call, and the raw HTTP contract's own "Start a session"
 // example always POSTs a `message`.
 //
-// So `openSession()` has to send something before a session id exists to
-// hand `claim()` — and it has to do that before the review job (and
-// therefore the real prompt) is even known, since `claim()` is what reveals
-// the job. This file resolves that with a tiny, harmless BOOTSTRAP turn:
-// open a session, send a one-line internal message under a dedicated
-// single-field output schema (`SESSION_BOOTSTRAP_SCHEMA`) that forces eve's
-// task mode and gets a fast, minimal, structured reply needing no tool
-// calls, then use ITS `sessionId` as `.id`. This matches Task 5's own header
-// comment, which already accepted the cost of this shape ("every idle 30s
-// poll opens and immediately closes a real eve session... deliberate") —
-// that acceptance is what makes a real (if minimal) LLM turn on every idle
-// poll a documented tradeoff, not a surprise this file introduces.
+// So `openSession()` sends a tiny, harmless BOOTSTRAP turn: open a session,
+// send a one-line internal message under a dedicated single-field output
+// schema (`SESSION_BOOTSTRAP_SCHEMA`) that forces eve's task mode and gets a
+// fast, minimal, structured reply with no tool calls needed, then use ITS
+// `sessionId` as `.id`.
+//
+// ARC B REVIEW FIX WAVE — the bootstrap now runs ONCE PER CLAIMED JOB, NOT
+// once per poll. The first version of this loop opened a session
+// UNCONDITIONALLY, before even claiming, so every idle 30s poll paid for a
+// real (if minimal) model turn — 2,880 turns/day at rest if the worker never
+// found a job to review. Review flagged that Important-severity once the
+// mechanism above was concrete rather than a directional idea. The core now
+// claims FIRST (review_job_worker.core.mjs's own header comment): an idle
+// poll (`claim()` resolves `null`) never calls `openSession()` at all, so it
+// costs exactly one cheap claim HTTP call and mints NO model turn. This
+// module's `createOpenSessionFn` below is completely UNCHANGED in mechanism
+// — the core just calls it later (after a real job is claimed) and less
+// often (never for an empty queue) than the first version did.
+//
+// THE BINDING-BEFORE-REAL-TURN INVARIANT (why the bootstrap survives at
+// all): claim and bind used to be one atomic console call specifically so
+// the console could bind a session to a job in the SAME transaction it
+// claimed the job in. That atomicity is gone — `bind` is now its own seam,
+// called by the core AFTER `openSession()` succeeds and BEFORE the real
+// review turn is sent (`claim -> openSession -> bind -> send -> complete ->
+// close`, review_job_worker.core.mjs). What matters for correctness was
+// NEVER the atomicity itself — it was that binding happens before the real
+// turn runs. Every session-resolving tool the review turn calls (the
+// reviewer subagent's tools + root's `post_pr_review`) resolves this job's
+// workspace by looking up `eveSessionId` in the `jace_sessions` table
+// (`ctx.session.parent?.rootSessionId ?? ctx.session.id` -> console ->
+// `getJaceSessionByEveSessionId` -> workspace); as long as that row exists
+// by the time those tools run, it does not matter whether the row was
+// written in the same statement as the claim or a separate HTTP call two
+// seconds later. That invariant — bind before the real send() — is exactly
+// what this module's `createOpenSessionFn` + `createBindFn` + the core's own
+// ordering together preserve, and it is the ENTIRE reason the bootstrap
+// mechanism (mint a session, THEN bind it, THEN send the real prompt) is
+// still necessary post-restructure rather than something a simpler design
+// could have dropped.
 //
 // CONTINUING the SAME session for the real review turn afterward needs
 // `preserveCompletedSessions: true` on the Client (ClientOptions' own doc
@@ -71,7 +96,7 @@
 // expected boundary is `session.completed` (a plain structured ack, no tool
 // calls, so no HITL pause) — WITHOUT this flag the client's own convenience
 // state resets on exactly that boundary, so the SECOND `send()` (the real
-// review) would silently open a DIFFERENT session than the one `claim()`
+// review) would silently open a DIFFERENT session than the one `bind()`
 // already told the console about. Because of that same risk, the bootstrap
 // is only trusted when it reaches `status: "completed"` — NOT "waiting"
 // either, even though a "waiting" boundary is also normally continuable
@@ -79,11 +104,15 @@
 // is answered" — an unrelated review prompt landing on a session still
 // waiting on some unexpected approval is a state this worker has no
 // business trying to recover from; safer to fail the tick and retry next
-// poll). `send()` below also re-checks `result.sessionId` against the id
-// `openSession()` minted, on every call, as a defense-in-depth tripwire: if
-// eve's session ever changed out from under this object for any reason,
-// this throws instead of silently reporting a review as posted under the
-// wrong session's binding.
+// poll). `send()` below applies the SAME strict standard to the REAL review
+// turn too: it re-checks `result.sessionId` against the id `openSession()`
+// minted AND requires `result.status === "completed"` (not merely
+// `result.data` being present — a non-terminal turn could in principle
+// carry an interim/partial payload, and only a genuinely completed turn's
+// data is trustworthy), on every call, as defense-in-depth: if eve's session
+// ever changed out from under this object, or ended in any state other than
+// a clean completion, this throws instead of silently reporting a review as
+// posted under the wrong session or an unfinished turn.
 //
 // TIMEOUT — `openSession()`'s bootstrap round-trip is bounded by
 // `SESSION_CREATE_TIMEOUT_MS`, both via an AbortController signal threaded
@@ -117,37 +146,53 @@
 // nothing for a client to tear down. It exists purely so the core's
 // best-effort `safeClose()` always has something safe to await.
 //
-// THE HONESTY COUPLING (Task 6 brief, explicit ask): review_job_worker.core.mjs
-// resolves EVERY non-throwing `send()` as `outcome:"posted"` — it never
-// reads `result.posted` at all (see that module's own inline comment:
-// "blockers is deliberately dropped here"; `posted` is dropped the same
-// way, just never called out there by name). That makes `posted:false`
-// indistinguishable from `posted:true` to this loop. review_job_prompt.mjs's
-// schema descriptions carry the honesty instruction instead (the prompt's
-// own TEXT is a locked, verbatim contract per the brief — see that module's
-// header): a claimed job's turn must genuinely fail (reject/error) when
-// posting fails, never complete with a dishonest `posted:false`. Nothing in
-// THIS file enforces that — it is root's own standing tool-failure
-// behavior, outside every file this task touches — but the coupling is real
-// and is exactly why `posted` still exists in the schema at all despite
-// this loop never reading it: it is the one field a human reading a stored
-// `review_jobs` row (or a later analytics pass) can use to sanity-check
-// that an `outcome:"posted"` row's own structured result agreed.
+// *** UNVERIFIED AGAINST A LIVE EVE SERVER ***
+// Everything above (the forced-schema bootstrap, `preserveCompletedSessions`,
+// the strict "completed"-only acceptance, the continuation onto the same
+// session for the real turn) is verified against the installed eve@0.19.0
+// SDK's source, type declarations, and documentation — NOT against a real,
+// running eve server. This sandbox has no live eve process to smoke-test
+// against. RECOMMENDED SMOKE TEST before this ships past dogfood: with
+// `JACE_REVIEW_WORKER=1` and a real console configured, enroll exactly one
+// test workspace/repo in `REVIEWER_OF_RECORD_WORKSPACES`, open one real PR
+// against it, and watch a single review job go end-to-end (claim -> a real
+// bootstrap turn actually completes -> bind succeeds -> the real review turn
+// actually runs under the SAME session -> a review posts) with the worker's
+// own logs open the whole time. Only that live run can confirm the bootstrap
+// behaves the way this comment predicts against root's actual instructions
+// (rather than the FAKE client this module's own tests use).
+//
+// THE HONESTY COUPLING (explicit ask): review_job_worker.core.mjs resolves
+// EVERY non-throwing `send()` as `outcome:"posted"` — it never reads
+// `result.posted` at all (see that module's own inline comment: "blockers is
+// deliberately dropped here"; `posted` is dropped the same way, just never
+// called out there by name). That makes `posted:false` indistinguishable
+// from `posted:true` to this loop. review_job_prompt.mjs's schema
+// descriptions carry the honesty instruction instead (the prompt's own TEXT
+// is a locked, verbatim contract — see that module's header): a claimed
+// job's turn must genuinely fail (reject/error) when posting fails, never
+// complete with a dishonest `posted:false`. Nothing in THIS file enforces
+// that — it is root's own standing tool-failure behavior, outside every file
+// this task touches — but the coupling is real and is exactly why `posted`
+// still exists in the schema at all despite this loop never reading it: it
+// is the one field a human reading a stored `review_jobs` row (or a later
+// analytics pass) can use to sanity-check that an `outcome:"posted"` row's
+// own structured result agreed.
 //
 // FLAG — this file does NOT check `JACE_REVIEW_WORKER` itself.
-// agent/instrumentation.ts (Task 6 brief's literal code) gates the call to
-// `startReviewJobWorker` on that env var, mirroring how it already gates
-// nothing for `startDiscordGateway` inside THIS file's scope (that listener
-// instead gates on `DISCORD_BOT_TOKEN` presence INSIDE itself) — two
-// different, equally established gating shapes already coexist in this
-// codebase; this file follows the brief's explicit choice of the former for
-// this worker.
+// agent/instrumentation.ts gates the call to `startReviewJobWorker` on that
+// env var, mirroring how it already gates nothing for `startDiscordGateway`
+// inside THIS file's scope (that listener instead gates on
+// `DISCORD_BOT_TOKEN` presence INSIDE itself) — two different, equally
+// established gating shapes already coexist in this codebase; this file
+// follows instrumentation.ts's explicit choice of the former for this
+// worker.
 
 import { hostname } from "node:os";
 import { Client } from "eve/client";
 import { createReviewJobWorker } from "./review_job_worker.core.mjs";
 import { reviewJobPrompt, REVIEW_JOB_RESULT_SCHEMA } from "./review_job_prompt.mjs";
-import { claimReviewJob, completeReviewJob } from "./review_job_console.mjs";
+import { claimReviewJob, bindReviewJobSession, completeReviewJob } from "./review_job_console.mjs";
 
 export const DEFAULT_EVE_HOST = "http://127.0.0.1:2000";
 
@@ -188,18 +233,35 @@ export function buildWorkerId({ hostnameFn = hostname, pid = process.pid } = {})
 }
 
 /**
- * Curry `workerId` into the core's `claim({eveSessionId})` call (Task 6
- * brief, obligation 2) — the core itself has no configured identity to
- * source one from (Task 5's header comment: "This core has no configured
- * identity for itself").
+ * Wire the core's `claim()` call (NO arguments — see
+ * review_job_worker.core.mjs's own header comment: "there is no
+ * `eveSessionId` to carry at claim time anymore") to the real transport,
+ * currying in this process's own `workerId` and configured `env`. The core
+ * itself has no identity to source `workerId` from.
  *
  * @param {{ workerId: string, env: Record<string, string|undefined>,
  *   claimReviewJobFn?: typeof claimReviewJob }} args — `claimReviewJobFn` is
  *   a test-only override; production callers rely on the default.
- * @returns {(args: { eveSessionId: string }) => Promise<unknown>}
+ * @returns {() => Promise<unknown>}
  */
 export function createClaimFn({ workerId, env, claimReviewJobFn = claimReviewJob }) {
-  return ({ eveSessionId }) => claimReviewJobFn({ workerId, eveSessionId, env });
+  return () => claimReviewJobFn({ workerId, env });
+}
+
+/**
+ * Wire the core's `bind({jobId, eveSessionId})` call (fix wave — the
+ * eveSessionId<->job binding that used to ride inside `claim` now lives
+ * here, called once a session has been opened for an actual claimed job) to
+ * the real transport, fixing `env`.
+ *
+ * @param {{ env: Record<string, string|undefined>,
+ *   bindReviewJobSessionFn?: typeof bindReviewJobSession }} args —
+ *   `bindReviewJobSessionFn` is a test-only override; production callers
+ *   rely on the default.
+ * @returns {(args: { jobId: string, eveSessionId: string }) => Promise<void>}
+ */
+export function createBindFn({ env, bindReviewJobSessionFn = bindReviewJobSession }) {
+  return ({ jobId, eveSessionId }) => bindReviewJobSessionFn({ jobId, eveSessionId, env });
 }
 
 /**
@@ -221,6 +283,9 @@ export function createCompleteFn({ env, completeReviewJobFn = completeReviewJob 
  * Build the core's `openSession()` seam against a real (or, in tests, fake)
  * `eve/client` `Client` instance. See this module's header comment
  * ("THE SESSION-MINTING PROBLEM") for the full mechanics this implements.
+ * Called once per CLAIMED job post-fix-wave (never on an idle poll) — see
+ * the header comment's "ARC B REVIEW FIX WAVE" paragraph — but the mechanism
+ * itself is unchanged from before that restructure.
  *
  * @param {{ client: { session: () => any }, timeoutMs?: number }} args
  * @returns {() => Promise<{ id: string, send: (args: {message: string, outputSchema: unknown}) => Promise<unknown>, close: () => Promise<void> }>}
@@ -279,9 +344,13 @@ export function createOpenSessionFn({ client, timeoutMs = SESSION_CREATE_TIMEOUT
             `review-job-worker: review turn ran under session "${result.sessionId}", expected "${sessionId}" — refusing to report a review posted under an unbound session`,
           );
         }
-        if (result.data === undefined) {
+        // Matches the bootstrap's own strict standard (header comment,
+        // "CONTINUING the SAME session..."): only a genuinely completed
+        // turn's data is trustworthy — a non-terminal status is rejected
+        // even if it happens to carry a data payload.
+        if (result.status !== "completed" || result.data === undefined) {
           throw new Error(
-            `review-job-worker: review turn ended with status "${result.status}" and no structured result`,
+            `review-job-worker: review turn ended with status "${result.status}" and no usable structured result`,
           );
         }
         return result.data;
@@ -321,6 +390,7 @@ export async function startReviewJobWorker(env = process.env) {
 
     const worker = createReviewJobWorker({
       claim: createClaimFn({ workerId, env }),
+      bind: createBindFn({ env }),
       complete: createCompleteFn({ env }),
       openSession: createOpenSessionFn({ client }),
       promptFor: reviewJobPrompt,

@@ -1,8 +1,15 @@
-// Unit tests for the Arc B headless review-job worker's ASSEMBLER (Task 6):
+// Unit tests for the Arc B headless review-job worker's ASSEMBLER:
 // apps/jace/agent/lib/review_job_worker.mjs. This file wires
-// review_job_worker.core.mjs's (Task 5) pure loop to real transports
+// review_job_worker.core.mjs's pure loop to real transports
 // (review_job_console.mjs) and a real eve session (eve/client) — see its own
 // header comment for the full "session-minting problem" this resolves.
+//
+// ARC B REVIEW FIX WAVE (per-job session restructure): `claim` no longer
+// carries or receives an `eveSessionId` — the core now calls it with NO
+// arguments at all, and `createClaimFn`'s closure only needs to curry its
+// own configured `workerId`. A NEW `createBindFn` curries the job/session
+// pairing into a `bind({jobId, eveSessionId})` call instead, made AFTER a
+// session is opened for an actual claimed job.
 //
 // `startReviewJobWorker` itself constructs a REAL `eve/client` `Client` and,
 // on success, starts a REAL setInterval — calling it in a test would leave a
@@ -12,7 +19,7 @@
 // tests agent/lib/discord-gateway.mjs (which opens a real socket on call),
 // `startReviewJobWorker`'s OWN body is tested STRUCTURALLY (read the source,
 // assert on its shape) rather than executed. Its separable, injectable
-// pieces — buildWorkerId, createClaimFn, createCompleteFn,
+// pieces — buildWorkerId, createClaimFn, createBindFn, createCompleteFn,
 // createOpenSessionFn — are fully exercised behaviorally with fakes, since
 // none of them touch a real network or a real timer.
 
@@ -26,6 +33,7 @@ import {
   SESSION_BOOTSTRAP_SCHEMA,
   buildWorkerId,
   createClaimFn,
+  createBindFn,
   createCompleteFn,
   createOpenSessionFn,
 } from "../agent/lib/review_job_worker.mjs";
@@ -48,10 +56,10 @@ test("buildWorkerId: defaults to real os.hostname()/process.pid when not overrid
 });
 
 // ---------------------------------------------------------------------------
-// createClaimFn — the workerId-currying pin (Task 6 brief, obligation 2)
+// createClaimFn — fix wave: claim takes NO arguments; only workerId is curried
 // ---------------------------------------------------------------------------
 
-test("PIN: createClaimFn's closure calls claimReviewJobFn with BOTH workerId and the core-supplied eveSessionId", async () => {
+test("PIN: createClaimFn's closure takes no arguments and calls claimReviewJobFn with the configured workerId + env", async () => {
   const calls = [];
   const claimFn = createClaimFn({
     workerId: "review-worker-host-1-999",
@@ -62,28 +70,27 @@ test("PIN: createClaimFn's closure calls claimReviewJobFn with BOTH workerId and
     },
   });
 
-  // The core calls claim() as `claim({ eveSessionId })` ONLY — no workerId
-  // (review_job_worker.core.mjs's own header comment). This closure must
-  // merge its own configured workerId in before delegating.
-  await claimFn({ eveSessionId: "session-abc" });
+  // The core now calls claim() with NO arguments at all (review_job_worker.core.mjs's
+  // own header comment: "no eveSessionId to carry at claim time anymore").
+  await claimFn();
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].workerId, "review-worker-host-1-999");
-  assert.equal(calls[0].eveSessionId, "session-abc");
+  assert.ok(!("eveSessionId" in calls[0]), "claim no longer carries an eveSessionId — that moved to bind()");
 });
 
 test("createClaimFn: forwards its configured env through unchanged", async () => {
   const env = { JACE_CONSOLE_BASE_URL: "https://x", JACE_CONSOLE_TOKEN: "t" };
   const calls = [];
   const claimFn = createClaimFn({ workerId: "w1", env, claimReviewJobFn: async (args) => calls.push(args) });
-  await claimFn({ eveSessionId: "s1" });
+  await claimFn();
   assert.equal(calls[0].env, env);
 });
 
 test("createClaimFn: returns whatever the underlying claimReviewJobFn resolves (a job or null), unmodified", async () => {
   const job = { id: "job-1", repo: "a/b", prNumber: 1, headSha: "sha", event: "opened", workspaceId: "ws" };
   const claimFn = createClaimFn({ workerId: "w1", env: {}, claimReviewJobFn: async () => job });
-  assert.deepEqual(await claimFn({ eveSessionId: "s1" }), job);
+  assert.deepEqual(await claimFn(), job);
 });
 
 test("createClaimFn: defaults claimReviewJobFn to the real claimReviewJob when not overridden", async () => {
@@ -91,7 +98,38 @@ test("createClaimFn: defaults claimReviewJobFn to the real claimReviewJob when n
   // any network call — proves the default wiring reaches the real function
   // rather than silently no-op'ing.
   const claimFn = createClaimFn({ workerId: "w1", env: {} });
-  await assert.rejects(() => claimFn({ eveSessionId: "s1" }), /JACE_CONSOLE_BASE_URL/);
+  await assert.rejects(() => claimFn(), /JACE_CONSOLE_BASE_URL/);
+});
+
+// ---------------------------------------------------------------------------
+// createBindFn — NEW (fix wave): curries jobId/eveSessionId into bindReviewJobSession
+// ---------------------------------------------------------------------------
+
+test("PIN: createBindFn's closure calls bindReviewJobSessionFn with jobId, eveSessionId, and the configured env", async () => {
+  const env = { JACE_CONSOLE_BASE_URL: "https://x", JACE_CONSOLE_TOKEN: "t" };
+  const calls = [];
+  const bindFn = createBindFn({ env, bindReviewJobSessionFn: async (args) => calls.push(args) });
+
+  // The core calls bind() as `bind({jobId, eveSessionId})` (review_job_worker.core.mjs).
+  await bindFn({ jobId: "job-1", eveSessionId: "session-abc" });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { jobId: "job-1", eveSessionId: "session-abc", env });
+});
+
+test("createBindFn: propagates the underlying bindReviewJobSessionFn's rejection unchanged (the core's bind() try/catch depends on this)", async () => {
+  const bindFn = createBindFn({
+    env: {},
+    bindReviewJobSessionFn: async () => {
+      throw new Error("console returned 409");
+    },
+  });
+  await assert.rejects(() => bindFn({ jobId: "job-1", eveSessionId: "s1" }), /409/);
+});
+
+test("createBindFn: defaults bindReviewJobSessionFn to the real bindReviewJobSession when not overridden", async () => {
+  const bindFn = createBindFn({ env: {} });
+  await assert.rejects(() => bindFn({ jobId: "job-1", eveSessionId: "s1" }), /JACE_CONSOLE_BASE_URL/);
 });
 
 // ---------------------------------------------------------------------------
@@ -126,6 +164,8 @@ test("createCompleteFn: defaults completeReviewJobFn to the real completeReviewJ
 // ---------------------------------------------------------------------------
 // createOpenSessionFn — the session-minting bootstrap (see the module's own
 // header comment, "THE SESSION-MINTING PROBLEM", for the full mechanics).
+// Unaffected by the fix wave's claim/bind split — openSession() is still
+// called once per claimed job, just later in the tick than before.
 // ---------------------------------------------------------------------------
 
 /** A fake eve/client-shaped Client: `.session()` returns a fake ClientSession
@@ -246,6 +286,21 @@ test("the returned session's send(): throws if the turn produced no structured d
   await assert.rejects(() => session.send({ message: "m", outputSchema: {} }), /waiting/);
 });
 
+test("the returned session's send(): throws if the turn's status is NOT 'completed' even though data happens to be present (matches the bootstrap's own strict standard — status is the source of truth, not the presence of data)", async () => {
+  let call = 0;
+  const client = fakeClient(() => {
+    call += 1;
+    if (call === 1) return { status: "completed", sessionId: "sess-1", data: { ready: true } };
+    // A "waiting" turn that nonetheless carries a data payload (e.g. a
+    // partial/interim structured emission) must NOT be trusted — only a
+    // genuinely terminal "completed" turn is.
+    return { status: "waiting", sessionId: "sess-1", data: { posted: true, reviewUrl: "https://x", verdict: "approve", blockers: [], summaryLine: "line" } };
+  });
+  const openSession = createOpenSessionFn({ client });
+  const session = await openSession();
+  await assert.rejects(() => session.send({ message: "m", outputSchema: {} }), /waiting/);
+});
+
 test("the returned session's close(): resolves without throwing (eve/client's ClientSession has no server-side close call)", async () => {
   const client = fakeClient(() => ({ status: "completed", sessionId: "sess-1", data: { ready: true } }));
   const openSession = createOpenSessionFn({ client });
@@ -258,13 +313,20 @@ test("the returned session's close(): resolves without throwing (eve/client's Cl
 // this isn't executed: it constructs a real Client and starts a real timer).
 // ---------------------------------------------------------------------------
 
-test("imports Client from eve/client, the core factory, the prompt/schema, and the console transports", () => {
+test("imports Client from eve/client, the core factory, the prompt/schema, and the console transports (claim/bind/complete)", () => {
   assert.match(code, /import\s*{\s*Client\s*}\s*from\s*["']eve\/client["']/);
   assert.match(code, /import\s*{\s*createReviewJobWorker\s*}\s*from\s*["']\.\/review_job_worker\.core\.mjs["']/);
   assert.match(code, /reviewJobPrompt/);
   assert.match(code, /REVIEW_JOB_RESULT_SCHEMA/);
   assert.match(code, /claimReviewJob/);
+  assert.match(code, /bindReviewJobSession/);
   assert.match(code, /completeReviewJob/);
+});
+
+test("startReviewJobWorker wires bind: into the factory call (fix wave — the core now has a bind seam)", () => {
+  const fnMatch = code.match(/export async function startReviewJobWorker\([\s\S]*?\n\}/);
+  assert.ok(fnMatch, "startReviewJobWorker function not found");
+  assert.match(fnMatch[0], /\bbind:\s*createBindFn\(/);
 });
 
 test("startReviewJobWorker guards against being started twice in the same process", () => {
@@ -309,4 +371,18 @@ test("exports startReviewJobWorker", () => {
 
 test("SESSION_CREATE_TIMEOUT_MS is exported and larger than the house 8000ms HTTP convention (this bounds a real model turn, not a REST call)", () => {
   assert.ok(SESSION_CREATE_TIMEOUT_MS > 8000);
+});
+
+test("documents that the bootstrap now runs once per claimed job (idle ticks are model-free), per the fix-wave review", () => {
+  assert.match(code, /once per (?:claimed|actual) job/i);
+  assert.match(code, /idle/i);
+});
+
+test("documents the mechanism as UNVERIFIED against a live eve server and names the recommended smoke test", () => {
+  assert.match(code, /UNVERIFIED/);
+  assert.match(code, /smoke test/i);
+});
+
+test("documents the binding-before-real-turn invariant explicitly", () => {
+  assert.match(code, /binding.*before.*(?:real )?(?:review )?turn/is);
 });

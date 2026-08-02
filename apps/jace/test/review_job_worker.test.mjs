@@ -36,6 +36,7 @@ import {
   createBindFn,
   createCompleteFn,
   createOpenSessionFn,
+  resolveBootstrapTimeoutMs,
 } from "../agent/lib/review_job_worker.mjs";
 
 const sourcePath = fileURLToPath(new URL("../agent/lib/review_job_worker.mjs", import.meta.url));
@@ -385,4 +386,13 @@ test("documents the mechanism as UNVERIFIED against a live eve server and names 
 
 test("documents the binding-before-real-turn invariant explicitly", () => {
   assert.match(code, /binding.*before.*(?:real )?(?:review )?turn/is);
+});
+
+test("resolveBootstrapTimeoutMs: env override wins, garbage and non-positive fall back to the 120s default (Arc B smoke fix)", () => {
+  assert.equal(resolveBootstrapTimeoutMs({}), SESSION_CREATE_TIMEOUT_MS);
+  assert.equal(SESSION_CREATE_TIMEOUT_MS, 120_000);
+  assert.equal(resolveBootstrapTimeoutMs({ JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS: "45000" }), 45000);
+  assert.equal(resolveBootstrapTimeoutMs({ JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS: "not-a-number" }), SESSION_CREATE_TIMEOUT_MS);
+  assert.equal(resolveBootstrapTimeoutMs({ JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS: "0" }), SESSION_CREATE_TIMEOUT_MS);
+  assert.equal(resolveBootstrapTimeoutMs({ JACE_REVIEW_BOOTSTRAP_TIMEOUT_MS: "-5" }), SESSION_CREATE_TIMEOUT_MS);
 });

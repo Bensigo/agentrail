@@ -363,7 +363,10 @@ server's own self-description, more authoritative than prose about it).
 ### plan's own W3-T1..T4 scope
 
 Raw `curl` of the doc pages' own markdown source (`<page>.md`), never a
-WebFetch summary — `vercel.com/docs/integrations/index.md`,
+WebFetch summary — `vercel.com/docs/integrations.md` (fix round, review
+Finding 2: `integrations/index.md` 404s on this doc platform — `<page>.md`
+has no `/index` suffix here; corrected, cited quotes re-verified present
+verbatim at the correct URL),
 `.../integrations/create-integration.md`,
 `.../integrations/create-integration/submit-integration.md`,
 `.../integrations/create-integration/vercel-api-integrations.md`,
@@ -383,7 +386,7 @@ exchange endpoint (see below).
   endpoints; (2) **"Native integration" / Marketplace Provider API** —
   CONFIRMED to require an actual Vercel partnership ("Native integrations
   allow a two-way connection between Vercel and third-parties Vercel has
-  partnered with" — `integrations/index.md`, no bold in the source; "share
+  partnered with" — `integrations.md`, no bold in the source; "share
   your `team_id` and Integration's URL Slug with Vercel in your shared
   Slack channel" — `create-integration.md`) — a heavier build (an
   "integration server"
@@ -421,11 +424,19 @@ exchange endpoint (see below).
   nor `expires_in` (nor any TTL number in prose) appears ANYWHERE tied to
   this endpoint across the entire doc corpus — the full-corpus grep found
   zero hits beyond the one exchange-URL mention itself. What DOES bound a
-  token's life is installation STATE, not a clock: *"Any API requests will
-  fail with a `403`... `integration_configuration_disabled`"* if the
-  installing team's owner leaves unclaimed for 30 days
-  (`vercel-api-integrations.md`) — already `lib/evidence/vercel.ts`'s own
-  `unauthorized` degradation, no new mapping needed. `lib/oauth/vercel.ts`'s
+  token's life is installation STATE, not a clock. Fix round (review
+  Finding 3 — corrected a sequencing inversion in the first pass):
+  disablement is IMMEDIATE, not delayed — *"If an owner(s) of an
+  integration leaves the team… the integration will be flagged as
+  disabled[;] the team will receive an email to take action (transfer
+  ownership) within 30 days, otherwise the integration will be deleted"*,
+  and *"Any API requests will fail with a `403`...
+  `integration_configuration_disabled`"* once disabled — both
+  `vercel-api-integrations.md`. The 403s begin the moment the owner
+  leaves; the 30-day window is the deadline before the MORE severe,
+  separate outcome (permanent deletion), not a delay before the 403s
+  start — already `lib/evidence/vercel.ts`'s own `unauthorized`
+  degradation either way, no new mapping needed. `lib/oauth/vercel.ts`'s
   `refresh()` is therefore a DOCUMENTED, DELIBERATE no-op that always
   rejects (never a network call) — safe specifically because `expiresAt` is
   stamped to a fixed far-future sentinel, so `core.ts`'s `needsRefresh()`
@@ -471,28 +482,54 @@ exchange endpoint (see below).
   every 401/403 to `unauthorized` (Task P7, unmodified), a PRE-EXISTING,
   ONGOING per-call safety net, the same decisive point `cloudflare.ts`'s own
   "NO postExchange" reasoning makes for its own equivalent decision.
-- **Review/approval gate — VERIFIED SELF-SERVE, corrects the "vendor review
-  gate" premise; NOT the datadog outcome.** A connectable-account
-  integration is functionally LIVE the instant its Create Integration form
-  is submitted: *"Once you have created your connectable account
-  integration, it will be assigned the **Community** badge and be available
-  for external users to download"* — `create-integration.md`. The install
-  URL from the endpoints finding above is live immediately, installable by
-  the creator's own team included — no Vercel review, no waiting. A
-  SEPARATE, OPTIONAL, LATER step — public marketplace LISTING
-  (discoverability on Vercel's own `/integrations` browse page) — is the
-  ONLY thing gated by manual review, and only after 500+ active
-  installations: *"The integration must have at least 500 active
+- **Review/approval gate — GENUINELY AMBIGUOUS, not settled either
+  direction (fix round, review Finding 1 — the first pass here quoted
+  only the favorable half of `create-integration.md` and stamped
+  "VERIFIED SELF-SERVE" as flat fact; the SAME page carries directly
+  conflicting language, never previously quoted).** Favorable — the
+  page's more specific "After integration creation" section: *"Once you
+  have created your connectable account integration, it will be assigned
+  the **Community** badge and be available for external users to
+  download"* — `create-integration.md`. Conflicting — the SAME page's own
+  top-level numbered overview (step 3's own qualifier, "if it's a
+  connectable account integration," ties this to exactly this integration
+  type, not just native integrations): *"Once your integration is
+  approved, you can share it for users to install if it's a connectable
+  account integration"* — and, of the very form an owner is instructed to
+  submit: *"The Create Integration form must be completed in full before
+  you can submit your integration for review"* — both `create-
+  integration.md`. `approval-checklist.md`'s own connectable-account
+  checklist (independently confirmed) is entirely about marketplace
+  LISTING polish (image sizing, install-wizard UX) — real, but it does
+  NOT resolve this creation-time tension either way. Whether "approved"/
+  "review" there gates even the CREATOR's own first install attempt, gates
+  only sharing the link with others while the creator can self-install
+  regardless, or is stale boilerplate the more specific section
+  supersedes, is NOT determinable from docs alone — and the favorable
+  quote's own wording ("available for **external** users to download," in
+  the SAME sentence as "immediately") sits awkwardly with a clean
+  creator-vs-others split, so that narrower reading is not assumed either.
+  **THE ONE REMAINING UNTESTED SEAM:** the first live connect attempt,
+  after an owner registers the integration and sets the three env vars,
+  is what actually settles this — a failure on that very first try may
+  mean "still pending Vercel's own approval, retry shortly," not
+  necessarily a misconfiguration; no operator-facing copy in this
+  codebase promises "no waiting" as of this fix round. What IS still
+  settled either way: public marketplace LISTING (discoverability) is a
+  SEPARATE, OPTIONAL, LATER step, gated by manual review only after 500+
+  active installations: *"The integration must have at least 500 active
   installations… email integrations@vercel.com with your request to be
   reviewed for listing"* — `create-integration.md`; independently
-  re-confirmed by the dedicated `approval-checklist.md` page, whose own
-  connectable-account checklist funnels to the identical action. Both
-  citations are unambiguously about LISTING, never about functional
-  OAuth/API access, and this connector never intends to pursue listing
-  (AgentRail's own connect button links directly to the external-install
-  URL, exactly like Sentry's own direct external-install link) — so the
-  500-install threshold is structurally irrelevant here. **Verification
-  outcome: proceed, not stop.**
+  re-confirmed by `approval-checklist.md`. That citation is unambiguously
+  about LISTING, never about functional OAuth/API access, and this
+  connector never intends to pursue listing (AgentRail's own connect
+  button links directly to the external-install URL, exactly like
+  Sentry's own direct external-install link) — so the 500-install
+  threshold is confirmed irrelevant regardless of how the creation-time
+  question resolves. **Verification outcome: proceed with implementation
+  (the code needs no change either way — see `vercel.ts`'s own
+  doc-comment, "(6)"), but do not ship "no review needed" as settled fact
+  to an operator.**
 - **Scopes (registration-time picker, not a per-authorize param):**
   CONFIRMED table, `vercel-api-integrations.md` ("Scopes") — this adapter's
   three calls need exactly THREE, each at Read (never Read/Write): `user`,
@@ -994,25 +1031,33 @@ for an unrecognized/missing param. Dismissing strips the query params
    registration steps" below.
 7. **W3-T9 (phase 3, post-dates the plan's own original W3-T1..T4 scope —
    originally excluded on a "vendor review gate" premise this task's own
-   verification corrected):** Vercel's `OauthProviderAdapter`. No PKCE (not
-   used by this flow at all — see "W3-T9 doc-verification" above). A
-   material auth-method difference from every prior adapter:
-   `client_secret_post` (id/secret in the exchange BODY), not
-   `client_secret_basic`. New third env var `VERCEL_OAUTH_INTEGRATION_SLUG`
-   (mirrors Sentry's `envReady()` pattern) — the authorize URL is
-   slug-keyed, not a shared host + `client_id` param. `refresh()` is a
-   documented, deliberate no-op that always rejects (Vercel's own tokens are
-   long-lived with no refresh mechanism); `expiresAt` is stamped to a fixed
-   far-future sentinel rather than a computed TTL nothing documents.
-   `postExchange` auto-fills `vercelTeamId` from the exchange response's own
-   `team_id` (zero extra network calls, unlike Railway's
-   `externalWorkspaces` verification query) but does NOT fail-closed on a
-   mismatch — see "W3-T9 doc-verification" above for why that gap is closed
-   by a PRE-EXISTING per-call mechanism instead, the same reasoning
-   Cloudflare's own `postExchange` absence relies on. Registration needs NO
-   new blocking step (unlike Cloudflare's DNS verification) — a
-   connectable-account integration is self-installable immediately on
-   creation; see "Owner registration steps" below.
+   verification found genuinely ambiguous, not confirmed either direction —
+   see "W3-T9 doc-verification" above, "Review/approval gate"):** Vercel's
+   `OauthProviderAdapter`. No PKCE (not used by this flow at all). A
+   material auth-method difference from Railway's/Cloudflare's own
+   `client_secret_basic`: `client_secret_post` (id/secret in the exchange
+   BODY, form-urlencoded) — narrower than "every prior adapter" (fix round,
+   review Finding 4): Sentry's own exchange ALSO isn't `client_secret_basic`
+   (its `client_id`/`client_secret` ride in a JSON body instead), so Vercel
+   is the first FORM-URLENCODED-`client_secret_post` adapter specifically,
+   not the first non-Basic one outright. New third env var
+   `VERCEL_OAUTH_INTEGRATION_SLUG` (mirrors Sentry's `envReady()` pattern) —
+   the authorize URL is slug-keyed, not a shared host + `client_id` param.
+   `refresh()` is a documented, deliberate no-op that always rejects
+   (Vercel's own tokens are long-lived with no refresh mechanism);
+   `expiresAt` is stamped to a fixed far-future sentinel rather than a
+   computed TTL nothing documents. `postExchange` auto-fills `vercelTeamId`
+   from the exchange response's own `team_id` (zero extra network calls,
+   unlike Railway's `externalWorkspaces` verification query) but does NOT
+   fail-closed on a mismatch — see "W3-T9 doc-verification" above for why
+   that gap is closed by a PRE-EXISTING per-call mechanism instead, the
+   same reasoning Cloudflare's own `postExchange` absence relies on.
+   Registration itself needs no DNS-verification-style blocking step (unlike
+   Cloudflare's) — but whether the resulting integration installs
+   immediately, even for its own creator, or waits on a Vercel-side
+   approval step of unknown speed is genuinely UNRESOLVED from docs alone
+   (see "W3-T9 doc-verification" above) — the first live connect attempt
+   is what actually settles it; see "Owner registration steps" below.
 
 ## Owner registration steps
 
@@ -1099,12 +1144,19 @@ integration's own **URL Slug** (the authorize URL is slug-keyed —
 `vercel.com/integrations/<slug>/new`, unlike Railway's/Cloudflare's shared-
 host authorize endpoints); set `VERCEL_OAUTH_CLIENT_ID` /
 `VERCEL_OAUTH_CLIENT_SECRET` / `VERCEL_OAUTH_INTEGRATION_SLUG` on the
-deployment. **No promotion/review/domain-verification step needed** — unlike
-Cloudflare's PUBLIC-visibility DNS gate, a connectable-account integration
-is self-installable the instant the form is submitted (see "W3-T9
-doc-verification" above, "Review/approval gate") — this is a
-single-session dashboard action, same weight as Railway's/Sentry's own
-steps. Vercel's own access tokens never expire on a clock and have no
+deployment. **No DNS-verification-style step, unlike Cloudflare's PUBLIC-
+visibility gate** — registering the integration itself is a single-session
+dashboard action, same weight as Railway's/Sentry's own steps. Whether the
+resulting integration installs immediately for its own creator, or waits
+on a Vercel-side approval step of unknown speed first, is GENUINELY
+UNRESOLVED from the docs fetched (see "W3-T9 doc-verification" above,
+"Review/approval gate" — two passages on Vercel's own page conflict on
+this point, and neither this task nor its fix round resolved which
+governs). **Try connecting immediately after registering; if the first
+attempt fails, wait and retry before assuming a misconfiguration** — the
+first real attempt is this codebase's own live-smoke test for this
+question, not something settled by reading alone. Vercel's own access
+tokens never expire on a clock and have no
 refresh token to lose track of (see "W3-T9 doc-verification" above, "Token
 lifetime") — there is no rotation/expiry behavior to plan around after
 registration, only the ordinary "operator reconnects if the integration is
@@ -1128,10 +1180,16 @@ gates on `VERCEL_OAUTH_INTEGRATION_SLUG` the same way).
   **Cloudflare moved OUT of this list (W3-T6)** — its own OAuth phase,
   previously "documented future," is now built; see "W3-T6
   doc-verification" above and "As-built addendum (W3-T6)" below.
-  **Vercel moved OUT of this list (W3-T9)** — verification found API access
-  IS obtainable self-serve (not the "vendor review gate" the session
-  research that framed Vercel's original exclusion anticipated — see "W3-T9
-  doc-verification" above); its own OAuth adapter is now built. Vercel's
+  **Vercel moved OUT of this list (W3-T9)** — its own OAuth adapter is now
+  built, but the "vendor review gate" the session research that framed
+  Vercel's original exclusion anticipated was NOT cleanly refuted either —
+  verification found Vercel's own docs genuinely ambiguous on whether a
+  fresh connectable-account integration installs immediately, even for its
+  own creator, or waits on an approval step first (two passages on the
+  same page conflict, unresolved by anything else fetched) — see "W3-T9
+  doc-verification" above, "Review/approval gate," for the full disclosed
+  tension, and "Owner registration steps" below for the live-smoke framing
+  this leaves for the first real connect attempt. Vercel's
   earlier exclusion from the W3-T4 sheet note (above) was simply that task's
   own scope pin at the time, not a claim about its OAuth roadmap either way
   — and is now moot, since Vercel has its own `oauthHint` (like
@@ -1305,9 +1363,16 @@ what's needed" stop condition never triggered.
 
 Vercel was originally excluded from this wave (see "Out of scope") on a
 "vendor review gate" premise from the session's own prior research —
-verification found that premise wrong for the flow this connector actually
-needs; promoted to as-built. Full doc-verification trail: "W3-T9
-doc-verification (Vercel)" above; full quoted trail also in
+promoted to as-built anyway, on the strength of everything else this task
+verified (endpoints, token lifetime, state transport, team scoping — all
+CONFIRMED, none blocking), even though the review-gate premise itself was
+NOT cleanly refuted: fix round (independent review, `.superpowers/sdd/
+review-W3T9.md` Finding 1) found the doc page this task leaned on hardest
+carries directly conflicting language its first pass never quoted — see
+"W3-T9 doc-verification" above, "Review/approval gate," for the full,
+now-disclosed tension. The code itself needed no change either way; the
+fix round corrected the CLAIM, not the adapter. Full doc-verification
+trail: "W3-T9 doc-verification (Vercel)" above; full quoted trail also in
 `.superpowers/sdd/task-W3T9-report.md`.
 
 `lib/oauth/vercel.ts` mirrors `sentry.ts`'s shape more than Railway's/
@@ -1321,8 +1386,14 @@ prior adapter, each disclosed in the adapter's own doc-comment:
 
 1. **`client_secret_post`, not `client_secret_basic`** — `client_id`/
    `client_secret` ride in the token-exchange BODY, never an `Authorization:
-   Basic` header, the first adapter in this codebase to need this auth
-   method (confirmed verbatim from the doc's own request-body table).
+   Basic` header, unlike Railway's/Cloudflare's own Basic-auth adapters
+   (confirmed verbatim from the doc's own request-body table). NOT the
+   first adapter to avoid Basic auth outright (fix round, review Finding
+   4 — narrowed from an earlier overclaim): Sentry's own exchange ALSO
+   isn't `client_secret_basic` (its `client_id`/`client_secret` ride in a
+   JSON body instead) — Vercel is the first specifically
+   FORM-URLENCODED-`client_secret_post` adapter in this codebase, a
+   narrower, still-accurate claim.
 2. **`refresh()` is a documented, deliberate no-op that always rejects** —
    Vercel's own docs describe the issued token as "long-lived" with NO
    `refresh_token`/`expires_in` anywhere for this endpoint (confirmed by an
@@ -1359,12 +1430,16 @@ prior adapter, each disclosed in the adapter's own doc-comment:
 `oauthHint`/`oauthRegistrationUrl`, the same two fields every other
 oauth-capable provider's catalog entry carries.
 
-**No new registration blocker, unlike Cloudflare's.** A connectable-account
-integration is self-installable the instant its Create Integration form is
-submitted — no promotion step, no DNS verification, no review queue. See
-"Owner registration steps" above; this is a single-session dashboard
-action, the same weight as Railway's/Sentry's own steps, not Cloudflare's
-multi-day one.
+**No DNS-verification-style registration step, unlike Cloudflare's.**
+Registering the integration itself — filling out and submitting the Create
+Integration form — is a single-session dashboard action, the same weight
+as Railway's/Sentry's own steps, not Cloudflare's multi-day
+domain-verification one. **Whether the RESULTING integration installs
+immediately once registered is a separate, genuinely open question** (fix
+round, review Finding 1) — see "W3-T9 doc-verification" above,
+"Review/approval gate," and "Owner registration steps" above for the
+disclosed tension and the "try connecting, retry if the first attempt
+fails" guidance this leaves for the operator.
 
 **Setup-state UI (W3-T8) picked Vercel up with ZERO changes to that task's
 own files** — confirmed, not assumed: `oauthSetup.capable` (`connector-
@@ -1375,13 +1450,17 @@ is what makes the connect sheet's "One-click connect available" notice and
 the grid tile's "Setup" tag both appear for Vercel automatically, the exact
 mechanism T8's own report documents.
 
-**Vendor verification outcome: one correction (the wave's own prior
-"vendor review gate" premise for Vercel), everything else either confirmed
-or explicitly disclosed as undocumented (the exchange response's own exact
-JSON shape has no worked example anywhere in Vercel's docs — confirmed by
-absence, handled defensively).** Nothing found blocks this adapter's
-ability to mint a token `lib/evidence/vercel.ts`'s existing REST calls can
-actually use — the "cannot grant what's needed" stop condition never
-triggered.
+**Vendor verification outcome: endpoints/token-lifetime/state-transport/
+team-scoping all CONFIRMED and none blocking; the review-gate premise
+itself walked back from "refuted" to "genuinely ambiguous, disclosed"
+after a fix round caught this task's own first pass quoting only the
+favorable half of its own cited page (review Finding 1); the exchange
+response's own exact JSON shape is explicitly disclosed as undocumented
+(confirmed by absence, handled defensively).** Nothing found blocks this
+adapter's ability to mint a token `lib/evidence/vercel.ts`'s existing REST
+calls can actually use — the "cannot grant what's needed" stop condition
+never triggered — but "can mint a token at all" and "can mint one on the
+very first try, unconditionally" are not proven to be the same claim here;
+see "Review/approval gate" above.
 
 **Full report + doc-verification trail:** `.superpowers/sdd/task-W3T9-report.md`.

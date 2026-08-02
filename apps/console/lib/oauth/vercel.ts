@@ -23,8 +23,12 @@ import type {
  * DOC-VERIFICATION (BINDING — this session's own discipline, raw `curl`
  * fetches of the doc pages' own markdown source, `<page>.md`, never a
  * WebFetch summary — see this repo's own `feedback-raw-fetch-doc-verification`
- * memory note for why). Sources, all fetched live 2026-08-02:
- * `vercel.com/docs/integrations/index.md`,
+ * memory note for why). Sources, all fetched live 2026-08-02 (fix round,
+ * `.superpowers/sdd/review-W3T9.md` Finding 2: `integrations/index.md`
+ * below 404s — `<page>.md` has no `/index` suffix on this site, unlike
+ * Cloudflare's/Sentry's own doc platforms; corrected to `integrations.md`,
+ * re-verified the cited quotes are present there verbatim):
+ * `vercel.com/docs/integrations.md`,
  * `vercel.com/docs/integrations/create-integration.md`,
  * `vercel.com/docs/integrations/create-integration/submit-integration.md`,
  * `vercel.com/docs/integrations/create-integration/vercel-api-integrations.md`,
@@ -45,7 +49,7 @@ import type {
  *     account type — no partnership, no sales call. Confirmed self-serve
  *     framing: "These integrations allow you to connect Vercel with an
  *     existing account on a third-party platform or service" —
- *     `integrations/index.md`. This is the ONLY mechanism whose own doc page
+ *     `integrations.md`. This is the ONLY mechanism whose own doc page
  *     is titled "Building Integrations with **Vercel REST API**" and whose
  *     worked flow ends at `Authorization: Bearer <access_token>` against
  *     `api.vercel.com`'s real endpoints (`/v7/deployments`, `/v9/projects/…`,
@@ -53,7 +57,7 @@ import type {
  *   - **"Native integration" / Marketplace Provider API — NOT this, ruled
  *     out.** Confirmed to REQUIRE a Vercel partnership, not self-serve:
  *     "Native integrations allow a two-way connection between Vercel and
- *     third-parties Vercel has partnered with" — `integrations/index.md`
+ *     third-parties Vercel has partnered with" — `integrations.md`
  *     (no bold in the source); "In order to create native integrations,
  *     please share your `team_id` and Integration's URL Slug with Vercel in
  *     your shared Slack channel… You can sign up to be a native integration
@@ -144,13 +148,21 @@ import type {
  * `cloudflare.ts`'s own "ACCESS TTL" section already establishes for this
  * codebase. What DOES bound a Vercel integration token's life, confirmed, is
  * INSTALLATION STATE, not a clock: "Each installation of your integration is
- * stored and tracked as a configuration" and, if the installing team's own
- * owner leaves without a new owner claiming it within 30 days, "Any API
+ * stored and tracked as a configuration." FIX ROUND (review Finding 3 —
+ * the sequencing below was inverted in the first pass; corrected):
+ * disablement is IMMEDIATE, not delayed 30 days — "If an owner(s) of an
+ * integration leaves the team… the integration will be flagged as
+ * disabled[; t]he team will receive an email to take action (transfer
+ * ownership) within 30 days, otherwise the integration will be deleted,"
+ * and separately, "When integration configurations are disabled: Any API
  * requests will fail with a `403` HTTP status code and a `code` of
- * `integration_configuration_disabled`" — `vercel-api-integrations.md`. A
+ * `integration_configuration_disabled`" — both `vercel-api-integrations.md`.
+ * The 403s begin the moment the owner leaves (disablement is immediate);
+ * the 30-day window is the DEADLINE before the more severe, separate
+ * outcome — permanent deletion — not a delay before the 403s start. A
  * plain 403 is ALREADY `lib/evidence/vercel.ts`'s own `unauthorized`
  * degradation (unchanged by this task) — no new mapping needed for this
- * event to surface legibly.
+ * event to surface legibly, regardless of the corrected timeline.
  *
  * **`refresh()` below is therefore a DOCUMENTED, DELIBERATE NO-OP that
  * always REJECTS** — never a network call, never a crash. This is safe
@@ -280,35 +292,72 @@ import type {
  * the same decisive point `cloudflare.ts`'s own doc-comment makes for its
  * own equivalent decision.
  *
- * (6) REVIEW / APPROVAL GATE — VERIFIED SELF-SERVE, NOT the "datadog
- * outcome." A connectable-account integration becomes FUNCTIONALLY LIVE the
- * instant its Create Integration form is submitted — no Vercel review, no
- * waiting: "Once you have created your connectable account integration, it
- * will be assigned the **Community** badge and be available for external
- * users to download. You can share it with users either through your site…"
- * — `create-integration.md` ("After integration creation" →
- * "Connectable account integrations"). The install URL from "(2)" above
- * (`https://vercel.com/integrations/:slug/new`) is live and installable —
- * BY THE CREATOR'S OWN TEAM INCLUDED, since nothing gates WHO can hit that
- * URL beyond having the link — the moment the integration exists, full
- * stop. A SEPARATE, OPTIONAL, LATER step exists — being LISTED/discoverable
- * on Vercel's own public `/integrations` browse page — and THAT is the only
- * thing gated by a manual review: "The integration must have at least 500
- * active installations… The integration follows our [review guidelines]…
- * email integrations@vercel.com with your request to be reviewed for
- * listing" — `create-integration.md`; independently re-confirmed by the
- * dedicated `approval-checklist.md` page, whose own connectable-account
- * checklist funnels to the identical action: "Complete the relevant
+ * (6) REVIEW / APPROVAL GATE — GENUINELY AMBIGUOUS, NOT settled either
+ * direction. FIX ROUND (independent review, `.superpowers/sdd/
+ * review-W3T9.md`, Finding 1): the first pass here quoted only the
+ * favorable half of `create-integration.md` and stamped "VERIFIED
+ * SELF-SERVE" as flat fact — the SAME page contains directly conflicting
+ * language, never previously quoted or addressed. Both passages below are
+ * real, both are about the connectable-account path specifically, and
+ * they are not reconciled by anything else fetched.
+ *
+ * FAVORABLE (the "After integration creation" → "Connectable account
+ * integrations" section — more specific, reads like the actual
+ * post-creation state): "Once you have created your connectable account
+ * integration, it will be assigned the **Community** badge and be
+ * available for external users to download. You can share it with users
+ * either through your site…" — `create-integration.md`.
+ *
+ * CONFLICTING (the SAME page's own top-level numbered overview, step 3 —
+ * its own qualifier, "if it's a connectable account integration," ties
+ * this to exactly this integration type, not just native integrations,
+ * which are steps 4-5): "Once your integration is approved, you can share
+ * it for users to install if it's a connectable account integration" — and,
+ * of the very form this task's own env-var comments tell an owner to
+ * submit: "The Create Integration form must be completed in full before
+ * you can submit your integration for review" — both `create-integration.md`.
+ *
+ * WHAT THIS DOES AND DOES NOT RESOLVE: `approval-checklist.md`'s own
+ * connectable-account checklist (independently confirmed) is entirely
+ * about marketplace LISTING polish (image cropping, install-wizard UX,
+ * "Examples: MongoDB Atlas, Sanity") — real, and unambiguously about the
+ * SEPARATE 500-install public-listing step below, but it does NOT touch
+ * the CREATION-time question the conflicting passage above raises, either
+ * way. Whether "approved"/"submit… for review" there means (a) a real gate
+ * blocking even the integration CREATOR's own first install attempt at
+ * `/integrations/:slug/new`, (b) a gate on sharing the link with OTHERS
+ * specifically while the creator can self-install regardless, or (c) stale
+ * boilerplate the more specific "After integration creation" section
+ * supersedes, is NOT determinable from the docs fetched — this adapter's
+ * own evidence does not cleanly distinguish those readings (the favorable
+ * quote's own wording, "available for **external** users to download,"
+ * sits awkwardly with reading (b) specifically, so that narrower split is
+ * NOT assumed here either).
+ *
+ * THE ONE REMAINING UNTESTED SEAM (disclosed, not resolved by this task):
+ * the FIRST live connect attempt, after an owner registers the integration
+ * and sets the three env vars below, is the actual test. If it fails on
+ * the very first try, "still pending Vercel's own approval, wait and
+ * retry" is a live possibility, not necessarily a misconfiguration or a
+ * rejected credential — this file does not, and cannot, distinguish that
+ * case from an ordinary `exchange_failed`/`unauthorized` today. No
+ * operator-facing copy anywhere in this codebase should promise "no
+ * waiting" until a real connect attempt settles this.
+ *
+ * WHAT IS STILL SETTLED, either way: public marketplace LISTING
+ * (discoverability on Vercel's own `/integrations` browse page) is a
+ * SEPARATE, OPTIONAL, LATER step, gated by manual review only after 500+
+ * active installations: "The integration must have at least 500 active
+ * installations… email integrations@vercel.com with your request to be
+ * reviewed for listing" — `create-integration.md`; independently
+ * re-confirmed by `approval-checklist.md`'s own "Complete the relevant
  * checklist, then email integrations@vercel.com with your request to be
- * reviewed." Both citations are unambiguously about MARKETPLACE LISTING
- * (discoverability), never about functional OAuth/API access — this
- * connector never intends to pursue public listing (AgentRail's own connect
- * button links directly to the external-install URL, exactly like Sentry's
- * own direct external-install link — no marketplace browse step involved),
- * so the 500-install threshold is structurally irrelevant to whether this
- * adapter works. CONCLUSION: API access IS obtainable self-serve, TODAY, the
- * moment the owner submits the Create Integration form and sets the three
- * env vars below — proceeding with implementation, not stopping.
+ * reviewed." This is unambiguously about LISTING, never about functional
+ * OAuth/API access, and this connector never intends to pursue it
+ * (AgentRail's own connect button links directly to the external-install
+ * URL, exactly like Sentry's own direct external-install link) — so the
+ * 500-install threshold is confirmed irrelevant here regardless of how
+ * the creation-time question above eventually resolves.
  *
  * SCOPES (registration-time picker, NOT a per-authorize-request param — see
  * "(2)" above): CONFIRMED table of selectable API Scopes,

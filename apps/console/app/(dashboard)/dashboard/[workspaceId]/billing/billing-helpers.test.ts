@@ -7,14 +7,15 @@ import {
   renewalLabel,
   seatClaimedLabel,
   seatLimitForPlan,
+  seatsInUseLabel,
   seatsLabel,
   statusChip,
   STATUS_CHIP_TONE_CLASSNAME,
 } from "./billing-helpers";
 
 describe("planLabel", () => {
-  it("labels every BillingPlan value", () => {
-    expect(planLabel("trial")).toBe("Trial");
+  it("labels every BillingPlan value (2026-08-02 owner ruling: no customer-facing trial — an un-subscribed account reads 'No plan yet', never 'Trial')", () => {
+    expect(planLabel("trial")).toBe("No plan yet");
     expect(planLabel("starter")).toBe("Starter");
     expect(planLabel("growth")).toBe("Growth");
     expect(planLabel("enterprise")).toBe("Enterprise");
@@ -66,6 +67,16 @@ describe("seatsLabel", () => {
 
   it("renders an over-limit count as-is — no special-casing in the string itself", () => {
     expect(seatsLabel(12, 10)).toBe("12 of 10");
+  });
+});
+
+describe("seatsInUseLabel (2026-08-02 owner ruling — the billing page's un-subscribed-account seat count: usage only, never seatsLabel's 'X of Y' fraction of an entitlement the account doesn't have)", () => {
+  it("renders '<n> in use'", () => {
+    expect(seatsInUseLabel(3)).toBe("3 in use");
+  });
+
+  it("renders zero plainly", () => {
+    expect(seatsInUseLabel(0)).toBe("0 in use");
   });
 });
 

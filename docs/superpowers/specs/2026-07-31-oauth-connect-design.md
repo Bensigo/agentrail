@@ -359,6 +359,202 @@ server's own self-description, more authoritative than prose about it).
   just once at connect time the way Railway's gap needed a one-time check to
   close.
 
+### W3-T9 doc-verification (Vercel) — phase 3, this task post-dates the
+### plan's own W3-T1..T4 scope
+
+Raw `curl` of the doc pages' own markdown source (`<page>.md`), never a
+WebFetch summary — `vercel.com/docs/integrations.md` (fix round, review
+Finding 2: `integrations/index.md` 404s on this doc platform — `<page>.md`
+has no `/index` suffix here; corrected, cited quotes re-verified present
+verbatim at the correct URL),
+`.../integrations/create-integration.md`,
+`.../integrations/create-integration/submit-integration.md`,
+`.../integrations/create-integration/vercel-api-integrations.md`,
+`.../integrations/create-integration/approval-checklist.md` — plus a
+full-corpus grep of `vercel.com/docs/llms-full.txt` (the entire doc site,
+7.6MB, concatenated) for `oauth/access_token`, `refresh_token`,
+`expires_in`, `installation_id`, and `access_token`, used to CONFIRM BY
+ABSENCE that no worked JSON response example exists anywhere for the
+exchange endpoint (see below).
+
+- **Session research's own "OAuth with vendor review gate" premise —
+  CORRECTED, not confirmed.** Three DISTINCT Vercel mechanisms exist,
+  easily conflated: (1) the **"Connectable account" integration, external
+  installation flow** — self-serve, no partnership, the ONE this adapter
+  uses, and the only one whose worked flow ends in
+  `Authorization: Bearer <access_token>` against `api.vercel.com`'s real
+  endpoints; (2) **"Native integration" / Marketplace Provider API** —
+  CONFIRMED to require an actual Vercel partnership ("Native integrations
+  allow a two-way connection between Vercel and third-parties Vercel has
+  partnered with" — `integrations.md`, no bold in the source; "share
+  your `team_id` and Integration's URL Slug with Vercel in your shared
+  Slack channel" — `create-integration.md`) — a heavier build (an
+  "integration server"
+  Vercel calls INTO) this connector does not need and does not use; (3)
+  **"Sign in with Vercel" / OIDC** — already ruled out by
+  `lib/evidence/vercel.ts`'s own prior doc-comment (`vca_`/`vcr_` token
+  prefixes), RE-CONFIRMED independently this task via the full-corpus grep:
+  a completely different response shape
+  (`{access_token:"vca_...",refresh_token,expires_in,token_type:'bearer'}`)
+  bound to an END USER signing into a third party's app, not a REST API
+  credential at all.
+- **Endpoints — CONFIRMED verbatim.** Authorize (the "External installation
+  flow" — "When you're initiating the installation from your application,"
+  exactly this connect button's own case): *"Use this URL to start the
+  process: `https://vercel.com/integrations/:slug/new`"* —
+  `submit-integration.md`. A per-integration, SLUG-keyed URL path (like
+  Sentry's own `external-install/` shape), not a shared host + `client_id`
+  param (Railway's/Cloudflare's shape) — needing a THIRD env var,
+  `VERCEL_OAUTH_INTEGRATION_SLUG`, mirroring Sentry's
+  `SENTRY_OAUTH_INTEGRATION_SLUG` precedent. Token exchange:
+  `POST https://api.vercel.com/v2/oauth/access_token` — CONFIRMED exactly as
+  the task's own brief anticipated, `vercel-api-integrations.md`. Body
+  `application/x-www-form-urlencoded`, four required fields confirmed
+  verbatim from the doc's own table: `client_id`, `client_secret`, `code`,
+  `redirect_uri`. **Auth method — a material, confirmed difference from
+  Railway's/Cloudflare's `client_secret_basic`:** both `client_id` and
+  `client_secret` ride IN THE BODY (`client_secret_post`-shaped), never an
+  `Authorization: Basic` header — the doc's own table lists both as
+  request-body keys, no Basic-auth mention anywhere on the page.
+- **Token lifetime — NO refresh, confirmed by explicit wording AND by
+  absence.** *"This short-lived parameter is valid for **30 minutes** and
+  can be exchanged **once** for a long-lived access token"* (bold exactly
+  as in the source — only "30 minutes"/"once" are emphasized there, not
+  "long-lived") — `vercel-api-integrations.md`. Neither `refresh_token`
+  nor `expires_in` (nor any TTL number in prose) appears ANYWHERE tied to
+  this endpoint across the entire doc corpus — the full-corpus grep found
+  zero hits beyond the one exchange-URL mention itself. What DOES bound a
+  token's life is installation STATE, not a clock. Fix round (review
+  Finding 3 — corrected a sequencing inversion in the first pass):
+  disablement is IMMEDIATE, not delayed — *"If an owner(s) of an
+  integration leaves the team… the integration will be flagged as
+  disabled[;] the team will receive an email to take action (transfer
+  ownership) within 30 days, otherwise the integration will be deleted"*,
+  and *"Any API requests will fail with a `403`...
+  `integration_configuration_disabled`"* once disabled — both
+  `vercel-api-integrations.md`. The 403s begin the moment the owner
+  leaves; the 30-day window is the deadline before the MORE severe,
+  separate outcome (permanent deletion), not a delay before the 403s
+  start — already `lib/evidence/vercel.ts`'s own `unauthorized`
+  degradation either way, no new mapping needed. `lib/oauth/vercel.ts`'s
+  `refresh()` is therefore a DOCUMENTED, DELIBERATE no-op that always
+  rejects (never a network call) — safe specifically because `expiresAt` is
+  stamped to a fixed far-future sentinel, so `core.ts`'s `needsRefresh()`
+  will not call it under any realistic clock; IF it somehow were called,
+  `core.ts`'s own generic contract (proven by `core.test.ts`'s fake-adapter
+  coverage) degrades a rejecting `refresh()` to `unauthorized` regardless.
+- **State transport — CONFIRMED to round-trip, but ONLY for the flow this
+  adapter uses.** Three distinct installation flows exist, each with its OWN
+  redirect query-param table (`submit-integration.md`): the **External
+  installation flow** (ours) lists `state` — *"Random string to be passed
+  back upon completion. It is used to protect against CSRF attacks"* — the
+  **Marketplace** and **Deploy button** flows' own tables both OMIT it
+  entirely. `stateTransport: "param"` is correct because this connect
+  button always drives the external flow. **Disclosed, v1-scoped caveat:**
+  this integration stays at Vercel's default "Community" (unlisted) badge in
+  v1 (see the REVIEW GATE finding below) — an unlisted integration "do
+  **not** appear in the marketplace" at all, so the state-less
+  marketplace-flow path is structurally unreachable today; a FUTURE decision
+  to pursue public listing would need to revisit this, the same way Sentry
+  needed a `"session"`-transport fallback for its own state-less flow.
+- **Team scoping — CONFIRMED, threaded via the SAME envelope-encoding
+  precedent `sentry.ts` established.** *"The response of your `code`
+  exchange request includes a `team_id` property. If `team_id` is not null,
+  you know that this integration was installed on a team… append the
+  `teamId` query parameter to each API request"* —
+  `vercel-api-integrations.md`. This is exactly `lib/evidence/vercel.ts`'s
+  own pre-existing `config.vercelTeamId` field (Task P7, unmodified).
+  `postExchange` (`types.ts`) receives no raw response data — only
+  `{envelope, config}` — so, mirroring `sentry.ts`'s own "INSTALLATION ID
+  THREADING" precedent exactly (adapted for a provider with no real refresh
+  token to also carry), `exchange()` stamps `envelope.refresh` with
+  `JSON.stringify({teamId})` rather than a real token, and `postExchange`
+  decodes it to AUTO-FILL `vercelTeamId` when unset — a zero-extra-network-
+  call analogue of Railway's own case-(b) auto-fill. **Disclosed: no
+  fail-closed mismatch gate** (unlike Railway's `project_not_granted`) —
+  Vercel's grant isn't RESOURCE-scoped the way Railway's `project:viewer`
+  is (no "pick which project(s)" consent step exists at all, only
+  team-vs-personal), and a genuine team/token mismatch already fails LOUDLY
+  today — under the doc's own "403 Forbidden responses" heading: *"Ensure
+  you are not missing the `teamId` query parameter… Ensure the Scope of
+  Your Access Token is properly set"* — `vercel-api-integrations.md`;
+  `lib/evidence/vercel.ts`'s own `vercelGet` already maps
+  every 401/403 to `unauthorized` (Task P7, unmodified), a PRE-EXISTING,
+  ONGOING per-call safety net, the same decisive point `cloudflare.ts`'s own
+  "NO postExchange" reasoning makes for its own equivalent decision.
+- **Review/approval gate — GENUINELY AMBIGUOUS, not settled either
+  direction (fix round, review Finding 1 — the first pass here quoted
+  only the favorable half of `create-integration.md` and stamped
+  "VERIFIED SELF-SERVE" as flat fact; the SAME page carries directly
+  conflicting language, never previously quoted).** Favorable — the
+  page's more specific "After integration creation" section: *"Once you
+  have created your connectable account integration, it will be assigned
+  the **Community** badge and be available for external users to
+  download"* — `create-integration.md`. Conflicting — the SAME page's own
+  top-level numbered overview (step 3's own qualifier, "if it's a
+  connectable account integration," ties this to exactly this integration
+  type, not just native integrations): *"Once your integration is
+  approved, you can share it for users to install if it's a connectable
+  account integration"* — and, of the very form an owner is instructed to
+  submit: *"The Create Integration form must be completed in full before
+  you can submit your integration for review"* — both `create-
+  integration.md`. `approval-checklist.md`'s own connectable-account
+  checklist (independently confirmed) is entirely about marketplace
+  LISTING polish (image sizing, install-wizard UX) — real, but it does
+  NOT resolve this creation-time tension either way. Whether "approved"/
+  "review" there gates even the CREATOR's own first install attempt, gates
+  only sharing the link with others while the creator can self-install
+  regardless, or is stale boilerplate the more specific section
+  supersedes, is NOT determinable from docs alone — and the favorable
+  quote's own wording ("available for **external** users to download," in
+  the SAME sentence as "immediately") sits awkwardly with a clean
+  creator-vs-others split, so that narrower reading is not assumed either.
+  **THE ONE REMAINING UNTESTED SEAM:** the first live connect attempt,
+  after an owner registers the integration and sets the three env vars,
+  is what actually settles this — a failure on that very first try may
+  mean "still pending Vercel's own approval, retry shortly," not
+  necessarily a misconfiguration; no operator-facing copy in this
+  codebase promises "no waiting" as of this fix round. What IS still
+  settled either way: public marketplace LISTING (discoverability) is a
+  SEPARATE, OPTIONAL, LATER step, gated by manual review only after 500+
+  active installations: *"The integration must have at least 500 active
+  installations… email integrations@vercel.com with your request to be
+  reviewed for listing"* — `create-integration.md`; independently
+  re-confirmed by `approval-checklist.md`. That citation is unambiguously
+  about LISTING, never about functional OAuth/API access, and this
+  connector never intends to pursue listing (AgentRail's own connect
+  button links directly to the external-install URL, exactly like
+  Sentry's own direct external-install link) — so the 500-install
+  threshold is confirmed irrelevant regardless of how the creation-time
+  question resolves. **Verification outcome: proceed with implementation
+  (the code needs no change either way — see `vercel.ts`'s own
+  doc-comment, "(6)"), but do not ship "no review needed" as settled fact
+  to an operator.**
+- **Scopes (registration-time picker, not a per-authorize param):**
+  CONFIRMED table, `vercel-api-integrations.md` ("Scopes") — this adapter's
+  three calls need exactly THREE, each at Read (never Read/Write): `user`,
+  `project`, `deployment`. No `team` scope needed (the docs' own
+  403-troubleshooting text points at the `teamId` query parameter/the
+  token's own scope, never a missing `team` API scope specifically).
+- **PKCE — NOT USED**, mirrors Sentry's own finding exactly: no worked
+  example anywhere shows a `code_challenge`/`code_verifier` field on either
+  the authorize URL's own confirmed-accepted params (`state` only) or the
+  token-exchange body's own four confirmed fields.
+- **Genuinely undocumented, confirmed by absence — the exchange response's
+  own exact JSON shape.** No worked example anywhere in the ENTIRE doc
+  corpus shows the full response body for `POST /v2/oauth/access_token` —
+  `access_token` is inferred from RFC 6749/the request table's own
+  snake_case convention (never independently confirmed in a response
+  example); `team_id` IS confirmed by name in prose (see "Team scoping"
+  above) but not in a worked JSON example either. `lib/oauth/vercel.ts`'s
+  own `exchange()` reads `team_id` defensively, falling back to the
+  redirect's OWN `teamId` query param (also confirmed, independently, on
+  the External installation flow's own table) if the response omits it —
+  belt-and-braces for a field this task cannot cite a worked JSON example
+  for, the same "confirmed by absence, build defensively" doctrine
+  `cloudflare.ts`'s own "ACCESS TTL" finding already established for this
+  spec.
+
 ## Design (pinned)
 
 **Storage** — the encrypted plaintext behind the existing `connectors.secret`
@@ -833,20 +1029,50 @@ for an unrecognized/missing param. Dismissing strips the query params
    client from Cloudflare's PRIVATE default to PUBLIC visibility, which
    requires DNS domain verification (up to two days) — see "Owner
    registration steps" below.
+7. **W3-T9 (phase 3, post-dates the plan's own original W3-T1..T4 scope —
+   originally excluded on a "vendor review gate" premise this task's own
+   verification found genuinely ambiguous, not confirmed either direction —
+   see "W3-T9 doc-verification" above, "Review/approval gate"):** Vercel's
+   `OauthProviderAdapter`. No PKCE (not used by this flow at all). A
+   material auth-method difference from Railway's/Cloudflare's own
+   `client_secret_basic`: `client_secret_post` (id/secret in the exchange
+   BODY, form-urlencoded) — narrower than "every prior adapter" (fix round,
+   review Finding 4): Sentry's own exchange ALSO isn't `client_secret_basic`
+   (its `client_id`/`client_secret` ride in a JSON body instead), so Vercel
+   is the first FORM-URLENCODED-`client_secret_post` adapter specifically,
+   not the first non-Basic one outright. New third env var
+   `VERCEL_OAUTH_INTEGRATION_SLUG` (mirrors Sentry's `envReady()` pattern) —
+   the authorize URL is slug-keyed, not a shared host + `client_id` param.
+   `refresh()` is a documented, deliberate no-op that always rejects
+   (Vercel's own tokens are long-lived with no refresh mechanism);
+   `expiresAt` is stamped to a fixed far-future sentinel rather than a
+   computed TTL nothing documents. `postExchange` auto-fills `vercelTeamId`
+   from the exchange response's own `team_id` (zero extra network calls,
+   unlike Railway's `externalWorkspaces` verification query) but does NOT
+   fail-closed on a mismatch — see "W3-T9 doc-verification" above for why
+   that gap is closed by a PRE-EXISTING per-call mechanism instead, the
+   same reasoning Cloudflare's own `postExchange` absence relies on.
+   Registration itself needs no DNS-verification-style blocking step (unlike
+   Cloudflare's) — but whether the resulting integration installs
+   immediately, even for its own creator, or waits on a Vercel-side
+   approval step of unknown speed is genuinely UNRESOLVED from docs alone
+   (see "W3-T9 doc-verification" above) — the first live connect attempt
+   is what actually settles it; see "Owner registration steps" below.
 
 ## Owner registration steps
 
-All three providers need the **exact** redirect URI registered on the
+All four providers need the **exact** redirect URI registered on the
 vendor side — a mismatch is the #1 real-world OAuth integration failure, so
 this is not "a URL like…", it is the literal string:
 
 - Production: `https://www.heyjace.com/api/v1/connectors/oauth/callback/railway`,
-  `https://www.heyjace.com/api/v1/connectors/oauth/callback/sentry`, and
-  `https://www.heyjace.com/api/v1/connectors/oauth/callback/cloudflare`
+  `https://www.heyjace.com/api/v1/connectors/oauth/callback/sentry`,
+  `https://www.heyjace.com/api/v1/connectors/oauth/callback/cloudflare`, and
+  `https://www.heyjace.com/api/v1/connectors/oauth/callback/vercel`
 - Local dev (`CONSOLE_PUBLIC_URL=http://localhost:3000`, this repo's
   documented default): `http://localhost:3000/api/v1/connectors/oauth/callback/railway`,
-  `.../sentry`, and `.../cloudflare` — substitute your own dev port if it
-  differs.
+  `.../sentry`, `.../cloudflare`, and `.../vercel` — substitute your own dev
+  port if it differs.
 
 Sentry additionally needs its **Webhook URL** registered (a separate field
 on the same Public Integration form, W3-T5 — see "W3-T5 doc-verification"
@@ -905,26 +1131,69 @@ lead time before Cloudflare OAuth is usable wave-wide, not a same-deploy
 toggle. This is a materially bigger registration lift than Railway's or
 Sentry's own steps, both single-session dashboard actions.
 
+**Vercel (W3-T9):** register a connectable-account Integration — Vercel →
+your account/team (team switcher) → **Integrations** → **Integrations
+Console** →
+(`vercel.com/d?to=/dashboard/integrations/console`) → **Create**, choosing
+the connectable-account type; fill in the Create Integration form with the
+redirect URI above as its **Redirect URL**; under **API Scopes**, select
+**Read** for exactly `user`, `project`, and `deployment` (least-privilege —
+this connector never writes; see "W3-T9 doc-verification" above for why
+these three and not more); note the issued client id/secret AND the
+integration's own **URL Slug** (the authorize URL is slug-keyed —
+`vercel.com/integrations/<slug>/new`, unlike Railway's/Cloudflare's shared-
+host authorize endpoints); set `VERCEL_OAUTH_CLIENT_ID` /
+`VERCEL_OAUTH_CLIENT_SECRET` / `VERCEL_OAUTH_INTEGRATION_SLUG` on the
+deployment. **No DNS-verification-style step, unlike Cloudflare's PUBLIC-
+visibility gate** — registering the integration itself is a single-session
+dashboard action, same weight as Railway's/Sentry's own steps. Whether the
+resulting integration installs immediately for its own creator, or waits
+on a Vercel-side approval step of unknown speed first, is GENUINELY
+UNRESOLVED from the docs fetched (see "W3-T9 doc-verification" above,
+"Review/approval gate" — two passages on Vercel's own page conflict on
+this point, and neither this task nor its fix round resolved which
+governs). **Try connecting immediately after registering; if the first
+attempt fails, wait and retry before assuming a misconfiguration** — the
+first real attempt is this codebase's own live-smoke test for this
+question, not something settled by reading alone. Vercel's own access
+tokens never expire on a clock and have no
+refresh token to lose track of (see "W3-T9 doc-verification" above, "Token
+lifetime") — there is no rotation/expiry behavior to plan around after
+registration, only the ordinary "operator reconnects if the integration is
+ever uninstalled" case every provider already has.
+
 Once every provider's env vars are set (and its own task has merged so its
 adapter is registered), `oauthReady` flips true server-side automatically
 for it — no redeploy-time toggle beyond the env vars themselves (Sentry's
 `envReady()` gates on all three of its vars; Cloudflare's own `envReady()`
-gates on `CLOUDFLARE_OAUTH_SCOPE` the same way).
+gates on `CLOUDFLARE_OAUTH_SCOPE` the same way; Vercel's own `envReady()`
+gates on `VERCEL_OAUTH_INTEGRATION_SLUG` the same way).
 
 ## Out of scope
 
-- Vercel, Datadog, Langfuse, Grafana, Prometheus OAuth — none are in this
-  wave; token-paste is the permanent, correct mechanism for all five.
-  **Correction (W3-T4):** the one-line "this is the standard integration
-  method" sheet note (`ConnectorConnectMeta.tokenStandardNote`, not an
-  apology, no "coming soon") went to only FOUR of these five — Grafana,
-  Prometheus, Langfuse, Datadog, exactly `plan-oauth.md`'s own W3-T4 task
-  line — not all six original candidates as an earlier draft of this bullet
-  claimed. Vercel's exclusion from the sheet note is simply the plan's own
-  W3-T4 scope pin, not a claim about its own OAuth roadmap either way.
+- Datadog, Langfuse, Grafana, Prometheus OAuth — none are in this wave;
+  token-paste is the permanent, correct mechanism for all four. The one-line
+  "this is the standard integration method" sheet note
+  (`ConnectorConnectMeta.tokenStandardNote`, W3-T4, not an apology, no
+  "coming soon") went to exactly these four — `plan-oauth.md`'s own W3-T4
+  task line.
   **Cloudflare moved OUT of this list (W3-T6)** — its own OAuth phase,
   previously "documented future," is now built; see "W3-T6
   doc-verification" above and "As-built addendum (W3-T6)" below.
+  **Vercel moved OUT of this list (W3-T9)** — its own OAuth adapter is now
+  built, but the "vendor review gate" the session research that framed
+  Vercel's original exclusion anticipated was NOT cleanly refuted either —
+  verification found Vercel's own docs genuinely ambiguous on whether a
+  fresh connectable-account integration installs immediately, even for its
+  own creator, or waits on an approval step first (two passages on the
+  same page conflict, unresolved by anything else fetched) — see "W3-T9
+  doc-verification" above, "Review/approval gate," for the full disclosed
+  tension, and "Owner registration steps" below for the live-smoke framing
+  this leaves for the first real connect attempt. Vercel's
+  earlier exclusion from the W3-T4 sheet note (above) was simply that task's
+  own scope pin at the time, not a claim about its OAuth roadmap either way
+  — and is now moot, since Vercel has its own `oauthHint` (like
+  railway/sentry/cloudflare) rather than `tokenStandardNote`.
 - Datadog's own MCP server / any MCP-based connect mechanism — a different
   integration shape entirely, not evaluated here.
 - ~~Sentry's uninstall webhook~~ — **shipped W3-T5** (unplanned fast-follow,
@@ -1089,3 +1358,109 @@ evidence adapter's GraphQL queries can actually use — the "cannot grant
 what's needed" stop condition never triggered.
 
 **Full report + doc-verification trail:** `.superpowers/sdd/task-W3T6-report.md`.
+
+## As-built addendum (W3-T9 — Vercel OAuth adapter, phase 3)
+
+Vercel was originally excluded from this wave (see "Out of scope") on a
+"vendor review gate" premise from the session's own prior research —
+promoted to as-built anyway, on the strength of everything else this task
+verified (endpoints, token lifetime, state transport, team scoping — all
+CONFIRMED, none blocking), even though the review-gate premise itself was
+NOT cleanly refuted: fix round (independent review, `.superpowers/sdd/
+review-W3T9.md` Finding 1) found the doc page this task leaned on hardest
+carries directly conflicting language its first pass never quoted — see
+"W3-T9 doc-verification" above, "Review/approval gate," for the full,
+now-disclosed tension. The code itself needed no change either way; the
+fix round corrected the CLAIM, not the adapter. Full doc-verification
+trail: "W3-T9 doc-verification (Vercel)" above; full quoted trail also in
+`.superpowers/sdd/task-W3T9-report.md`.
+
+`lib/oauth/vercel.ts` mirrors `sentry.ts`'s shape more than Railway's/
+Cloudflare's: no PKCE, `stateTransport: "param"` (unlike Sentry — Vercel's
+External installation flow DOES round-trip `state`), a slug-keyed authorize
+URL (`vercel.com/integrations/<slug>/new`, like Sentry's `external-install/`
+shape) needing a third env var, and a `postExchange` that reads a value
+threaded through the envelope's own `refresh` field (like Sentry's
+`installationId` threading) — with four material deviations from every
+prior adapter, each disclosed in the adapter's own doc-comment:
+
+1. **`client_secret_post`, not `client_secret_basic`** — `client_id`/
+   `client_secret` ride in the token-exchange BODY, never an `Authorization:
+   Basic` header, unlike Railway's/Cloudflare's own Basic-auth adapters
+   (confirmed verbatim from the doc's own request-body table). NOT the
+   first adapter to avoid Basic auth outright (fix round, review Finding
+   4 — narrowed from an earlier overclaim): Sentry's own exchange ALSO
+   isn't `client_secret_basic` (its `client_id`/`client_secret` ride in a
+   JSON body instead) — Vercel is the first specifically
+   FORM-URLENCODED-`client_secret_post` adapter in this codebase, a
+   narrower, still-accurate claim.
+2. **`refresh()` is a documented, deliberate no-op that always rejects** —
+   Vercel's own docs describe the issued token as "long-lived" with NO
+   `refresh_token`/`expires_in` anywhere for this endpoint (confirmed by an
+   explicit-wording citation AND a full-corpus grep finding zero hits).
+   `expiresAt` is stamped to a FIXED far-future sentinel
+   (`VERCEL_OAUTH_ENVELOPE_EXPIRES_AT_SENTINEL`), never a computed TTL
+   nothing documents — `core.ts`'s existing generic "a rejecting refresh()
+   degrades to unauthorized, never throws" contract (proven by its own
+   fake-adapter test coverage, unmodified by this task) is what makes this
+   safe; no core.ts/types.ts change was needed to support a refresh-less
+   provider.
+3. **`postExchange` auto-fills `vercelTeamId` with ZERO extra network
+   calls** — unlike Railway's `externalWorkspaces` verification query,
+   Vercel's own exchange response already carries `team_id` for free; this
+   adapter threads it to `postExchange` via the SAME envelope-encoding
+   mechanism `sentry.ts` established for its own `installationId` (the
+   envelope's `refresh` field, JSON-encoded, since Vercel has no real
+   refresh token to also carry there and `postExchange` itself receives no
+   raw exchange-response data). Deliberately does NOT fail-closed on a
+   team mismatch the way Railway's `project_not_granted` does — see "W3-T9
+   doc-verification" above ("Team scoping") for the three-part reasoning
+   this mirrors from `cloudflare.ts`'s own "NO postExchange" decision.
+4. **`VERCEL_OAUTH_INTEGRATION_SLUG`, a new required third env var**
+   (`envReady()`, mirrors Sentry's `SENTRY_OAUTH_INTEGRATION_SLUG`) — the
+   authorize URL is per-integration and slug-keyed, not a shared host +
+   `client_id` param.
+
+`lib/evidence/vercel.ts` switches to `resolveProviderAuth(workspaceId,
+"vercel")`, byte-identical REST calls (`fetchProjectDeployments`/
+`fetchDeploymentEvents` untouched) — mirrors `railway.ts`'s/`sentry.ts`'s/
+`cloudflare.ts`'s identical prior switch exactly. `vercel`'s catalog entry
+(Task P7, Evidence Providers Wave 2) needed no NEW config fields —
+`vercelProjectId`/`vercelTeamId` already existed; this task added only
+`oauthHint`/`oauthRegistrationUrl`, the same two fields every other
+oauth-capable provider's catalog entry carries.
+
+**No DNS-verification-style registration step, unlike Cloudflare's.**
+Registering the integration itself — filling out and submitting the Create
+Integration form — is a single-session dashboard action, the same weight
+as Railway's/Sentry's own steps, not Cloudflare's multi-day
+domain-verification one. **Whether the RESULTING integration installs
+immediately once registered is a separate, genuinely open question** (fix
+round, review Finding 1) — see "W3-T9 doc-verification" above,
+"Review/approval gate," and "Owner registration steps" above for the
+disclosed tension and the "try connecting, retry if the first attempt
+fails" guidance this leaves for the operator.
+
+**Setup-state UI (W3-T8) picked Vercel up with ZERO changes to that task's
+own files** — confirmed, not assumed: `oauthSetup.capable` (`connector-
+helpers.ts`, the connectors GET route) is derived from `oauthAdapterFor(kind)
+!== null`, never a hardcoded provider list; registering
+`vercelOauthAdapter` alone (plus the three routes' own side-effect imports)
+is what makes the connect sheet's "One-click connect available" notice and
+the grid tile's "Setup" tag both appear for Vercel automatically, the exact
+mechanism T8's own report documents.
+
+**Vendor verification outcome: endpoints/token-lifetime/state-transport/
+team-scoping all CONFIRMED and none blocking; the review-gate premise
+itself walked back from "refuted" to "genuinely ambiguous, disclosed"
+after a fix round caught this task's own first pass quoting only the
+favorable half of its own cited page (review Finding 1); the exchange
+response's own exact JSON shape is explicitly disclosed as undocumented
+(confirmed by absence, handled defensively).** Nothing found blocks this
+adapter's ability to mint a token `lib/evidence/vercel.ts`'s existing REST
+calls can actually use — the "cannot grant what's needed" stop condition
+never triggered — but "can mint a token at all" and "can mint one on the
+very first try, unconditionally" are not proven to be the same claim here;
+see "Review/approval gate" above.
+
+**Full report + doc-verification trail:** `.superpowers/sdd/task-W3T9-report.md`.

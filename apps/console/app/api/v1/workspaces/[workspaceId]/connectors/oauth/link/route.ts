@@ -13,10 +13,12 @@ import { computeCodeChallengeS256, generateCodeVerifier } from "../../../../../.
 // W3-T2: registers the `railway` OAuth adapter — see the callback route's
 // identical import for the full "REACHABILITY" reasoning. W3-T3:
 // `lib/oauth/sentry.ts` registers the same way. W3-T6: `lib/oauth/
-// cloudflare.ts` registers the same way.
+// cloudflare.ts` registers the same way. W3-T9: `lib/oauth/vercel.ts`
+// registers the same way.
 import "../../../../../../../../lib/oauth/railway";
 import "../../../../../../../../lib/oauth/sentry";
 import "../../../../../../../../lib/oauth/cloudflare";
+import "../../../../../../../../lib/oauth/vercel";
 
 const ADMIN_ROLES = ["owner", "admin"];
 

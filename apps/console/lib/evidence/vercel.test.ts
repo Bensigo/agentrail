@@ -7,7 +7,20 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
 }));
 
+// OAuth Connect Wave 3, W3-T9: this adapter now resolves its bearer
+// credential via `resolveProviderAuth` (`../oauth/core`) instead of using
+// the raw `secret` parameter directly — mocked the same way as
+// `@agentrail/db-postgres` above, and given a passing default in
+// `beforeEach` so every pre-existing test in this file (which passes
+// `TOKEN` as the `secret` param and asserts `Bearer ${TOKEN}`) keeps
+// exercising the exact same REST-call shape unmodified. Mirrors
+// `railway.test.ts`'s identical W3-T2 addition.
+vi.mock("../oauth/core", () => ({
+  resolveProviderAuth: vi.fn(),
+}));
+
 import { getConnector } from "@agentrail/db-postgres";
+import { resolveProviderAuth } from "../oauth/core";
 import { vercelAdapter } from "./vercel";
 import { adapterFor } from "./registry";
 import type { EvidenceQuery, EvidenceVerb } from "./types";
@@ -19,6 +32,7 @@ import { CONNECTOR_CATALOG } from "../../app/(dashboard)/dashboard/[workspaceId]
 import { verifyConnectorCredential } from "../../app/api/v1/workspaces/[workspaceId]/connectors/secret/verify";
 
 const mockGetConnector = vi.mocked(getConnector);
+const mockResolveProviderAuth = vi.mocked(resolveProviderAuth);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 // FIXTURE, deliberately non-realistic (Fix Round 1 — shape asserted
@@ -115,6 +129,10 @@ const originalFetch = global.fetch;
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetConnector.mockResolvedValue(connectorRow());
+  // Default: resolves to the SAME `TOKEN` constant every pre-existing test
+  // in this file already passes as the `secret` param and asserts against —
+  // see the mock's own doc-comment above.
+  mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: TOKEN });
 });
 
 afterEach(() => {
@@ -181,6 +199,72 @@ describe("vercelAdapter — config_missing", () => {
     global.fetch = routeFetch({}) as unknown as typeof fetch;
     await vercelAdapter.query(WS, q(), TOKEN);
     expect(mockGetConnector).toHaveBeenCalledWith(WS, "vercel");
+  });
+});
+
+// -----------------------------------------------------------------------
+// OAuth Connect Wave 3, W3-T9 — auth resolution via resolveProviderAuth.
+// -----------------------------------------------------------------------
+describe("vercelAdapter — auth resolution via resolveProviderAuth (W3-T9)", () => {
+  it("calls resolveProviderAuth(workspaceId, 'vercel') once the secret-presence and projectId checks pass", async () => {
+    global.fetch = routeFetch({}) as unknown as typeof fetch;
+    await vercelAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).toHaveBeenCalledWith(WS, "vercel");
+  });
+
+  it("never calls resolveProviderAuth when secret is null (the cheap existence gate still short-circuits first)", async () => {
+    await vercelAdapter.query(WS, q(), null);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("never calls resolveProviderAuth when vercelProjectId is absent (the config_missing gate still short-circuits first)", async () => {
+    mockGetConnector.mockResolvedValue(connectorRow(null));
+    await vercelAdapter.query(WS, q(), TOKEN);
+    expect(mockResolveProviderAuth).not.toHaveBeenCalled();
+  });
+
+  it("legacy-token kind: uses resolveProviderAuth's resolved secret as the Bearer credential — NOT the raw secret param passed into query()", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "legacy-resolved-token" });
+    const fetchMock = routeFetch({
+      deployments: () => ({ status: 200, body: { deployments: [] } }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    // The `secret` param below is deliberately a DIFFERENT value than what
+    // resolveProviderAuth resolves — proving the Authorization header comes
+    // from the latter, not the former (the param is only the cheap
+    // existence gate now — see vercel.ts's own "CREDENTIAL" doc-comment).
+    await vercelAdapter.query(WS, q(), "raw-param-value-unused-for-auth");
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer legacy-resolved-token" });
+  });
+
+  it("oauth kind, long-lived (no refresh expected): uses the resolved access token as-is", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: true, secret: "oauth-access-token" });
+    const fetchMock = routeFetch({
+      deployments: () => ({ status: 200, body: { deployments: [] } }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await vercelAdapter.query(WS, q(), TOKEN);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer oauth-access-token" });
+  });
+
+  it("degrades config_missing when resolveProviderAuth itself reports config_missing, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "config_missing" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await vercelAdapter.query(WS, q(), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "config_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("degrades unauthorized when resolveProviderAuth reports unauthorized (e.g. a rejected refresh() no-op) — reuses this adapter's existing closed reason, without ever calling fetch", async () => {
+    mockResolveProviderAuth.mockResolvedValue({ ok: false, reason: "unauthorized" });
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const res = await vercelAdapter.query(WS, q({ verb: "search_events" }), TOKEN);
+    expect(res).toEqual({ ok: false, reason: "unauthorized" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

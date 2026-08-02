@@ -543,6 +543,35 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
     expect(loc.searchParams.has("oauth_error")).toBe(false);
   });
 
+  // W3-T9 (Vercel) — same reasoning as the cloudflare test immediately
+  // above: Vercel's own adapter also declares `stateTransport: "param"`
+  // (its External installation flow round-trips `state` — see
+  // `lib/oauth/vercel.ts`'s own doc-comment, "(4) STATE TRANSPORT"), so
+  // this route needs no vercel-specific branch either. Also proves the
+  // redirect's own extra `teamId`/`configurationId` query params (Vercel's
+  // own External installation flow — see vercel.ts's doc-comment, "(2)
+  // ENDPOINTS") flow through `ExchangeInput.params` exactly like sentry's
+  // `installationId` does above, via this route's existing generic
+  // "every OTHER query param besides state/code" forwarding.
+  it("works end-to-end for provider 'vercel' via the same generic param-transport machinery, forwarding teamId/configurationId through ExchangeInput.params", async () => {
+    const res = await GET(
+      req({ state: "s", code: "c", teamId: "team-abc", configurationId: "icfg-1" }),
+      params("vercel")
+    );
+    expect(fakeAdapter.exchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redirectUri: "https://heyjace.com/api/v1/connectors/oauth/callback/vercel",
+        params: expect.objectContaining({ teamId: "team-abc", configurationId: "icfg-1" }),
+      })
+    );
+    expect(setConnectorSecret).toHaveBeenCalledWith("ws-1", "vercel", "serialized-envelope");
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.pathname).toBe("/dashboard/ws-1/connectors");
+    expect(loc.searchParams.get("connected")).toBe("vercel");
+    expect(loc.searchParams.has("oauth_error")).toBe(false);
+  });
+
   // -----------------------------------------------------------------------
   // W3-T2 fix round (independent review Finding #1) — the optional
   // postExchange gate. `fakeAdapter` (used everywhere above) deliberately

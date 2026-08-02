@@ -940,6 +940,24 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
         "Copy the token (shown once).",
         "Open the project → Settings to find its Project ID (and, if it's team-owned, the Team ID), then paste the token and both ids here and connect.",
       ],
+      // OAuth Connect Wave 3, W3-T9 — see ConnectorConnectMeta.oauthHint's
+      // own doc-comment. Wording echoes railway's/sentry's/cloudflare's own
+      // calm, no-apology tone and "use a token instead" pointer to the
+      // disclosure immediately below it.
+      oauthHint:
+        "Connecting via Vercel grants read-only access to your project's deployments and build/runtime events — you can use an API token instead if you'd rather not.",
+      // W3-T9 — see ConnectorConnectMeta.oauthRegistrationUrl's own
+      // doc-comment for the sourcing convention. Confirmed live 2026-08-02:
+      // this is the exact "Integrations Console" link `create-integration.md`
+      // itself uses as a clickable reference ("View all integrations that
+      // you have created on the Integrations Console") — Vercel's own
+      // `/d?to=…` shorthand resolves to the caller's own current
+      // account/team context, the same "account-agnostic direct link"
+      // property cloudflare.ts's own `?to=/:account/...` citation relies on,
+      // rather than a workspace-scoped URL this codebase would have to
+      // guess. From there: team switcher → Integrations → Integrations
+      // Console → Create.
+      oauthRegistrationUrl: "https://vercel.com/d?to=%2Fdashboard%2Fintegrations%2Fconsole&title=Open+Integrations+Console",
       // Task P7's own pinned decision: TWO extra config fields — unlike
       // every prior Wave-2 provider (which declared either one required
       // field, like grafana/prometheus/langfuse above, or two BOTH-required

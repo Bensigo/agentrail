@@ -889,6 +889,20 @@ describe("connector catalog — vercel entry (Task P7)", () => {
       },
     ]);
   });
+
+  // OAuth Connect Wave 3, W3-T9 — ConnectorConnectMeta.oauthHint.
+  it("declares a calm oauthHint sentence for the OAuth-primary button, mentioning read-only access and the token fallback", () => {
+    expect(vercel.connect?.oauthHint).toBeDefined();
+    expect(vercel.connect?.oauthHint).toMatch(/read-only/i);
+    expect(vercel.connect?.oauthHint).toMatch(/api token/i);
+  });
+
+  // W3-T9 — ConnectorConnectMeta.oauthRegistrationUrl.
+  it("declares an oauthRegistrationUrl pointing at Vercel's own Integrations Console", () => {
+    expect(vercel.connect?.oauthRegistrationUrl).toBe(
+      "https://vercel.com/d?to=%2Fdashboard%2Fintegrations%2Fconsole&title=Open+Integrations+Console"
+    );
+  });
 });
 
 describe("connector catalog — cloudflare entry (Task P8, FINAL Wave-2 provider)", () => {

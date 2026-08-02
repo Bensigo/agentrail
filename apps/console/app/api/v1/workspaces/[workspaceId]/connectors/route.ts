@@ -24,10 +24,12 @@ import { oauthAdapterFor, oauthConfigFor, missingOauthEnv } from "../../../../..
 // route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
 // called at runtime, deriving `oauthReady` below). W3-T3: `lib/oauth/
 // sentry.ts` registers the same way. W3-T6: `lib/oauth/cloudflare.ts`
-// registers the same way.
+// registers the same way. W3-T9: `lib/oauth/vercel.ts` registers the same
+// way.
 import "../../../../../../lib/oauth/railway";
 import "../../../../../../lib/oauth/sentry";
 import "../../../../../../lib/oauth/cloudflare";
+import "../../../../../../lib/oauth/vercel";
 
 /**
  * Every non-secret config key any catalog entry declares via

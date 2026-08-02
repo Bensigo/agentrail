@@ -1,5 +1,6 @@
 import { getConnector } from "@agentrail/db-postgres";
 import { registerAdapter } from "./registry";
+import { resolveProviderAuth } from "../oauth/core";
 import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "./types";
 
 /**
@@ -15,8 +16,24 @@ import type { EvidenceAdapter, EvidenceDegradationReason, EvidenceQuery } from "
  *
  * CREDENTIAL: a SINGLE secret (no `secretParts`, like sentry/prometheus/
  * grafana above) — a Vercel Access Token, sent as `Authorization: Bearer
- * <token>` on every call. This adapter uses its `secret` parameter
- * directly, same shape as every prior single-secret provider.
+ * <token>` on every call. UPDATED (OAuth Connect Wave 3, W3-T9,
+ * `.superpowers/sdd/plan-oauth.md`): the bearer value is no longer the raw
+ * `secret` parameter this function receives — it is now resolved via
+ * `resolveProviderAuth(workspaceId, "vercel")` (`lib/oauth/core.ts`), which
+ * discriminates what's actually stored: a legacy pasted token is returned
+ * verbatim (byte-identical behavior to before this task), while an
+ * OAuth-connected envelope (`lib/oauth/vercel.ts`) is returned as-is — a
+ * Vercel integration access token is documented long-lived with NO refresh
+ * mechanism (`lib/oauth/vercel.ts`'s own doc-comment, "(3) TOKEN LIFETIME"),
+ * so `resolveProviderAuth`'s refresh-skew branch is not expected to ever
+ * fire for this provider in practice; IF it somehow did (a future bug,
+ * clock skew), the adapter's `refresh()` rejects cleanly and
+ * `resolveProviderAuth` degrades to `unauthorized` — this adapter needs no
+ * special-casing either way, since that degradation is already a member of
+ * this file's own closed `EvidenceDegradationReason` set. `secret` itself is
+ * kept ONLY as the pre-existing cheap "is anything stored at all" gate below
+ * (`!secret -> config_missing`) — mirrors `lib/evidence/railway.ts`'s
+ * identical W3-T2 switch exactly.
  *
  * VERCEL REST API SHAPES — confirmed against Vercel's own docs during
  * implementation (this task's mandatory first step; NOT trusted from
@@ -919,9 +936,18 @@ export const vercelAdapter: EvidenceAdapter = {
     // SCOPING"): absence never degrades, it just means personal scope.
     const teamId = row?.config.vercelTeamId;
 
+    // OAuth Connect Wave 3, W3-T9 — see this module's own doc-comment
+    // ("CREDENTIAL") for the full contract. `auth.reason` is already a
+    // member of this adapter's own `EvidenceDegradationReason` union, so it
+    // passes straight through with no mapping.
+    const auth = await resolveProviderAuth(workspaceId, "vercel");
+    if (!auth.ok) {
+      return { ok: false, reason: auth.reason };
+    }
+
     return q.verb === "changes"
-      ? queryChanges(secret, projectId, teamId, q)
-      : querySearchEvents(secret, projectId, teamId, q);
+      ? queryChanges(auth.secret, projectId, teamId, q)
+      : querySearchEvents(auth.secret, projectId, teamId, q);
   },
 };
 

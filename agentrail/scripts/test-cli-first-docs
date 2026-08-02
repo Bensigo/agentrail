@@ -69,11 +69,14 @@ assert_not_grep "scripts/review-pr" "${tmp_dir}/help.out" "AgentRail CLI help pr
 assert_grep "agentrail afk" "${tmp_dir}/afk-help.out" "AgentRail AFK help does not use the CLI-first command"
 assert_not_grep "scripts/afk-workflow" "${tmp_dir}/afk-help.out" "AgentRail AFK help promotes the internal AFK script"
 
+# Arc B (reviewer of record): the internal review-pr subcommand is DELETED —
+# Jace is the one reviewer of record. This block used to exercise its CLI
+# validation; it now pins the deletion at the installed-CLI level.
 if "$agentrail" internal review-pr --pr 12 --machine-readable >"${tmp_dir}/internal-review.out" 2>&1; then
-  echo "internal review command accepted machine-readable mode without an output artifact" >&2
+  echo "internal review-pr should be deleted (Arc B reviewer of record) but still ran" >&2
   exit 1
 fi
-assert_grep "--machine-readable requires --output" "${tmp_dir}/internal-review.out" "Internal review command did not route through AgentRail CLI validation"
+assert_grep "Unknown internal command: review-pr" "${tmp_dir}/internal-review.out" "Deleted internal review-pr did not error as an unknown command"
 
 without_state="${tmp_dir}/without-state"
 mkdir -p "$without_state"

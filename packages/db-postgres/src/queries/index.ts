@@ -3087,3 +3087,33 @@ export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
 // capacity gate's read: runs claimed (not completed), across every
 // workspace on the account, in a caller-supplied half-open window.
 export { countAccountRunsStartedInWindow } from "./capacity.js";
+
+// Reviewer of Record queue (Arc B §2-§3, spec
+// docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The
+// enqueue/supersede/claim/complete/bind query layer over `review_jobs` — see
+// `queries/review_jobs.ts` for the full WHY on each (the deterministic-id
+// dedupe, the EvalPlanQual-safe supersede, the SKIP LOCKED claim + per-
+// workspace running-job bound + daily budget, the fixed-backoff complete,
+// and the jace_sessions binding). Naming: "review job", never "review gate"
+// — `review_gates` (above) is a different, unrelated table.
+// releaseReviewJob (Task 4, Arc B §3; caller moved in the Arc B review fix
+// wave from the claim route to the NEW bind route once claim stopped binding
+// a session): the bind route's own escape hatch — flips a claimed job back
+// to `queued` (release, not leak) when its bindReviewJobSession call fails.
+// See `queries/review_jobs.ts`'s own doc-comment on the function for the
+// guard and why it never bumps attempts/backoff (an infra release, not a
+// worker-reported failure).
+// getReviewJobState (Arc B review fix wave): the bind route's own
+// precondition check — see `queries/review_jobs.ts`'s own doc-comment on the
+// function for why bindReviewJobSession itself cannot signal "not running".
+export {
+  reviewJobId,
+  enqueueReviewJob,
+  claimReviewJob,
+  completeReviewJob,
+  bindReviewJobSession,
+  releaseReviewJob,
+  getReviewJobState,
+  type EnqueueReviewJobResult,
+  type CompleteReviewJobInput,
+} from "./review_jobs.js";

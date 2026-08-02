@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from agentrail.afk.state import AfkState, IssueState, IssueStatus, Store
+from agentrail.afk.state import AfkState, IssueState, Store, coerce_issue_status
 
 
 def state_path(target: Path) -> Path:
@@ -40,7 +40,7 @@ def _issue_from_dict(d: dict) -> IssueState:
         number=d["number"],
         title=d.get("title", ""),
         url=d.get("url", ""),
-        status=IssueStatus(d.get("status", "queued")),
+        status=coerce_issue_status(d.get("status", "queued")),
         pr=d.get("pr"),
         slot=d.get("slot"),
         retries=d.get("retries", 0),
@@ -57,7 +57,6 @@ def to_dict(state: AfkState) -> dict:
         "schemaVersion": 1,
         "concurrency": state.concurrency,
         "max_retries": state.max_retries,
-        "max_review_rounds": state.max_review_rounds,
         "completed": state.completed,
         "failed": state.failed,
         "slots": {str(k): v for k, v in state.slots.items()},
@@ -71,7 +70,6 @@ def from_dict(d: dict) -> AfkState:
         slots={int(k): v for k, v in d.get("slots", {}).items()},
         concurrency=d.get("concurrency", 2),
         max_retries=d.get("max_retries", 2),
-        max_review_rounds=d.get("max_review_rounds", 3),
         completed=d.get("completed", 0),
         failed=d.get("failed", 0),
     )

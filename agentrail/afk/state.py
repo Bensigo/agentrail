@@ -24,11 +24,10 @@ class IssueStatus(str, Enum):
     QUEUED = "queued"            # in the work queue, not yet claimed
     CLAIMED = "claimed"          # a slot owns it, work not started
     RUNNING = "running"          # agent implementing the issue
-    PR_OPEN = "pr_open"          # PR exists, awaiting review
-    REVIEWING = "reviewing"      # review in progress
-    AUTOFIXING = "autofixing"    # P0/P1 finding being patched in place
+    PR_OPEN = "pr_open"          # PR exists, awaiting the objective gate
+    AUTOFIXING = "autofixing"    # objective-gate failure being patched in place
     MERGED = "merged"            # PR merged, done
-    COMMENTED = "commented"      # P2/P3 findings posted; engineer decides
+    COMMENTED = "commented"      # gate passed, merge permission OFF; engineer decides
     HUMAN_REVIEW = "human_review"  # retries/rounds exhausted; needs a human
     FAILED = "failed"            # gave up
 
@@ -37,6 +36,22 @@ class IssueStatus(str, Enum):
 TERMINAL_STATUSES = frozenset(
     {IssueStatus.MERGED, IssueStatus.COMMENTED, IssueStatus.HUMAN_REVIEW, IssueStatus.FAILED}
 )
+
+
+def coerce_issue_status(value: str) -> IssueStatus:
+    """Parse a persisted status string leniently.
+
+    A state.json snapshot or events.jsonl journal written by a prior version
+    of AgentRail can carry a status value retired since — e.g. "reviewing"
+    (``IssueStatus.REVIEWING``, removed with the Arc B reviewer-of-record
+    deletion). Map anything unrecognized to HUMAN_REVIEW (a safe, human-visible
+    landing spot) instead of raising, so an upgrade never crashes loading or
+    replaying history written by the previous version.
+    """
+    try:
+        return IssueStatus(value)
+    except ValueError:
+        return IssueStatus.HUMAN_REVIEW
 
 
 @dataclass(frozen=True)
@@ -68,7 +83,6 @@ class AfkState:
     slots: Dict[int, Optional[int]] = field(default_factory=dict)
     concurrency: int = 2
     max_retries: int = 2
-    max_review_rounds: int = 3
     completed: int = 0
     failed: int = 0
 
@@ -340,7 +354,6 @@ def reduce(state: AfkState, action: Action) -> AfkState:
         slots=slots,
         concurrency=state.concurrency,
         max_retries=state.max_retries,
-        max_review_rounds=state.max_review_rounds,
         completed=completed,
         failed=failed,
     )

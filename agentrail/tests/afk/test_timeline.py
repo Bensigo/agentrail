@@ -23,7 +23,6 @@ def _store(concurrency=2):
     return Store(AfkState(
         concurrency=concurrency,
         max_retries=2,
-        max_review_rounds=3,
         slots={i: None for i in range(concurrency)},
     ))
 
@@ -44,9 +43,18 @@ def test_action_roundtrip_all_types():
 
 
 def test_setstatus_enum_serializes_to_value():
-    d = action_to_dict(SetStatus(1, IssueStatus.REVIEWING))
-    assert d["status"] == "reviewing"
-    assert action_from_dict(d).status == IssueStatus.REVIEWING
+    d = action_to_dict(SetStatus(1, IssueStatus.AUTOFIXING))
+    assert d["status"] == "autofixing"
+    assert action_from_dict(d).status == IssueStatus.AUTOFIXING
+
+
+def test_action_from_dict_coerces_legacy_reviewing_status():
+    """A journal line recorded by the pre-Arc-B code can carry a SetStatus
+    action with status "reviewing" — IssueStatus.REVIEWING is gone, so replay
+    must coerce it to HUMAN_REVIEW rather than raising ValueError."""
+    d = {"type": "SetStatus", "number": 1, "status": "reviewing"}
+    action = action_from_dict(d)
+    assert action == SetStatus(1, IssueStatus.HUMAN_REVIEW)
 
 
 # --- journal write/read -----------------------------------------------------
@@ -137,7 +145,7 @@ def _event(seq, ts, kind, **extra):
 def test_metrics_time_in_status_and_utilization():
     # hand-build a timeline with explicit timestamps to assert durations
     init_state = {
-        "concurrency": 1, "max_retries": 2, "max_review_rounds": 3,
+        "concurrency": 1, "max_retries": 2,
         "completed": 0, "failed": 0, "slots": {"0": None}, "issues": {},
     }
     base = "2026-06-10T00:00:"

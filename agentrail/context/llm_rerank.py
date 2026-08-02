@@ -24,8 +24,8 @@ This is a **deep, pure module** split: the window/prompt/parse/merge functions
 are pure and unit-testable offline; :func:`_call_model` is the ONE thin
 network seam (monkeypatch it in tests).  That seam rides the AUTHENTICATED
 Claude Code CLI harness — a headless ``claude -p`` call, the SAME agent path a
-run phase uses (agentrail/run/pipeline.py, agentrail/afk/review_engine.py) —
-NOT a raw ``anthropic.Anthropic()`` + ``ANTHROPIC_API_KEY``.  AgentRail *is* the
+run phase uses (agentrail/run/pipeline.py) — NOT a raw
+``anthropic.Anthropic()`` + ``ANTHROPIC_API_KEY``.  AgentRail *is* the
 CLI harness, so a utility LLM call must route through the agent, never hard-gate
 on a missing key (see the "harness model calls ride Claude Code" convention).
 The stage is fail-open: when the headless model path is unavailable (no

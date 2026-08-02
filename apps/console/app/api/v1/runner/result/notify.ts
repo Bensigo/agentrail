@@ -116,19 +116,37 @@ const JACE_RUN_OUTCOME_URL =
   process.env["JACE_RUN_OUTCOME_URL"] || `${EVE_HOST}/eve/v1/run-outcome`;
 
 /**
+ * Optional enrichment opportunistically forwarded to Jace's run-outcome route
+ * for its OPTIONAL goal-loop evaluation extension (#1289,
+ * `apps/jace/agent/channels/run-outcome.ts`) — that route only attempts
+ * goal-loop evaluation when ALL THREE of `workspaceId`/`issueExternalId`/
+ * `outcome` are present in the POST body (see that route's own doc-comment),
+ * so a caller supplying none of these (e.g. Arc B §3's review-job notify,
+ * which has no issue number to report) is simply unaffected — the platform
+ * notification itself (the `message` on `target`) is delivered identically
+ * either way. Every field is optional for exactly that reason.
+ */
+export interface JaceOutcomeEnrichment {
+  outcome?: string;
+  issueNumber?: string;
+  prUrl?: string;
+  costUsd?: number;
+}
+
+/**
  * The initiator identity Eve forwards to `session.auth.initiator` so Jace's
  * channel handlers and tools can attribute the session to the originating
  * workspace. Non-secret; a service principal, not an end user.
  */
 function jaceInitiatorAuth(
   workspaceId: string,
-  params: NotifyParams
+  enrichment: JaceOutcomeEnrichment
 ): Record<string, unknown> {
   return {
     authenticator: "agentrail",
     principalType: "service",
     principalId: workspaceId,
-    attributes: { issueNumber: params.issueNumber, outcome: params.outcome },
+    attributes: { issueNumber: enrichment.issueNumber, outcome: enrichment.outcome },
   };
 }
 
@@ -151,7 +169,7 @@ function jaceInitiatorAuth(
 async function notifyViaJace(
   workspaceId: string,
   channel: "telegram" | "discord" | "slack" | "imessage",
-  params: NotifyParams,
+  enrichment: JaceOutcomeEnrichment,
   message: string,
   target: Record<string, string | undefined>
 ): Promise<void> {
@@ -163,11 +181,11 @@ async function notifyViaJace(
       channel,
       message,
       target,
-      auth: jaceInitiatorAuth(workspaceId, params),
-      outcome: params.outcome,
-      issueNumber: params.issueNumber,
-      prUrl: params.prUrl,
-      costUsd: params.costUsd,
+      auth: jaceInitiatorAuth(workspaceId, enrichment),
+      outcome: enrichment.outcome,
+      issueNumber: enrichment.issueNumber,
+      prUrl: enrichment.prUrl,
+      costUsd: enrichment.costUsd,
     }),
   });
 }
@@ -178,11 +196,11 @@ async function notifyViaJace(
  */
 async function notifyTelegramViaJace(
   workspaceId: string,
-  params: NotifyParams,
+  enrichment: JaceOutcomeEnrichment,
   message: string
 ): Promise<void> {
   const connector = await getConnector(workspaceId, "telegram");
-  await notifyViaJace(workspaceId, "telegram", params, message, {
+  await notifyViaJace(workspaceId, "telegram", enrichment, message, {
     chatId: connector?.config.chatId,
   });
 }
@@ -194,11 +212,11 @@ async function notifyTelegramViaJace(
  */
 async function notifyDiscordViaJace(
   workspaceId: string,
-  params: NotifyParams,
+  enrichment: JaceOutcomeEnrichment,
   message: string
 ): Promise<void> {
   const connector = await getConnector(workspaceId, "discord");
-  await notifyViaJace(workspaceId, "discord", params, message, {
+  await notifyViaJace(workspaceId, "discord", enrichment, message, {
     channelId: connector?.config.channelId,
   });
 }
@@ -210,11 +228,11 @@ async function notifyDiscordViaJace(
  */
 async function notifySlackViaJace(
   workspaceId: string,
-  params: NotifyParams,
+  enrichment: JaceOutcomeEnrichment,
   message: string
 ): Promise<void> {
   const connector = await getConnector(workspaceId, "slack");
-  await notifyViaJace(workspaceId, "slack", params, message, {
+  await notifyViaJace(workspaceId, "slack", enrichment, message, {
     channelId: connector?.config.channelId,
   });
 }
@@ -230,19 +248,20 @@ async function notifySlackViaJace(
  */
 async function notifyIMessageViaJace(
   workspaceId: string,
-  params: NotifyParams,
+  enrichment: JaceOutcomeEnrichment,
   message: string
 ): Promise<void> {
-  await notifyViaJace(workspaceId, "imessage", params, message, {});
+  await notifyViaJace(workspaceId, "imessage", enrichment, message, {});
 }
 
 /** A per-channel sender: posts `text` to that gateway for the workspace. */
 type GatewaySender = (workspaceId: string, text: string) => Promise<void>;
 
 /**
- * Fan out a terminal run outcome to each channel's chosen sender. Each sender is
- * isolated: one channel failing (or throwing) never blocks the others, and this
- * function never throws — the route's response is unaffected (AC3).
+ * Fan out `text` to each channel's chosen sender for `workspaceId`. Each
+ * sender is isolated: one channel failing (or throwing) never blocks the
+ * others, and this function never throws — the caller's own response is
+ * unaffected (AC3).
  *
  * PER-CHANNEL ROUTING (#1047 Telegram, #1050 Discord + Slack, #1100 iMessage).
  * Every channel is delivered on EXACTLY ONE path, chosen independently per
@@ -256,21 +275,26 @@ type GatewaySender = (workspaceId: string, text: string) => Promise<void>;
  *    notification (there is no legacy path to fall back to, and none is created
  *    here).
  *
- * Exactly-once & retry-silence: the caller invokes this ONLY on a non-null
- * `terminalState`, so a retry / re-queue / heartbeat never reaches here — that
- * hard rule is preserved regardless of which route each channel takes.
+ * THE REUSABLE CORE (Arc B §3): extracted out of `notifyRunOutcome` so a
+ * caller with WORKER-composed content and no run-outcome vocabulary (e.g.
+ * `review-jobs/complete/route.ts` — a review job has no issue number) can
+ * drive the exact same per-channel routing without going through
+ * `buildOutcomeMessage`'s issue-shaped template. `enrichment` is entirely
+ * optional (see `JaceOutcomeEnrichment`'s own doc-comment) — omitting it just
+ * means Jace's OPTIONAL goal-loop extension never fires for this send; the
+ * platform notification itself is unaffected.
+ *
+ * Exactly-once & retry-silence is the CALLER's responsibility: `notifyRunOutcome`
+ * invokes this ONLY on a non-null `terminalState` (a retry/re-queue/heartbeat
+ * never reaches here); `review-jobs/complete/route.ts` invokes this ONLY on
+ * `outcome: "posted"`. This function itself fires every sender exactly once
+ * per call, whatever the caller decided.
  */
-export async function notifyRunOutcome(
+export async function sendWorkspaceNotification(
   workspaceId: string,
-  params: NotifyParams
+  text: string,
+  enrichment: JaceOutcomeEnrichment = {}
 ): Promise<void> {
-  // Unconditional since 2026-07-31 owner ruling: the run-outcome ping always
-  // speaks scope, not dollars — same posture the landing demo already adopts
-  // unconditionally (`_conversation-demo-data.ts`). `buildOutcomeMessage`
-  // itself stays pure (no env read, see its own doc-comment); this real call
-  // site is what decides FOR it, from server code.
-  const text = buildOutcomeMessage(params, { hideCost: true });
-
   // Resolve the jace connector ONCE. Isolated: a lookup blip falls back to the
   // all-legacy route (never throws, never dark by default), matching the
   // best-effort contract of the senders themselves. The per-channel ownership
@@ -287,10 +311,10 @@ export async function notifyRunOutcome(
   // delivered on each channel exactly once (no dark, no double).
   const senders: GatewaySender[] = [
     jaceOwnsTelegramNotify(jaceConnector)
-      ? (ws, t) => notifyTelegramViaJace(ws, params, t)
+      ? (ws, t) => notifyTelegramViaJace(ws, enrichment, t)
       : notifyTelegram,
     jaceOwnsDiscordNotify(jaceConnector)
-      ? (ws, t) => notifyDiscordViaJace(ws, params, t)
+      ? (ws, t) => notifyDiscordViaJace(ws, enrichment, t)
       : notifyDiscord,
   ];
 
@@ -298,7 +322,7 @@ export async function notifyRunOutcome(
   // ONLY when migrated to Jace. Un-migrated Slack adds no sender at all (not a
   // fallback) — do not create a legacy Slack path in the console.
   if (jaceOwnsSlackNotify(jaceConnector)) {
-    senders.push((ws, t) => notifySlackViaJace(ws, params, t));
+    senders.push((ws, t) => notifySlackViaJace(ws, enrichment, t));
   }
 
   // iMessage (#1100) is greenfield too — it has no official bot/webhook API and
@@ -306,7 +330,7 @@ export async function notifyRunOutcome(
   // console sender. Delivered ONLY when migrated to Jace; un-migrated iMessage
   // adds no sender at all (not a fallback) — no legacy iMessage path exists here.
   if (jaceOwnsIMessageNotify(jaceConnector)) {
-    senders.push((ws, t) => notifyIMessageViaJace(ws, params, t));
+    senders.push((ws, t) => notifyIMessageViaJace(ws, enrichment, t));
   }
 
   await Promise.all(
@@ -314,8 +338,35 @@ export async function notifyRunOutcome(
       try {
         await send(workspaceId, text);
       } catch {
-        // best-effort — a gateway blip must never affect the result response.
+        // best-effort — a gateway blip must never affect the caller's response.
       }
     })
   );
+}
+
+/**
+ * Build the run-outcome text (`buildOutcomeMessage`) and hand it to the
+ * shared fan-out core above with this outcome's enrichment fields — the
+ * console's #888 gateway notify on a terminal queue outcome. This function is
+ * now a THIN WRAPPER: every behavior it had before Arc B §3's extraction
+ * (routing, exactly-once, best-effort) lives in `sendWorkspaceNotification`
+ * unchanged; this is a pure relocation, not a behavior change (pinned by this
+ * file's own pre-existing tests).
+ */
+export async function notifyRunOutcome(
+  workspaceId: string,
+  params: NotifyParams
+): Promise<void> {
+  // Unconditional since 2026-07-31 owner ruling: the run-outcome ping always
+  // speaks scope, not dollars — same posture the landing demo already adopts
+  // unconditionally (`_conversation-demo-data.ts`). `buildOutcomeMessage`
+  // itself stays pure (no env read, see its own doc-comment); this real call
+  // site is what decides FOR it, from server code.
+  const text = buildOutcomeMessage(params, { hideCost: true });
+  await sendWorkspaceNotification(workspaceId, text, {
+    outcome: params.outcome,
+    issueNumber: params.issueNumber,
+    prUrl: params.prUrl,
+    costUsd: params.costUsd,
+  });
 }

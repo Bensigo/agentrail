@@ -398,18 +398,19 @@ def finalize_objective_gate(
     metadata_file: Path,
     *,
     gate_result: GateResult,
-    review_advisory: Optional[Dict[str, Any]] = None,
     independent_review_status: str = "active",
 ) -> Dict[str, Any]:
-    """Mark a run done from the Objective Gate and record review as advisory.
+    """Mark a run done from the Objective Gate.
 
     Thin orchestration around the deep, pure ``objective_gate.evaluate`` (ADR
-    0007): a run is "done" if and only if the gate is GREEN. The LLM reviewer's
-    output is stored as **advisory** (``role: "advisory"``) and never changes
-    done-ness — a clean review cannot turn a red gate green, and a blocking
-    review cannot turn a green gate red. The gate verdict + full evidence trail
-    are persisted to the run metadata so the run surface can show *why* (AC3
-    data side; the console UI is a separate follow-up).
+    0007): a run is "done" if and only if the gate is GREEN. The gate verdict +
+    full evidence trail are persisted to the run metadata so the run surface
+    can show *why* (AC3 data side; the console UI is a separate follow-up).
+    (The LLM-reviewer advisory record this function used to also write —
+    ``data["review"]`` via a ``review_advisory`` param — was dead plumbing:
+    production always passed ``None``. Removed with the Arc B
+    reviewer-of-record wave; PR review is now Jace's webhook-driven
+    review-job queue, entirely outside this pipeline.)
 
     Returns a small outcome dict (``done`` + the persisted gate verdict) for the
     caller; the source of truth is what is written to ``metadata_file``.
@@ -418,10 +419,6 @@ def finalize_objective_gate(
 
     gate_payload = gate_result.to_dict()
     data["objectiveGate"] = gate_payload
-
-    # Review is advisory only — recorded for the run surface, never gating.
-    if review_advisory is not None:
-        data["review"] = {"role": "advisory", "findings": review_advisory}
 
     # Independent Review visibility (#1270 AC1/AC2): every run's record shows
     # whether the verify/critic seat ran, and why not when it didn't.
@@ -2067,7 +2064,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         )
 
     outcome = finalize_objective_gate(
-        metadata_file, gate_result=gate_result, review_advisory=None,
+        metadata_file, gate_result=gate_result,
         independent_review_status=rc.independent_review_status,
     )
 

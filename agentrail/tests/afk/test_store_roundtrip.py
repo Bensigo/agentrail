@@ -92,7 +92,6 @@ def test_old_state_dict_without_blocked_by_loads(tmp_path: Path):
         "schemaVersion": 1,
         "concurrency": 2,
         "max_retries": 2,
-        "max_review_rounds": 3,
         "completed": 0,
         "failed": 0,
         "slots": {"0": None, "1": None},
@@ -109,3 +108,48 @@ def test_old_state_dict_without_blocked_by_loads(tmp_path: Path):
     state = from_dict(legacy_state)
 
     assert state.issues[1].blocked_by == ()
+
+
+def test_legacy_reviewing_status_coerces_to_human_review():
+    """Backward compat: a state.json snapshot persisted mid-review under the
+    pre-Arc-B code (status "reviewing") must not ValueError on load now that
+    IssueStatus.REVIEWING is gone — it lands on HUMAN_REVIEW instead."""
+    legacy = {
+        "number": 3,
+        "title": "was mid-review",
+        "url": "u",
+        "status": "reviewing",
+        "pr": 9,
+        "slot": 0,
+        "retries": 0,
+        "review_rounds": 1,
+        "error": None,
+    }
+
+    issue = _issue_from_dict(legacy)
+
+    assert issue.status == IssueStatus.HUMAN_REVIEW
+
+
+def test_old_state_dict_with_reviewing_issue_loads(tmp_path: Path):
+    """The whole-state path (from_dict) is just as lenient as _issue_from_dict."""
+    legacy_state = {
+        "schemaVersion": 1,
+        "concurrency": 2,
+        "max_retries": 2,
+        "completed": 0,
+        "failed": 0,
+        "slots": {"0": None},
+        "issues": {
+            "1": {
+                "number": 1,
+                "title": "was mid-review",
+                "url": "u",
+                "status": "reviewing",
+            }
+        },
+    }
+
+    state = from_dict(legacy_state)
+
+    assert state.issues[1].status == IssueStatus.HUMAN_REVIEW

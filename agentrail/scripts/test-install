@@ -70,12 +70,10 @@ required=(
   ".agentrail/agents/agent-instructions.md"
   ".agentrail/agents/issue-tracker.md"
   ".agentrail/agents/agentrail-state.md"
-  ".agentrail/agents/github-pr-reviewer.md"
   ".agentrail/agents/context-engine.md"
   ".agentrail/agents/context-compiler-contract.md"
   ".agentrail/agents/milestones.md"
   ".agentrail/agents/ralph-loop.md"
-  ".agentrail/agents/pr-review.md"
   ".agentrail/agents/skill-registry.json"
   ".agentrail/agents/visual-evidence.md"
   ".agentrail/agents/triage-labels.md"
@@ -220,11 +218,6 @@ if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/ral
   exit 1
 fi
 
-if ! grep -q -- "memory_suggestions" "${tmp_dir}/.agentrail/agents/github-pr-reviewer.md"; then
-  echo "github-pr-reviewer docs do not describe memory suggestions" >&2
-  exit 1
-fi
-
 if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/.agentrail/agents/agentrail-state.md"; then
   echo "agentrail state docs do not describe the state file path" >&2
   exit 1
@@ -247,11 +240,6 @@ fi
 
 if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.legacyAdopted")" != "false" ]]; then
   echo "fresh install was incorrectly marked as legacy-adopted" >&2
-  exit 1
-fi
-
-if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/pr-review.md"; then
-  echo "pr-review docs do not require acceptance criteria coverage checks" >&2
   exit 1
 fi
 
@@ -303,7 +291,13 @@ if [[ -f "${tmp_dir}/.agentrail/taste.md" ]]; then
   exit 1
 fi
 
-for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/github-pr-reviewer.md" "docs/memory/README.md" "docs/prd/context-engine.md"; do
+# .agentrail/agents/{pr-review,github-pr-reviewer}.md: the native review
+# engine that consumed these two docs was deleted with the Arc B
+# reviewer-of-record wave, along with their agentrail/templates/docs/agents/
+# source files — a fresh install must no longer produce them.
+for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/github-pr-reviewer.md" \
+                     ".agentrail/agents/pr-review.md" ".agentrail/agents/github-pr-reviewer.md" \
+                     "docs/memory/README.md" "docs/prd/context-engine.md"; do
   if [[ -f "${tmp_dir}/${excluded_file}" ]]; then
     echo "${excluded_file} should not be installed by init" >&2
     exit 1

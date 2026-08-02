@@ -23,6 +23,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { LangfuseOtelSpanAttributes } from "@langfuse/tracing";
 import {
   AI_SDK_CONTEXT_PREFIX,
@@ -73,6 +75,49 @@ test("agent/instrumentation.ts default-exports an object with a setup function",
   assert.notEqual(mod.default, null);
   assert.equal(typeof mod.default.setup, "function");
   assert.equal(typeof mod.default.events["step.started"], "function");
+});
+
+// ---------------------------------------------------------------------------
+// (a2) Arc B headless review worker — flag-gated start beside the Discord
+// gateway block (Task 6). `setup()` itself is never CALLED by this test
+// suite (it registers real OTel + opens a real Discord socket + would start
+// a real review-job worker) — exactly why (a) above only checks the
+// default-export's SHAPE. This mirrors discord-gateway-wiring.test.mjs's own
+// structural, read-the-source approach for the same reason: the thing being
+// proven here is the WIRING (flag check, import, fire-and-forget + .catch),
+// not runtime behavior that needs a live eve server or Discord socket.
+// ---------------------------------------------------------------------------
+
+const instrumentationSourcePath = fileURLToPath(new URL("../agent/instrumentation.ts", import.meta.url));
+const instrumentationCode = readFileSync(instrumentationSourcePath, "utf8");
+
+test("imports startReviewJobWorker from ./lib/review_job_worker.mjs", () => {
+  assert.match(
+    instrumentationCode,
+    /import\s*{\s*startReviewJobWorker\s*}\s*from\s*["']\.\/lib\/review_job_worker\.mjs["']/,
+  );
+});
+
+test("gates the review-job worker on JACE_REVIEW_WORKER === \"1\" (trimmed), default off", () => {
+  assert.match(instrumentationCode, /process\.env\.JACE_REVIEW_WORKER/);
+  assert.match(instrumentationCode, /\.trim\(\)\s*===\s*["']1["']/);
+});
+
+test("starts the review-job worker fire-and-forget with a .catch, never an escaping rejection (mirrors the Discord gateway block directly above it)", () => {
+  const gateMatch = instrumentationCode.match(
+    /if\s*\(\s*\(process\.env\.JACE_REVIEW_WORKER[\s\S]*?\n {4}\}/,
+  );
+  assert.ok(gateMatch, "JACE_REVIEW_WORKER gate block not found");
+  assert.match(gateMatch[0], /void startReviewJobWorker\(process\.env\)\.catch\(/);
+});
+
+test("the review-job worker gate sits inside setup(), after the Discord gateway's own startDiscordGateway call", () => {
+  const discordIndex = instrumentationCode.indexOf("void startDiscordGateway(process.env)");
+  const reviewIndex = instrumentationCode.indexOf("void startReviewJobWorker(process.env)");
+  const setupCloseIndex = instrumentationCode.indexOf("},\n  events:");
+  assert.ok(discordIndex >= 0 && reviewIndex >= 0 && setupCloseIndex >= 0);
+  assert.ok(discordIndex < reviewIndex, "review worker start must come after the Discord gateway start");
+  assert.ok(reviewIndex < setupCloseIndex, "review worker start must still be inside setup()");
 });
 
 // ---------------------------------------------------------------------------

@@ -130,7 +130,6 @@ See:
 - `.agentrail/agents/agentrail-state.md`
 - `.agentrail/agents/milestones.md`
 - `.agentrail/agents/ralph-loop.md`
-- `.agentrail/agents/pr-review.md`
 - `.agentrail/agents/visual-evidence.md`
 - `.agentrail/agents/triage-labels.md`
 - `.agentrail/memory/README.md`

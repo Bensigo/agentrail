@@ -21,7 +21,7 @@ def _make_runner(tmp_path: Path) -> Runner:
     target.mkdir()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    store = Store(AfkState(concurrency=1, max_retries=1, max_review_rounds=1, slots={0: None}))
+    store = Store(AfkState(concurrency=1, max_retries=1, slots={0: None}))
     return Runner(
         target=target, engine="claude", base="main", concurrency=1,
         afk_label="afk", queue_labels=["ready"], run_dir=run_dir, store=store,

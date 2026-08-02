@@ -48,6 +48,7 @@ from agentrail.afk.state import (
     SetPr,
     SetStatus,
     Store,
+    coerce_issue_status,
 )
 from agentrail.afk.store import to_dict
 
@@ -105,7 +106,7 @@ def action_from_dict(d: dict) -> object:
     if cls is None:
         raise TypeError(f"unknown action type in journal: {name!r}")
     if name == "SetStatus" and not isinstance(data.get("status"), IssueStatus):
-        data["status"] = IssueStatus(data["status"])
+        data["status"] = coerce_issue_status(data["status"])
     return cls(**data)
 
 

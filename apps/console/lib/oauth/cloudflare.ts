@@ -174,6 +174,23 @@ import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdap
  *          fabrication, but the same discipline applies: catch it, name it,
  *          don't paper over it.
  *
+ *          **CONFIRMED FROM THE LIVE DASHBOARD (2026-08-01)** — distinct
+ *          provenance from every other fact in this SCOPES section: this is an
+ *          OPERATOR-DASHBOARD-CONFIRMED observation, not a vendor-doc
+ *          citation. The owner registered a live OAuth client and read the
+ *          scopes picker directly: it displays "Analytics Read
+ *          (analytics.read)" under Zone permissions — the correct grant for
+ *          this connector — alongside "Account Analytics Read
+ *          (account-analytics.read)" under Account permissions, the documented
+ *          trap above. Deployments should set
+ *          `CLOUDFLARE_OAUTH_SCOPE=analytics.read`. `CLOUDFLARE_OAUTH_SCOPE`
+ *          stays REQUIRED and operator-supplied, NOT hardcoded as a fallback
+ *          here: a dashboard reading for one account on one date is not the
+ *          same guarantee as the vendor-doc citations elsewhere in this file,
+ *          and nothing confirms this string is stable across accounts or over
+ *          time the way a published spec would be. Operators should verify
+ *          against their own dashboard picker if this value ever errors.
+ *
  *   - REQUEST PARAM NAMES (authorize URL query params, token POST body) —
  *     **NOT shown in a worked example anywhere in Cloudflare's own docs**
  *     (unlike Railway's literal worked `curl` commands) — inferred from RFC
@@ -319,7 +336,11 @@ import type { AuthorizeUrlInput, ExchangeInput, OauthEnvelope, OauthProviderAdap
  *     select the permission matching "Analytics Read" under "Zone
  *     permissions" — NOT the similarly-named, ALSO-real "Account Analytics
  *     Read" (a different, account-scoped permission; see "SCOPES" above) —
- *     then note the resulting scope ID(s) for `CLOUDFLARE_OAUTH_SCOPE`.
+ *     confirmed 2026-08-01 from the live dashboard picker as `analytics.read`
+ *     (an operator reading, not a vendor-doc-guaranteed string — see "SCOPES"
+ *     above); note the resulting scope ID(s) for `CLOUDFLARE_OAUTH_SCOPE`,
+ *     verifying against your own dashboard picker since this can change
+ *     without notice.
  *     Then PROMOTE TO PUBLIC (see "PUBLIC vs. PRIVATE CLIENT VISIBILITY"
  *     above) — required before any workspace outside the registering
  *     account can use this connect button at all, and involves a DNS TXT

@@ -886,8 +886,12 @@ doc-verification" above), Redirect URL from the list above; search the
 scopes picker for the permission matching "Analytics Read" under Zone
 permissions (same one the token-paste path's own setup steps ask for) — NOT
 the similarly-named, ALSO-real "Account Analytics Read" (a different,
-account-scoped permission) — and note the resulting scope ID(s) for
-`CLOUDFLARE_OAUTH_SCOPE`; note the issued client id/secret;
+account-scoped permission) — confirmed 2026-08-01 from the live dashboard
+picker as `analytics.read` (an operator-dashboard reading, not a
+vendor-doc-guaranteed string — see "W3-T6 doc-verification" above); note
+the resulting scope ID(s) for `CLOUDFLARE_OAUTH_SCOPE`, verifying against
+your own dashboard picker since this can change without notice; note the
+issued client id/secret;
 set `CLOUDFLARE_OAUTH_CLIENT_ID` / `CLOUDFLARE_OAUTH_CLIENT_SECRET` /
 `CLOUDFLARE_OAUTH_SCOPE` on the deployment. **Then promote the client to
 PUBLIC visibility** (Cloudflare → the client's action menu → Change

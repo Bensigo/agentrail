@@ -7,13 +7,15 @@ is synchronous (``store.claim_next``) so two workers can never take the same
 issue — the lock lives in local state, not in GitHub labels. GitHub label
 writes are confirmation side effects layered on top.
 
-Per-worker pipeline (ADR 0007):
-  implement issue -> find PR -> advisory review (once, never blocks)
-    -> objective gate (CI checks + security):
-       -> pass : merge if permitted (--auto-merge, #1278, default OFF),
-                 else leave the PR open with an explanatory comment
-       -> fail : bounded agent fix (max 2) in place, re-run gate
-       -> still failing after the fix budget : escalate to human review
+Per-worker pipeline: implement issue -> find PR -> objective gate (CI checks
++ security):
+  -> pass : merge if permitted (--auto-merge, #1278, default OFF),
+            else leave the PR open with an explanatory comment
+  -> fail : bounded agent fix (max 2) in place, re-run gate
+  -> still failing after the fix budget : escalate to human review
+
+No model-review step runs here — Jace is the one reviewer of record (Arc B
+§5); this runner's own job ends at the objective gate.
 """
 from __future__ import annotations
 
@@ -26,7 +28,6 @@ from pathlib import Path
 from typing import FrozenSet, List, Optional
 
 from agentrail.afk import github as gh
-from agentrail.afk import review as review_policy
 from agentrail.afk.state import (
     AfkState,
     EnqueueIssue,
@@ -52,7 +53,7 @@ REVIEWED_LABEL = "pr-reviewed"
 # Issue #1278: the honest PR comment posted when the objective gate passes
 # but merge permission is OFF (the default, ``--auto-merge`` not given) — the
 # PR stays open for a human to merge; nothing else about the pipeline
-# changes (still exactly one advisory review, still no extra fix round).
+# changes (still no extra fix round).
 MERGE_PERMISSION_OFF_COMMENT = (
     "## Objective gate passed\n\n"
     "This PR is green and ready to merge, but merge permission is OFF for "
@@ -211,7 +212,7 @@ class Runner:
         # Issue #1278: grantable merge permission — default OFF (dogfood-only
         # tool, correct default trust posture; this INTENTIONALLY changes
         # AFK's prior unconditional-merge-on-green behavior). ON reproduces
-        # the exact prior behavior (_review_and_gate merges once the gate
+        # the exact prior behavior (_gate_and_fix merges once the gate
         # passes); OFF leaves the PR open with MERGE_PERMISSION_OFF_COMMENT
         # instead. Set only by cli.commands.afk.run_afk's --auto-merge flag
         # (the sole production setter) — see that module for the CLI/config
@@ -245,8 +246,8 @@ class Runner:
         ``AGENTRAIL_LANGFUSE_SESSION_ID`` in ``agentrail/run/pipeline.py`` —
         so every ``agentrail run issue`` phase for this issue groups into one
         Langfuse session. Harmless metadata when Langfuse is disabled or the
-        consuming command ignores it (e.g. review/objective-fix subprocesses
-        that don't currently read this env var).
+        consuming command ignores it (e.g. the objective-fix subprocess,
+        which doesn't currently read this env var).
         """
         return f"afk-{issue}-{self._start_iso}"
 
@@ -426,46 +427,6 @@ class Runner:
         return subprocess.run(["git", "-C", str(self.target), *args],
                               check=False, capture_output=True, text=True)
 
-    async def _review(self, pr: int) -> Optional[review_policy.ReviewOutcome]:
-        head = gh.pr_head_ref(pr)
-        if not head:
-            return None
-        # Review in a disposable worktree. review-pr does `git switch <head>` in
-        # its cwd (resolved via `git rev-parse --show-toplevel`), so running it in
-        # a worktree checks out the PR head THERE and never touches the main
-        # checkout — this is what prevents the AFK data-loss.
-        self._git("fetch", "origin", head)
-        # drop any stale worktree already holding the head branch (but never the
-        # main checkout itself)
-        listing = self._git("worktree", "list", "--porcelain").stdout
-        path: Optional[str] = None
-        for line in listing.splitlines():
-            if line.startswith("worktree "):
-                path = line[len("worktree "):]
-            elif line.startswith("branch ") and path:
-                if line.endswith(f"/{head}") and path != str(self.target):
-                    self._git("worktree", "remove", "--force", path)
-        self._git("worktree", "prune")
-        # force the local head branch to origin so review-pr's `git pull --ff-only`
-        # is a no-op (a branch-ref update only; the main working tree is untouched)
-        self._git("branch", "-f", head, f"origin/{head}")
-        wt = self.run_dir / "worktrees" / f"review-pr-{pr}"
-        if self._git("worktree", "add", str(wt), head).returncode != 0:
-            return None
-        try:
-            out = self.logs / f"pr-{pr}-review.md"
-            rc = await _sh(
-                [self.agentrail, "internal", "review-pr", "--pr", str(pr),
-                 "--engine", self.engine, "--output", str(out), "--machine-readable"],
-                cwd=wt,
-                log=self.logs / f"pr-{pr}-review.log",
-            )
-            if rc != 0:
-                return None
-            return review_policy.classify(out)
-        finally:
-            self._remove_worktree(wt)
-
     async def _objective_gate(self, pr: int):
         """Poll CI until checks resolve, then run the deterministic gate."""
         from agentrail.afk import objective_gate as og
@@ -536,13 +497,21 @@ class Runner:
         finally:
             self._remove_worktree(wt)
 
-    def _push_gate(self, issue: int, pr: int, gate, review_text: str, round_no: int) -> None:
+    def _push_gate(self, issue: int, pr: int, gate, round_no: int) -> None:
+        """Push this round's objective-gate result to the dashboard.
+
+        No advisory review runs anymore, so there is no ``review_text`` to
+        carry — ``push_review_gate`` is called without it and falls back to
+        its own default (``""``), which makes the pushed payload's
+        ``findings`` list honestly empty rather than stale/fabricated. The
+        gate's real ``status``/``blocking_reasons`` are unaffected.
+        """
         sid = getattr(self, "session_id", None)
         if not sid:
             return
         from agentrail.afk.review_push import push_review_gate
         from agentrail.afk.run_register import run_uuid
-        push_review_gate(self.target, run_uuid(sid, issue), round_no, gate, review_text=review_text)
+        push_review_gate(self.target, run_uuid(sid, issue), round_no, gate)
 
     def _escalate_human(self, issue: int, pr: int, reasons: list[str]) -> None:
         gh.ensure_label(HUMAN_REVIEW_LABEL, "D4C5F9",
@@ -574,13 +543,13 @@ class Runner:
 
         try:
             # Idempotency: if a PR already exists for this issue (a retry after a
-            # failed review, or a resumed run), do NOT re-implement — that would
-            # collide with the existing branch/worktree. Go straight to review.
+            # prior failure, or a resumed run), do NOT re-implement — that would
+            # collide with the existing branch/worktree. Go straight to the gate.
             pr = issue_state.pr or gh.detect_pr_for_issue(issue)
             if pr:
                 self.store.dispatch(SetPr(issue, pr))
                 self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
-                await self._review_and_gate(slot, issue, pr)
+                await self._gate_and_fix(slot, issue, pr)
                 return
 
             self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
@@ -607,44 +576,26 @@ class Runner:
             self.store.dispatch(SetPr(issue, pr))
             self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
 
-            await self._review_and_gate(slot, issue, pr)
+            await self._gate_and_fix(slot, issue, pr)
         finally:
             final_issue = self.store.state.issues.get(issue)
             if final_issue is not None:
                 run_status = _FINISH_STATUS_MAP.get(final_issue.status, "failed")
                 self._register_run(final_issue, run_status, finished=True)
 
-    async def _review_and_gate(self, slot: int, issue: int, pr: int) -> None:
+    async def _gate_and_fix(self, slot: int, issue: int, pr: int) -> None:
+        """Objective gate (CI + security), with a bounded in-place fix loop.
+
+        No advisory review runs first (Arc B: Jace is the one reviewer of
+        record) — this is the whole post-PR pipeline now: gate -> pass/fail,
+        fail -> bounded agent fix -> re-gate, exhausted -> escalate to human.
+        """
         max_fix = 2
 
-        # 1. Advisory review — runs once, never blocks (ADR 0007).
-        self.store.dispatch(SetStatus(issue, IssueStatus.REVIEWING))
-        outcome = await self._review(pr)
-        if outcome is None:
-            self._fail(issue, "review produced no parseable output")
-            return
-
-        review_file = self.logs / f"pr-{pr}-review.md"
-        try:
-            review_text = review_file.read_text()
-        except OSError:
-            review_text = ""
-
-        if outcome.has_findings:
-            gh.comment_on_pr(pr, review_policy.findings_comment(pr, outcome))
-
-        # Memory suggestions flow once per review (parity with the old loop).
-        sid = getattr(self, "session_id", None)
-        if sid:
-            from agentrail.afk.review_push import push_memory_items
-            from agentrail.afk.run_register import run_uuid
-            push_memory_items(self.target, run_uuid(sid, issue), outcome)
-
-        # 2. Objective gate, with a bounded fix loop.
         attempts = 0
         while True:
             gate = await self._objective_gate(pr)
-            self._push_gate(issue, pr, gate, review_text, round_no=attempts + 1)
+            self._push_gate(issue, pr, gate, round_no=attempts + 1)
 
             if gate.passed:
                 # #1278: merge permission gate. OFF (the default) leaves the
@@ -756,7 +707,7 @@ class Runner:
             pr = self.store.state.issues[issue].pr
             if pr:
                 gh.ensure_label(HUMAN_REVIEW_LABEL, "D4C5F9",
-                                "PR needs human review — automated review failed repeatedly.")
+                                "PR needs human review — repeated attempts failed.")
                 gh.add_pr_label(pr, HUMAN_REVIEW_LABEL)
             self._cleanup_issue_labels(issue)
 
@@ -849,17 +800,15 @@ class Runner:
 
 
 def build_store(target: Path, *, concurrency: int, max_retries: int,
-                max_review_rounds: int, issues: List[dict]) -> Store:
+                issues: List[dict]) -> Store:
     """Create (or resume) the store and seed the queue from GitHub issues."""
     existing = load_snapshot(target)
     if existing is not None:
         # resume: keep terminal issues, refresh config knobs
         from dataclasses import replace as _replace
-        base = _replace(existing, concurrency=concurrency,
-                        max_retries=max_retries, max_review_rounds=max_review_rounds)
+        base = _replace(existing, concurrency=concurrency, max_retries=max_retries)
     else:
         base = AfkState(concurrency=concurrency, max_retries=max_retries,
-                        max_review_rounds=max_review_rounds,
                         slots={i: None for i in range(concurrency)})
     # a fresh run starts with all slots empty regardless of how a prior run left them
     from dataclasses import replace as _replace
@@ -886,10 +835,11 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
             if existing_issue.status != IssueStatus.QUEUED:
                 # The issue is still open in the GitHub queue but the saved
                 # snapshot has it in some non-queued state — either terminal
-                # (human_review / merged) or an in-flight state (reviewing /
-                # running) orphaned by a killed run. On a fresh process nothing
-                # is actually in flight, so reset it for a clean attempt
-                # (RequeueIssue keeps the PR ref, so the pipeline reviews the
-                # existing PR rather than re-implementing).
+                # (human_review / merged) or an in-flight state (running /
+                # pr_open / autofixing) orphaned by a killed run. On a fresh
+                # process nothing is actually in flight, so reset it for a
+                # clean attempt (RequeueIssue keeps the PR ref, so the
+                # pipeline re-gates the existing PR rather than
+                # re-implementing).
                 store.dispatch(RequeueIssue(num))
     return store

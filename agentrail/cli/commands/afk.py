@@ -32,14 +32,14 @@ def _usage() -> str:
     return """Usage:
   agentrail afk [--concurrency N] [--engine claude|codex] [--base BRANCH]
                 [--afk-label LABEL] [--queue-labels a,b] [--max-retries N]
-                [--max-review-rounds N] [--dry-run] [--allow-dirty]
+                [--dry-run] [--allow-dirty]
                 [--model MODEL] [--budget-per-issue FLOAT]
                 [--allow-hosted-repo] [--auto-merge]
 
 Runs the AFK workflow: pick approved GitHub issues, implement each in an
-isolated worktree, open a PR, review it, and either merge (only with
---auto-merge), auto-fix P0/P1 findings in place, or comment P2/P3 findings
-for the engineer to decide.
+isolated worktree, open a PR, and run it through the objective gate (CI +
+security) — merge (only with --auto-merge), auto-fix in place on failure, or
+escalate to a human once the fix budget is exhausted.
 
 State is a single JSON snapshot at .agentrail/afk/state.json (the single source
 of truth). Slot claiming is synchronous, so two workers never take the same
@@ -79,7 +79,6 @@ def _parse(args: List[str]) -> dict:
         "afk_label": "afk",
         "queue_labels": ["review-fix", "ready-for-agent"],
         "max_retries": 2,
-        "max_review_rounds": 3,
         "dry_run": False,
         "allow_dirty": False,
         "model": "",
@@ -114,8 +113,6 @@ def _parse(args: List[str]) -> dict:
             opts["queue_labels"] = [x for x in args[i + 1].split(",") if x]; i += 2
         elif a == "--max-retries":
             opts["max_retries"] = int(args[i + 1]); i += 2
-        elif a == "--max-review-rounds":
-            opts["max_review_rounds"] = int(args[i + 1]); i += 2
         elif a == "--dry-run":
             opts["dry_run"] = True; i += 1
         elif a == "--allow-dirty":
@@ -165,8 +162,8 @@ def run_afk(args: List[str]) -> int:
     opts = _parse(args)
     target = opts["target"].resolve()
 
-    # Guard (#1271): AFK can auto-merge once its review gate passes (opt-in,
-    # #1278's --auto-merge — see Runner._review_and_gate / Runner._merge ->
+    # Guard (#1271): AFK can auto-merge once its objective gate passes (opt-in,
+    # #1278's --auto-merge — see Runner._gate_and_fix / Runner._merge ->
     # gh.merge_pr_squash). Fine against our own dogfood repo; must never even
     # START against a repo connected to a HOSTED CUSTOMER workspace, whether
     # or not --auto-merge is set — this guard is about which repo AFK may
@@ -276,9 +273,9 @@ def run_afk(args: List[str]) -> int:
 
     # ensure the labels the workflow projects onto GitHub exist
     gh.ensure_label("afk-in-progress", "BFDADC", "Claimed by the AFK workflow.")
-    gh.ensure_label("pr-reviewed", "C5DEF5", "PR completed automated review.")
+    gh.ensure_label("pr-reviewed", "C5DEF5", "AFK finished processing this PR.")
     gh.ensure_label("human-review-needed", "D4C5F9",
-                    "PR needs human review — automated review failed repeatedly.")
+                    "PR needs human review — repeated attempts failed.")
 
     stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = target / ".afk-workflow" / stamp
@@ -287,7 +284,6 @@ def run_afk(args: List[str]) -> int:
         target,
         concurrency=opts["concurrency"],
         max_retries=opts["max_retries"],
-        max_review_rounds=opts["max_review_rounds"],
         issues=issues,
     )
     runner = Runner(

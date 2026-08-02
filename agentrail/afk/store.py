@@ -57,7 +57,6 @@ def to_dict(state: AfkState) -> dict:
         "schemaVersion": 1,
         "concurrency": state.concurrency,
         "max_retries": state.max_retries,
-        "max_review_rounds": state.max_review_rounds,
         "completed": state.completed,
         "failed": state.failed,
         "slots": {str(k): v for k, v in state.slots.items()},
@@ -71,7 +70,6 @@ def from_dict(d: dict) -> AfkState:
         slots={int(k): v for k, v in d.get("slots", {}).items()},
         concurrency=d.get("concurrency", 2),
         max_retries=d.get("max_retries", 2),
-        max_review_rounds=d.get("max_review_rounds", 3),
         completed=d.get("completed", 0),
         failed=d.get("failed", 0),
     )

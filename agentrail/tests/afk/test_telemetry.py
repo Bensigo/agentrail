@@ -40,7 +40,6 @@ def _make_store() -> Store:
         AfkState(
             concurrency=1,
             max_retries=2,
-            max_review_rounds=3,
             slots={0: None},
         )
     )

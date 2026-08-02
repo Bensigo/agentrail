@@ -92,7 +92,6 @@ def test_old_state_dict_without_blocked_by_loads(tmp_path: Path):
         "schemaVersion": 1,
         "concurrency": 2,
         "max_retries": 2,
-        "max_review_rounds": 3,
         "completed": 0,
         "failed": 0,
         "slots": {"0": None, "1": None},

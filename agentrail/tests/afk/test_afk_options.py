@@ -151,8 +151,7 @@ class RunnerForwardsBudgetTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         tmp = Path(td.name)
         (tmp / "main").mkdir()
-        store = Store(AfkState(concurrency=1, max_retries=1,
-                               max_review_rounds=1, slots={0: None}))
+        store = Store(AfkState(concurrency=1, max_retries=1, slots={0: None}))
         # _implement now dispatches RecordCost(number=1), which requires the
         # issue to exist in state. In the real flow the issue is always enqueued
         # before _implement runs; seed it here so this unit test mirrors that.
@@ -195,8 +194,7 @@ class RunnerForwardsBudgetSourceTests(unittest.TestCase):
         self.addCleanup(td.cleanup)
         tmp = Path(td.name)
         (tmp / "main").mkdir()
-        store = Store(AfkState(concurrency=1, max_retries=1,
-                               max_review_rounds=1, slots={0: None}))
+        store = Store(AfkState(concurrency=1, max_retries=1, slots={0: None}))
         store.dispatch(EnqueueIssue(number=1, title="t", url="http://x/1"))
         runner = Runner(
             target=tmp / "main", engine="claude", base="main", concurrency=1,

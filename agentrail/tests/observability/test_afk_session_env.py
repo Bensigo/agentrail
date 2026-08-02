@@ -46,7 +46,6 @@ def _make_runner(tmp_path: Path, *, issues: list) -> Runner:
     store = Store(AfkState(
         concurrency=1,
         max_retries=1,
-        max_review_rounds=1,
         slots={0: None},
     ))
     for number in issues:

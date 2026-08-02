@@ -7,7 +7,7 @@ from agentrail.afk.objective_gate import ObjectiveGateResult
 
 
 # Re-implements the loop decision logic to lock the contract. The runner's
-# _review_and_gate must follow this exact control flow.
+# _gate_and_fix must follow this exact control flow.
 async def _drive_loop(gate, fix, merge, escalate, max_fix=2):
     attempts = 0
     while True:
@@ -88,7 +88,7 @@ def test_fix_failure_escalates_immediately():
 
 
 # ---------------------------------------------------------------------------
-# Integration tests that drive the REAL Runner._review_and_gate method.
+# Integration tests that drive the REAL Runner._gate_and_fix method.
 #
 # These exist to keep the real method from drifting away from the contract
 # the _drive_loop tests above lock down. We build a Runner via __new__ (no real
@@ -98,7 +98,6 @@ def test_fix_failure_escalates_immediately():
 # ---------------------------------------------------------------------------
 from agentrail.afk.runner import Runner, MERGE_PERMISSION_OFF_COMMENT  # noqa: E402
 from agentrail.afk.state import IssueStatus, SetStatus  # noqa: E402
-from agentrail.afk import review as review_policy  # noqa: E402
 
 
 class _Spy:
@@ -119,12 +118,11 @@ class _Spy:
 
 
 def _make_real_runner(monkeypatch, tmpdir, *,
-                      review_outcome=None,
                       gate_results=None,
                       fix_result=True,
                       merge_result=True,
                       auto_merge=True):
-    """Build a Runner via __new__ with the minimal attributes _review_and_gate
+    """Build a Runner via __new__ with the minimal attributes _gate_and_fix
     touches, and monkeypatch every async/IO helper to a spy. Returns
     (runner, calls) where calls counts/records helper invocations.
 
@@ -141,26 +139,15 @@ def _make_real_runner(monkeypatch, tmpdir, *,
     r.logs = Path(tmpdir)
     r.target = Path(tmpdir)
     r.auto_merge = auto_merge
-    # session_id None: push_memory_items short-circuits inside the real method.
-    # _push_gate is spied separately below so we still observe round_no values.
+    # session_id None: _push_gate short-circuits inside the real method, but
+    # it's spied separately below anyway so we still observe round_no values.
     r.session_id = None
 
-    # Pre-create the review file so review_text = read_text() succeeds
-    # deterministically (rather than relying on the OSError fallback).
-    (Path(tmpdir) / "pr-7-review.md").write_text("review body")
-
-    if review_outcome is None:
-        review_outcome = review_policy.ReviewOutcome(findings=[], memory_suggestions=[])
-
     calls = {
-        "review": 0, "gate": 0, "fix": 0, "merge": 0,
+        "gate": 0, "fix": 0, "merge": 0,
         "escalate": 0, "fail": 0, "cleanup": 0, "comment": 0,
         "fail_reasons": [], "gate_rounds": [], "comment_bodies": [],
     }
-
-    async def _review(pr):
-        calls["review"] += 1
-        return review_outcome
 
     _gate_iter = list(gate_results) if isinstance(gate_results, list) else None
 
@@ -188,10 +175,9 @@ def _make_real_runner(monkeypatch, tmpdir, *,
     def _cleanup_issue_labels(issue):
         calls["cleanup"] += 1
 
-    def _push_gate(issue, pr, gate, review_text, round_no):
+    def _push_gate(issue, pr, gate, round_no):
         calls["gate_rounds"].append(round_no)
 
-    monkeypatch.setattr(r, "_review", _review)
     monkeypatch.setattr(r, "_objective_gate", _objective_gate)
     monkeypatch.setattr(r, "_objective_fix", _objective_fix)
     monkeypatch.setattr(r, "_merge", _merge)
@@ -209,26 +195,6 @@ def _make_real_runner(monkeypatch, tmpdir, *,
     return r, calls
 
 
-def test_real_review_none_fails_before_gate(monkeypatch):
-    with tempfile.TemporaryDirectory() as td:
-        r, calls = _make_real_runner(
-            monkeypatch, td,
-            gate_results=ObjectiveGateResult("pass", []),
-        )
-
-        async def _review_none(pr):
-            calls["review"] += 1
-            return None
-
-        monkeypatch.setattr(r, "_review", _review_none)
-
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
-
-    assert calls["fail"] == 1
-    assert calls["gate"] == 0
-    assert calls["merge"] == 0
-
-
 def test_real_gate_fails_twice_then_escalates(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         r, calls = _make_real_runner(
@@ -236,7 +202,7 @@ def test_real_gate_fails_twice_then_escalates(monkeypatch):
             gate_results=ObjectiveGateResult("fail", ["CI check 'test' failed"]),
             fix_result=True,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["escalate"] == 1
     assert calls["merge"] == 0
@@ -251,7 +217,7 @@ def test_real_gate_pass_merges_and_marks_merged(monkeypatch):
             gate_results=ObjectiveGateResult("pass", []),
             merge_result=True,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["merge"] == 1
     assert IssueStatus.MERGED in r.store.statuses()
@@ -265,7 +231,7 @@ def test_real_merge_failure_calls_fail(monkeypatch):
             gate_results=ObjectiveGateResult("pass", []),
             merge_result=False,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["fail"] == 1
     assert "merge failed" in calls["fail_reasons"][0]
@@ -279,7 +245,7 @@ def test_real_fix_failure_escalates_immediately(monkeypatch):
             gate_results=ObjectiveGateResult("fail", ["CI check 'test' failed"]),
             fix_result=False,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["fix"] == 1
     assert calls["escalate"] == 1
@@ -302,7 +268,7 @@ def test_real_gate_pass_auto_merge_off_comments_instead_of_merging(monkeypatch):
             gate_results=ObjectiveGateResult("pass", []),
             auto_merge=False,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["merge"] == 0
     assert calls["escalate"] == 0
@@ -323,7 +289,7 @@ def test_real_gate_pass_auto_merge_on_still_merges(monkeypatch):
             gate_results=ObjectiveGateResult("pass", []),
             auto_merge=True,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["merge"] == 1
     assert calls["comment"] == 0
@@ -341,14 +307,14 @@ def test_real_gate_fail_auto_merge_off_still_escalates_normally(monkeypatch):
             fix_result=True,
             auto_merge=False,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["escalate"] == 1
     assert calls["merge"] == 0
     assert calls["fix"] == 2
-    # The MERGE_PERMISSION_OFF_COMMENT is a gate-PASS-only comment — a fail
-    # path posts its own findings/escalation comments (or none, in this
-    # fixture with no review findings), never this one.
+    # The MERGE_PERMISSION_OFF_COMMENT is a gate-PASS-only comment — the
+    # fail/escalate path never posts it (this fixture posts no comments on
+    # the fail path at all).
     assert MERGE_PERMISSION_OFF_COMMENT not in calls["comment_bodies"]
 
 
@@ -362,6 +328,6 @@ def test_real_gate_pass_auto_merge_off_never_calls_merge_even_if_merge_result_wo
             merge_result=True,
             auto_merge=False,
         )
-        asyncio.run(r._review_and_gate(slot=0, issue=1, pr=7))
+        asyncio.run(r._gate_and_fix(slot=0, issue=1, pr=7))
 
     assert calls["merge"] == 0

@@ -18,11 +18,10 @@ from agentrail.afk.state import (
 from agentrail.afk.store import from_dict, load_snapshot, to_dict, write_snapshot
 
 
-def _store(concurrency=2, max_retries=2, max_review_rounds=3):
+def _store(concurrency=2, max_retries=2):
     return Store(AfkState(
         concurrency=concurrency,
         max_retries=max_retries,
-        max_review_rounds=max_review_rounds,
         slots={i: None for i in range(concurrency)},
     ))
 

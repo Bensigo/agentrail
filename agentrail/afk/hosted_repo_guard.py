@@ -1,9 +1,9 @@
 """Hosted-repo quarantine (#1271) — refuse to run AFK against a repo that
 belongs to a HOSTED CUSTOMER workspace.
 
-``agentrail afk`` can auto-merge once its review gate passes, but only
+``agentrail afk`` can auto-merge once its objective gate passes, but only
 opt-in: grantable merge permission (#1278) shipped as the ``--auto-merge``
-CLI flag, default OFF (``Runner.auto_merge`` / ``Runner._review_and_gate``
+CLI flag, default OFF (``Runner.auto_merge`` / ``Runner._gate_and_fix``
 -> ``Runner._merge`` -> ``gh.merge_pr_squash``, ``afk/runner.py``). That
 default-OFF gate is a SEPARATE, per-invocation trust decision — it does not
 change whether AFK should be allowed to touch a repo it doesn't own at all.

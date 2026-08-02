@@ -1,10 +1,11 @@
 """Tests for pipeline wiring of the Objective Gate (issue #769, AC2 + AC3).
 
-The pipeline marks a run "done" based on the **Objective Gate** verdict — not on
-an LLM reviewer's opinion (ADR 0007). LLM review output is recorded as advisory
-and is non-blocking: a clean review can never turn a red gate green, and a
-critical review can never turn a green gate red. The gate verdict + evidence are
-persisted to the run surface (AC3 data side).
+The pipeline marks a run "done" based on the **Objective Gate** verdict alone
+(ADR 0007) — the gate's ``status``/``blocking_reasons`` are the only signal.
+(An LLM-reviewer advisory record used to also ride along on this call via a
+``review_advisory`` param; it was dead plumbing — production always passed
+``None`` — and was removed with the Arc B reviewer-of-record wave.) The gate
+verdict + evidence are persisted to the run surface (AC3 data side).
 
 These tests drive the thin orchestration ``finalize_objective_gate`` over plain
 inputs; no real tools run.
@@ -57,63 +58,27 @@ class FinalizeObjectiveGateTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    # --- AC2: done is decided by the gate, not the review --------------------
+    # --- AC2: done is decided solely by the gate ------------------------------
 
-    def test_green_gate_marks_done_regardless_of_review(self) -> None:
+    def test_green_gate_marks_done(self) -> None:
         outcome = finalize_objective_gate(
-            self.metadata_file,
-            gate_result=_green_result(),
-            review_advisory={"blocking": ["P1: looks risky"]},
-        )
-        self.assertTrue(outcome["done"])
-
-    def test_red_gate_is_not_done_even_with_clean_review(self) -> None:
-        outcome = finalize_objective_gate(
-            self.metadata_file,
-            gate_result=_red_result(),
-            review_advisory={"blocking": [], "advisory": []},
-        )
-        self.assertFalse(outcome["done"])
-
-    def test_review_findings_do_not_change_doneness(self) -> None:
-        """Same gate verdict → same done-ness, whatever the review says."""
-        clean = finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory={"blocking": []}
-        )
-        blocking = finalize_objective_gate(
-            self.metadata_file,
-            gate_result=_green_result(),
-            review_advisory={"blocking": ["P0: scary"]},
-        )
-        self.assertEqual(clean["done"], blocking["done"])
-        self.assertTrue(clean["done"])
-
-    # --- AC2: review stored as advisory --------------------------------------
-
-    def test_review_stored_as_advisory_non_blocking(self) -> None:
-        review = {"blocking": ["P1: x"], "advisory": ["P3: nit"]}
-        finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory=review
-        )
-        data = json.loads(self.metadata_file.read_text())
-        self.assertIn("review", data)
-        self.assertEqual(data["review"]["role"], "advisory")
-        # the original findings are preserved verbatim under the advisory record
-        self.assertEqual(data["review"]["findings"], review)
-
-    def test_runs_with_no_review_still_finalize(self) -> None:
-        outcome = finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory=None
+            self.metadata_file, gate_result=_green_result(),
         )
         self.assertTrue(outcome["done"])
         data = json.loads(self.metadata_file.read_text())
         self.assertEqual(data["objectiveGate"]["verdict"], "green")
 
+    def test_red_gate_marks_not_done(self) -> None:
+        outcome = finalize_objective_gate(
+            self.metadata_file, gate_result=_red_result(),
+        )
+        self.assertFalse(outcome["done"])
+
     # --- AC3 (data side): gate verdict + evidence persisted ------------------
 
     def test_gate_verdict_persisted_to_run_metadata(self) -> None:
         finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory=None
+            self.metadata_file, gate_result=_green_result(),
         )
         data = json.loads(self.metadata_file.read_text())
         self.assertEqual(data["objectiveGate"]["verdict"], "green")
@@ -121,7 +86,7 @@ class FinalizeObjectiveGateTest(unittest.TestCase):
 
     def test_red_gate_evidence_names_failure(self) -> None:
         finalize_objective_gate(
-            self.metadata_file, gate_result=_red_result(), review_advisory=None
+            self.metadata_file, gate_result=_red_result(),
         )
         data = json.loads(self.metadata_file.read_text())
         self.assertEqual(data["objectiveGate"]["verdict"], "red")
@@ -129,7 +94,7 @@ class FinalizeObjectiveGateTest(unittest.TestCase):
 
     def test_evidence_trail_persisted(self) -> None:
         finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory=None
+            self.metadata_file, gate_result=_green_result(),
         )
         data = json.loads(self.metadata_file.read_text())
         names = {e["name"] for e in data["objectiveGate"]["evidence"]}
@@ -138,7 +103,7 @@ class FinalizeObjectiveGateTest(unittest.TestCase):
 
     def test_preserves_existing_metadata_keys(self) -> None:
         finalize_objective_gate(
-            self.metadata_file, gate_result=_green_result(), review_advisory=None
+            self.metadata_file, gate_result=_green_result(),
         )
         data = json.loads(self.metadata_file.read_text())
         self.assertEqual(data["targetIssue"], 42)

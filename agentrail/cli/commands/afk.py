@@ -252,10 +252,15 @@ def run_afk(args: List[str]) -> int:
             print(f"  #{it['number']} {it['title']}{tag}")
         return 0
 
-    # Guard: AFK mutates the main checkout during PR review — it runs
-    # `git switch --detach` and `git reset --hard origin/<base>` there
-    # (see runner._prepare_for_review / _restore_main). On a dirty tree that
-    # silently discards uncommitted work. Refuse unless explicitly overridden.
+    # Guard: AFK's fix loop runs entirely in disposable git worktrees under
+    # this checkout (runner._setup_worktree / _remove_worktree) — it does not
+    # switch or hard-reset the main checkout itself (that ran only during the
+    # PR-review step, deleted with the Arc B reviewer-of-record wave). This
+    # check stays as a pre-flight safety net: AFK still runs git plumbing
+    # (fetch/worktree add/worktree remove) against this checkout for the
+    # length of the run, so starting from a clean tree keeps AFK's changes
+    # and the operator's own uncommitted work from ever being ambiguous.
+    # Refuse unless explicitly overridden.
     if not opts["allow_dirty"]:
         dirty = subprocess.run(
             ["git", "-C", str(target), "status", "--porcelain"],
@@ -264,9 +269,11 @@ def run_afk(args: List[str]) -> int:
         if dirty:
             print(
                 "AFK refuses to start: the main checkout has uncommitted changes.\n"
-                "During PR review AFK switches and hard-resets this checkout, which "
-                "would discard them. Commit or stash your changes first, or run AFK "
-                "from a separate clone. Use --allow-dirty to override (work may be lost).",
+                "AFK's fix loop works in disposable git worktrees under this checkout "
+                "rather than mutating it directly, but it still runs git commands "
+                "against it for the length of the run. Commit or stash your changes "
+                "first, or run AFK from a separate clone. Use --allow-dirty to "
+                "override (work may be lost).",
                 file=sys.stderr,
             )
             return 1

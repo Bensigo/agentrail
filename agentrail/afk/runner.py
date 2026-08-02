@@ -500,11 +500,10 @@ class Runner:
     def _push_gate(self, issue: int, pr: int, gate, round_no: int) -> None:
         """Push this round's objective-gate result to the dashboard.
 
-        No advisory review runs anymore, so there is no ``review_text`` to
-        carry — ``push_review_gate`` is called without it and falls back to
-        its own default (``""``), which makes the pushed payload's
-        ``findings`` list honestly empty rather than stale/fabricated. The
-        gate's real ``status``/``blocking_reasons`` are unaffected.
+        No advisory review runs anymore (deleted with the Arc B
+        reviewer-of-record wave) — ``push_review_gate`` carries only the
+        gate's real ``status``/``blocking_reasons``; it has no findings field
+        to fabricate or leave stale.
         """
         sid = getattr(self, "session_id", None)
         if not sid:

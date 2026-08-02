@@ -48,6 +48,15 @@ def test_setstatus_enum_serializes_to_value():
     assert action_from_dict(d).status == IssueStatus.AUTOFIXING
 
 
+def test_action_from_dict_coerces_legacy_reviewing_status():
+    """A journal line recorded by the pre-Arc-B code can carry a SetStatus
+    action with status "reviewing" — IssueStatus.REVIEWING is gone, so replay
+    must coerce it to HUMAN_REVIEW rather than raising ValueError."""
+    d = {"type": "SetStatus", "number": 1, "status": "reviewing"}
+    action = action_from_dict(d)
+    assert action == SetStatus(1, IssueStatus.HUMAN_REVIEW)
+
+
 # --- journal write/read -----------------------------------------------------
 
 

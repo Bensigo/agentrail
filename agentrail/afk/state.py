@@ -38,6 +38,22 @@ TERMINAL_STATUSES = frozenset(
 )
 
 
+def coerce_issue_status(value: str) -> IssueStatus:
+    """Parse a persisted status string leniently.
+
+    A state.json snapshot or events.jsonl journal written by a prior version
+    of AgentRail can carry a status value retired since — e.g. "reviewing"
+    (``IssueStatus.REVIEWING``, removed with the Arc B reviewer-of-record
+    deletion). Map anything unrecognized to HUMAN_REVIEW (a safe, human-visible
+    landing spot) instead of raising, so an upgrade never crashes loading or
+    replaying history written by the previous version.
+    """
+    try:
+        return IssueStatus(value)
+    except ValueError:
+        return IssueStatus.HUMAN_REVIEW
+
+
 @dataclass(frozen=True)
 class IssueState:
     number: int

@@ -6,18 +6,20 @@ Coverage:
 - HTTP error → returns False, never raises (non-fatal).
 - "passed" status when objective gate passes.
 - "failed" status when objective gate fails.
-- build_gate_payload uses objective gate state, not review findings.
+- build_gate_payload carries only objective-gate state — no findings field
+  (the advisory LLM-review parser was deleted with the Arc B
+  reviewer-of-record wave; see test_reviewer_of_record_deletion.py).
+- extract_memory_suggestions / push_memory_items (unrelated to the deleted
+  findings parser — these survive the wave untouched).
 """
 from __future__ import annotations
 
 import json
 import uuid
 from pathlib import Path
-
-import pytest
+from types import SimpleNamespace
 
 from agentrail.afk import review_push
-from agentrail.afk.review import Finding, ReviewOutcome
 from agentrail.afk.objective_gate import ObjectiveGateResult
 
 
@@ -35,17 +37,6 @@ def _write_server_json(tmp_path: Path, base_url: str = "http://localhost:3000",
         "api_key": api_key,
         "repository_id": repository_id,
     }))
-
-
-def _make_outcome(findings=(), memory_suggestions=()) -> ReviewOutcome:
-    return ReviewOutcome(
-        findings=list(findings),
-        memory_suggestions=list(memory_suggestions),
-    )
-
-
-def _finding(title="Bug", severity="P0", file="foo.py", body="fix it") -> Finding:
-    return Finding(title=title, severity=severity, file=file, body=body)
 
 
 class FakeResp:
@@ -207,203 +198,26 @@ def test_push_id_differs_by_round(tmp_path: Path, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# parse_findings — structured JSON review
+# build_gate_payload — objective-gate-only payload (ADR 0007 realignment;
+# the advisory findings half — parse_findings and the "findings" field —
+# was deleted with the Arc B reviewer-of-record wave).
 # ---------------------------------------------------------------------------
 
 
-STRUCTURED_REVIEW = """\
-# Review of PR #42
-
-Looked at the diff; two real problems and one nit.
-
-BEGIN_REVIEW_FIX_ISSUES_JSON
-{
-  "fix_issues": [
-    {"title": "Null deref on missing config", "severity": "P1",
-     "file": "app/main.py", "body": "Guard cfg before cfg.get() or it crashes on fresh installs."},
-    {"title": "Race in cache write", "severity": "P2",
-     "file": "app/cache.py", "body": "Take the lock before writing the shared dict."},
-    {"title": "Typo in log message", "severity": "P3",
-     "file": null, "body": "s/recieved/received/"}
-  ],
-  "memory_suggestions": []
-}
-END_REVIEW_FIX_ISSUES_JSON
-"""
-
-
-def test_parse_findings_structured_json() -> None:
-    findings = review_push.parse_findings(STRUCTURED_REVIEW)
-    assert len(findings) == 3
-
-    assert findings[0]["severity"] == "critical"  # P1 → critical
-    assert findings[0]["category"] == "blocked"
-    assert "Null deref on missing config" in findings[0]["description"]
-    assert "app/main.py" in findings[0]["description"]
-    assert findings[0]["suggested_fix"] == (
-        "Guard cfg before cfg.get() or it crashes on fresh installs."
-    )
-
-    assert findings[1]["severity"] == "major"     # P2 → major
-    assert findings[2]["severity"] == "minor"     # P3 → minor
-    assert findings[1]["category"] == "ac"
-    assert findings[2]["category"] == "ac"
-    assert findings[2]["suggested_fix"] == "s/recieved/received/"
-
-
-def test_parse_findings_p0_and_unknown_severity() -> None:
-    text = (
-        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
-        '{"fix_issues": [{"title": "Boom", "severity": "P0", "body": "fix"},'
-        ' {"title": "Meh", "severity": "wat", "body": ""}],'
-        ' "memory_suggestions": []}\n'
-        "END_REVIEW_FIX_ISSUES_JSON\n"
-    )
-    findings = review_push.parse_findings(text)
-    assert findings[0]["severity"] == "critical"  # P0 → critical
-    assert findings[0]["category"] == "blocked"
-    assert findings[1]["severity"] == "minor"     # other → minor
-    assert findings[1]["category"] == "ac"
-    assert findings[1]["suggested_fix"] == "Meh"  # falls back to title
-
-
-def test_parse_findings_assigns_evidence_categories() -> None:
-    text = (
-        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
-        '{"fix_issues": ['
-        '{"title": "Coverage missing", "severity": "P2", "body": "CI test coverage failed"},'
-        '{"title": "Screenshot absent", "severity": "P3", "body": "UI visual evidence is missing"},'
-        '{"title": "Sources unclear", "severity": "P3", "body": "Add citations to source context"},'
-        '{"title": "Acceptance criteria gap", "severity": "P3", "body": "Map AC2 explicitly"}'
-        '], "memory_suggestions": []}\n'
-        "END_REVIEW_FIX_ISSUES_JSON\n"
-    )
-    findings = review_push.parse_findings(text)
-    assert [f["category"] for f in findings] == ["tests", "visual", "citations", "ac"]
-
-
-def test_parse_findings_structured_empty_fix_issues_is_clean() -> None:
-    text = (
-        "All good.\n"
-        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
-        '{"fix_issues": [], "memory_suggestions": []}\n'
-        "END_REVIEW_FIX_ISSUES_JSON\n"
-    )
-    assert review_push.parse_findings(text) == []
-
-
-# ---------------------------------------------------------------------------
-# parse_findings — messy prose review (fallback)
-# ---------------------------------------------------------------------------
-
-
-MESSY_PROSE_REVIEW = """\
-Review notes (no machine block, agent went off-script):
-
-This PR has a blocking problem. P1: the retry loop in worker.py never
-backs off, so a flaky upstream hammers the API until the rate limiter
-bans us. Must fix before merge.
-"""
-
-
-def test_parse_findings_prose_fallback_single_finding() -> None:
-    findings = review_push.parse_findings(MESSY_PROSE_REVIEW)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f["severity"] == "critical"
-    assert f["category"] == "blocked"
-    assert "retry loop in worker.py" in f["description"]
-    assert f["suggested_fix"]  # non-empty how-to-fix text
-
-
-def test_parse_findings_prose_fallback_truncates_long_text() -> None:
-    long_text = "blocking problem: " + "x" * 5000
-    findings = review_push.parse_findings(long_text)
-    assert len(findings) == 1
-    assert len(findings[0]["description"]) <= 1001  # limit + ellipsis
-
-
-# ---------------------------------------------------------------------------
-# parse_findings — clean pass (empty)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_findings_empty_text() -> None:
-    assert review_push.parse_findings("") == []
-    assert review_push.parse_findings("   \n  ") == []
-
-
-def test_parse_findings_clean_prose_pass() -> None:
-    text = "Reviewed the diff carefully. No blocking issues found. LGTM."
-    assert review_push.parse_findings(text) == []
-
-
-# ---------------------------------------------------------------------------
-# push_review_gate includes parsed findings
-# ---------------------------------------------------------------------------
-
-
-def test_push_includes_findings_from_review_text(tmp_path: Path, monkeypatch) -> None:
-    _write_server_json(tmp_path)
-    captured: dict = {}
-
-    def fake_urlopen(req, timeout):
-        captured["body"] = json.loads(req.data)
-        return FakeResp()
-
-    monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
-
+def test_build_gate_payload_uses_objective_status():
     gate = ObjectiveGateResult("fail", ["CI check 'test' failed"])
-    review_push.push_review_gate(tmp_path, "run-f", 1, gate,
-                                 review_text=STRUCTURED_REVIEW)
-
-    findings = captured["body"]["findings"]
-    assert len(findings) == 3
-    assert findings[0]["severity"] == "critical"
-    assert findings[0]["category"] == "blocked"
-    assert {"severity", "category", "description", "suggested_fix"} <= set(findings[0])
-
-
-def test_push_findings_default_empty(tmp_path: Path, monkeypatch) -> None:
-    _write_server_json(tmp_path)
-    captured: dict = {}
-
-    def fake_urlopen(req, timeout):
-        captured["body"] = json.loads(req.data)
-        return FakeResp()
-
-    monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
-
-    gate = ObjectiveGateResult("pass", [])
-    review_push.push_review_gate(tmp_path, "run-g", 1, gate)
-    assert captured["body"]["findings"] == []
-
-
-# ---------------------------------------------------------------------------
-# build_gate_payload — new function tests (ADR 0007 realignment)
-# ---------------------------------------------------------------------------
-
-
-def test_build_gate_payload_uses_objective_status_and_advisory_findings():
-    gate = ObjectiveGateResult("fail", ["CI check 'test' failed"])
-    review_text = (
-        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
-        '{"fix_issues": [{"title":"x","severity":"P2","file":"a.py","body":"b"}]}\n'
-        "END_REVIEW_FIX_ISSUES_JSON\n"
-    )
     payload = review_push.build_gate_payload(
-        repository_id="r", run_id="run1", round_no=1, gate=gate, review_text=review_text
+        repository_id="r", run_id="run1", round_no=1, gate=gate
     )
     assert payload["status"] == "failed"                      # from objective gate
     assert payload["blocking_reasons"] == ["CI check 'test' failed"]
-    assert len(payload["findings"]) == 1                       # advisory, from review
-    assert payload["findings"][0]["severity"] == "major"
+    assert "findings" not in payload
 
 
 def test_build_gate_payload_passed_status():
     gate = ObjectiveGateResult("pass", [])
     payload = review_push.build_gate_payload(
-        repository_id="r", run_id="run1", round_no=1, gate=gate, review_text=""
+        repository_id="r", run_id="run1", round_no=1, gate=gate
     )
     assert payload["status"] == "passed" and payload["blocking_reasons"] == []
 
@@ -413,8 +227,12 @@ def test_build_gate_payload_passed_status():
 # ---------------------------------------------------------------------------
 
 
-def _make_outcome_with_memory(suggestions) -> ReviewOutcome:
-    return ReviewOutcome(findings=[], memory_suggestions=suggestions)
+def _make_outcome_with_memory(suggestions) -> SimpleNamespace:
+    """Duck-typed stand-in for a review outcome — extract_memory_suggestions
+    and push_memory_items only ever read ``.memory_suggestions`` (see
+    review_push.py; the ``ReviewOutcome`` dataclass this used to build lived
+    in agentrail.afk.review, deleted with the Arc B reviewer-of-record wave)."""
+    return SimpleNamespace(memory_suggestions=suggestions)
 
 
 def test_extract_memory_suggestions_empty_list() -> None:

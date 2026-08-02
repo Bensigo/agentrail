@@ -16,12 +16,13 @@ import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
-// Shared tier data (subscription-platform slice 9, Task 2 — owner ruling
-// 2026-08-02: "in the landing page we should have our pricing"). Same
-// TIERS array the /pricing page renders — see ./pricing/tiers.ts's own
-// doc-comment for why the data lives in its own module rather than on
-// either page.tsx file.
-import { TIERS } from "./pricing/tiers";
+// Shared tier card grid (subscription-platform slice 10, Task 1 — owner
+// feedback 2026-08-02: the landing must show the FULL pricing cards, the
+// same presentation /pricing renders, not slice 9's compact one-line tier
+// summaries). Same TierCards component /pricing renders — see
+// ./pricing/tier-cards.tsx's own doc-comment for why the grid lives in its
+// own module rather than on either page.tsx file.
+import { TierCards } from "./pricing/tier-cards";
 
 
 /**
@@ -50,26 +51,6 @@ const HOW_WE_WORK = [
     line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",
   },
 ];
-
-/**
- * Landing §6b's per-tier pricing-line tail (subscription-platform slice 9,
- * Task 2). `Tier` (`./pricing/tiers.ts`) carries `seats` as prose for the
- * /pricing page's own table cell ("Up to 4", "Up to 10", "Custom") — not a
- * raw number — so there is no numeric field to derive `up to ${n} people`
- * from without re-parsing a string. A tiny map keyed by tier name is the
- * least-duplicative honest option: it restates the SAME two numbers
- * tiers.ts already carries (4, 10) as landing prose, rather than inventing
- * fresh ones; `pricing-copy.test.ts` cross-checks both digits against
- * tiers.ts's own `seats` field so this map can't silently drift from it.
- * Enterprise has no public price (see `ENTERPRISE_CONTACT_EMAIL` in
- * `./pricing/page.tsx`), so its render below skips the price segment
- * entirely and this map supplies its whole line tail: "custom pricing".
- */
-const TIER_LANDING_TAIL: Record<string, string> = {
-  Starter: "up to 4 people",
-  Growth: "up to 10 people",
-  Enterprise: "custom pricing",
-};
 
 /**
  * The secondary sign-in path (controller ruling, #1279 PR ①: "GitHub sign-in
@@ -348,7 +329,17 @@ export default async function LandingPage() {
           same category as the retired heading/claim, not approval-copy
           slice 6 owns, so they're rewritten too, in this page's own
           register (§6b stays declarative "you"-address, distinct from
-          HOW_WE_WORK's first-person Jace voice above). */}
+          HOW_WE_WORK's first-person Jace voice above). Slice 10, Task 1
+          (owner feedback 2026-08-02): the pricing itself now renders as
+          the SAME full cards /pricing shows (TierCards,
+          ./pricing/tier-cards.tsx) instead of slice 9's compact one-line
+          summaries. The card grid sits as a SIBLING of the max-w-[560px]
+          div below, not nested inside it — a narrower max-width ancestor
+          caps every descendant's rendered width no matter what max-w a
+          child itself carries, so the only way to actually reach ~960px is
+          to escape that ancestor. /pricing's own page.tsx brackets this
+          same grid between two max-w-[560px] elements for the identical
+          reason; this section repeats that narrow/wide/narrow shape. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[560px]">
           <Reveal>
@@ -381,48 +372,29 @@ export default async function LandingPage() {
             ))}
           </ol>
           <Reveal delay={240}>
-            <div className="mt-10 flex flex-col items-center gap-4 text-center">
-              <p className="text-[var(--gray-11)]">
-                One shipped PR pays for the month.
-              </p>
-              {/* Tier pricing lines (subscription-platform slice 9, Task 2 —
-                  owner ruling 2026-08-02: "in the landing page we should
-                  have our pricing"). Same TIERS the /pricing page renders
-                  (./pricing/tiers.ts) — one array feeds both surfaces, so a
-                  price change can't drift between them. Enterprise has no
-                  public price, so its line skips the price segment; see
-                  TIER_LANDING_TAIL's own doc-comment for the seats-count
-                  derivation. */}
-              <div className="flex flex-col gap-1">
-                {TIERS.map((tier) => {
-                  const isEnterprise = tier.name === "Enterprise";
-                  return (
-                    <p key={tier.name} className="text-[var(--gray-11)]">
-                      {tier.name} ·{" "}
-                      {!isEnterprise && (
-                        <>
-                          <span className="font-mono">{tier.price}</span> ·{" "}
-                        </>
-                      )}
-                      {TIER_LANDING_TAIL[tier.name]}
-                    </p>
-                  );
-                })}
-              </div>
-              {/* Landing honesty rule (#1415) — ungated per the 2026-08-02
-                  owner ruling: the /pricing page's own Live/Preview chip
-                  (./pricing/page.tsx) already carries the payment-honesty
-                  disclosure, so this link no longer needs its own gate on
-                  top of the tier lines above. */}
-              <Link
-                href="/pricing"
-                className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
-              >
-                See exact pricing
-              </Link>
-            </div>
+            <p className="mt-10 text-center text-[var(--gray-11)]">
+              One shipped PR pays for the month.
+            </p>
           </Reveal>
         </div>
+        <Reveal delay={310}>
+          <div className="mx-auto mt-10 max-w-[960px]">
+            <TierCards />
+          </div>
+        </Reveal>
+        {/* Landing honesty rule (#1415) — ungated per the 2026-08-02 owner
+            ruling: the /pricing page's own Live/Preview chip
+            (./pricing/page.tsx) already carries the payment-honesty
+            disclosure, so this link no longer needs its own gate on top of
+            the tier cards above. */}
+        <Reveal delay={380} className="mx-auto mt-6 max-w-[560px] text-center">
+          <Link
+            href="/pricing"
+            className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+          >
+            See exact pricing
+          </Link>
+        </Reveal>
       </section>
 
       {/* 7 — Closing CTA + minimal footer. Mascot appearance 2 of 2 — Jace

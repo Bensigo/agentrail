@@ -16,7 +16,12 @@ import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
-import { isPricingClaimLive } from "./_pricing-gate";
+// Shared tier data (subscription-platform slice 9, Task 2 — owner ruling
+// 2026-08-02: "in the landing page we should have our pricing"). Same
+// TIERS array the /pricing page renders — see ./pricing/tiers.ts's own
+// doc-comment for why the data lives in its own module rather than on
+// either page.tsx file.
+import { TIERS } from "./pricing/tiers";
 
 
 /**
@@ -45,6 +50,26 @@ const HOW_WE_WORK = [
     line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",
   },
 ];
+
+/**
+ * Landing §6b's per-tier pricing-line tail (subscription-platform slice 9,
+ * Task 2). `Tier` (`./pricing/tiers.ts`) carries `seats` as prose for the
+ * /pricing page's own table cell ("Up to 4", "Up to 10", "Custom") — not a
+ * raw number — so there is no numeric field to derive `up to ${n} people`
+ * from without re-parsing a string. A tiny map keyed by tier name is the
+ * least-duplicative honest option: it restates the SAME two numbers
+ * tiers.ts already carries (4, 10) as landing prose, rather than inventing
+ * fresh ones; `pricing-copy.test.ts` cross-checks both digits against
+ * tiers.ts's own `seats` field so this map can't silently drift from it.
+ * Enterprise has no public price (see `ENTERPRISE_CONTACT_EMAIL` in
+ * `./pricing/page.tsx`), so its render below skips the price segment
+ * entirely and this map supplies its whole line tail: "custom pricing".
+ */
+const TIER_LANDING_TAIL: Record<string, string> = {
+  Starter: "up to 4 people",
+  Growth: "up to 10 people",
+  Enterprise: "custom pricing",
+};
 
 /**
  * The secondary sign-in path (controller ruling, #1279 PR ①: "GitHub sign-in
@@ -360,20 +385,41 @@ export default async function LandingPage() {
               <p className="text-[var(--gray-11)]">
                 One shipped PR pays for the month.
               </p>
-              {/* Landing honesty rule (#1415): this link is the actual
-                  pricing CLAIM ("here's what you pay, right now") — unlike
-                  the plain step description above, which just states a
-                  future model. Gated OFF by default; the owner flips
-                  NEXT_PUBLIC_BILLING_VERIFIED_LIVE once AC1/AC2 are
-                  browser-verified on prod (see ./_pricing-gate.ts). */}
-              {isPricingClaimLive() && (
-                <Link
-                  href="/pricing"
-                  className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
-                >
-                  See exact pricing
-                </Link>
-              )}
+              {/* Tier pricing lines (subscription-platform slice 9, Task 2 —
+                  owner ruling 2026-08-02: "in the landing page we should
+                  have our pricing"). Same TIERS the /pricing page renders
+                  (./pricing/tiers.ts) — one array feeds both surfaces, so a
+                  price change can't drift between them. Enterprise has no
+                  public price, so its line skips the price segment; see
+                  TIER_LANDING_TAIL's own doc-comment for the seats-count
+                  derivation. */}
+              <div className="flex flex-col gap-1">
+                {TIERS.map((tier) => {
+                  const isEnterprise = tier.name === "Enterprise";
+                  return (
+                    <p key={tier.name} className="text-[var(--gray-11)]">
+                      {tier.name} ·{" "}
+                      {!isEnterprise && (
+                        <>
+                          <span className="font-mono">{tier.price}</span> ·{" "}
+                        </>
+                      )}
+                      {TIER_LANDING_TAIL[tier.name]}
+                    </p>
+                  );
+                })}
+              </div>
+              {/* Landing honesty rule (#1415) — ungated per the 2026-08-02
+                  owner ruling: the /pricing page's own Live/Preview chip
+                  (./pricing/page.tsx) already carries the payment-honesty
+                  disclosure, so this link no longer needs its own gate on
+                  top of the tier lines above. */}
+              <Link
+                href="/pricing"
+                className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+              >
+                See exact pricing
+              </Link>
             </div>
           </Reveal>
         </div>

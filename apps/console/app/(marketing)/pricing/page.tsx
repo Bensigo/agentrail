@@ -2,6 +2,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { LIGHT_SURFACE } from "../../../lib/light-surface";
 import { isPricingClaimLive } from "../_pricing-gate";
+// Tier data (subscription-platform slice 9, Task 2): extracted verbatim
+// into its own module so the landing page can share it too — a page.tsx
+// file can't carry named exports (Next route-type contract), so the data
+// can't live here anymore. See ./tiers.ts's own doc-comment.
+import { TIERS } from "./tiers";
 
 export const metadata = {
   title: "Pricing — Jace",
@@ -13,75 +18,6 @@ const STEPS = [
   "Pick a plan: Starter, Growth, or Enterprise.",
   "Talk to Jace on Telegram, Slack, or Discord.",
   "Approve the work. It ships as a pull request.",
-];
-
-type Tier = {
-  name: string;
-  price: string;
-  seats: string;
-  included: string;
-  /** Feature-line vocabulary — spec §10, byte-exact per subscription-
-   *  platform slice 7's Global Constraints (see the doc-comment below). */
-  features: string[];
-  ctaLabel: string;
-};
-
-/**
- * Subscription-platform spec §2 commercial packaging (`docs/superpowers/
- * specs/2026-07-29-subscription-platform-design.md`). Seats and capacity
- * match `lib/policy/plan-policies.ts`'s `PLAN_POLICIES` as of this write
- * (starter: 4 seats / 350 capacity; growth: 10 seats / 1,000 capacity) —
- * spec §2 calls these "launch priors, calibrated monthly", so keep this
- * table in sync by hand if that file's numbers move. Dollar prices are NOT
- * a shared code constant: Stripe owns the actual recurring Price objects
- * (`lib/billing/stripe-plans.ts` maps plan -> Price id only, never a
- * dollar amount), so $80/$200 are hand-set here to match the Stripe
- * dashboard and the spec's own table. Enterprise has no public price or
- * checkout (spec §2: "no public pricing and no checkout flow — it is a
- * conversation") — its CTA below is a `mailto:` link, never a checkout
- * link; see `ENTERPRISE_CONTACT_EMAIL`.
- *
- * `features` is the tier feature-line vocabulary (subscription-platform
- * slice 7 Global Constraints, spec §10: "verbatim vocabulary") — copied
- * byte-exact, including "everything in Starter" as Growth's first line and
- * the deliberate lowercase-led phrasing of the rest (these read as list
- * items, not sentence openers). `ctaLabel` is spelled out per tier rather
- * than built from `` `Start with ${tier.name}` `` at render time, so the
- * literal strings "Start with Starter" / "Start with Growth" exist in this
- * file's own source text, not just in the rendered DOM —
- * `pricing-copy.test.ts` pins them as raw source text (see that file's own
- * doc-comment on why raw text), which a runtime-built string can't satisfy.
- */
-const TIERS: Tier[] = [
-  {
-    name: "Starter",
-    price: "$80/mo",
-    seats: "Up to 4",
-    included: "≈350 engineering tasks/mo",
-    features: ["PR reviews", "bug fixes", "documentation", "everyday engineering"],
-    ctaLabel: "Start with Starter",
-  },
-  {
-    name: "Growth",
-    price: "$200/mo",
-    seats: "Up to 10",
-    included: "≈1,000 engineering tasks/mo",
-    features: [
-      "everything in Starter",
-      "architecture assistance",
-      "large refactors",
-      "premium reasoning",
-    ],
-    ctaLabel: "Start with Growth",
-  },
-  {
-    name: "Enterprise",
-    price: "Contact us",
-    seats: "Custom",
-    included: "Custom",
-    features: ["custom AI policies", "SSO", "self-hosting", "SLA", "dedicated support"],
-    ctaLabel: "Contact us",
-  },
 ];
 
 /**

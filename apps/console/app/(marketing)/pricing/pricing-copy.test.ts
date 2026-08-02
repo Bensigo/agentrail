@@ -42,7 +42,18 @@ function stripComments(source: string): string {
     .replace(/^\s*\/\/.*$/gm, ""); // line comments
 }
 
-const pricingSource = stripComments(readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8"));
+// Subscription-platform slice 9, Task 2: the Tier type + TIERS array moved
+// verbatim out of page.tsx into a sibling ./tiers.ts module (so the landing
+// page can import the same data — a page.tsx file can't carry named
+// exports, per Next's route-type contract). Every `pricingSource.toContain`
+// pin below that targets tier data (prices, feature vocabulary, CTA
+// labels) still needs to see that text, so `pricingSource` is now the
+// concatenation of both files — from this test's perspective, "the pricing
+// page's copy" is page.tsx + its data module together, and the extraction
+// changed neither file's rendered/data content (only where it lives).
+const pricingPageSource = readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8");
+const tiersSource = readFileSync(resolve(PRICING_DIR, "tiers.ts"), "utf8");
+const pricingSource = stripComments(`${pricingPageSource}\n${tiersSource}`);
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
 // Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
 // only `_craft-pins.test.ts` reads it, and only for the mechanical style
@@ -255,5 +266,71 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingIdx).toBeGreaterThan(-1);
     expect(signInIdx).toBeGreaterThan(-1);
     expect(pricingIdx).toBeLessThan(signInIdx);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Subscription-platform slice 9, Task 2 (owner ruling 2026-08-02: "in the
+// landing page we should have our pricing") — §6b now renders the three
+// tier lines inline instead of only linking out to /pricing. Render-site
+// anchored (this repo's slice-7 lesson: a pin that only matches an
+// orphaned data declaration, and not the actual JSX that consumes it, is a
+// defect) — every check below is scoped to the real block that maps over
+// TIERS, not just "this text exists somewhere in the file". The fully
+// assembled DOM strings ("Starter · $80/mo · up to 4 people") can't be
+// pinned as contiguous raw text — they're assembled from `{tier.name}` /
+// `{tier.price}` expressions at render time, and this repo has no DOM
+// render harness (see _craft-pins.test.ts's own doc-comment) — so this
+// splits the guarantee across (a) the render site really consumes the
+// tier data and the seats-descriptor map, and (b) that map carries the
+// exact pinned phrasing, keyed to the right tier name.
+// -----------------------------------------------------------------------
+
+describe("landing §6b renders the tier pricing lines inline (subscription-platform slice 9, Task 2)", () => {
+  const tiersMapIdx = landingSource.indexOf("TIERS.map(");
+  const renderBlock = landingSource.slice(tiersMapIdx, tiersMapIdx + 700);
+
+  it("the render site actually maps over the shared TIERS array (not a hardcoded copy)", () => {
+    expect(tiersMapIdx).toBeGreaterThan(-1);
+  });
+
+  it("the render site reads the tier's own name and price, not hardcoded literals", () => {
+    expect(renderBlock).toMatch(/\{tier\.name\}/);
+    expect(renderBlock).toMatch(/\{tier\.price\}/);
+  });
+
+  it("the render site's price sits in font-mono (TASTE mono-on-data)", () => {
+    const priceIdx = renderBlock.indexOf("{tier.price}");
+    expect(priceIdx).toBeGreaterThan(-1);
+    expect(renderBlock.slice(Math.max(0, priceIdx - 100), priceIdx)).toMatch(/font-mono/);
+  });
+
+  it("the render site's separator is a middle dot, never an em-dash", () => {
+    expect(renderBlock).toContain("·");
+    expect(renderBlock).not.toContain("—");
+  });
+
+  it("the render site actually consumes the seats-descriptor map — not an orphaned declaration", () => {
+    expect(renderBlock).toContain("TIER_LANDING_TAIL[tier.name]");
+  });
+
+  it("the seats-descriptor map keys the exact pinned phrasing to the right tier name", () => {
+    expect(landingSource).toMatch(/Starter:\s*"up to 4 people"/);
+    expect(landingSource).toMatch(/Growth:\s*"up to 10 people"/);
+    expect(landingSource).toMatch(/Enterprise:\s*"custom pricing"/);
+  });
+
+  it("the seats-descriptor numbers match tiers.ts's own seats field — no drift between the two files", () => {
+    const starterSeats = tiersSource.match(/name: "Starter"[\s\S]*?seats: "Up to (\d+)"/)?.[1];
+    const growthSeats = tiersSource.match(/name: "Growth"[\s\S]*?seats: "Up to (\d+)"/)?.[1];
+    expect(starterSeats).toBe("4");
+    expect(growthSeats).toBe("10");
+    expect(landingSource).toContain(`up to ${starterSeats} people`);
+    expect(landingSource).toContain(`up to ${growthSeats} people`);
+  });
+
+  it("the ungated pricing link still renders (owner ruling 2026-08-02: no isPricingClaimLive gate)", () => {
+    expect(landingSource).toContain("See exact pricing");
+    expect(landingSource).not.toContain("isPricingClaimLive");
   });
 });

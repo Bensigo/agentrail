@@ -206,6 +206,11 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
   });
 
+  it("§6b's tier price renders in font-mono (subscription-platform slice 9, Task 2)", () => {
+    const source = readSibling("page.tsx");
+    expect(monoAppliesBefore(source, "{tier.price}")).toBe(true);
+  });
+
   it("no decorative index numerals anywhere on the page (owner ruling 2026-07-22: rendered {i + 1} counters are slop-catalog LS-5)", () => {
     const source = readSibling("page.tsx");
     expect(source).not.toContain("{i + 1}");

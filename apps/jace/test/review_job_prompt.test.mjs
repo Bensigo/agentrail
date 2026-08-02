@@ -115,3 +115,20 @@ test("REVIEW_JOB_RESULT_SCHEMA: posted's description instructs failing loudly ra
   const desc = REVIEW_JOB_RESULT_SCHEMA.properties.posted.description ?? "";
   assert.match(desc, /fail|propagat|do not return/i);
 });
+
+// ---------------------------------------------------------------------------
+// evidenceKeys — B2a §1 Task 3 (spec
+// docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md).
+// OPTIONAL: not in `required` (pinned above as "exactly the five brief
+// fields") — a model that never captured evidence must still validate
+// against this schema exactly as it did before this field existed.
+// ---------------------------------------------------------------------------
+
+test("REVIEW_JOB_RESULT_SCHEMA: evidenceKeys is an array of strings", () => {
+  assert.equal(REVIEW_JOB_RESULT_SCHEMA.properties.evidenceKeys.type, "array");
+  assert.equal(REVIEW_JOB_RESULT_SCHEMA.properties.evidenceKeys.items.type, "string");
+});
+
+test("REVIEW_JOB_RESULT_SCHEMA: evidenceKeys is NOT required — additive, absent must still validate", () => {
+  assert.ok(!REVIEW_JOB_RESULT_SCHEMA.required.includes("evidenceKeys"));
+});

@@ -1,0 +1,34 @@
+-- Arc D's attachment point: `review_jobs.evidence_keys` (B2a §1 Task 3, spec
+-- docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md; plan
+-- docs/superpowers/plans/2026-08-02-b2a-visual-evidence.md). Task 2's
+-- `review-evidence` upload route (apps/console/app/api/v1/runner/review-evidence/route.ts)
+-- returns an object-store `key` per uploaded screenshot (scheme:
+-- `lib/artifacts/store.ts`'s `artifactKey`). This column is where the FULL
+-- SET of keys a completed review actually cited comes to rest —
+-- `completeReviewJob` (queries/review_jobs.ts) writes it on the `posted`
+-- outcome only, when the worker's structured result carries an
+-- `evidenceKeys` array — a durable per-job record Arc D can later attach to
+-- a Change Record, independent of the artifact store's own signed-URL TTL.
+--
+-- NULLABLE, NO DEFAULT, bare `jsonb` — mirrors
+-- `0009_add_run_context_evidence.sql`'s `runs.selected_sources` column
+-- exactly (same shape: an optional jsonb array bolted onto an
+-- already-populated table with no backfill). Deliberately NOT
+-- `.default('[]')`: a review posted with no evidence (no behavioral ACs, no
+-- reachable preview URL, or simply a worker/route that doesn't pass
+-- `evidenceKeys`) must read back NULL, not `[]`, so a later reader can tell
+-- "no evidence was ever attempted" apart from "evidence was attempted and
+-- the set happens to be empty." ADDITIVE: every `completeReviewJob` call
+-- made before this task (and any future call that simply omits
+-- `evidenceKeys`) leaves this column untouched at NULL — byte-identical to
+-- today.
+--
+-- NOTE ON THIS FILE'S PROVENANCE: hand-authored, NOT `drizzle-kit
+-- generate`d — the same pre-existing `meta/` snapshot-chain gap documented
+-- in 0046_github_app_installation.sql, 0064_slack_installations.sql, and
+-- 0066_review_jobs.sql's own provenance notes (the snapshot chain only
+-- covers migrations 0000-0003, so `generate` has no accurate baseline to
+-- diff against and fails outright outside a TTY). Follows
+-- 0065_slack_installations_workspace.sql's own `ALTER TABLE ... ADD COLUMN
+-- IF NOT EXISTS` shape, so this file is safe to re-run.
+ALTER TABLE "review_jobs" ADD COLUMN IF NOT EXISTS "evidence_keys" jsonb;

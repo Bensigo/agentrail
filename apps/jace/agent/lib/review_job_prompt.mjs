@@ -69,6 +69,18 @@ export function reviewJobPrompt(job) {
  * (2026-08-02; see this module's header comment) — IS now read: the core
  * completes `outcome:"failed"` instead of `"posted"` whenever this field is
  * anything but a literal `true`.
+ *
+ * `evidenceKeys` (B2a §1 Task 3, spec
+ * docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md) — NEW,
+ * OPTIONAL (deliberately absent from `required`): the object-store keys
+ * (Task 2's `review-evidence` upload route) the reviewer subagent's relayed
+ * QA evidence actually cited, if any. review_job_worker.core.mjs passes
+ * `result.evidenceKeys` through to `complete()` unchanged, ONLY when
+ * present, on the `posted` path — see that module's own doc-comment. This
+ * task deliberately does NOT touch `reviewJobPrompt`'s own instruction text
+ * above (which fields to ask the model to RETURN is Task 6's "one sentence"
+ * change, per the B2a plan) — only this schema gains the field, so a model
+ * that has no reason to populate it yet still validates cleanly.
  */
 export const REVIEW_JOB_RESULT_SCHEMA = {
   type: "object",
@@ -99,6 +111,14 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
     summaryLine: {
       type: "string",
       description: "One line for the owner: repo, PR, verdict, and the judgment verdicts.",
+    },
+    evidenceKeys: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "The object-store keys of every per-AC evidence screenshot this " +
+        "review cited, if any. Omit this field entirely when no evidence " +
+        "was captured — do not return an empty array to mean the same thing.",
     },
   },
 };

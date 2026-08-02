@@ -195,6 +195,50 @@ test('happy path: claims FIRST (no args), opens a session only for the claimed j
 });
 
 // ---------------------------------------------------------------------------
+// tick() — B2a §1 Task 3: result.evidenceKeys maps through complete() on the
+// posted path, additively (spec
+// docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md). The
+// happy-path test above (unmodified) is the additive proof: a result with no
+// evidenceKeys at all still produces that exact 5-key complete() call, no
+// sixth key riding along — Node's `assert.deepEqual` (strict mode) would
+// fail that test the instant an `evidenceKeys: undefined` key rode
+// unconditionally onto every completion, which is exactly why the mapping
+// below is conditional rather than a bare passthrough.
+// ---------------------------------------------------------------------------
+
+test('happy path WITH evidenceKeys: a structured result carrying evidenceKeys passes them through to complete() unchanged', async () => {
+  const job = makeJob();
+  const structured = makeResult({ evidenceKeys: ["review-evidence/ws-1/ada__widgets/7/abc123/ac-1/1.png"] });
+  const completeArgs = [];
+
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => job,
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "session-evidence-1",
+        send: async () => structured,
+        close: async () => {},
+      }),
+    }),
+  );
+
+  const outcome = await worker.tick();
+
+  assert.equal(outcome, "done");
+  assert.deepEqual(completeArgs, [
+    {
+      jobId: "job-1",
+      outcome: "posted",
+      postedReviewUrl: structured.reviewUrl,
+      verdict: structured.verdict,
+      summaryLine: structured.summaryLine,
+      evidenceKeys: structured.evidenceKeys,
+    },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // tick() — bind() fails: NOT reported via complete()
 // ---------------------------------------------------------------------------
 

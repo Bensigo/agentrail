@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 
@@ -69,6 +69,19 @@ export const reviewJobs = pgTable(
     // Set only for state='skipped' (e.g. "daily budget exhausted") — never
     // silent (spec §2 "Budget").
     skipReason: text("skip_reason"),
+    // B2a §1 Task 3 (spec docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md):
+    // the object-store keys (Task 2's `review-evidence` upload route,
+    // `lib/artifacts/store.ts`'s `artifactKey` scheme) a completed review
+    // actually cited — Arc D's later attachment point to a Change Record.
+    // Written by `completeReviewJob` on the `posted` outcome ONLY, when the
+    // worker's structured result carries an `evidenceKeys` array; every
+    // other path (no evidence attempted, or the calling worker/route simply
+    // omits the field) leaves this column NULL, never `[]` — see migration
+    // 0067's own doc-comment for why NULL and empty-array must stay
+    // distinguishable. Nullable, no default, mirroring `runs.ts`'s
+    // `selectedSources` precedent (bare optional jsonb array bolted onto an
+    // already-populated table).
+    evidenceKeys: jsonb("evidence_keys").$type<string[]>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

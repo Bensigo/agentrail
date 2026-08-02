@@ -119,7 +119,7 @@ const MAX_SUMMARY_IN_ERROR_CHARS = 200;
  *   bind: (args: { jobId: string, eveSessionId: string }) => Promise<void>,
  *   complete: (args: { jobId: string, outcome: "posted"|"failed",
  *     postedReviewUrl?: string|null, verdict?: string, summaryLine?: string,
- *     error?: string }) => Promise<void>,
+ *     error?: string, evidenceKeys?: string[] }) => Promise<void>,
  *   openSession: () => Promise<EveSession>,
  *   promptFor: (job: ReviewJob) => string,
  *   resultSchema: unknown,
@@ -222,20 +222,36 @@ export function createReviewJobWorker({
         try {
           // `result` is the model's structured output, shaped by `resultSchema`
           // (Task 6's REVIEW_JOB_RESULT_SCHEMA: {posted, reviewUrl, verdict,
-          // blockers, summaryLine}). Only `reviewUrl` gets renamed — to
-          // `postedReviewUrl`, matching `complete`'s own documented shape and
-          // the console's complete-route body (Arc B plan Task 4) —
-          // `verdict`/`summaryLine` pass through unchanged. `blockers` is
-          // deliberately dropped here: it is not part of `complete`'s contract
-          // (only `jobId, outcome, postedReviewUrl, verdict, summaryLine,
-          // error`), so nothing in this module ever reads it.
-          await complete({
+          // blockers, summaryLine}, +B2a §1 Task 3's optional `evidenceKeys`).
+          // Only `reviewUrl` gets renamed — to `postedReviewUrl`, matching
+          // `complete`'s own documented shape and the console's complete-route
+          // body (Arc B plan Task 4) — `verdict`/`summaryLine` pass through
+          // unchanged. `blockers` is deliberately dropped here: it is not part
+          // of `complete`'s contract (only `jobId, outcome, postedReviewUrl,
+          // verdict, summaryLine, error, evidenceKeys`), so nothing in this
+          // module ever reads it.
+          //
+          // `evidenceKeys` is added to the call args ONLY when the result
+          // actually carries it (`!== undefined`) — a bare, unconditional
+          // `evidenceKeys: result?.evidenceKeys` would put an
+          // `evidenceKeys: undefined` key on EVERY completion, including
+          // every result that never mentions evidence at all, changing this
+          // call's shape for every existing caller/test. Conditional
+          // inclusion is what keeps a result with no evidenceKeys producing
+          // the exact same complete() call as before this field existed —
+          // mirrors review_job_console.mjs's own `completeReviewJob`
+          // undefined-omission convention for its other optional fields.
+          const completeArgs = {
             jobId: job.id,
             outcome: "posted",
             postedReviewUrl: result?.reviewUrl,
             verdict: result?.verdict,
             summaryLine: result?.summaryLine,
-          });
+          };
+          if (result?.evidenceKeys !== undefined) {
+            completeArgs.evidenceKeys = result.evidenceKeys;
+          }
+          await complete(completeArgs);
         } catch (err) {
           safeLog("review-job-worker: complete() failed after a posted result", err);
         }

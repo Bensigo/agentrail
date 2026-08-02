@@ -146,7 +146,17 @@
 // nothing for a client to tear down. It exists purely so the core's
 // best-effort `safeClose()` always has something safe to await.
 //
-// *** UNVERIFIED AGAINST A LIVE EVE SERVER ***
+// LIVE-SMOKE STATUS (2026-08-02): VERIFIED end-to-end OUT-OF-PROCESS —
+// scripts/review-worker.mjs against a running `eve start` completed
+// claim -> bootstrap (seconds) -> bind -> real review -> POSTED on a real
+// PR (Bensigo/agentrail#1557, first attempt, ~150s). CRITICAL DEPLOYMENT
+// CONSTRAINT the smoke found: the IN-PROCESS worker (instrumentation-
+// launched, same process as eve) WEDGES — an eve Client calling its own
+// server never sees result() resolve, while an external process against
+// the same server resolves in seconds. Until that eve-level quirk is
+// fixed upstream, JACE_REVIEW_WORKER must run via the standalone
+// entrypoint (scripts/review-worker.mjs) as its OWN process/service,
+// never inside the serving jace process.
 // Everything above (the forced-schema bootstrap, `preserveCompletedSessions`,
 // the strict "completed"-only acceptance, the continuation onto the same
 // session for the real turn) is verified against the installed eve@0.19.0

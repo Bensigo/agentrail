@@ -97,11 +97,26 @@ import type {
  * **strongly recommended**. PKCE protects against authorization code
  * interception if an attacker manages to observe the redirect." Given that
  * emphasis, AND that Cloudflare's own OAuth (a documented future phase,
- * per the coordinator's own scope ruling) REQUIRES PKCE regardless of
- * client type, the generic plumbing (`./pkce.ts`, `mintConnectorOauthState`'s
- * optional 4th arg, `types.ts`'s additive `codeChallenge`/`codeVerifier`
- * fields) is built once, shared, rather than retrofitted per-provider
- * later. This adapter REQUIRES both fields (throws if either is missing —
+ * per the coordinator's own scope ruling) was BELIEVED at the time to
+ * REQUIRE PKCE regardless of client type, the generic plumbing (`./pkce.ts`,
+ * `mintConnectorOauthState`'s optional 4th arg, `types.ts`'s additive
+ * `codeChallenge`/`codeVerifier` fields) is built once, shared, rather than
+ * retrofitted per-provider later.
+ *
+ * CORRECTED (W3-T6, `lib/oauth/cloudflare.ts`'s own doc-comment + live
+ * verification — see `.superpowers/sdd/task-W3T6-report.md`): that belief
+ * about Cloudflare was wrong. Cloudflare's own docs say PKCE is
+ * "Optional/not required" for a server-side confidential client (the exact
+ * category both this console and Railway's own adapter fall into) — REQUIRED
+ * only for a public client with no secret, mirroring THIS adapter's own
+ * "Recommended, not Required" finding almost exactly, not a stricter rule.
+ * Both adapters still send PKCE unconditionally regardless — not because
+ * either vendor's docs mandate it for a confidential client, but as
+ * deliberate defense-in-depth now that the shared plumbing exists; the
+ * doc-comment sentence above is left in place as the historical record of
+ * what motivated building `./pkce.ts` generically in the first place, not
+ * as a current claim about Cloudflare. This adapter REQUIRES both fields
+ * (throws if either is missing —
  * see `authorizeUrl`/`exchange` below) rather than treating them as
  * best-effort: having built the shared plumbing, silently degrading to
  * non-PKCE on a missing field would be a worse, harder-to-notice failure

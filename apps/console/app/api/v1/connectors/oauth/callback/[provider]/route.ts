@@ -28,8 +28,10 @@ import {
 // `oauthAdapterFor`/`oauthConfigFor` must import each provider's adapter
 // module directly (mirrors `runner/evidence/route.ts`'s identical idiom for
 // evidence adapters). W3-T3: `lib/oauth/sentry.ts` registers the same way.
+// W3-T6: `lib/oauth/cloudflare.ts` registers the same way.
 import "../../../../../../../lib/oauth/railway";
 import "../../../../../../../lib/oauth/sentry";
+import "../../../../../../../lib/oauth/cloudflare";
 
 const ADMIN_ROLES = ["owner", "admin"];
 

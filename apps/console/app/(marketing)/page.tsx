@@ -16,7 +16,13 @@ import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
-import { isPricingClaimLive } from "./_pricing-gate";
+// Shared tier card grid (subscription-platform slice 10, Task 1 — owner
+// feedback 2026-08-02: the landing must show the FULL pricing cards, the
+// same presentation /pricing renders, not slice 9's compact one-line tier
+// summaries). Same TierCards component /pricing renders — see
+// ./pricing/tier-cards.tsx's own doc-comment for why the grid lives in its
+// own module rather than on either page.tsx file.
+import { TierCards } from "./pricing/tier-cards";
 
 
 /**
@@ -323,7 +329,17 @@ export default async function LandingPage() {
           same category as the retired heading/claim, not approval-copy
           slice 6 owns, so they're rewritten too, in this page's own
           register (§6b stays declarative "you"-address, distinct from
-          HOW_WE_WORK's first-person Jace voice above). */}
+          HOW_WE_WORK's first-person Jace voice above). Slice 10, Task 1
+          (owner feedback 2026-08-02): the pricing itself now renders as
+          the SAME full cards /pricing shows (TierCards,
+          ./pricing/tier-cards.tsx) instead of slice 9's compact one-line
+          summaries. The card grid sits as a SIBLING of the max-w-[560px]
+          div below, not nested inside it — a narrower max-width ancestor
+          caps every descendant's rendered width no matter what max-w a
+          child itself carries, so the only way to actually reach ~960px is
+          to escape that ancestor. /pricing's own page.tsx brackets this
+          same grid between two max-w-[560px] elements for the identical
+          reason; this section repeats that narrow/wide/narrow shape. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[560px]">
           <Reveal>
@@ -356,27 +372,29 @@ export default async function LandingPage() {
             ))}
           </ol>
           <Reveal delay={240}>
-            <div className="mt-10 flex flex-col items-center gap-4 text-center">
-              <p className="text-[var(--gray-11)]">
-                One shipped PR pays for the month.
-              </p>
-              {/* Landing honesty rule (#1415): this link is the actual
-                  pricing CLAIM ("here's what you pay, right now") — unlike
-                  the plain step description above, which just states a
-                  future model. Gated OFF by default; the owner flips
-                  NEXT_PUBLIC_BILLING_VERIFIED_LIVE once AC1/AC2 are
-                  browser-verified on prod (see ./_pricing-gate.ts). */}
-              {isPricingClaimLive() && (
-                <Link
-                  href="/pricing"
-                  className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
-                >
-                  See exact pricing
-                </Link>
-              )}
-            </div>
+            <p className="mt-10 text-center text-[var(--gray-11)]">
+              One shipped PR pays for the month.
+            </p>
           </Reveal>
         </div>
+        <Reveal delay={310}>
+          <div className="mx-auto mt-10 max-w-[960px]">
+            <TierCards />
+          </div>
+        </Reveal>
+        {/* Landing honesty rule (#1415) — ungated per the 2026-08-02 owner
+            ruling: the /pricing page's own Live/Preview chip
+            (./pricing/page.tsx) already carries the payment-honesty
+            disclosure, so this link no longer needs its own gate on top of
+            the tier cards above. */}
+        <Reveal delay={380} className="mx-auto mt-6 max-w-[560px] text-center">
+          <Link
+            href="/pricing"
+            className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
+          >
+            See exact pricing
+          </Link>
+        </Reveal>
       </section>
 
       {/* 7 — Closing CTA + minimal footer. Mascot appearance 2 of 2 — Jace

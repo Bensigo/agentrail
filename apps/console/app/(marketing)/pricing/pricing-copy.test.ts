@@ -42,7 +42,29 @@ function stripComments(source: string): string {
     .replace(/^\s*\/\/.*$/gm, ""); // line comments
 }
 
-const pricingSource = stripComments(readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8"));
+// Subscription-platform slice 9, Task 2: the Tier type + TIERS array moved
+// verbatim out of page.tsx into a sibling ./tiers.ts module (so the landing
+// page can import the same data — a page.tsx file can't carry named
+// exports, per Next's route-type contract). Every `pricingSource.toContain`
+// pin below that targets tier data (prices, feature vocabulary, CTA
+// labels) still needs to see that text, so `pricingSource` is now the
+// concatenation of both files — from this test's perspective, "the pricing
+// page's copy" is page.tsx + its data module together, and the extraction
+// changed neither file's rendered/data content (only where it lives).
+//
+// Slice 10, Task 1: the tier CARD GRID (CTA classes, ENTERPRISE_CONTACT_
+// EMAIL, the TIERS.map render site itself) made the same move, out of
+// page.tsx into a sibling ./tier-cards.tsx module (so the landing can
+// render the identical cards, not just the same data) — pricingSource
+// gains a third file for the same reason it gained tiers.ts above. Every
+// pin below that anchors a render-site expression (`{tier.ctaLabel}`, the
+// mailto interpolation, `href="/login"`, ...) now finds that text in
+// tier-cards.tsx instead of page.tsx; concatenating keeps the pin text
+// itself unchanged.
+const pricingPageSource = readFileSync(resolve(PRICING_DIR, "page.tsx"), "utf8");
+const tiersSource = readFileSync(resolve(PRICING_DIR, "tiers.ts"), "utf8");
+const tierCardsSource = readFileSync(resolve(PRICING_DIR, "tier-cards.tsx"), "utf8");
+const pricingSource = stripComments(`${pricingPageSource}\n${tiersSource}\n${tierCardsSource}`);
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
 // Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
 // only `_craft-pins.test.ts` reads it, and only for the mechanical style
@@ -255,5 +277,55 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingIdx).toBeGreaterThan(-1);
     expect(signInIdx).toBeGreaterThan(-1);
     expect(pricingIdx).toBeLessThan(signInIdx);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Subscription-platform slice 10, Task 1 (owner feedback 2026-08-02: the
+// landing must show the FULL pricing cards, the same presentation
+// /pricing renders, not slice 9's compact one-line tier summaries) — §6b
+// now renders the shared `TierCards` component instead of mapping over
+// TIERS inline. This retires slice 9's whole "renders the tier pricing
+// lines inline" describe block below it in history: that block's checks
+// (TIERS.map( as a landing render site, the TIER_LANDING_TAIL seats-tail
+// map and its cross-file drift guard, the middle-dot separator) pinned
+// JSX that no longer exists — `<TierCards />` is a single self-closing
+// element, nothing in landing page.tsx maps over TIERS or reads
+// `{tier.price}`/`{tier.name}` directly anymore (see `_craft-pins.test.ts`
+// for the mono-price pin's new home in tier-cards.tsx). Render-site
+// anchored (this repo's slice-7 lesson still applies): the check below is
+// scoped to §6b's own region, not just "this text exists somewhere in the
+// file", so a `<TierCards` reference anywhere else (e.g. an import line)
+// can't satisfy it.
+// -----------------------------------------------------------------------
+
+describe("landing §6b renders the full pricing tier cards (subscription-platform slice 10, Task 1)", () => {
+  // Anchored on the section's own rendered heading, not the "6b — Billing"
+  // JSX comment above it — `landingSource` is comment-STRIPPED (see this
+  // file's own `stripComments`), so a comment-only marker would never be
+  // found here and silently sink this whole describe block's index to -1.
+  const sixBIdx = landingSource.indexOf("One subscription for your whole team");
+  const sixBRegion = landingSource.slice(sixBIdx, sixBIdx + 3000);
+
+  it("§6b's region actually renders TierCards (render-site anchored, not just imported)", () => {
+    expect(sixBIdx).toBeGreaterThan(-1);
+    expect(sixBRegion).toMatch(/<TierCards\s*\/>/);
+  });
+
+  it("landing page.tsx imports TierCards from the shared module (not a hardcoded copy)", () => {
+    expect(landingSource).toContain('import { TierCards } from "./pricing/tier-cards"');
+  });
+
+  it("slice 9's compact one-line tier summaries are gone — no TIERS.map render site, no TIER_LANDING_TAIL map, no leftover seats-tail phrasing", () => {
+    expect(landingSource).not.toContain("TIERS.map(");
+    expect(landingSource).not.toContain("TIER_LANDING_TAIL");
+    expect(landingSource).not.toContain("up to 4 people");
+    expect(landingSource).not.toContain("up to 10 people");
+    expect(landingSource).not.toContain("custom pricing");
+  });
+
+  it("the ungated pricing link still renders (owner ruling 2026-08-02: no isPricingClaimLive gate)", () => {
+    expect(landingSource).toContain("See exact pricing");
+    expect(landingSource).not.toContain("isPricingClaimLive");
   });
 });

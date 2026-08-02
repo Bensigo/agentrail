@@ -7,11 +7,12 @@ import {
   SlackBrand,
   TelegramBrand,
 } from "../../connectors/components/brand-icons";
-import type { GatewayKind, GatewayView } from "./gateway-helpers";
-// Relative (not @/…) because lib/ lives outside app/ or src/, the only roots
-// the @/* alias covers — mirrors gateway-helpers.ts's identical import of
-// lib/telegram-bot and connectors-panel.tsx's import of this same module.
-import { linkedIdentitiesLine } from "../../../../../../lib/linked-identities";
+import {
+  connectedSummaryLine,
+  withInstallWorkspace,
+  type GatewayKind,
+  type GatewayView,
+} from "./gateway-helpers";
 // Same self-host docs link the setup wizard's channel step renders
 // (`channel-step.tsx`, via `channel-step-helpers.ts`'s re-export) — canonical
 // home is `lib/telegram-bot.ts`, imported directly here rather than reaching
@@ -108,7 +109,12 @@ function notConfiguredSentence(kind: GatewayKind): string {
 //                        `GatewayView.openUrl`'s doc-comment). NEVER
 //                        `actionUrl` here — that's an INSTALL url for
 //                        discord/slack, not a way back into the conversation
-//                        (whole-branch review fix 1).
+//                        (whole-branch review fix 1). For slack this state is
+//                        now reachable two ways — a linked identity OR a live
+//                        app installation — which is the bugfix: completing
+//                        "Add to Slack" writes an installation and no
+//                        identity, so an identity-only rule left this card
+//                        stuck on the install CTA forever.
 //   3. available        — not connected, but actionUrl is set: the primary CTA.
 //   4. not-configured  — not connected, no actionUrl: env isn't set up.
 // --------------------------------------------------------------------------- //
@@ -140,7 +146,13 @@ function resolveCardState(gateway: GatewayView): GatewayCardState {
 // action for its state, all rendered on load. No button, disclosure, or
 // expand affordance ever hides anything here (brief §4).
 // --------------------------------------------------------------------------- //
-function GatewayCard({ gateway }: { gateway: GatewayView }) {
+function GatewayCard({
+  gateway,
+  workspaceId,
+}: {
+  gateway: GatewayView;
+  workspaceId: string;
+}) {
   const state = resolveCardState(gateway);
 
   return (
@@ -176,9 +188,7 @@ function GatewayCard({ gateway }: { gateway: GatewayView }) {
       {state.kind === "connected" && (
         <div className="flex flex-col gap-1.5">
           <p className="text-xs text-[var(--gray-10)]">
-            {linkedIdentitiesLine(
-              gateway.linkedIdentities.map((i) => i.displayName)
-            )}
+            {connectedSummaryLine(gateway)}
           </p>
           {state.openUrl && (
             <a
@@ -195,7 +205,10 @@ function GatewayCard({ gateway }: { gateway: GatewayView }) {
 
       {state.kind === "available" && (
         <a
-          href={state.actionUrl}
+          // Slack's CTA carries the asking workspace so the completed install
+          // can be attributed back to it — otherwise this button never goes
+          // away, however many times it succeeds (see withInstallWorkspace).
+          href={withInstallWorkspace(state.actionUrl, gateway.kind, workspaceId)!}
           target="_blank"
           rel="noreferrer"
           className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
@@ -297,7 +310,11 @@ export function GatewaysPanel({ workspaceId }: { workspaceId: string }) {
         // height left the row visibly ragged.
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
           {gateways.map((gateway) => (
-            <GatewayCard key={gateway.kind} gateway={gateway} />
+            <GatewayCard
+              key={gateway.kind}
+              gateway={gateway}
+              workspaceId={workspaceId}
+            />
           ))}
         </div>
       )}

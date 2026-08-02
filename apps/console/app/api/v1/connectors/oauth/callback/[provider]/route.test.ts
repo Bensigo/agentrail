@@ -521,6 +521,28 @@ describe("GET /api/v1/connectors/oauth/callback/[provider]", () => {
     expect(loc.searchParams.has("oauth_error")).toBe(false);
   });
 
+  // W3-T6 (Cloudflare) — this route's own mechanism is entirely generic
+  // (param-transport, the default `fakeAdapter` above declares nothing
+  // special), so Cloudflare needs no new branch anywhere in route.ts; this
+  // test exists to PROVE that "free via the generic machinery" claim rather
+  // than assume it — same generic fakeAdapter, just the provider URL
+  // segment (and therefore the built redirect_uri + `?connected=` value)
+  // swapped to "cloudflare".
+  it("works end-to-end for provider 'cloudflare' via the same generic param-transport machinery — no cloudflare-specific branch anywhere in this route", async () => {
+    const res = await GET(req({ state: "s", code: "c" }), params("cloudflare"));
+    expect(fakeAdapter.exchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redirectUri: "https://heyjace.com/api/v1/connectors/oauth/callback/cloudflare",
+      })
+    );
+    expect(setConnectorSecret).toHaveBeenCalledWith("ws-1", "cloudflare", "serialized-envelope");
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("location")!);
+    expect(loc.pathname).toBe("/dashboard/ws-1/connectors");
+    expect(loc.searchParams.get("connected")).toBe("cloudflare");
+    expect(loc.searchParams.has("oauth_error")).toBe(false);
+  });
+
   // -----------------------------------------------------------------------
   // W3-T2 fix round (independent review Finding #1) — the optional
   // postExchange gate. `fakeAdapter` (used everywhere above) deliberately

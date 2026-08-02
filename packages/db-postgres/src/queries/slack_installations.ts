@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { encryptSecret, decryptSecret } from "../crypto.js";
 import { slackInstallations } from "../schema/slack_installations.js";
@@ -24,6 +24,14 @@ export interface UpsertSlackInstallationInput {
   installedBySlackUserId?: string | null;
   scopes?: string | null;
   enterpriseId?: string | null;
+  /**
+   * The AgentRail workspace that STARTED this install, when the install began
+   * from a signed-in console session (the install route membership-checks the
+   * caller before signing it into the OAuth `state`, so this is always
+   * server-derived — never a client-supplied string). Omitted for an install
+   * that arrived with no workspace context, e.g. Slack's App Directory.
+   */
+  workspaceId?: string | null;
 }
 
 /**
@@ -33,6 +41,15 @@ export interface UpsertSlackInstallationInput {
  * query log. `revoked_at` is unconditionally cleared to `null` on both the
  * insert path and the conflict-update path: a reinstall after an
  * `app_uninstalled` must reactivate the row, not leave it looking revoked.
+ *
+ * `workspace_id` is the ONE column the conflict path does not overwrite
+ * blind: it is `coalesce(excluded.workspace_id, slack_installations.
+ * workspace_id)`, so a workspace-attributed install can be re-run later with
+ * no workspace context (an App Directory reinstall, say) without silently
+ * wiping the attribution the console's Gateways page reads to decide Slack is
+ * connected. A reinstall that DOES carry a workspace still re-points it —
+ * last attributed install wins, which is the only sensible answer when a
+ * Slack team is claimed by a different workspace.
  */
 export async function upsertSlackInstallation(
   input: UpsertSlackInstallationInput
@@ -48,6 +65,7 @@ export async function upsertSlackInstallation(
     installedBySlackUserId: input.installedBySlackUserId ?? null,
     scopes: input.scopes ?? null,
     enterpriseId: input.enterpriseId ?? null,
+    workspaceId: input.workspaceId ?? null,
     revokedAt: null,
     updatedAt: now,
   };
@@ -57,8 +75,49 @@ export async function upsertSlackInstallation(
     .values(row)
     .onConflictDoUpdate({
       target: slackInstallations.teamId,
-      set: row,
+      set: {
+        ...row,
+        workspaceId: sql`coalesce(excluded.${sql.raw(
+          slackInstallations.workspaceId.name
+        )}, ${slackInstallations.workspaceId})`,
+      },
     });
+}
+
+/** One live Slack installation as the console's Gateways surface reads it —
+ * deliberately no `botToken` field at all, so this projection cannot leak a
+ * credential into a page or an API response by omission. */
+export interface WorkspaceSlackInstallation {
+  teamId: string;
+  teamName: string | null;
+}
+
+/**
+ * Every LIVE Slack installation attributed to a workspace, oldest first.
+ *
+ * This is the read that fixes "the Gateways page shows Add to Slack even
+ * though Slack is connected": Slack's connect act is the OAuth install, which
+ * writes a row HERE and no chat identity, so a page that only consulted
+ * `chat_identities` could never see it. Revoked rows (Slack's
+ * `app_uninstalled`) are excluded, which also makes the reverse true — remove
+ * the app from Slack and the console goes back to offering the install.
+ */
+export async function listSlackInstallationsForWorkspace(
+  workspaceId: string
+): Promise<WorkspaceSlackInstallation[]> {
+  return db
+    .select({
+      teamId: slackInstallations.teamId,
+      teamName: slackInstallations.teamName,
+    })
+    .from(slackInstallations)
+    .where(
+      and(
+        eq(slackInstallations.workspaceId, workspaceId),
+        isNull(slackInstallations.revokedAt)
+      )
+    )
+    .orderBy(slackInstallations.createdAt);
 }
 
 /** The non-secret-shaped view `getSlackInstallation` returns — `botToken` is

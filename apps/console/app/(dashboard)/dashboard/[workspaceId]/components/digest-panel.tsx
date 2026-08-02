@@ -9,10 +9,12 @@ import { messageJaceTarget } from "../../../setup/components/channel-step-helper
 import { seatsLabel } from "../billing/billing-helpers";
 import {
   capacityText,
+  capacityUsedText,
   formatNeedsYouBreakdown,
   formatWeekRangeLabel,
   inProgressStateLabel,
   isAtOrPastCurrentWeek,
+  seatsInUseText,
   shiftWeek,
   shippedStripText,
   type DigestData,
@@ -160,6 +162,15 @@ function NeedsYouBlock({
  * see `loadPlanCardData`'s own doc-comment), `PlanCardEmpty` below renders
  * in this slot instead.
  *
+ * 2026-08-02 owner ruling — no customer-facing trial: `data.hasPlan` is the
+ * ONE thing this component branches on. `false` (an un-subscribed account,
+ * internal `plan` enum value `"trial"`) renders the "No plan yet" state —
+ * usage-only Seats/Capacity rows (`seatsInUseText`/`capacityUsedText`, never
+ * `seatsLabel`/`capacityText`'s "X of Y" — that would claim an entitlement
+ * to a plan this account doesn't have), the `data.renewalText` choose-a-plan
+ * line, and a "Choose a plan" CTA at the SAME billing href. `true` is
+ * byte-identical to the plan card that shipped in slice 6 — unchanged.
+ *
  * Exported (despite being consumed only from `DigestPanel` below) so it can
  * be unit-tested by calling it directly and walking the returned element
  * tree — this repo's vitest environment has no DOM/render harness, and
@@ -174,6 +185,31 @@ export function PlanCardBlock({
   data: PlanCardData;
   workspaceId: string;
 }) {
+  if (!data.hasPlan) {
+    return (
+      <DigestCard title="Plan">
+        <div className="flex flex-col gap-1">
+          <span className="font-mono text-3xl font-bold text-[var(--gray-12)]">
+            {data.planLabel}
+          </span>
+          <span className="text-xs text-[var(--gray-09)]">
+            {`Seats · ${seatsInUseText(data.seatsUsed)}`}
+          </span>
+          <span className="text-xs text-[var(--gray-09)]">
+            {`Capacity · ${capacityUsedText(data.capacityUsed)}`}
+          </span>
+          <span className="text-xs text-[var(--gray-09)]">{data.renewalText}</span>
+          <Link
+            href={`/dashboard/${workspaceId}/billing`}
+            className="mt-1 flex items-center gap-0.5 text-xs text-[var(--blue-11)]"
+          >
+            Choose a plan <ArrowUpRight className="h-3 w-3" />
+          </Link>
+        </div>
+      </DigestCard>
+    );
+  }
+
   return (
     <DigestCard title="Plan">
       <div className="flex flex-col gap-1">

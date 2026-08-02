@@ -19,6 +19,7 @@ import {
   renewalLabel,
   seatClaimedLabel,
   seatLimitForPlan,
+  seatsInUseLabel,
   seatsLabel,
   statusChip,
   STATUS_CHIP_TONE_CLASSNAME,
@@ -128,7 +129,15 @@ export default async function BillingPage({
           <p className="text-sm text-[var(--gray-09)]">
             {renewalLabel(account?.currentPeriodEnd ?? null)}
           </p>
-          <p className="text-sm text-[var(--gray-11)]">Seats: {seatsLabel(seatsUsed, seatLimit)}</p>
+          {/* 2026-08-02 owner ruling — no customer-facing trial: an
+              un-subscribed account (`plan === "trial"`) has no seat
+              ENTITLEMENT to show a fraction against, so it reads as raw
+              usage only (`seatsInUseLabel`), never `seatsLabel`'s "X of Y"
+              — same ruling as `PLAN_LABEL.trial` above, `billing-helpers.ts`
+              has the full rationale. */}
+          <p className="text-sm text-[var(--gray-11)]">
+            Seats: {plan === "trial" ? seatsInUseLabel(seatsUsed) : seatsLabel(seatsUsed, seatLimit)}
+          </p>
         </div>
 
         <div className="flex flex-col gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">

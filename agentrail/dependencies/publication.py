@@ -131,6 +131,35 @@ def _proof_row(gate: Mapping[str, Any], names: Sequence[str]) -> tuple[bool, str
     return False, "evidence row is missing"
 
 
+def _ac_evidence(payload: Mapping[str, Any], run_data: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _section(payload, "acEvidence", "ac_evidence") or _section(run_data, "acEvidence", "ac_evidence")
+
+
+def _blocked_ac_reasons(ac: Mapping[str, Any]) -> list[str]:
+    reasons: list[str] = []
+
+    unbound = [_text(item) for item in _items(_get(ac, "unbound")) if _text(item)]
+    if unbound:
+        reasons.append("unbound AC evidence: " + ", ".join(unbound))
+
+    waived = [_text(_get(item, "id")) for item in _items(_get(ac, "waived")) if _text(_get(item, "id"))]
+    if waived:
+        reasons.append("waived AC evidence: " + ", ".join(waived))
+
+    unverifiable = [_text(_get(item, "ac")) for item in _items(_get(ac, "unverifiable")) if _text(_get(item, "ac"))]
+    if unverifiable:
+        reasons.append("unverifiable AC evidence: " + ", ".join(unverifiable))
+
+    for item in _items(_get(ac, "acs")):
+        row = _mapping(item)
+        ac_id = _text(_get(row, "id")) or "unknown-ac"
+        status = _text(_get(row, "status"))
+        if status and status != "proven":
+            reasons.append(f"AC {ac_id} is {status}")
+
+    return reasons
+
+
 def evaluate_dependency_publication(run_data: Mapping[str, Any]) -> DependencyPublicationDecision:
     """Validate every prerequisite required before a dependency PR is opened."""
     payload = _publication_payload(run_data)
@@ -143,6 +172,7 @@ def evaluate_dependency_publication(run_data: Mapping[str, Any]) -> DependencyPu
     execution = _execution(payload, run_data)
     gate = _section(payload, "objectiveGate") or _section(run_data, "objectiveGate")
     reviewability = _section(payload, "reviewability") or _section(run_data, "reviewability")
+    ac = _ac_evidence(payload, run_data)
     reasons: list[str] = []
 
     fingerprint = _candidate_value(candidate, "fingerprint", "candidateFingerprint")
@@ -197,6 +227,8 @@ def evaluate_dependency_publication(run_data: Mapping[str, Any]) -> DependencyPu
     independent_ok, _ = _proof_row(gate, ("independent-verification", "independentVerification"))
     if _text(_get(run_data, "independentReview")) != "active" or not independent_ok:
         reasons.append("Independent Verification is missing or inactive")
+
+    reasons.extend(_blocked_ac_reasons(ac))
 
     review_decision = _section(reviewability, "decision")
     review_diff = _section(reviewability, "diff")

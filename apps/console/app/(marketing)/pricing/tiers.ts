@@ -25,13 +25,13 @@ export type Tier = {
  * Subscription-platform spec §2 commercial packaging (`docs/superpowers/
  * specs/2026-07-29-subscription-platform-design.md`). Seats and capacity
  * match `lib/policy/plan-policies.ts`'s `PLAN_POLICIES` as of this write
- * (starter: 4 seats / 350 capacity; growth: 10 seats / 1,000 capacity) —
+ * (starter: 4 seats / 34 capacity; growth: 10 seats / 74 capacity) —
  * spec §2 calls these "launch priors, calibrated monthly", so keep this
  * table in sync by hand if that file's numbers move. Dollar prices are NOT
  * a shared code constant: Stripe owns the actual recurring Price objects
  * (`lib/billing/stripe-plans.ts` maps plan -> Price id only, never a
- * dollar amount), so $80/$200 are hand-set here to match the Stripe
- * dashboard and the spec's own table. Enterprise has no public price or
+ * dollar amount), so $199/$399 are hand-set here to match the current
+ * commercial decision. Enterprise has no public price or
  * checkout (spec §2: "no public pricing and no checkout flow — it is a
  * conversation") — its CTA below is a `mailto:` link, never a checkout
  * link; see `ENTERPRISE_CONTACT_EMAIL` in `./page.tsx`.
@@ -50,22 +50,27 @@ export type Tier = {
 export const TIERS: Tier[] = [
   {
     name: "Starter",
-    price: "$80/mo",
+    price: "$199/mo",
     seats: "Up to 4",
-    included: "≈350 engineering tasks/mo",
-    features: ["PR reviews", "bug fixes", "documentation", "everyday engineering"],
+    included: "≈34 engineering tasks/mo",
+    features: [
+      "acceptance contracts",
+      "verification evidence",
+      "reviewable changes",
+      "team approvals",
+    ],
     ctaLabel: "Start with Starter",
   },
   {
     name: "Growth",
-    price: "$200/mo",
+    price: "$399/mo",
     seats: "Up to 10",
-    included: "≈1,000 engineering tasks/mo",
+    included: "≈74 engineering tasks/mo",
     features: [
       "everything in Starter",
-      "architecture assistance",
-      "large refactors",
-      "premium reasoning",
+      "dependency upgrade workflow — coming soon",
+      "compatibility evidence",
+      "calibrated refusal",
     ],
     ctaLabel: "Start with Growth",
   },
@@ -74,7 +79,13 @@ export const TIERS: Tier[] = [
     price: "Contact us",
     seats: "Custom",
     included: "Custom",
-    features: ["custom AI policies", "SSO", "self-hosting", "SLA", "dedicated support"],
+    features: [
+      "custom acceptance policies",
+      "review-cost reporting",
+      "environment fidelity",
+      "SLA",
+      "dedicated support",
+    ],
     ctaLabel: "Contact us",
   },
 ];

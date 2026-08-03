@@ -41,6 +41,12 @@ export async function computeLandingStats(
 ): Promise<LandingStats> {
   try {
     const live = await count();
+    // A healthy empty read means the live table has no terminal outcomes yet,
+    // not that the product has no track record. Keep the documented dogfood
+    // baseline visible until the first live outcome exists.
+    if (live.success === 0 && live.humanReview === 0 && live.failed === 0) {
+      return { ...DOGFOOD_BASELINE, source: "baseline-only" };
+    }
     return {
       workedOn: DOGFOOD_BASELINE.workedOn + live.success + live.humanReview + live.failed,
       shipped: DOGFOOD_BASELINE.shipped + live.success,

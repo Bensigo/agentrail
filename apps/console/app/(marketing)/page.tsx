@@ -36,19 +36,29 @@ import { TierCards } from "./pricing/tier-cards";
  * this line describes.
  */
 const HOW_WE_WORK = [
-  { name: "Message", line: "Send me a task in chat, or hand me a GitHub issue." },
   {
-    name: "Brief",
-    line: "Before I touch code you get a brief: task type, scope, and exactly what I'll build.",
-  },
-  { name: "Approve", line: "Your approval starts the task. Nothing ships without it." },
-  {
-    name: "Pull request",
-    line: "I write the code, a second model reviews it, and your own tests have to pass. Then the PR opens.",
+    name: "Contract",
+    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions.",
   },
   {
-    name: "Merge",
-    line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",
+    name: "Approve",
+    line: "You approve the contract before implementation starts. Nothing runs without that decision.",
+  },
+  {
+    name: "Execute",
+    line: "The factory works inside the approved scope and records what it did.",
+  },
+  {
+    name: "Size",
+    line: "The target is a focused, reviewable pull request. Oversized or high-risk work is split or escalated before review.",
+  },
+  {
+    name: "Verify",
+    line: "Tests and independent checks look for regressions before the pull request reaches your team.",
+  },
+  {
+    name: "Proof or refusal",
+    line: "The result should carry its evidence. If the contract cannot be proven, Jace should stop.",
   },
 ];
 
@@ -144,13 +154,15 @@ export default async function LandingPage() {
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
             <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
             <span className="text-heading-2 mt-5 block text-balance">
-              The AI{" "}
-              <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
-                fractional
-              </span>{" "}
-              software engineer.
+            Every other agent gives you more pull requests. Jace gives your
+            team fewer review hours.
             </span>
           </h1>
+          <p className="ar-rise mt-6 max-w-[58ch] text-[var(--gray-11)]" style={{ animationDelay: "110ms" }}>
+            Approved engineering work, acceptance criteria, verification, and
+            evidence attached to the result. If Jace cannot prove the change,
+            it stops.
+          </p>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
             <PrimaryCta cta={cta} />
           </div>
@@ -167,8 +179,8 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
-              The brief in this demo is computed by the same code that prices
-              real runs.
+              Before the code, there is a contract: goal, non-goals, criteria,
+              blast radius, and stop conditions.
             </p>
           </Reveal>
         </div>
@@ -180,7 +192,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">Use cases</h2>
+            <h2 className="text-heading-2 text-center">What your team gets back</h2>
           </Reveal>
         </div>
         <div className="mt-12">
@@ -203,7 +215,7 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-[var(--accent-fill-text)]">
-              How I work
+              What has to be true before a PR reaches your team
             </h2>
           </Reveal>
           {/* Comic-panel bento (owner personality pass 2026-07-22 — "make
@@ -243,11 +255,13 @@ export default async function LandingPage() {
       <section className="relative -mt-14 rounded-t-[2.5rem] border-t-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 pt-20 pb-24 sm:pt-24 sm:pb-28">
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">Where you&apos;ll find me</h2>
+            <h2 className="text-heading-2 text-center">
+              Meet Jace where work already gets discussed
+            </h2>
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Add me where your team already talks.
+              Start in chat. The approved change ends as a pull request.
             </p>
           </Reveal>
           <div className="mt-12">
@@ -272,8 +286,8 @@ export default async function LandingPage() {
             <h2 className="text-heading-2 text-center">The numbers</h2>
           </Reveal>
           <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
-            Autonomous runs, issue in to reviewed pull request out. Counted
-            from the platform database, refreshed hourly.
+            Runs completed, verification passed, and work that did not land.
+            Counted from the platform database, refreshed hourly.
           </p>
           <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
             {/* Cards stay inlined: the mono-on-data craft pin scans 300
@@ -285,7 +299,7 @@ export default async function LandingPage() {
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.shipped}
                 />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">shipped</p>
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">verification passed</p>
               </div>
             </Reveal>
             <Reveal delay={70}>
@@ -294,7 +308,7 @@ export default async function LandingPage() {
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.workedOn}
                 />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">worked on</p>
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">runs completed</p>
               </div>
             </Reveal>
             <Reveal delay={140}>
@@ -373,7 +387,7 @@ export default async function LandingPage() {
           </ol>
           <Reveal delay={240}>
             <p className="mt-10 text-center text-[var(--gray-11)]">
-              One shipped PR pays for the month.
+            The point is fewer review hours, not more generated code.
             </p>
           </Reveal>
         </div>
@@ -411,13 +425,14 @@ export default async function LandingPage() {
             className="-rotate-3 mx-auto mb-6"
           />
           <h2 className="text-heading-2">
-            Point me at a repo
+            Start with an approved change
             <span aria-hidden className="ar-cursor animate-pulse font-mono">
               _
             </span>
           </h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
-            Connect GitHub, hand me an issue, and wake up to a reviewed PR.
+            Connect GitHub, approve the contract, and get a pull request with
+            the proof attached.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />
@@ -440,6 +455,9 @@ export default async function LandingPage() {
           <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-11)]">
             <Link href="/docs" className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]">
               Docs
+            </Link>
+            <Link href="/privacy" className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]">
+              Privacy
             </Link>
             <a
               href="https://github.com/Bensigo/agentrail"
@@ -487,7 +505,7 @@ export default async function LandingPage() {
             </form>
           </nav>
           <span className="text-label text-[var(--gray-11)]">
-            © {new Date().getFullYear()} AgentRail
+            © {new Date().getFullYear()} Jace
           </span>
         </div>
       </footer>
@@ -531,5 +549,3 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
     </form>
   );
 }
-
-

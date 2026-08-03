@@ -12,7 +12,7 @@ import { TierCards } from "./tier-cards";
 export const metadata = {
   title: "Pricing — Jace",
   description:
-    "Plans priced by team size. One subscription, a fractional AI engineer for your whole team.",
+    "Plans priced by team size for reviewable engineering work with proof attached.",
 };
 
 const STEPS = [
@@ -90,8 +90,8 @@ export default function PricingPage() {
         </p>
 
         <p className="mt-6 text-[var(--gray-11)]">
-          Jace is an AI software engineer for your team. One subscription
-          covers everyone — plans are priced by team size, never per task.
+          One subscription covers your team. Plans are priced by team size and
+          built around approved, reviewable engineering work.
         </p>
       </div>
 
@@ -102,9 +102,9 @@ export default function PricingPage() {
       <div className="mx-auto max-w-[560px] px-6 pb-24">
         <p className="mt-10 text-[var(--gray-11)]">
           Every plan comes with included monthly engineering capacity —
-          measured in tasks, not dollars. Starter includes ≈350 tasks a
-          month; Growth includes ≈1,000. Jace asks before anything runs, and
-          finished work ships as a pull request.
+          measured in tasks, not dollars. Starter includes ≈34 tasks a
+          month; Growth includes ≈74. Jace asks before anything runs, and
+          finished work ships as a pull request with evidence attached.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">

@@ -35,8 +35,12 @@ Detection order:
        - start: ``scripts.dev`` -> ``["npm", "run", "dev"]``, else
          ``scripts.start`` -> ``["npm", "run", "start"]``; neither present
          means undetectable.
-       - install: ``["npm", "ci"]`` if ``package-lock.json`` exists next to
-         it, else ``["npm", "install"]``.
+       - install: match the package manager lockfile next to it:
+         ``pnpm-lock.yaml`` -> ``["corepack", "pnpm", "install", "--frozen-lockfile",
+         "--dangerously-allow-all-builds"]``,
+         ``yarn.lock`` -> ``["corepack", "yarn", "install", "--frozen-lockfile"]``,
+         ``package-lock.json`` -> ``["npm", "ci"]``; otherwise
+         ``["npm", "install"]``.
        - port: 3000 if ``next`` is a (dev)dependency, 5173 if ``vite`` is,
          3000 if ``react-scripts`` is, else 3000.
   3. Nothing usable was found -> ``None``.
@@ -85,6 +89,28 @@ def _framework_port(deps: dict[str, Any]) -> int | None:
         if dep_name in deps:
             return dep_port
     return None
+
+
+def _install_command(repo_dir: str) -> list[str]:
+    """Install command matched to the repo's lockfile.
+
+    The order is deliberate: pnpm/yarn workspaces may contain dependencies
+    like ``workspace:*`` that plain npm cannot resolve. Prefer their lockfiles
+    before falling back to npm's lockfile or the no-lock npm default.
+    """
+    if os.path.isfile(os.path.join(repo_dir, "pnpm-lock.yaml")):
+        return [
+            "corepack",
+            "pnpm",
+            "install",
+            "--frozen-lockfile",
+            "--dangerously-allow-all-builds",
+        ]
+    if os.path.isfile(os.path.join(repo_dir, "yarn.lock")):
+        return ["corepack", "yarn", "install", "--frozen-lockfile"]
+    if os.path.isfile(os.path.join(repo_dir, "package-lock.json")):
+        return ["npm", "ci"]
+    return ["npm", "install"]
 
 
 def detect_recipe(repo_dir: str) -> PreviewRecipe | None:
@@ -177,8 +203,7 @@ def _from_package_json(repo_dir: str) -> PreviewRecipe | None:
     else:
         return None
 
-    has_lockfile = os.path.isfile(os.path.join(repo_dir, "package-lock.json"))
-    install = ["npm", "ci"] if has_lockfile else ["npm", "install"]
+    install = _install_command(repo_dir)
 
     deps: dict[str, Any] = {}
     for key in ("dependencies", "devDependencies"):

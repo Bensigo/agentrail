@@ -104,6 +104,7 @@ export const dependencyWatchObservations = pgTable(
       .default({}),
     // Candidate fingerprint is stored separately from the observation key.
     observationKey: text("observation_key").notNull(),
+    candidateFingerprint: text("candidate_fingerprint"),
     status: text("status").$type<DependencyWatchStatus>().notNull(),
     candidates: jsonb("candidates").$type<unknown[]>().notNull().default([]),
     errorCode: text("error_code").$type<DependencyWatchErrorCode>(),

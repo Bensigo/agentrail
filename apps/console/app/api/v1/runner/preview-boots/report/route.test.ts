@@ -189,6 +189,26 @@ describe("POST /api/v1/runner/preview-boots/report", () => {
       expect(mockReport).not.toHaveBeenCalled();
     });
 
+    // Fix round 1 (review Finding 2, Minor): `typeof x === "number"` is true
+    // for NaN/Infinity/non-integers too, which would previously pass this
+    // gate and then throw uncaught at the Postgres driver layer (the
+    // `port` column is `integer`) instead of a clean 400.
+    it("400 when port is a number but not a valid integer (NaN/Infinity/non-integer) — would otherwise reach the DB layer uncaught", async () => {
+      for (const port of [NaN, Infinity, -Infinity, 1.5]) {
+        const res = await POST(postReq({ ...VALID_READY_BODY, port }));
+        expect(res.status, `port=${port} should 400`).toBe(400);
+      }
+      expect(mockReport).not.toHaveBeenCalled();
+    });
+
+    it("accepts a negative or zero integer port without 400ing (only non-integers are rejected — scope of this fix)", async () => {
+      for (const port of [0, -1]) {
+        mockReport.mockResolvedValue({ ...READY_ROW, port } as never);
+        const res = await POST(postReq({ ...VALID_READY_BODY, port }));
+        expect(res.status, `port=${port} should not 400`).not.toBe(400);
+      }
+    });
+
     it("400 when reason is present but not a string", async () => {
       const res = await POST(postReq({ id: "boot-1", workerId: "w1", status: "failed", reason: 123 }));
       expect(res.status).toBe(400);

@@ -170,13 +170,16 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
   // absent row -> 404
   // -------------------------------------------------------------------------
   describe("absent row", () => {
-    it('404 {error:"boot not found"} when getPreviewBoot returns null', async () => {
+    it('404 {error:"boot not found"} when getPreviewBoot returns null (after a successfully-resolved session)', async () => {
       vi.mocked(getPreviewBoot).mockResolvedValue(null as never);
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("unknown-id"));
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: "boot not found" });
-      // Session resolution is skipped once the row itself doesn't exist.
-      expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
+      // Fix round 1 (review Finding 1): session resolution now runs BEFORE
+      // the row lookup, so a valid session still resolves even when the row
+      // turns out not to exist — this is the opposite of the pre-fix
+      // assertion, which pinned the buggy row-first ordering.
+      expect(getJaceSessionByEveSessionId).toHaveBeenCalled();
     });
   });
 
@@ -189,6 +192,11 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
       const res = await GET(getReq({ eveSessionId: "unknown-session" }), params("boot-1"));
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: "Session not found" });
+      // Fix round 1 (Finding 1): the row must never be looked up once
+      // session resolution has already failed — this is what closes the
+      // existence oracle (see the dedicated "existence oracle" describe
+      // block below).
+      expect(getPreviewBoot).not.toHaveBeenCalled();
     });
 
     it("resolves a workspace-anchored, identity-less session without calling getChatIdentityById", async () => {
@@ -215,6 +223,10 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
       expect(await res.json()).toEqual({
         error: "this conversation has no workspace yet — create one first",
       });
+      // Fix round 1 (Finding 1): the 409 branch also short-circuits before
+      // the row lookup — the third variant Finding 1 called out (a
+      // workspace-less session turning an existing row's 404 into a 409).
+      expect(getPreviewBoot).not.toHaveBeenCalled();
     });
   });
 
@@ -227,6 +239,97 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: "boot not found" });
+    });
+
+    // Fix round 1 (review Finding 1, coordinator-requested proof): a
+    // resolvable, valid session ("eve-session-1" -> ws-1) must produce a
+    // BYTE-IDENTICAL response whether the requested row belongs to a
+    // different workspace or doesn't exist at all — neither existence nor
+    // ownership is a distinguishable oracle to a valid caller.
+    it("[ORACLE] byte-identical 404 for a valid session against a FOREIGN row vs. a NONEXISTENT row", async () => {
+      vi.mocked(getPreviewBoot).mockResolvedValueOnce({ ...PENDING_ROW, workspaceId: "some-other-ws" } as never);
+      const foreignRes = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
+      const foreignBody = await foreignRes.json();
+
+      vi.mocked(getPreviewBoot).mockResolvedValueOnce(null as never);
+      const absentRes = await GET(getReq({ eveSessionId: "eve-session-1" }), params("unknown-id"));
+      const absentBody = await absentRes.json();
+
+      expect(foreignRes.status).toBe(absentRes.status);
+      expect(foreignBody).toEqual(absentBody);
+      expect(foreignRes.status).toBe(404);
+      expect(foreignBody).toEqual({ error: "boot not found" });
+    });
+
+    it("a resolvable, OWNING session still gets the full {status, url, reason} — the fix doesn't over-hide legitimate access", async () => {
+      vi.mocked(getPreviewBoot).mockResolvedValue({ ...PENDING_ROW, workspaceId: "ws-1" } as never);
+      const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "pending", url: null, reason: null });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Fix round 1 — Finding 1 (CRITICAL): cross-tenant EXISTENCE oracle.
+  // The bug: the pre-fix route called getPreviewBoot(id) BEFORE resolving
+  // the caller's own session, so an UNRESOLVABLE eveSessionId produced a
+  // DIFFERENT 404 body depending on whether the row existed
+  // ({error:"Session not found"} either way is the FIXED behavior; pre-fix,
+  // a nonexistent row short-circuited to {error:"boot not found"} instead,
+  // one step earlier, before resolveWorkspaceId ever ran) — a live oracle
+  // for row existence that required no proof of tenancy at all, just the
+  // shared JACE_CONSOLE_TOKEN. These tests pin the closed behavior: with the
+  // session resolved FIRST, the row is never even looked up once session
+  // resolution has already failed, so there is nothing left that COULD vary
+  // between the two sub-cases below.
+  // ---------------------------------------------------------------------
+  describe("cross-tenant existence oracle (Fix round 1, Finding 1)", () => {
+    it("[ORACLE] an UNRESOLVABLE eveSessionId produces byte-identical output whether the row exists or not", async () => {
+      vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never); // unresolvable in both sub-cases
+
+      // getPreviewBoot's mocked return value deliberately does NOT vary
+      // between the two calls below (unlike the "OWNING session" tests
+      // above) — the whole point of this test is that it can't matter,
+      // since session resolution now fails before the row is ever looked
+      // up. Queuing distinct mockResolvedValueOnce values here would be
+      // pointless AND would leave unconsumed queued values that leak into
+      // later tests (vi.clearAllMocks() in beforeEach clears call history,
+      // not a mock's queued-but-unconsumed return values) — asserting
+      // `.not.toHaveBeenCalled()` below is the real proof, not varying what
+      // it WOULD have returned.
+      const existingRes = await GET(getReq({ eveSessionId: "garbage-session" }), params("boot-1"));
+      const existingBody = await existingRes.json();
+
+      const absentRes = await GET(getReq({ eveSessionId: "garbage-session" }), params("unknown-id"));
+      const absentBody = await absentRes.json();
+
+      expect(existingRes.status).toBe(absentRes.status);
+      expect(existingBody).toEqual(absentBody);
+      expect(existingRes.status).toBe(404);
+      expect(existingBody).toEqual({ error: "Session not found" });
+
+      // The row is never looked up once session resolution has already
+      // failed — this IS why the two sub-cases above can never diverge.
+      expect(getPreviewBoot).not.toHaveBeenCalled();
+    });
+
+    it("a workspace-less (409) session also short-circuits before the row lookup — the 409-vs-404 variant Finding 1 called out is closed too", async () => {
+      vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+        ...PINNED_SESSION,
+        workspaceId: null,
+      } as never);
+      vi.mocked(getChatIdentityById).mockResolvedValue({ ...BOUND_IDENTITY, workspaceId: null } as never);
+
+      // Same reasoning as the test above: getPreviewBoot's return value is
+      // irrelevant (and deliberately left unconfigured beyond the beforeEach
+      // default) since it must never be called here either.
+      const existingRes = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
+      const absentRes = await GET(getReq({ eveSessionId: "eve-session-1" }), params("unknown-id"));
+
+      expect(existingRes.status).toBe(409);
+      expect(absentRes.status).toBe(409);
+      expect(await existingRes.json()).toEqual(await absentRes.json());
+      expect(getPreviewBoot).not.toHaveBeenCalled();
     });
   });
 
@@ -266,5 +369,19 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
       const json = await res.json();
       expect(Object.keys(json).sort()).toEqual(["reason", "status", "url"]);
     });
+
+    // Fix round 1 (review Finding 3, Minor): pending/ready/failed were
+    // already covered above; this closes the remaining three status values.
+    // Pure passthrough (`status: row.status`, no branching in the route), so
+    // this is a coverage pin, not new route logic under test.
+    it.each(["claimed", "booting", "torn_down"] as const)(
+      "200 passes the '%s' status straight through",
+      async (status) => {
+        vi.mocked(getPreviewBoot).mockResolvedValue({ ...PENDING_ROW, status } as never);
+        const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
+        expect(res.status).toBe(200);
+        expect((await res.json()).status).toBe(status);
+      }
+    );
   });
 });

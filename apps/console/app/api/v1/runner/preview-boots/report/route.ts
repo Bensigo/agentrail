@@ -32,6 +32,13 @@ import { previewBootsDisabled, previewBootsDisabledResponse } from "../shared";
  * see that function's own doc-comment); a PRESENT-but-wrong-typed value for
  * any of the three is also a 400 (never a silent ignore), same posture
  * `review-jobs/complete/route.ts` uses for its own optional `evidenceKeys`.
+ * `port` specifically requires `Number.isInteger` (Fix round 1, review
+ * Finding 2, Minor), not just `typeof === "number"` — the column is a
+ * Postgres `integer`, and `typeof x === "number"` is true for `NaN`,
+ * `Infinity`, and non-integers like `1.5`, none of which that column
+ * accepts; letting one through this gate would previously reach
+ * `reportPreviewBoot`'s raw `sql` template uncaught and surface as a 500
+ * instead of this route's normal 400 contract.
  *
  * OWNERSHIP + STATE GUARD: entirely `reportPreviewBoot`'s own job — every
  * UPDATE it runs is scoped to BOTH the row id AND the calling `workerId`, so
@@ -86,7 +93,10 @@ function parseReportBody(raw: unknown): ReportBody | null {
   // review-jobs/complete/route.ts uses for its own evidenceKeys — never a
   // silent ignore of a caller's mistake.
   if (o.url !== undefined && typeof o.url !== "string") return null;
-  if (o.port !== undefined && typeof o.port !== "number") return null;
+  // Number.isInteger, not typeof === "number" (Fix round 1, Finding 2): the
+  // column is a Postgres `integer` — NaN/Infinity/1.5 must 400 here, not
+  // reach the DB layer uncaught. See this file's own doc-comment.
+  if (o.port !== undefined && !Number.isInteger(o.port)) return null;
   if (o.reason !== undefined && typeof o.reason !== "string") return null;
 
   return {

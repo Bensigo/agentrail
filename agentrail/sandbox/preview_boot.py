@@ -58,10 +58,11 @@ _PROBE_HTTP_TIMEOUT = 1.0
 _LOG_FILENAME = ".agentrail-preview-boot.log"
 _LOG_TAIL_BYTES = 4000
 
-# subprocess.run's captured stdout/stderr on an install failure is bounded
-# to this many trailing lines in the raised BootError, mirroring
-# native_runner.py's own _LOGS_TAIL_LINES convention.
-_INSTALL_TAIL_LINES = 40
+# The install step (recipe.install) gets its OWN log file, distinct from the
+# boot child's — the two phases run one after another in the same clone_dir,
+# and keeping them separate avoids one phase's failure tail accidentally
+# reading the other's leftover output.
+_INSTALL_LOG_FILENAME = ".agentrail-preview-install.log"
 
 
 @dataclass
@@ -147,7 +148,12 @@ def clone_pr_head(
         except (subprocess.SubprocessError, OSError) as exc:
             raise RuntimeError(redact_token(f"{step} failed: {exc}", token)) from None
         if getattr(proc, "returncode", 1) != 0:
-            stderr = redact_token((getattr(proc, "stderr", "") or "")[-500:].strip(), token)
+            # Redact the FULL stderr first, THEN truncate — never the other
+            # way round. redact_token is an exact-substring `.replace`; if a
+            # token straddles the truncation cutoff, truncating first can
+            # split it so the surviving fragment no longer matches the full
+            # token string and escapes redaction (review round 1, I1).
+            stderr = redact_token((getattr(proc, "stderr", "") or "").strip(), token)[-500:]
             raise RuntimeError(f"{step} failed: {stderr or '(no output)'}")
 
     _run(["git", "clone", "--depth", "1", clone_url, dest], cwd=None, step="git clone")
@@ -181,7 +187,7 @@ def pick_free_port() -> int:
 # ---------------------------------------------------------------------------
 
 
-def _probe_once(port: int, ready_path: str) -> bool:
+def _probe_once(port: int, ready_path: str, *, connect_timeout: float, http_timeout: float) -> bool:
     """A single TCP-then-HTTP attempt. TCP connect first (cheap, tells us
     the child is at least listening) before ever issuing an HTTP request —
     if a request landed on a closed/unlistening port it would just raise
@@ -190,24 +196,44 @@ def _probe_once(port: int, ready_path: str) -> bool:
     a real HTTP server answered on that port (many recipes' default
     ready_path of "/" resolves this way for e.g. a JSON API with no root
     route) — 5xx means the process is up but not yet actually healthy.
+
+    A probe's ONLY job is answering "healthy yes/no" — it must NEVER raise.
+    The HTTP half's except is deliberately a broad ``except Exception``
+    (review round 1, C1): the previous narrower
+    ``(URLError, OSError, ValueError)`` list missed
+    ``http.client.HTTPException`` (e.g. ``BadStatusLine``, raised when a
+    port is bound but the peer sends bytes that aren't a valid HTTP status
+    line — a realistic case for a still-starting or misconfigured process,
+    and directly triggerable by the untrusted repo code this module boots),
+    which is not an ``OSError`` subclass and so escaped uncaught. Any
+    failure to get a clean sub-500 response — transport error, malformed
+    response, anything else — means "not ready yet", full stop, rather than
+    depending on this except list staying exhaustive forever.
     """
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=_PROBE_CONNECT_TIMEOUT):
+        with socket.create_connection(("127.0.0.1", port), timeout=connect_timeout):
             pass
     except OSError:
         return False
 
     url = f"http://127.0.0.1:{port}{ready_path}"
     try:
-        with urllib.request.urlopen(url, timeout=_PROBE_HTTP_TIMEOUT) as resp:
+        with urllib.request.urlopen(url, timeout=http_timeout) as resp:
             return resp.status < 500
     except urllib.error.HTTPError as exc:
         # HTTPError IS urlopen's normal way of surfacing a non-2xx/3xx
         # response (it is not a transport failure) — its .code is the real
         # status.
         return exc.code < 500
-    except (urllib.error.URLError, OSError, ValueError):
+    except Exception:  # noqa: BLE001 - see docstring: a probe must never raise
         return False
+
+
+# A single probe attempt is never given less than this, even when the
+# overall deadline has already passed — health_check always attempts at
+# least once (see its own docstring), and a near-zero timeout would make an
+# attempt meaningless.
+_MIN_PROBE_TIMEOUT = 0.1
 
 
 def health_check(port: int, ready_path: str, *, timeout: float, interval: float = 0.5) -> bool:
@@ -217,14 +243,33 @@ def health_check(port: int, ready_path: str, *, timeout: float, interval: float 
     unix socket file. Always attempts at least once, even for a ``timeout``
     of 0 — there is never a reason to report "unhealthy" without having
     actually tried.
+
+    Each attempt's own connect/HTTP timeouts are capped to whatever budget
+    actually remains before the deadline (floored at
+    :data:`_MIN_PROBE_TIMEOUT`), not left at their fixed
+    :data:`_PROBE_CONNECT_TIMEOUT` / :data:`_PROBE_HTTP_TIMEOUT` maximums
+    unconditionally. Without this, a single attempt starting just before the
+    deadline could itself run for the full ~2s combined probe budget,
+    overshooting a caller's requested ``timeout`` by nearly that much
+    (review round 1, M1) — capping bounds the overshoot to roughly
+    :data:`_MIN_PROBE_TIMEOUT`.
     """
     deadline = time.monotonic() + timeout
+    first_attempt = True
     while True:
-        if _probe_once(port, ready_path):
-            return True
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if not first_attempt and remaining <= 0:
             return False
-        time.sleep(interval)
+        budget = max(remaining, _MIN_PROBE_TIMEOUT)
+        connect_timeout = min(_PROBE_CONNECT_TIMEOUT, budget)
+        http_timeout = min(_PROBE_HTTP_TIMEOUT, budget)
+        if _probe_once(port, ready_path, connect_timeout=connect_timeout, http_timeout=http_timeout):
+            return True
+        first_attempt = False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
 
 
 # ---------------------------------------------------------------------------
@@ -288,14 +333,6 @@ def _tail_bytes(path: str, max_bytes: int = _LOG_TAIL_BYTES) -> str:
     return data.decode("utf-8", errors="replace").strip()
 
 
-def _tail_text(stdout: str, stderr: str, *, max_lines: int = _INSTALL_TAIL_LINES) -> str:
-    """Trailing lines of whichever of stdout/stderr is non-empty, preferring
-    stdout — mirrors ``native_runner.py``'s own ``_logs_tail`` convention."""
-    body = stdout if (stdout or "").strip() else (stderr or "")
-    lines = body.splitlines()
-    return "\n".join(lines[-max_lines:]).strip()
-
-
 # ---------------------------------------------------------------------------
 # boot / teardown
 # ---------------------------------------------------------------------------
@@ -304,34 +341,88 @@ def _tail_text(stdout: str, stderr: str, *, max_lines: int = _INSTALL_TAIL_LINES
 def _run_install(argv: list, clone_dir: str, process_env: dict, timeout: float) -> None:
     """Run ``recipe.install`` in ``clone_dir``, capped at ``timeout``.
 
-    Uses the SAME public-safe env boundary as the boot child itself
-    (``build_native_child_env`` with no extra caller_env) — install steps
-    (``npm ci``, etc.) are just as untrusted as the start command; there is
-    no reason to hand them anything more.
+    Gets the EXACT SAME process-group discipline as the boot child itself
+    (review round 1, C2) — ``start_new_session=True`` + stdout/stderr teed
+    to a file, never a pipe — because the install step is just as untrusted
+    as the start command (e.g. an attacker-controlled npm ``postinstall``
+    script is a well-known supply-chain technique) and can just as easily
+    background a detached grandchild:
 
-    On any failure (couldn't start, timed out, non-zero exit) this removes
-    ``clone_dir`` itself before raising :class:`BootError` — no process was
-    spawned yet at this point (this always runs before the start command),
-    so there is nothing else to clean up.
+      - A pipe (the previous ``subprocess.run(capture_output=True)``)
+        reintroduces the exact deadlock this module otherwise avoids for
+        the boot child: a grandchild inheriting the pipe's write end keeps
+        it open after the install command itself exits, so
+        ``communicate()`` can't see EOF and blocks for the FULL ``timeout``
+        regardless of how fast the install command actually finished. A
+        file has no such failure mode.
+      - Without a captured pgid, a grandchild is structurally unreachable
+        by ANY cleanup here — not just on timeout. Capturing it (exactly
+        like the boot child) and ``killpg``-ing the whole group on every
+        exit path — success included, in case a grandchild outlived a
+        successful install — closes that.
+
+    Uses the SAME public-safe env boundary as the boot child
+    (``build_native_child_env`` with no extra caller_env). On any failure
+    (couldn't start, timed out, non-zero exit) this kills the whole process
+    group and removes ``clone_dir`` before raising :class:`BootError` — no
+    other process has been spawned yet at this point (this always runs
+    before the start command), so there is nothing else to clean up.
     """
     install_env = build_native_child_env(process_env, {})
+    log_path = os.path.join(clone_dir, _INSTALL_LOG_FILENAME)
+
     try:
-        result = subprocess.run(
-            argv, cwd=clone_dir, env=install_env, timeout=timeout,
-            capture_output=True, text=True,
-        )
-    except subprocess.TimeoutExpired:
-        shutil.rmtree(clone_dir, ignore_errors=True)
-        raise BootError(f"install step timed out after {timeout}s: {argv!r}") from None
-    except (subprocess.SubprocessError, OSError) as exc:
+        with open(log_path, "wb") as log_fh:
+            proc = subprocess.Popen(
+                argv,
+                cwd=clone_dir,
+                env=install_env,
+                start_new_session=True,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+            )
+    except OSError as exc:
         shutil.rmtree(clone_dir, ignore_errors=True)
         raise BootError(f"install step failed to start: {exc}") from None
-    if result.returncode != 0:
-        tail = _tail_text(result.stdout, result.stderr)
+
+    pgid = _process_group_id(proc)
+
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        tail = _tail_bytes(log_path)
+        _kill_process_group(proc, pgid)  # reaches a grandchild too, not just argv[0]
         shutil.rmtree(clone_dir, ignore_errors=True)
         raise BootError(
-            f"install step {argv!r} exited {result.returncode}: {tail or '(no output)'}"
-        )
+            f"install step {argv!r} timed out after {timeout}s: {tail or '(no output)'}"
+        ) from None
+
+    if returncode != 0:
+        tail = _tail_bytes(log_path)
+        _kill_process_group(proc, pgid)  # in case a grandchild is still around
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        raise BootError(f"install step {argv!r} exited {returncode}: {tail or '(no output)'}")
+
+    # Success: still reap the whole group, in case the install command left
+    # a detached grandchild running in the background — there is no
+    # legitimate reason for one to survive into the boot-child phase.
+    _kill_process_group(proc, pgid)
+
+
+def _fail_boot(proc: subprocess.Popen, pgid: int, clone_dir: str, log_path: str, reason: str) -> None:
+    """Tear down a just-spawned boot child and raise :class:`BootError`.
+
+    The single funnel every :func:`boot` failure AFTER ``Popen`` succeeds
+    goes through — kill the process group, remove ``clone_dir``, THEN
+    raise — so the "no leaked process, no leftover dir" guarantee lives in
+    ONE place rather than being re-implemented (and potentially
+    forgotten/gotten-wrong) at every call site. Always raises; never
+    returns normally.
+    """
+    tail = _tail_bytes(log_path)
+    _kill_process_group(proc, pgid)
+    shutil.rmtree(clone_dir, ignore_errors=True)
+    raise BootError(f"{reason}: {tail or '(no output)'}")
 
 
 def boot(
@@ -355,10 +446,13 @@ def boot(
     wins over anything of the same name in ``process_env``).
 
     On any failure — install failure, the start command failing to spawn
-    at all, or a health-check timeout — this cleans up everything it
-    started for this attempt (killed process group, ``clone_dir`` removed)
-    before raising :class:`BootError`, so a caller never needs to call
-    :func:`teardown` on a failed :func:`boot`.
+    at all, health_check returning False, OR health_check RAISING (review
+    round 1, C1: ``_probe_once``'s own except is broadened, but this is a
+    second, independent safety net — the cleanup guarantee must not rest
+    entirely on that except list staying exhaustive forever) — this cleans
+    up everything it started for this attempt (killed process group,
+    ``clone_dir`` removed) before raising :class:`BootError`, so a caller
+    never needs to call :func:`teardown` on a failed :func:`boot`.
     """
     if recipe.install:
         _run_install(recipe.install, clone_dir, process_env, timeout)
@@ -383,13 +477,23 @@ def boot(
 
     pgid = _process_group_id(proc)
 
-    if not health_check(port, recipe.ready_path, timeout=timeout):
-        tail = _tail_bytes(log_path)
-        _kill_process_group(proc, pgid)
-        shutil.rmtree(clone_dir, ignore_errors=True)
-        raise BootError(
+    try:
+        healthy = health_check(port, recipe.ready_path, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - belt-and-suspenders (C1): even an
+        # exception type _probe_once's own broadened catch doesn't happen to
+        # cover must still trigger full cleanup, never escape with a live
+        # process/leftover clone_dir.
+        _fail_boot(
+            proc, pgid, clone_dir, log_path,
+            f"boot child {recipe.start!r} on port {port} raised during health-check "
+            f"(ready_path={recipe.ready_path!r}): {exc!r}",
+        )
+
+    if not healthy:
+        _fail_boot(
+            proc, pgid, clone_dir, log_path,
             f"boot child {recipe.start!r} on port {port} never became healthy "
-            f"(ready_path={recipe.ready_path!r}): {tail or '(no output)'}"
+            f"(ready_path={recipe.ready_path!r})",
         )
 
     return BootHandle(

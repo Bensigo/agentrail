@@ -117,6 +117,81 @@ def _running_http_server(port: int, handler_cls: type):
         httpd.server_close()
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid still exists — a liveness check via
+    signal 0, which sends no actual signal and only probes existence."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _garbage_protocol_recipe(port: int) -> PreviewRecipe:
+    """Binds ``port`` for REAL (the TCP half of a probe succeeds) but
+    speaks garbage, not HTTP: any GET raises ``http.client.HTTPException``
+    (e.g. ``BadStatusLine``), which is NOT an ``OSError`` subclass (C1) —
+    a realistic case for a misconfigured recipe or a hostile PR."""
+    script = textwrap.dedent(
+        f"""
+        import socket
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", {port}))
+        srv.listen(5)
+        while True:
+            conn, _addr = srv.accept()
+            conn.sendall(b"NOT_AN_HTTP_STATUS_LINE_AT_ALL\\r\\n\\r\\n")
+            conn.close()
+        """
+    )
+    return PreviewRecipe(
+        install=None,
+        start=[sys.executable, "-c", script],
+        port=port,
+        ready_path="/",
+    )
+
+
+@contextlib.contextmanager
+def _black_hole_listener(port: int):
+    """Accepts TCP connections (so the TCP half of a probe succeeds
+    immediately) but never sends a byte back — makes the HTTP half of a
+    single probe attempt consume its full timeout. Used to prove
+    health_check's deadline overshoot is bounded (M1)."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(5)
+    srv.settimeout(0.2)
+    stop = threading.Event()
+    conns: list = []
+
+    def _accept_loop() -> None:
+        while not stop.is_set():
+            try:
+                conn, _addr = srv.accept()
+                conns.append(conn)  # keep open; never write to or close it
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+    thread = threading.Thread(target=_accept_loop, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+        for conn in conns:
+            with contextlib.suppress(OSError):
+                conn.close()
+        srv.close()
+
+
 # ---------------------------------------------------------------------------
 # pick_free_port
 # ---------------------------------------------------------------------------
@@ -184,6 +259,29 @@ class TestHealthCheck:
                 box[0].shutdown()
                 box[0].server_close()
             thread.join(timeout=2)
+
+
+class TestHealthCheckDeadlineDiscipline:
+    """M1 (review round 1): a single probe attempt starting near the
+    deadline must not itself be allowed to run for its full fixed budget
+    (~2s) past that deadline — total wall time should stay within a small
+    margin of the caller's requested ``timeout``."""
+
+    def test_total_wall_time_stays_within_a_small_margin_of_the_requested_timeout(
+        self,
+    ) -> None:
+        port = pick_free_port()
+        timeout = 0.3
+        with _black_hole_listener(port):
+            start = time.monotonic()
+            result = health_check(port, "/", timeout=timeout, interval=0.2)
+            elapsed = time.monotonic() - start
+
+        assert result is False
+        # OLD behavior: a probe starting right at the deadline could itself
+        # take up to ~2s (the fixed connect+HTTP probe budget), overshooting
+        # a 0.3s request by nearly 2s. Bounded now to a small margin.
+        assert elapsed < timeout + 0.6, f"overshot {timeout}s budget: took {elapsed:.2f}s"
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +416,41 @@ class TestClonePrHead:
         assert len(runner.calls) == 2  # checkout never attempted
         assert token not in str(exc_info.value)
 
+    def test_token_straddling_the_truncation_boundary_is_still_fully_redacted(
+        self, tmp_path: Path
+    ) -> None:
+        """I1 (review round 1): the OLD code truncated stderr to its last
+        500 chars BEFORE redacting, so a token straddling that cutoff lost
+        its matching prefix and a fragment survived untouched. Position the
+        token so the cut lands strictly inside it, and assert on a
+        distinguishing tail fragment — not just the full token — since a
+        naive "token not in message" check alone wouldn't catch a PARTIAL
+        leak (the surviving fragment isn't the complete token string)."""
+        dest = str(tmp_path / "clone")
+        token = "ghp_" + "".join(f"{i:03d}" for i in range(15))  # 49 unique chars
+        tail_fragment = token[-12:]
+
+        prefix = "F" * 40
+        suffix = "S" * 480
+        leaking_stderr = prefix + token + suffix
+        # Sanity-check the fixture itself: the [-500:] cut must land
+        # strictly inside the token, not before or after it, or this test
+        # wouldn't actually exercise the straddling case it claims to.
+        cut_from_start = len(leaking_stderr) - 500
+        assert len(prefix) < cut_from_start < len(prefix) + len(token)
+
+        runner = _StubRunner([_StubCompleted(1, "", leaking_stderr)])
+
+        with pytest.raises(RuntimeError) as exc_info:
+            clone_pr_head(
+                "https://github.com/acme/widgets.git", "deadbeef", dest,
+                token=token, runner=runner,
+            )
+
+        message = str(exc_info.value)
+        assert token not in message
+        assert tail_fragment not in message, "a fragment of the token leaked past truncation"
+
 
 # ---------------------------------------------------------------------------
 # boot / teardown — real fixture lifecycle
@@ -381,6 +514,58 @@ class TestBootLifecycle:
             assert result.returncode != 0, f"leaked process still running: {result.stdout}"
 
 
+class TestBootHealthCheckExceptionSafety:
+    """C1 (review round 1): an exception escaping health_check must never
+    skip boot()'s cleanup. Two independent proofs:
+      (a) a REAL untrusted process that triggers the actual gap found (a
+          non-HTTP response raising http.client.HTTPException, which
+          _probe_once's old except clause did not catch), and
+      (b) a monkeypatched health_check raising something arbitrary,
+          proving boot()'s OWN try/except safety net works on its own,
+          independent of how exhaustive _probe_once's except clause is —
+          the brief's "fix BOTH" ask.
+    """
+
+    def test_non_http_response_on_the_port_still_raises_boot_error_and_cleans_up(
+        self, clone_dir: str
+    ) -> None:
+        port = pick_free_port()
+        recipe = _garbage_protocol_recipe(port)
+
+        with pytest.raises(BootError):
+            boot(
+                recipe, clone_dir, advertise_host="127.0.0.1",
+                process_env=dict(os.environ), timeout=2.0,
+            )
+
+        assert not os.path.exists(clone_dir)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.5)
+
+    def test_boot_cleans_up_even_if_health_check_itself_raises_unexpectedly(
+        self, clone_dir: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agentrail.sandbox.preview_boot as preview_boot_module
+
+        port = pick_free_port()
+        recipe = _http_server_recipe(port)
+
+        def _boom(*_args: Any, **_kwargs: Any) -> bool:
+            raise ValueError("simulated unexpected health_check failure")
+
+        monkeypatch.setattr(preview_boot_module, "health_check", _boom)
+
+        with pytest.raises(BootError):
+            boot(
+                recipe, clone_dir, advertise_host="127.0.0.1",
+                process_env=dict(os.environ), timeout=3.0,
+            )
+
+        assert not os.path.exists(clone_dir)
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.5)
+
+
 class TestBootInstallStep:
     def test_install_failure_raises_boot_error_and_never_spawns_start(
         self, clone_dir: str
@@ -402,6 +587,101 @@ class TestBootInstallStep:
         assert not os.path.exists(clone_dir)
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=0.3)
+
+
+class TestRunInstallProcessGroupDiscipline:
+    """C2 (review round 1): the install step must get the SAME
+    process-group discipline as the boot child — file-logged (not piped)
+    stdout/stderr, and a killpg on every exit path. Without it, a
+    backgrounded grandchild (e.g. from an attacker-controlled npm
+    ``postinstall``) both re-introduces the exact pipe-deadlock this
+    module documents avoiding for the boot child, AND survives cleanup."""
+
+    def test_a_backgrounded_grandchild_does_not_block_install_for_the_full_timeout(
+        self, tmp_path: Path, clone_dir: str
+    ) -> None:
+        port = pick_free_port()
+        pid_file = tmp_path / "grandchild.pid"
+        install_script = tmp_path / "install_backgrounds_a_grandchild.py"
+        install_script.write_text(
+            textwrap.dedent(
+                f"""
+                import subprocess, sys
+                # Inherits OUR stdout/stderr (the pipe-deadlock hazard) and
+                # is NOT setsid'd (stays in our process group — the
+                # killpg-reachability hazard). Outlives this script.
+                gc = subprocess.Popen([sys.executable, "-c",
+                                        "import time; time.sleep(30)"])
+                with open({str(pid_file)!r}, "w") as fh:
+                    fh.write(str(gc.pid))
+                sys.exit(0)
+                """
+            ),
+            encoding="utf-8",
+        )
+        recipe = PreviewRecipe(
+            install=[sys.executable, str(install_script)],
+            start=[sys.executable, "-m", "http.server", str(port)],
+            port=port,
+            ready_path="/",
+        )
+
+        start = time.monotonic()
+        handle = boot(
+            recipe, clone_dir, advertise_host="127.0.0.1",
+            process_env=dict(os.environ), timeout=6.0,
+        )
+        elapsed = time.monotonic() - start
+        try:
+            # The install script itself exits almost instantly; the old
+            # pipe-based capture would instead block this for the FULL 6s
+            # timeout regardless, waiting on the grandchild's pipe end.
+            assert elapsed < 3.0, f"install blocked on the grandchild's pipe: took {elapsed:.2f}s"
+        finally:
+            teardown(handle)
+
+        grandchild_pid = int(pid_file.read_text().strip())
+        assert not _pid_alive(grandchild_pid), (
+            "install's grandchild survived — leaked outside process-group cleanup"
+        )
+
+    def test_install_timeout_kills_the_whole_group_including_a_grandchild(
+        self, tmp_path: Path, clone_dir: str
+    ) -> None:
+        port = pick_free_port()
+        pid_file = tmp_path / "grandchild.pid"
+        install_script = tmp_path / "install_hangs_after_backgrounding.py"
+        install_script.write_text(
+            textwrap.dedent(
+                f"""
+                import subprocess, sys, time
+                gc = subprocess.Popen([sys.executable, "-c",
+                                        "import time; time.sleep(30)"])
+                with open({str(pid_file)!r}, "w") as fh:
+                    fh.write(str(gc.pid))
+                time.sleep(30)  # the install command itself never finishes
+                """
+            ),
+            encoding="utf-8",
+        )
+        recipe = PreviewRecipe(
+            install=[sys.executable, str(install_script)],
+            start=[sys.executable, "-m", "http.server", str(port)],
+            port=port,
+            ready_path="/",
+        )
+
+        with pytest.raises(BootError):
+            boot(
+                recipe, clone_dir, advertise_host="127.0.0.1",
+                process_env=dict(os.environ), timeout=1.5,
+            )
+
+        assert not os.path.exists(clone_dir)
+        grandchild_pid = int(pid_file.read_text().strip())
+        assert not _pid_alive(grandchild_pid), (
+            "install's grandchild survived an install timeout — leaked"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -323,6 +323,10 @@ async function getPreviewBootStatus({ baseUrl, token, id, eveSessionId, transpor
     status: bootStatus,
     url: typeof body.url === "string" ? body.url : null,
     reason: typeof body.reason === "string" ? body.reason : null,
+    bootLogKey:
+      typeof body.bootLogKey === "string" && body.bootLogKey.trim()
+        ? body.bootLogKey
+        : null,
   };
 }
 
@@ -377,10 +381,18 @@ async function pollPreviewBoot({ baseUrl, token, id, eveSessionId, transport, sl
         if (typeof polled.url !== "string" || !polled.url.trim()) {
           return degraded("bad_body");
         }
-        return { ok: true, id, url: polled.url };
+        const result = { ok: true, id, url: polled.url };
+        if (polled.bootLogKey) result.bootLogKey = polled.bootLogKey;
+        return result;
       }
-      if (polled.status === "failed") return degraded("boot_failed", { reason: polled.reason });
-      if (polled.status === "torn_down") return degraded("boot_gone");
+      if (polled.status === "failed") {
+        const extra = { reason: polled.reason };
+        if (polled.bootLogKey) extra.bootLogKey = polled.bootLogKey;
+        return degraded("boot_failed", extra);
+      }
+      if (polled.status === "torn_down") {
+        return degraded("boot_gone", polled.bootLogKey ? { bootLogKey: polled.bootLogKey } : {});
+      }
       // pending / claimed / booting / any other value this module doesn't
       // recognize as terminal -> still in flight -> loop back and re-check
       // the TTL.
@@ -403,8 +415,8 @@ async function pollPreviewBoot({ baseUrl, token, id, eveSessionId, transport, sl
  *   4. POST non-2xx                              -> degraded(<mapped reason>[, {status}])
  *   5. POST non-JSON / missing `id` in the body  -> degraded("bad_body")
  *   6. poll reaches `ready`                      -> { ok: true, id, url }
- *   7. poll reaches `failed`                     -> degraded("boot_failed", {reason})
- *   8. poll reaches `torn_down`                  -> degraded("boot_gone")
+ *   7. poll reaches `failed`                     -> degraded("boot_failed", {reason, bootLogKey?})
+ *   8. poll reaches `torn_down`                  -> degraded("boot_gone", {bootLogKey?})
  *   9. poll TTL (or the MAX_POLL_ATTEMPTS
  *      backstop) elapses first                   -> degraded("boot_timeout")
  *  10. poll GET 404s                              -> degraded("boot_lost")
@@ -420,7 +432,7 @@ async function pollPreviewBoot({ baseUrl, token, id, eveSessionId, transport, sl
  *           transport: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}>,
  *           sleep: (ms: number) => Promise<void>,
  *           now?: () => number }} args
- * @returns {Promise<{ok:true,id:string,url:string|null} | {ok:false,degraded:true,reason:string,note:string,[k:string]:unknown}>}
+ * @returns {Promise<{ok:true,id:string,url:string,bootLogKey?:string} | {ok:false,degraded:true,reason:string,note:string,bootLogKey?:string,[k:string]:unknown}>}
  */
 export async function requestPreviewBoot({
   eveSessionId,

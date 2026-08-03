@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { reportPreviewBoot } from "@agentrail/db-postgres";
+import { reportPreviewBoot, setPreviewBootLogKey } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
+import {
+  bootLogArtifactKey,
+  putArtifact,
+  storageConfigured,
+} from "../../../../../../lib/artifacts/store";
 import { previewBootsDisabled, previewBootsDisabledResponse } from "../shared";
 
 /**
@@ -24,7 +29,7 @@ import { previewBootsDisabled, previewBootsDisabledResponse } from "../shared";
  * FLAG (immediately after auth): `PREVIEW_BOOTS_ENABLED !== "1"` — 503
  * (`../shared.ts`).
  *
- * BODY: `{ id, workerId, status, url?, port?, reason? }`. `id`/`workerId`
+ * BODY: `{ id, workerId, status, url?, port?, reason?, bootLog? }`. `id`/`workerId`
  * (non-empty strings) and `status` (one of the four legal values) are
  * required — 400 otherwise, before any db call. `url`/`port`/`reason` are
  * optional pass-through fields `reportPreviewBoot` itself only writes on the
@@ -51,6 +56,10 @@ import { previewBootsDisabled, previewBootsDisabledResponse } from "../shared";
  * worker" from "illegal transition" from "unknown id"; all three read as
  * "boot not found or not owned" to the caller.
  *
+ * `bootLog` is a bounded, best-effort text/plain tail. It is uploaded only
+ * after the guarded transition succeeds; storage failure never changes the
+ * lifecycle response. The resulting key is returned by the poll route.
+ *
  * RESPONSE: `null` -> 409 `{error:"boot not found or not owned"}`; otherwise
  * 200 `{ok:true, status:row.status}` — the row's OWN post-transition status
  * (matters for the `ready`->`ready` idempotent liveness re-report branch,
@@ -60,6 +69,7 @@ import { previewBootsDisabled, previewBootsDisabledResponse } from "../shared";
 
 const STATUSES = new Set(["booting", "ready", "failed", "torn_down"]);
 type Status = "booting" | "ready" | "failed" | "torn_down";
+const MAX_BOOT_LOG_BYTES = 256 * 1024;
 
 interface ReportBody {
   id: string;
@@ -68,6 +78,7 @@ interface ReportBody {
   url?: string;
   port?: number;
   reason?: string;
+  bootLog?: string;
 }
 
 const REQUIRED_FIELDS_MESSAGE =
@@ -81,31 +92,66 @@ function isStatus(v: unknown): v is Status {
   return typeof v === "string" && STATUSES.has(v);
 }
 
-function parseReportBody(raw: unknown): ReportBody | null {
-  if (!raw || typeof raw !== "object") return null;
+type ParseResult =
+  | { ok: true; body: ReportBody }
+  | { ok: false; status: number; error: string };
+
+function parseReportBody(raw: unknown): ParseResult {
+  if (!raw || typeof raw !== "object") {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
   const o = raw as Record<string, unknown>;
 
-  if (!isNonEmptyString(o.id)) return null;
-  if (!isNonEmptyString(o.workerId)) return null;
-  if (!isStatus(o.status)) return null;
+  if (!isNonEmptyString(o.id)) {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
+  if (!isNonEmptyString(o.workerId)) {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
+  if (!isStatus(o.status)) {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
 
   // Present-but-malformed optional fields are a 400, same posture
   // review-jobs/complete/route.ts uses for its own evidenceKeys — never a
   // silent ignore of a caller's mistake.
-  if (o.url !== undefined && typeof o.url !== "string") return null;
+  if (o.url !== undefined && typeof o.url !== "string") {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
   // Number.isInteger, not typeof === "number" (Fix round 1, Finding 2): the
   // column is a Postgres `integer` — NaN/Infinity/1.5 must 400 here, not
   // reach the DB layer uncaught. See this file's own doc-comment.
-  if (o.port !== undefined && !Number.isInteger(o.port)) return null;
-  if (o.reason !== undefined && typeof o.reason !== "string") return null;
+  if (o.port !== undefined && !Number.isInteger(o.port)) {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
+  if (o.reason !== undefined && typeof o.reason !== "string") {
+    return { ok: false, status: 400, error: REQUIRED_FIELDS_MESSAGE };
+  }
+  if (o.bootLog !== undefined && typeof o.bootLog !== "string") {
+    return { ok: false, status: 400, error: "bootLog must be a string when provided" };
+  }
+  if (
+    typeof o.bootLog === "string" &&
+    Buffer.byteLength(o.bootLog, "utf8") > MAX_BOOT_LOG_BYTES
+  ) {
+    return {
+      ok: false,
+      status: 413,
+      error: `bootLog exceeds ${MAX_BOOT_LOG_BYTES} bytes`,
+    };
+  }
 
   return {
-    id: o.id,
-    workerId: o.workerId,
-    status: o.status,
-    url: typeof o.url === "string" ? o.url : undefined,
-    port: typeof o.port === "number" ? o.port : undefined,
-    reason: typeof o.reason === "string" ? o.reason : undefined,
+    ok: true,
+    body: {
+      id: o.id,
+      workerId: o.workerId,
+      status: o.status,
+      url: typeof o.url === "string" ? o.url : undefined,
+      port: typeof o.port === "number" ? o.port : undefined,
+      reason: typeof o.reason === "string" ? o.reason : undefined,
+      bootLog: typeof o.bootLog === "string" ? o.bootLog : undefined,
+    },
   };
 }
 
@@ -125,22 +171,63 @@ export async function POST(request: NextRequest) {
   }
 
   const body = parseReportBody(raw);
-  if (!body) {
-    return NextResponse.json({ error: REQUIRED_FIELDS_MESSAGE }, { status: 400 });
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status });
   }
 
   const row = await reportPreviewBoot({
-    id: body.id,
-    workerId: body.workerId,
-    status: body.status,
-    url: body.url,
-    port: body.port,
-    reason: body.reason,
+    id: body.body.id,
+    workerId: body.body.workerId,
+    status: body.body.status,
+    url: body.body.url,
+    port: body.body.port,
+    reason: body.body.reason,
   });
 
   if (!row) {
     return NextResponse.json({ error: "boot not found or not owned" }, { status: 409 });
   }
 
+  if (body.body.bootLog !== undefined) {
+    await storeBootLogBestEffort({
+      id: row.id,
+      workerId: body.body.workerId,
+      workspaceId: row.workspaceId,
+      repo: row.repo,
+      prNumber: row.prNumber,
+      headSha: row.headSha,
+      bootLog: body.body.bootLog,
+    });
+  }
+
   return NextResponse.json({ ok: true, status: row.status }, { status: 200 });
+}
+
+async function storeBootLogBestEffort(input: {
+  id: string;
+  workerId: string;
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  bootLog: string;
+}): Promise<void> {
+  if (!storageConfigured(process.env)) return;
+
+  try {
+    const key = bootLogArtifactKey({
+      workspaceId: input.workspaceId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
+    });
+    await putArtifact(key, Buffer.from(input.bootLog, "utf8"), "text/plain");
+    await setPreviewBootLogKey({
+      id: input.id,
+      workerId: input.workerId,
+      bootLogKey: key,
+    });
+  } catch (err) {
+    console.error("[preview-boots/report] boot log storage failed:", err);
+  }
 }

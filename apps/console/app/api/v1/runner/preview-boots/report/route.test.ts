@@ -3,12 +3,27 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   reportPreviewBoot: vi.fn(),
+  setPreviewBootLogKey: vi.fn(),
 }));
-import { reportPreviewBoot } from "@agentrail/db-postgres";
+vi.mock("../../../../../../lib/artifacts/store", () => ({
+  bootLogArtifactKey: vi.fn(),
+  putArtifact: vi.fn(),
+  storageConfigured: vi.fn(),
+}));
+import { reportPreviewBoot, setPreviewBootLogKey } from "@agentrail/db-postgres";
+import {
+  bootLogArtifactKey,
+  putArtifact,
+  storageConfigured,
+} from "../../../../../../lib/artifacts/store";
 
 import { POST } from "./route";
 
 const mockReport = vi.mocked(reportPreviewBoot);
+const mockSetBootLogKey = vi.mocked(setPreviewBootLogKey);
+const mockBootLogArtifactKey = vi.mocked(bootLogArtifactKey);
+const mockPutArtifact = vi.mocked(putArtifact);
+const mockStorageConfigured = vi.mocked(storageConfigured);
 
 const AUTH_ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-shared-secret-abc123";
@@ -52,6 +67,7 @@ const READY_ROW = {
   claimedAt: NOW,
   url: "http://127.0.0.1:41234",
   port: 41234,
+  bootLogKey: null,
   reason: null,
   attempts: 0,
   expiresAt: new Date(NOW.getTime() + 720_000),
@@ -76,6 +92,12 @@ beforeEach(() => {
   process.env[AUTH_ENV_KEY] = SECRET;
   process.env[FLAG_ENV_KEY] = "1";
   mockReport.mockResolvedValue(null as never);
+  mockSetBootLogKey.mockResolvedValue(null as never);
+  mockStorageConfigured.mockReturnValue(false);
+  mockBootLogArtifactKey.mockReturnValue(
+    "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log"
+  );
+  mockPutArtifact.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -214,6 +236,18 @@ describe("POST /api/v1/runner/preview-boots/report", () => {
       expect(res.status).toBe(400);
       expect(mockReport).not.toHaveBeenCalled();
     });
+
+    it("400 when bootLog is present but not a string", async () => {
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: 123 }));
+      expect(res.status).toBe(400);
+      expect(mockReport).not.toHaveBeenCalled();
+    });
+
+    it("413 when bootLog exceeds the bounded input cap", async () => {
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: "x".repeat(256 * 1024 + 1) }));
+      expect(res.status).toBe(413);
+      expect(mockReport).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -258,6 +292,19 @@ describe("POST /api/v1/runner/preview-boots/report", () => {
         reason: "boot error",
       });
     });
+
+    it("does not pass bootLog into the status transition query", async () => {
+      mockReport.mockResolvedValue(READY_ROW as never);
+      await POST(postReq({ ...VALID_READY_BODY, bootLog: "boot output" }));
+      expect(mockReport).toHaveBeenCalledWith({
+        id: "boot-1",
+        workerId: "worker-1",
+        status: "ready",
+        url: "http://127.0.0.1:41234",
+        port: 41234,
+        reason: undefined,
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -286,6 +333,15 @@ describe("POST /api/v1/runner/preview-boots/report", () => {
       const res = await POST(postReq({ id: "unknown-id", workerId: "w1", status: "ready" }));
       expect(res.status).toBe(409);
     });
+
+    it("does not store bootLog when the guarded status transition fails", async () => {
+      mockStorageConfigured.mockReturnValue(true);
+      mockReport.mockResolvedValue(null as never);
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: "boot output" }));
+      expect(res.status).toBe(409);
+      expect(mockPutArtifact).not.toHaveBeenCalled();
+      expect(mockSetBootLogKey).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -311,6 +367,59 @@ describe("POST /api/v1/runner/preview-boots/report", () => {
       const res = await POST(postReq({ id: "boot-1", workerId: "worker-1", status: "torn_down", reason: "ttl expired" }));
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, status: "torn_down" });
+    });
+
+    it("best-effort stores bootLog as text/plain and persists the key when storage is configured", async () => {
+      mockStorageConfigured.mockReturnValue(true);
+      mockReport.mockResolvedValue(READY_ROW as never);
+      mockSetBootLogKey.mockResolvedValue({
+        ...READY_ROW,
+        bootLogKey: "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log",
+      } as never);
+
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: "server ready\n" }));
+
+      expect(res.status).toBe(200);
+      expect(mockBootLogArtifactKey).toHaveBeenCalledWith({
+        workspaceId: "ws-1",
+        repo: "ada/widgets",
+        prNumber: 98,
+        headSha: "deadbeefcafe",
+      });
+      expect(mockPutArtifact).toHaveBeenCalledWith(
+        "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log",
+        Buffer.from("server ready\n", "utf8"),
+        "text/plain"
+      );
+      expect(mockSetBootLogKey).toHaveBeenCalledWith({
+        id: "boot-1",
+        workerId: "worker-1",
+        bootLogKey: "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log",
+      });
+    });
+
+    it("does not fail the status report when storage is disabled", async () => {
+      mockStorageConfigured.mockReturnValue(false);
+      mockReport.mockResolvedValue(READY_ROW as never);
+
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: "server ready\n" }));
+
+      expect(res.status).toBe(200);
+      expect(mockPutArtifact).not.toHaveBeenCalled();
+      expect(mockSetBootLogKey).not.toHaveBeenCalled();
+    });
+
+    it("does not fail the status report when artifact storage throws", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockStorageConfigured.mockReturnValue(true);
+      mockReport.mockResolvedValue(READY_ROW as never);
+      mockPutArtifact.mockRejectedValue(new Error("S3 unavailable"));
+
+      const res = await POST(postReq({ ...VALID_READY_BODY, bootLog: "server ready\n" }));
+
+      expect(res.status).toBe(200);
+      expect(mockSetBootLogKey).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
     });
   });
 });

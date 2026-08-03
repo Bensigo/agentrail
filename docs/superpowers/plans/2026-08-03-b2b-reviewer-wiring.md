@@ -40,14 +40,14 @@
 **Interface (produces):**
 ```
 requestPreviewBoot({ eveSessionId, repo, prNumber, headSha, env, transport, sleep, now }) ->
-  Promise<{ ok:true, id, url } | { ok:false, degraded:true, reason, note }>
+  Promise<{ ok:true, id, url, bootLogKey? } | { ok:false, degraded:true, reason, note, bootLogKey? }>
 ```
 - `resolveConsoleConfig(env)` verbatim from `fetch_issue.core.mjs`; unset → `degraded("config_missing", {missing})`.
 - POST `/api/v1/runner/preview-boots` with the Bearer + JSON body. Classify non-2xx to a stable reason: 503→`"boots_disabled"`, 403→`"not_enrolled"`, 404→`"session_or_repo"`, 409→`"no_workspace"`, 400→`"bad_request"`, other→`"request_failed"` (+status). Non-JSON body → `"bad_body"`. Transport throw → `"unreachable"`.
-- On `{id}`, poll GET `/api/v1/runner/preview-boots/{id}?eveSessionId=…`: constants `POLL_BACKOFF_MS=[2000,5000,10000]` (cap at last), `POLL_JITTER_MS=250`, `POLL_TTL_MS=8*60*1000` (a real `npm ci` + dev-server boot can take minutes — this is how long root waits for READY, distinct from the boot's own live-TTL), `MAX_POLL_ATTEMPTS=1000`, `BLIP_RETRY_DELAY_MS=500`, `REQUEST_TIMEOUT_MS=8000`. Terminal mapping: `ready`→`{ok:true, id, url}`; `failed`→`degraded("boot_failed",{reason})`; `torn_down`→`degraded("boot_gone")`; deadline→`degraded("boot_timeout")`; a 404 on poll→`degraded("boot_lost")`.
+- On `{id}`, poll GET `/api/v1/runner/preview-boots/{id}?eveSessionId=…`: constants `POLL_BACKOFF_MS=[2000,5000,10000]` (cap at last), `POLL_JITTER_MS=250`, `POLL_TTL_MS=8*60*1000` (a real `npm ci` + dev-server boot can take minutes — this is how long root waits for READY, distinct from the boot's own live-TTL), `MAX_POLL_ATTEMPTS=1000`, `BLIP_RETRY_DELAY_MS=500`, `REQUEST_TIMEOUT_MS=8000`. Terminal mapping: `ready`→`{ok:true, id, url, bootLogKey?}`; `failed`→`degraded("boot_failed",{reason,bootLogKey?})`; `torn_down`→`degraded("boot_gone",{bootLogKey?})`; deadline→`degraded("boot_timeout")`; a 404 on poll→`degraded("boot_lost")`.
 - `degraded(reason, extra)` returns `{ok:false, degraded:true, reason, note: NOTES[reason], ...extra}`; `NOTES` are fixed strings (never interpolate transport text or secrets).
 
-- [ ] Steps: TDD the core with injected `transport`/`sleep`/`now` — happy (POST→poll `pending`×2→`ready` returns url); `boot_failed`; `boot_timeout` (deadline hit); `boots_disabled` (503 POST, no poll); the backoff-before-first-GET + blip-retry. Then the thin `tools/request_preview_boot.ts` (mirror `post_pr_review.ts`: `defineTool`, `ctx.session.id`, real fetch-with-`AbortController`-timeout transport, `setTimeout` sleep, `Date.now`). → `cd apps/jace && pnpm test` green → Commit: `feat(jace): request_preview_boot root tool — request + poll the boot plane (B2b-ii)`.
+- [x] TDD the core with injected `transport`/`sleep`/`now` — happy (POST→poll `pending`×2→`ready` returns url); `boot_failed`; `boot_timeout` (deadline hit); `boots_disabled` (503 POST, no poll); the backoff-before-first-GET + blip-retry. Then the thin `tools/request_preview_boot.ts` (mirror `post_pr_review.ts`: `defineTool`, `ctx.session.id`, real fetch-with-`AbortController`-timeout transport, `setTimeout` sleep, `Date.now`). Boot-log keys now ride the ready result into the review job's `evidenceKeys` artifact trail. → `cd apps/jace && pnpm test` green → Commit: `feat(jace): request_preview_boot root tool — request + poll the boot plane (B2b-ii)`.
 
 ### Task 2: rung-2 in the review-job prompt
 
@@ -56,11 +56,11 @@ requestPreviewBoot({ eveSessionId, repo, prNumber, headSha, env, transport, slee
 **The rung-2 rewrite** (replace the current single behavioral bullet; keep the `not_testable with the concrete reason` + `which environment rung was reached` language intact):
 > - If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting (rung 1). If there is no preview URL, call request_preview_boot with (repo, prNumber, headSha); if it returns a booted URL, dispatch qa against THAT url exactly as rung 1 (rung 2). If there is no preview URL AND no boot becomes ready, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.
 
-- [ ] Steps: update the bullet in `review_job_prompt.mjs:55`; update the `EXPECTED` array element in `review_job_prompt.test.mjs` in LOCKSTEP (byte-for-byte) so the full-string pin passes; add `assert.match(reviewJobPrompt(JOB), /request_preview_boot/)`; confirm the existing `/not_testable with the concrete reason/` match still passes; update the §4 spec prose + the stale header-comment note. → `cd apps/jace && pnpm test` green → Commit: `feat(jace): review-job rung 2 — boot a no-preview PR before falling to not_testable (B2b-ii)`.
+- [x] Update the behavioral-AC bullet in `review_job_prompt.mjs`; update the `EXPECTED` array element in `review_job_prompt.test.mjs` in LOCKSTEP (byte-for-byte); pin `request_preview_boot`, `not_testable`, and rung-2 `bootLogKey` → `evidenceKeys`; update the §4 spec prose + header-comment note. → `cd apps/jace && pnpm test` green → Commit: `feat(jace): review-job rung 2 — boot a no-preview PR before falling to not_testable (B2b-ii)`.
 
 ### Task 3: sweep + final review + PR
 
-- [ ] Full `apps/jace` suite green; a wire-contract check that the tool's POST/GET shapes + query param match the live `preview-boots` routes (read them, confirm field names/casing). Coordinator runs a whole-branch review + opens the PR. (A full tool→worker→boot live smoke is optional — the routes+worker+boot were end-to-end-proven in #1573; this arc's new surface is the tool's poll logic (unit-covered) and the prompt pin.)
+- [ ] Full `apps/jace` suite green; a wire-contract check that the tool's POST/GET shapes + query param match the live `preview-boots` routes; boot-log key propagation and the full cloud smoke remain required before merge. Coordinator runs a whole-branch review + updates the PR. (The existing #1573 route/worker/boot smoke is not sufficient for this slice because it predates reviewer wiring and boot-log artifact attachment.)
 
 ## Acceptance criteria (final walk)
 
@@ -68,4 +68,4 @@ requestPreviewBoot({ eveSessionId, repo, prNumber, headSha, env, transport, slee
 2. Wire matches the live routes byte-for-byte (body `{eveSessionId, repo, prNumber, headSha}`; poll `?eveSessionId=`; `status` vocab).
 3. Rung 2 slots between rung 1 and the terminal `not_testable`; the verbatim prompt pin + a `request_preview_boot` match both pass; `not_testable`/`which rung` language preserved; the §4 spec pin is in lockstep.
 4. Degrades cleanly with the boot plane OFF (503 → `boots_disabled` → ACs `not_testable`) — nothing breaks when `PREVIEW_BOOTS_ENABLED` is unset.
-5. No migration; only `apps/jace` (+ the one spec doc) touched.
+5. The Jace result preserves any boot-log key on ready and degraded terminal paths; the console report route accepts a bounded `bootLog`, uploads it best-effort as `text/plain` under the B2a `review-evidence/<workspace>/<repo>/<pr>/<head>/boot.log` key scheme, persists the nullable key, and exposes it on GET. The preview-worker Railway config is documented separately and is not deployed until CI and cloud smoke pass.

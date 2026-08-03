@@ -77,6 +77,8 @@ describe.skipIf(!DB_AVAILABLE)(
         claimedAt,
         url: "http://127.0.0.1:41234",
         port: 41234,
+        bootLogKey:
+          "review-evidence/ws-1/acme__widgets/42/abc123def456abc123def456abc123def456abcd/boot.log",
         reason: "test-reason",
         attempts: 3,
         expiresAt,
@@ -102,6 +104,9 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(row.claimedAt?.getTime()).toBe(claimedAt.getTime());
       expect(row.url).toBe("http://127.0.0.1:41234");
       expect(row.port).toBe(41234);
+      expect(row.bootLogKey).toBe(
+        "review-evidence/ws-1/acme__widgets/42/abc123def456abc123def456abcd/boot.log"
+      );
       expect(row.reason).toBe("test-reason");
       expect(row.attempts).toBe(3);
       expect(row.expiresAt?.getTime()).toBe(expiresAt.getTime());
@@ -135,6 +140,7 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(row.claimedAt).toBeNull();
       expect(row.url).toBeNull();
       expect(row.port).toBeNull();
+      expect(row.bootLogKey).toBeNull();
       expect(row.reason).toBeNull();
       expect(row.expiresAt).toBeNull();
       expect(row.lastLivenessAt).toBeNull();
@@ -191,11 +197,12 @@ describe("preview_boots schema — declarations (no DB required)", () => {
     expect(fk!.onDelete).toBe("cascade");
   });
 
-  it("workerId/claimedAt/url/port/reason/expiresAt/lastLivenessAt/nextEligibleAt are all nullable", () => {
+  it("workerId/claimedAt/url/port/bootLogKey/reason/expiresAt/lastLivenessAt/nextEligibleAt are all nullable", () => {
     expect(previewBoots.workerId.notNull).toBe(false);
     expect(previewBoots.claimedAt.notNull).toBe(false);
     expect(previewBoots.url.notNull).toBe(false);
     expect(previewBoots.port.notNull).toBe(false);
+    expect(previewBoots.bootLogKey.notNull).toBe(false);
     expect(previewBoots.reason.notNull).toBe(false);
     expect(previewBoots.expiresAt.notNull).toBe(false);
     expect(previewBoots.lastLivenessAt.notNull).toBe(false);
@@ -225,6 +232,36 @@ describe("preview_boots schema — declarations (no DB required)", () => {
       (c) => (c as { name?: string }).name
     );
     expect(columnNames).toEqual(["workspace_id", "repo", "pr_number"]);
+  });
+});
+
+describe("0069_preview_boot_logs migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0069_preview_boot_logs.sql"
+  );
+
+  it("adds nullable boot_log_key idempotently", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain(
+      'ALTER TABLE "preview_boots" ADD COLUMN IF NOT EXISTS "boot_log_key" text'
+    );
+  });
+
+  it("is registered in the journal at idx 73", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0069_preview_boot_logs"
+    );
+    expect(entry).toBeDefined();
+    expect(entry.idx).toBe(73);
+    expect(entry.version).toBe("7");
+    expect(entry.breakpoints).toBe(true);
   });
 });
 

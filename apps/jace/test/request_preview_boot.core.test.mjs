@@ -204,7 +204,12 @@ test("happy path: POST then poll pending x2 then ready -> {ok:true, id, url}", a
     async () => ({ status: 200, json: async () => pollBody({ status: "pending" }) }),
     async () => ({
       status: 200,
-      json: async () => pollBody({ status: "ready", url: "https://preview.example.com/boot-1" }),
+      json: async () =>
+        pollBody({
+          status: "ready",
+          url: "https://preview.example.com/boot-1",
+          bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot/boot.log",
+        }),
     }),
   );
   const sleep = fakeSleep();
@@ -217,7 +222,12 @@ test("happy path: POST then poll pending x2 then ready -> {ok:true, id, url}", a
     now: fakeClock(0, 1000),
   });
 
-  assert.deepEqual(result, { ok: true, id: "boot-1", url: "https://preview.example.com/boot-1" });
+  assert.deepEqual(result, {
+    ok: true,
+    id: "boot-1",
+    url: "https://preview.example.com/boot-1",
+    bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot/boot.log",
+  });
   assert.equal(transport.calls.length, 4); // POST + 3 GETs
   assert.equal(sleep.delays.length, 3);
   assert.ok(sleep.delays[0] >= 2000 && sleep.delays[0] < 2250);
@@ -269,7 +279,12 @@ test("poll status failed -> degraded boot_failed, carrying the console's own rea
     async () => ({ status: 200, json: async () => postedBody() }),
     async () => ({
       status: 200,
-      json: async () => pollBody({ status: "failed", reason: "npm ci exited 1" }),
+      json: async () =>
+        pollBody({
+          status: "failed",
+          reason: "npm ci exited 1",
+          bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
+        }),
     }),
   );
   const result = await requestPreviewBoot({
@@ -279,13 +294,26 @@ test("poll status failed -> degraded boot_failed, carrying the console's own rea
     sleep: fakeSleep(),
     now: fakeClock(0, 1000),
   });
-  assert.deepEqual(result, degraded("boot_failed", { reason: "npm ci exited 1" }));
+  assert.deepEqual(
+    result,
+    degraded("boot_failed", {
+      reason: "npm ci exited 1",
+      bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
+    }),
+  );
 });
 
 test("poll status torn_down -> degraded boot_gone", async () => {
   const transport = fakeTransport(
     async () => ({ status: 200, json: async () => postedBody() }),
-    async () => ({ status: 200, json: async () => pollBody({ status: "torn_down" }) }),
+    async () => ({
+      status: 200,
+      json: async () =>
+        pollBody({
+          status: "torn_down",
+          bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
+        }),
+    }),
   );
   const result = await requestPreviewBoot({
     ...ARGS,
@@ -294,7 +322,12 @@ test("poll status torn_down -> degraded boot_gone", async () => {
     sleep: fakeSleep(),
     now: fakeClock(0, 1000),
   });
-  assert.deepEqual(result, degraded("boot_gone"));
+  assert.deepEqual(
+    result,
+    degraded("boot_gone", {
+      bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
+    }),
+  );
 });
 
 test("poll 404 -> degraded boot_lost, no retry (a 404 is stable, not treated as a blip)", async () => {

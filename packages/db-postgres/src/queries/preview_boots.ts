@@ -111,6 +111,7 @@ function mapPreviewBootRow(row: Record<string, unknown>): PreviewBootRow {
     claimedAt: toDateOrNull(row.claimed_at),
     url: (row.url as string | null) ?? null,
     port: (row.port as number | null) ?? null,
+    bootLogKey: (row.boot_log_key as string | null) ?? null,
     reason: (row.reason as string | null) ?? null,
     attempts: row.attempts as number,
     expiresAt: toDateOrNull(row.expires_at),
@@ -474,6 +475,30 @@ export async function reportPreviewBoot(
       `)
     ) as Array<Record<string, unknown>>;
   }
+
+  const raw = rows[0];
+  return raw ? mapPreviewBootRow(raw) : null;
+}
+
+/**
+ * Attach the best-effort boot-log artifact key after a successful guarded
+ * report. Scoped to the current claimant like `reportPreviewBoot`, so a
+ * foreign worker cannot attach evidence to a row it does not own.
+ */
+export async function setPreviewBootLogKey(input: {
+  id: string;
+  workerId: string;
+  bootLogKey: string;
+}): Promise<PreviewBootRow | null> {
+  const rows = Array.from(
+    await db.execute(sql`
+      UPDATE preview_boots
+      SET boot_log_key = ${input.bootLogKey}, updated_at = now()
+      WHERE id = ${input.id}
+        AND worker_id = ${input.workerId}
+      RETURNING *
+    `)
+  ) as Array<Record<string, unknown>>;
 
   const raw = rows[0];
   return raw ? mapPreviewBootRow(raw) : null;

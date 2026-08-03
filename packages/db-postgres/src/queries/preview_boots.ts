@@ -177,10 +177,13 @@ export type EnqueuePreviewBootResult = {
  * `claimed`/`booting`/`ready` — a newer push should tear down an
  * already-booted preview for the old head too, not just an unclaimed one.
  * That teardown is NOT performed here: this call only flips the row's
- * status; the worker's own supervise loop (Task 7) is what notices the
- * flipped status and actually kills the child process — see
- * `schema/preview_boots.ts`'s own doc-comment for why marking the row is
- * safe on its own.
+ * status. In v1 the worker's supervise loop runs on its own local TTL clock
+ * and does NOT poll the console, so a superseded boot's child process keeps
+ * serving until that TTL expires (up to `ttlSeconds`) even though the row
+ * already reads `torn_down`; early termination on supersede is a deferred
+ * follow-up. Marking the row is still correct on its own — see
+ * `schema/preview_boots.ts`'s doc-comment — and the stale boot self-tears
+ * down at TTL, so nothing leaks past that window.
  */
 export async function enqueuePreviewBoot(input: {
   workspaceId: string;

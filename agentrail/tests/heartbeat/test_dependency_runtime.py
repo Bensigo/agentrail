@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 
 from agentrail.heartbeat.dependency_runtime import DependencyWatchRuntime
+from agentrail.heartbeat import dependency_runtime
 
 
 FILES = {
@@ -79,3 +80,9 @@ def test_manual_watch_is_claimed_detected_and_persisted_without_queue_work():
     assert publisher.calls[0]["candidate"].fingerprint
     assert executor.executed[0][1]["candidate_fingerprint"] == publisher.calls[0]["candidate"].fingerprint
     assert executor.executed[0][1]["candidate_fingerprint"] != executor.executed[0][1]["observation_key"]
+
+
+def test_sql_observation_persists_candidate_fingerprint_separately_from_observation_key():
+    sql = dependency_runtime.queue_store._SQL[dependency_runtime.RECORD_WATCH_OBSERVATION_OP]
+    assert "candidate_fingerprint" in sql.split("VALUES", 1)[0]
+    assert "%(candidate_fingerprint)s" in sql

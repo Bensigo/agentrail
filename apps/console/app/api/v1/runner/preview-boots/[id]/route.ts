@@ -60,9 +60,10 @@ import { previewBootsDisabled, previewBootsDisabledResponse, resolveWorkspaceId 
  * exists even though it can't read its contents") — this route now honors
  * that same rule for its OWN resource, not just for the session lookup.
  *
- * RESPONSE: 200 `{status, url, reason}` only — never `workerId`,
+ * RESPONSE: 200 `{status, url, reason, bootLogKey}` only — never `workerId`,
  * `attempts`, `expiresAt`, or any other internal scheduling field a poller
- * has no use for.
+ * has no use for. `bootLogKey` is nullable until the worker's best-effort
+ * artifact upload completes.
  */
 
 function notFoundResponse(): NextResponse {
@@ -105,7 +106,12 @@ export async function GET(
   }
 
   return NextResponse.json(
-    { status: row.status, url: row.url ?? null, reason: row.reason ?? null },
+    {
+      status: row.status,
+      url: row.url ?? null,
+      reason: row.reason ?? null,
+      bootLogKey: row.bootLogKey ?? null,
+    },
     { status: 200 }
   );
 }

@@ -14,6 +14,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   findWorkspaceByRepo: vi.fn(),
   getConnector: vi.fn(),
+  appendJudgmentEvent: vi.fn(),
   enqueueGithubIssue: vi.fn(),
   findQueueEntryByExternalId: vi.fn(),
 }));
@@ -25,7 +26,12 @@ vi.mock("../../../../../../lib/alignment-reconciler", () => ({
 }));
 
 import { POST } from "./route";
-import { findWorkspaceByRepo, getConnector, findQueueEntryByExternalId } from "@agentrail/db-postgres";
+import {
+  appendJudgmentEvent,
+  findWorkspaceByRepo,
+  getConnector,
+  findQueueEntryByExternalId,
+} from "@agentrail/db-postgres";
 import {
   reconcileAlignmentBriefs,
   reviseAndRepostAlignmentBrief,
@@ -34,6 +40,7 @@ import {
 const mockFindWorkspace = vi.mocked(findWorkspaceByRepo);
 const mockGetConnector = vi.mocked(getConnector);
 const mockFindEntry = vi.mocked(findQueueEntryByExternalId);
+const mockAppendJudgmentEvent = vi.mocked(appendJudgmentEvent);
 const mockReconcile = vi.mocked(reconcileAlignmentBriefs);
 const mockReviseAndRepost = vi.mocked(reviseAndRepostAlignmentBrief);
 
@@ -42,7 +49,11 @@ const ORIGINAL_SECRET_ENV = process.env["GITHUB_WEBHOOK_SECRET"];
 function req(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/v1/connectors/github/webhook", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-github-event": "issues" },
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-github-delivery": "delivery-1",
+    },
     body: JSON.stringify(body),
   });
 }
@@ -170,6 +181,24 @@ describe("POST /api/v1/connectors/github/webhook — issues.edited (#1345 PR③ 
       body: "## Acceptance criteria\n- [ ] narrower scope\n",
       repoFullName: "acme/widgets",
       number: 42,
+    });
+    expect(mockAppendJudgmentEvent).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
+      repo: "acme/widgets",
+      eventKey: expect.stringMatching(/^requirement-correction:issue:42:[0-9a-f]{24}$/),
+      type: "requirement_correction",
+      refs: { issueNumber: 42 },
+      payload: {
+        issueNumber: 42,
+        changedFields: ["body"],
+        title: "Cheaper version",
+        body: "## Acceptance criteria\n- [ ] narrower scope\n",
+        previousTitle: null,
+        previousBody: "old body",
+        textTruncated: false,
+      },
+      actorRef: { kind: "github_user" },
+      sourceRef: { kind: "github_webhook", id: "delivery-1" },
     });
   });
 

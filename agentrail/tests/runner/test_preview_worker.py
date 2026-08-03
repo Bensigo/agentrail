@@ -116,7 +116,14 @@ _RECIPE = PreviewRecipe(install=["npm", "ci"], start=["npm", "run", "dev"], port
 
 
 def _fake_handle(dest: str) -> BootHandle:
-    return BootHandle(proc=None, pgid=-1, port=3000, url="http://127.0.0.1:3000", clone_dir=dest)  # type: ignore[arg-type]
+    return BootHandle(
+        proc=None,  # type: ignore[arg-type]
+        pgid=-1,
+        port=3000,
+        url="http://127.0.0.1:3000",
+        clone_dir=dest,
+        boot_log_path=os.path.join(dest, ".agentrail-preview-boot.log"),
+    )
 
 
 class FakeBootOps:
@@ -164,6 +171,9 @@ class FakeBootOps:
                 # real module's contract.
                 shutil.rmtree(clone_dir, ignore_errors=True)
             raise self._boot_raises
+        os.makedirs(clone_dir, exist_ok=True)
+        with open(os.path.join(clone_dir, ".agentrail-preview-boot.log"), "w", encoding="utf-8") as fh:
+            fh.write("server ready\n")
         return _fake_handle(clone_dir)
 
     def teardown(self, handle: BootHandle) -> None:
@@ -260,6 +270,10 @@ def test_happy_path_report_sequence():
     # every ready report carries the booted url/port.
     ready_bodies = [b for b in _report_bodies(transport) if b["status"] == "ready"]
     assert all(b["url"] == "http://127.0.0.1:3000" and b["port"] == 3000 for b in ready_bodies)
+    assert all(b["bootLog"] == "server ready" for b in ready_bodies)
+    torn_down_body = _report_bodies(transport)[-1]
+    assert torn_down_body["status"] == "torn_down"
+    assert torn_down_body["bootLog"] == "server ready"
 
     # claim + every report are addressed to THIS worker and bearer-authed.
     claim_call = transport.calls[0]
@@ -301,7 +315,10 @@ def test_no_recipe_reports_failed_and_cleans_dir_without_booting():
 
 def test_boot_error_reports_failed_and_trusts_boots_own_cleanup():
     clock = FakeClock()
-    boot_exc = BootError("child never became healthy: connection refused")
+    boot_exc = BootError(
+        "child never became healthy: connection refused",
+        boot_log_tail="listening failed\nconnection refused",
+    )
     ops = FakeBootOps(boot_raises=boot_exc, boot_removes_dir=True)
     transport = FakeTransport([_claim_response()])
     config = _config()
@@ -313,7 +330,9 @@ def test_boot_error_reports_failed_and_trusts_boots_own_cleanup():
     )
 
     assert _report_statuses(transport) == ["booting", "failed"]
-    assert "never became healthy" in _report_bodies(transport)[1]["reason"]
+    failed_body = _report_bodies(transport)[1]
+    assert failed_body["reason"] == "boot_failed"
+    assert failed_body["bootLog"] == "listening failed\nconnection refused"
     # preview_boot.boot()'s own docstring: "callers never need a
     # compensating teardown of their own on this path" -- there is no
     # BootHandle to tear down here in the first place (boot() raised
@@ -406,7 +425,7 @@ def test_clone_failure_reports_failed_and_cleans_dir_without_booting():
     )
 
     assert _report_statuses(transport) == ["booting", "failed"]
-    assert "authentication failed" in _report_bodies(transport)[1]["reason"]
+    assert _report_bodies(transport)[1]["reason"] == "clone_failed"
     assert ops.detect_calls == []  # never reached
     assert ops.boot_calls == []
     assert ops.teardown_calls == []

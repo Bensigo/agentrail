@@ -3165,8 +3165,57 @@ export {
   enqueuePreviewBoot,
   claimPreviewBoot,
   reportPreviewBoot,
+  setPreviewBootLogKey,
   getPreviewBoot,
   expireStalePreviewBoots,
   type EnqueuePreviewBootResult,
   type ReportPreviewBootInput,
 } from "./preview_boots.js";
+
+// Arc D Change Record storage slice (spec
+// docs/superpowers/specs/2026-07-31-change-record-design.md): deterministic
+// find-or-create/unify by issue and/or PR, append-only idempotent timeline
+// events, and a scoped timeline read. Routes, UI, and producer adapters land
+// in later slices.
+export {
+  changeRecordId,
+  changeRecordEventId,
+  findOrCreateChangeRecord,
+  appendChangeRecordEvent,
+  readChangeRecordTimelineByPr,
+  readChangeRecordTimeline,
+  listChangeRecords,
+  type ChangeRecordAnchor,
+  type FindOrCreateChangeRecordInput,
+  type AppendChangeRecordEventInput,
+  type ChangeRecordTimeline,
+  type ListChangeRecordsInput,
+} from "./change_records.js";
+
+// Arc E Judgment Ledger storage slice (spec
+// docs/superpowers/specs/2026-07-31-judgment-ledger-design.md): typed,
+// workspace/repo-scoped, append-only judgment events with deterministic
+// idempotency keys and tenant-scoped reads. Consumers, calibration, routes, and
+// UI land in later slices.
+export {
+  judgmentEventId,
+  appendJudgmentEvent,
+  listJudgmentEvents,
+  getJudgmentCalibrationSummary,
+  listJudgmentConstraints,
+  listReviewerSuppressionRules,
+  evaluateJudgmentConstraints,
+  parseJudgmentConstraint,
+  parseDecisionMemoryConstraint,
+  parseReviewerDismissalFindingClass,
+  JUDGMENT_CALIBRATION_EVENT_TYPES,
+  type AppendJudgmentEventInput,
+  type ListJudgmentEventsInput,
+  type GetJudgmentCalibrationSummaryInput,
+  type JudgmentCalibrationEventType,
+  type JudgmentCalibrationSummary,
+  type JudgmentConstraint,
+  type JudgmentConstraintMatch,
+  type ListReviewerSuppressionRulesInput,
+  type ReviewerSuppressionRule,
+} from "./judgment_events.js";

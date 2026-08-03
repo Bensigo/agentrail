@@ -184,6 +184,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
+  "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
   "fetch_evidence_capabilities.ts", // read-only (debugging spec PR #1501, T11 review fix round 1): reads the workspace's EVIDENCE CAPABILITY MAP (which verbs have a connected/credentialed provider) — no params, no anchored investigation needed — over the console token API; no approval, no child_process
   "fetch_investigations.ts", // read-only (debugging spec PR #1501): reads INVESTIGATIONS — the durable record of one production incident (anchor/list/get/search), relays verdict eligibility verbatim — over the console token API; no approval, no child_process
   "fetch_issue.ts", // read-only (QA AC-awareness spec, docs/superpowers/specs/2026-07-29-qa-ac-awareness-design.md): reads ONE GitHub issue (number/title/body/state) over the console token API, to resolve its acceptance criteria before dispatching qa; no approval, no child_process
@@ -191,7 +192,9 @@ const EXPECTED_TOOL_FILES = [
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "record_judgment.ts", // UNGATED by design: records bounded internal chat/grilling learning evidence only; no GitHub/workspace mutation and no child_process
   "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
+  "request_preview_boot.ts", // operational + ungated by design (B2b reviewer wiring): requests/polls a console preview boot for the calling root session; no repo/workspace mutation, no approval, no child_process
   "save_brief.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own brief store only (never GitHub/a workspace/any outside system); human-authority + unknown-can't-resolve invariants enforced at the console route, not here; no child_process (HTTP to the console, like post_pr_review)
   "save_investigation.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own investigation store only (never GitHub/a workspace/any outside system); human-authority + evidence-immutability + hypothesis-evidence-gating + kind-fixed-at-creation invariants enforced at the console route, not here; REJECTS verdict/status outright; no child_process (HTTP to the console, like save_brief)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
@@ -224,7 +227,13 @@ const EXPECTED_MUTATING_TOOLS = [
 // a ceiling as much as a floor: the test below asserts each one wires NO
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
-const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts", "save_brief.ts", "save_investigation.ts", "record_verdict.ts"];
+const UNGATED_ADVISORY_WRITES = [
+  "post_pr_review.ts",
+  "record_judgment.ts",
+  "save_brief.ts",
+  "save_investigation.ts",
+  "record_verdict.ts",
+];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

@@ -9,6 +9,8 @@ import {
   isBillingEnabled,
   chargeCompletedTask,
   usdToCents,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
 import {
@@ -46,6 +48,50 @@ function isRunnerStatus(value: unknown): value is RunnerStatus {
     typeof value === "string" &&
     (RUNNER_STATUSES as readonly string[]).includes(value)
   );
+}
+
+/** Attach a trusted merge outcome to the PR's canonical Change Record. */
+async function appendMergeChangeRecordEvent({
+  workspaceId,
+  queueEntryId,
+  prUrl,
+  outcome,
+}: {
+  workspaceId: string;
+  queueEntryId: string;
+  prUrl: string;
+  outcome: "merged" | "merge_failed";
+}): Promise<void> {
+  const parsed = parseGithubPrUrl(prUrl);
+  if (!parsed) return;
+
+  try {
+    const repo = `${parsed.owner}/${parsed.repo}`;
+    const record = await findOrCreateChangeRecord({
+      workspaceId,
+      repo,
+      prNumber: parsed.number,
+      state: outcome === "merged" ? "merged" : "open",
+    });
+    await appendChangeRecordEvent({
+      recordId: record.id,
+      eventKey: `merge:pr:${parsed.number}:${outcome}`,
+      stage: "merge",
+      actor: "runner-result",
+      payloadRef: {
+        kind: "merge",
+        queueEntryId,
+        repo,
+        prNumber: parsed.number,
+        url: prUrl,
+        outcome,
+      },
+    });
+  } catch (err) {
+    // The runner result is already committed; an attachment failure is
+    // observable but must not turn a successful report into a failed response.
+    console.error("[runner/result] change-record merge attach failed:", err);
+  }
 }
 
 /**
@@ -413,6 +459,19 @@ export async function POST(request: NextRequest) {
       `Merge attempt failed — PR left open: ${body.pr_url}`,
       now + 2
     );
+  }
+
+  if (
+    (mergeOutcome === "merged" || mergeOutcome === "merge_failed") &&
+    typeof body.pr_url === "string" &&
+    body.pr_url
+  ) {
+    await appendMergeChangeRecordEvent({
+      workspaceId: workspace_id,
+      queueEntryId: id,
+      prUrl: body.pr_url,
+      outcome: mergeOutcome,
+    });
   }
 
   // Failure evidence (#1146 AC2): a red/error result carrying a logs_tail is the

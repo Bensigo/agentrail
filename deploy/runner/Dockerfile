@@ -112,6 +112,11 @@
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS runtime
 
+# Preview boots and target-repo lifecycle scripts may invoke pnpm/yarn
+# directly. Node ships Corepack but not a pnpm executable in the slim image;
+# install the shims once so a cloned workspace can use its declared manager.
+RUN corepack enable pnpm yarn
+
 # git + gh: agentrail/sandbox/native_runner.py shells out to both directly
 # (git clone/checkout/add/commit/push; gh pr create / gh pr view) — confirmed
 # by reading native_runner.py. `agentrail run`'s bare-issue-selection path also

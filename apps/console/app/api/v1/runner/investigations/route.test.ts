@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  appendChangeRecordEvent: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   getInvestigationBySlug: vi.fn(),
   getInvestigationById: vi.fn(),
+  getRepositoryByName: vi.fn(),
   listInvestigations: vi.fn(),
   searchInvestigations: vi.fn(),
   upsertInvestigation: vi.fn(),
@@ -17,9 +20,12 @@ vi.mock("@agentrail/db-postgres", () => ({
 
 import { GET, POST } from "./route";
 import {
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
   getJaceSessionByEveSessionId,
   getInvestigationBySlug,
   getInvestigationById,
+  getRepositoryByName,
   listInvestigations,
   searchInvestigations,
   upsertInvestigation,
@@ -33,10 +39,13 @@ import {
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockGetBySlug = vi.mocked(getInvestigationBySlug);
 const mockGetById = vi.mocked(getInvestigationById);
+const mockGetRepositoryByName = vi.mocked(getRepositoryByName);
 const mockList = vi.mocked(listInvestigations);
 const mockSearch = vi.mocked(searchInvestigations);
 const mockUpsert = vi.mocked(upsertInvestigation);
 const mockPatchItems = vi.mocked(patchInvestigationItems);
+const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
+const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComputeEligibility = vi.mocked(computeVerdictEligibility);
 const mockLinkInvestigations = vi.mocked(linkInvestigations);
 const mockSetAnchor = vi.mocked(setSessionInvestigationAnchor);
@@ -48,6 +57,7 @@ const SESSION_ID = "00000000-0000-0000-0000-0000000005e5";
 const EVE_SESSION_ID = "eve-session-1";
 const INVESTIGATION_ID = "00000000-0000-0000-0000-0000000000a1";
 const TARGET_INVESTIGATION_ID = "00000000-0000-0000-0000-0000000000a2";
+const CHANGE_RECORD_ID = "00000000-0000-0000-0000-0000000000d1";
 const SLUG = "checkout-500s";
 
 // Central-secret auth, same idiom as briefs/workspace-memory/repo-wiki's own tests.
@@ -168,8 +178,30 @@ beforeEach(() => {
   mockGetById.mockResolvedValue({ investigation: EXISTING_INVESTIGATION, items: [SOME_ITEM] } as never);
   mockList.mockResolvedValue([EXISTING_INVESTIGATION] as never);
   mockSearch.mockResolvedValue([EXISTING_INVESTIGATION] as never);
+  mockGetRepositoryByName.mockResolvedValue({
+    id: "repo-1",
+    workspaceId: WS,
+    name: "ada/widgets",
+    url: "https://github.com/ada/widgets",
+    defaultBranch: "main",
+    createdAt: new Date("2026-07-29T00:00:00Z"),
+    updatedAt: new Date("2026-07-29T00:00:00Z"),
+  } as never);
   mockUpsert.mockResolvedValue(EXISTING_INVESTIGATION as never);
   mockPatchItems.mockResolvedValue(EMPTY_PATCH_RESULT as never);
+  mockFindOrCreateChangeRecord.mockResolvedValue({
+    id: CHANGE_RECORD_ID,
+    workspaceId: WS,
+    repo: "ada/widgets",
+    issueNumber: null,
+    prNumber: 42,
+    headShas: ["abc123"],
+    mergedSha: null,
+    state: "open",
+    createdAt: new Date("2026-07-29T00:00:00Z"),
+    updatedAt: new Date("2026-07-29T00:00:00Z"),
+  } as never);
+  mockAppendChangeRecordEvent.mockResolvedValue({ inserted: true, event: {} } as never);
   mockComputeEligibility.mockResolvedValue(ELIGIBLE as never);
   mockLinkInvestigations.mockResolvedValue(undefined as never);
   mockSetAnchor.mockResolvedValue(true as never);
@@ -661,6 +693,95 @@ describe("POST /api/v1/runner/investigations", () => {
     ]);
     const body = await res.json();
     expect(body.investigation).toMatchObject({ slug: SLUG });
+  });
+
+  describe("Change Record incident lifecycle attachment (Arc D post-merge continuation)", () => {
+    it("appends one idempotent incident-stage event when changeRecord anchors are supplied", async () => {
+      const res = await POST(
+        postReq({
+          ...validBody,
+          severity: "high",
+          changeRecord: {
+            repo: "ada/widgets",
+            prNumber: 42,
+            headShas: ["abc123"],
+          },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockGetRepositoryByName).toHaveBeenCalledWith(WS, "ada/widgets");
+      expect(mockFindOrCreateChangeRecord).toHaveBeenCalledWith({
+        workspaceId: WS,
+        repo: "ada/widgets",
+        issueNumber: null,
+        prNumber: 42,
+        headShas: ["abc123"],
+      });
+      expect(mockAppendChangeRecordEvent).toHaveBeenCalledWith({
+        recordId: CHANGE_RECORD_ID,
+        eventKey: `incident:investigation:${INVESTIGATION_ID}`,
+        stage: "incident",
+        actor: "jace-investigator",
+        payloadRef: {
+          kind: "investigation",
+          investigationId: INVESTIGATION_ID,
+          slug: SLUG,
+          severity: "medium",
+          verdict: null,
+          confidence: null,
+        },
+      });
+      const body = await res.json();
+      expect(body.changeRecord).toEqual({
+        id: CHANGE_RECORD_ID,
+        eventKey: `incident:investigation:${INVESTIGATION_ID}`,
+        inserted: true,
+      });
+    });
+
+    it("surfaces an idempotent replay as inserted:false without duplicating the investigation write", async () => {
+      mockAppendChangeRecordEvent.mockResolvedValue({ inserted: false, event: {} } as never);
+      const res = await POST(
+        postReq({
+          ...validBody,
+          changeRecord: {
+            repo: "ada/widgets",
+            issueNumber: 7,
+          },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.changeRecord).toEqual({
+        id: CHANGE_RECORD_ID,
+        eventKey: `incident:investigation:${INVESTIGATION_ID}`,
+        inserted: false,
+      });
+    });
+
+    it("404s before writing when changeRecord.repo is not connected to the resolved workspace", async () => {
+      mockGetRepositoryByName.mockResolvedValue(null as never);
+      const res = await POST(
+        postReq({
+          ...validBody,
+          changeRecord: {
+            repo: "intruder/widgets",
+            prNumber: 42,
+          },
+        })
+      );
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({
+        error: "changeRecord.repo is not connected to this workspace",
+      });
+      expect(mockUpsert).not.toHaveBeenCalled();
+      expect(mockPatchItems).not.toHaveBeenCalled();
+      expect(mockFindOrCreateChangeRecord).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+    });
   });
 
   describe("relaying store refusals honestly — all six patchInvestigationItems arrays pass through, always present", () => {

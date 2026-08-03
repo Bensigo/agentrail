@@ -25,6 +25,9 @@ agentrail = ["templates/**", "skills/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["agentrail/tests"]
+markers = [
+    "integration: tests that exercise the full checkout, repository history, or generated context index",
+]
 
 [build-system]
 requires = ["setuptools>=61"]

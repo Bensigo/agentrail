@@ -284,6 +284,13 @@ export interface ArtifactKeyInput {
   ext: string;
 }
 
+export interface BootLogArtifactKeyInput {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+}
+
 /**
  * Builds an artifact key under the EXACT scheme pinned by owner ruling #1564
  * (design doc §1):
@@ -339,6 +346,23 @@ export function artifactKey(input: ArtifactKeyInput): string {
   }
 
   return `review-evidence/${workspaceId}/${sanitizedRepo}/${prNumber}/${headSha}/${acId}/${filename}`;
+}
+
+/**
+ * Dedicated key for preview-boot logs, kept under the same
+ * review-evidence/workspace/repo/pr/head family as screenshots but with a
+ * fixed `boot.log` filename.
+ */
+export function bootLogArtifactKey(input: BootLogArtifactKeyInput): string {
+  const { workspaceId, repo, prNumber, headSha } = input;
+
+  assertSafeSegment("workspaceId", workspaceId);
+  assertSafeSegment("repo", repo, { allowSlash: true });
+  assertSafeSegment("headSha", headSha);
+  assertPositiveInteger("prNumber", prNumber);
+
+  const sanitizedRepo = repo.replace(/\//g, "__");
+  return `review-evidence/${workspaceId}/${sanitizedRepo}/${prNumber}/${headSha}/boot.log`;
 }
 
 function assertSafeSegment(

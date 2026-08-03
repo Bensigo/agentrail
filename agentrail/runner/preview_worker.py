@@ -23,9 +23,10 @@ the already-implemented ``apps/console/app/api/v1/runner/preview-boots/{claim,re
   ``204`` (nothing pending) or ``200 {id, workspaceId, repo, repoUrl,
   prNumber, headSha, ref, githubToken, ttlSeconds}``.
 - ``POST {base}/api/v1/runner/preview-boots/report {id, workerId, status,
-  url?, port?, reason?}`` -> ``200 {ok, status}`` or ``409`` (not found /
-  not owned by this worker / illegal transition from the row's current
-  state). This worker treats a non-2xx report response as inert (see
+  url?, port?, reason?, bootLog?}`` -> ``200 {ok, status}`` or ``409`` (not
+  found / not owned by this worker / illegal transition from the row's current
+  state). ``bootLog`` is an optional bounded tail of the boot child's log,
+  included only when available. This worker treats a non-2xx report response as inert (see
   ``_report``'s own docstring) -- v1 is TTL-only, with no early-release or
   claim-check against the console's own view of the row (the follow-up
   plan adds that); the worker's supervise loop runs entirely on ITS OWN
@@ -122,11 +123,9 @@ _FALLBACK_TTL_SECONDS = 720.0
 CLAIM_PATH = "/api/v1/runner/preview-boots/claim"
 REPORT_PATH = "/api/v1/runner/preview-boots/report"
 
-# A single failure reason's bound in the `reason` report field -- mirrors
-# the 500-char tail bound preview_boot.py itself applies to redacted
-# stderr, so one oversized error (e.g. a giant traceback string) can't
-# balloon the report payload.
-_REASON_MAX_CHARS = 500
+# Boot logs are the only raw child output sent to the console, and are kept
+# bounded independently from the stable lifecycle `reason` field.
+_BOOT_LOG_MAX_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -272,6 +271,7 @@ def _report(
     url: Optional[str] = None,
     port: Optional[int] = None,
     reason: Optional[str] = None,
+    boot_log: Optional[str] = None,
 ) -> bool:
     """``POST .../preview-boots/report``.
 
@@ -298,6 +298,8 @@ def _report(
         payload["port"] = port
     if reason is not None:
         payload["reason"] = reason
+    if boot_log is not None:
+        payload["bootLog"] = boot_log
     resp = transport(
         "POST",
         f"{config.base_url}{REPORT_PATH}",
@@ -307,9 +309,38 @@ def _report(
     return 200 <= resp.status < 300
 
 
-def _short(exc: BaseException) -> str:
-    """A bounded failure reason for the `reason` report field."""
-    return str(exc)[:_REASON_MAX_CHARS]
+def _public_failure_reason(exc: BaseException) -> str:
+    """Return a stable lifecycle reason without relaying repo output."""
+    if isinstance(exc, BootError):
+        return exc.public_reason
+    return "clone_failed"
+
+
+def _safe_boot_log_from_handle(handle: BootHandle) -> Optional[str]:
+    """Best-effort boot log evidence for a live handle.
+
+    Reading this file is explicitly non-critical: if it fails, report
+    without ``bootLog`` and keep the preview lifecycle moving.
+    """
+    try:
+        tail = preview_boot.boot_log_tail(handle, process_env=os.environ)
+    except Exception as exc:  # noqa: BLE001 - evidence read must not fail lifecycle
+        _log.warning("preview boot log tail read failed: %s", exc)
+        return None
+    if not tail:
+        return None
+    return tail[-_BOOT_LOG_MAX_CHARS:]
+
+
+def _safe_boot_log_from_error(exc: BootError) -> Optional[str]:
+    try:
+        tail = getattr(exc, "boot_log_tail", "")
+    except Exception as attr_exc:  # noqa: BLE001 - defensive around injected exceptions
+        _log.warning("preview boot error log tail read failed: %s", attr_exc)
+        return None
+    if not tail:
+        return None
+    return str(tail)[-_BOOT_LOG_MAX_CHARS:]
 
 
 # --- per-claim handling -----------------------------------------------------
@@ -372,7 +403,13 @@ def _handle_claim(
             # a failure here (bad/expired token, unreachable repo, a ref
             # that no longer exists after a force-push) is just as terminal
             # to this attempt as a bad recipe or a failed boot.
-            _report(transport, config, boot_id=item.id, status="failed", reason=_short(exc))
+            _report(
+                transport,
+                config,
+                boot_id=item.id,
+                status="failed",
+                reason="clone_failed",
+            )
             _log.warning("preview boot %s: clone failed: %s", item.id, exc)
             shutil.rmtree(dest, ignore_errors=True)
             return
@@ -393,13 +430,21 @@ def _handle_claim(
                 timeout=boot_timeout,
             )
         except BootError as exc:
-            _report(transport, config, boot_id=item.id, status="failed", reason=_short(exc))
+            _report(
+                transport,
+                config,
+                boot_id=item.id,
+                status="failed",
+                reason=_public_failure_reason(exc),
+                boot_log=_safe_boot_log_from_error(exc),
+            )
             _log.warning("preview boot %s: boot failed: %s", item.id, exc)
             return
 
+        boot_log = _safe_boot_log_from_handle(handle)
         _report(
             transport, config, boot_id=item.id, status="ready",
-            url=handle.url, port=handle.port,
+            url=handle.url, port=handle.port, boot_log=boot_log,
         )
         _log.info("preview boot %s: ready at %s", item.id, handle.url)
 
@@ -413,12 +458,13 @@ def _handle_claim(
             # early-release).
             _report(
                 transport, config, boot_id=item.id, status="ready",
-                url=handle.url, port=handle.port,
+                url=handle.url, port=handle.port, boot_log=boot_log,
             )
 
+        boot_log = _safe_boot_log_from_handle(handle) or boot_log
         teardown(handle)
         handle = None
-        _report(transport, config, boot_id=item.id, status="torn_down")
+        _report(transport, config, boot_id=item.id, status="torn_down", boot_log=boot_log)
         _log.info("preview boot %s: torn down (ttl elapsed)", item.id)
     finally:
         if handle is not None:

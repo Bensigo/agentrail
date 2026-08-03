@@ -16,6 +16,8 @@ import {
   buildGoalFileCheckUrl,
   buildGoalFileRecordedUrl,
   GOAL_CHECK_INFRA_FAILURE_MESSAGE,
+  recordChangeRecordIssueIntake,
+  CHANGE_RECORD_EVENTS_PATH,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -403,6 +405,83 @@ const APPROVED_RELEARN_RESPONDER = async () => ({
   json: async () => ({ approvalId: "approval-1", status: "approved" }),
 });
 const OK_STAMP_RESPONDER = async () => ({ status: 200, json: async () => ({ ok: true }) });
+
+test("recordChangeRecordIssueIntake: posts a stable requirement event with the issue snapshot", async () => {
+  const transport = fakeTransport(async () => ({ status: 201, json: async () => ({ ok: true }) }));
+
+  const accepted = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    url: "https://github.com/Bensigo/agentrail/issues/1042",
+    title: "Add a health endpoint",
+    env: STAMP_ENV,
+    transport,
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${CHANGE_RECORD_EVENTS_PATH}`,
+  );
+  assert.deepEqual(JSON.parse(transport.calls[0].init.body), {
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    eventKey: "issue:intake:1042",
+    stage: "requirement",
+    actor: "jace",
+    state: "open",
+    payloadRef: {
+      kind: "issue_snapshot",
+      issueNumber: 1042,
+      url: "https://github.com/Bensigo/agentrail/issues/1042",
+      title: "Add a health endpoint",
+    },
+  });
+});
+
+test("recordChangeRecordIssueIntake: missing config or transport failure is an honest best-effort skip", async () => {
+  const skipped = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    env: {},
+    transport: async () => {
+      throw new Error("must not be called without console config");
+    },
+  });
+  assert.equal(skipped, false);
+
+  const failed = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    env: STAMP_ENV,
+    transport: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.equal(failed, false);
+});
+
+test("runCreateIssue: successful GitHub creation is returned when Change Record intake is unavailable", async () => {
+  const changeRecordTransport = fakeTransport(async () => {
+    throw new Error("ETIMEDOUT");
+  });
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    eveSessionId: "eve-session-1",
+    changeRecordTransport,
+  });
+
+  assert.equal(ref.number, 1042);
+  assert.equal(changeRecordTransport.calls.length, 1);
+});
 
 test("buildPublishedStampUrl joins the base url, the approvals path, the approvalId, and /published", () => {
   const url = buildPublishedStampUrl("https://console.example.com", "approval-123");
@@ -879,6 +958,108 @@ test("runCreateIssue: a normal, non-goal issue never touches the goal-check/goal
   assert.equal(ref.number, 1042);
   assert.equal(checkCalled, false, "no goal stamp -> the pre-file check must never fire");
   assert.equal(recordCalled, false, "no goal stamp -> the post-file record must never fire");
+});
+
+test("runCreateIssue: block mode checks the hardened proposal before invoking the CLI", async () => {
+  let cliCalled = false;
+  const constraintTransport = fakeTransport(async (url, init) => {
+    assert.equal(url, "https://console.example.com/api/v1/runner/judgment-constraints/check");
+    const body = JSON.parse(init.body);
+    assert.equal(body.eveSessionId, "eve-session-1");
+    assert.match(body.text, /Add Redis/);
+    return {
+      status: 200,
+      json: async () => ({
+        allowed: false,
+        blocks: [{ reason: "Redis was rejected." }],
+        warnings: [],
+      }),
+    };
+  });
+
+  const result = await runCreateIssue({
+    execFileFn: async () => {
+      cliCalled = true;
+      return { stdout: SUCCESS_STDOUT, stderr: "" };
+    },
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add Redis",
+    acceptanceCriteria: ["Use Redis for retries"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: constraintTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "Redis was rejected." });
+  assert.equal(cliCalled, false);
+  assert.equal(constraintTransport.calls.length, 1);
+});
+
+test("runCreateIssue: a blocked requirement records the refusal denominator without filing", async () => {
+  const eventTransport = fakeTransport(async (url, init) => {
+    assert.equal(url, "https://console.example.com/api/v1/runner/judgment-events");
+    const body = JSON.parse(init.body);
+    assert.equal(body.eveSessionId, "eve-session-1");
+    assert.equal(body.type, "requirement_correction");
+    assert.equal(body.payload.decisionAttempted, true);
+    assert.equal(body.payload.refusalKind, "requirements_conflict");
+    return { status: 201, json: async () => ({ ok: true }) };
+  });
+
+  const result = await runCreateIssue({
+    execFileFn: async () => ({ stdout: SUCCESS_STDOUT, stderr: "" }),
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add Redis",
+    acceptanceCriteria: ["Use Redis for retries"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: async () => ({
+      status: 200,
+      json: async () => ({ allowed: false, blocks: [{ reason: "Redis was rejected." }] }),
+    }),
+    judgmentEventTransport: eventTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "Redis was rejected." });
+  assert.equal(eventTransport.calls.length, 1);
+});
+
+test("runCreateIssue: block-mode constraint infrastructure failure fails closed", async () => {
+  let cliCalled = false;
+  const result = await runCreateIssue({
+    execFileFn: async () => {
+      cliCalled = true;
+      return { stdout: SUCCESS_STDOUT, stderr: "" };
+    },
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add a queue",
+    acceptanceCriteria: ["Retries are bounded"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+
+  assert.deepEqual(result, {
+    blocked: true,
+    message: "couldn't verify workspace judgment constraints before filing — try again in a moment",
+  });
+  assert.equal(cliCalled, false);
+});
+
+test("runCreateIssue: constraint mode off preserves the existing path without a check", async () => {
+  let checkCalled = false;
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    constraintCheckTransport: async () => {
+      checkCalled = true;
+      return { status: 503, json: async () => ({}) };
+    },
+  });
+
+  assert.equal(ref.number, 1042);
+  assert.equal(checkCalled, false);
 });
 
 test("runCreateIssue: a goal-stamped issue that the console ALLOWS is filed AND recorded via recordGoalIssueFiled — the wiring the adversarial review found missing", async () => {

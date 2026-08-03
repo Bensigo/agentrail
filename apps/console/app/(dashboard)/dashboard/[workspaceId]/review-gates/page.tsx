@@ -75,6 +75,91 @@ function FindingsCountBadge({ count }: { count: number }) {
   );
 }
 
+function FindingDisposition({
+  workspaceId,
+  gateId,
+  findingIndex,
+}: {
+  workspaceId: string;
+  gateId: string;
+  findingIndex: number;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editedDescription, setEditedDescription] = useState("");
+  const [editedSuggestedFix, setEditedSuggestedFix] = useState("");
+
+  async function submit(
+    disposition: "accepted" | "edited" | "dismissed",
+    edits?: { editedDescription?: string; editedSuggestedFix?: string }
+  ) {
+    setState("loading");
+    try {
+      const response = await fetch(`/api/v1/workspaces/${workspaceId}/review-gates/${gateId}/judgment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ findingIndex, disposition, ...edits }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setMessage(disposition === "accepted" ? "Accepted" : "Dismissed");
+      setState("done");
+      setEditing(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not record disposition");
+      setState("error");
+    }
+  }
+
+  if (state === "done") return <span className="text-xs text-[var(--green-11)]">{message}</span>;
+  if (editing) {
+    return (
+      <span className="flex min-w-[260px] flex-col gap-2">
+        <input
+          value={editedDescription}
+          onChange={(event) => setEditedDescription(event.target.value)}
+          placeholder="Corrected finding"
+          className="rounded border border-[var(--gray-06)] bg-[var(--gray-01)] px-2 py-1 text-xs"
+        />
+        <input
+          value={editedSuggestedFix}
+          onChange={(event) => setEditedSuggestedFix(event.target.value)}
+          placeholder="Corrected fix"
+          className="rounded border border-[var(--gray-06)] bg-[var(--gray-01)] px-2 py-1 text-xs"
+        />
+        <span className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => submit("edited", { editedDescription, editedSuggestedFix })}
+            disabled={state === "loading" || (!editedDescription.trim() && !editedSuggestedFix.trim())}
+            className="text-xs text-[var(--blue-11)] hover:underline disabled:opacity-50"
+          >
+            Save edit
+          </button>
+          <button type="button" onClick={() => setEditing(false)} className="text-xs text-[var(--gray-11)] hover:underline">
+            Cancel
+          </button>
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <button type="button" onClick={() => submit("accepted")} disabled={state === "loading"} className="text-xs text-[var(--blue-11)] hover:underline disabled:opacity-50">
+        Accept
+      </button>
+      <button type="button" onClick={() => submit("dismissed")} disabled={state === "loading"} className="text-xs text-[var(--gray-11)] hover:underline disabled:opacity-50">
+        Dismiss
+      </button>
+      <button type="button" onClick={() => setEditing(true)} disabled={state === "loading"} className="text-xs text-[var(--gray-11)] hover:underline disabled:opacity-50">
+        Edit
+      </button>
+      {state === "error" && <span className="text-xs text-[var(--red-11])" title={message}>Failed</span>}
+    </span>
+  );
+}
+
 function GateSubRow({
   gate,
   workspaceId,
@@ -187,6 +272,7 @@ function GateSubRow({
                   <span>{f.description}</span>
                 </span>
                 <span className="shrink-0">
+                  <FindingDisposition workspaceId={workspaceId} gateId={gate.id} findingIndex={i} />
                   <CreateIssueButton
                     workspaceId={workspaceId}
                     gateId={gate.id}

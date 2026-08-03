@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 import {
   artifactKey,
+  bootLogArtifactKey,
   DEFAULT_SIGNED_URL_TTL_SECONDS,
   putArtifact,
   signedGetUrl,
@@ -163,6 +164,44 @@ describe("artifactKey", () => {
 
   it("throws when ext contains a stray '/'", () => {
     expect(() => artifactKey({ ...VALID_INPUT, ext: "p/ng" })).toThrow();
+  });
+});
+
+describe("bootLogArtifactKey", () => {
+  it("builds the dedicated boot.log key under the review-evidence workspace/repo/pr/head family", () => {
+    expect(
+      bootLogArtifactKey({
+        workspaceId: "ws_123",
+        repo: "agentrail/console",
+        prNumber: 42,
+        headSha: "deadbeefcafe",
+      })
+    ).toBe("review-evidence/ws_123/agentrail__console/42/deadbeefcafe/boot.log");
+  });
+
+  it("sanitizes every '/' in repo", () => {
+    expect(
+      bootLogArtifactKey({
+        workspaceId: "ws_123",
+        repo: "a/b/c",
+        prNumber: 42,
+        headSha: "deadbeefcafe",
+      })
+    ).toBe("review-evidence/ws_123/a__b__c/42/deadbeefcafe/boot.log");
+  });
+
+  it("throws on traversal-hostile or malformed coordinates", () => {
+    const valid = {
+      workspaceId: "ws_123",
+      repo: "agentrail/console",
+      prNumber: 42,
+      headSha: "deadbeefcafe",
+    };
+
+    expect(() => bootLogArtifactKey({ ...valid, workspaceId: ".." })).toThrow();
+    expect(() => bootLogArtifactKey({ ...valid, repo: "../console" })).toThrow();
+    expect(() => bootLogArtifactKey({ ...valid, headSha: "dead/beef" })).toThrow();
+    expect(() => bootLogArtifactKey({ ...valid, prNumber: 0 })).toThrow();
   });
 });
 

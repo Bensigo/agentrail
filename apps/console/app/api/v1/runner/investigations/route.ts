@@ -141,9 +141,12 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
   getJaceSessionByEveSessionId,
   getInvestigationBySlug,
   getInvestigationById,
+  getRepositoryByName,
   listInvestigations,
   searchInvestigations,
   upsertInvestigation,
@@ -208,6 +211,13 @@ interface RawInvestigationLink {
   role: string;
 }
 
+interface RawChangeRecordAnchor {
+  repo: string;
+  issueNumber?: number | null;
+  prNumber?: number | null;
+  headShas?: string[];
+}
+
 interface RawPostBody {
   eveSessionId: string;
   // Optional ONLY for a pure `anchor: false` clear with no content fields —
@@ -229,6 +239,7 @@ interface RawPostBody {
   // it untouched.
   anchor?: boolean;
   links?: RawInvestigationLink[];
+  changeRecord?: RawChangeRecordAnchor;
 }
 
 function isRawInvestigationItem(v: unknown): v is RawInvestigationItem {
@@ -269,6 +280,28 @@ function isRawInvestigationLink(v: unknown): v is RawInvestigationLink {
   return true;
 }
 
+function isPositiveInteger(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v > 0;
+}
+
+function isRawChangeRecordAnchor(v: unknown): v is RawChangeRecordAnchor {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.repo !== "string" || o.repo.trim().length === 0) return false;
+  const issueNumber = o.issueNumber === undefined ? null : o.issueNumber;
+  const prNumber = o.prNumber === undefined ? null : o.prNumber;
+  if (issueNumber !== null && !isPositiveInteger(issueNumber)) return false;
+  if (prNumber !== null && !isPositiveInteger(prNumber)) return false;
+  if (issueNumber === null && prNumber === null) return false;
+  if (
+    o.headShas !== undefined &&
+    (!Array.isArray(o.headShas) || !(o.headShas as unknown[]).every((s) => typeof s === "string" && s.trim().length > 0))
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function isRawPostBody(v: unknown): v is RawPostBody {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
@@ -300,6 +333,7 @@ function isRawPostBody(v: unknown): v is RawPostBody {
   ) {
     return false;
   }
+  if (o.changeRecord !== undefined && !isRawChangeRecordAnchor(o.changeRecord)) return false;
   return true;
 }
 
@@ -442,7 +476,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Body must have eveSessionId (string), and optional slug (non-empty string — required unless this is a pure anchor: false clear), title/symptomStatement/symptomSignature/affectedSurface (string), severity (low|medium|high|critical), firstSeenAt (ISO date string or null), items (array of {id?, kind, body?, mechanism?, state?, evidenceRefs?, data?}), anchor (boolean), links (array of {targetSlug, role})",
+          "Body must have eveSessionId (string), and optional slug (non-empty string — required unless this is a pure anchor: false clear), title/symptomStatement/symptomSignature/affectedSurface (string), severity (low|medium|high|critical), firstSeenAt (ISO date string or null), items (array of {id?, kind, body?, mechanism?, state?, evidenceRefs?, data?}), anchor (boolean), links (array of {targetSlug, role}), changeRecord ({repo, issueNumber? or prNumber?, headShas?})",
       },
       { status: 400 }
     );
@@ -462,6 +496,7 @@ export async function POST(request: NextRequest) {
   const slugRaw = raw.slug?.trim() ?? "";
   const items = raw.items ?? [];
   const links = raw.links ?? [];
+  const changeRecordAnchor = raw.changeRecord;
 
   // Pure anchor-clear — mirrors runner/briefs' own "anchor: false with no
   // slug" branch exactly (see this route's doc-comment): fires when Jace has
@@ -476,7 +511,8 @@ export async function POST(request: NextRequest) {
       raw.severity !== undefined ||
       raw.firstSeenAt !== undefined ||
       items.length > 0 ||
-      links.length > 0
+      links.length > 0 ||
+      changeRecordAnchor !== undefined
     ) {
       return NextResponse.json(
         {
@@ -499,6 +535,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "slug is required" }, { status: 400 });
   }
   const slug = slugRaw;
+
+  if (changeRecordAnchor) {
+    const connectedRepo = await getRepositoryByName(workspaceId, changeRecordAnchor.repo.trim());
+    if (!connectedRepo) {
+      return NextResponse.json(
+        { error: "changeRecord.repo is not connected to this workspace" },
+        { status: 404 }
+      );
+    }
+  }
 
   let firstSeenAt: Date | null | undefined;
   if (raw.firstSeenAt !== undefined) {
@@ -617,6 +663,37 @@ export async function POST(request: NextRequest) {
       anchor = null; // already cleared above, before the upsert
     }
 
+    let changeRecord:
+      | { id: string; eventKey: string; inserted: boolean }
+      | undefined;
+    if (changeRecordAnchor) {
+      const issueNumber = changeRecordAnchor.issueNumber ?? null;
+      const prNumber = changeRecordAnchor.prNumber ?? null;
+      const record = await findOrCreateChangeRecord({
+        workspaceId,
+        repo: changeRecordAnchor.repo.trim(),
+        issueNumber,
+        prNumber,
+        headShas: changeRecordAnchor.headShas?.map((sha) => sha.trim()),
+      });
+      const eventKey = `incident:investigation:${investigation.id}`;
+      const { inserted } = await appendChangeRecordEvent({
+        recordId: record.id,
+        eventKey,
+        stage: "incident",
+        actor: "jace-investigator",
+        payloadRef: {
+          kind: "investigation",
+          investigationId: investigation.id,
+          slug: investigation.slug,
+          severity: investigation.severity,
+          verdict: investigation.verdict,
+          confidence: investigation.confidence,
+        },
+      });
+      changeRecord = { id: record.id, eventKey, inserted };
+    }
+
     return NextResponse.json(
       {
         investigation,
@@ -628,6 +705,7 @@ export async function POST(request: NextRequest) {
         unmatchedIds,
         skippedLinks,
         ...(anchor !== undefined ? { anchor } : {}),
+        ...(changeRecord !== undefined ? { changeRecord } : {}),
       },
       { status: 200 }
     );

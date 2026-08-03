@@ -121,12 +121,16 @@
  * the top-level and the per-provider shapes).
  */
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 import {
   getJaceSessionByEveSessionId,
   getSessionInvestigationAnchor,
   getInvestigationById,
   getConnectors,
   getConnectorSecret,
+  getRepositoryByName,
+  findOrCreateChangeRecord,
+  appendChangeRecordEvent,
   type ConnectorProvider,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
@@ -176,6 +180,16 @@ import {
   type EvidenceVerb,
 } from "../../../../../lib/evidence/types";
 
+const REPO_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const SHA_PATTERN = /^[A-Fa-f0-9]{7,40}$/;
+
+interface ChangeRecordAnchor {
+  repo: string;
+  prNumber: number;
+  issueNumber?: number;
+  headSha?: string;
+}
+
 function degradedResponse(reason: EvidenceDegradationReason): NextResponse {
   const body: EvidenceDegradation = { degraded: true, reason };
   return NextResponse.json(body, { status: 200 });
@@ -184,6 +198,123 @@ function degradedResponse(reason: EvidenceDegradationReason): NextResponse {
 function isValidIsoDate(value: string): boolean {
   if (!value) return false;
   return !Number.isNaN(new Date(value).getTime());
+}
+
+function parsePositiveInteger(value: string | null): number | null {
+  if (value === null || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isValidRepoName(repo: string): boolean {
+  const [owner, name, extra] = repo.split("/");
+  return (
+    extra === undefined &&
+    !!owner &&
+    !!name &&
+    REPO_SEGMENT_PATTERN.test(owner) &&
+    REPO_SEGMENT_PATTERN.test(name)
+  );
+}
+
+function parseChangeRecordAnchor(request: NextRequest): ChangeRecordAnchor | null {
+  const repo = request.nextUrl.searchParams.get("changeRecordRepo")?.trim() ?? "";
+  const prNumber = parsePositiveInteger(
+    request.nextUrl.searchParams.get("changeRecordPrNumber")
+  );
+  const issueNumber = parsePositiveInteger(
+    request.nextUrl.searchParams.get("changeRecordIssueNumber")
+  );
+  const headSha =
+    request.nextUrl.searchParams.get("changeRecordHeadSha")?.trim() ?? "";
+
+  const anyAnchorParam =
+    repo ||
+    request.nextUrl.searchParams.has("changeRecordPrNumber") ||
+    request.nextUrl.searchParams.has("changeRecordIssueNumber") ||
+    headSha;
+  if (!anyAnchorParam) return null;
+  if (!repo || !isValidRepoName(repo) || !prNumber) return null;
+  if (
+    request.nextUrl.searchParams.has("changeRecordIssueNumber") &&
+    !issueNumber
+  ) {
+    return null;
+  }
+  if (headSha && !SHA_PATTERN.test(headSha)) return null;
+
+  return {
+    repo,
+    prNumber,
+    ...(issueNumber ? { issueNumber } : {}),
+    ...(headSha ? { headSha } : {}),
+  };
+}
+
+async function appendProductionChangeRecordEvent({
+  workspaceId,
+  anchor,
+  query,
+  investigationId,
+  envelopes,
+}: {
+  workspaceId: string;
+  anchor: ChangeRecordAnchor;
+  query: EvidenceQuery;
+  investigationId: string;
+  envelopes: EvidenceEnvelope[];
+}): Promise<{ recordId: string; eventKey: string; inserted: boolean } | null> {
+  if (envelopes.length === 0) return null;
+
+  const connectedRepo = await getRepositoryByName(workspaceId, anchor.repo);
+  if (!connectedRepo) {
+    return null;
+  }
+
+  const evidenceKey = createHash("sha256")
+    .update(
+      JSON.stringify({
+        query,
+        refs: envelopes.map((envelope) => envelope.ref).sort(),
+      })
+    )
+    .digest("hex")
+    .slice(0, 24);
+  const eventKey = `production:evidence:${anchor.repo}:pr:${anchor.prNumber}:${evidenceKey}`;
+
+  const record = await findOrCreateChangeRecord({
+    workspaceId,
+    repo: anchor.repo,
+    issueNumber: anchor.issueNumber ?? null,
+    prNumber: anchor.prNumber,
+    headShas: anchor.headSha ? [anchor.headSha] : undefined,
+    state: "production",
+  });
+  const { inserted } = await appendChangeRecordEvent({
+    recordId: record.id,
+    eventKey,
+    stage: "production",
+    actor: "runner-evidence",
+    payloadRef: {
+      kind: "deployment_evidence",
+      repo: anchor.repo,
+      prNumber: anchor.prNumber,
+      ...(anchor.issueNumber ? { issueNumber: anchor.issueNumber } : {}),
+      ...(anchor.headSha ? { headSha: anchor.headSha } : {}),
+      investigationId,
+      query,
+      evidence: envelopes.map((envelope) => ({
+        ref: envelope.ref,
+        provider: envelope.provider,
+        verb: envelope.verb,
+        digest: envelope.digest,
+        capturedAt: envelope.capturedAt,
+        truncated: envelope.truncated,
+      })),
+    },
+  });
+
+  return { recordId: record.id, eventKey, inserted };
 }
 
 export async function GET(request: NextRequest) {
@@ -225,6 +356,16 @@ export async function GET(request: NextRequest) {
   const windowStart = request.nextUrl.searchParams.get("windowStart") ?? "";
   const windowEnd = request.nextUrl.searchParams.get("windowEnd") ?? "";
   if (!isValidIsoDate(windowStart) || !isValidIsoDate(windowEnd)) {
+    return degradedResponse("bad_request");
+  }
+  const changeRecordAnchor = parseChangeRecordAnchor(request);
+  if (
+    (request.nextUrl.searchParams.has("changeRecordRepo") ||
+      request.nextUrl.searchParams.has("changeRecordPrNumber") ||
+      request.nextUrl.searchParams.has("changeRecordIssueNumber") ||
+      request.nextUrl.searchParams.has("changeRecordHeadSha")) &&
+    !changeRecordAnchor
+  ) {
     return degradedResponse("bad_request");
   }
 
@@ -348,7 +489,32 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ envelopes, degradations });
+    let changeRecord:
+      | { recordId: string; eventKey: string; inserted: boolean }
+      | undefined;
+    if (changeRecordAnchor) {
+      try {
+        const appended = await appendProductionChangeRecordEvent({
+          workspaceId,
+          anchor: changeRecordAnchor,
+          query: q,
+          investigationId,
+          envelopes,
+        });
+        if (appended) changeRecord = appended;
+      } catch (err) {
+        // Evidence capture already succeeded. A Change Record attachment
+        // failure must be observable, but it must not turn the evidence read
+        // into a provider failure or drop the captured envelopes.
+        console.error("[runner/evidence] production change-record attach failed:", err);
+      }
+    }
+
+    return NextResponse.json({
+      envelopes,
+      degradations,
+      ...(changeRecord ? { changeRecord } : {}),
+    });
   } catch (err) {
     console.error("[runner/evidence] verb query failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

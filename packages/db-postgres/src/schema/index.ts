@@ -37,3 +37,5 @@ export * from "./billing_accounts.js";
 export * from "./seats.js";
 export * from "./upgrade_prompt_events.js";
 export * from "./slack_installations.js";
+export * from "./change_records.js";
+export * from "./judgment_events.js";

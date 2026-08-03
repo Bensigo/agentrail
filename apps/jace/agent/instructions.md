@@ -591,6 +591,13 @@ When the owner asks you to review a pull request — "review PR #98 on
 owner/repo", a pasted GitHub PR URL, or "can you look at this PR" —
 delegate to the `reviewer` subagent instead of judging the diff yourself.
 
+When the owner asks why a pull request should be trusted, or asks what happened
+to PR #N after review, call `fetch_change_record` for that PR before answering.
+Relay the record's stored lifecycle evidence and name missing stages plainly;
+the record is an evidence index, not a new approval. If it returns no record or
+degraded, say that trust evidence could not be retrieved rather than inferring
+confidence from the PR title, a green CI badge, or the absence of comments.
+
 - **Resolve which repo and PR number first.** A PR URL (e.g.
   `https://github.com/owner/repo/pull/98`) already names both; from a bare
   number with no repo named, ask which repo before delegating — never

@@ -39,6 +39,7 @@ from agentrail.sandbox.preview_boot import (
     BootError,
     BootHandle,
     boot,
+    boot_log_tail,
     clone_pr_head,
     health_check,
     pick_free_port,
@@ -610,6 +611,7 @@ class TestBootLifecycle:
         assert handle.port == port
         assert handle.url == f"http://127.0.0.1:{port}"
         assert handle.clone_dir == clone_dir
+        assert handle.boot_log_path == os.path.join(clone_dir, ".agentrail-preview-boot.log")
         assert handle.proc.poll() is None  # still running right after boot
 
         pid = handle.proc.pid
@@ -617,6 +619,7 @@ class TestBootLifecycle:
             # The port genuinely serves — not just that health_check said so.
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3.0) as resp:
                 assert resp.status == 200
+            assert isinstance(boot_log_tail(handle), str)
         finally:
             teardown(handle)
 
@@ -650,6 +653,55 @@ class TestBootLifecycle:
         if shutil.which("pgrep"):
             result = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
             assert result.returncode != 0, f"leaked process still running: {result.stdout}"
+
+    def test_health_fail_exposes_log_tail_without_changing_error_message_shape(
+        self, clone_dir: str
+    ) -> None:
+        port = pick_free_port()
+        secret = "super-secret-value-123"
+        script = textwrap.dedent(
+            f"""
+            import time
+            print("boot child starting")
+            print("known secret: {secret}", flush=True)
+            time.sleep(10)
+            """
+        )
+        recipe = PreviewRecipe(
+            install=None,
+            start=[sys.executable, "-c", script],
+            port=port,
+            ready_path="/",
+        )
+
+        with pytest.raises(BootError) as exc_info:
+            boot(
+                recipe,
+                clone_dir,
+                advertise_host="127.0.0.1",
+                process_env={**dict(os.environ), "TEST_PREVIEW_SECRET": secret},
+                timeout=1.0,
+            )
+
+        message = str(exc_info.value)
+        assert "never became healthy" in message
+        assert "boot child starting" in message
+        assert exc_info.value.boot_log_tail == "boot child starting\nknown secret: [REDACTED]"
+        assert secret not in message
+        assert secret not in exc_info.value.boot_log_tail
+
+
+class TestBootError:
+    def test_log_tail_is_retained_without_changing_string_message(self) -> None:
+        exc = BootError(
+            "same message",
+            boot_log_tail="tail evidence",
+            public_reason="install_failed",
+        )
+
+        assert str(exc) == "same message"
+        assert exc.boot_log_tail == "tail evidence"
+        assert exc.public_reason == "install_failed"
 
 
 class TestBootHealthCheckExceptionSafety:

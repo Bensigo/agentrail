@@ -105,7 +105,7 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(row.url).toBe("http://127.0.0.1:41234");
       expect(row.port).toBe(41234);
       expect(row.bootLogKey).toBe(
-        "review-evidence/ws-1/acme__widgets/42/abc123def456abc123def456abcd/boot.log"
+        "review-evidence/ws-1/acme__widgets/42/abc123def456abc123def456abc123def456abcd/boot.log"
       );
       expect(row.reason).toBe("test-reason");
       expect(row.attempts).toBe(3);

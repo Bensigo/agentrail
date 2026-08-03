@@ -82,6 +82,7 @@ const PENDING_ROW = {
   claimedAt: null,
   url: null,
   port: null,
+  bootLogKey: null,
   reason: null,
   attempts: 0,
   expiresAt: null,
@@ -265,7 +266,12 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
       vi.mocked(getPreviewBoot).mockResolvedValue({ ...PENDING_ROW, workspaceId: "ws-1" } as never);
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ status: "pending", url: null, reason: null });
+      expect(await res.json()).toEqual({
+        status: "pending",
+        url: null,
+        reason: null,
+        bootLogKey: null,
+      });
     });
   });
 
@@ -340,7 +346,12 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
     it("200 {status, url:null, reason:null} for a pending boot with neither set", async () => {
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ status: "pending", url: null, reason: null });
+      expect(await res.json()).toEqual({
+        status: "pending",
+        url: null,
+        reason: null,
+        bootLogKey: null,
+      });
     });
 
     it("200 surfaces a live url on a ready boot", async () => {
@@ -351,7 +362,12 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
         port: 41234,
       } as never);
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
-      expect(await res.json()).toEqual({ status: "ready", url: "http://127.0.0.1:41234", reason: null });
+      expect(await res.json()).toEqual({
+        status: "ready",
+        url: "http://127.0.0.1:41234",
+        reason: null,
+        bootLogKey: null,
+      });
     });
 
     it("200 surfaces a reason on a failed boot", async () => {
@@ -361,13 +377,33 @@ describe("GET /api/v1/runner/preview-boots/[id]", () => {
         reason: "stale",
       } as never);
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
-      expect(await res.json()).toEqual({ status: "failed", url: null, reason: "stale" });
+      expect(await res.json()).toEqual({
+        status: "failed",
+        url: null,
+        reason: "stale",
+        bootLogKey: null,
+      });
+    });
+
+    it("200 surfaces bootLogKey when present", async () => {
+      vi.mocked(getPreviewBoot).mockResolvedValue({
+        ...PENDING_ROW,
+        status: "ready",
+        bootLogKey: "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log",
+      } as never);
+      const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
+      expect(await res.json()).toEqual({
+        status: "ready",
+        url: null,
+        reason: null,
+        bootLogKey: "review-evidence/ws-1/ada__widgets/98/deadbeefcafe/boot.log",
+      });
     });
 
     it("never leaks internal fields (workerId, attempts, expiresAt, ...)", async () => {
       const res = await GET(getReq({ eveSessionId: "eve-session-1" }), params("boot-1"));
       const json = await res.json();
-      expect(Object.keys(json).sort()).toEqual(["reason", "status", "url"]);
+      expect(Object.keys(json).sort()).toEqual(["bootLogKey", "reason", "status", "url"]);
     });
 
     // Fix round 1 (review Finding 3, Minor): pending/ready/failed were

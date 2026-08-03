@@ -9,6 +9,7 @@ import {
   enqueuePreviewBoot,
   claimPreviewBoot,
   reportPreviewBoot,
+  setPreviewBootLogKey,
   getPreviewBoot,
   expireStalePreviewBoots,
 } from "./preview_boots.js";
@@ -118,6 +119,7 @@ describe.skipIf(!DB_AVAILABLE)(
         claimedAt: Date | null;
         url: string | null;
         port: number | null;
+        bootLogKey: string | null;
         reason: string | null;
         attempts: number;
         expiresAt: Date | null;
@@ -142,6 +144,7 @@ describe.skipIf(!DB_AVAILABLE)(
         claimedAt: overrides.claimedAt ?? null,
         url: overrides.url ?? null,
         port: overrides.port ?? null,
+        bootLogKey: overrides.bootLogKey ?? null,
         reason: overrides.reason ?? null,
         attempts: overrides.attempts ?? 0,
         expiresAt: overrides.expiresAt ?? null,
@@ -757,6 +760,57 @@ describe.skipIf(!DB_AVAILABLE)(
           reason: "x",
         });
         expect(result).toBeNull();
+      });
+    });
+
+    // -----------------------------------------------------------------
+    // setPreviewBootLogKey — best-effort evidence attachment
+    // -----------------------------------------------------------------
+    describe("setPreviewBootLogKey", () => {
+      let wsId: string;
+      beforeEach(async () => {
+        wsId = await createWorkspace();
+      });
+      afterEach(async () => {
+        await deleteWorkspace(wsId);
+      });
+
+      it("attaches a boot log key for the owning worker without changing status", async () => {
+        const id = await insertPreviewBoot(wsId, {
+          status: "ready",
+          workerId: "w1",
+        });
+
+        const result = await setPreviewBootLogKey({
+          id,
+          workerId: "w1",
+          bootLogKey: "review-evidence/ws-1/acme__widgets/1/sha/boot.log",
+        });
+
+        expect(result?.id).toBe(id);
+        expect(result?.status).toBe("ready");
+        expect(result?.bootLogKey).toBe(
+          "review-evidence/ws-1/acme__widgets/1/sha/boot.log"
+        );
+        expect((await readPreviewBoot(id)).bootLogKey).toBe(
+          "review-evidence/ws-1/acme__widgets/1/sha/boot.log"
+        );
+      });
+
+      it("returns null and leaves the row untouched for a foreign worker", async () => {
+        const id = await insertPreviewBoot(wsId, {
+          status: "ready",
+          workerId: "owner-worker",
+        });
+
+        const result = await setPreviewBootLogKey({
+          id,
+          workerId: "foreign-worker",
+          bootLogKey: "review-evidence/ws-1/acme__widgets/1/sha/boot.log",
+        });
+
+        expect(result).toBeNull();
+        expect((await readPreviewBoot(id)).bootLogKey).toBeNull();
       });
     });
 

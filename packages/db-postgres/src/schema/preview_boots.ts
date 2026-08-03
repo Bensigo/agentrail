@@ -64,6 +64,10 @@ export const previewBoots = pgTable(
     // Set once the boot reports 'ready'; both null before that.
     url: text("url"),
     port: integer("port"),
+    // Optional object-store key for the worker-captured boot log artifact.
+    // Best-effort evidence only: status transitions do not depend on this
+    // being populated.
+    bootLogKey: text("boot_log_key"),
     // Failure or teardown reason — set on 'failed'/'torn_down', never
     // silent (mirrors review_jobs.skipReason's "never silent" rule).
     reason: text("reason"),

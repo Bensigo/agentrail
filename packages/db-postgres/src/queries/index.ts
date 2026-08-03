@@ -3132,6 +3132,7 @@ export {
   enqueuePreviewBoot,
   claimPreviewBoot,
   reportPreviewBoot,
+  setPreviewBootLogKey,
   getPreviewBoot,
   expireStalePreviewBoots,
   type EnqueuePreviewBootResult,

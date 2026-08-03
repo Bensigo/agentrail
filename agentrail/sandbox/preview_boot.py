@@ -75,6 +75,7 @@ class BootHandle:
     port: int
     url: str  # http://<advertise_host>:<port>
     clone_dir: str
+    boot_log_path: str
 
 
 class BootError(RuntimeError):
@@ -85,6 +86,17 @@ class BootError(RuntimeError):
     ``clone_dir`` — so callers never need a compensating teardown of their
     own on this path.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        boot_log_tail: str = "",
+        public_reason: str = "boot_failed",
+    ) -> None:
+        super().__init__(message)
+        self.boot_log_tail = boot_log_tail
+        self.public_reason = public_reason
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +361,42 @@ def _kill_process_group(proc: subprocess.Popen, pgid: int) -> None:
         proc.wait(timeout=5)
 
 
-def _tail_bytes(path: str, max_bytes: int = _LOG_TAIL_BYTES) -> str:
+def _redact_secret_values(text: str, process_env: dict | None = None) -> str:
+    """Best-effort redaction for values that should never leave the host.
+
+    The preview child is given only the public-safe native child env, but a
+    hostile or buggy process can still print values it knows. Redact exact
+    values from sensitive process-env keys before a tail becomes evidence.
+    """
+    if not text or not process_env:
+        return text
+
+    redacted = text
+    sensitive_markers = (
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "DATABASE_URL",
+        "API_KEY",
+        "AUTH",
+        "PRIVATE_KEY",
+    )
+    for key, value in process_env.items():
+        if not isinstance(key, str) or not any(marker in key.upper() for marker in sensitive_markers):
+            continue
+        if not isinstance(value, str) or len(value) < 8:
+            continue
+        redacted = redacted.replace(value, "[REDACTED]")
+    return redacted
+
+
+def _tail_bytes(
+    path: str,
+    max_bytes: int = _LOG_TAIL_BYTES,
+    *,
+    process_env: dict | None = None,
+) -> str:
     """The trailing ``max_bytes`` of a file, decoded leniently. Empty
     string on any I/O problem (e.g. the file was never created) rather
     than raising — this only ever feeds a best-effort error message.
@@ -362,7 +409,17 @@ def _tail_bytes(path: str, max_bytes: int = _LOG_TAIL_BYTES) -> str:
             data = fh.read()
     except OSError:
         return ""
-    return data.decode("utf-8", errors="replace").strip()
+    return _redact_secret_values(data.decode("utf-8", errors="replace").strip(), process_env)
+
+
+def boot_log_tail(handle: BootHandle, *, process_env: dict | None = None) -> str:
+    """Best-effort bounded tail of a live boot child's stdout/stderr log.
+
+    Returns ``""`` if the file cannot be read. This helper is intentionally
+    safe for reporting paths: log evidence must never be able to fail the
+    preview lifecycle.
+    """
+    return _tail_bytes(handle.boot_log_path, process_env=process_env)
 
 
 # ---------------------------------------------------------------------------
@@ -415,25 +472,31 @@ def _run_install(argv: list, clone_dir: str, process_env: dict, timeout: float) 
             )
     except OSError as exc:
         shutil.rmtree(clone_dir, ignore_errors=True)
-        raise BootError(f"install step failed to start: {exc}") from None
+        raise BootError("install step failed to start", public_reason="install_failed") from None
 
     pgid = _process_group_id(proc)
 
     try:
         returncode = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        tail = _tail_bytes(log_path)
+        tail = _tail_bytes(log_path, process_env=process_env)
         _kill_process_group(proc, pgid)  # reaches a grandchild too, not just argv[0]
         shutil.rmtree(clone_dir, ignore_errors=True)
         raise BootError(
-            f"install step {argv!r} timed out after {timeout}s: {tail or '(no output)'}"
+            f"install step {argv!r} timed out after {timeout}s: {tail or '(no output)'}",
+            boot_log_tail=tail,
+            public_reason="install_timeout",
         ) from None
 
     if returncode != 0:
-        tail = _tail_bytes(log_path)
+        tail = _tail_bytes(log_path, process_env=process_env)
         _kill_process_group(proc, pgid)  # in case a grandchild is still around
         shutil.rmtree(clone_dir, ignore_errors=True)
-        raise BootError(f"install step {argv!r} exited {returncode}: {tail or '(no output)'}")
+        raise BootError(
+            f"install step {argv!r} exited {returncode}: {tail or '(no output)'}",
+            boot_log_tail=tail,
+            public_reason="install_failed",
+        )
 
     # Success: still reap the whole group, in case the install command left
     # a detached grandchild running in the background — there is no
@@ -441,7 +504,15 @@ def _run_install(argv: list, clone_dir: str, process_env: dict, timeout: float) 
     _kill_process_group(proc, pgid)
 
 
-def _fail_boot(proc: subprocess.Popen, pgid: int, clone_dir: str, log_path: str, reason: str) -> None:
+def _fail_boot(
+    proc: subprocess.Popen,
+    pgid: int,
+    clone_dir: str,
+    log_path: str,
+    reason: str,
+    *,
+    process_env: dict | None = None,
+) -> None:
     """Tear down a just-spawned boot child and raise :class:`BootError`.
 
     The single funnel every :func:`boot` failure AFTER ``Popen`` succeeds
@@ -451,10 +522,15 @@ def _fail_boot(proc: subprocess.Popen, pgid: int, clone_dir: str, log_path: str,
     forgotten/gotten-wrong) at every call site. Always raises; never
     returns normally.
     """
-    tail = _tail_bytes(log_path)
+    reason = _redact_secret_values(reason, process_env)
+    tail = _tail_bytes(log_path, process_env=process_env)
     _kill_process_group(proc, pgid)
     shutil.rmtree(clone_dir, ignore_errors=True)
-    raise BootError(f"{reason}: {tail or '(no output)'}")
+    raise BootError(
+        f"{reason}: {tail or '(no output)'}",
+        boot_log_tail=tail,
+        public_reason="boot_failed",
+    )
 
 
 def boot(
@@ -505,7 +581,7 @@ def boot(
             )
     except OSError as exc:
         shutil.rmtree(clone_dir, ignore_errors=True)
-        raise BootError(f"failed to start boot child {recipe.start!r}: {exc}") from None
+        raise BootError("failed to start boot child", public_reason="boot_failed") from None
 
     pgid = _process_group_id(proc)
 
@@ -519,6 +595,7 @@ def boot(
             proc, pgid, clone_dir, log_path,
             f"boot child {recipe.start!r} on port {port} raised during health-check "
             f"(ready_path={recipe.ready_path!r}): {exc!r}",
+            process_env=process_env,
         )
 
     if not healthy:
@@ -526,6 +603,7 @@ def boot(
             proc, pgid, clone_dir, log_path,
             f"boot child {recipe.start!r} on port {port} never became healthy "
             f"(ready_path={recipe.ready_path!r})",
+            process_env=process_env,
         )
 
     return BootHandle(
@@ -534,6 +612,7 @@ def boot(
         port=port,
         url=f"http://{advertise_host}:{port}",
         clone_dir=clone_dir,
+        boot_log_path=log_path,
     )
 
 

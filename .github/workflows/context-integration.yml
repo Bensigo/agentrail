@@ -1,0 +1,55 @@
+name: Context integration
+
+# Full-checkout retrieval quality and pinned-corpus proofs are valuable but
+# expensive. Keep them visible and blocking when context/eval code changes,
+# without making every unrelated PR build the repository's generated index.
+
+on:
+  pull_request:
+    paths:
+      - "agentrail/context/**"
+      - "agentrail/evals/**"
+      - "agentrail/tests/context/**"
+      - "agentrail/tests/evals/**"
+      - "agentrail/tests/conftest.py"
+      - "pyproject.toml"
+      - ".github/workflows/context-integration.yml"
+  push:
+    branches: [main]
+    paths:
+      - "agentrail/context/**"
+      - "agentrail/evals/**"
+      - "agentrail/tests/context/**"
+      - "agentrail/tests/evals/**"
+      - "agentrail/tests/conftest.py"
+      - "pyproject.toml"
+      - ".github/workflows/context-integration.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: context-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  repo-index:
+    runs-on: ubuntu-latest
+    # The deepest fixture intentionally scans the full generated index and can
+    # take several minutes on a hosted runner; this bound still prevents an
+    # accidental hang without making the quality lane flaky.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python package and test runner
+        run: python -m pip install --upgrade pip pytest -e .
+      - name: Build repository context index once
+        run: python -m agentrail.cli.main context index --target . --no-push
+      - name: Run full-checkout integration tests
+        run: python -m pytest -q -m integration

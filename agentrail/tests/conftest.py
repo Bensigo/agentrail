@@ -3,6 +3,48 @@ from __future__ import annotations
 
 import pytest
 
+
+# These tests intentionally exercise the repository checkout itself rather than
+# a small temporary fixture. Keep them out of the fast PR lane so a missing
+# generated index cannot trigger a full-repository build as a side effect of
+# an otherwise ordinary unit-test run. The path-triggered integration workflow
+# runs them with an explicitly prepared index.
+_INTEGRATION_NODE_FRAGMENTS = (
+    # Full-checkout retrieval/evaluation quality gates.
+    "tests/context/test_file_level_precision.py::ReportWiringTests",
+    "tests/context/test_nonsaturated_fixtures.py::NonSaturatedCorpusTests",
+    "tests/context/test_pack_cutoff.py::PackCutoffNoOpTests",
+    "tests/context/test_pack_cutoff.py::PackCutoffCertificationTests",
+    "tests/context/test_rank_aware_metric.py::ReportWiringTests",
+    "tests/context/test_rank_nonsaturated_fixtures.py::RankNonSaturatedCorpusTests",
+    "tests/context/test_retrieval_grep_baseline.py::",
+    "tests/context/test_retrieval_precision_fixtures.py::AC2_EvalProducesLiveNonZeroMetrics",
+    "tests/context/test_retrieval_precision_fixtures.py::AC4_PackPrecisionIsFalsifiable",
+    "tests/context/test_rerank.py::RerankPrecisionImprovementTests",
+    "tests/context/test_symbol_candidates.py::HardFixtureRecallCertification",
+    "tests/context/test_symbol_packing.py::SymbolPackingRecallUnchangedTests",
+    "tests/context/test_wiki_retrieval.py::OrientationProbesFixtureTests",
+    # Real corpus/index canaries and commit-pinned hidden-test proofs.
+    "tests/evals/test_spine.py::test_e2e_pack_precision_recall_populated_on_real_run",
+    "tests/evals/test_spine.py::test_e2e_rerank_flag_toggles_the_cited_set",
+    "tests/evals/test_spine.py::test_cli_evals_run_smoke_drives_spine",
+    "tests/evals/test_spine.py::test_cli_evals_run_ablation_runs_full_leave_one_out_set",
+    "tests/cli/test_evals_cli.py::EvalsRunNewFlowCliTests",
+    "tests/evals/test_corpus_pins.py::test_empty_diff_fails_at_pinned_commit",
+    "tests/evals/test_corpus_pins.py::test_solving_diff_passes_at_pinned_commit",
+    "tests/evals/test_corpus_pins.py::test_captured_agent_diff_solves_a_real_corpus_task_end_to_end",
+    "tests/evals/test_corpus_pins.py::test_wrong_change_fails_for_abstain_task",
+    "tests/evals/test_hidden_tests.py::test_ac3_real_corpus_output_format_enforcer_end_to_end",
+)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Classify full-checkout tests for the dedicated integration lane."""
+    integration = pytest.mark.integration
+    for item in items:
+        if any(fragment in item.nodeid for fragment in _INTEGRATION_NODE_FRAGMENTS):
+            item.add_marker(integration)
+
 # Dashboard-link env fallback used by load_server_config when the target has no
 # .agentrail/server.json. AFK sets these for the pipeline process, so any test
 # that exercises the run pipeline would otherwise push telemetry (context packs,

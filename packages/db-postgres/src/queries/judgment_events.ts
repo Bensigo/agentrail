@@ -283,6 +283,75 @@ export function evaluateJudgmentConstraints(input: {
   };
 }
 
+export type ReviewerSuppressionRule = {
+  findingClass: string;
+  count: number;
+  reason: string;
+  sourceEventIds: string[];
+};
+
+export type ListReviewerSuppressionRulesInput = {
+  workspaceId: string;
+  repo: string;
+  minimumDismissals?: number;
+};
+
+function normalizeFindingClass(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function parseReviewerDismissalFindingClass(event: JudgmentEventRow): string | null {
+  if (event.type !== "review_outcome") return null;
+  if (event.payload.disposition !== "dismissed") return null;
+  return normalizeFindingClass(event.payload.findingClass);
+}
+
+export async function listReviewerSuppressionRules(
+  input: ListReviewerSuppressionRulesInput
+): Promise<ReviewerSuppressionRule[]> {
+  const minimumDismissals = Math.max(1, Math.trunc(input.minimumDismissals ?? 3));
+  const rows = Array.from(
+    await db.execute(sql`
+      SELECT
+        LOWER(REGEXP_REPLACE(BTRIM(payload->>'findingClass'), '\\s+', ' ', 'g')) AS finding_class,
+        COUNT(*)::int AS count,
+        ARRAY_AGG(id ORDER BY occurred_at ASC, created_at ASC, id ASC) AS source_event_ids
+      FROM judgment_events
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND type = 'review_outcome'
+        AND payload->>'disposition' = 'dismissed'
+        AND jsonb_typeof(payload->'findingClass') = 'string'
+        AND BTRIM(payload->>'findingClass') <> ''
+      GROUP BY finding_class
+      HAVING COUNT(*) >= ${minimumDismissals}
+      ORDER BY finding_class ASC
+    `)
+  ) as Array<{
+    finding_class: string | null;
+    count: number;
+    source_event_ids: string[] | null;
+  }>;
+
+  return rows.flatMap((row) => {
+    const findingClass = normalizeFindingClass(row.finding_class);
+    if (!findingClass) return [];
+    const count = Number(row.count ?? 0);
+    const sourceEventIds = Array.isArray(row.source_event_ids)
+      ? row.source_event_ids.filter((id): id is string => typeof id === "string")
+      : [];
+    return [{
+      findingClass,
+      count,
+      reason:
+        `${count} prior review findings with class "${findingClass}" were dismissed for this repo.`,
+      sourceEventIds,
+    }];
+  });
+}
+
 export async function listJudgmentEvents(
   input: ListJudgmentEventsInput
 ): Promise<JudgmentEventRow[]> {

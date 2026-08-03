@@ -3167,8 +3167,10 @@ export {
   listJudgmentEvents,
   getJudgmentCalibrationSummary,
   listJudgmentConstraints,
+  listReviewerSuppressionRules,
   evaluateJudgmentConstraints,
   parseJudgmentConstraint,
+  parseReviewerDismissalFindingClass,
   JUDGMENT_CALIBRATION_EVENT_TYPES,
   type AppendJudgmentEventInput,
   type ListJudgmentEventsInput,
@@ -3177,4 +3179,6 @@ export {
   type JudgmentCalibrationSummary,
   type JudgmentConstraint,
   type JudgmentConstraintMatch,
+  type ListReviewerSuppressionRulesInput,
+  type ReviewerSuppressionRule,
 } from "./judgment_events.js";

@@ -34,7 +34,13 @@ export const MAX_AC_COVERAGE = 20;
 // wired onto this subagent (search_code, read_repo_file, file_history,
 // fetch_wiki). The prompt and rendering (later tasks) are built on this
 // exact list, so both its membership and its order are the contract.
-export const INVESTIGATION_TOOLS = ["search_code", "read_repo_file", "file_history", "fetch_wiki"];
+export const INVESTIGATION_TOOLS = [
+  "search_code",
+  "read_repo_file",
+  "file_history",
+  "fetch_wiki",
+  "reviewer_suppressions",
+];
 export const MAX_INVESTIGATED = 20;
 
 // The four axes of judgment rendered per review. Verdicts are per-field
@@ -116,6 +122,11 @@ export const REVIEW_SCHEMA = {
           finding: {
             type: "string",
             description: "What's wrong and why, in your own words.",
+          },
+          findingClass: {
+            type: "string",
+            description:
+              "Optional normalized class for matching an explicit reviewer suppression rule.",
           },
           suggestedComment: {
             type: "string",
@@ -339,6 +350,9 @@ export function validateReview(review) {
         push(`findings[${i}].severity must be one of: ${REVIEW_SEVERITIES.join(", ")}`);
       }
       if (!isStr(f.finding)) push(`findings[${i}].finding must be a non-empty string`);
+      if (f.findingClass !== undefined && !isStr(f.findingClass)) {
+        push(`findings[${i}].findingClass must be a non-empty string when present`);
+      }
       if (!isStr(f.suggestedComment)) {
         push(`findings[${i}].suggestedComment must be a non-empty string`);
       }

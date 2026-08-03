@@ -1,11 +1,12 @@
 // The reviewer subagent has ZERO write capability and is isolated from the
 // factory's write paths (post_pr_review, issue-filing), while authoring
-// exactly its FIVE read-only tools: fetch_pr_diff (the PR's metadata + diff)
+// exactly its SIX read-only tools: fetch_pr_diff (the PR's metadata + diff)
 // plus the four context tools that let it investigate beyond the diff —
 // read_repo_file (one file/dir at a ref), search_code (capped textual usage
-// search), file_history (recent commits touching a path), and fetch_wiki
-// (the repo's compiled wiki, list/get/search). Widening from ONE tool to
-// FIVE is this task's own change (design:
+// search), file_history (recent commits touching a path), fetch_wiki
+// (the repo's compiled wiki, list/get/search), and reviewer_suppressions
+// (per-repo Judgment Ledger suppression rules). Widening from ONE tool to
+// SIX is this task's own change (design:
 // docs/superpowers/specs/2026-07-31-reviewer-judgment-engine-design.md §2,
 // "the posture rework") — the read-only, zero-write guarantee this file
 // exists to prove is otherwise untouched. Copies the structure of
@@ -35,17 +36,18 @@
 //      those sentinels in the same tools/ directory — none of the sentinels are
 //      removed or replaced.
 //
-// All FIVE authored tools are read-only, proved three ways: none sets an
+// All SIX authored tools are read-only, proved three ways: none sets an
 // `approval` field (approval gates are reserved for root's gated write tools);
 // none of their transport code contains a POST/PUT/DELETE method string (every
-// one of the five is GET-only); and each reaches exactly one configured
+// one of the six is GET-only); and each reaches exactly one configured
 // console endpoint via the global fetch (pr-review for fetch_pr_diff,
 // repo-file for read_repo_file, code-search for search_code, file-history for
-// file_history, repo-wiki for fetch_wiki).
+// file_history, repo-wiki for fetch_wiki, reviewer-suppressions for
+// reviewer_suppressions).
 //
 // What replaces the old "ONE read tool" injection-defense framing (design §2):
-// everything any of the five tools fetches — the diff, a file's content,
-// search fragments, commit messages, wiki prose — is the SAME untrusted
+// everything any of the six tools fetches — the diff, a file's content,
+// search fragments, commit messages, wiki prose, suppression rules — is the SAME untrusted
 // surface, never an instruction; that rule (plus the investigation budget)
 // lives in instructions.md, not here. This file proves the STRUCTURAL half of
 // the posture (isolation + harness lock-down + GET-only + no write path), not
@@ -68,7 +70,7 @@ const reviewerDir = fileURLToPath(
 );
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 
-// The five authored tools (widened from one to five by this task — design
+// The six authored tools (widened from one to six by this task — design
 // §2). Each legitimately uses defineTool, so all five are EXCLUDED from the
 // sentinel-only assertions and from the defineTool write-path scan. Adding a
 // sixth is a deliberate edit here, same posture as no-second-write-path.
@@ -79,6 +81,7 @@ const AUTHORED_TOOLS = [
   "search_code.ts",
   "file_history.ts",
   "fetch_wiki.ts",
+  "reviewer_suppressions.ts",
 ].sort();
 
 function sourceFiles(dir) {
@@ -138,7 +141,7 @@ test("reviewer strips the ENTIRE default harness via disableTool() sentinels", (
   const disabled = new Set();
   for (const entry of readdirSync(toolsDir)) {
     if (!entry.endsWith(".ts")) continue;
-    if (AUTHORED_TOOLS.includes(entry)) continue; // the five real tools, asserted below
+    if (AUTHORED_TOOLS.includes(entry)) continue; // the six real tools, asserted below
     const src = readFileSync(`${toolsDir}/${entry}`, "utf8");
     // A sentinel DISABLES — it must never DEFINE a real (capability-granting) tool.
     assert.doesNotMatch(
@@ -189,7 +192,7 @@ test("reviewer strips the ENTIRE default harness via disableTool() sentinels", (
   }
 });
 
-test("reviewer authors exactly its FIVE read-only tools — fetch_pr_diff, read_repo_file, search_code, file_history, fetch_wiki", () => {
+test("reviewer authors exactly its SIX read-only tools — fetch_pr_diff, read_repo_file, search_code, file_history, fetch_wiki, reviewer_suppressions", () => {
   // Enumerate every source file that authors a tool (defineTool). It must be
   // exactly the five read-only tools, nothing else.
   const authored = sourceFiles(reviewerDir)
@@ -199,7 +202,7 @@ test("reviewer authors exactly its FIVE read-only tools — fetch_pr_diff, read_
   assert.deepEqual(
     authored,
     AUTHORED_TOOLS.map((t) => `tools/${t}`).sort(),
-    `reviewer must author exactly its five tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
+    `reviewer must author exactly its six tools (${AUTHORED_TOOLS.join(", ")}); found: ${authored.join(", ") || "(none)"}`,
   );
 
   // Every one of the five is READ-ONLY: none may carry an approval gate (an
@@ -251,7 +254,7 @@ test("reviewer declares no connections directory (no MCP surface, HTTP-only reac
   assert.ok(
     !existsSync(`${reviewerDir}/connections`),
     "reviewer must declare no connections — its only outbound reach is the five " +
-      "configured console endpoints via its five authored tools (fetch_pr_diff, " +
-      "read_repo_file, search_code, file_history, fetch_wiki)",
+      "configured console endpoints via its six authored tools (fetch_pr_diff, " +
+      "read_repo_file, search_code, file_history, fetch_wiki, reviewer_suppressions)",
   );
 });

@@ -35,11 +35,16 @@ function normalizeHeadShas(headShas: readonly string[] | undefined): string[] {
   return Array.from(new Set((headShas ?? []).filter(Boolean))).sort();
 }
 
+function textArraySql(values: readonly string[]) {
+  if (values.length === 0) return sql`ARRAY[]::text[]`;
+  return sql`ARRAY[${sql.join(values.map((value) => sql`${value}`), sql`, `)}]::text[]`;
+}
+
 function mergeHeadShasSql(headShas: readonly string[]) {
   return sql`
     ARRAY(
       SELECT DISTINCT unnest(
-        COALESCE(change_records.head_shas, ARRAY[]::text[]) || ${headShas}::text[]
+        COALESCE(change_records.head_shas, ARRAY[]::text[]) || ${textArraySql(headShas)}
       )
       ORDER BY 1
     )
@@ -228,7 +233,7 @@ export async function findOrCreateChangeRecord(
           ${input.repo},
           ${input.issueNumber ?? null},
           ${input.prNumber ?? null},
-          ${headShas}::text[],
+          ${textArraySql(headShas)},
           ${input.mergedSha ?? null},
           ${input.state ?? "open"}
         )

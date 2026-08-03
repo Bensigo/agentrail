@@ -8,6 +8,7 @@ import {
   getConnectorSecret,
   getReviewGate,
   getRun,
+  appendJudgmentEvent,
 } from "@agentrail/db-postgres";
 import {
   buildFindingIssue,
@@ -73,9 +74,36 @@ export async function POST(
     target = linear && linear.enabled && linear.hasSecret ? "linear" : "github";
   }
 
-  return target === "linear"
+  const run = await getRun(workspaceId, gate.runId).catch(() => null);
+  const repository = run?.repositoryId
+    ? await getRepository(workspaceId, run.repositoryId).catch(() => null)
+    : null;
+  const response = target === "linear"
     ? createLinearIssue(workspaceId, title, issueBody)
     : createGithubIssue(workspaceId, gate.runId, title, issueBody);
+  const result = await response;
+  if (result.ok && repository?.name) {
+    try {
+      await appendJudgmentEvent({
+        workspaceId,
+        repo: repository.name,
+        eventKey: `review:finding:${gateId}:${idx}:accepted:${target}`,
+        type: "review_outcome",
+        refs: { findingId: `${gateId}:${idx}`, runId: gate.runId },
+        payload: {
+          disposition: "accepted",
+          findingClass: finding.category,
+          action: "issue_created",
+          target,
+        },
+        actorRef: { kind: "workspace_member", id: session.user.id },
+        sourceRef: { kind: "console_review_gate", id: gateId },
+      });
+    } catch (error) {
+      console.error("[review-gates/issue] judgment capture failed:", error);
+    }
+  }
+  return result;
 }
 
 async function createGithubIssue(

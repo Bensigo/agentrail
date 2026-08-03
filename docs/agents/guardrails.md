@@ -17,6 +17,7 @@ Every guardrail below is enumerated from the single registry
 | --- | --- | --- | --- |
 | `approval_gate` | blocking | yes | Requires human approval before an irreversible action (merge, deploy, protected push) when the approval policy is enabled; disabled by default. |
 | `check_runner` | blocking | yes | Runs the declared objective verification command(s) and requires every check to pass; a run with no declared verification is red ('no objective verification declared'). |
+| `dependency_upgrade_evidence` | blocking | yes | Blocks an approved pnpm upgrade until canonical release, usage, target-lock, peer-compatibility, and security evidence is complete. |
 | `input_contract` | blocking | yes | Admits an issue to the Issue Queue only when it passes the entrance checks: no prompt-injection directive, and an Acceptance-criteria section with machine-checkable (checkbox) criteria. |
 | `objective_gate` | blocking | yes | The single objective definition of done/merge: objective checks (tests/build/lint) + acceptance-criteria coverage + Red-Green and Independent-Verification seams (sync harness), and CI checks (with a pending hold) + committed-secret scan + deleted-file-still-referenced (async harness). No LLM opinion participates. |
 | `output_enforcer` | blocking | yes | Rejects full-file rewrites of existing files; accepts diff/patch edits and any content for new files or renames. |

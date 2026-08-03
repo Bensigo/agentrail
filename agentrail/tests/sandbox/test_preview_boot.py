@@ -319,14 +319,16 @@ class TestClonePrHead:
     ) -> None:
         dest = str(tmp_path / "clone")
         ref = "deadbeefcafefeed0000000000000000000000"
-        runner = _StubRunner([_StubCompleted(0), _StubCompleted(0), _StubCompleted(0)])
+        runner = _StubRunner(
+            [_StubCompleted(0), _StubCompleted(0), _StubCompleted(0), _StubCompleted(0)]
+        )
 
         clone_pr_head(
             "https://github.com/acme/widgets.git", ref, dest,
             token="ght-secret", runner=runner,
         )
 
-        assert len(runner.calls) == 3
+        assert len(runner.calls) == 4
         clone_argv, _ = runner.calls[0]
         assert clone_argv == [
             "git", "clone", "--depth", "1",
@@ -339,12 +341,23 @@ class TestClonePrHead:
         checkout_argv, checkout_kwargs = runner.calls[2]
         assert checkout_argv == ["git", "checkout", "FETCH_HEAD"]
         assert checkout_kwargs.get("cwd") == dest
+        # S1: the credential-scrub step resets origin to the ORIGINAL,
+        # never-tokened repo_url (never clone_url) — must never itself
+        # carry "ght-secret".
+        scrub_argv, scrub_kwargs = runner.calls[3]
+        assert scrub_argv == [
+            "git", "remote", "set-url", "origin",
+            "https://github.com/acme/widgets.git",
+        ]
+        assert scrub_kwargs.get("cwd") == dest
 
     def test_a_pr_head_ref_is_passed_through_to_fetch_untouched(self, tmp_path: Path) -> None:
         """ref can be refs/pull/N/head — clone_pr_head must never try to
         --branch it (git rejects that form); it flows straight into fetch."""
         dest = str(tmp_path / "clone")
-        runner = _StubRunner([_StubCompleted(0), _StubCompleted(0), _StubCompleted(0)])
+        runner = _StubRunner(
+            [_StubCompleted(0), _StubCompleted(0), _StubCompleted(0), _StubCompleted(0)]
+        )
 
         clone_pr_head(
             "https://github.com/acme/widgets.git", "refs/pull/42/head", dest,
@@ -450,6 +463,131 @@ class TestClonePrHead:
         message = str(exc_info.value)
         assert token not in message
         assert tail_fragment not in message, "a fragment of the token leaked past truncation"
+
+
+# ---------------------------------------------------------------------------
+# clone_pr_head — credential scrub (final review, S1)
+#
+# TestBootEnvSecurityInvariant (below) proves the booted child's ENVIRONMENT
+# is clean. It says nothing about DISK: `git clone` persists whatever URL
+# it was given — including the token `authenticated_clone_url` embeds —
+# verbatim into dest/.git/config, and boot() then runs the repo's OWN
+# untrusted install/start commands with cwd=dest, which can trivially read
+# that file. clone_pr_head must scrub it before ever returning.
+# ---------------------------------------------------------------------------
+
+
+class TestClonePrHeadCredentialScrub:
+    def test_a_failing_scrub_step_raises_instead_of_returning_with_a_tokened_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A scrub failure must never be swallowed — better to fail the
+        whole clone than let boot() ever see a dest whose config still
+        carries the token."""
+        dest = str(tmp_path / "clone")
+        token = "ghp_x"
+        runner = _StubRunner(
+            [
+                _StubCompleted(0),  # clone
+                _StubCompleted(0),  # fetch
+                _StubCompleted(0),  # checkout
+                _StubCompleted(1, "", "fatal: could not set 'remote.origin.url'"),  # scrub
+            ]
+        )
+
+        with pytest.raises(RuntimeError):
+            clone_pr_head(
+                "https://github.com/acme/widgets.git", "deadbeef", dest,
+                token=token, runner=runner,
+            )
+
+        assert len(runner.calls) == 4  # the scrub step was actually attempted
+        scrub_argv, scrub_kwargs = runner.calls[3]
+        assert scrub_argv == [
+            "git", "remote", "set-url", "origin",
+            "https://github.com/acme/widgets.git",
+        ]
+        assert scrub_kwargs.get("cwd") == dest
+
+    def test_the_credential_does_not_survive_on_disk_after_a_real_local_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reproduces the S1 finding exactly as the reviewer did: a REAL
+        `git clone`/`fetch`/`checkout` (real subprocess, real git, no
+        stubs) whose remote URL carries a fake token, then asserts the
+        token is gone from BOTH `git config --get remote.origin.url` and a
+        raw read of dest/.git/config afterward.
+
+        There's no reachable real GitHub host to clone from offline, so
+        `authenticated_clone_url` (the only thing that would normally turn
+        an https:// repo_url into a tokened one) is swapped for a fake that
+        points at a real local source repo instead, via a `file://` URL
+        carrying the SAME `x-access-token:<token>@` userinfo prefix
+        `authenticated_clone_url` itself would produce — confirmed
+        empirically (outside this suite) that git happily clones through a
+        fake userinfo prefix on a file:// URL AND persists it byte-for-byte
+        into dest/.git/config, exactly like the reviewer's https:// repro.
+        `repo_url` itself — what clone_pr_head receives, and what the
+        scrub must reset origin back to — is never touched by the fake: it
+        stays a plain, realistic https:// URL throughout, exactly as in
+        production.
+        """
+        import agentrail.sandbox.preview_boot as preview_boot_module
+
+        source = tmp_path / "source"
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(source)],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.email", "test@example.com"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "config", "user.name", "Test"],
+            check=True, capture_output=True, text=True,
+        )
+        (source / "README.md").write_text("hello\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(source), "add", "README.md"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(source), "-c", "commit.gpgsign=false",
+             "commit", "-q", "-m", "init"],
+            check=True, capture_output=True, text=True,
+        )
+        sha = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        token = "ghp_realtoken1234567890"
+        clean_repo_url = "https://github.com/acme/widgets.git"  # never actually contacted
+        dest = tmp_path / "dest"
+
+        def _fake_authenticated_clone_url(repo_url: str, tok: str) -> str:
+            assert (repo_url, tok) == (clean_repo_url, token)
+            return f"file://x-access-token:{tok}@{source}"
+
+        monkeypatch.setattr(
+            preview_boot_module, "authenticated_clone_url", _fake_authenticated_clone_url
+        )
+
+        clone_pr_head(clean_repo_url, sha, str(dest), token=token, runner=subprocess)
+
+        # The working tree is real and must remain intact — boot() needs it.
+        assert (dest / "README.md").read_text(encoding="utf-8") == "hello\n"
+
+        remaining_url = subprocess.run(
+            ["git", "-C", str(dest), "config", "--get", "remote.origin.url"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        assert token not in remaining_url
+        assert remaining_url == clean_repo_url  # reset to repo_url, not just token-stripped
+
+        raw_config = (dest / ".git" / "config").read_text(encoding="utf-8")
+        assert token not in raw_config
 
 
 # ---------------------------------------------------------------------------

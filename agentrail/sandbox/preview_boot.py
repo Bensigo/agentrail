@@ -108,7 +108,7 @@ def clone_pr_head(
     branch/tag name on the ``origin`` remote git's ``--branch`` resolves
     against). So instead of ``--branch`` (the approach
     ``agentrail.runner.onboard._clone`` uses for an ordinary branch/tag
-    ref), this always does three steps:
+    ref), this always does four steps:
 
       1. ``git clone --depth 1 <authed-url> dest`` — shallow clone of
          whatever the default branch happens to be; its content is
@@ -119,6 +119,8 @@ def clone_pr_head(
          ``ref`` (whatever form it takes) as ``FETCH_HEAD``, without ever
          needing it to be a resolvable branch/tag name.
       3. ``git -C dest checkout FETCH_HEAD`` — lands the working tree on it.
+      4. ``git -C dest remote set-url origin <repo_url>`` — scrubs the
+         credential step 1 just persisted to disk (see below).
 
     ``token`` (a workspace's connected GitHub OAuth token, or a locally
     configured PAT) is embedded as HTTP Basic auth in the clone URL via
@@ -127,6 +129,25 @@ def clone_pr_head(
     it, ``origin`` is already authenticated for steps 2/3, which is why
     only the clone step's argv needs the credentialed URL.
 
+    Step 4 closes a credential-on-disk leak (final review, S1): ``git
+    clone`` persists whatever URL it was given VERBATIM into
+    ``dest/.git/config``'s ``remote.origin.url`` as an entirely ordinary
+    side effect of setting up ``origin`` — it has no idea step 1's URL
+    happens to carry a token, and never scrubs it back out on its own.
+    :func:`boot` then runs the PR's OWN untrusted ``recipe.install`` /
+    ``recipe.start`` with ``cwd=dest``, so anything left in
+    ``dest/.git/config`` at that point is directly readable by that
+    untrusted code — an unscrubbed config would hand a live, unscoped,
+    installation-wide GitHub token to whatever the PR author's own
+    postinstall/start script chooses to do with it, for that token's
+    lifetime. Step 4 resets ``origin`` to ``repo_url`` — the ORIGINAL
+    parameter this function received, never touched by
+    ``authenticated_clone_url`` — rather than to ``clone_url``: ``repo_url``
+    never had a token embedded in it to begin with, so this is a plain
+    credential-free reset, not a second redaction pass that could itself be
+    incomplete. It only rewrites git's own remote metadata; the working
+    tree :func:`boot` depends on is untouched.
+
     Every failure path is routed through
     :func:`agentrail.sandbox.clone_auth.redact_token` before it can leave
     this function — both a non-zero exit's captured stderr AND a raised
@@ -134,7 +155,10 @@ def clone_pr_head(
     docstring) ``subprocess.CalledProcessError``/``TimeoutExpired.__str__()``
     unconditionally embed the raw argv they were constructed with, which
     for the clone step includes the credential-embedded URL regardless of
-    what git itself printed.
+    what git itself printed. This applies to step 4 too, via the SAME
+    ``_run`` helper every other step uses — so a scrub failure raises
+    exactly like a clone/fetch/checkout failure would, rather than ever
+    silently leaving a tokened config on disk.
 
     ``runner`` is injected (default :mod:`subprocess`) so tests never touch
     the network — mirrors ``agentrail.runner.onboard._clone``'s own seam.
@@ -159,6 +183,14 @@ def clone_pr_head(
     _run(["git", "clone", "--depth", "1", clone_url, dest], cwd=None, step="git clone")
     _run(["git", "fetch", "--depth", "1", "origin", ref], cwd=dest, step="git fetch")
     _run(["git", "checkout", "FETCH_HEAD"], cwd=dest, step="git checkout")
+    # S1: scrub the credential step 1 persisted into dest/.git/config BEFORE
+    # this function ever returns — boot() runs the repo's own untrusted
+    # install/start commands with cwd=dest right after, and they can read
+    # that file. Reset to repo_url (never tokened), not clone_url (always
+    # tokened when a token was supplied). Routed through the same _run seam
+    # as every other step so a failure here fails the whole clone rather
+    # than silently returning with a live token still on disk.
+    _run(["git", "remote", "set-url", "origin", repo_url], cwd=dest, step="git remote set-url")
 
 
 # ---------------------------------------------------------------------------

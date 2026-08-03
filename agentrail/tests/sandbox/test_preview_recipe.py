@@ -295,7 +295,13 @@ class TestPackageJsonHeuristics:
         recipe = detect_recipe(str(tmp_path))
 
         assert recipe is not None
-        assert recipe.install == ["corepack", "pnpm", "install", "--frozen-lockfile"]
+        assert recipe.install == [
+            "corepack",
+            "pnpm",
+            "install",
+            "--frozen-lockfile",
+            "--dangerously-allow-all-builds",
+        ]
 
     def test_install_uses_yarn_when_yarn_lockfile_present(self, tmp_path: Path) -> None:
         _write_json(tmp_path / "package.json", {"scripts": {"dev": "vite"}})

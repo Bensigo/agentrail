@@ -36,7 +36,8 @@ Detection order:
          ``scripts.start`` -> ``["npm", "run", "start"]``; neither present
          means undetectable.
        - install: match the package manager lockfile next to it:
-         ``pnpm-lock.yaml`` -> ``["corepack", "pnpm", "install", "--frozen-lockfile"]``,
+         ``pnpm-lock.yaml`` -> ``["corepack", "pnpm", "install", "--frozen-lockfile",
+         "--dangerously-allow-all-builds"]``,
          ``yarn.lock`` -> ``["corepack", "yarn", "install", "--frozen-lockfile"]``,
          ``package-lock.json`` -> ``["npm", "ci"]``; otherwise
          ``["npm", "install"]``.
@@ -98,7 +99,13 @@ def _install_command(repo_dir: str) -> list[str]:
     before falling back to npm's lockfile or the no-lock npm default.
     """
     if os.path.isfile(os.path.join(repo_dir, "pnpm-lock.yaml")):
-        return ["corepack", "pnpm", "install", "--frozen-lockfile"]
+        return [
+            "corepack",
+            "pnpm",
+            "install",
+            "--frozen-lockfile",
+            "--dangerously-allow-all-builds",
+        ]
     if os.path.isfile(os.path.join(repo_dir, "yarn.lock")):
         return ["corepack", "yarn", "install", "--frozen-lockfile"]
     if os.path.isfile(os.path.join(repo_dir, "package-lock.json")):

@@ -335,20 +335,33 @@ class SecurityEvidenceProvider(Protocol):
 
 
 def _failure_release(reason: str, observed_at: str) -> ReleaseEvidence:
-    return ReleaseEvidence(EvidenceResolution.NOT_VERIFIABLE, "", observed_at=observed_at, reason=reason)
+    return ReleaseEvidence(
+        EvidenceResolution.NOT_VERIFIABLE,
+        "",
+        observed_at=observed_at,
+        reason=f"release evidence is not_verifiable: {reason}",
+    )
 
 
 def _failure_usage(reason: str, observed_at: str) -> UsageEvidence:
-    finding = UsageFinding(EvidenceState.UNKNOWN, detail=reason)
+    finding = UsageFinding(EvidenceState.UNKNOWN, detail=f"usage evidence is not_verifiable: {reason}")
     return UsageEvidence(finding, finding, finding, finding, observed_at)
 
 
 def _failure_lock(reason: str, observed_at: str) -> LockResolution:
-    return LockResolution(EvidenceResolution.NOT_VERIFIABLE, observed_at=observed_at, reason=reason)
+    return LockResolution(
+        EvidenceResolution.NOT_VERIFIABLE,
+        observed_at=observed_at,
+        reason=f"target lock resolution is not_verifiable: {reason}",
+    )
 
 
 def _failure_security(reason: str, observed_at: str) -> SecurityEvidence:
-    return SecurityEvidence(EvidenceResolution.NOT_VERIFIABLE, observed_at=observed_at, reason=reason)
+    return SecurityEvidence(
+        EvidenceResolution.NOT_VERIFIABLE,
+        observed_at=observed_at,
+        reason=f"security advisory data is not_verifiable: {reason}",
+    )
 
 
 def collect_dependency_evidence(
@@ -367,13 +380,13 @@ def collect_dependency_evidence(
     try:
         release_evidence = release.resolve(identity)
     except Exception as exc:  # provider failures are evidence failures, never passes
-        release_evidence = _failure_release(f"release evidence unavailable: {type(exc).__name__}", timestamp)
+        release_evidence = _failure_release(f"provider failure: {type(exc).__name__}", timestamp)
     if not isinstance(release_evidence, ReleaseEvidence):
         release_evidence = _failure_release("release provider returned malformed evidence", timestamp)
     try:
         usage_evidence = usage.inspect(identity)
     except Exception as exc:
-        usage_evidence = _failure_usage(f"usage evidence unavailable: {type(exc).__name__}", timestamp)
+        usage_evidence = _failure_usage(f"provider failure: {type(exc).__name__}", timestamp)
     if not isinstance(usage_evidence, UsageEvidence) or not all(
         isinstance(finding, UsageFinding)
         for finding in (
@@ -387,13 +400,13 @@ def collect_dependency_evidence(
     try:
         lock_evidence = lock.resolve(identity)
     except Exception as exc:
-        lock_evidence = _failure_lock(f"target lock resolution unavailable: {type(exc).__name__}", timestamp)
+        lock_evidence = _failure_lock(f"provider failure: {type(exc).__name__}", timestamp)
     if not isinstance(lock_evidence, LockResolution):
         lock_evidence = _failure_lock("lock provider returned malformed evidence", timestamp)
     try:
         security_evidence = security.inspect(identity)
     except Exception as exc:
-        security_evidence = _failure_security(f"security advisory data unavailable: {type(exc).__name__}", timestamp)
+        security_evidence = _failure_security(f"provider failure: {type(exc).__name__}", timestamp)
     if not isinstance(security_evidence, SecurityEvidence):
         security_evidence = _failure_security("security provider returned malformed evidence", timestamp)
 
@@ -456,7 +469,12 @@ def evaluate_dependency_evidence(
         ("workspace usage", evidence.usage.workspace_usage),
     ):
         if finding.status is EvidenceState.UNKNOWN:
-            maybe_block(f"usage:{name}", f"{name} usage is ambiguous or unavailable", waivable=True)
+            detail = f": {finding.detail}" if finding.detail else ""
+            maybe_block(
+                f"usage:{name}",
+                f"{name} usage evidence is not_verifiable{detail}",
+                waivable=True,
+            )
 
     if evidence.lock.resolution is not EvidenceResolution.RESOLVED:
         reasons.append(evidence.lock.reason or f"target lock resolution is {evidence.lock.resolution.value}")
@@ -882,6 +900,52 @@ def write_dependency_evidence(
     write_json(metadata_path, metadata)
 
 
+def collect_and_write_dependency_evidence(
+    path: Path,
+    candidate: DependencyCandidate | CandidateIdentity,
+    *,
+    release: ReleaseEvidenceProvider,
+    usage: UsageEvidenceProvider,
+    lock: LockResolutionProvider,
+    security: SecurityEvidenceProvider,
+    waiver: Optional[EvidenceWaiver] = None,
+    observed_at: Optional[str] = None,
+    metadata_path: Optional[Path] = None,
+) -> DependencyEvidence:
+    """Collect dependency evidence and persist the bounded artifact.
+
+    This is the pre-implementation stage: it uses injected providers, fails
+    closed on provider errors, writes ``dependency_evidence.json``, and returns
+    the evidence object that should feed the Objective Gate seam.
+    """
+    evidence = collect_dependency_evidence(
+        candidate,
+        release=release,
+        usage=usage,
+        lock=lock,
+        security=security,
+        waiver=waiver,
+        observed_at=observed_at,
+    )
+    write_dependency_evidence(path, evidence, metadata_path=metadata_path)
+    return evidence
+
+
+def load_dependency_evidence_for_gate(run_dir: Path) -> Dict[str, Any]:
+    """Load the dependency evidence artifact for the Objective Gate seam.
+
+    Missing or unreadable artifacts are converted into an explicit invalid
+    payload so the gate fails closed instead of silently skipping the evidence.
+    """
+    path = Path(run_dir) / "dependency_evidence.json"
+    if not path.exists():
+        return {"invalid": "dependency evidence file is missing"}
+    try:
+        return read_json(path)
+    except Exception as exc:  # noqa: BLE001 - explicit fail-closed seam
+        return {"invalid": f"dependency evidence could not be read: {type(exc).__name__}"}
+
+
 def dependency_gate_input(payload: Mapping[str, Any]) -> Tuple[bool, str]:
     """Validate the serialized decision before it enters the Objective Gate."""
     if not isinstance(payload, Mapping):
@@ -967,8 +1031,10 @@ __all__ = [
     "UsageEvidence",
     "UsageFinding",
     "collect_dependency_evidence",
+    "collect_and_write_dependency_evidence",
     "dependency_gate_input",
     "evaluate_dependency_evidence",
+    "load_dependency_evidence_for_gate",
     "resolve_pnpm_lock_transition",
     "scan_usage_evidence",
     "security_evidence_from_advisory_payload",

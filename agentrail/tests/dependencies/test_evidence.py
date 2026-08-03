@@ -19,8 +19,10 @@ from agentrail.dependencies.evidence import (
     UsageEvidence,
     UsageFinding,
     collect_dependency_evidence,
+    collect_and_write_dependency_evidence,
     dependency_gate_input,
     evaluate_dependency_evidence,
+    load_dependency_evidence_for_gate,
     resolve_pnpm_lock_transition,
     scan_usage_evidence,
     security_evidence_from_advisory_payload,
@@ -89,6 +91,17 @@ class _Provider:
         return self.value
 
 
+class _RaisingProvider:
+    def __init__(self, message: str = "network down") -> None:
+        self.message = message
+
+    def resolve(self, candidate):
+        raise RuntimeError(self.message)
+
+    def inspect(self, candidate):
+        raise RuntimeError(self.message)
+
+
 def test_collect_records_candidate_sources_timestamps_and_ready_decision() -> None:
     evidence = collect_dependency_evidence(
         _candidate(),
@@ -109,6 +122,21 @@ def test_collect_records_candidate_sources_timestamps_and_ready_decision() -> No
         True,
         "candidate compatibility, usage, lock, release, and security evidence is complete",
     )
+
+
+def test_provider_failures_become_not_verifiable_and_block() -> None:
+    evidence = collect_dependency_evidence(
+        _candidate(),
+        release=_RaisingProvider(),
+        usage=_Provider(_usage()),
+        lock=_Provider(_resolved_lock()),
+        security=_Provider(_resolved_security()),
+        observed_at=NOW,
+    )
+
+    assert evidence.release.resolution is EvidenceResolution.NOT_VERIFIABLE
+    assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
+    assert any("not_verifiable" in reason for reason in evidence.decision.blocking_reasons)
 
 
 def test_usage_reports_direct_config_peer_and_workspace_findings() -> None:
@@ -142,6 +170,20 @@ def test_incomplete_context_is_unknown_not_not_found() -> None:
     assert usage.workspace_usage.status is EvidenceState.UNKNOWN
 
 
+def test_ambiguous_usage_blocks_as_not_verifiable() -> None:
+    evidence = collect_dependency_evidence(
+        _candidate(),
+        release=_Provider(_resolved_release()),
+        usage=_Provider(_usage(status=EvidenceState.UNKNOWN)),
+        lock=_Provider(_resolved_lock()),
+        security=_Provider(_resolved_security()),
+        observed_at=NOW,
+    )
+
+    assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
+    assert any("not_verifiable" in reason for reason in evidence.decision.blocking_reasons)
+
+
 def test_lock_transition_captures_direct_transitive_and_peer_conflicts() -> None:
     baseline = """lockfileVersion: '9.0'\n\npackages:\n  lodash@4.17.21:\n    resolution: {integrity: sha}\n  react@18.2.0:\n    resolution: {integrity: sha}\nsnapshots:\n  lodash@4.17.21:\n  react@18.2.0:\n    peerDependencies:\n      lodash: ^4.17.21\n"""
     target = """lockfileVersion: '9.0'\n\npackages:\n  lodash@4.17.22:\n    resolution: {integrity: sha}\n  react@18.3.0:\n    resolution: {integrity: sha}\n    peerDependencies:\n      lodash: ^4.17.99\nsnapshots:\n  lodash@4.17.22:\n  react@18.3.0:\n    peerDependencies:\n      lodash: ^4.17.99\n"""
@@ -171,23 +213,32 @@ def test_malformed_target_lock_is_not_verifiable_and_blocks() -> None:
 
 
 def test_high_and_critical_new_advisories_block_even_with_explicit_waiver() -> None:
-    advisory = SecurityEvidence(
-        EvidenceResolution.RESOLVED,
-        advisories=(
-            SecurityAdvisory(
-                "GHSA-high", "lodash", "high", True, _source("GHSA-high"),
+    for severity in ("high", "critical"):
+        advisory = SecurityEvidence(
+            EvidenceResolution.RESOLVED,
+            advisories=(
+                SecurityAdvisory(
+                    f"GHSA-{severity}",
+                    "lodash",
+                    severity,
+                    True,
+                    _source(f"GHSA-{severity}"),
+                ),
             ),
-        ),
-        sources=(_source("osv"),),
-        observed_at=NOW,
-    )
-    evidence = collect_dependency_evidence(
-        _candidate(), release=_Provider(_resolved_release()), usage=_Provider(_usage()),
-        lock=_Provider(_resolved_lock()), security=_Provider(advisory),
-        waiver=EvidenceWaiver("waiver-1", "user-1", "reviewed", NOW, ("release",)), observed_at=NOW,
-    )
-    assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
-    assert any("high security advisory" in reason for reason in evidence.decision.blocking_reasons)
+            sources=(_source("osv"),),
+            observed_at=NOW,
+        )
+        evidence = collect_dependency_evidence(
+            _candidate(),
+            release=_Provider(_resolved_release()),
+            usage=_Provider(_usage()),
+            lock=_Provider(_resolved_lock()),
+            security=_Provider(advisory),
+            waiver=EvidenceWaiver("waiver-1", "user-1", "reviewed", NOW, ("release",)),
+            observed_at=NOW,
+        )
+        assert evidence.decision.status is DependencyDecisionStatus.BLOCKED
+        assert any(f"{severity} security advisory" in reason for reason in evidence.decision.blocking_reasons)
 
 
 def test_unknown_release_requires_explicit_visible_waiver_but_unavailable_does_not() -> None:
@@ -239,3 +290,33 @@ def test_persistence_exposes_artifact_and_metadata(tmp_path: Path) -> None:
     assert stored["decision"]["proofComplete"] is True
     assert run["dependencyEvidence"]["candidateFingerprint"] == "sha256:candidate-1580"
     assert run["dependencyEvidenceFile"] == str(artifact)
+
+
+def test_collect_and_write_dependency_evidence_persists_the_gate_artifact(tmp_path: Path) -> None:
+    metadata = tmp_path / "run.json"
+    metadata.write_text("{}\n")
+    artifact = tmp_path / "dependency_evidence.json"
+
+    evidence = collect_and_write_dependency_evidence(
+        artifact,
+        _candidate(),
+        release=_Provider(_resolved_release()),
+        usage=_Provider(_usage()),
+        lock=_Provider(_resolved_lock()),
+        security=_Provider(_resolved_security()),
+        waiver=EvidenceWaiver("waiver-4", "human-7", "manual signoff", NOW, ("release",)),
+        observed_at=NOW,
+        metadata_path=metadata,
+    )
+
+    stored = json.loads(artifact.read_text())
+    run = json.loads(metadata.read_text())
+    assert evidence.decision.waiver is not None
+    assert stored["decision"]["waiver"]["id"] == "waiver-4"
+    assert run["dependencyEvidence"]["decision"]["waiver"]["id"] == "waiver-4"
+    assert run["dependencyEvidenceFile"] == str(artifact)
+
+
+def test_missing_dependency_artifact_loads_as_an_explicit_invalid_payload(tmp_path: Path) -> None:
+    payload = load_dependency_evidence_for_gate(tmp_path)
+    assert payload["invalid"] == "dependency evidence file is missing"

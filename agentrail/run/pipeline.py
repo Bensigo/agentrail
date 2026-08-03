@@ -66,6 +66,7 @@ from agentrail.run.usage_capture import (
     record_reads_into_run_json,
 )
 from agentrail.shared.json import read_json, write_json
+from agentrail.dependencies.evidence import load_dependency_evidence_for_gate
 
 _log = logging.getLogger(__name__)
 
@@ -396,20 +397,25 @@ def _independent_review_warning(agent: str, status: str) -> str:
 
 
 def _load_dependency_evidence_for_gate(run_dir: Path) -> Optional[Dict[str, Any]]:
-    """Load the pre-implementation dependency artifact, if this is one.
-
-    A malformed artifact is intentionally converted to an invalid object so the
-    Objective Gate records a red dependency-evidence row instead of treating a
-    read failure as absence of a dependency check.
-    """
-    path = run_dir / "dependency_evidence.json"
-    if not path.exists():
+    """Load dependency evidence only for runs that actually carry the marker."""
+    metadata_path = run_dir / "run.json"
+    metadata = read_json(metadata_path) if metadata_path.exists() else {}
+    if not isinstance(metadata, dict):
         return None
-    try:
-        payload = read_json(path)
-    except Exception as exc:  # noqa: BLE001 - fail closed at the gate seam
-        return {"invalid": f"dependency evidence could not be read: {type(exc).__name__}"}
-    return payload
+    dependency_markers = (
+        "dependencyEvidence",
+        "dependencyEvidenceFile",
+        "dependencyExecution",
+        "dependencyExecutionFile",
+        "dependencyPublication",
+        "dependency_publication",
+        "dependencyUpgrade",
+        "dependency_upgrade",
+        "approvedDependencyUpgrade",
+    )
+    if not any(marker in metadata for marker in dependency_markers):
+        return None
+    return load_dependency_evidence_for_gate(run_dir)
 
 
 def finalize_objective_gate(

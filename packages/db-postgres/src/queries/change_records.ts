@@ -261,6 +261,7 @@ export async function appendChangeRecordEvent(
     eventKey: input.eventKey,
   });
   const payloadRefJson = JSON.stringify(input.payloadRef);
+  const at = (input.at ?? new Date()).toISOString();
   const inserted = Array.from(
     await db.execute(sql`
       INSERT INTO change_record_events (
@@ -271,7 +272,7 @@ export async function appendChangeRecordEvent(
         ${input.recordId},
         ${input.eventKey},
         ${input.stage},
-        ${input.at ?? new Date()},
+        ${at},
         ${input.actor},
         ${payloadRefJson}::jsonb
       )

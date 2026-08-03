@@ -3117,3 +3117,23 @@ export {
   type EnqueueReviewJobResult,
   type CompleteReviewJobInput,
 } from "./review_jobs.js";
+
+// The boot plane's dedicated queue (B2b Task 2, plan
+// docs/superpowers/plans/2026-08-02-b2b-sandbox-boot.md; spec
+// docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md §B2b
+// §4-5). enqueue/claim/report/expire query layer over `preview_boots` — see
+// `queries/preview_boots.ts` for the full WHY on each (the deterministic-id
+// dedupe, the advisory-lock-guarded supersede, the SKIP LOCKED claim, the
+// guarded per-target-status report transitions, and the stale-liveness
+// sweep). Modeled directly on `review_jobs.ts`, but single-attempt — no
+// back-to-pending retry path.
+export {
+  previewBootId,
+  enqueuePreviewBoot,
+  claimPreviewBoot,
+  reportPreviewBoot,
+  getPreviewBoot,
+  expireStalePreviewBoots,
+  type EnqueuePreviewBootResult,
+  type ReportPreviewBootInput,
+} from "./preview_boots.js";

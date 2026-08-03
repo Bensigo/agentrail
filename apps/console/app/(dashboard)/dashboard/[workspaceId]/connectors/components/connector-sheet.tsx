@@ -1,14 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Radio, AlertCircle, ChevronDown, ExternalLink, CheckCircle2, X } from "lucide-react";
+import { Radio, AlertCircle, CheckCircle2, X } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   capabilitySummary,
-  shouldShowOauthSetupHint,
-  validateConnectorCredential,
-  type ConnectorConnectMeta,
   type ConnectorView,
 } from "./connector-helpers";
 
@@ -147,56 +144,9 @@ function TriggerControls({
 }
 
 // --------------------------------------------------------------------------- //
-// "How to set up" — collapsible per-provider steps + docs link.
-// --------------------------------------------------------------------------- //
-function SetupHelp({ connector }: { connector: ConnectorView }) {
-  const [open, setOpen] = useState(false);
-  if (!connector.connect) return null;
-  const { setupSteps, helpUrl } = connector.connect;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1 self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)]"
-      >
-        <ChevronDown
-          size={12}
-          className={`transition-transform ${open ? "rotate-180" : ""}`}
-        />
-        How to set up {connector.label}
-      </button>
-      {open && (
-        <div className="flex flex-col gap-1.5 rounded border border-[var(--gray-04)] bg-[var(--gray-02)] p-2.5">
-          <ol className="ml-3.5 list-decimal space-y-1 text-xs leading-relaxed text-[var(--gray-10)]">
-            {setupSteps.map((s, i) => (
-              <li key={i}>{s}</li>
-            ))}
-          </ol>
-          <a
-            href={helpUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
-          >
-            Open {connector.label} docs
-            <ExternalLink size={11} />
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// OAuth-primary button for a `connectMethod: "secret"` provider (W3-T1,
-// OAuth Connect Wave 3, `.superpowers/sdd/plan-oauth.md`) — DISTINCT from
-// `OAuthManage` below: that component is GitHub's own OAuth-native
-// (`connectMethod: "oauth"`) card body; this one is a small ADDITIVE primary
-// action `SecretManage` renders ABOVE its existing token form when
-// `connector.oauthReady` is true (see that component's own doc-comment for
-// why `connectMethod` itself never flips — the plan's own pinned
-// constraint). Posts to the GENERIC `.../connectors/oauth/link` route
+// Broker connect button for a `connectMethod: "secret"` provider — distinct
+// from `OAuthManage` below, which is GitHub's own OAuth-native install flow.
+// Posts to the GENERIC `.../connectors/oauth/link` route
 // (provider in the body, not the URL — every OAuth-capable secret-method
 // provider shares this one route) and redirects the browser to the
 // vendor's own authorize screen on success, mirroring `OAuthManage`'s
@@ -252,84 +202,15 @@ function OauthConnectButton({
 }
 
 // --------------------------------------------------------------------------- //
-// OAuth setup state (W3-T8, owner-visible OAuth setup state,
-// `.superpowers/sdd/plan-oauth.md`) — the discoverability fix for the
-// env-gated one-click machinery (#1548-#1552, #1558): BEFORE this task, a
-// provider with a registered adapter (railway/sentry/cloudflare) but
-// incomplete env rendered BYTE-IDENTICAL to a provider with no adapter at
-// all — the bare token form below, nothing more. The deployment owner had
-// zero in-product signal one-click connect existed short of reading
-// source, which is exactly the bug the user reported (twice). Rendered
-// ONLY from `SecretManage`'s `!connector.oauthReady` branch below, gated
-// on `shouldShowOauthSetupHint` (`connector-helpers.ts`) — the connectors
-// GET route already scopes `connector.oauthSetup` to an owner/admin caller
-// (see that field's own doc-comment on `ConnectorConfigInput`), so a
-// member never receives it and this component is unreachable for one; no
-// second, redundant `canManage` check needed here, mirroring how
-// `SetupHelp` above renders unconditionally off data presence alone.
-//
-// Hook-free (props in, JSX out) — deliberately, so it can be called
-// directly and its returned element tree walked in
-// `connector-sheet.test.ts` (this repo's vitest environment is "node", no
-// @testing-library/react/jsdom — same posture as `digest-panel.test.ts`'s
-// `PlanCardBlock`/`PlanCardEmpty`). Exported for exactly that reason.
-// --------------------------------------------------------------------------- //
-export function OauthSetupNotice({
-  connector,
-  setup,
-}: {
-  connector: ConnectorView;
-  setup: NonNullable<ConnectorView["oauthSetup"]>;
-}) {
-  const registrationUrl = connector.connect?.oauthRegistrationUrl;
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
-      <p className="text-xs font-semibold text-[var(--gray-12)]">
-        One-click connect available
-      </p>
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        This deployment hasn&apos;t set up one-click {connector.label} connect
-        yet — the environment variables below turn it on. Token-paste stays as
-        the fallback.
-      </p>
-      {setup.missingEnv.length > 0 && (
-        <ul className="flex flex-col gap-0.5">
-          {setup.missingEnv.map((name) => (
-            <li key={name}>
-              <code className="font-mono text-xs text-[var(--gray-11)]">{name}</code>
-            </li>
-          ))}
-        </ul>
-      )}
-      {registrationUrl && (
-        <a
-          href={registrationUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
-        >
-          {connector.label} registration steps
-          <ExternalLink size={11} />
-        </a>
-      )}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
-// Secret connector management — MCP-key connectors only (linear/figma/
-// context7/observability providers). Posts the credential to the write-only
-// /connectors/secret route; the value is never read back.
+// Secret connector management — the shared broker action for connectors whose
+// catalog kind is currently represented as `connectMethod: "secret"`.
 // --------------------------------------------------------------------------- //
 
-// Module-level (not per-render) empty-array fallbacks for `secretParts` /
-// `extraConfigFields` when a catalog entry declares neither — reusing the
-// SAME reference on every render (rather than a fresh `?? []` literal each
-// time) keeps `save`'s useCallback dependency array referentially stable for
-// every provider that predates this wave (react-hooks/exhaustive-deps).
-const NO_SECRET_PARTS: NonNullable<ConnectorConnectMeta["secretParts"]> = [];
-const NO_EXTRA_FIELDS: NonNullable<ConnectorConnectMeta["extraConfigFields"]> = [];
-
+// --------------------------------------------------------------------------- //
+// Broker connector management — every disconnected connector has one primary
+// action. The broker decides whether that click starts OAuth or MCP OAuth;
+// the UI never asks the user to discover, paste, or configure credentials.
+// --------------------------------------------------------------------------- //
 function SecretManage({
   connector,
   workspaceId,
@@ -343,355 +224,61 @@ function SecretManage({
 }) {
   const isConnected = connector.status === "connected";
   const meta = connector.connect;
-
-  // Task P0: composite secrets — a catalog entry declaring `secretParts`
-  // renders ONE password input PER PART instead of the single credential
-  // input; the parts are joined `partA:partB` right before the PUT (see
-  // `apps/console/lib/evidence/composite-secret.ts`'s own doc-comment).
-  // Absent (every provider before this wave) → `secretParts` is `[]` and
-  // the original single-input rendering below is completely unaffected.
-  const secretParts = meta?.secretParts ?? NO_SECRET_PARTS;
-  const isComposite = secretParts.length > 0;
-  const [secret, setSecret] = useState("");
-  const [partValues, setPartValues] = useState<string[]>(() => secretParts.map(() => ""));
-
-  // Task P0 (generalizes Task 7's single `extraValue` string): N generic
-  // extra config fields, driven entirely by the catalog entry's
-  // `connect.extraConfigFields` — this component never hardcodes which
-  // provider needs one or how many, so the NEXT provider needing extra
-  // fields is catalog-only. See connector-helpers.ts's own doc-comment on
-  // ConnectorConnectMeta.extraConfigFields.
-  const extraFields = meta?.extraConfigFields ?? NO_EXTRA_FIELDS;
-  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // W3-T1 (OAuth Connect Wave 3): whether the token-paste form has been
-  // explicitly revealed via "Use an API token instead". Only READ when
-  // `connector.oauthReady` is true (see the not-connected branch below) —
-  // declared unconditionally here regardless, per the Rules of Hooks.
-  const [manualOpen, setManualOpen] = useState(false);
 
-  const save = useCallback(
-    async (body: { secret: string | null }) => {
-      setSaving(true);
-      setErr(null);
-      try {
-        // Computed BEFORE the secret PUT (Task P2 — see this component's own
-        // note below at the persistence call for why the SAME entries also
-        // ride ALONGSIDE the secret in the request below, not just here).
-        const configEntries = extraFields
-          .map((f) => [f.key, (extraValues[f.key] ?? "").trim()] as const)
-          .filter(([, v]) => v.length > 0);
-
-        const res = await fetch(
-          `/api/v1/workspaces/${workspaceId}/connectors/secret`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            // Task P2: a catalog entry's extraConfigFields values ride
-            // ALONGSIDE the secret in this SAME request (in addition to the
-            // dedicated persistence call below) — some providers' live
-            // verify needs a not-yet-persisted extra field (Langfuse's host:
-            // `verify.ts` calls `GET {host}/api/public/projects`, and at
-            // THIS point in the flow no config PUT has run yet — see
-            // `verify.ts`'s own doc-comment). secret/route.ts reads these
-            // ONLY to hand to verify; it never persists them itself (the
-            // dedicated config PUT below remains the sole persistence
-            // path), so this is harmless for every provider whose secret
-            // route doesn't consume them (every provider before this task,
-            // including Railway's own `railwayProjectId`). Never sent on a
-            // disconnect (`body.secret === null`).
-            body: JSON.stringify({
-              provider: connector.kind,
-              ...body,
-              ...(body.secret !== null ? Object.fromEntries(configEntries) : {}),
-            }),
-          }
-        );
-        if (!res.ok) {
-          const b = await res.json().catch(() => ({}));
-          throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
+  const disconnect = useCallback(async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await fetch(
+        `/api/v1/workspaces/${workspaceId}/connectors/secret`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: connector.kind, secret: null }),
         }
-
-        // The extra fields (when the catalog entry declares any) ALSO save
-        // via the connectors CONFIG route (the sole persistence path for
-        // them — see the note above), and only once the credential itself
-        // is accepted, so a rejected token never leaves an orphaned config
-        // value behind. Never attempted on a disconnect (`body.secret ===
-        // null`). Only non-empty values are sent, so an optional field left
-        // blank never overwrites a previously-stored one with an empty
-        // string.
-        if (body.secret !== null && configEntries.length > 0) {
-          const configRes = await fetch(
-            `/api/v1/workspaces/${workspaceId}/connectors`,
-            {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                provider: connector.kind,
-                ...Object.fromEntries(configEntries),
-              }),
-            }
-          );
-          if (!configRes.ok) {
-            const b = await configRes.json().catch(() => ({}));
-            throw new Error((b as { error?: string }).error ?? `HTTP ${configRes.status}`);
-          }
-        }
-
-        setSecret("");
-        setPartValues(secretParts.map(() => ""));
-        setExtraValues({});
-        onChanged();
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Failed to save");
-      } finally {
-        setSaving(false);
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
       }
-    },
-    [workspaceId, connector.kind, extraFields, extraValues, secretParts, onChanged]
-  );
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to disconnect");
+    } finally {
+      setSaving(false);
+    }
+  }, [workspaceId, connector.kind, onChanged]);
 
-  if (isConnected) {
+  if (!isConnected) {
     return (
-      <div className="flex flex-col gap-2">
-        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          {meta?.credentialLabel ?? "Credential"} stored
-          {connector.target ? (
-            <code className="font-mono text-[var(--gray-11)]">
-              · {connector.target}
-            </code>
-          ) : null}
-        </p>
-        <button
-          onClick={() => save({ secret: null })}
-          disabled={!canManage || saving}
-          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-        >
-          {saving ? "Disconnecting…" : "Disconnect"}
-        </button>
-        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      </div>
+      <OauthConnectButton
+        connector={connector}
+        workspaceId={workspaceId}
+        canManage={canManage}
+      />
     );
   }
 
-  const missingRequiredExtra = extraFields.find(
-    (f) => f.required !== false && (extraValues[f.key] ?? "").trim().length === 0
-  );
-
-  // W3-T1 (OAuth Connect Wave 3): the token-paste form itself, computed ONCE
-  // as a plain JSX value so it can be rendered from EITHER branch below
-  // (unaffected by `oauthReady`) rather than duplicated in source — the
-  // `!connector.oauthReady` branch returns this exact same element, so a
-  // provider without OAuth readiness renders byte-identically to before
-  // this task (no visual regression — the plan's own pinned requirement).
-  const tokenForm = (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-
-        // Task P0: a composite provider joins its N part inputs into the
-        // single `partA:partB` string right here, client-side, before any
-        // validation runs — see composite-secret.ts's own doc-comment on
-        // why a raw part must never contain the `:` delimiter.
-        let credential: string;
-        if (isComposite) {
-          const emptyIdx = partValues.findIndex((v) => v.trim().length === 0);
-          if (emptyIdx !== -1) {
-            setErr(`${secretParts[emptyIdx].name} is required.`);
-            return;
-          }
-          const colonIdx = partValues.findIndex((v) => v.includes(":"));
-          if (colonIdx !== -1) {
-            setErr(`${secretParts[colonIdx].name} must not contain ":".`);
-            return;
-          }
-          credential = partValues.map((v) => v.trim()).join(":");
-        } else {
-          credential = secret;
-        }
-
-        const check = validateConnectorCredential(connector.kind, credential);
-        if (!check.ok) {
-          setErr(check.error);
-          return;
-        }
-        if (missingRequiredExtra) {
-          setErr(`${missingRequiredExtra.label} is required.`);
-          return;
-        }
-        save({ secret: credential.trim() });
-      }}
-      className="flex flex-col gap-2"
-    >
-      {/* OAuth Connect Wave 3, W3-T4 — ConnectorConnectMeta.tokenStandardNote's
-          own doc-comment. Renders regardless of `oauthReady` (unlike
-          `oauthHint` below), since the four providers that declare this are
-          never oauthReady — a calm, no-apology "this is the standard way"
-          note, not an error/hint about the input's own shape. */}
-      {meta?.tokenStandardNote && (
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          {meta.tokenStandardNote}
-        </p>
-      )}
-      {isComposite ? (
-        secretParts.map((part, i) => (
-          <input
-            key={part.name}
-            aria-label={part.name}
-            type="password"
-            autoComplete="off"
-            placeholder={part.name}
-            value={partValues[i] ?? ""}
-            disabled={!canManage}
-            onChange={(e) =>
-              setPartValues((prev) => {
-                const next = [...prev];
-                next[i] = e.target.value;
-                return next;
-              })
-            }
-            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-          />
-        ))
-      ) : (
-        <input
-          aria-label={meta?.credentialLabel ?? "Credential"}
-          type="password"
-          autoComplete="off"
-          placeholder={meta?.credentialPlaceholder}
-          value={secret}
-          disabled={!canManage}
-          onChange={(e) => setSecret(e.target.value)}
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-        />
-      )}
-      {meta?.credentialHint && (
-        <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
-      )}
-      {extraFields.map((field) => (
-        <input
-          key={field.key}
-          aria-label={field.label}
-          type="text"
-          autoComplete="off"
-          placeholder={field.placeholder}
-          value={extraValues[field.key] ?? ""}
-          disabled={!canManage}
-          onChange={(e) =>
-            setExtraValues((prev) => ({ ...prev, [field.key]: e.target.value }))
-          }
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-        />
-      ))}
-      <button
-        type="submit"
-        disabled={
-          !canManage ||
-          saving ||
-          (isComposite
-            ? partValues.some((v) => v.trim().length === 0)
-            : secret.trim().length === 0) ||
-          Boolean(missingRequiredExtra)
-        }
-        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-      >
-        {saving ? "Connecting…" : "Connect"}
-      </button>
-      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      <SetupHelp connector={connector} />
-    </form>
-  );
-
-  // Without oauthReady: today's bare token form, nothing wrapping it (plan's
-  // own pinned "no visual regression" requirement) — now scoped precisely
-  // to a provider with no registered adapter, or one this caller (a
-  // member) gets no `oauthSetup` for. W3-T8 ADDS a calm setup section and
-  // keeps the token form behind an explicit fallback button for the
-  // oauth-capable, owner/admin, not-yet-configured case
-  // (`shouldShowOauthSetupHint`, `connector-helpers.ts`) — the
-  // discoverability fix for the user-reported bug that a
-  // registered-but-unconfigured provider looked identical to one with no
-  // one-click path at all; see `OauthSetupNotice`'s own doc-comment. W3-T4:
-  // four providers (grafana/prometheus/langfuse/datadog) render one extra
-  // static sentence INSIDE `tokenForm` itself via `tokenStandardNote` —
-  // still the same single shared JSX value returned from every branch
-  // below, so "no visual regression" still holds in the sense that matters
-  // (one code path, not a byte-identical string for those four providers
-  // specifically).
-  if (!connector.oauthReady) {
-    // `setup` re-read into a local so TypeScript narrows it non-null for
-    // the JSX below — `shouldShowOauthSetupHint` alone (a function call)
-    // can't narrow `connector.oauthSetup`'s type at the call site.
-    const setup = connector.oauthSetup;
-    if (setup && shouldShowOauthSetupHint(connector)) {
-      return (
-        <div className="flex flex-col gap-3">
-          <OauthSetupNotice connector={connector} setup={setup} />
-          {manualOpen ? (
-            tokenForm
-          ) : (
-            <button
-              type="button"
-              onClick={() => setManualOpen(true)}
-              className="self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)] underline-offset-2 hover:underline"
-            >
-              Use an API token instead
-            </button>
-          )}
-        </div>
-      );
-    }
-    if (connector.connection?.mode === "manual" && !manualOpen) {
-      return (
-        <div className="flex flex-col gap-2">
-          <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-            This connector needs a credential from {connector.label}; Jace will
-            keep it encrypted and use it only for the granted subagent tools.
-          </p>
-          <button
-            type="button"
-            onClick={() => setManualOpen(true)}
-            disabled={!canManage}
-            className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-          >
-            Connect {connector.label} manually
-          </button>
-        </div>
-      );
-    }
-    return tokenForm;
-  }
-
-  // oauthReady: an OAuth-primary "Connect {label}" button, plus a quiet
-  // disclosure that reveals the SAME token form on demand — the plan's own
-  // pinned sheet contract. One-way reveal (no "hide again" affordance):
-  // once a workspace admin opts into token-paste for this connect attempt,
-  // there is no reason to re-hide it. Like every other piece of local state
-  // in this component (`secret`, `partValues`, `extraValues`), `manualOpen`
-  // persists across closing and reopening the SAME connector's sheet (the
-  // parent `ConnectorSheet` only remounts this component via its
-  // `key={shown.kind}` when the OPEN connector actually changes — see that
-  // component's own doc-comment on `shown`) — it resets by switching to a
-  // different connector, or a full page reload, not by close+reopen alone.
   return (
     <div className="flex flex-col gap-2">
-      {meta?.oauthHint && (
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.oauthHint}</p>
-      )}
-      <OauthConnectButton connector={connector} workspaceId={workspaceId} canManage={canManage} />
-      {manualOpen ? (
-        tokenForm
-      ) : (
-        <button
-          type="button"
-          onClick={() => setManualOpen(true)}
-          className="self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)] underline-offset-2 hover:underline"
-        >
-          Use an API token instead
-        </button>
-      )}
+      <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+        <CheckCircle2 size={13} className="text-[var(--green-11)]" />
+        {meta?.credentialLabel ?? "Connection"} connected
+        {connector.target ? (
+          <code className="font-mono text-[var(--gray-11)]">· {connector.target}</code>
+        ) : null}
+      </p>
+      <button
+        type="button"
+        onClick={disconnect}
+        disabled={!canManage || saving}
+        className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {saving ? "Disconnecting…" : "Disconnect"}
+      </button>
+      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
     </div>
   );
 }
@@ -786,15 +373,7 @@ function OAuthManage({
     );
   }
 
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Install the Jace GitHub App to let Jace review, push, and open PRs on
-        the repos you pick — every action shows as Jace, not you.
-      </p>
-      {installButton}
-    </div>
-  );
+  return installButton;
 }
 
 // --------------------------------------------------------------------------- //

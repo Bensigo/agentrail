@@ -94,7 +94,7 @@ export async function POST(
   const adapter = oauthAdapterFor(body.provider);
   if (!adapter) {
     return NextResponse.json(
-      { error: "This connector does not support OAuth connect" },
+      { error: "This connector has no OAuth/MCP broker enabled on this deployment yet" },
       { status: 400 }
     );
   }
@@ -107,8 +107,8 @@ export async function POST(
     ? mcpOauthConfigFor(body.provider)
     : oauthConfigFor(body.provider);
 
-  // Env gating (plan pin): absent env -> 409 with a clear, actionable
-  // message, never a half-configured authorize attempt. Checked AFTER the
+  // Env gating (plan pin): absent env -> 409 with a clear broker message,
+  // never a half-configured authorize attempt. Checked AFTER the
   // adapter-registered check above (a provider with no adapter at all is a
   // different, earlier failure than one whose adapter exists but isn't
   // enabled on this deployment yet). The generic two-var pair
@@ -124,9 +124,7 @@ export async function POST(
     const label = body.provider.charAt(0).toUpperCase() + body.provider.slice(1);
     return NextResponse.json(
       {
-        error: `${label} OAuth isn't configured on this deployment yet. ${
-          missing.length > 0 ? `Missing: ${missing.join(", ")}. ` : ""
-        }Use an API token instead.`,
+        error: `${label} OAuth/MCP is not enabled on this deployment yet.`,
       },
       { status: 409 }
     );

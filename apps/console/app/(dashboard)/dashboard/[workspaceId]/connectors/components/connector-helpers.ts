@@ -443,7 +443,7 @@ export const CONNECTOR_TYPE_META: Record<
   mcp: {
     label: "MCP",
     description:
-      "Model-Context-Protocol tool servers — codebase-level. Adding an API key writes the server into your repo's MCP config (.mcp.json) at run time, so the coding agent can call its tools during a run.",
+      "Model-Context-Protocol tool servers — codebase-level. Connect once and the coding agent can call the granted tools during a run.",
   },
   observability: {
     label: "Observability",

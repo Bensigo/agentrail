@@ -137,7 +137,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toMatch(/oauth/i);
-    expect(body.error).toMatch(/api token instead/i);
+    expect(body.error).toMatch(/OAuth\/MCP.*not enabled/i);
     expect(mintConnectorOauthState).not.toHaveBeenCalled();
   });
 
@@ -241,7 +241,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/connectors/oauth/link", () => {
       expect(res.status).toBe(409);
       const body = await res.json();
       expect(body.error).toMatch(/oauth/i);
-      expect(body.error).toMatch(/api token instead/i);
+      expect(body.error).toMatch(/OAuth\/MCP.*not enabled/i);
       expect(mintConnectorOauthState).not.toHaveBeenCalled();
     });
   });

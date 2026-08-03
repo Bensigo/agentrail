@@ -47,11 +47,7 @@ export default defineTool({
     "issue toward a goal) and that goal's leash is already exhausted or the " +
     "goal is no longer active, this returns { blocked: true, message } " +
     "INSTEAD of creating anything — relay that message verbatim rather than " +
-    "retrying or filing without the stamp. When " +
-    "AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE is warn/block, the tool also checks " +
-    "recorded workspace decision/rejected-approach constraints before issue " +
-    "creation; block mode returns { blocked: true, message, violations } " +
-    "before anything is created.",
+    "retrying or filing without the stamp.",
   // Always require a human approve/reject before this tool executes.
   approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({

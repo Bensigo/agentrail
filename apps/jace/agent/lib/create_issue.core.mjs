@@ -107,9 +107,6 @@ export function extractGoalSlug(text) {
 
 export const GOAL_FILE_CHECK_PATH = "/api/v1/runner/goals/file-check";
 export const GOAL_FILE_RECORDED_PATH = "/api/v1/runner/goals/file-recorded";
-export const JUDGMENT_CONSTRAINTS_CHECK_PATH = "/api/v1/runner/judgment-constraints/check";
-export const JUDGMENT_CONSTRAINTS_BLOCKED_MESSAGE =
-  "this issue contradicts recorded workspace judgment constraints";
 
 /** @param {string} baseUrl — already trimmed + de-slashed */
 export function buildGoalFileCheckUrl(baseUrl) {
@@ -119,93 +116,6 @@ export function buildGoalFileCheckUrl(baseUrl) {
 /** @param {string} baseUrl — already trimmed + de-slashed */
 export function buildGoalFileRecordedUrl(baseUrl) {
   return `${baseUrl}${GOAL_FILE_RECORDED_PATH}`;
-}
-
-/** @param {string} baseUrl — already trimmed + de-slashed */
-export function buildJudgmentConstraintsCheckUrl(baseUrl) {
-  return `${baseUrl}${JUDGMENT_CONSTRAINTS_CHECK_PATH}`;
-}
-
-export function resolveJudgmentConstraintsMode(env = {}) {
-  const raw = String(env.AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE ?? "off").trim().toLowerCase();
-  if (raw === "warn" || raw === "block") return raw;
-  return "off";
-}
-
-function normalizeConstraintViolations(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const kind = typeof item.kind === "string" ? item.kind : "constraint";
-      const id = typeof item.id === "string" ? item.id : "";
-      const reason = typeof item.reason === "string" ? item.reason : "";
-      const source = typeof item.source === "string" ? item.source : "";
-      return { kind, id, reason, source };
-    })
-    .filter((item) => item.reason || item.id || item.source);
-}
-
-/**
- * Pre-create E2 judgment constraint check. `off` is a real mode and skips the
- * console call. `warn` reports violations but allows creation. `block` refuses
- * before the GitHub issue CLI can run.
- *
- * @param {{ eveSessionId?: string, mode?: string, issue: object, env?: Record<string,string|undefined>, transport: Function }} args
- * @returns {Promise<{ allow: boolean, mode: "off"|"warn"|"block", violations: Array<{kind:string,id:string,reason:string,source:string}>, message?: string }>}
- */
-export async function checkJudgmentConstraints({
-  eveSessionId,
-  mode,
-  issue,
-  env = {},
-  transport,
-}) {
-  const resolvedMode = mode === "warn" || mode === "block" ? mode : resolveJudgmentConstraintsMode(env);
-  if (resolvedMode === "off") return { allow: true, mode: "off", violations: [] };
-
-  const cfg = resolveConsoleConfig(env);
-  if (!cfg.ok) return { allow: resolvedMode !== "block", mode: resolvedMode, violations: [] };
-
-  const sessionId = String(eveSessionId ?? "").trim();
-  if (!sessionId) return { allow: resolvedMode !== "block", mode: resolvedMode, violations: [] };
-
-  let res;
-  try {
-    res = await transport(buildJudgmentConstraintsCheckUrl(cfg.baseUrl), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({ eveSessionId: sessionId, mode: resolvedMode, issue }),
-    });
-  } catch {
-    return { allow: resolvedMode !== "block", mode: resolvedMode, violations: [] };
-  }
-
-  const status = Number(res && res.status);
-  if (!Number.isFinite(status) || status < 200 || status >= 300) {
-    return { allow: resolvedMode !== "block", mode: resolvedMode, violations: [] };
-  }
-
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    return { allow: resolvedMode !== "block", mode: resolvedMode, violations: [] };
-  }
-
-  const violations = normalizeConstraintViolations(body?.violations);
-  const allow = resolvedMode === "block" ? body?.allow === true && violations.length === 0 : true;
-  const message =
-    typeof body?.message === "string" && body.message.trim()
-      ? body.message
-      : violations.length > 0
-        ? JUDGMENT_CONSTRAINTS_BLOCKED_MESSAGE
-        : undefined;
-  return { allow, mode: resolvedMode, violations, ...(message ? { message } : {}) };
 }
 
 /** The generic, safe-to-relay refusal text used whenever the pre-file leash check itself cannot be trusted (infra failure) — see `checkGoalFileLeash`'s own "fail CLOSED" contract for why this is a refusal, not a silent allow. */
@@ -695,7 +605,6 @@ export async function stampCreatedIssueUrl({
  * @param {Function} [input.stampTransport] - test-only: inject the stamp mechanism's HTTP transport.
  * @param {Function} [input.goalCheckTransport] - #1289 test-only: inject the pre-file leash-check's HTTP transport.
  * @param {Function} [input.goalRecordTransport] - #1289 test-only: inject the post-file bookkeeping record's HTTP transport.
- * @param {Function} [input.judgmentConstraintsTransport] - E2 test-only: inject the pre-create judgment constraints check.
  * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string } | { blocked: true, message: string }>}
  */
 export async function runCreateIssue({
@@ -714,7 +623,6 @@ export async function runCreateIssue({
   stampTransport,
   goalCheckTransport,
   goalRecordTransport,
-  judgmentConstraintsTransport,
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
@@ -737,29 +645,6 @@ export async function runCreateIssue({
   // — otherwise a mass-ping token or hidden channel in a researcher-tainted
   // title would reach GitHub unfiltered.
   const safeTitle = hardenUntrusted(title, { maxLen: FIELD_CAPS.title });
-
-  const judgmentCheck = await checkJudgmentConstraints({
-    eveSessionId,
-    env: resolvedEnv,
-    transport: judgmentConstraintsTransport ?? realStampTransport,
-    issue: {
-      repo: resolvedRepo,
-      title: safeTitle,
-      body,
-      parent: parent ?? "",
-      requiredContext: requiredContext ?? "",
-      whatToBuild: whatToBuild ?? "",
-      acceptanceCriteria: acceptanceCriteria ?? [],
-      verification: verification ?? "",
-    },
-  });
-  if (!judgmentCheck.allow) {
-    return {
-      blocked: true,
-      message: judgmentCheck.message ?? JUDGMENT_CONSTRAINTS_BLOCKED_MESSAGE,
-      violations: judgmentCheck.violations,
-    };
-  }
 
   // #1289 (Jace goal loop, adversarial-review fix) — THE PRE-FILE LEASH
   // GATE. Detect a goal stamp in the FINAL, already-hardened title+body

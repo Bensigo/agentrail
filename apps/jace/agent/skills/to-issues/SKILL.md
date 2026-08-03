@@ -18,15 +18,6 @@ create issues any other way, and never apply labels — the factory applies its
 `ready-for-agent` trigger label server-side. Use the `emit-issue-brief` skill to
 shape each brief into the house format before you call the tool.
 
-`create_issue` also owns the Judgment Ledger E2 preflight when
-`AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE` is `warn` or `block`: recorded workspace
-`decision` memory and rejected-approach constraints are checked before the GitHub
-issue is created. In `warn`, relay the warning plainly and continue only because
-the configured mode permits it. In `block`, the tool returns `{ blocked: true,
-message, violations }` and creates nothing; do not retry by rephrasing the same
-contradicting issue, and do not file through another path. Resolve the constraint
-with the human first.
-
 ## Readiness gate — check before you publish anything
 
 If the work you are about to publish traces back to a **brief** (the durable,

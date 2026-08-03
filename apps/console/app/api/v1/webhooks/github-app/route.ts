@@ -45,7 +45,7 @@ import {
  * webhooks are not an error surface): `X-GitHub-Event` must be
  * `pull_request` (checked off the header alone, no body parsing needed) ->
  * the body must parse as JSON -> `action` must be one of
- * opened|ready_for_review|reopened|synchronize -> a draft PR
+ * opened|ready_for_review|reopened|synchronize, or a merged `closed` event -> a draft PR
  * (`pull_request.draft === true`) is skipped for opened/reopened/synchronize
  * (it (re-)enters once `ready_for_review` fires later; THAT action is never
  * draft-gated, regardless of the payload's `draft` value) -> `installation.id`
@@ -67,7 +67,8 @@ const SIGNATURE_HEADER = "x-hub-signature-256";
 const EVENT_HEADER = "x-github-event";
 const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 
-// The four `pull_request` actions this queue admits (design spec §1).
+// The four `pull_request` actions this queue admits (design spec §1). A
+// merged `closed` delivery is handled separately as a Change Record event.
 const TRIGGER_ACTIONS = new Set([
   "opened",
   "ready_for_review",

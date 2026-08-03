@@ -22,15 +22,15 @@
 // text exact-string, not just these substrings, so any future wording drift
 // fails loudly regardless of which phrase moved).
 //
-// UPDATED (B2a's Task 6, 2026-08-02 — docs/superpowers/plans/2026-08-02-b2a-
-// visual-evidence.md; a DIFFERENT "Task 6" from the Arc B plan's own Task 6
-// referenced just above, which is what originally wrote this file's body):
-// the QA-fold bullet gained ONE additional sentence — "Fold its
-// evidence_images through too, verbatim — the posted review links them per
-// AC." — so the bulleted body is no longer purely verbatim from the Arc B
-// brief; that one sentence is B2a's own addition, not wording drift.
-// test/review_job_prompt.test.mjs's full-string EXPECTED pin was updated to
-// match, verbatim, and gained one more individual PIN for this sentence.
+// UPDATED (B2b-ii's Task 2, 2026-08-03 — docs/superpowers/plans/2026-08-03-
+// b2b-reviewer-wiring.md): the QA-fold bullet now has explicit environment
+// rungs. Rung 1 uses a reachable PR preview URL. Rung 2 calls
+// request_preview_boot(repo, prNumber, headSha) when no preview URL is present
+// and uses the booted URL if it becomes ready. Rung 1's B2a evidence_images
+// relay remains part of the QA fold. If neither environment is available,
+// behavioral ACs stay not_testable with the concrete reason and the posted
+// review names the environment rung reached. The full-string EXPECTED pin in
+// test/review_job_prompt.test.mjs is updated in lockstep.
 //
 // WHAT THIS PROMPT DELIBERATELY DOES NOT SAY: it never tells the model what
 // to do if posting fails. That is intentional, not an oversight. See
@@ -62,7 +62,7 @@ export function reviewJobPrompt(job) {
     `Review PR #${prNumber} in ${repo} at head ${headSha}. Do exactly your normal review choreography:`,
     `- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.`,
     `- Post the review with post_pr_review. One review, one verdict.`,
-    `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting. Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
+    `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting (rung 1). Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, call request_preview_boot with (repo, prNumber, headSha); if it returns a booted URL, dispatch qa against THAT url exactly as rung 1 (rung 2). If there is no preview URL AND no boot becomes ready, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
     `- Do not create issues, send channel messages, or take any action beyond the review itself.`,
     `Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts).`,
   ].join("\n");

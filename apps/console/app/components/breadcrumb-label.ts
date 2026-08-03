@@ -29,6 +29,7 @@ export const SEGMENT_LABELS: Record<string, string> = {
   memory: "Memory",
   briefs: "Briefs",
   investigations: "Investigations",
+  changes: "Changes",
   wiki: "Wiki",
   members: "Team",
   teams: "Teams",

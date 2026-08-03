@@ -2,6 +2,11 @@ import { createHash } from "crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
+  type FindOrCreateChangeRecordInput,
+} from "./change_records.js";
+import {
   JUDGMENT_EVENT_TYPES,
   judgmentEvents,
   type JudgmentEventRef,
@@ -74,13 +79,78 @@ export type AppendJudgmentEventInput = {
   occurredAt?: Date;
 };
 
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function changeRecordAnchorFromRefs(
+  refs: JudgmentEventRefs
+): Omit<FindOrCreateChangeRecordInput, "workspaceId" | "repo"> | null {
+  const issueNumber = positiveInteger(refs.issueNumber);
+  const prNumber = positiveInteger(refs.prNumber ?? refs.pullRequestNumber);
+  if (issueNumber == null && prNumber == null) return null;
+
+  const rawHeadShas = refs.headShas;
+  const headShas = Array.isArray(rawHeadShas)
+    ? rawHeadShas.filter((sha): sha is string => typeof sha === "string" && sha.length > 0)
+    : typeof refs.headSha === "string" && refs.headSha.length > 0
+      ? [refs.headSha]
+      : undefined;
+  const mergedSha = typeof refs.mergedSha === "string" ? refs.mergedSha : undefined;
+  return { issueNumber, prNumber, headShas, mergedSha };
+}
+
+async function attachLearningStage(input: {
+  event: JudgmentEventRow;
+  actorRef: JudgmentEventRef;
+  sourceRef: JudgmentEventRef;
+}): Promise<void> {
+  const changeRecordId = input.event.refs.changeRecordId;
+  if (typeof changeRecordId !== "string" || !changeRecordId) return;
+  await appendChangeRecordEvent({
+    recordId: changeRecordId,
+    eventKey: `judgment:${input.event.id}`,
+    stage: "learning",
+    actor: input.actorRef.id ? `${input.actorRef.kind}:${input.actorRef.id}` : input.actorRef.kind,
+    payloadRef: {
+      kind: "judgment_event",
+      judgmentEventId: input.event.id,
+      type: input.event.type,
+      eventKey: input.event.eventKey,
+      source: input.sourceRef,
+    },
+    at: input.event.occurredAt,
+  });
+}
+
 export async function appendJudgmentEvent(
   input: AppendJudgmentEventInput
 ): Promise<{ event: JudgmentEventRow; inserted: boolean }> {
   assertJudgmentEventType(input.type);
 
+  let refs = { ...input.refs };
+  if (typeof refs.changeRecordId !== "string") {
+    const anchor = changeRecordAnchorFromRefs(refs);
+    if (anchor) {
+      try {
+        const record = await findOrCreateChangeRecord({
+          workspaceId: input.workspaceId,
+          repo: input.repo,
+          ...anchor,
+        });
+        refs = { ...refs, changeRecordId: record.id };
+      } catch (error) {
+        // Ledger capture must not make the originating webhook or human
+        // action fail when the optional Change Record attachment is down.
+        console.error("[judgment-events] Change Record attachment failed:", error);
+      }
+    }
+  }
+
   const id = judgmentEventId(input);
-  const refsJson = JSON.stringify(input.refs);
+  const refsJson = JSON.stringify(refs);
   const payloadJson = JSON.stringify(input.payload);
   const actorRefJson = JSON.stringify(input.actorRef);
   const sourceRefJson = JSON.stringify(input.sourceRef);
@@ -128,12 +198,21 @@ export async function appendJudgmentEvent(
     throw new Error("appendJudgmentEvent: event was not inserted or found");
   }
 
-  return {
+  const event = {
     event:
       inserted[0] != null
         ? mapJudgmentEventRow(inserted[0])
         : (raw as JudgmentEventRow),
     inserted: inserted[0] != null,
+  };
+  try {
+    await attachLearningStage({ event: event.event, actorRef: input.actorRef, sourceRef: input.sourceRef });
+  } catch (error) {
+    console.error("[judgment-events] learning-stage attachment failed:", error);
+  }
+  return {
+    event: event.event,
+    inserted: event.inserted,
   };
 }
 

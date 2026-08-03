@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
+  appendJudgmentEvent,
   briefAreaEnum,
   briefItemKindEnum,
   briefItemResolutionEnum,
   briefItemStateEnum,
   deleteBriefItem,
   getBriefBySlug,
+  getRepository,
   getWorkspaceMembership,
   updateBriefItemAsHuman,
 } from "@agentrail/db-postgres";
@@ -32,18 +34,19 @@ interface RawBody {
 async function requireManage(workspaceId: string) {
   const session = await auth();
   if (!session?.user?.id) {
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }), userId: null } as const;
   }
   const membership = await getWorkspaceMembership(session.user.id, workspaceId);
   if (!membership) {
-    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) } as const;
+    return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }), userId: null } as const;
   }
   if (!ADMIN_ROLES.includes(membership.role as (typeof ADMIN_ROLES)[number])) {
     return {
       error: NextResponse.json({ error: "Owner or admin role required" }, { status: 403 }),
+      userId: null,
     } as const;
   }
-  return { error: null } as const;
+  return { error: null, userId: session.user.id } as const;
 }
 
 /**
@@ -157,6 +160,37 @@ export async function PATCH(
   }
   if (!result.item) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // A human edit during grilling is a labeled correction, not just a brief
+  // mutation. Capture it after the authoritative write so a ledger outage
+  // cannot make the console report a failed correction.
+  if (brief.repositoryId && gate.userId) {
+    const repository = await getRepository(workspaceId, brief.repositoryId).catch(() => null);
+    if (repository?.name) {
+      const before = (brief.items ?? []).find((item) => item.id === itemId) ?? null;
+      try {
+        await appendJudgmentEvent({
+          workspaceId,
+          repo: repository.name,
+          eventKey: `requirement-correction:brief:${brief.id}:item:${itemId}:${result.item.updatedAt.toISOString()}`,
+          type: "requirement_correction",
+          refs: { acId: itemId, briefId: brief.id },
+          payload: {
+            source: "grilling",
+            briefSlug: slug,
+            itemId,
+            changedFields: Object.keys(fields),
+            before,
+            after: result.item,
+          },
+          actorRef: { kind: "workspace_member", id: gate.userId },
+          sourceRef: { kind: "console_brief_edit", id: brief.id },
+        });
+      } catch (error) {
+        console.error("[briefs/items] requirement correction capture failed:", error);
+      }
+    }
   }
 
   return NextResponse.json({ item: result.item });

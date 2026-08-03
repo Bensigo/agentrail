@@ -484,6 +484,13 @@
       "when": 1787400000000,
       "tag": "0069_preview_boot_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1787500000000,
+      "tag": "0070_change_records",
+      "breakpoints": true
     }
   ]
 }

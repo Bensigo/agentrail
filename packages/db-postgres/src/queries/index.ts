@@ -3170,6 +3170,7 @@ export {
   listReviewerSuppressionRules,
   evaluateJudgmentConstraints,
   parseJudgmentConstraint,
+  parseDecisionMemoryConstraint,
   parseReviewerDismissalFindingClass,
   JUDGMENT_CALIBRATION_EVENT_TYPES,
   type AppendJudgmentEventInput,

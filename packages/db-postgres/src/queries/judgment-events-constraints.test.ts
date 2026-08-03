@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateJudgmentConstraints,
+  parseDecisionMemoryConstraint,
   parseJudgmentConstraint,
 } from "./judgment_events.js";
 
@@ -19,6 +20,27 @@ const event = (payload: Record<string, unknown>) => ({
 });
 
 describe("judgment constraint evaluation", () => {
+  it("turns explicitly tagged decision memories into enforceable constraints", () => {
+    expect(parseDecisionMemoryConstraint({
+      id: "decision-1",
+      content: "Keep the worker on Postgres.",
+      tags: ["adr", "judgment:blocked-term:Redis", "judgment:blocked-term: redis"],
+    })).toEqual({
+      eventId: "decision-1",
+      eventKey: "memory:decision-1",
+      terms: ["redis"],
+      reason: "Keep the worker on Postgres.",
+    });
+  });
+
+  it("keeps untagged decisions advisory", () => {
+    expect(parseDecisionMemoryConstraint({
+      id: "decision-2",
+      content: "Use Postgres for durable state.",
+      tags: ["adr"],
+    })).toBeNull();
+  });
+
   it("extracts the structured blockedTerms contract", () => {
     expect(parseJudgmentConstraint(event({
       blockedTerms: ["Redis", "  managed queue  ", "redis"],

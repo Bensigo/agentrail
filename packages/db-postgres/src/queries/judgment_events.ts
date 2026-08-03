@@ -349,6 +349,39 @@ export function parseJudgmentConstraint(event: JudgmentEventRow): JudgmentConstr
   return { eventId: event.id, eventKey: event.eventKey, terms, reason };
 }
 
+type DecisionMemoryConstraintInput = {
+  id: string;
+  content: string;
+  tags: unknown;
+};
+
+/**
+ * Decision memories opt into enforcement with explicit tags of the form
+ * `judgment:blocked-term:<phrase>`. A decision without those tags remains
+ * advisory; treating its whole prose as a blocker would create false stops.
+ */
+export function parseDecisionMemoryConstraint(
+  memory: DecisionMemoryConstraintInput
+): JudgmentConstraint | null {
+  const terms = Array.from(
+    new Set(
+      (Array.isArray(memory.tags) ? memory.tags : [])
+        .filter((tag): tag is string => typeof tag === "string")
+        .map((tag) => tag.trim())
+        .filter((tag) => tag.toLowerCase().startsWith("judgment:blocked-term:"))
+        .map((tag) => tag.slice("judgment:blocked-term:".length).trim().toLowerCase())
+        .filter((term) => term.length >= 3)
+    )
+  );
+  if (terms.length === 0) return null;
+  return {
+    eventId: memory.id,
+    eventKey: `memory:${memory.id}`,
+    terms,
+    reason: memory.content.trim() || "This decision is locked by the workspace.",
+  };
+}
+
 export async function listJudgmentConstraints(input: {
   workspaceId: string;
   repo: string;
@@ -360,10 +393,33 @@ export async function listJudgmentConstraints(input: {
     order: "asc",
     limit: 500,
   });
-  return events.flatMap((event) => {
+  const eventConstraints = events.flatMap((event) => {
     const constraint = parseJudgmentConstraint(event);
     return constraint ? [constraint] : [];
   });
+  const decisionMemories = Array.from(
+    await db.execute(sql`
+      SELECT
+        memory_items.id,
+        memory_items.content,
+        memory_items.tags
+      FROM memory_items
+      INNER JOIN repositories
+        ON repositories.id = memory_items.repository_id
+      WHERE memory_items.workspace_id = ${input.workspaceId}
+        AND repositories.name = ${input.repo}
+        AND memory_items.type = 'decision'
+      ORDER BY memory_items.created_at ASC, memory_items.id ASC
+      LIMIT 500
+    `)
+  ) as Array<DecisionMemoryConstraintInput>;
+  return [
+    ...eventConstraints,
+    ...decisionMemories.flatMap((memory) => {
+      const constraint = parseDecisionMemoryConstraint(memory);
+      return constraint ? [constraint] : [];
+    }),
+  ];
 }
 
 export type JudgmentConstraintMatch = JudgmentConstraint & { matched: true };

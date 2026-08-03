@@ -102,6 +102,18 @@ plainly that it is enforced here, at the skill level, and nowhere else yet —
 don't imply the factory's write path itself refuses unready work, because it
 doesn't.
 
+## Judgment constraints — planner refusal
+
+Before each `create_issue` call, treat the complete proposed issue text as a
+constraint-checked proposal. The write boundary may return a judgment
+constraint block from a previously rejected approach. A block is a real
+planner refusal: stop, show the recorded reason, and revise the proposal or
+ask the human to explicitly choose a different approach. Never retry the same
+proposal unchanged, never describe the block as optional context, and never
+claim that a successful human approval overrode the constraint. The
+`create_issue` boundary is the enforceable seam today; this skill's prose keeps
+the planner from silently routing around it.
+
 ## Order of publication
 
 1. **Publish the PRD as the parent epic issue first.** Call `create_issue` once

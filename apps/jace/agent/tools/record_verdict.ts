@@ -138,6 +138,13 @@ export default defineTool({
         "REQUIRED (non-empty) for verdict='undetermined': what would need to be true/known to actually settle " +
           "this, so the investigation can be resumed intelligently later, e.g. 'metrics for checkout during the window'.",
       ),
+    changeRecord: z
+      .object({
+        recordId: z.string().min(1).describe("The workspace-scoped Change Record id linked to this incident."),
+        missedCheck: z.string().min(1).max(4000).describe("The check that should have existed to catch this incident."),
+      })
+      .optional()
+      .describe("Optional post-merge incident linkage; emits a missed_check learning row on the Change Record."),
   }),
   async execute(input, ctx) {
     const eveSessionId = ctx?.session?.parent?.rootSessionId ?? ctx?.session?.id;
@@ -148,6 +155,7 @@ export default defineTool({
       confidence: input.confidence,
       mechanismSummary: input.mechanismSummary,
       missingEvidence: input.missingEvidence,
+      changeRecord: input.changeRecord,
       env: process.env,
       transport: realTransport,
       fetchImpl: fetch,

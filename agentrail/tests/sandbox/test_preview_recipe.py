@@ -3,7 +3,8 @@
 ``detect_recipe`` figures out how to boot a cloned repo for a preview: an
 install command, a start command, a port, and a ready path. It never runs a
 command or shells out — it only reads real files (``.agentrail/config.json``,
-``package.json``, ``package-lock.json``) already present in the checkout.
+``package.json`` and package-manager lockfiles) already present in the
+checkout.
 
 Detection order under test:
   1. An explicit flat ``preview`` key in ``.agentrail/config.json``. Two
@@ -19,8 +20,9 @@ Detection order under test:
      A complete, valid block always wins outright over package.json
      (``TestExplicitConfigWins``).
   2. ``package.json`` heuristics: ``scripts.dev`` beats ``scripts.start``;
-     install is ``npm ci`` iff ``package-lock.json`` exists; port is guessed
-     from ``next``/``vite``/``react-scripts`` in (dev)dependencies via the
+     install matches the detected lockfile (``pnpm-lock.yaml`` /
+     ``yarn.lock`` / ``package-lock.json``); port is guessed from
+     ``next``/``vite``/``react-scripts`` in (dev)dependencies via the
      independently-tested ``_framework_port`` helper
      (``TestFrameworkPortHelper``, fix round 1, #2) so a dropped mapping
      entry can't hide behind ``next``/``react-scripts`` sharing the same
@@ -279,6 +281,36 @@ class TestPackageJsonHeuristics:
 
         assert recipe is not None
         assert recipe.install == ["npm", "ci"]
+
+    def test_install_uses_pnpm_when_pnpm_lockfile_present(self, tmp_path: Path) -> None:
+        _write_json(
+            tmp_path / "package.json",
+            {
+                "scripts": {"dev": "vite"},
+                "dependencies": {"@acme/ui": "workspace:*"},
+            },
+        )
+        (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+
+        recipe = detect_recipe(str(tmp_path))
+
+        assert recipe is not None
+        assert recipe.install == [
+            "corepack",
+            "pnpm",
+            "install",
+            "--frozen-lockfile",
+            "--dangerously-allow-all-builds",
+        ]
+
+    def test_install_uses_yarn_when_yarn_lockfile_present(self, tmp_path: Path) -> None:
+        _write_json(tmp_path / "package.json", {"scripts": {"dev": "vite"}})
+        (tmp_path / "yarn.lock").write_text("# yarn lockfile v1\n", encoding="utf-8")
+
+        recipe = detect_recipe(str(tmp_path))
+
+        assert recipe is not None
+        assert recipe.install == ["corepack", "yarn", "install", "--frozen-lockfile"]
 
     def test_install_uses_npm_install_when_no_lockfile(self, tmp_path: Path) -> None:
         _write_json(tmp_path / "package.json", {"scripts": {"dev": "vite"}})

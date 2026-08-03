@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getChatIdentityById: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
   getRepositoryByName: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
 }));
@@ -11,6 +12,7 @@ vi.mock("@agentrail/db-postgres", () => ({
 import {
   getChatIdentityById,
   getJaceSessionByEveSessionId,
+  findOrCreateChangeRecord,
   getRepositoryByName,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
@@ -78,6 +80,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(getChatIdentityById).mockResolvedValue(null as never);
   vi.mocked(getRepositoryByName).mockResolvedValue({ id: "repo-1" } as never);
+  vi.mocked(findOrCreateChangeRecord).mockResolvedValue(timeline().record as never);
   vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue(timeline() as never);
 });
 
@@ -173,6 +176,20 @@ describe("POST /api/v1/runner/change-record/pr", () => {
           url: "https://console.example.com/e/5",
         },
       ],
+    });
+  });
+
+  it("ensures the PR record before reading when the review tool requests the preflight", async () => {
+    const res = await POST(
+      req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98, ensure: true })
+    );
+
+    expect(res.status).toBe(200);
+    expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
+      repo: "ada/widgets",
+      prNumber: 98,
+      state: "open",
     });
   });
 });

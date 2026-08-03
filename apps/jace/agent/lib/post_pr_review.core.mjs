@@ -643,7 +643,7 @@ async function fetchPrChangeRecord({ cfg, sessionId, repo, prNumber, transport }
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ eveSessionId: sessionId, repo, prNumber }),
+      body: JSON.stringify({ eveSessionId: sessionId, repo, prNumber, ensure: true }),
     });
   } catch {
     return null;

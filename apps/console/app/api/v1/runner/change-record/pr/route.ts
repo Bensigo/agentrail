@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getChatIdentityById,
   getJaceSessionByEveSessionId,
+  findOrCreateChangeRecord,
   getRepositoryByName,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
@@ -17,7 +18,7 @@ type StageEvidence = {
 };
 
 function parseBody(raw: unknown):
-  | { eveSessionId: string; repo: string; prNumber: number }
+  | { eveSessionId: string; repo: string; prNumber: number; ensure: boolean }
   | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -26,7 +27,7 @@ function parseBody(raw: unknown):
   const prNumber = typeof o.prNumber === "number" ? o.prNumber : Number(o.prNumber);
   if (!eveSessionId || !REPO_FORMAT_RE.test(repo)) return null;
   if (!Number.isInteger(prNumber) || prNumber <= 0) return null;
-  return { eveSessionId, repo, prNumber };
+  return { eveSessionId, repo, prNumber, ensure: o.ensure === true };
 }
 
 async function resolveWorkspace(
@@ -129,6 +130,14 @@ export async function POST(request: NextRequest) {
   if (!resolved.ok) return resolved.response;
 
   try {
+    if (body.ensure) {
+      await findOrCreateChangeRecord({
+        workspaceId: resolved.workspaceId,
+        repo: body.repo,
+        prNumber: body.prNumber,
+        state: "open",
+      });
+    }
     const timeline = await readChangeRecordTimelineByPr({
       workspaceId: resolved.workspaceId,
       repo: body.repo,

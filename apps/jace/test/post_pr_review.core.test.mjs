@@ -319,6 +319,7 @@ test("runPostPrReview opt-in Change Record fetch appends the block before postin
     eveSessionId: "eve-session-1",
     repo: "ada/widgets",
     prNumber: 98,
+    ensure: true,
   });
   const sent = JSON.parse(transport.calls[0].init.body);
   assert.match(sent.summary, /\*\*Change Record\*\*/);

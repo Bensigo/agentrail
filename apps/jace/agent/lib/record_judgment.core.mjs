@@ -88,7 +88,7 @@ function cleanOptionalRef(value) {
   return text || undefined;
 }
 
-function buildRefs({ briefSlug, itemId, sourceTurnId } = {}) {
+function buildRefs({ briefSlug, itemId, sourceTurnId, issueNumber, prNumber, headSha } = {}) {
   const refs = {};
   const cleanBriefSlug = cleanOptionalRef(briefSlug);
   const cleanItemId = cleanOptionalRef(itemId);
@@ -96,6 +96,10 @@ function buildRefs({ briefSlug, itemId, sourceTurnId } = {}) {
   if (cleanBriefSlug) refs.briefSlug = cleanBriefSlug;
   if (cleanItemId) refs.itemId = cleanItemId;
   if (cleanSourceTurnId) refs.sourceTurnId = cleanSourceTurnId;
+  if (Number.isSafeInteger(issueNumber) && issueNumber > 0) refs.issueNumber = issueNumber;
+  if (Number.isSafeInteger(prNumber) && prNumber > 0) refs.prNumber = prNumber;
+  const cleanHeadSha = cleanOptionalRef(headSha);
+  if (cleanHeadSha) refs.headSha = cleanHeadSha;
   return refs;
 }
 
@@ -131,6 +135,9 @@ export function buildJudgmentEventBody({
   briefSlug,
   itemId,
   sourceTurnId,
+  issueNumber,
+  prNumber,
+  headSha,
 }) {
   const sessionId = String(eveSessionId ?? "").trim();
   const resolvedRepo = cleanText(repo, 200);
@@ -142,7 +149,7 @@ export function buildJudgmentEventBody({
   const cleanedReason = cleanText(reason, REASON_MAX_LEN);
   if (!cleanedReason) return { ok: false, reason: "bad_request" };
 
-  const refs = buildRefs({ briefSlug, itemId, sourceTurnId });
+  const refs = buildRefs({ briefSlug, itemId, sourceTurnId, issueNumber, prNumber, headSha });
   if (resolvedType === "rejected_approach") {
     const terms = uniqueCleanTerms(blockedTerms);
     if (terms.length === 0) return { ok: false, reason: "bad_request" };
@@ -190,6 +197,9 @@ export async function recordJudgment({
   briefSlug,
   itemId,
   sourceTurnId,
+  issueNumber,
+  prNumber,
+  headSha,
   env = {},
   transport,
 }) {
@@ -208,6 +218,9 @@ export async function recordJudgment({
       briefSlug,
       itemId,
       sourceTurnId,
+      issueNumber,
+      prNumber,
+      headSha,
     });
     if (!built.ok) return degraded(built.reason);
 

@@ -37,6 +37,9 @@ const refsSchema = {
   briefSlug: z.string().optional().describe("Optional brief slug this judgment came from."),
   itemId: z.string().optional().describe("Optional brief item id this judgment corrects."),
   sourceTurnId: z.string().optional().describe("Optional chat turn/message id for provenance."),
+  issueNumber: z.number().int().positive().optional().describe("Optional linked GitHub issue number."),
+  prNumber: z.number().int().positive().optional().describe("Optional linked GitHub pull request number."),
+  headSha: z.string().optional().describe("Optional linked PR head SHA."),
 };
 
 export default defineTool({
@@ -80,6 +83,9 @@ export default defineTool({
       briefSlug: input.briefSlug,
       itemId: input.itemId,
       sourceTurnId: input.sourceTurnId,
+      issueNumber: input.issueNumber,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
       env: process.env,
       transport: realTransport,
     });

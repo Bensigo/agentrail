@@ -125,6 +125,28 @@ async function attachLearningStage(input: {
   });
 }
 
+async function findChangeRecordByCommit(input: {
+  workspaceId: string;
+  repo: string;
+  sha: string;
+}): Promise<string | null> {
+  const rows = Array.from(
+    await db.execute(sql`
+      SELECT id
+      FROM change_records
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND (
+          merged_sha = ${input.sha}
+          OR ${input.sha} = ANY(COALESCE(head_shas, ARRAY[]::text[]))
+        )
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `)
+  ) as Array<{ id?: unknown }>;
+  return typeof rows[0]?.id === "string" ? rows[0].id : null;
+}
+
 export async function appendJudgmentEvent(
   input: AppendJudgmentEventInput
 ): Promise<{ event: JudgmentEventRow; inserted: boolean }> {
@@ -145,6 +167,18 @@ export async function appendJudgmentEvent(
         // Ledger capture must not make the originating webhook or human
         // action fail when the optional Change Record attachment is down.
         console.error("[judgment-events] Change Record attachment failed:", error);
+      }
+    }
+    if (typeof refs.changeRecordId !== "string" && typeof refs.revertedCommitSha === "string") {
+      try {
+        const recordId = await findChangeRecordByCommit({
+          workspaceId: input.workspaceId,
+          repo: input.repo,
+          sha: refs.revertedCommitSha,
+        });
+        if (recordId) refs = { ...refs, changeRecordId: recordId };
+      } catch (error) {
+        console.error("[judgment-events] commit-to-Change-Record lookup failed:", error);
       }
     }
   }

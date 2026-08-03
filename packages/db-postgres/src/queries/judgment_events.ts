@@ -152,6 +152,14 @@ export const JUDGMENT_CALIBRATION_EVENT_TYPES = [
   "rejected_approach",
 ] as const;
 
+// Requirement corrections are not included in the headline event counts, but
+// they are the only source of refusal attempts and therefore must remain in
+// the calibration query's source set.
+export const JUDGMENT_CALIBRATION_SOURCE_EVENT_TYPES = [
+  ...JUDGMENT_CALIBRATION_EVENT_TYPES,
+  "requirement_correction",
+] as const;
+
 export type JudgmentCalibrationEventType =
   (typeof JUDGMENT_CALIBRATION_EVENT_TYPES)[number];
 
@@ -246,7 +254,10 @@ export async function getJudgmentCalibrationSummary(
       FROM judgment_events
       WHERE workspace_id = ${input.workspaceId}
         AND repo = ${input.repo}
-        AND type IN ('review_outcome', 'false_green', 'missed_check', 'rejected_approach')
+        AND type IN (${sql.join(
+          JUDGMENT_CALIBRATION_SOURCE_EVENT_TYPES.map((type) => sql`${type}`),
+          sql`, `
+        )})
         AND (${fromIso}::timestamptz IS NULL OR occurred_at >= ${fromIso}::timestamptz)
         AND (${toIso}::timestamptz IS NULL OR occurred_at < ${toIso}::timestamptz)
       GROUP BY type, disposition, gate_outcome, refusal_kind, decision_attempt

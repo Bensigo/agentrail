@@ -8,11 +8,18 @@ vi.mock("../db.js", () => ({
   db: { execute: mocks.execute },
 }));
 
-import { getJudgmentCalibrationSummary } from "./judgment_events.js";
+import {
+  getJudgmentCalibrationSummary,
+  JUDGMENT_CALIBRATION_SOURCE_EVENT_TYPES,
+} from "./judgment_events.js";
 
 describe("judgment calibration summary", () => {
   beforeEach(() => {
     mocks.execute.mockReset();
+  });
+
+  it("includes requirement corrections in the source set because they supply refusal attempts", () => {
+    expect(JUDGMENT_CALIBRATION_SOURCE_EVENT_TYPES).toContain("requirement_correction");
   });
 
   it("returns explicit denominators and zeroes for an empty window", async () => {

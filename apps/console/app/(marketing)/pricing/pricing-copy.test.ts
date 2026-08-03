@@ -25,6 +25,7 @@ import { dirname, resolve } from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const PRICING_DIR = dirname(__filename); // apps/console/app/(marketing)/pricing
 const MARKETING_DIR = resolve(PRICING_DIR, ".."); // apps/console/app/(marketing)
+const APP_DIR = resolve(MARKETING_DIR, "..");
 
 /**
  * Strips comments before checking copy — same approach as
@@ -66,6 +67,8 @@ const tiersSource = readFileSync(resolve(PRICING_DIR, "tiers.ts"), "utf8");
 const tierCardsSource = readFileSync(resolve(PRICING_DIR, "tier-cards.tsx"), "utf8");
 const pricingSource = stripComments(`${pricingPageSource}\n${tiersSource}\n${tierCardsSource}`);
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
+const layoutSource = stripComments(readFileSync(resolve(APP_DIR, "layout.tsx"), "utf8"));
+const useCasesSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_use-cases.tsx"), "utf8"));
 // Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
 // only `_craft-pins.test.ts` reads it, and only for the mechanical style
 // pins), so the nav's new Pricing link is pinned here as a second readFile,
@@ -241,6 +244,28 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
 
   it("landing §6b carries its new subscription heading", () => {
     expect(landingSource).toContain("One subscription for your whole team");
+  });
+
+  it("root metadata no longer renders the stale role wording", () => {
+    expect(layoutSource).toContain("Jace — reviewable pull requests for engineering teams");
+    expect(layoutSource).toContain(
+      "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
+    );
+    expect(layoutSource).not.toContain("AI fractional software engineer");
+    expect(layoutSource).not.toContain("fractional software engineer");
+  });
+
+  it("landing page renders the new bottleneck section without inventing attribution", () => {
+    expect(landingSource).toContain("The bottleneck moved");
+    expect(landingSource).toContain("Attribution unavailable in the current source set.");
+  });
+
+  it("the outcome-led use case names migrations while keeping dependency upgrades Coming soon", () => {
+    expect(useCasesSource).toContain("Migrations and dependency upgrades");
+    expect(useCasesSource).toContain(
+      "Migrations are the beachhead. Dependency upgrade workflow stays Coming soon until the capability ships.",
+    );
+    expect(useCasesSource).toContain("Coming soon");
   });
 
   // Fix round: the STEPS lists on both pages were rewritten too (see

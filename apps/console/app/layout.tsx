@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Jace — the AI fractional software engineer",
+  title: "Jace — reviewable pull requests for engineering teams",
   description:
-    "Jace is an AI engineer you talk to in chat. He turns ideas into issues, aligns with you before building, and ships pull requests — nothing merges without your review.",
+    "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
 };
 
 export default function RootLayout({

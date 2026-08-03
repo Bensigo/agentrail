@@ -169,6 +169,22 @@ export default async function LandingPage() {
         </div>
       </section>
 
+      {/* The bottleneck section stays explicit: the note says attribution
+          is unavailable in the current source set, so the page does not
+          invent one. */}
+      <section className="px-6 pb-14 sm:pb-18">
+        <div className="mx-auto max-w-[720px]">
+          <Reveal>
+            <h2 className="text-heading-2 text-center">The bottleneck moved</h2>
+          </Reveal>
+          <Reveal delay={70}>
+            <p className="mx-auto mt-4 max-w-[42ch] text-center text-[var(--gray-11)]">
+              Attribution unavailable in the current source set.
+            </p>
+          </Reveal>
+        </div>
+      </section>
+
       {/* 2b — The conversation act: device-as-stage at full width (the
           phone moved out of the hero, owner-chosen 2026-07-22). Its typing
           choreography arms when it scrolls into view. */}

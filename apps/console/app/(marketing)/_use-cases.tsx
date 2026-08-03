@@ -18,8 +18,8 @@ interface UseCase {
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Keep dependencies moving",
-    line: "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+    title: "Migrations and dependency upgrades",
+    line: "Migrations are the beachhead. Dependency upgrade workflow stays Coming soon until the capability ships.",
     visual: "dependency",
     comingSoon: true,
   },
@@ -82,9 +82,9 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
   if (visual === "dependency") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
-        <span>dependency candidate</span>
-        <span className="text-[var(--gray-12)]">→ inspect changelog</span>
-        <span className="text-[var(--gray-12)]">→ compatibility evidence</span>
+        <span>migration plan</span>
+        <span className="text-[var(--gray-12)]">→ dependency upgrade workflow</span>
+        <span className="text-[var(--gray-12)]">→ Coming soon</span>
       </div>
     );
   }

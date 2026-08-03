@@ -289,8 +289,8 @@ export function OauthSetupNotice({
       </p>
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         This deployment hasn&apos;t set up one-click {connector.label} connect
-        yet — the environment variables below turn it on. Token-paste still
-        works in the meantime.
+        yet — the environment variables below turn it on. Token-paste stays as
+        the fallback.
       </p>
       {setup.missingEnv.length > 0 && (
         <ul className="flex flex-col gap-0.5">
@@ -607,10 +607,11 @@ function SecretManage({
   // Without oauthReady: today's bare token form, nothing wrapping it (plan's
   // own pinned "no visual regression" requirement) — now scoped precisely
   // to a provider with no registered adapter, or one this caller (a
-  // member) gets no `oauthSetup` for. W3-T8 ADDS a calm setup section
-  // ABOVE the token form for the oauth-capable, owner/admin, not-yet-
-  // configured case (`shouldShowOauthSetupHint`, `connector-helpers.ts`)
-  // — the discoverability fix for the user-reported bug that a
+  // member) gets no `oauthSetup` for. W3-T8 ADDS a calm setup section and
+  // keeps the token form behind an explicit fallback button for the
+  // oauth-capable, owner/admin, not-yet-configured case
+  // (`shouldShowOauthSetupHint`, `connector-helpers.ts`) — the
+  // discoverability fix for the user-reported bug that a
   // registered-but-unconfigured provider looked identical to one with no
   // one-click path at all; see `OauthSetupNotice`'s own doc-comment. W3-T4:
   // four providers (grafana/prometheus/langfuse/datadog) render one extra
@@ -628,7 +629,35 @@ function SecretManage({
       return (
         <div className="flex flex-col gap-3">
           <OauthSetupNotice connector={connector} setup={setup} />
-          {tokenForm}
+          {manualOpen ? (
+            tokenForm
+          ) : (
+            <button
+              type="button"
+              onClick={() => setManualOpen(true)}
+              className="self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)] underline-offset-2 hover:underline"
+            >
+              Use an API token instead
+            </button>
+          )}
+        </div>
+      );
+    }
+    if (connector.connection?.mode === "manual" && !manualOpen) {
+      return (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+            This connector needs a credential from {connector.label}; Jace will
+            keep it encrypted and use it only for the granted subagent tools.
+          </p>
+          <button
+            type="button"
+            onClick={() => setManualOpen(true)}
+            disabled={!canManage}
+            className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          >
+            Connect {connector.label} manually
+          </button>
         </div>
       );
     }

@@ -17,6 +17,11 @@ import {
   type PostExchangeResult,
 } from "../../../../../../../lib/oauth/types";
 import {
+  connectionDefinitionFor,
+  isBrokerConnectorKind,
+} from "../../../../../../../lib/connection-broker";
+import { mcpOauthConfigFor } from "../../../../../../../lib/connection-broker/mcp-oauth";
+import {
   connectedRedirectUrl,
   oauthCallbackUri,
   oauthErrorRedirectUrl,
@@ -379,7 +384,12 @@ export async function GET(
     return fail(workspaceId, "state_invalid");
   }
 
-  if (!adapter || !oauthConfigFor(provider)) {
+  const brokerDefinition = isBrokerConnectorKind(provider)
+    ? connectionDefinitionFor(provider)
+    : null;
+  const isRemoteMcp = brokerDefinition?.mode === "remote-mcp-oauth";
+  const oauthConfig = isRemoteMcp ? mcpOauthConfigFor(provider) : oauthConfigFor(provider);
+  if (!adapter || !oauthConfig || !(adapter.envReady?.() ?? true)) {
     return fail(workspaceId, "provider_unconfigured");
   }
 

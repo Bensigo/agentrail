@@ -19,6 +19,14 @@ import {
   type ConnectorConfigInput,
 } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { oauthAdapterFor, oauthConfigFor, missingOauthEnv } from "../../../../../../lib/oauth/types";
+import {
+  connectionDefinitionFor,
+  isBrokerConnectorKind,
+} from "../../../../../../lib/connection-broker";
+import {
+  mcpOauthConfigFor,
+  missingMcpOauthEnv,
+} from "../../../../../../lib/connection-broker/mcp-oauth";
 // W3-T2: registers the `railway` OAuth adapter — see the oauth callback
 // route's identical import for the full "REACHABILITY" reasoning (this GET
 // route is the third and last place `oauthAdapterFor`/`oauthConfigFor` are
@@ -139,10 +147,21 @@ export async function GET(
         // present. Never hardcoded client-side — see `connector-helpers.ts`'s
         // `ConnectorConfigInput.oauthReady` doc-comment for why these
         // checks, not env alone.
-        oauthReady:
-          oauthAdapterFor(entry.kind) !== null &&
-          oauthConfigFor(entry.kind) !== null &&
-          (oauthAdapterFor(entry.kind)?.envReady?.() ?? true),
+        oauthReady: (() => {
+          const adapter = oauthAdapterFor(entry.kind);
+          const definition = isBrokerConnectorKind(entry.kind)
+            ? connectionDefinitionFor(entry.kind)
+            : null;
+          const isRemoteMcp = definition?.mode === "remote-mcp-oauth";
+          const config = isRemoteMcp
+            ? mcpOauthConfigFor(entry.kind)
+            : oauthConfigFor(entry.kind);
+          return (
+            adapter !== null &&
+            config !== null &&
+            (adapter?.envReady?.() ?? true)
+          );
+        })(),
         // W3-T8 (owner-visible OAuth setup state, `.superpowers/sdd/
         // plan-oauth.md`) — the discoverability fix: `oauthReady` above
         // renders a provider with a registered-but-unconfigured adapter
@@ -165,10 +184,21 @@ export async function GET(
         // ready right now" — see `connector-helpers.ts`'s
         // `ConnectorConfigInput.oauthSetup` doc-comment for why the two
         // stay orthogonal rather than one suppressing the other here.
-        oauthSetup:
-          canManage && oauthAdapterFor(entry.kind) !== null
-            ? { capable: true as const, missingEnv: missingOauthEnv(entry.kind) }
-            : null,
+        oauthSetup: (() => {
+          if (!canManage) return null;
+          const adapter = oauthAdapterFor(entry.kind);
+          const definition = isBrokerConnectorKind(entry.kind)
+            ? connectionDefinitionFor(entry.kind)
+            : null;
+          if (!adapter) return null;
+          if (definition?.mode === "remote-mcp-oauth") {
+            return {
+              capable: true as const,
+              missingEnv: missingMcpOauthEnv(entry.kind),
+            };
+          }
+          return { capable: true as const, missingEnv: missingOauthEnv(entry.kind) };
+        })(),
       };
     });
 

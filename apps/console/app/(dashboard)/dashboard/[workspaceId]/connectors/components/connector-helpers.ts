@@ -35,6 +35,11 @@
 
 import type { EvidenceVerb } from "../../../../../../lib/evidence/types";
 import { splitCompositeSecret } from "../../../../../../lib/evidence/composite-secret";
+import {
+  connectionDefinitionFor,
+  type BrokerConnectorKind,
+  type ConnectorConnectionDefinition,
+} from "../../../../../../lib/connection-broker";
 
 /**
  * The external tools AgentRail can connect (M038 catalog), plus `factory` —
@@ -386,6 +391,8 @@ export interface ConnectorView {
   ingestLabel: string | null;
   target: string | null;
   connect: ConnectorConnectMeta | null;
+  /** The shared Jace connection-broker capability for this connector. */
+  connection: ConnectorConnectionDefinition | null;
   /**
    * GitHub only: the Jace GitHub App is installed (see the doc-comment on
    * {@link ConnectorConfigInput.appInstalled}). False for every other kind.
@@ -1238,6 +1245,10 @@ export function projectConnectors(
         ingestLabel,
         target,
         connect: entry.connect ?? null,
+        connection:
+          entry.kind === "factory"
+            ? null
+            : connectionDefinitionFor(entry.kind as BrokerConnectorKind),
         appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
         // Heartbeat trigger config the card manages (folded in #816). Defaults when
         // no connector row exists: a connector defaults enabled once connected.

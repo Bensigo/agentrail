@@ -121,6 +121,7 @@ describe("OauthSetupNotice (W3-T8, owner-visible OAuth setup state)", () => {
     const text = collectText(el).join(" ");
     expect(text).toContain("Railway");
     expect(text).toContain("one-click");
+    expect(text).toContain("Token-paste stays as the fallback.");
     // House tone (TASTE.md / less-slop-writing) — no apology, no hype.
     expect(text.toLowerCase()).not.toContain("sorry");
     expect(text.toLowerCase()).not.toContain("coming soon");

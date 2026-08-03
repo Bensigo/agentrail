@@ -8,6 +8,14 @@ import {
   SESSION_TRANSPORT_OAUTH_STATE_TTL_MS,
 } from "@agentrail/db-postgres";
 import { oauthAdapterFor, oauthConfigFor } from "../../../../../../../../lib/oauth/types";
+import {
+  connectionDefinitionFor,
+  isBrokerConnectorKind,
+} from "../../../../../../../../lib/connection-broker";
+import {
+  mcpOauthConfigFor,
+  missingMcpOauthEnv,
+} from "../../../../../../../../lib/connection-broker/mcp-oauth";
 import { oauthCallbackUri } from "../../../../../../../../lib/oauth/redirect";
 import { computeCodeChallengeS256, generateCodeVerifier } from "../../../../../../../../lib/oauth/pkce";
 // W3-T2: registers the `railway` OAuth adapter — see the callback route's
@@ -91,6 +99,14 @@ export async function POST(
     );
   }
 
+  const brokerDefinition = isBrokerConnectorKind(body.provider)
+    ? connectionDefinitionFor(body.provider)
+    : null;
+  const isRemoteMcp = brokerDefinition?.mode === "remote-mcp-oauth";
+  const oauthConfig = isRemoteMcp
+    ? mcpOauthConfigFor(body.provider)
+    : oauthConfigFor(body.provider);
+
   // Env gating (plan pin): absent env -> 409 with a clear, actionable
   // message, never a half-configured authorize attempt. Checked AFTER the
   // adapter-registered check above (a provider with no adapter at all is a
@@ -103,11 +119,14 @@ export async function POST(
   // a slug-missing sentry connect attempt 409s cleanly instead of reaching
   // `authorizeUrl()`'s own throw (which `requireSentryIntegrationSlug`
   // would raise, surfacing as an unhandled 500).
-  if (!oauthConfigFor(body.provider) || !(adapter.envReady?.() ?? true)) {
+  if (!oauthConfig || !(adapter.envReady?.() ?? true)) {
+    const missing = isRemoteMcp ? missingMcpOauthEnv(body.provider) : [];
     const label = body.provider.charAt(0).toUpperCase() + body.provider.slice(1);
     return NextResponse.json(
       {
-        error: `${label} OAuth isn't configured on this deployment yet. Use an API token instead.`,
+        error: `${label} OAuth isn't configured on this deployment yet. ${
+          missing.length > 0 ? `Missing: ${missing.join(", ")}. ` : ""
+        }Use an API token instead.`,
       },
       { status: 409 }
     );

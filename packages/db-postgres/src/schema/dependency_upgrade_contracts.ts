@@ -49,6 +49,7 @@ export const dependencyUpgradeContracts = pgTable(
     watchId: uuid("watch_id")
       .notNull()
       .references(() => dependencyWatches.id, { onDelete: "cascade" }),
+    observationKey: text("observation_key").notNull(),
     candidateFingerprint: text("candidate_fingerprint").notNull(),
     packageName: text("package_name").notNull(),
     dependencyKind: text("dependency_kind").notNull(),

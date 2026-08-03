@@ -38,8 +38,10 @@ export type DependencyUpgradeProposal = {
   requiredProof: string[];
   verificationCommands: string[];
   candidateFingerprint: string;
+  observationKey?: string;
   candidate: DependencyUpgradeCandidateInput;
   needsHumanDecision: string[];
+  evidenceIssues?: string[];
 };
 
 export type DependencyUpgradeEvidenceInput = {
@@ -49,6 +51,11 @@ export type DependencyUpgradeEvidenceInput = {
   security?: string;
   baselineTests?: string[];
   targetTests?: string[];
+};
+
+export type DependencyUpgradeProposalOptions = {
+  observationKey?: string;
+  evidenceIssues?: string[];
 };
 
 const MAX_FIELD = 240;
@@ -92,12 +99,14 @@ export function candidateFingerprintMatches(candidate: DependencyUpgradeCandidat
 
 export function buildDependencyUpgradeProposal(
   candidate: DependencyUpgradeCandidateInput,
-  evidence: DependencyUpgradeEvidenceInput = {}
+  evidence: DependencyUpgradeEvidenceInput = {},
+  options: DependencyUpgradeProposalOptions = {}
 ): DependencyUpgradeProposal {
   const packageName = clean(candidate.package);
   const current = clean(candidate.current_version);
   const target = clean(candidate.target_version);
   const fingerprint = clean(candidate.fingerprint);
+  const observationKey = options.observationKey ? clean(options.observationKey) : undefined;
   const manifest = clean(candidate.manifest_path);
   const lockfile = clean(candidate.lockfile_path);
 
@@ -158,6 +167,9 @@ export function buildDependencyUpgradeProposal(
   if (!evidence.baselineTests?.length || !evidence.targetTests?.length) {
     needsHumanDecision.push("baseline and target test commands are missing");
   }
+  if (options.evidenceIssues?.length) {
+    needsHumanDecision.push(...cleanList(options.evidenceIssues));
+  }
 
   return {
     title: titleFor(candidate),
@@ -175,8 +187,10 @@ export function buildDependencyUpgradeProposal(
     requiredProof,
     verificationCommands,
     candidateFingerprint: fingerprint,
+    observationKey,
     candidate,
     needsHumanDecision,
+    evidenceIssues: cleanList(options.evidenceIssues),
   };
 }
 
@@ -208,6 +222,7 @@ export function buildDependencyUpgradeIssueBody(proposal: DependencyUpgradePropo
     "## Required context",
     `Candidate fingerprint: ${clean(proposal.candidateFingerprint)}`,
     `Package: ${clean(proposal.candidate.package)} (${clean(proposal.candidate.dependency_kind)})`,
+    `Observation key: ${clean(proposal.observationKey ?? "unavailable")}`,
     `Ecosystem: ${clean(proposal.candidate.ecosystem ?? "unknown")}`,
     `Package manager: ${clean(proposal.candidate.package_manager ?? "repository-declared")}`,
     `Version: ${clean(proposal.candidate.current_version)} → ${clean(proposal.candidate.target_version)}`,
@@ -228,6 +243,13 @@ export function buildDependencyUpgradeIssueBody(proposal: DependencyUpgradePropo
     "",
     "## Security evidence",
     clean(proposal.securityEvidence || "Evidence required before approval."),
+    ...(proposal.evidenceIssues?.length
+      ? [
+          "",
+          "## Evidence issues",
+          list(proposal.evidenceIssues),
+        ]
+      : []),
     "",
     "## Non-goals",
     list(proposal.nonGoals),
@@ -285,6 +307,8 @@ export function buildDependencyUpgradeApprovalInput(
     stopConditions: proposal.stopConditions,
     requiredProof: proposal.requiredProof,
     verificationCommands: proposal.verificationCommands,
+    observationKey: proposal.observationKey,
+    proposal,
     candidate: proposal.candidate,
     _brief: alignmentBrief,
   };

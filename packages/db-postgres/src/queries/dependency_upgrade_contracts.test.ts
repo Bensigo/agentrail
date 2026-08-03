@@ -136,6 +136,7 @@ describe("dependency upgrade contract query boundary", () => {
       workspaceId: "ws-1",
       repositoryId: "repo-1",
       watchId: "watch-1",
+      observationKey: observation.observationKey,
       candidate,
       proposal: { title: "upgrade react" },
     });
@@ -143,6 +144,7 @@ describe("dependency upgrade contract query boundary", () => {
     expect(result).toEqual({ contract: existing, created: false });
     expect(state.insertValues[0]).toMatchObject({
       workspaceId: "ws-1",
+      observationKey: observation.observationKey,
       candidateFingerprint: candidate.fingerprint,
     });
   });
@@ -194,6 +196,22 @@ describe("dependency upgrade contract query boundary", () => {
       decision: "refused",
       approvalId: "approval-1",
       details: { reason: "not now" },
+    });
+  });
+
+  it("records the observation key separately from the candidate fingerprint", async () => {
+    state.insertResponses = [[{ id: "event-1" }]];
+    await recordDependencyUpgradeContractEvent({
+      workspaceId: "ws-1",
+      contractId: "contract-1",
+      candidateFingerprint: candidate.fingerprint,
+      actor: { actorType: "system", actorId: "dependency-watch" },
+      decision: "proposed",
+      details: { baselineSha: candidate.baseline_sha, observationKey: observation.observationKey },
+    });
+    expect(state.insertValues[0]).toMatchObject({
+      candidateFingerprint: candidate.fingerprint,
+      details: { baselineSha: candidate.baseline_sha, observationKey: observation.observationKey },
     });
   });
 

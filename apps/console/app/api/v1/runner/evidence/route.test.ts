@@ -7,6 +7,9 @@ vi.mock("@agentrail/db-postgres", () => ({
   getInvestigationById: vi.fn(),
   getConnectors: vi.fn(),
   getConnectorSecret: vi.fn(),
+  getRepositoryByName: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
+  appendChangeRecordEvent: vi.fn(),
   appendEvidenceItem: vi.fn(),
 }));
 
@@ -97,6 +100,9 @@ import {
   getInvestigationById,
   getConnectors,
   getConnectorSecret,
+  getRepositoryByName,
+  findOrCreateChangeRecord,
+  appendChangeRecordEvent,
   appendEvidenceItem,
 } from "@agentrail/db-postgres";
 import { registerAdapter } from "../../../../../lib/evidence/registry";
@@ -107,6 +113,9 @@ const mockGetAnchor = vi.mocked(getSessionInvestigationAnchor);
 const mockGetById = vi.mocked(getInvestigationById);
 const mockGetConnectors = vi.mocked(getConnectors);
 const mockGetSecret = vi.mocked(getConnectorSecret);
+const mockGetRepositoryByName = vi.mocked(getRepositoryByName);
+const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
+const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockAppendEvidenceItem = vi.mocked(appendEvidenceItem);
 
 const fakeQuery = vi.fn();
@@ -190,10 +199,28 @@ function getReq(
     scope?: string;
     query?: string;
     limit?: string;
+    changeRecordRepo?: string;
+    changeRecordPrNumber?: string;
+    changeRecordIssueNumber?: string;
+    changeRecordHeadSha?: string;
     token?: string;
   } = {}
 ): NextRequest {
-  const { eveSessionId, mode, verb, windowStart, windowEnd, scope, query, limit, token } = opts;
+  const {
+    eveSessionId,
+    mode,
+    verb,
+    windowStart,
+    windowEnd,
+    scope,
+    query,
+    limit,
+    changeRecordRepo,
+    changeRecordPrNumber,
+    changeRecordIssueNumber,
+    changeRecordHeadSha,
+    token,
+  } = opts;
   const params = new URLSearchParams();
   if (eveSessionId !== undefined) params.set("eveSessionId", eveSessionId);
   if (mode !== undefined) params.set("mode", mode);
@@ -203,6 +230,14 @@ function getReq(
   if (scope !== undefined) params.set("scope", scope);
   if (query !== undefined) params.set("query", query);
   if (limit !== undefined) params.set("limit", limit);
+  if (changeRecordRepo !== undefined) params.set("changeRecordRepo", changeRecordRepo);
+  if (changeRecordPrNumber !== undefined) {
+    params.set("changeRecordPrNumber", changeRecordPrNumber);
+  }
+  if (changeRecordIssueNumber !== undefined) {
+    params.set("changeRecordIssueNumber", changeRecordIssueNumber);
+  }
+  if (changeRecordHeadSha !== undefined) params.set("changeRecordHeadSha", changeRecordHeadSha);
   const qs = params.toString();
   const headers: Record<string, string> = {};
   if (token !== undefined) headers["Authorization"] = `Bearer ${token}`;
@@ -237,6 +272,16 @@ beforeEach(() => {
   // unaffected by fakeobs2 merely being registered/declared in the catalog.
   mockGetConnectors.mockResolvedValue(ONE_PROVIDER_CONNECTOR_ROWS as never);
   mockGetSecret.mockResolvedValue("fake-secret-token");
+  mockGetRepositoryByName.mockResolvedValue({ id: "repo-1", name: "Bensigo/agentrail" } as never);
+  mockFindOrCreateChangeRecord.mockResolvedValue({
+    id: "change-record-1",
+    workspaceId: WS,
+    repo: "Bensigo/agentrail",
+    issueNumber: null,
+    prNumber: 1547,
+    state: "production",
+  } as never);
+  mockAppendChangeRecordEvent.mockResolvedValue({ inserted: true, event: {} } as never);
   mockAppendEvidenceItem.mockResolvedValue({ id: "evidence-item-1" } as never);
   fakeQuery.mockResolvedValue({ ok: true, raw: "run_id=abc123 merged_pr #4 at 2026-07-29T00:30:00Z" });
   fakeQuery2.mockResolvedValue({ ok: true, raw: "fakeobs2 default raw" });
@@ -442,6 +487,94 @@ describe("GET /api/v1/runner/evidence", () => {
           windowEnd: WINDOW_END,
         },
       });
+    });
+  });
+
+  describe("verb query — production Change Record producer", () => {
+    it("appends one idempotent production-stage event after deployment evidence is captured for a scoped PR", async () => {
+      const res = await GET(
+        verbReq({
+          changeRecordRepo: "Bensigo/agentrail",
+          changeRecordPrNumber: "1547",
+          changeRecordIssueNumber: "981",
+          changeRecordHeadSha: "2bb1234",
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.changeRecord).toEqual({
+        recordId: "change-record-1",
+        eventKey: expect.stringMatching(
+          /^production:evidence:Bensigo\/agentrail:pr:1547:[a-f0-9]{24}$/
+        ),
+        inserted: true,
+      });
+      expect(mockGetRepositoryByName).toHaveBeenCalledWith(WS, "Bensigo/agentrail");
+      expect(mockFindOrCreateChangeRecord).toHaveBeenCalledWith({
+        workspaceId: WS,
+        repo: "Bensigo/agentrail",
+        issueNumber: 981,
+        prNumber: 1547,
+        headShas: ["2bb1234"],
+        state: "production",
+      });
+      expect(mockAppendChangeRecordEvent).toHaveBeenCalledWith({
+        recordId: "change-record-1",
+        eventKey: expect.stringMatching(
+          /^production:evidence:Bensigo\/agentrail:pr:1547:[a-f0-9]{24}$/
+        ),
+        stage: "production",
+        actor: "runner-evidence",
+        payloadRef: {
+          kind: "deployment_evidence",
+          repo: "Bensigo/agentrail",
+          prNumber: 1547,
+          issueNumber: 981,
+          headSha: "2bb1234",
+          investigationId: INVESTIGATION_ID,
+          query: {
+            verb: "changes",
+            windowStart: WINDOW_START,
+            windowEnd: WINDOW_END,
+          },
+          evidence: [
+            expect.objectContaining({
+              ref: "evidence-item-1",
+              provider: "fakeobs",
+              verb: "changes",
+              truncated: false,
+            }),
+          ],
+        },
+      });
+    });
+
+    it("degrades bad_request before fan-out when a Change Record anchor is partial", async () => {
+      const res = await GET(verbReq({ changeRecordRepo: "Bensigo/agentrail" }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ degraded: true, reason: "bad_request" });
+      expect(fakeQuery).not.toHaveBeenCalled();
+      expect(mockAppendEvidenceItem).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+    });
+
+    it("does not fabricate a production event when the scoped repo is not connected to this workspace", async () => {
+      mockGetRepositoryByName.mockResolvedValue(null as never);
+
+      const res = await GET(
+        verbReq({
+          changeRecordRepo: "Bensigo/agentrail",
+          changeRecordPrNumber: "1547",
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.envelopes).toHaveLength(1);
+      expect(body.changeRecord).toBeUndefined();
+      expect(mockFindOrCreateChangeRecord).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
     });
   });
 

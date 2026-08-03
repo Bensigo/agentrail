@@ -190,6 +190,7 @@ export default defineTool({
       judgment: input.judgment,
       env: process.env,
       transport: realTransport,
+      changeRecordTransport: realTransport,
     });
   },
 });

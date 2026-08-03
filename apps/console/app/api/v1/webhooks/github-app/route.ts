@@ -4,6 +4,8 @@ import {
   enqueueReviewJob,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
 } from "@agentrail/db-postgres";
 
 /**
@@ -43,7 +45,7 @@ import {
  * webhooks are not an error surface): `X-GitHub-Event` must be
  * `pull_request` (checked off the header alone, no body parsing needed) ->
  * the body must parse as JSON -> `action` must be one of
- * opened|ready_for_review|reopened|synchronize -> a draft PR
+ * opened|ready_for_review|reopened|synchronize, or a merged `closed` event -> a draft PR
  * (`pull_request.draft === true`) is skipped for opened/reopened/synchronize
  * (it (re-)enters once `ready_for_review` fires later; THAT action is never
  * draft-gated, regardless of the payload's `draft` value) -> `installation.id`
@@ -65,7 +67,8 @@ const SIGNATURE_HEADER = "x-hub-signature-256";
 const EVENT_HEADER = "x-github-event";
 const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 
-// The four `pull_request` actions this queue admits (design spec §1).
+// The four `pull_request` actions this queue admits (design spec §1). A
+// merged `closed` delivery is handled separately as a Change Record event.
 const TRIGGER_ACTIONS = new Set([
   "opened",
   "ready_for_review",
@@ -157,7 +160,11 @@ export async function POST(request: NextRequest) {
   const body = payload as Record<string, unknown>;
 
   const action = typeof body.action === "string" ? body.action : "";
-  if (!TRIGGER_ACTIONS.has(action)) {
+  const isMergedClose = action === "closed" &&
+    body.pull_request != null &&
+    typeof body.pull_request === "object" &&
+    (body.pull_request as Record<string, unknown>).merged === true;
+  if (!TRIGGER_ACTIONS.has(action) && !isMergedClose) {
     return ignored();
   }
 
@@ -215,6 +222,42 @@ export async function POST(request: NextRequest) {
 
   if (typeof headSha !== "string" || typeof prNumber !== "number") {
     return ignored();
+  }
+
+  if (isMergedClose) {
+    const mergeCommitSha =
+      typeof prObj.merge_commit_sha === "string" ? prObj.merge_commit_sha : null;
+    try {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: workspace.workspaceId,
+        repo: repoFullName,
+        prNumber,
+        headShas: [headSha],
+        mergedSha: mergeCommitSha,
+        state: "merged",
+      });
+      await appendChangeRecordEvent({
+        recordId: record.id,
+        eventKey: `merge:pr:${prNumber}:merged`,
+        stage: "merge",
+        actor: "github-webhook",
+        payloadRef: {
+          kind: "merge",
+          repo: repoFullName,
+          prNumber,
+          url:
+            typeof prObj.html_url === "string" ? prObj.html_url : null,
+          mergeCommitSha,
+          outcome: "merged",
+        },
+      });
+    } catch (error) {
+      // A signed webhook is acknowledged even when the durable attachment is
+      // temporarily unavailable; GitHub may redeliver, and the event key is
+      // idempotent when it does.
+      console.error("[github-app/webhook] merge change-record attach failed:", error);
+    }
+    return NextResponse.json({ ok: true, merged: true });
   }
 
   const result = await enqueueReviewJob({

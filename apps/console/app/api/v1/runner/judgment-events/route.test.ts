@@ -80,8 +80,66 @@ describe("POST /api/v1/runner/judgment-events", () => {
       refs: {},
       payload: validBody.payload,
       actorRef: { kind: "jace" },
-      sourceRef: { kind: "create_issue" },
+      sourceRef: { kind: "chat" },
     });
+  });
+
+  it("accepts a chat-originated rejected_approach with bounded blocked terms and reason", async () => {
+    const body = {
+      eveSessionId: "eve-1",
+      repo: "acme/widgets",
+      eventKey: "rejected-approach:abc123",
+      type: "rejected_approach",
+      refs: { briefSlug: "retry-design" },
+      payload: {
+        blockedTerms: ["redis queue", "polling loop"],
+        reason: "The user rejected Redis-backed retries during grilling.",
+      },
+      actorRef: { kind: "spoofed" },
+      sourceRef: { kind: "spoofed" },
+    };
+
+    const response = await POST(request(body));
+    expect(response.status).toBe(201);
+    expect(appendJudgmentEvent).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
+      repo: "acme/widgets",
+      eventKey: "rejected-approach:abc123",
+      type: "rejected_approach",
+      refs: { briefSlug: "retry-design" },
+      payload: body.payload,
+      actorRef: { kind: "jace" },
+      sourceRef: { kind: "chat" },
+    });
+  });
+
+  it("rejects trusted producer event types on the chat-originated route", async () => {
+    for (const type of ["review_outcome", "false_green", "missed_check"]) {
+      const response = await POST(request({ ...validBody, type }));
+      expect(response.status).toBe(400);
+    }
+    expect(appendJudgmentEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects rejected_approach without a nonempty bounded reason and blockedTerms", async () => {
+    const base = {
+      ...validBody,
+      type: "rejected_approach",
+      payload: { reason: "Rejected during grilling.", blockedTerms: ["redis"] },
+    };
+
+    for (const payload of [
+      { reason: "", blockedTerms: ["redis"] },
+      { reason: "Rejected during grilling.", blockedTerms: [] },
+      { reason: "Rejected during grilling.", blockedTerms: [""] },
+      { reason: "Rejected during grilling.", blockedTerms: Array.from({ length: 21 }, (_, i) => `term-${i}`) },
+      { reason: "x".repeat(1201), blockedTerms: ["redis"] },
+      { reason: "Rejected during grilling.", blockedTerms: ["x".repeat(161)] },
+    ]) {
+      const response = await POST(request({ ...base, payload }));
+      expect(response.status).toBe(400);
+    }
+    expect(appendJudgmentEvent).not.toHaveBeenCalled();
   });
 
   it("does not write when the repo is outside the resolved workspace", async () => {

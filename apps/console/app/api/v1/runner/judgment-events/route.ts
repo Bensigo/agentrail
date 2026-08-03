@@ -10,18 +10,26 @@ import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 /**
  * POST /api/v1/runner/judgment-events
  *
- * Jace's producer seam for workspace-scoped ledger rows. The caller supplies
- * only the session/repo and already-derived event payload; tenant resolution
- * and actor/source attribution stay server-owned. This first runner producer
- * is intentionally limited to requirement corrections so refusal capture
- * cannot become an unvalidated generic write surface.
+ * Jace's chat/grilling producer seam for workspace-scoped ledger rows. The
+ * caller supplies only the session/repo and already-derived event payload;
+ * tenant resolution and actor/source attribution stay server-owned. This
+ * producer is intentionally limited to chat-originated requirement corrections
+ * and rejected approaches; trusted review_outcome/false_green/missed_check
+ * producers stay on their existing dedicated routes.
  */
+
+const CHAT_EVENT_TYPES = ["requirement_correction", "rejected_approach"] as const;
+const MAX_REASON_LEN = 1200;
+const MAX_BLOCKED_TERMS = 20;
+const MAX_BLOCKED_TERM_LEN = 160;
+
+type ChatJudgmentEventType = (typeof CHAT_EVENT_TYPES)[number];
 
 type JudgmentEventBody = {
   eveSessionId: string;
   repo: string;
   eventKey: string;
-  type: "requirement_correction";
+  type: ChatJudgmentEventType;
   refs: Record<string, unknown>;
   payload: Record<string, unknown>;
 };
@@ -30,13 +38,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
+function boundedNonemptyString(value: unknown, maxLen: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLen;
+}
+
+function validRejectedApproachPayload(payload: Record<string, unknown>): boolean {
+  if (!boundedNonemptyString(payload.reason, MAX_REASON_LEN)) return false;
+  if (!Array.isArray(payload.blockedTerms)) return false;
+  if (payload.blockedTerms.length < 1 || payload.blockedTerms.length > MAX_BLOCKED_TERMS) return false;
+  return payload.blockedTerms.every((term) => boundedNonemptyString(term, MAX_BLOCKED_TERM_LEN));
+}
+
+function validRequirementCorrectionPayload(payload: Record<string, unknown>): boolean {
+  if (Object.keys(payload).length === 0) return false;
+  const reason = payload.reason;
+  return reason === undefined || boundedNonemptyString(reason, MAX_REASON_LEN);
+}
+
+function validPayload(type: ChatJudgmentEventType, payload: Record<string, unknown>): boolean {
+  if (type === "rejected_approach") return validRejectedApproachPayload(payload);
+  return validRequirementCorrectionPayload(payload);
+}
+
+function isChatJudgmentEventType(value: unknown): value is ChatJudgmentEventType {
+  return CHAT_EVENT_TYPES.includes(value as ChatJudgmentEventType);
+}
+
 function parseBody(raw: unknown): JudgmentEventBody | null {
   if (!isRecord(raw)) return null;
   if (
     typeof raw.eveSessionId !== "string" ||
     typeof raw.repo !== "string" ||
     typeof raw.eventKey !== "string" ||
-    raw.type !== "requirement_correction" ||
+    !isChatJudgmentEventType(raw.type) ||
     !isRecord(raw.refs) ||
     !isRecord(raw.payload)
   ) {
@@ -52,6 +86,7 @@ function parseBody(raw: unknown): JudgmentEventBody | null {
   } satisfies JudgmentEventBody;
   if (!body.eveSessionId || !body.repo || !body.eventKey) return null;
   if (body.eventKey.length > 160 || body.repo.length > 200) return null;
+  if (!validPayload(body.type, body.payload)) return null;
   return body;
 }
 
@@ -70,7 +105,10 @@ export async function POST(request: NextRequest) {
   const body = parseBody(await request.json().catch(() => null));
   if (!body) {
     return NextResponse.json(
-      { error: "eveSessionId, repo, eventKey, requirement_correction type, refs, and payload are required" },
+      {
+        error:
+          "eveSessionId, repo, eventKey, chat judgment type, refs, and a valid bounded payload are required",
+      },
       { status: 400 }
     );
   }
@@ -90,7 +128,7 @@ export async function POST(request: NextRequest) {
       refs: body.refs,
       payload: body.payload,
       actorRef: { kind: "jace" },
-      sourceRef: { kind: "create_issue" },
+      sourceRef: { kind: "chat" },
     });
     return NextResponse.json(
       { ok: true, inserted: result.inserted, event: result.event },

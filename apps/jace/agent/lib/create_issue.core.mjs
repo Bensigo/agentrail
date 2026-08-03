@@ -111,6 +111,7 @@ export const GOAL_FILE_RECORDED_PATH = "/api/v1/runner/goals/file-recorded";
 export const JUDGMENT_CONSTRAINTS_PATH = "/api/v1/runner/judgment-constraints/check";
 export const JUDGMENT_EVENTS_PATH = "/api/v1/runner/judgment-events";
 export const JUDGMENT_CONSTRAINTS_MODE_ENV = "AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE";
+export const CHANGE_RECORD_EVENTS_PATH = "/api/v1/runner/change-record/events";
 
 /** @param {string} baseUrl — already trimmed + de-slashed */
 export function buildGoalFileCheckUrl(baseUrl) {
@@ -377,6 +378,63 @@ export async function recordGoalIssueFiled({ goalId, issueExternalId, env = {}, 
     });
   } catch {
     // Belt-and-suspenders: see this function's own "NEVER throws" doc-comment.
+  }
+}
+
+/**
+ * Best-effort: attach the newly-created issue to its canonical Change Record.
+ * The event key is stable for the issue, so retries or duplicate tool calls
+ * cannot append a second intake event. This bookkeeping must never turn a
+ * successful GitHub issue creation into a failed chat tool call.
+ *
+ * @param {{ eveSessionId?: string, repo?: string, issueNumber?: number, url?: string, title?: string, env?: Record<string,string|undefined>, transport?: Function }} args
+ * @returns {Promise<boolean>} true only when the console accepts the event
+ */
+export async function recordChangeRecordIssueIntake({
+  eveSessionId,
+  repo,
+  issueNumber,
+  url,
+  title,
+  env = {},
+  transport = realStampTransport,
+}) {
+  try {
+    const sessionId = String(eveSessionId ?? "").trim();
+    const targetRepo = String(repo ?? "").trim();
+    const number = Number(issueNumber);
+    if (!sessionId || !targetRepo || !Number.isInteger(number) || number <= 0) return false;
+
+    const cfg = resolveConsoleConfig(env);
+    if (!cfg.ok) return false;
+
+    const res = await transport(`${cfg.baseUrl}${CHANGE_RECORD_EVENTS_PATH}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        eveSessionId: sessionId,
+        repo: targetRepo,
+        issueNumber: number,
+        eventKey: `issue:intake:${number}`,
+        stage: "requirement",
+        actor: "jace",
+        state: "open",
+        payloadRef: {
+          kind: "issue_snapshot",
+          issueNumber: number,
+          url: String(url ?? "").trim() || null,
+          title: String(title ?? "").trim(),
+        },
+      }),
+    });
+    const status = Number(res && res.status);
+    return Number.isFinite(status) && status >= 200 && status < 300;
+  } catch {
+    return false;
   }
 }
 
@@ -767,6 +825,7 @@ export async function stampCreatedIssueUrl({
  * @param {Function} [input.goalRecordTransport] - #1289 test-only: inject the post-file bookkeeping record's HTTP transport.
  * @param {Function} [input.constraintCheckTransport] - E2 test-only: inject the judgment-constraint check transport.
  * @param {Function} [input.judgmentEventTransport] - E1 test-only: inject the refusal ledger transport.
+ * @param {Function} [input.changeRecordTransport] - test-only: inject the best-effort Change Record intake transport.
  * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string } | { blocked: true, message: string }>}
  */
 export async function runCreateIssue({
@@ -787,6 +846,7 @@ export async function runCreateIssue({
   goalRecordTransport,
   constraintCheckTransport,
   judgmentEventTransport,
+  changeRecordTransport,
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
@@ -889,6 +949,20 @@ export async function runCreateIssue({
     url: resolveStampUrl(ref),
     env: resolvedEnv,
     transport: stampTransport,
+  });
+
+  // Arc D: issue intake is the first lifecycle event for the same canonical
+  // record later used by planning, review, QA, merge, and production stages.
+  // This is deliberately best-effort: the GitHub issue already exists and
+  // must remain the return value even if the console is temporarily down.
+  await recordChangeRecordIssueIntake({
+    eveSessionId,
+    repo: ref.repo,
+    issueNumber: ref.number,
+    url: resolveStampUrl(ref),
+    title: safeTitle,
+    env: resolvedEnv,
+    transport: changeRecordTransport,
   });
 
   // #1289 (Jace goal loop, adversarial-review fix) — THE POST-FILE

@@ -6,12 +6,16 @@ vi.mock("@agentrail/db-postgres", () => ({
   enqueueReviewJob: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
   getRepositoryByName: vi.fn(),
+  appendChangeRecordEvent: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
 }));
 import { POST } from "./route";
 import {
   enqueueReviewJob,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
 } from "@agentrail/db-postgres";
 
 // --- fixtures ---------------------------------------------------------------
@@ -67,6 +71,9 @@ function prPayload(
     repoFullName?: string;
     installationId?: number;
     omitInstallation?: boolean;
+    merged?: boolean;
+    mergeCommitSha?: string;
+    htmlUrl?: string;
   } = {}
 ): Record<string, unknown> {
   const {
@@ -77,6 +84,9 @@ function prPayload(
     repoFullName = "ada/widgets",
     installationId = 999,
     omitInstallation = false,
+    merged = false,
+    mergeCommitSha = "merge-sha-1",
+    htmlUrl = "https://github.com/ada/widgets/pull/42",
   } = opts;
   return {
     action,
@@ -85,6 +95,9 @@ function prPayload(
       number: prNumber,
       draft,
       head: { sha: headSha },
+      merged,
+      merge_commit_sha: mergeCommitSha,
+      html_url: htmlUrl,
     },
     repository: { full_name: repoFullName },
     ...(omitInstallation ? {} : { installation: { id: installationId } }),
@@ -102,6 +115,8 @@ beforeEach(() => {
     deduped: false,
     superseded: 0,
   } as never);
+  vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
+  vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
 });
 
 afterEach(() => {
@@ -176,6 +191,37 @@ describe("POST /api/v1/webhooks/github-app", () => {
       expect(await res.json()).toEqual({ ok: true, ignored: true });
     }
     expect(enqueueReviewJob).not.toHaveBeenCalled();
+  });
+
+  it("4b. a merged closed PR appends one idempotent merge-stage Change Record event", async () => {
+    const body = JSON.stringify(prPayload({ action: "closed", merged: true }));
+    const res = await POST(makeRequest(body));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, merged: true });
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
+    expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      repo: "ada/widgets",
+      prNumber: 42,
+      headShas: ["abc123def4567890"],
+      mergedSha: "merge-sha-1",
+      state: "merged",
+    });
+    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
+      recordId: "change-1",
+      eventKey: "merge:pr:42:merged",
+      stage: "merge",
+      actor: "github-webhook",
+      payloadRef: {
+        kind: "merge",
+        repo: "ada/widgets",
+        prNumber: 42,
+        url: "https://github.com/ada/widgets/pull/42",
+        mergeCommitSha: "merge-sha-1",
+        outcome: "merged",
+      },
+    });
   });
 
   // ---------------------------------------------------------------------

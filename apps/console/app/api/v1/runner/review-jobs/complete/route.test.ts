@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  appendChangeRecordEvent: vi.fn(),
   completeReviewJob: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
 }));
 // The notify module is mocked wholesale, same convention as
 // runner/result/route.test.ts's `vi.mock("./notify", ...)` — this route's
@@ -14,10 +16,16 @@ vi.mock("../../result/notify", () => ({
 }));
 
 import { POST } from "./route";
-import { completeReviewJob } from "@agentrail/db-postgres";
+import {
+  appendChangeRecordEvent,
+  completeReviewJob,
+  findOrCreateChangeRecord,
+} from "@agentrail/db-postgres";
 import { sendWorkspaceNotification } from "../../result/notify";
 
+const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
+const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
 const mockNotify = vi.mocked(sendWorkspaceNotification);
 
 // Central-secret auth — same idiom as the sibling claim route's tests.
@@ -44,6 +52,30 @@ const POSTED_JOB = {
   skipReason: null,
   createdAt: NOW,
   updatedAt: NOW,
+};
+
+const CHANGE_RECORD = {
+  id: "record-1",
+  workspaceId: "ws-1",
+  repo: "acme/widgets",
+  issueNumber: null,
+  prNumber: 42,
+  headShas: ["a".repeat(40)],
+  mergedSha: null,
+  state: "open",
+  createdAt: NOW,
+  updatedAt: NOW,
+};
+
+const CHANGE_RECORD_EVENT = {
+  id: "event-1",
+  recordId: "record-1",
+  eventKey: "review:posted:job-1",
+  stage: "review",
+  actor: "reviewer-of-record",
+  payloadRef: { kind: "review_job", jobId: "job-1" },
+  at: NOW,
+  createdAt: NOW,
 };
 
 const FAILED_JOB = {
@@ -88,6 +120,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env[ENV_KEY] = SECRET;
   mockComplete.mockResolvedValue(null as never);
+  mockFindOrCreateChangeRecord.mockResolvedValue(CHANGE_RECORD as never);
+  mockAppendChangeRecordEvent.mockResolvedValue({
+    event: CHANGE_RECORD_EVENT,
+    inserted: true,
+  } as never);
   mockNotify.mockResolvedValue(undefined as never);
 });
 
@@ -293,6 +330,67 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       const res = await POST(postReq(VALID_POSTED_BODY));
       expect(res.status).toBe(200);
     });
+
+    it("appends a Change Record review event using the completed job's PR anchor", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      await POST(postReq(VALID_POSTED_BODY));
+
+      expect(mockFindOrCreateChangeRecord).toHaveBeenCalledWith({
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headShas: ["a".repeat(40)],
+      });
+      expect(mockAppendChangeRecordEvent).toHaveBeenCalledWith({
+        recordId: "record-1",
+        eventKey: "review:posted:job-1",
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: {
+          kind: "review_job",
+          jobId: "job-1",
+          repo: "acme/widgets",
+          prNumber: 42,
+          headSha: "a".repeat(40),
+          postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
+          verdict: "approve",
+          evidenceKeys: null,
+        },
+        at: NOW,
+      });
+    });
+
+    it("treats a duplicate Change Record event as an idempotent success", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      mockAppendChangeRecordEvent.mockResolvedValue({
+        event: CHANGE_RECORD_EVENT,
+        inserted: false,
+      } as never);
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+      expect(res.status).toBe(200);
+      expect(mockAppendChangeRecordEvent).toHaveBeenCalledTimes(1);
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips Change Record attachment when the completed job has no PR anchor, without failing completion", async () => {
+      mockComplete.mockResolvedValue({ ...POSTED_JOB, prNumber: null } as never);
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+      expect(res.status).toBe(200);
+      expect(mockFindOrCreateChangeRecord).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps review completion successful when Change Record attachment is unavailable", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      mockAppendChangeRecordEvent.mockRejectedValue(new Error("change-record store down"));
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+      expect(res.status).toBe(200);
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -305,6 +403,8 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
 
       expect(res.status).toBe(200);
       expect(mockNotify).not.toHaveBeenCalled();
+      expect(mockFindOrCreateChangeRecord).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
     });
 
     it("passes the worker's error through to completeReviewJob", async () => {

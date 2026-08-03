@@ -16,6 +16,8 @@ import {
   buildGoalFileCheckUrl,
   buildGoalFileRecordedUrl,
   GOAL_CHECK_INFRA_FAILURE_MESSAGE,
+  recordChangeRecordIssueIntake,
+  CHANGE_RECORD_EVENTS_PATH,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -403,6 +405,83 @@ const APPROVED_RELEARN_RESPONDER = async () => ({
   json: async () => ({ approvalId: "approval-1", status: "approved" }),
 });
 const OK_STAMP_RESPONDER = async () => ({ status: 200, json: async () => ({ ok: true }) });
+
+test("recordChangeRecordIssueIntake: posts a stable requirement event with the issue snapshot", async () => {
+  const transport = fakeTransport(async () => ({ status: 201, json: async () => ({ ok: true }) }));
+
+  const accepted = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    url: "https://github.com/Bensigo/agentrail/issues/1042",
+    title: "Add a health endpoint",
+    env: STAMP_ENV,
+    transport,
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${CHANGE_RECORD_EVENTS_PATH}`,
+  );
+  assert.deepEqual(JSON.parse(transport.calls[0].init.body), {
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    eventKey: "issue:intake:1042",
+    stage: "requirement",
+    actor: "jace",
+    state: "open",
+    payloadRef: {
+      kind: "issue_snapshot",
+      issueNumber: 1042,
+      url: "https://github.com/Bensigo/agentrail/issues/1042",
+      title: "Add a health endpoint",
+    },
+  });
+});
+
+test("recordChangeRecordIssueIntake: missing config or transport failure is an honest best-effort skip", async () => {
+  const skipped = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    env: {},
+    transport: async () => {
+      throw new Error("must not be called without console config");
+    },
+  });
+  assert.equal(skipped, false);
+
+  const failed = await recordChangeRecordIssueIntake({
+    eveSessionId: "eve-session-1",
+    repo: "Bensigo/agentrail",
+    issueNumber: 1042,
+    env: STAMP_ENV,
+    transport: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.equal(failed, false);
+});
+
+test("runCreateIssue: successful GitHub creation is returned when Change Record intake is unavailable", async () => {
+  const changeRecordTransport = fakeTransport(async () => {
+    throw new Error("ETIMEDOUT");
+  });
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    eveSessionId: "eve-session-1",
+    changeRecordTransport,
+  });
+
+  assert.equal(ref.number, 1042);
+  assert.equal(changeRecordTransport.calls.length, 1);
+});
 
 test("buildPublishedStampUrl joins the base url, the approvals path, the approvalId, and /published", () => {
   const url = buildPublishedStampUrl("https://console.example.com", "approval-123");

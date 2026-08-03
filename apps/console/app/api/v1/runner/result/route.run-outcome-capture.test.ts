@@ -31,6 +31,8 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     isBillingEnabled: vi.fn(),
     chargeCompletedTask: vi.fn(),
     usdToCents: actual.usdToCents,
+    appendChangeRecordEvent: vi.fn(),
+    findOrCreateChangeRecord: vi.fn(),
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -58,6 +60,8 @@ import {
   getMergePermission,
   getInstallationToken,
   recordRunOutcome,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
   type RecordRunnerResult,
 } from "@agentrail/db-postgres";
 import {
@@ -124,6 +128,8 @@ beforeEach(() => {
   vi.mocked(reconcileAlignmentBriefs).mockResolvedValue([] as never);
   mockGetRunCosts.mockResolvedValue([]);
   mockRecordRunOutcome.mockResolvedValue(undefined);
+  vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
+  vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 

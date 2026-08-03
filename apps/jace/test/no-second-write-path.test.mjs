@@ -184,6 +184,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
+  "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
   "fetch_evidence_capabilities.ts", // read-only (debugging spec PR #1501, T11 review fix round 1): reads the workspace's EVIDENCE CAPABILITY MAP (which verbs have a connected/credentialed provider) — no params, no anchored investigation needed — over the console token API; no approval, no child_process
   "fetch_investigations.ts", // read-only (debugging spec PR #1501): reads INVESTIGATIONS — the durable record of one production incident (anchor/list/get/search), relays verdict eligibility verbatim — over the console token API; no approval, no child_process
   "fetch_issue.ts", // read-only (QA AC-awareness spec, docs/superpowers/specs/2026-07-29-qa-ac-awareness-design.md): reads ONE GitHub issue (number/title/body/state) over the console token API, to resolve its acceptance criteria before dispatching qa; no approval, no child_process

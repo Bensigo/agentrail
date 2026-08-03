@@ -76,7 +76,9 @@ describe("composeAlignmentBrief", () => {
     });
 
     expect(brief.requirementDecision?.decision).toBe("refuse");
-    expect(brief.requirementDecision?.refusal?.code).toBe("conflicting_acceptance_criteria");
+    if (brief.requirementDecision?.decision === "refuse") {
+      expect(brief.requirementDecision.refusal.code).toBe("conflicting_acceptance_criteria");
+    }
     expect(brief.requirementDecision?.confidence.state).toBe("unknown");
   });
 
@@ -148,7 +150,9 @@ describe("composeChatBornBrief (#1274 PR ②)", () => {
     });
 
     expect(brief.requirementDecision?.decision).toBe("refuse");
-    expect(brief.requirementDecision?.refusal?.cannotEstablish).toContain("without violating");
+    if (brief.requirementDecision?.decision === "refuse") {
+      expect(brief.requirementDecision.refusal.cannotEstablish).toContain("without violating");
+    }
   });
 
   it("estimateUsd is always > 0 for a well-formed input (never a silent 0)", () => {

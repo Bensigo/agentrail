@@ -8,6 +8,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getRepositoryByName: vi.fn(),
   appendChangeRecordEvent: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
+  recordReviewEvent: vi.fn(),
 }));
 import { POST } from "./route";
 import {
@@ -16,6 +17,7 @@ import {
   getRepositoryByName,
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
+  recordReviewEvent,
 } from "@agentrail/db-postgres";
 
 // --- fixtures ---------------------------------------------------------------
@@ -25,6 +27,7 @@ const ENROLL_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 const SECRET = "gh-app-webhook-secret-abc123";
 const ORIGINAL_SECRET = process.env[SECRET_ENV];
 const ORIGINAL_ENROLL = process.env[ENROLL_ENV];
+const DELIVERY_ID = "gh-delivery-1";
 
 const WORKSPACE_ID = "ws-1";
 const WORKSPACE = { workspaceId: WORKSPACE_ID };
@@ -47,11 +50,18 @@ function makeRequest(
     event?: string | null;
     signature?: string | null;
     omitSignatureHeader?: boolean;
+    deliveryId?: string | null;
   } = {}
 ): NextRequest {
-  const { event = "pull_request", signature, omitSignatureHeader = false } = opts;
+  const {
+    event = "pull_request",
+    signature,
+    omitSignatureHeader = false,
+    deliveryId = DELIVERY_ID,
+  } = opts;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (event !== null) headers["x-github-event"] = event;
+  if (deliveryId !== null) headers["x-github-delivery"] = deliveryId;
   if (!omitSignatureHeader) {
     headers["x-hub-signature-256"] = signature ?? sign(body, SECRET);
   }
@@ -117,6 +127,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
   vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
+  vi.mocked(recordReviewEvent).mockResolvedValue({ recorded: true, eventId: "review-event-1" } as never);
 });
 
 afterEach(() => {
@@ -200,6 +211,15 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, merged: true });
     expect(enqueueReviewJob).not.toHaveBeenCalled();
+    expect(recordReviewEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        repo: "ada/widgets",
+        prNumber: 42,
+        deliveryId: DELIVERY_ID,
+        eventType: "merged",
+      })
+    );
     expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       repo: "ada/widgets",
@@ -355,6 +375,16 @@ describe("POST /api/v1/webhooks/github-app", () => {
       headSha: "deadbeef1234",
       event: "opened",
     });
+    expect(recordReviewEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        repo: "ada/widgets",
+        prNumber: 7,
+        deliveryId: DELIVERY_ID,
+        eventType: "opened",
+        headSha: "deadbeef1234",
+      })
+    );
     expect(await res.json()).toEqual({
       ok: true,
       enqueued: true,
@@ -403,6 +433,48 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(enqueueReviewJob).toHaveBeenCalledWith(
       expect.objectContaining({ event: "synchronize" })
     );
+    expect(recordReviewEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "head_updated", deliveryId: DELIVERY_ID })
+    );
+  });
+
+  it("9e. pull_request_review submitted records the review ledger and stops after acking", async () => {
+    const payload = JSON.stringify({
+      action: "submitted",
+      review: {
+        state: "approved",
+        submitted_at: "2026-08-01T11:00:00Z",
+        user: { type: "User" },
+      },
+      pull_request: {
+        number: 42,
+        draft: false,
+        head: { sha: "abc123def4567890" },
+        created_at: "2026-08-01T09:00:00Z",
+        additions: 1,
+        deletions: 2,
+        changed_files: 3,
+      },
+      repository: { full_name: "ada/widgets" },
+      installation: { id: 999 },
+      sender: { type: "User" },
+    });
+    const res = await POST(makeRequest(payload, { event: "pull_request_review" }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, recorded: true });
+    expect(recordReviewEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        repo: "ada/widgets",
+        prNumber: 42,
+        deliveryId: DELIVERY_ID,
+        eventType: "review_submitted",
+        reviewState: "approved",
+        headSha: "abc123def4567890",
+      })
+    );
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------

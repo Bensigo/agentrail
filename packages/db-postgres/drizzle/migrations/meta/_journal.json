@@ -491,6 +491,13 @@
       "when": 1787500000000,
       "tag": "0070_change_records",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1787600000000,
+      "tag": "0071_judgment_events",
+      "breakpoints": true
     }
   ]
 }

@@ -3155,3 +3155,16 @@ export {
   type AppendChangeRecordEventInput,
   type ChangeRecordTimeline,
 } from "./change_records.js";
+
+// Arc E Judgment Ledger storage slice (spec
+// docs/superpowers/specs/2026-07-31-judgment-ledger-design.md): typed,
+// workspace/repo-scoped, append-only judgment events with deterministic
+// idempotency keys and tenant-scoped reads. Consumers, calibration, routes, and
+// UI land in later slices.
+export {
+  judgmentEventId,
+  appendJudgmentEvent,
+  listJudgmentEvents,
+  type AppendJudgmentEventInput,
+  type ListJudgmentEventsInput,
+} from "./judgment_events.js";

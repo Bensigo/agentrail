@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from agentrail.dependencies.evidence import dependency_gate_input
 from agentrail.guardrails.base import Verdict
 from agentrail.guardrails.registry import register
 
@@ -308,6 +309,7 @@ def evaluate_objective(
     added_lines: Optional[Sequence[str]] = None,
     deleted_files: Optional[Sequence[str]] = None,
     references: Optional[Mapping[str, List[str]]] = None,
+    dependency_evidence: Optional[Mapping[str, Any]] = None,
 ) -> ObjectiveVerdict:
     """Evaluate the unified Objective Gate (the single definition of "done").
 
@@ -326,7 +328,9 @@ def evaluate_objective(
     3. **Acceptance-criteria coverage** (sync harness): satisfied, else fail.
     4. **Red-Green Proof seam** (#772): when required and invalid → fail.
     5. **Independent Verification seam** (#782): when required and rejected → fail.
-    6. **Deterministic security** (async harness): committed-secret scan and
+    6. **Dependency evidence** (pnpm upgrade harness): release, usage, target
+       lock, peer, and advisory evidence must be complete before continuation.
+    7. **Deterministic security** (async harness): committed-secret scan and
        deleted-file-still-referenced; any hit → fail.
 
     Returns an :class:`ObjectiveVerdict`. ``state == "pass"`` is the single
@@ -427,7 +431,16 @@ def evaluate_objective(
         if not accepted:
             failed_reasons.append("independent verification rejected")
 
-    # 6. Deterministic security (async harness): committed-secret scan and
+    # 6. Dependency upgrades are not allowed to proceed on an advisory-only
+    # response. The evidence artifact is produced before implementation and its
+    # serialized decision is the gate input (issue #1580).
+    if dependency_evidence is not None:
+        dependency_passed, dependency_detail = dependency_gate_input(dependency_evidence)
+        evidence.append(Evidence("dependency-evidence", dependency_passed, dependency_detail))
+        if not dependency_passed:
+            failed_reasons.append(f"dependency evidence: {dependency_detail}")
+
+    # 7. Deterministic security (async harness): committed-secret scan and
     #    deleted-file-still-referenced. The async gate ran these only after CI was
     #    clean (step 1 already returned on a CI fail/pending), preserving order.
     security_reasons: List[str] = []
@@ -506,6 +519,7 @@ class ObjectiveGate:
             added_lines=kwargs.get("added_lines"),  # type: ignore[arg-type]
             deleted_files=kwargs.get("deleted_files"),  # type: ignore[arg-type]
             references=kwargs.get("references"),  # type: ignore[arg-type]
+            dependency_evidence=kwargs.get("dependency_evidence"),  # type: ignore[arg-type]
         )
         if verdict.state == "pass":
             return Verdict.passing()

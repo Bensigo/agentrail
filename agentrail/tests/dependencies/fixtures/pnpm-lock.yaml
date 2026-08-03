@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+importers:
+
+  .:
+    dependencies:
+      lodash:
+        specifier: 4.17.21
+        version: 4.17.21
+      react:
+        specifier: ^18.2.0
+        version: 18.2.0
+    devDependencies:
+      vitest:
+        specifier: ~1.6.0
+        version: 1.6.0
+
+packages: {}
+
+snapshots: {}

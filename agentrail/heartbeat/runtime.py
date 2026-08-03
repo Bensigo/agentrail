@@ -252,6 +252,7 @@ class HeartbeatRuntime:
         config: RuntimeConfig,
         detect_capabilities: Callable[[], FrozenSet[Capability]] = detect_capabilities,
         merge_pr: Optional[MergePr] = None,
+        dependency_watch_runtime=None,
     ) -> None:
         # One loop can now poll SEVERAL intake sources (GitHub + Linear, issue
         # #1036). ``connector=`` (single) stays for back-compat — every existing
@@ -277,6 +278,7 @@ class HeartbeatRuntime:
         self._config = config
         self._detect = detect_capabilities
         self._merge_pr = merge_pr
+        self._dependency_watch_runtime = dependency_watch_runtime
 
     @staticmethod
     def _source_of(connector: Connector) -> str:
@@ -308,6 +310,11 @@ class HeartbeatRuntime:
             return CycleReport.disabled()
 
         report = CycleReport()
+
+        # Dependency watches are a separate observation lane. They run before
+        # issue intake and never call QueueStore.enqueue or the sandbox.
+        if self._dependency_watch_runtime is not None:
+            self._dependency_watch_runtime.run_once()
 
         # (b) poll every connector + enqueue with dedupe on external_id. We key the
         # polled IssueRef by the *minted entry's number* so the dispatch loop can

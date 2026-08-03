@@ -1,9 +1,131 @@
 import {
   confirmAlignmentBrief,
+  decideDependencyUpgradeContract,
   denyAlignmentBrief,
+  getDependencyUpgradeContractById,
+  recordDependencyUpgradeContractEvent,
+  setDependencyUpgradeContractState,
+  enqueueGithubIssue,
+  stampPublishedIssueUrl,
   type JaceApprovalRow,
 } from "@agentrail/db-postgres";
 import { extractConfirmedBudgetAndModel } from "./alignment-brief";
+import { publishDependencyUpgradeIssue } from "./dependency-upgrade-publisher";
+
+export type ApprovalActor = {
+  actorType: string;
+  actorId: string;
+};
+
+function actorForApproval(approval: JaceApprovalRow, actor?: ApprovalActor): ApprovalActor {
+  return (
+    actor ??
+    (approval.chatIdentityId
+      ? { actorType: "chat_identity", actorId: approval.chatIdentityId }
+      : { actorType: "approval", actorId: approval.id })
+  );
+}
+
+async function applyDependencyUpgradeContractDecision(
+  approval: JaceApprovalRow,
+  decision: "approved" | "denied",
+  actor?: ApprovalActor
+): Promise<void> {
+  const rawContractId = approval.dependencyContractId;
+  const payloadContractId = approval.toolInput["contractId"];
+  if (
+    typeof rawContractId !== "string" ||
+    !rawContractId ||
+    (payloadContractId !== undefined && payloadContractId !== rawContractId)
+  ) {
+    console.error(`[approval-decision] dependency contract approval ${approval.id} has no matching persisted contract binding`);
+    return;
+  }
+  let contract = await getDependencyUpgradeContractById(rawContractId);
+  if (!contract || contract.workspaceId !== approval.workspaceId) {
+    console.error(`[approval-decision] dependency contract ${rawContractId} is missing or cross-workspace`);
+    return;
+  }
+  const resolvedActor = actorForApproval(approval, actor);
+
+  const resolved = await decideDependencyUpgradeContract({
+    workspaceId: contract.workspaceId,
+    contractId: contract.id,
+    approvalId: approval.id,
+    decision,
+    actor: resolvedActor,
+  });
+  if (decision === "denied" || resolved.status !== "approved" || !resolved.contract) return;
+  contract = resolved.contract;
+
+  const candidate = {
+    package: contract.packageName,
+    dependency_kind: contract.dependencyKind,
+    specifier: contract.specifier,
+    current_version: contract.currentVersion,
+    target_version: contract.targetVersion,
+    manifest_path: contract.manifestPath,
+    lockfile_path: contract.lockfilePath,
+    baseline_sha: contract.baselineSha,
+    fingerprint: contract.candidateFingerprint,
+  };
+  try {
+    const published = await publishDependencyUpgradeIssue({
+      workspaceId: contract.workspaceId,
+      repositoryId: contract.repositoryId,
+      approvalId: approval.id,
+      contractId: contract.id,
+      candidate,
+      proposal: contract.proposal as Parameters<typeof publishDependencyUpgradeIssue>[0]["proposal"],
+    });
+    const stamped = await stampPublishedIssueUrl(approval.id, published.url);
+    if (stamped === "conflict" || stamped === "not_approved") {
+      throw new Error(`approval URL stamp failed: ${stamped}`);
+    }
+    await enqueueGithubIssue({
+      workspaceId: contract.workspaceId,
+      repoFullName: published.repoFullName,
+      number: published.number,
+      title: (contract.proposal as Record<string, unknown>).title as string,
+      body: published.body,
+    });
+    await setDependencyUpgradeContractState({
+      workspaceId: contract.workspaceId,
+      contractId: contract.id,
+      state: "published",
+      issueUrl: published.url,
+      issueNumber: published.number,
+      lastError: null,
+    });
+    await recordDependencyUpgradeContractEvent({
+      workspaceId: contract.workspaceId,
+      contractId: contract.id,
+      candidateFingerprint: contract.candidateFingerprint,
+      actor: resolvedActor,
+      decision: "published",
+      approvalId: approval.id,
+      details: { issueUrl: published.url, issueNumber: published.number },
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "GitHub issue publication failed";
+    await setDependencyUpgradeContractState({
+      workspaceId: contract.workspaceId,
+      contractId: contract.id,
+      state: "needs-human-decision",
+      lastError: reason,
+    });
+    await recordDependencyUpgradeContractEvent({
+      workspaceId: contract.workspaceId,
+      contractId: contract.id,
+      candidateFingerprint: contract.candidateFingerprint,
+      actor: resolvedActor,
+      decision: "failed",
+      approvalId: approval.id,
+      details: { reason },
+    });
+    console.error(`[approval-decision] dependency contract ${contract.id} publication failed:`, error);
+  }
+}
 
 /**
  * The #1274 alignment-gate confirm/deny side-effect (#1276 PR ②: promoted out
@@ -43,8 +165,20 @@ import { extractConfirmedBudgetAndModel } from "./alignment-brief";
  */
 export async function applyAlignmentDecision(
   approval: JaceApprovalRow,
-  decision: "approved" | "denied"
+  decision: "approved" | "denied",
+  actor?: ApprovalActor
 ): Promise<void> {
+  // The runner proposal boundary historically stored this as a `create_issue`
+  // approval with the server-owned dependencyContractId marker. Treat that
+  // marker as part of the dedicated dependency seam so an approved candidate
+  // cannot resolve successfully and then silently skip issue publication.
+  if (
+    approval.toolName === "dependency_upgrade_contract" ||
+    typeof approval.dependencyContractId === "string"
+  ) {
+    await applyDependencyUpgradeContractDecision(approval, decision, actor);
+    return;
+  }
   if (!approval.queueEntryId) return;
 
   if (decision === "denied") {

@@ -53,6 +53,7 @@ def evaluate(
     ac_coverage_detail: Optional[AcCoverageDetail] = None,
     red_green_evidence: Optional[Mapping[str, Any]] = None,
     verification_evidence: Optional[Mapping[str, Any]] = None,
+    dependency_evidence: Optional[Mapping[str, Any]] = None,
 ) -> GateResult:
     """Evaluate the Objective Gate for the sync (``run``) harness.
 
@@ -73,4 +74,5 @@ def evaluate(
         ac_coverage_detail=ac_coverage_detail,
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
+        dependency_evidence=dependency_evidence,
     )

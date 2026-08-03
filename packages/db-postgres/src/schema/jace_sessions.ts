@@ -3,6 +3,7 @@ import {
   uuid,
   text,
   jsonb,
+  boolean,
   timestamp,
   unique,
   uniqueIndex,
@@ -15,6 +16,7 @@ import { chatIdentities } from "./chat_identities.js";
 import { queueEntries } from "./queue_entries.js";
 import { briefs } from "./briefs.js";
 import { investigations } from "./investigations.js";
+import { dependencyUpgradeContracts } from "./dependency_upgrade_contracts.js";
 
 /**
  * Jace session map + pending approvals (spec §4).
@@ -254,6 +256,31 @@ export const jaceApprovals = pgTable(
     // queue entry must never cascade-delete the approval audit trail.
     queueEntryId: uuid("queue_entry_id").references(() => queueEntries.id, {
       onDelete: "set null",
+    }),
+    // Candidate-to-contract approvals reuse the one approval seam but do not
+    // carry a queue entry until the human decision has created the issue.
+    dependencyContractId: uuid("dependency_contract_id").references(
+      () => dependencyUpgradeContracts.id,
+      { onDelete: "set null" }
+    ),
+    // Requirement-level intake evidence (#1583). These columns denormalize
+    // the server-computed decision from tool_input so reporting does not have
+    // to trust or reinterpret model-authored JSON. NULL on old approvals means
+    // this decision layer did not exist when they were made.
+    requirementDecision: text("requirement_decision"), // accept|refuse
+    requirementTaskFamily: text("requirement_task_family"),
+    requirementRefusalCode: text("requirement_refusal_code"),
+    requirementConfidence: jsonb("requirement_confidence").$type<{
+      state: "unknown";
+      basis: string[];
+    } | null>(),
+    // pending = awaiting the human's answer; accepted = an ordinary approval;
+    // waived = an explicit approval of a refusal; denied/revised are terminal
+    // audit markers for the human's other recovery paths.
+    requirementStatus: text("requirement_status"),
+    requirementOverride: boolean("requirement_override").notNull().default(false),
+    requirementOverrideAt: timestamp("requirement_override_at", {
+      withTimezone: true,
     }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

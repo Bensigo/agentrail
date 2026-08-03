@@ -12,6 +12,7 @@ import {
   PLAYWRIGHT_READONLY_TOOLS,
   PLAYWRIGHT_FORBIDDEN_TOOLS,
   resolvePlaywrightUrl,
+  resolveContext7Url,
   resolveContext7Headers,
   resolveResearchSources,
 } from "../agent/subagents/researcher/lib/connections.core.mjs";
@@ -52,6 +53,17 @@ test("Context7 headers carry the API key only when set (public tier otherwise)",
   assert.deepEqual(resolveContext7Headers({ CONTEXT7_API_KEY: "  sk-ctx7  " }), {
     CONTEXT7_API_KEY: "sk-ctx7",
   });
+});
+
+test("Context7 can consume a broker-injected endpoint and bearer access token", () => {
+  assert.equal(
+    resolveContext7Url({ JACE_MCP_CONTEXT7_URL: " https://broker.test/context7 " }),
+    "https://broker.test/context7",
+  );
+  assert.deepEqual(
+    resolveContext7Headers({ JACE_MCP_CONTEXT7_ACCESS_TOKEN: " access-token " }),
+    { Authorization: "Bearer access-token" },
+  );
 });
 
 // ---------------------------------------------------------------------------

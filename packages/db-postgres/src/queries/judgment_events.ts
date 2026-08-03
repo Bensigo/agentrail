@@ -145,6 +145,78 @@ export type ListJudgmentEventsInput = {
   order?: "asc" | "desc";
 };
 
+export const JUDGMENT_CALIBRATION_EVENT_TYPES = [
+  "review_outcome",
+  "false_green",
+  "missed_check",
+  "rejected_approach",
+] as const;
+
+export type JudgmentCalibrationEventType =
+  (typeof JUDGMENT_CALIBRATION_EVENT_TYPES)[number];
+
+export type JudgmentCalibrationSummary = {
+  workspaceId: string;
+  repo: string;
+  from: string | null;
+  to: string | null;
+  totalEvents: number;
+  counts: Record<JudgmentCalibrationEventType, number>;
+};
+
+export type GetJudgmentCalibrationSummaryInput = {
+  workspaceId: string;
+  repo: string;
+  from?: Date | null;
+  to?: Date | null;
+};
+
+function emptyJudgmentCalibrationCounts(): Record<JudgmentCalibrationEventType, number> {
+  return {
+    review_outcome: 0,
+    false_green: 0,
+    missed_check: 0,
+    rejected_approach: 0,
+  };
+}
+
+export async function getJudgmentCalibrationSummary(
+  input: GetJudgmentCalibrationSummaryInput
+): Promise<JudgmentCalibrationSummary> {
+  const fromIso = input.from?.toISOString() ?? null;
+  const toIso = input.to?.toISOString() ?? null;
+  const rows = Array.from(
+    await db.execute(sql`
+      SELECT
+        type,
+        COUNT(*)::int AS count
+      FROM judgment_events
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND type IN ('review_outcome', 'false_green', 'missed_check', 'rejected_approach')
+        AND (${fromIso}::timestamptz IS NULL OR occurred_at >= ${fromIso}::timestamptz)
+        AND (${toIso}::timestamptz IS NULL OR occurred_at < ${toIso}::timestamptz)
+      GROUP BY type
+    `)
+  ) as Array<{ type: JudgmentCalibrationEventType; count: number }>;
+
+  const counts = emptyJudgmentCalibrationCounts();
+  for (const row of rows) {
+    if (JUDGMENT_CALIBRATION_EVENT_TYPES.includes(row.type)) {
+      counts[row.type] = Number(row.count ?? 0);
+    }
+  }
+
+  return {
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    from: fromIso,
+    to: toIso,
+    totalEvents: Object.values(counts).reduce((sum, count) => sum + count, 0),
+    counts,
+  };
+}
+
 export type JudgmentConstraint = {
   eventId: string;
   eventKey: string;
@@ -166,7 +238,7 @@ export function parseJudgmentConstraint(event: JudgmentEventRow): JudgmentConstr
     new Set(
       rawTerms
         .filter((term): term is string => typeof term === "string")
-        .map((term) => term.trim().toLocaleLowerCase())
+        .map((term) => term.trim().toLowerCase())
         .filter((term) => term.length >= 3)
     )
   );
@@ -200,7 +272,7 @@ export function evaluateJudgmentConstraints(input: {
   proposalText: string;
   constraints: readonly JudgmentConstraint[];
 }): { allowed: boolean; blocks: JudgmentConstraintMatch[]; warnings: string[] } {
-  const proposal = input.proposalText.trim().toLocaleLowerCase();
+  const proposal = input.proposalText.trim().toLowerCase();
   const blocks = input.constraints
     .filter((constraint) => constraint.terms.every((term) => proposal.includes(term)))
     .map((constraint) => ({ ...constraint, matched: true as const }));

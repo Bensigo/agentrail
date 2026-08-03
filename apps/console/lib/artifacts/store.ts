@@ -39,6 +39,10 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
  *   - `S3_ACCESS_KEY`  / `S3_SECRET_KEY` — static credentials.
  *   - `S3_BUCKET`      — e.g. `agentrail-artifacts` (the dev-compose bucket,
  *                        pre-created by the `minio-init` service).
+ *   - `S3_FORCE_PATH_STYLE` — OPTIONAL, defaults to `1` for MinIO/dev
+ *                        compatibility; set to `0` for providers that require
+ *                        virtual-hosted bucket addressing (such as Railway
+ *                        Buckets).
  *   - `S3_REGION`      — OPTIONAL, defaults to `"us-east-1"`. S3-compatible
  *                        stores like minio have no real region concept, but
  *                        the AWS SDK v3 client requires SOME region string to
@@ -46,15 +50,11 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
  *                        placeholder for those targets, not a validated AWS
  *                        region.
  *
- * FORCE PATH STYLE: always `true`. Minio (dev, and — per the design doc's
- * rollout note — possibly prod too, via a Railway minio service) requires
- * path-style requests (`http://host:port/<bucket>/<key>`); virtual-hosted
- * style (`http://<bucket>.host/<key>`) needs real DNS-level bucket-subdomain
- * support minio doesn't provide. Since `S3_ENDPOINT` is one of the four
- * always-required vars, this client is ALWAYS talking to an explicit,
- * S3-compatible endpoint rather than bare AWS `s3.amazonaws.com` — path
- * style is the safe, uniform choice for that shape of target across every
- * deployment this module currently supports.
+ * FORCE PATH STYLE: defaults to `true` for MinIO (dev), which requires
+ * path-style requests (`http://host:port/<bucket>/<key>`). Set
+ * `S3_FORCE_PATH_STYLE=0` for S3-compatible providers whose credentials are
+ * issued for virtual-hosted bucket addressing; Railway Buckets rejects the
+ * path-style signature even though its endpoint is otherwise S3-compatible.
  */
 
 const S3_ENDPOINT_VAR = "S3_ENDPOINT";
@@ -62,6 +62,7 @@ const S3_ACCESS_KEY_VAR = "S3_ACCESS_KEY";
 const S3_SECRET_KEY_VAR = "S3_SECRET_KEY";
 const S3_BUCKET_VAR = "S3_BUCKET";
 const S3_REGION_VAR = "S3_REGION";
+const S3_FORCE_PATH_STYLE_VAR = "S3_FORCE_PATH_STYLE";
 const DEFAULT_REGION = "us-east-1";
 
 /** Presigned GET URL default TTL: 30 days, in seconds — pinned by the task brief. */
@@ -126,6 +127,7 @@ interface ResolvedS3Config {
   secretAccessKey: string;
   bucket: string;
   region: string;
+  forcePathStyle: boolean;
 }
 
 /**
@@ -161,6 +163,7 @@ function resolveS3Config(): ResolvedS3Config {
     secretAccessKey: secretAccessKey!,
     bucket: bucket!,
     region: process.env[S3_REGION_VAR] || DEFAULT_REGION,
+    forcePathStyle: process.env[S3_FORCE_PATH_STYLE_VAR] !== "0",
   };
 }
 
@@ -179,8 +182,9 @@ function resolveS3(): { client: S3Client; bucket: string } {
   const client = new S3Client({
     endpoint: config.endpoint,
     region: config.region,
-    // See the module doc-comment, "FORCE PATH STYLE".
-    forcePathStyle: true,
+    // See the module doc-comment, "FORCE PATH STYLE". Defaults to MinIO's
+    // path style; Railway Buckets sets the opt-out explicitly in deployment.
+    forcePathStyle: config.forcePathStyle,
     credentials: {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,

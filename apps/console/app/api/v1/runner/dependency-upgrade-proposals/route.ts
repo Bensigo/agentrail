@@ -30,7 +30,29 @@ type ProposalRequest = {
   evidence?: DependencyUpgradeEvidenceInput;
 };
 
-function parseBody(value: unknown): ProposalRequest | null {
+type ParsedProposalRequest = ProposalRequest & {
+  evidenceIssues: string[];
+};
+
+function parseEvidenceList(
+  field: "releaseEvidence" | "usageScope" | "baselineTests" | "targetTests",
+  value: unknown
+): { values?: string[]; issues: string[] } {
+  if (value === undefined) return { values: undefined, issues: [] };
+  if (!Array.isArray(value)) return { issues: [`${field} is not a supported evidence list`] };
+  const values: string[] = [];
+  const issues: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.trim()) {
+      values.push(item);
+    } else {
+      issues.push(`${field} contains unsupported evidence`);
+    }
+  }
+  return { values: values.length ? values : undefined, issues };
+}
+
+function parseBody(value: unknown): ParsedProposalRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
   if (
@@ -44,19 +66,42 @@ function parseBody(value: unknown): ProposalRequest | null {
   const rawEvidence = body.evidence && typeof body.evidence === "object" && !Array.isArray(body.evidence)
     ? body.evidence as Record<string, unknown>
     : undefined;
-  const strings = (value: unknown): string[] | undefined =>
-    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+  if (typeof body.evidence !== "undefined" && !rawEvidence) {
+    return {
+      workspaceId: body.workspaceId,
+      watchId: body.watchId,
+      candidateFingerprint: body.candidateFingerprint,
+      evidence: undefined,
+      evidenceIssues: ["evidence payload is not a supported evidence object"],
+    };
+  }
+  const releaseEvidence = parseEvidenceList("releaseEvidence", rawEvidence?.releaseEvidence);
+  const usageScope = parseEvidenceList("usageScope", rawEvidence?.usageScope);
+  const baselineTests = parseEvidenceList("baselineTests", rawEvidence?.baselineTests);
+  const targetTests = parseEvidenceList("targetTests", rawEvidence?.targetTests);
+  const evidenceIssues = [
+    ...releaseEvidence.issues,
+    ...usageScope.issues,
+    ...baselineTests.issues,
+    ...targetTests.issues,
+  ];
   const evidence: DependencyUpgradeEvidenceInput | undefined = rawEvidence
     ? {
-        releaseEvidence: strings(rawEvidence.releaseEvidence),
-        usageScope: strings(rawEvidence.usageScope),
+        releaseEvidence: releaseEvidence.values,
+        usageScope: usageScope.values,
         transitiveCompatibility: typeof rawEvidence.transitiveCompatibility === "string" ? rawEvidence.transitiveCompatibility : undefined,
         security: typeof rawEvidence.security === "string" ? rawEvidence.security : undefined,
-        baselineTests: strings(rawEvidence.baselineTests),
-        targetTests: strings(rawEvidence.targetTests),
+        baselineTests: baselineTests.values,
+        targetTests: targetTests.values,
       }
     : undefined;
-  return { workspaceId: body.workspaceId, watchId: body.watchId, candidateFingerprint: body.candidateFingerprint, evidence };
+  if (rawEvidence && typeof rawEvidence.transitiveCompatibility !== "undefined" && typeof rawEvidence.transitiveCompatibility !== "string") {
+    evidenceIssues.push("transitiveCompatibility is not a supported evidence value");
+  }
+  if (rawEvidence && typeof rawEvidence.security !== "undefined" && typeof rawEvidence.security !== "string") {
+    evidenceIssues.push("security is not a supported evidence value");
+  }
+  return { workspaceId: body.workspaceId, watchId: body.watchId, candidateFingerprint: body.candidateFingerprint, evidence, evidenceIssues };
 }
 
 /**
@@ -82,12 +127,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Candidate fingerprint is invalid" }, { status: 409 });
   }
 
-  const proposal = buildDependencyUpgradeProposal(observed.candidate, body.evidence);
+  const proposal = buildDependencyUpgradeProposal(observed.candidate, body.evidence, {
+    observationKey: observed.observationKey,
+    evidenceIssues: body.evidenceIssues,
+  });
   const state = dependencyUpgradeApprovalReady(proposal) ? "proposed" : "needs-human-decision";
   let stored = await createOrGetDependencyUpgradeContract({
     workspaceId: body.workspaceId,
     repositoryId: observed.repositoryId,
     watchId: observed.watchId,
+    observationKey: observed.observationKey,
     candidate: observed.candidate,
     proposal: proposal as unknown as Record<string, unknown>,
     state,
@@ -148,6 +197,7 @@ export async function POST(request: NextRequest) {
       actor: { actorType: "system", actorId: "jace" },
       decision: "approval_requested",
       approvalId: recorded.approval.id,
+      details: { observationKey: observed.observationKey },
     });
   }
 

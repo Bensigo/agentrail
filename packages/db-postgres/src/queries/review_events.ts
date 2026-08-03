@@ -10,8 +10,10 @@ import type {
 } from "../schema/review_events.js";
 import {
   computeReviewMetrics,
+  compareReviewMetrics,
   type ReviewMetricEvent,
   type ReviewMetricWindow,
+  type ReviewMetricComparison,
   type ReviewMetrics,
 } from "../review_metrics.js";
 
@@ -104,6 +106,21 @@ export type ReviewMetricsQuery = {
   observedUntil?: Date;
 };
 
+export type ReviewMetricsReportQuery = ReviewMetricsQuery & {
+  taskFamily: string;
+  baselineFrom?: Date;
+  baselineTo?: Date;
+  baselineObservedUntil?: Date;
+};
+
+export type ReviewMetricsReport = {
+  workspaceId: string;
+  taskFamily: string;
+  current: ReviewMetrics;
+  baseline: ReviewMetrics | null;
+  comparison: ReviewMetricComparison | null;
+};
+
 /** Read the event ledger and compute the same pure metric definitions for all task families. */
 export async function getReviewMetrics(
   input: ReviewMetricsQuery
@@ -127,4 +144,58 @@ export async function getReviewMetrics(
   return computeReviewMetrics(rows as ReviewMetricEvent[], window);
 }
 
-export type { ReviewEventRow, ReviewEventType, ReviewMetricEvent, ReviewMetrics };
+/**
+ * Read a dated task-family report and, when requested, compare it against a
+ * second dated baseline window. This is the report seam the console route can
+ * expose without inventing its own metric math.
+ */
+export async function getReviewMetricsReport(
+  input: ReviewMetricsReportQuery
+): Promise<ReviewMetricsReport | null> {
+  if (input.to <= input.from) {
+    throw new Error("review metrics require a non-empty date range");
+  }
+  if ((input.baselineFrom && !input.baselineTo) || (!input.baselineFrom && input.baselineTo)) {
+    throw new Error("baseline review metrics require both baselineFrom and baselineTo");
+  }
+  if (input.baselineFrom && input.baselineTo && input.baselineTo <= input.baselineFrom) {
+    throw new Error("baseline review metrics require a non-empty date range");
+  }
+
+  const [currentMetrics, baselineMetrics] = await Promise.all([
+    getReviewMetrics({
+      workspaceId: input.workspaceId,
+      from: input.from,
+      to: input.to,
+      observedUntil: input.observedUntil,
+    }),
+    input.baselineFrom && input.baselineTo
+      ? getReviewMetrics({
+          workspaceId: input.workspaceId,
+          from: input.baselineFrom,
+          to: input.baselineTo,
+          observedUntil: input.baselineObservedUntil ?? input.baselineTo,
+        })
+      : Promise.resolve([] as ReviewMetrics[]),
+  ]);
+
+  const current = currentMetrics.find((metric) => metric.taskFamily === input.taskFamily) ?? null;
+  if (!current) return null;
+
+  const baseline = baselineMetrics.find((metric) => metric.taskFamily === input.taskFamily) ?? null;
+  return {
+    workspaceId: input.workspaceId,
+    taskFamily: input.taskFamily,
+    current,
+    baseline,
+    comparison: baseline ? compareReviewMetrics(current, baseline) : null,
+  };
+}
+
+export type {
+  ReviewEventRow,
+  ReviewEventType,
+  ReviewMetricEvent,
+  ReviewMetrics,
+  ReviewMetricComparison,
+};

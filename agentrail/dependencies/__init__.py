@@ -65,7 +65,6 @@ from agentrail.dependencies.manager import (
     UnsupportedDetection,
     detect_dependency_manager,
 )
-
 from agentrail.dependencies.publication import (
     DependencyPublicationDecision,
     build_dependency_pr_body,

@@ -69,6 +69,19 @@ describe("composeAlignmentBrief", () => {
     expect(brief.estimateUsd).toBeGreaterThan(0);
   });
 
+  it("attaches a typed requirement decision so the approval seam can audit the intake", () => {
+    const brief = composeAlignmentBrief({
+      ...BASE,
+      body: "## Acceptance criteria\n- [ ] must enable caching\n- [ ] must disable caching\n",
+    });
+
+    expect(brief.requirementDecision?.decision).toBe("refuse");
+    if (brief.requirementDecision?.decision === "refuse") {
+      expect(brief.requirementDecision.refusal.code).toBe("conflicting_acceptance_criteria");
+    }
+    expect(brief.requirementDecision?.confidence.state).toBe("unknown");
+  });
+
   it("matches estimateBrief's own output exactly for the same input (no drift between the two)", () => {
     const brief = composeAlignmentBrief(BASE);
     const directEstimate = estimateBrief({
@@ -127,6 +140,19 @@ describe("composeChatBornBrief (#1274 PR ②)", () => {
     expect(brief).not.toHaveProperty("repoFullName");
     expect(brief).not.toHaveProperty("issueNumber");
     expect(brief).not.toHaveProperty("issueUrl");
+  });
+
+  it("threads the same typed requirement decision into the chat-born brief for recording and rendering", () => {
+    const brief = composeChatBornBrief({
+      title: "Add dark mode toggle",
+      whatToBuild: "A settings toggle that persists across reload.",
+      acceptanceCriteria: ["must enable caching", "must disable caching"],
+    });
+
+    expect(brief.requirementDecision?.decision).toBe("refuse");
+    if (brief.requirementDecision?.decision === "refuse") {
+      expect(brief.requirementDecision.refusal.cannotEstablish).toContain("without violating");
+    }
   });
 
   it("estimateUsd is always > 0 for a well-formed input (never a silent 0)", () => {

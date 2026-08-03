@@ -102,9 +102,9 @@ export const dependencyWatchObservations = pgTable(
       .$type<Record<string, string>>()
       .notNull()
       .default({}),
-    // Candidate fingerprints and unchanged snapshots use the same key so
-    // retries are idempotent even when the detector returns no candidate.
+    // Candidate fingerprint is stored separately from the observation key.
     observationKey: text("observation_key").notNull(),
+    candidateFingerprint: text("candidate_fingerprint"),
     status: text("status").$type<DependencyWatchStatus>().notNull(),
     candidates: jsonb("candidates").$type<unknown[]>().notNull().default([]),
     errorCode: text("error_code").$type<DependencyWatchErrorCode>(),

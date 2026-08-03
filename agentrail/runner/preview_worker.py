@@ -216,7 +216,6 @@ class PreviewBootItem:
     """
 
     id: str
-    workspace_id: str
     repo: str
     repo_url: str
     pr_number: int
@@ -224,20 +223,50 @@ class PreviewBootItem:
     ref: str
     github_token: str
     ttl_seconds: float
+    workspace_id: str = ""
+    base_ref: str = ""
+    expected_head_sha: str = ""
+    expected_environment_rung: str = ""
 
     @classmethod
     def from_dict(cls, d: Dict[str, object]) -> "PreviewBootItem":
+        head_sha = str(d.get("headSha") or "")
+        expected_head_sha = str(d.get("expectedHeadSha") or head_sha)
         return cls(
             id=str(d["id"]),
-            workspace_id=str(d.get("workspaceId") or ""),
             repo=str(d.get("repo") or ""),
             repo_url=str(d.get("repoUrl") or ""),
             pr_number=_safe_int(d.get("prNumber")),
-            head_sha=str(d.get("headSha") or ""),
+            head_sha=head_sha,
             ref=str(d.get("ref") or ""),
             github_token=str(d.get("githubToken") or ""),
             ttl_seconds=_safe_float(d.get("ttlSeconds"), _FALLBACK_TTL_SECONDS),
+            workspace_id=str(d.get("workspaceId") or ""),
+            base_ref=str(d.get("baseRef") or d.get("baseSha") or ""),
+            expected_head_sha=expected_head_sha,
+            expected_environment_rung=str(
+                d.get("expectedEnvironmentRung") or d.get("environmentRung") or ""
+            ),
         )
+
+
+def _boot_process_env(item: PreviewBootItem) -> Dict[str, str]:
+    """Carry the claim's identity and reviewability hints into the boot child.
+
+    The boot child already receives the worker's public-safe environment
+    through ``preview_boot.boot``. The preview worker makes the identity
+    hints explicit here so a future nested runner can recover the same
+    base/head evidence the console and reviewer-context seams expect.
+    """
+    boot_env = dict(os.environ)
+    if item.workspace_id:
+        boot_env["AGENTRAIL_WORKSPACE_ID"] = item.workspace_id
+    if item.base_ref:
+        boot_env["AGENTRAIL_BASE_REF"] = item.base_ref
+    boot_env["AGENTRAIL_EXPECTED_HEAD_SHA"] = item.expected_head_sha or item.head_sha
+    if item.expected_environment_rung:
+        boot_env["AGENTRAIL_EXPECTED_ENVIRONMENT_RUNG"] = item.expected_environment_rung
+    return boot_env
 
 
 # --- console calls ---------------------------------------------------------
@@ -343,6 +372,17 @@ def _safe_boot_log_from_error(exc: BootError) -> Optional[str]:
     return str(tail)[-_BOOT_LOG_MAX_CHARS:]
 
 
+def _claim_identity_failure(item: PreviewBootItem) -> Optional[str]:
+    """Fail closed when the worker cannot trust the claimed boot identity."""
+    if not item.workspace_id:
+        return "claim missing workspaceId"
+    if not item.head_sha:
+        return "claim missing headSha"
+    if item.expected_head_sha and item.expected_head_sha != item.head_sha:
+        return "claim expectedHeadSha does not match headSha"
+    return None
+
+
 # --- per-claim handling -----------------------------------------------------
 
 
@@ -394,6 +434,13 @@ def _handle_claim(
     dest = tempfile.mkdtemp(prefix="agentrail-preview-")
     short_sha = item.head_sha[:12] if item.head_sha else item.ref
     try:
+        identity_failure = _claim_identity_failure(item)
+        if identity_failure is not None:
+            _report(transport, config, boot_id=item.id, status="failed", reason=identity_failure)
+            _log.warning("preview boot %s: %s", item.id, identity_failure)
+            shutil.rmtree(dest, ignore_errors=True)
+            return
+
         _report(transport, config, boot_id=item.id, status="booting")
         _log.info("preview boot %s: booting %s@%s", item.id, item.repo, short_sha)
 
@@ -422,11 +469,12 @@ def _handle_claim(
             return
 
         try:
+            boot_process_env = _boot_process_env(item)
             handle = boot(
                 recipe,
                 dest,
                 advertise_host=config.advertise_host,
-                process_env=os.environ,
+                process_env=boot_process_env,
                 timeout=boot_timeout,
             )
         except BootError as exc:

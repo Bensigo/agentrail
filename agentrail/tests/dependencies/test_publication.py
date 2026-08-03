@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agentrail.dependencies.publication import (
     build_dependency_pr_body,
     evaluate_dependency_publication,
@@ -69,7 +71,7 @@ def test_publication_requires_all_bound_evidence_and_builds_server_body() -> Non
     decision = evaluate_dependency_publication(_run_data())
 
     assert decision.allowed is True
-    body = build_dependency_pr_body(decision)
+    body = build_dependency_pr_body(decision, issue_ref="1579")
     for text in (
         "left-pad",
         "1.3.0 → 1.3.1",
@@ -82,6 +84,7 @@ def test_publication_requires_all_bound_evidence_and_builds_server_body() -> Non
         "Changed-file scope",
         "AC1",
         "Merge: disabled by default",
+        "Resolves #1579",
     ):
         assert text in body
 
@@ -104,3 +107,22 @@ def test_out_of_scope_file_cannot_publish_a_pr() -> None:
 
     assert decision.allowed is False
     assert any("README.md" in reason for reason in decision.reasons)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda payload: payload["dependencyPublication"]["acEvidence"].__setitem__("unbound", ["AC2"]), "unbound AC evidence"),
+        (lambda payload: payload["dependencyPublication"]["acEvidence"].__setitem__("waived", [{"id": "AC3"}]), "waived AC evidence"),
+        (lambda payload: payload["dependencyPublication"]["acEvidence"].__setitem__("unverifiable", [{"ac": "AC4"}]), "unverifiable AC evidence"),
+        (lambda payload: payload["dependencyPublication"]["acEvidence"]["acs"][0].__setitem__("status", "waived"), "AC AC1 is waived"),
+    ],
+)
+def test_unproven_ac_evidence_blocks_publication(mutate, expected: str) -> None:
+    data = _run_data()
+    mutate(data)
+
+    decision = evaluate_dependency_publication(data)
+
+    assert decision.allowed is False
+    assert any(expected in reason for reason in decision.reasons)

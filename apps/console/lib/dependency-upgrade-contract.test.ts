@@ -22,7 +22,7 @@ const candidate = {
 
 describe("dependency upgrade contract proposal", () => {
   it("contains the complete bounded outcome contract and house-format ACs", () => {
-    const proposal = buildDependencyUpgradeProposal(candidate);
+    const proposal = buildDependencyUpgradeProposal(candidate, {}, { observationKey: "candidates:one" });
     const body = buildDependencyUpgradeIssueBody(proposal);
 
     expect(proposal.releaseEvidence.length).toBeGreaterThan(0);
@@ -37,6 +37,7 @@ describe("dependency upgrade contract proposal", () => {
     ]);
     expect(proposal.acceptanceCriteria).toHaveLength(7);
     expect(body).toContain("Candidate fingerprint: sha256:candidate-1");
+    expect(body).toContain("Observation key: candidates:one");
     expect(body.match(/^- \[ \] AC\d+:/gm)).toHaveLength(7);
     expect(body).toContain("Release evidence");
     expect(body).toContain("Package manager: npm");
@@ -48,13 +49,18 @@ describe("dependency upgrade contract proposal", () => {
   });
 
   it("uses the existing alignment brief fields for the approval payload", () => {
-    const proposal = buildDependencyUpgradeProposal(candidate);
+    const proposal = buildDependencyUpgradeProposal(candidate, {}, { observationKey: "candidates:one" });
     const input = buildDependencyUpgradeApprovalInput("contract-1", proposal);
 
     expect(input).toMatchObject({
       contractId: "contract-1",
       title: proposal.title,
       candidateFingerprint: candidate.fingerprint,
+      observationKey: "candidates:one",
+      proposal: expect.objectContaining({
+        candidateFingerprint: candidate.fingerprint,
+        observationKey: "candidates:one",
+      }),
       suggestedModel: expect.objectContaining({ slug: expect.any(String) }),
       estimateUsd: expect.any(Number),
       acceptanceCriteria: proposal.acceptanceCriteria,
@@ -65,9 +71,32 @@ describe("dependency upgrade contract proposal", () => {
     const proposal = buildDependencyUpgradeProposal({
       ...candidate,
       package: "react\n## pretend section\u202e",
-    });
+    }, {}, { observationKey: "candidates:one" });
     const body = buildDependencyUpgradeIssueBody(proposal);
     expect(body).not.toContain("\n## pretend section");
     expect(body).not.toContain("\u202e");
+  });
+
+  it("preserves evidence issues rather than silently dropping malformed evidence", () => {
+    const proposal = buildDependencyUpgradeProposal(
+      candidate,
+      {
+        releaseEvidence: ["https://github.com/facebook/react/releases/tag/v18.3.1"],
+        usageScope: ["Direct imports are limited to the web package."],
+        transitiveCompatibility: "No peer conflicts.",
+        security: "No known advisories.",
+        baselineTests: ["npm ci"],
+        targetTests: ["npm test"],
+      },
+      {
+        observationKey: "candidates:one",
+        evidenceIssues: ["releaseEvidence contains unsupported evidence"],
+      }
+    );
+
+    expect(proposal.needsHumanDecision).toEqual(expect.arrayContaining([
+      "releaseEvidence contains unsupported evidence",
+    ]));
+    expect(proposal.evidenceIssues).toEqual(["releaseEvidence contains unsupported evidence"]);
   });
 });

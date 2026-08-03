@@ -7,6 +7,7 @@ import {
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
   triggerDependencyWatchesForPush,
+  recordReviewEvent,
 } from "@agentrail/db-postgres";
 
 /**
@@ -44,7 +45,8 @@ import {
  *
  * ADMISSION CHAIN (every step's failure is a 200 ignore, never a throw —
  * webhooks are not an error surface): `X-GitHub-Event` must be
- * `pull_request` (checked off the header alone, no body parsing needed) ->
+ * `pull_request`, `pull_request_review`, or the enrolled dependency-watch
+ * `push` path (checked off the header alone, no body parsing needed) ->
  * the body must parse as JSON -> `action` must be one of
  * opened|ready_for_review|reopened|synchronize, or a merged `closed` event -> a draft PR
  * (`pull_request.draft === true`) is skipped for opened/reopened/synchronize
@@ -65,6 +67,7 @@ import {
  */
 
 const SIGNATURE_HEADER = "x-hub-signature-256";
+const DELIVERY_HEADER = "x-github-delivery";
 const EVENT_HEADER = "x-github-event";
 const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 
@@ -122,6 +125,77 @@ function ignored(reason?: string): NextResponse {
   );
 }
 
+type JsonObject = Record<string, unknown>;
+
+function asObject(value: unknown): JsonObject | null {
+  return value && typeof value === "object" ? (value as JsonObject) : null;
+}
+
+function actorTypeFromGitHubUserType(value: unknown): "human" | "agent" | "unknown" {
+  if (value === "User") return "human";
+  if (typeof value === "string" && value.toLowerCase().includes("bot")) return "agent";
+  return "unknown";
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function reviewEventTypeForPullRequestAction(
+  action: string,
+  merged: boolean
+): "opened" | "head_updated" | "reopened" | "merged" | "closed" | null {
+  if (action === "opened" || action === "ready_for_review") return "opened";
+  if (action === "reopened") return "reopened";
+  if (action === "synchronize") return "head_updated";
+  if (action === "closed") return merged ? "merged" : "closed";
+  return null;
+}
+
+async function recordWebhookReviewEvent(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  taskFamily?: string | null;
+  deliveryId: string | null;
+  eventType:
+    | "opened"
+    | "head_updated"
+    | "reopened"
+    | "merged"
+    | "closed"
+    | "review_submitted";
+  occurredAt: Date;
+  headSha?: string | null;
+  reviewState?: string | null;
+  actorType?: "human" | "agent" | "unknown" | null;
+  additions?: number | null;
+  deletions?: number | null;
+  changedFiles?: number | null;
+}): Promise<void> {
+  if (!input.deliveryId) return;
+
+  try {
+    await recordReviewEvent({
+      workspaceId: input.workspaceId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      taskFamily: input.taskFamily ?? null,
+      deliveryId: input.deliveryId,
+      eventType: input.eventType,
+      occurredAt: input.occurredAt,
+      headSha: input.headSha ?? null,
+      reviewState: input.reviewState ?? null,
+      actorType: input.actorType ?? null,
+      additions: input.additions ?? null,
+      deletions: input.deletions ?? null,
+      changedFiles: input.changedFiles ?? null,
+    });
+  } catch (error) {
+    console.error("[github-app/webhook] review-event record failed:", error);
+  }
+}
+
 async function handleDependencyPush(body: Record<string, unknown>): Promise<NextResponse> {
   const installation = body.installation;
   const repository = body.repository;
@@ -174,11 +248,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  // Only `pull_request` and enrolled dependency-watch `push` deliveries carry work here — every other GitHub
-  // event this App may be subscribed to (ping, issues, push, …) is a benign
-  // ignore, decided off the header alone, no body parsing needed.
+  // Only `pull_request`, `pull_request_review`, and enrolled dependency-watch
+  // `push` deliveries carry work here — every other GitHub event this App may
+  // be subscribed to (ping, issues, …) is a benign ignore, decided off the
+  // header alone, no body parsing needed.
   const githubEvent = request.headers.get(EVENT_HEADER);
-  if (githubEvent !== "pull_request" && githubEvent !== "push") {
+  if (githubEvent !== "pull_request" && githubEvent !== "pull_request_review" && githubEvent !== "push") {
     return ignored();
   }
 
@@ -198,19 +273,22 @@ export async function POST(request: NextRequest) {
   if (githubEvent === "push") return handleDependencyPush(body);
 
   const action = typeof body.action === "string" ? body.action : "";
-  const isMergedClose = action === "closed" &&
-    body.pull_request != null &&
-    typeof body.pull_request === "object" &&
-    (body.pull_request as Record<string, unknown>).merged === true;
-  if (!TRIGGER_ACTIONS.has(action) && !isMergedClose) {
+  const deliveryId = request.headers.get(DELIVERY_HEADER);
+  const prObj = asObject(body.pull_request);
+  const reviewObj = asObject(body.review);
+  const isMergedClose = action === "closed" && prObj?.merged === true;
+
+  if (
+    githubEvent === "pull_request_review"
+      ? action !== "submitted"
+      : !TRIGGER_ACTIONS.has(action) && !isMergedClose
+  ) {
     return ignored();
   }
 
-  const pr = body.pull_request;
-  if (!pr || typeof pr !== "object") {
+  if (!prObj) {
     return ignored();
   }
-  const prObj = pr as Record<string, unknown>;
 
   if (prObj.draft === true && DRAFT_SKIP_ACTIONS.has(action)) {
     return ignored();
@@ -234,11 +312,7 @@ export async function POST(request: NextRequest) {
     return ignored("not enrolled");
   }
 
-  const repository = body.repository;
-  const repoFullName =
-    repository && typeof repository === "object"
-      ? (repository as Record<string, unknown>).full_name
-      : undefined;
+  const repoFullName = asObject(body.repository)?.full_name;
   if (typeof repoFullName !== "string") {
     return ignored();
   }
@@ -257,14 +331,70 @@ export async function POST(request: NextRequest) {
       ? (head as Record<string, unknown>).sha
       : undefined;
   const prNumber = prObj.number;
+  const occurredAt =
+    githubEvent === "pull_request_review" &&
+    typeof reviewObj?.submitted_at === "string"
+      ? new Date(reviewObj.submitted_at)
+      : isMergedClose && typeof prObj.merged_at === "string"
+        ? new Date(prObj.merged_at)
+        : action === "closed" && typeof prObj.closed_at === "string"
+          ? new Date(prObj.closed_at)
+      : typeof prObj.created_at === "string"
+        ? new Date(prObj.created_at)
+        : new Date();
 
   if (typeof headSha !== "string" || typeof prNumber !== "number") {
     return ignored();
   }
 
+  const reviewEventType =
+    githubEvent === "pull_request_review"
+      ? "review_submitted"
+      : reviewEventTypeForPullRequestAction(action, isMergedClose);
+
+  if (reviewEventType && !(githubEvent === "pull_request" && isMergedClose)) {
+    const reviewUser = githubEvent === "pull_request_review" ? asObject(reviewObj?.user) : asObject(body.sender);
+    await recordWebhookReviewEvent({
+      workspaceId: workspace.workspaceId,
+      repo: repoFullName,
+      prNumber,
+      taskFamily: null,
+      deliveryId,
+      eventType: reviewEventType,
+      occurredAt,
+      headSha,
+      reviewState:
+        githubEvent === "pull_request_review" && typeof reviewObj?.state === "string"
+          ? reviewObj.state
+          : null,
+      actorType: actorTypeFromGitHubUserType(reviewUser?.type),
+      additions: numberOrNull(prObj.additions),
+      deletions: numberOrNull(prObj.deletions),
+      changedFiles: numberOrNull(prObj.changed_files),
+    });
+  }
+
+  if (githubEvent === "pull_request_review") {
+    return NextResponse.json({ ok: true, recorded: reviewEventType === "review_submitted" });
+  }
+
   if (isMergedClose) {
     const mergeCommitSha =
       typeof prObj.merge_commit_sha === "string" ? prObj.merge_commit_sha : null;
+    await recordWebhookReviewEvent({
+      workspaceId: workspace.workspaceId,
+      repo: repoFullName,
+      prNumber,
+      taskFamily: null,
+      deliveryId,
+      eventType: "merged",
+      occurredAt,
+      headSha,
+      actorType: actorTypeFromGitHubUserType(asObject(body.sender)?.type),
+      additions: numberOrNull(prObj.additions),
+      deletions: numberOrNull(prObj.deletions),
+      changedFiles: numberOrNull(prObj.changed_files),
+    });
     try {
       const record = await findOrCreateChangeRecord({
         workspaceId: workspace.workspaceId,

@@ -48,6 +48,21 @@ export type ReviewMetrics = {
   limitations: string[];
 };
 
+export type ReviewMetricComparison = {
+  sampleSizeDelta: number;
+  denominatorDelta: {
+    openedPullRequests: number;
+    terminalPullRequests: number;
+    mergeRate: number;
+  };
+  medianTimeToFirstReviewSecondsDelta: number | null;
+  averageReviewCyclesDelta: number | null;
+  medianPrSizeLinesDelta: number | null;
+  mergeRateDelta: number | null;
+  postMergeReworkEventsDelta: number | null;
+  humanReviewMinutesDelta: number | null;
+};
+
 export type ReviewMetricWindow = {
   from?: Date;
   to?: Date;
@@ -380,4 +395,46 @@ export function isReviewEventType(value: string): value is ReviewEventType {
 
 export function isHumanReviewSource(value: string): value is HumanReviewSource {
   return value === "human_input" || value === "timer";
+}
+
+function deltaValue(current: number | null, baseline: number | null): number | null {
+  if (current === null || baseline === null) return null;
+  return current - baseline;
+}
+
+export function compareReviewMetrics(
+  current: ReviewMetrics,
+  baseline: ReviewMetrics
+): ReviewMetricComparison {
+  return {
+    sampleSizeDelta: current.sampleSize - baseline.sampleSize,
+    denominatorDelta: {
+      openedPullRequests:
+        current.denominator.openedPullRequests - baseline.denominator.openedPullRequests,
+      terminalPullRequests:
+        current.denominator.terminalPullRequests - baseline.denominator.terminalPullRequests,
+      mergeRate: current.denominator.mergeRate - baseline.denominator.mergeRate,
+    },
+    medianTimeToFirstReviewSecondsDelta: deltaValue(
+      current.medianTimeToFirstReviewSeconds.value,
+      baseline.medianTimeToFirstReviewSeconds.value
+    ),
+    averageReviewCyclesDelta: deltaValue(
+      current.averageReviewCycles.value,
+      baseline.averageReviewCycles.value
+    ),
+    medianPrSizeLinesDelta: deltaValue(
+      current.medianPrSizeLines.value,
+      baseline.medianPrSizeLines.value
+    ),
+    mergeRateDelta: deltaValue(current.mergeRate.value, baseline.mergeRate.value),
+    postMergeReworkEventsDelta: deltaValue(
+      current.postMergeReworkEvents.value,
+      baseline.postMergeReworkEvents.value
+    ),
+    humanReviewMinutesDelta: deltaValue(
+      current.humanReviewMinutes.value,
+      baseline.humanReviewMinutes.value
+    ),
+  };
 }

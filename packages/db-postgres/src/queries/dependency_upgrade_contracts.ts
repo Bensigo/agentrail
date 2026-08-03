@@ -173,6 +173,7 @@ export type CreateDependencyUpgradeContractInput = {
   workspaceId: string;
   repositoryId: string;
   watchId: string;
+  observationKey: string;
   candidate: DependencyUpgradeCandidate;
   proposal: Record<string, unknown>;
   createdBy?: string | null;
@@ -191,6 +192,7 @@ export async function createOrGetDependencyUpgradeContract(
     workspaceId: input.workspaceId,
     repositoryId: input.repositoryId,
     watchId: input.watchId,
+    observationKey: input.observationKey,
     candidateFingerprint: candidate.fingerprint,
     packageName: candidate.package,
     dependencyKind: candidate.dependency_kind,
@@ -219,7 +221,7 @@ export async function createOrGetDependencyUpgradeContract(
       candidateFingerprint: candidate.fingerprint,
       actor: { actorType: "system", actorId: "dependency-watch" },
       decision: input.state === "needs-human-decision" ? "needs_human_decision" : "proposed",
-      details: { baselineSha: candidate.baseline_sha },
+      details: { baselineSha: candidate.baseline_sha, observationKey: input.observationKey },
     });
     return { contract: inserted[0], created: true };
   }

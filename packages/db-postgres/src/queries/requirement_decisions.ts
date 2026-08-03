@@ -19,6 +19,9 @@ export interface RequirementDecisionReport {
   evaluatedDenominator: number;
   refusalCount: number;
   refusalRate: number | null;
+  overrideCount: number;
+  overrideDenominator: number;
+  overrideRate: number | null;
   falseRefusalCount: number;
   falseRefusalDenominator: number;
   falseRefusalRate: number | null;
@@ -35,6 +38,9 @@ export interface RequirementDecisionReportRow {
   evaluatedDenominator: number;
   refusalCount: number;
   refusalRate: number | null;
+  overrideCount: number;
+  overrideDenominator: number;
+  overrideRate: number | null;
   falseRefusalCount: number;
   falseRefusalDenominator: number;
   falseRefusalRate: number | null;
@@ -54,6 +60,8 @@ type RawRequirementReportRow = {
   taskFamily: string | null;
   evaluatedDenominator: string | number;
   refusalCount: string | number;
+  overrideCount: string | number;
+  overrideDenominator: string | number;
   falseRefusalCount: string | number;
   falseRefusalDenominator: string | number;
   falseAcceptCount: string | number;
@@ -72,6 +80,8 @@ function rate(numerator: number, denominator: number): number | null {
 function mapRow(row: RawRequirementReportRow): RequirementDecisionReportRow {
   const evaluatedDenominator = count(row.evaluatedDenominator);
   const refusalCount = count(row.refusalCount);
+  const overrideCount = count(row.overrideCount);
+  const overrideDenominator = count(row.overrideDenominator);
   const falseRefusalCount = count(row.falseRefusalCount);
   const falseRefusalDenominator = count(row.falseRefusalDenominator);
   const falseAcceptCount = count(row.falseAcceptCount);
@@ -82,6 +92,9 @@ function mapRow(row: RawRequirementReportRow): RequirementDecisionReportRow {
     evaluatedDenominator,
     refusalCount,
     refusalRate: rate(refusalCount, evaluatedDenominator),
+    overrideCount,
+    overrideDenominator,
+    overrideRate: rate(overrideCount, overrideDenominator),
     falseRefusalCount,
     falseRefusalDenominator,
     falseRefusalRate: rate(falseRefusalCount, falseRefusalDenominator),
@@ -111,6 +124,8 @@ export async function getRequirementDecisionReport(
       taskFamily: jaceApprovals.requirementTaskFamily,
       evaluatedDenominator: sql<string>`COUNT(*)`,
       refusalCount: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementDecision} = 'refuse')`,
+      overrideCount: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementOverride} = true AND ${jaceApprovals.requirementDecision} = 'refuse')`,
+      overrideDenominator: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementDecision} = 'refuse')`,
       falseRefusalCount: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementDecision} = 'refuse' AND ${runOutcomes.outcome} = 'success')`,
       falseRefusalDenominator: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementDecision} = 'refuse' AND ${runOutcomes.outcome} IS NOT NULL)`,
       falseAcceptCount: sql<string>`COUNT(*) FILTER (WHERE ${jaceApprovals.requirementDecision} = 'accept' AND ${runOutcomes.outcome} IS NOT NULL AND ${runOutcomes.outcome} <> 'success')`,
@@ -127,6 +142,8 @@ export async function getRequirementDecisionReport(
     (acc, row) => ({
       evaluatedDenominator: acc.evaluatedDenominator + row.evaluatedDenominator,
       refusalCount: acc.refusalCount + row.refusalCount,
+      overrideCount: acc.overrideCount + row.overrideCount,
+      overrideDenominator: acc.overrideDenominator + row.overrideDenominator,
       falseRefusalCount: acc.falseRefusalCount + row.falseRefusalCount,
       falseRefusalDenominator:
         acc.falseRefusalDenominator + row.falseRefusalDenominator,
@@ -141,6 +158,8 @@ export async function getRequirementDecisionReport(
     {
       evaluatedDenominator: 0,
       refusalCount: 0,
+      overrideCount: 0,
+      overrideDenominator: 0,
       falseRefusalCount: 0,
       falseRefusalDenominator: 0,
       falseAcceptCount: 0,
@@ -157,6 +176,9 @@ export async function getRequirementDecisionReport(
     evaluatedDenominator: totals.evaluatedDenominator,
     refusalCount: totals.refusalCount,
     refusalRate: rate(totals.refusalCount, totals.evaluatedDenominator),
+    overrideCount: totals.overrideCount,
+    overrideDenominator: totals.overrideDenominator,
+    overrideRate: rate(totals.overrideCount, totals.overrideDenominator),
     falseRefusalCount: totals.falseRefusalCount,
     falseRefusalDenominator: totals.falseRefusalDenominator,
     falseRefusalRate: rate(

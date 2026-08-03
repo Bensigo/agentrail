@@ -81,7 +81,37 @@ describe("dependency candidate proposal boundary", () => {
   it("persists an incomplete proposal as needs-human-decision and creates no approval", async () => {
     const response = await POST(request({ workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint }));
     expect(response.status).toBe(202);
-    expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({ state: "needs-human-decision" }));
+    expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
+      state: "needs-human-decision",
+      observationKey: "key",
+    }));
+    expect(recordApprovalRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps unsupported evidence visible and routes the proposal to needs-human-decision", async () => {
+    const response = await POST(request({
+      workspaceId: "ws",
+      watchId: "watch",
+      candidateFingerprint: candidate.fingerprint,
+      evidence: {
+        releaseEvidence: [null, "https://github.com/facebook/react/releases/tag/v18.3.0"],
+        usageScope: ["Direct imports are limited to the web package."],
+        transitiveCompatibility: "The target lock resolution has no peer conflicts.",
+        security: "No known advisories after review.",
+        baselineTests: ["pnpm test -- --runInBand"],
+        targetTests: ["pnpm test -- --runInBand"],
+      },
+    }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
+      state: "needs-human-decision",
+      observationKey: "key",
+    }));
+    expect(payload.needsHumanDecision).toEqual(expect.arrayContaining([
+      expect.stringContaining("releaseEvidence contains unsupported evidence"),
+    ]));
     expect(recordApprovalRequest).not.toHaveBeenCalled();
   });
 
@@ -121,6 +151,11 @@ describe("dependency candidate proposal boundary", () => {
       toolName: "dependency_upgrade_contract",
       dependencyContractId: "contract-1",
       requestId: `dependency-upgrade:${candidate.fingerprint}`,
+      toolInput: expect.objectContaining({
+        candidateFingerprint: candidate.fingerprint,
+        observationKey: "key",
+        proposal: expect.objectContaining({ candidateFingerprint: candidate.fingerprint, observationKey: "key" }),
+      }),
     }));
     expect(refreshDependencyUpgradeContractProposal).not.toHaveBeenCalled();
   });

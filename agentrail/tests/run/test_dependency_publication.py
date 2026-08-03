@@ -86,13 +86,14 @@ def _payload() -> dict:
 
 
 def test_proof_bearing_body_contains_candidate_and_evidence_sections() -> None:
-    body = build_dependency_pr_body(_payload())
+    body = build_dependency_pr_body(_payload(), issue_ref="1579")
     assert "sha256:candidate" in body
     assert "scheduler" in body
     assert "Baseline tests" in body
     assert "Merge: disabled by default" in body
     assert "AC1" in body
     assert "independent verifier accepted" in body
+    assert "Resolves #1579" in body
 
 
 @pytest.mark.parametrize(
@@ -130,3 +131,24 @@ def test_missing_required_gate_evidence_cannot_publish() -> None:
     assert reason is not None
     assert "Red-Green Proof" in reason
     assert "Independent Verification" in reason
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda payload: payload["acEvidence"].__setitem__("unbound", ["AC2"]), "unbound AC evidence"),
+        (lambda payload: payload["acEvidence"].__setitem__("waived", [{"id": "AC3"}]), "waived AC evidence"),
+        (lambda payload: payload["acEvidence"].__setitem__("unverifiable", [{"ac": "AC4"}]), "unverifiable AC evidence"),
+        (lambda payload: payload["acEvidence"]["acs"][0].__setitem__("status", "waived"), "AC AC1 is waived"),
+    ],
+)
+def test_unproven_ac_evidence_blocks_publication(mutate, expected: str) -> None:
+    payload = _payload()
+    mutate(payload)
+
+    reason = dependency_publication_failure(payload)
+
+    assert reason is not None
+    assert expected in reason
+    with pytest.raises(ValueError):
+        build_dependency_pr_body(payload)

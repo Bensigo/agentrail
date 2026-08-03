@@ -14,7 +14,8 @@ describe("decideRequirementContract", () => {
     expect(result.decision).toBe("accept");
     expect(result.taskFamily).toBe("general");
     expect(result.confidence.state).toBe("unknown");
-    expect(result.confidence.basis.join(" ")).toContain("no measured outcome history");
+    expect(result.confidence.basis.join(" ")).toContain("Task family: general");
+    expect(result.confidence.basis.join(" ")).toContain("no explicit refusal signal");
   });
 
   it.each([

@@ -205,6 +205,16 @@ def test_green_when_verification_required_and_valid() -> None:
     assert result.is_green is True
 
 
+def test_dependency_evidence_missing_artifact_blocks_the_gate() -> None:
+    result = evaluate(
+        checks=_passing_checks(),
+        ac_coverage=_full_coverage(),
+        dependency_evidence={"invalid": "dependency evidence file is missing"},
+    )
+    assert result.is_green is False
+    assert any("dependency evidence" in reason.lower() for reason in result.failed_reasons)
+
+
 def test_verification_not_required_keeps_prior_behavior() -> None:
     """``None`` verification evidence (the default) leaves the gate unchanged."""
     result = evaluate(

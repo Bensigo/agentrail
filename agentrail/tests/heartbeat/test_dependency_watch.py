@@ -111,6 +111,8 @@ def test_same_candidate_fingerprint_is_stable_for_deduplication():
         target_versions=Targets(), trigger=WatchTrigger.MANUAL, store=store,
     )
     assert first.observation_key == second.observation_key
+    assert first.candidate_fingerprint == store.calls[0]["observation"].candidates[0].fingerprint
+    assert first.candidate_fingerprint != first.observation_key
     assert store.calls[0]["observation"].candidates[0].fingerprint == store.calls[1]["observation"].candidates[0].fingerprint
 
 

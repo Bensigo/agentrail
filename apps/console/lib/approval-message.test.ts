@@ -263,6 +263,37 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
     expect(text).toContain("- Classified as \"ui\" from the title.");
   });
 
+  it("renders a refusal block when the brief is not tractable, including what cannot be established and what is required", () => {
+    const text = renderApprovalMessage("alignment_brief", {
+      ...BRIEF_INPUT,
+      requirementDecision: {
+        decision: "refuse",
+        taskFamily: "mechanical",
+        confidence: {
+          state: "unknown",
+          basis: [
+            "Task family: mechanical",
+            "Evidence basis: the brief matched the explicit excessive_scope intake signal",
+          ],
+        },
+        refusal: {
+          code: "excessive_scope",
+          label: "Excessive scope",
+          cannotEstablish: "the work has a bounded change surface that one approved run can finish",
+          requiredToProceed: "split the request into smaller, independently verifiable changes",
+          taskFamily: "mechanical",
+          confidence: { state: "unknown", basis: [] },
+        },
+      },
+    });
+
+    expect(text).toContain("Requirement decision: refuse");
+    expect(text).toContain("Refusal reason: Excessive scope");
+    expect(text).toContain("Cannot establish:");
+    expect(text).toContain("Required to proceed:");
+    expect(text).toContain("Confidence basis:");
+  });
+
   it("never throws and omits the sanction line when estimateUsd is missing/malformed", () => {
     expect(() => renderApprovalMessage("alignment_brief", {})).not.toThrow();
     const text = renderApprovalMessage("alignment_brief", { title: "x" });
@@ -370,14 +401,34 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
       expect(text).not.toContain("$");
     });
 
-    it("the create_issue _brief-flattening path also renders the scope sentence (delegates to the same renderer)", () => {
+  it("the create_issue _brief-flattening path also renders the scope sentence (delegates to the same renderer)", () => {
       const text = renderApprovalMessage("create_issue", {
         title: "Add dark mode toggle",
         acceptanceCriteria: [],
-        _brief: { taskType: "ui", estimateUsd: 1.35 },
+        _brief: {
+          taskType: "ui",
+          estimateUsd: 1.35,
+          requirementDecision: {
+            decision: "refuse",
+            taskFamily: "ui",
+            confidence: {
+              state: "unknown",
+              basis: ["Task family: ui", "Evidence basis: no explicit refusal signal was found in the brief"],
+            },
+            refusal: {
+              code: "missing_proof_path",
+              label: "Missing proof path",
+              cannotEstablish: "the acceptance criteria can be checked by a test, build, lint, or other declared verification",
+              requiredToProceed: "add a concrete verification command or explain the observable evidence that will prove the criteria",
+              taskFamily: "ui",
+              confidence: { state: "unknown", basis: [] },
+            },
+          },
+        },
       });
 
       expect(text).toContain("Approving starts a small task.");
+      expect(text).toContain("Requirement decision: refuse");
       expect(text).not.toContain("$");
     });
 

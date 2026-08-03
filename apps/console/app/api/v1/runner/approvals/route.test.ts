@@ -441,6 +441,7 @@ describe("POST /api/v1/runner/approvals — #1274 PR ② chat-born enrichment (c
       | Record<string, unknown>
       | undefined;
     expect(brief).toBeDefined();
+    expect(brief).toHaveProperty("requirementDecision");
     expect(typeof brief?.taskType).toBe("string");
     expect(typeof brief?.estimateUsd).toBe("number");
     expect((brief?.estimateUsd as number)).toBeGreaterThan(0);

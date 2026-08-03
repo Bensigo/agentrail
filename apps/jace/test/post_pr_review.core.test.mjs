@@ -13,11 +13,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   PR_REVIEW_PATH,
+  PR_CHANGE_RECORD_PATH,
   SUMMARY_MAX_LEN,
   COMMENT_BODY_MAX_LEN,
   POSTABLE_SEVERITIES,
   resolveConsoleConfig,
   buildPrReviewUrl,
+  buildPrChangeRecordUrl,
   classifyStatus,
   failure,
   filterPostableComments,
@@ -28,6 +30,8 @@ import {
   composeSummaryWithCoverage,
   renderJudgmentLine,
   composeSummary,
+  renderChangeRecordBlock,
+  composeSummaryWithChangeRecord,
 } from "../agent/lib/post_pr_review.core.mjs";
 
 const ENV = {
@@ -106,6 +110,14 @@ test("resolveConsoleConfig reports exactly which vars are missing", () => {
 test("buildPrReviewUrl joins the base url and the pr-review path", () => {
   assert.equal(buildPrReviewUrl("https://c.example.com"), `https://c.example.com${PR_REVIEW_PATH}`);
   assert.equal(PR_REVIEW_PATH, "/api/v1/runner/pr-review");
+});
+
+test("buildPrChangeRecordUrl joins the base url and the PR Change Record path", () => {
+  assert.equal(
+    buildPrChangeRecordUrl("https://c.example.com"),
+    `https://c.example.com${PR_CHANGE_RECORD_PATH}`,
+  );
+  assert.equal(PR_CHANGE_RECORD_PATH, "/api/v1/runner/change-record/pr");
 });
 
 test("classifyStatus maps HTTP status to outcome (2xx ok, rest degraded reasons)", () => {
@@ -235,6 +247,83 @@ test("runPostPrReview reports the console's own reviewUrl/summary/inlineComments
     { path: "src/index.ts", line: 12, body: "Consider a null check here." },
   ]);
   assert.match(result.summary, /folded stuff/);
+});
+
+test("renderChangeRecordBlock renders a stable record link and stored lifecycle evidence", () => {
+  const block = renderChangeRecordBlock({
+    found: true,
+    consoleBaseUrl: "https://console.example.com",
+    record: {
+      id: "record-1",
+      workspaceId: "ws-1",
+    },
+    stageEvidence: [
+      {
+        stage: "review",
+        label: "review posted (approve)",
+        url: "https://github.com/ada/widgets/pull/98#pullrequestreview-1",
+      },
+      { stage: "verification", label: "acceptance evidence", url: null },
+    ],
+  });
+
+  assert.match(block, /\*\*Change Record\*\*/);
+  assert.match(block, /\[record-1\]\(https:\/\/console\.example\.com\/dashboard\/ws-1\/changes\/record-1\)/);
+  assert.match(block, /review: \[review posted \(approve\)\]\(https:\/\/github\.com\/ada\/widgets\/pull\/98#pullrequestreview-1\)/);
+  assert.match(block, /verification: acceptance evidence/);
+});
+
+test("composeSummaryWithChangeRecord preserves the Change Record block under SUMMARY_MAX_LEN", () => {
+  const blockOnly = renderChangeRecordBlock({
+    found: true,
+    consoleBaseUrl: "https://console.example.com",
+    record: { id: "record-1", workspaceId: "ws-1" },
+    stageEvidence: [{ stage: "review", label: "review posted", url: null }],
+  });
+  const composed = composeSummaryWithChangeRecord("x".repeat(SUMMARY_MAX_LEN), {
+    found: true,
+    consoleBaseUrl: "https://console.example.com",
+    record: { id: "record-1", workspaceId: "ws-1" },
+    stageEvidence: [{ stage: "review", label: "review posted", url: null }],
+  });
+
+  assert.ok(composed.length <= SUMMARY_MAX_LEN);
+  assert.ok(composed.endsWith(blockOnly));
+});
+
+test("runPostPrReview opt-in Change Record fetch appends the block before posting", async () => {
+  const transport = fakeTransport(() => ({
+    status: 201,
+    json: async () => successBody(),
+  }));
+  const changeRecordTransport = fakeTransport(() => ({
+    status: 200,
+    json: async () => ({
+      found: true,
+      record: { id: "record-1", workspaceId: "ws-1" },
+      stageEvidence: [{ stage: "review", label: "review posted", url: null }],
+    }),
+  }));
+
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    env: ENV,
+    transport,
+    changeRecordTransport,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(changeRecordTransport.calls.length, 1);
+  assert.equal(changeRecordTransport.calls[0].url, `https://console.example.com${PR_CHANGE_RECORD_PATH}`);
+  assert.deepEqual(JSON.parse(changeRecordTransport.calls[0].init.body), {
+    eveSessionId: "eve-session-1",
+    repo: "ada/widgets",
+    prNumber: 98,
+    ensure: true,
+  });
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.match(sent.summary, /\*\*Change Record\*\*/);
+  assert.match(sent.summary, /review: review posted/);
 });
 
 // ---------------------------------------------------------------------------

@@ -77,3 +77,5 @@ def test_manual_watch_is_claimed_detected_and_persisted_without_queue_work():
     assert publisher.calls[0]["workspace_id"] == "ws-1"
     assert publisher.calls[0]["watch_id"] == "watch-1"
     assert publisher.calls[0]["candidate"].fingerprint
+    assert executor.executed[0][1]["candidate_fingerprint"] == publisher.calls[0]["candidate"].fingerprint
+    assert executor.executed[0][1]["candidate_fingerprint"] != executor.executed[0][1]["observation_key"]

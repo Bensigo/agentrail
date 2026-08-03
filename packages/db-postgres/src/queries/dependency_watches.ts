@@ -44,6 +44,7 @@ export type RecordDependencyObservationInput = {
   baselineSha?: string | null;
   selectedFileHashes: Record<string, string>;
   observationKey: string;
+  candidateFingerprint?: string | null;
   status: DependencyWatchStatus;
   candidates?: unknown[];
   errorCode?: DependencyWatchErrorCode | null;
@@ -51,6 +52,61 @@ export type RecordDependencyObservationInput = {
   observedAt?: Date;
   nextCheckAt?: Date | null;
 };
+
+const AUTO_SELECTED_PATHS = new Set([
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "pyproject.toml",
+  "poetry.lock",
+  "uv.lock",
+  "Cargo.toml",
+  "Cargo.lock",
+  "go.mod",
+  "go.sum",
+  "Gemfile",
+  "Gemfile.lock",
+  "composer.json",
+  "composer.lock",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "packages.lock.json",
+  "mix.exs",
+  "mix.lock",
+  "pubspec.yaml",
+  "pubspec.lock",
+  "Package.swift",
+  "Package.resolved",
+]);
+
+function normalizePath(path: string): string {
+  return path.replace(/^\.\//, "");
+}
+
+function resolvedPushPaths(watch: {
+  manifestPath: string;
+  lockfilePath: string;
+  selectedFileHashes: Record<string, string>;
+}): Set<string> {
+  const explicit = [watch.manifestPath, watch.lockfilePath]
+    .map(normalizePath)
+    .filter((path) => path !== "auto");
+  if (explicit.length === 2) {
+    return new Set(explicit);
+  }
+  const selected = Object.keys(watch.selectedFileHashes ?? {})
+    .map(normalizePath)
+    .filter((path) => path.length > 0);
+  if (selected.length > 0) {
+    return new Set(selected);
+  }
+  return AUTO_SELECTED_PATHS;
+}
 
 function validateConfig(input: DependencyWatchConfig): void {
   if (!input.workspaceId || !input.repositoryId) {
@@ -176,10 +232,22 @@ export async function triggerDependencyWatchesForPush(
   now = new Date()
 ) {
   const watches = await listDependencyWatchesForRepository(workspaceId, repositoryId);
-  const changed = new Set(changedPaths.map((path) => path.replace(/^\.\//, "")));
+  const changed = new Set(changedPaths.map(normalizePath));
   const triggered: typeof watches = [];
   for (const watch of watches) {
-    if (!changed.has(watch.manifestPath) && !changed.has(watch.lockfilePath)) continue;
+    const pushPaths = resolvedPushPaths(watch as {
+      manifestPath: string;
+      lockfilePath: string;
+      selectedFileHashes: Record<string, string>;
+    });
+    let matched = false;
+    for (const path of pushPaths) {
+      if (changed.has(path)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) continue;
     const [row] = await db
       .update(dependencyWatches)
       .set({
@@ -275,6 +343,7 @@ export async function recordDependencyWatchObservation(
       baselineSha: input.baselineSha ?? null,
       selectedFileHashes: input.selectedFileHashes,
       observationKey: input.observationKey,
+      candidateFingerprint: input.candidateFingerprint ?? null,
       status: input.status,
       candidates: input.candidates ?? [],
       errorCode: input.errorCode ?? null,
@@ -295,7 +364,7 @@ export async function recordDependencyWatchObservation(
     .set({
       lastCheckedSha: input.baselineSha ?? null,
       selectedFileHashes: input.selectedFileHashes,
-      candidateFingerprint: input.status === "candidates" ? input.observationKey : null,
+      candidateFingerprint: input.status === "candidates" ? input.candidateFingerprint ?? null : null,
       status: input.status,
       errorCode: input.errorCode ?? null,
       errorMessage: input.errorMessage ?? null,

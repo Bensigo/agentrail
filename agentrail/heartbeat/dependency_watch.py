@@ -66,6 +66,7 @@ class WatchObservation:
     trigger: WatchTrigger
     status: str
     observation_key: str
+    candidate_fingerprint: Optional[str] = None
     candidates: Tuple[DependencyCandidate, ...] = ()
     failure: Optional[WatchFailure] = None
     reason: Optional[str] = None
@@ -141,6 +142,12 @@ def _observation_key(result: ObservationResult, snapshot: DependencySnapshot) ->
     return f"{result.status.value}:{digest}"
 
 
+def _candidate_fingerprint(result: ObservationResult) -> Optional[str]:
+    if isinstance(result, CandidatesResult) and result.candidates:
+        return result.candidates[0].fingerprint
+    return None
+
+
 def _failure_for(result: ObservationResult) -> Optional[WatchFailure]:
     if result.status is ObservationStatus.UNSUPPORTED:
         return WatchFailure.UNSUPPORTED
@@ -209,6 +216,7 @@ def observe_watch(
             "unchanged" if result.status is ObservationStatus.UNCHANGED else "failed"
         ),
         observation_key=_observation_key(result, snapshot),
+        candidate_fingerprint=_candidate_fingerprint(result),
         candidates=result.candidates,
         failure=failure,
         reason="; ".join(result.reasons) if result.reasons else None,

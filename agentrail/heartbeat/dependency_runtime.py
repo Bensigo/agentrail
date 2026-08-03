@@ -70,7 +70,7 @@ queue_store._SQL.update(
             "%(observed_at)s) ON CONFLICT (workspace_id, repository_id, observation_key) "
             "DO NOTHING RETURNING id) UPDATE dependency_watches SET "
             "last_checked_sha = %(baseline_sha)s, selected_file_hashes = %(selected_file_hashes)s::jsonb, "
-            "candidate_fingerprint = CASE WHEN %(status)s = 'candidates' THEN %(observation_key)s ELSE NULL END, "
+            "candidate_fingerprint = CASE WHEN %(status)s = 'candidates' THEN %(candidate_fingerprint)s ELSE NULL END, "
             "status = %(status)s, error_code = %(error_code)s, error_message = %(error_message)s, "
             "last_checked_at = %(observed_at)s, updated_at = %(observed_at)s "
             "WHERE id = %(watch_id)s AND workspace_id = %(workspace_id)s"
@@ -258,6 +258,7 @@ class SqlWatchStore(WatchStore):
             "baseline_sha": snapshot.baseline_sha,
             "selected_file_hashes": json.dumps(dict(selected_file_hashes), sort_keys=True),
             "observation_key": observation.observation_key,
+            "candidate_fingerprint": observation.candidate_fingerprint,
             "status": observation.status,
             "candidates": json.dumps(candidates, sort_keys=True),
             "error_code": error_code,
@@ -338,7 +339,8 @@ class DependencyWatchRuntime:
             self.executor.execute(RECORD_WATCH_OBSERVATION_OP, {
                 "workspace_id": self.workspace_id, "watch_id": row["id"], "repository_id": row["repository_id"],
                 "trigger": trigger.value, "baseline_sha": None, "selected_file_hashes": json.dumps({}),
-                "observation_key": result.observation_key, "status": "failed", "candidates": json.dumps([]),
+                "observation_key": result.observation_key, "candidate_fingerprint": None,
+                "status": "failed", "candidates": json.dumps([]),
                 "error_code": "invalid_snapshot", "error_message": str(exc), "observed_at": now,
             })
             return result

@@ -77,7 +77,7 @@ jobs:
           agentrail/tests/context/test_symbol_candidates.py
           agentrail/tests/context/test_symbol_packing.py
 
-  eval-proofs:
+  eval-corpus:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -91,7 +91,48 @@ jobs:
         run: python -m pip install --upgrade pip pytest -e .
       - name: Build repository context index once
         run: python -m agentrail.cli.main context index --target . --no-push
-      - name: Run evaluation and corpus integration tests
+      - name: Run corpus and hidden-test integration proofs
         run: >-
           python -m pytest -q -m integration
-          agentrail/tests/evals agentrail/tests/cli/test_evals_cli.py
+          agentrail/tests/evals/test_corpus_pins.py
+          agentrail/tests/evals/test_hidden_tests.py
+          agentrail/tests/cli/test_evals_cli.py
+
+  eval-spine-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python package and test runner
+        run: python -m pip install --upgrade pip pytest -e .
+      - name: Build repository context index once
+        run: python -m agentrail.cli.main context index --target . --no-push
+      - name: Run spine CLI integration proofs
+        run: >-
+          python -m pytest -q -m integration agentrail/tests/evals/test_spine.py
+          -k 'cli_evals_run'
+
+  eval-spine-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python package and test runner
+        run: python -m pip install --upgrade pip pytest -e .
+      - name: Build repository context index once
+        run: python -m agentrail.cli.main context index --target . --no-push
+      - name: Run spine retrieval integration proofs
+        run: >-
+          python -m pytest -q -m integration
+          agentrail/tests/evals/test_spine.py
+          -k 'e2e_pack_precision_recall_populated_on_real_run or e2e_rerank_flag_toggles_the_cited_set'

@@ -1,8 +1,9 @@
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   findWorkspaceByRepo,
   getConnector,
+  appendJudgmentEvent,
   enqueueGithubIssue,
   findQueueEntryByExternalId,
   getRepositoryByName,
@@ -129,6 +130,71 @@ function issueContentChanged(payload: Record<string, unknown>): boolean {
   return "title" in c || "body" in c;
 }
 
+const MAX_REQUIREMENT_TEXT_LENGTH = 16_000;
+
+function boundedText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.slice(0, MAX_REQUIREMENT_TEXT_LENGTH);
+}
+
+function requirementCorrectionEventKey(
+  repo: string,
+  issueNumber: number,
+  deliveryId: string | null,
+  payload: Record<string, unknown>
+): string {
+  const stableInput = deliveryId ?? JSON.stringify({ repo, issueNumber, changes: payload.changes });
+  const digest = createHash("sha256").update(stableInput).digest("hex").slice(0, 24);
+  return `requirement-correction:issue:${issueNumber}:${digest}`;
+}
+
+async function appendRequirementCorrection(
+  payload: Record<string, unknown>,
+  repo: string,
+  workspaceId: string,
+  issueNumber: number,
+  deliveryId: string | null
+): Promise<void> {
+  const issue = payload.issue as Record<string, unknown>;
+  const changes = payload.changes as Record<string, unknown>;
+  const changedFields = ["title", "body"].filter((field) => field in changes);
+  const sender = payload.sender as Record<string, unknown> | undefined;
+  const actorId = typeof sender?.login === "string" ? sender.login : undefined;
+  const title = boundedText(issue.title);
+  const body = boundedText(issue.body);
+  const previousTitle = boundedText((changes.title as Record<string, unknown> | undefined)?.from);
+  const previousBody = boundedText((changes.body as Record<string, unknown> | undefined)?.from);
+
+  try {
+    await appendJudgmentEvent({
+      workspaceId,
+      repo,
+      eventKey: requirementCorrectionEventKey(repo, issueNumber, deliveryId, payload),
+      type: "requirement_correction",
+      refs: { issueNumber },
+      payload: {
+        issueNumber,
+        changedFields,
+        title,
+        body,
+        previousTitle,
+        previousBody,
+        textTruncated:
+          (typeof issue.title === "string" && issue.title.length > MAX_REQUIREMENT_TEXT_LENGTH) ||
+          (typeof issue.body === "string" && issue.body.length > MAX_REQUIREMENT_TEXT_LENGTH) ||
+          (typeof (changes.title as Record<string, unknown> | undefined)?.from === "string" &&
+            ((changes.title as Record<string, unknown>).from as string).length > MAX_REQUIREMENT_TEXT_LENGTH) ||
+          (typeof (changes.body as Record<string, unknown> | undefined)?.from === "string" &&
+            ((changes.body as Record<string, unknown>).from as string).length > MAX_REQUIREMENT_TEXT_LENGTH),
+      },
+      actorRef: { kind: "github_user", ...(actorId ? { id: actorId } : {}) },
+      sourceRef: { kind: "github_webhook", ...(deliveryId ? { id: deliveryId } : {}) },
+    });
+  } catch (err) {
+    console.error("[github/webhook] requirement correction capture failed:", err);
+  }
+}
+
 /**
  * #1345 PR③ / AC2 — a human hand-editing the GitHub issue's title/body
  * DIRECTLY (no chat, no Jace tool call involved): if this issue maps to a
@@ -151,7 +217,8 @@ function issueContentChanged(payload: Record<string, unknown>): boolean {
 async function handleIssuesEdited(
   payload: Record<string, unknown>,
   repoFullNameRaw: unknown,
-  workspaceId: string | null
+  workspaceId: string | null,
+  deliveryId: string | null
 ): Promise<NextResponse> {
   if (!issueContentChanged(payload)) {
     return NextResponse.json({ matched: false, reason: "edited but title/body unchanged" });
@@ -176,6 +243,7 @@ async function handleIssuesEdited(
   if (!entry) {
     responseBody = { matched: true, revised: false, reason: "not_found" };
   } else {
+    await appendRequirementCorrection(payload, repoFullName, workspaceId, number, deliveryId);
     const result = await reviseAndRepostAlignmentBrief({
       workspaceId,
       queueEntryId: entry.id,
@@ -396,7 +464,12 @@ export async function POST(request: NextRequest) {
   // report it as "not a trigger" and drop it, exactly as it did before this
   // PR) since it needs its own gating (content-changed) and response shape.
   if (action === "edited") {
-    return handleIssuesEdited(payload, repoFullName, workspaceId);
+    return handleIssuesEdited(
+      payload,
+      repoFullName,
+      workspaceId,
+      request.headers.get("x-github-delivery")
+    );
   }
 
   if (typeof action !== "string" || !TRIGGER_ACTIONS.has(action)) {

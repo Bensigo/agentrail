@@ -129,6 +129,114 @@ def write_ac_evidence(
     write_json(path, data)
 
 
+def write_reviewability_evidence(
+    path: Path,
+    *,
+    metadata_path: Optional[Path] = None,
+    evidence: Dict[str, Any],
+) -> None:
+    """Persist the reviewability contract and expose it through ``run.json``.
+
+    The JSON file is the durable, bounded artifact. The top-level run metadata
+    carries the same payload plus the artifact path so existing run/review
+    readers can consume it without inventing a second lookup protocol.
+    """
+    write_json(path, evidence)
+    if metadata_path is None:
+        return
+    data = read_json(metadata_path) if metadata_path.exists() else {}
+    data["reviewability"] = evidence
+    data["reviewabilityEvidenceFile"] = str(path)
+
+    # A post-commit refresh can happen after the Objective Gate was already
+    # serialized. Keep its evidence row and verdict synchronized with the
+    # durable reviewability artifact; otherwise a later artifact update could
+    # leave run.json claiming green while the evidence says it is not safe to
+    # publish.
+    gate = data.get("objectiveGate")
+    if isinstance(gate, dict):
+        decision = evidence.get("decision")
+        diff = evidence.get("diff")
+        environment = evidence.get("environment")
+        if isinstance(decision, dict):
+            status = str(decision.get("status") or "unknown")
+            proof_complete = decision.get("proofComplete") is True
+            changed_files = 0
+            changed_lines = 0
+            environment_rung = "unknown"
+            if isinstance(diff, dict):
+                changed_files = len(diff.get("changedFiles") or [])
+                changed_lines = int(diff.get("changedLines") or 0)
+            if isinstance(environment, dict):
+                environment_rung = str(environment.get("environmentRung") or "unknown")
+            detail = (
+                f"status={status}; proof={'complete' if proof_complete else 'incomplete'}; "
+                f"{changed_files} files/{changed_lines} lines; "
+                f"environment={environment_rung}; "
+                f"recommendation={decision.get('recommendation') or ''}"
+            )
+            row = {
+                "name": "reviewability",
+                "passed": proof_complete,
+                "detail": detail,
+            }
+            rows = gate.get("evidence")
+            if not isinstance(rows, list):
+                rows = []
+                gate["evidence"] = rows
+            for index, existing in enumerate(rows):
+                if isinstance(existing, dict) and existing.get("name") == "reviewability":
+                    rows[index] = row
+                    break
+            else:
+                rows.append(row)
+
+            if not proof_complete:
+                reason = (
+                    f"reviewability {status}: "
+                    + "; ".join(str(item) for item in (decision.get("reasons") or []))
+                ).rstrip(": ")
+                failed = gate.get("failedReasons")
+                if not isinstance(failed, list):
+                    failed = []
+                    gate["failedReasons"] = failed
+                if reason and reason not in failed:
+                    failed.append(reason)
+                gate["state"] = "fail"
+                gate["verdict"] = "red"
+                gate["isGreen"] = False
+    write_json(metadata_path, data)
+
+
+def refresh_reviewability_head_sha(
+    path: Path,
+    *,
+    metadata_path: Optional[Path] = None,
+    head_sha: str,
+) -> Dict[str, Any]:
+    """Refresh the reviewed head after the factory creates its publish commit.
+
+    The factory evaluates its working tree before the publish commit exists.
+    The evidence remains valid, but its ``headSha`` must identify the commit
+    that is actually pushed. This helper updates both durable surfaces through
+    :func:`write_reviewability_evidence` so the PR cannot carry a stale head.
+    """
+    if not head_sha:
+        raise ValueError("cannot refresh reviewability evidence without a head SHA")
+    evidence = read_json(path)
+    diff = evidence.get("diff")
+    if not isinstance(diff, dict):
+        raise ValueError("reviewability evidence has no diff record")
+    diff["headSha"] = head_sha
+    evidence["diff"] = diff
+    write_reviewability_evidence(
+        path,
+        metadata_path=metadata_path,
+        evidence=evidence,
+    )
+    return evidence
+
+
 def write_phase_status(
     path: Path,
     *,

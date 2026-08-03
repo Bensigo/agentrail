@@ -3121,6 +3121,23 @@ export { recordUpgradePromptOnce } from "./upgrade_prompts.js";
 // workspace on the account, in a caller-supplied half-open window.
 export { countAccountRunsStartedInWindow } from "./capacity.js";
 
+export * from "./dependency_watches.js";
+export * from "./dependency_upgrade_contracts.js";
+export {
+  getRequirementDecisionReport,
+  type RequirementDecisionReport,
+  type RequirementDecisionReportInput,
+  type RequirementDecisionReportRow,
+} from "./requirement_decisions.js";
+export {
+  recordReviewEvent,
+  recordHumanReviewTime,
+  getReviewMetrics,
+  type RecordReviewEventInput,
+  type RecordReviewEventResult,
+  type ReviewMetricsQuery,
+} from "./review_events.js";
+
 // Reviewer of Record queue (Arc B §2-§3, spec
 // docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The
 // enqueue/supersede/claim/complete/bind query layer over `review_jobs` — see

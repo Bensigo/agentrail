@@ -39,3 +39,6 @@ export * from "./upgrade_prompt_events.js";
 export * from "./slack_installations.js";
 export * from "./change_records.js";
 export * from "./judgment_events.js";
+export * from "./review_events.js";
+export * from "./dependency_watches.js";
+export * from "./dependency_upgrade_contracts.js";

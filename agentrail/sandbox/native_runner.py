@@ -45,6 +45,12 @@ from agentrail.sandbox.docker_runner import (
     RunResult,
     sum_cost_ledger,
 )
+from agentrail.run import artifacts
+from agentrail.run.dependency_publication import (
+    build_dependency_pr_body,
+    dependency_publication_failure,
+)
+from agentrail.shared.json import read_json
 # _authenticated_clone_url / _redact_token used to be defined in this module.
 # #1268 extracted them into agentrail.sandbox.clone_auth as the ONE shared
 # implementation (the onboard work-kind handler needed the exact same
@@ -190,6 +196,7 @@ def _result_from_run_json(
     reason = ""
 
     run_json = run_dir / "run.json"
+    data = {}
     try:
         data = json.loads(run_json.read_text())
         refusal = data.get("refusal")
@@ -227,6 +234,21 @@ def _result_from_run_json(
         status = "error"
         reason = f"could not read run result: {exc}"
 
+    # The Objective Gate is the source of the initial result, but a green gate
+    # is not publishable unless the persisted reviewability contract also proves
+    # the exact change. This protects the native path from stale or hand-built
+    # run.json records that claim green while reviewability is not testable,
+    # unverifiable, or over budget.
+    if not isinstance(data.get("refusal"), dict):
+        reviewability_reason = _reviewability_failure_from_data(data)
+        if reviewability_reason:
+            status = "red"
+            reason = "; ".join(filter(None, (reason, reviewability_reason)))
+        dependency_reason = dependency_publication_failure(data)
+        if dependency_reason:
+            status = "red"
+            reason = "; ".join(filter(None, (reason, f"dependency publication: {dependency_reason}")))
+
     # Cost: sum the per-phase cost ledger written by the pipeline (best-effort).
     cost += sum_cost_ledger(_ledger_path(repo_dir))
 
@@ -244,6 +266,25 @@ def _result_from_run_json(
         status=status, cost_usd=cost, branch=branch,
         gate_reason=reason, logs_tail=logs_tail,
     )
+
+
+def _reviewability_failure_from_data(data: dict, *, require_evidence: bool = False) -> str:
+    """Return a blocking reason for invalid persisted reviewability evidence."""
+    evidence = data.get("reviewability")
+    if not isinstance(evidence, dict):
+        # Older/manual run records may not carry the new artifact. Preserve
+        # historical parsing for non-publish callers, but never allow the
+        # publish boundary to treat missing proof as green.
+        return "reviewability not_testable: evidence is missing" if require_evidence else ""
+    decision = evidence.get("decision")
+    if not isinstance(decision, dict):
+        return "reviewability not_testable: decision evidence is missing"
+    status = str(decision.get("status") or "unknown")
+    if status == "reviewable" and decision.get("proofComplete") is True:
+        return ""
+    reasons = [str(item) for item in (decision.get("reasons") or []) if str(item)]
+    detail = "; ".join(reasons) or "proof is incomplete"
+    return f"reviewability {status}: {detail}"
 
 
 def _logs_tail(stdout: str, stderr: str) -> str:
@@ -788,10 +829,28 @@ def run_issue_on_host(
             branch, pr_url, push_auth_infra = _publish_green(
                 runner, repo_dir, issue_ref, pr_title, base_ref=ref, env=child_env,
                 repo_url=repo_url, github_token_refresher=github_token_refresher,
+                reviewability_run_dir=log_dir / run_id,
             )
             from dataclasses import replace
 
-            if push_auth_infra:
+            post_publish_data = {}
+            try:
+                post_publish_data = read_json(log_dir / run_id / "run.json")
+            except (OSError, ValueError, TypeError):
+                pass
+            reviewability_failure = _reviewability_failure_from_data(post_publish_data)
+            if reviewability_failure:
+                # A post-commit evidence refresh can fail after the initial
+                # green parse. Keep the local commit for inspection, but never
+                # report green or expose a PR URL when the persisted head is
+                # not trustworthy.
+                result = replace(
+                    result,
+                    status="red",
+                    gate_reason=reviewability_failure,
+                    branch=branch or result.branch,
+                )
+            elif push_auth_infra:
                 # #1391 AC3: the gate went green but the publish push could not
                 # authenticate to GitHub even after a token refresh — an
                 # INFRASTRUCTURE failure (the workspace's OAuth token expired),
@@ -853,6 +912,7 @@ def _publish_green(
     *, base_ref: str, env: Dict[str, str],
     repo_url: str = "",
     github_token_refresher: Optional[Callable[[], Optional[str]]] = None,
+    reviewability_run_dir: Optional[Path] = None,
 ) -> tuple[str, str, bool]:
     """Commit the agent's work to a feature branch, push it, open a PR.
 
@@ -903,6 +963,27 @@ def _publish_green(
     if commit is None or getattr(commit, "returncode", 1) != 0:
         return branch, "", False  # nothing to commit / commit failed
 
+    # The pipeline captured reviewability before this factory-owned publish
+    # commit existed. Refresh the persisted head SHA now, before any push or PR
+    # creation, so the proof names the exact commit a reviewer will receive.
+    if reviewability_run_dir is not None:
+        # Older native-runner fixtures and local callers can produce a green
+        # record without the reviewability extension. Preserve that historical
+        # path; once the contract is present, however, a failed refresh is
+        # fail-closed and prevents the push/PR.
+        try:
+            metadata = read_json(reviewability_run_dir / "run.json")
+        except (OSError, ValueError, TypeError):
+            metadata = {}
+        if isinstance(metadata.get("reviewability"), dict) and not _refresh_reviewability_after_commit(
+            runner,
+            repo_dir,
+            reviewability_run_dir,
+        ):
+            # The caller will re-read run.json and surface the fail-closed
+            # reason while retaining the local commit for inspection.
+            return branch, "", False
+
     push = _run(["git", "push", "--force", "-u", "origin", f"HEAD:{branch}"])
     if push is None or getattr(push, "returncode", 1) != 0:
         # #1391 mid-run recovery: only an AUTH failure with a refresher available
@@ -937,7 +1018,7 @@ def _publish_green(
         "gh", "pr", "create",
         "--head", branch, "--base", base_ref,
         "--title", title,
-        "--body", f"Resolves #{n}\n\nOpened by the AgentRail runner after a green objective gate.",
+        "--body", _publish_body(reviewability_run_dir, n),
     ])
     if pr is None or getattr(pr, "returncode", 1) != 0:
         # Branch is pushed; a PR may already exist — try to surface its URL.
@@ -946,6 +1027,99 @@ def _publish_green(
         return branch, url, False
     url = (getattr(pr, "stdout", "") or "").strip().splitlines()[-1:] or [""]
     return branch, url[0], False
+
+
+def _publish_body(run_dir: Optional[Path], issue_number: str) -> str:
+    """Use proof-bearing dependency content when this is a dependency run."""
+    fallback = f"Resolves #{issue_number}\n\nOpened by the AgentRail runner after a green objective gate."
+    if run_dir is None:
+        return fallback
+    dependency_run = False
+    try:
+        data = read_json(run_dir / "run.json")
+        dependency_run = isinstance(data.get("dependencyExecution"), dict)
+        ac_path = run_dir / "ac_evidence.json"
+        if ac_path.is_file():
+            ac_data = read_json(ac_path)
+            if isinstance(ac_data, dict):
+                data["acEvidence"] = ac_data
+        if dependency_run:
+            return build_dependency_pr_body(data, issue_ref=issue_number)
+    except (OSError, ValueError, TypeError):
+        # A dependency publication must never fall back to the generic body:
+        # an artifact read/render failure is itself a publication blocker.
+        if dependency_run:
+            raise
+        pass
+    return fallback
+
+
+def _refresh_reviewability_after_commit(
+    runner,
+    repo_dir: Path,
+    run_dir: Path,
+) -> bool:
+    """Refresh the persisted reviewability head after the factory commit.
+
+    Failure is recorded as a fail-closed reviewability decision in run.json.
+    The caller still leaves the local commit available for inspection, but the
+    native runner will refuse to publish it after re-reading that record.
+    """
+    metadata_path = run_dir / "run.json"
+    try:
+        metadata = read_json(metadata_path)
+    except (OSError, ValueError, TypeError):
+        return False
+    evidence = metadata.get("reviewability")
+    if not isinstance(evidence, dict):
+        return False
+
+    try:
+        head = runner.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_dir),
+            env=None,
+            timeout=120,
+            capture_output=True,
+            text=True,
+        )
+        head_sha = (getattr(head, "stdout", "") or "").strip()
+        if getattr(head, "returncode", 1) != 0 or not head_sha:
+            raise RuntimeError("git rev-parse HEAD did not return a commit SHA")
+        artifact_value = metadata.get("reviewabilityEvidenceFile")
+        artifact_path = Path(str(artifact_value)) if artifact_value else run_dir / "reviewability_evidence.json"
+        if not artifact_path.is_absolute():
+            artifact_path = run_dir / artifact_path
+        artifacts.refresh_reviewability_head_sha(
+            artifact_path,
+            metadata_path=metadata_path,
+            head_sha=head_sha,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - publish must fail closed
+        decision = dict(evidence.get("decision") or {})
+        decision.update({
+            "status": "not_testable",
+            "proofComplete": False,
+            "splitRecommended": False,
+            "reasons": [f"could not refresh committed head SHA: {type(exc).__name__}"],
+            "recommendation": "Re-capture the exact committed head before publishing.",
+        })
+        evidence = dict(evidence)
+        evidence["decision"] = decision
+        try:
+            artifact_value = metadata.get("reviewabilityEvidenceFile")
+            artifact_path = Path(str(artifact_value)) if artifact_value else run_dir / "reviewability_evidence.json"
+            if not artifact_path.is_absolute():
+                artifact_path = run_dir / artifact_path
+            artifacts.write_reviewability_evidence(
+                artifact_path,
+                metadata_path=metadata_path,
+                evidence=evidence,
+            )
+        except Exception:  # noqa: BLE001 - the native result remains non-green
+            pass
+        return False
 
 
 # ---------------------------------------------------------------------------

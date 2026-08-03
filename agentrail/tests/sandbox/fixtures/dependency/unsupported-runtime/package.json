@@ -1,0 +1,1 @@
+{"name":"dependency-fixture","packageManager":"pnpm@9","engines":{"node":">=20"},"dependencies":{"left-pad":"^1.3.0"}}

@@ -1993,6 +1993,14 @@ class RunIssueDocsConfigTrailWaiverTests(unittest.TestCase):
         self.target = _make_target(self._tmp.name)
         self.repo = Path(self._tmp.name) / "repo"
         self.repo.mkdir()
+        # Give the fixture the minimum runtime and lockfile evidence required
+        # by the publishable-run reviewability gate. The test still exercises
+        # the docs-only Red-Green waiver; these files are baseline metadata,
+        # not part of the change produced by the execute phase.
+        (self.target / "pyproject.toml").write_text(
+            "[project]\nname = \"pipeline-fixture\"\nversion = \"0.0.0\"\n"
+        )
+        (self.target / "uv.lock").write_text("version = 1\n")
         # Make the target a real git repo with a clean baseline. Ignore the run
         # artifacts the pipeline writes during the run so they don't pollute the
         # change set the gate classifies.

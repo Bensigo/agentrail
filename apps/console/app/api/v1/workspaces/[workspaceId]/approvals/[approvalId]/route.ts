@@ -82,7 +82,14 @@ export async function POST(
   // Regression-pinned by the Telegram webhook route's own suite (which
   // exercises the shared applyAlignmentDecision end-to-end, including the
   // no-queueEntryId no-op) and by this route's tests alongside this file.
-  await applyAlignmentDecision(approval, decision);
+  if (approval.toolName === "dependency_upgrade_contract") {
+    await applyAlignmentDecision(approval, decision, {
+      actorType: "console_user",
+      actorId: session.user.id,
+    });
+  } else {
+    await applyAlignmentDecision(approval, decision);
+  }
 
   return NextResponse.json({ success: true });
 }

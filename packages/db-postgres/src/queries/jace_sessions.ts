@@ -958,6 +958,62 @@ export interface RecordApprovalRequestInput {
   // parked `queue_entries` row this brief is gating. Omitted (stays null) for
   // every other tool, byte-identical to today.
   queueEntryId?: string;
+  /** #1579: the candidate-bound contract this approval may publish. */
+  dependencyContractId?: string;
+}
+
+const REQUIREMENT_REFUSAL_CODES = new Set([
+  "conflicting_acceptance_criteria",
+  "unresolved_blocking_question",
+  "unsupported_environment",
+  "excessive_scope",
+  "missing_proof_path",
+  "unavailable_evidence",
+]);
+
+function requirementEvidenceFromToolInput(input: Record<string, unknown>): {
+  requirementDecision: "accept" | "refuse";
+  requirementTaskFamily: string | null;
+  requirementRefusalCode: string | null;
+  requirementConfidence: { state: "unknown"; basis: string[] } | null;
+} | null {
+  const raw = input["requirementDecision"];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const decision = record["decision"];
+  if (decision !== "accept" && decision !== "refuse") return null;
+
+  const taskFamily =
+    typeof record["taskFamily"] === "string" && record["taskFamily"].trim()
+      ? record["taskFamily"].trim()
+      : null;
+  const rawRefusal = record["refusal"];
+  const refusal =
+    rawRefusal && typeof rawRefusal === "object" && !Array.isArray(rawRefusal)
+      ? (rawRefusal as Record<string, unknown>)
+      : null;
+  const code =
+    refusal && typeof refusal["code"] === "string" && REQUIREMENT_REFUSAL_CODES.has(refusal["code"])
+      ? refusal["code"]
+      : null;
+  if (decision === "refuse" && !code) return null;
+
+  const rawConfidence = record["confidence"];
+  const confidence =
+    rawConfidence && typeof rawConfidence === "object" && !Array.isArray(rawConfidence)
+      ? (rawConfidence as Record<string, unknown>)
+      : null;
+  const basis = Array.isArray(confidence?.["basis"])
+    ? confidence["basis"].filter((item): item is string => typeof item === "string")
+    : [];
+
+  return {
+    requirementDecision: decision,
+    requirementTaskFamily: taskFamily,
+    requirementRefusalCode: code,
+    requirementConfidence:
+      confidence?.["state"] === "unknown" ? { state: "unknown", basis } : null,
+  };
 }
 
 export interface RecordApprovalRequestResult {
@@ -1009,6 +1065,7 @@ export async function recordApprovalRequest(
   }
 
   const callbackToken = randomBytes(8).toString("hex");
+  const requirement = requirementEvidenceFromToolInput(input.toolInput);
 
   const inserted = await db
     .insert(jaceApprovals)
@@ -1024,6 +1081,12 @@ export async function recordApprovalRequest(
       approveOptionId: input.approveOptionId,
       denyOptionId: input.denyOptionId,
       queueEntryId: input.queueEntryId,
+      dependencyContractId: input.dependencyContractId,
+      requirementDecision: requirement?.requirementDecision,
+      requirementTaskFamily: requirement?.requirementTaskFamily,
+      requirementRefusalCode: requirement?.requirementRefusalCode,
+      requirementConfidence: requirement?.requirementConfidence,
+      requirementStatus: requirement ? "pending" : undefined,
     })
     .onConflictDoNothing({
       target: [jaceApprovals.eveSessionId, jaceApprovals.requestId],
@@ -1147,6 +1210,26 @@ export async function resolveApproval(
       status,
       publishedIssueUrl: publishedIssueUrl ?? null,
       resolvedAt: new Date(),
+      requirementStatus: sql`
+        CASE
+          WHEN ${status} = 'approved' AND ${jaceApprovals.requirementDecision} = 'refuse' THEN 'waived'
+          WHEN ${status} = 'approved' AND ${jaceApprovals.requirementDecision} = 'accept' THEN 'accepted'
+          WHEN ${status} = 'denied' AND ${jaceApprovals.requirementDecision} IS NOT NULL THEN 'denied'
+          ELSE ${jaceApprovals.requirementStatus}
+        END
+      `,
+      requirementOverride: sql`
+        CASE
+          WHEN ${status} = 'approved' AND ${jaceApprovals.requirementDecision} = 'refuse' THEN true
+          ELSE ${jaceApprovals.requirementOverride}
+        END
+      `,
+      requirementOverrideAt: sql`
+        CASE
+          WHEN ${status} = 'approved' AND ${jaceApprovals.requirementDecision} = 'refuse' THEN now()
+          ELSE ${jaceApprovals.requirementOverrideAt}
+        END
+      `,
     })
     .where(and(eq(jaceApprovals.id, id), eq(jaceApprovals.status, "pending")))
     .returning({ id: jaceApprovals.id });

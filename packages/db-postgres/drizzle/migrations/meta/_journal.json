@@ -498,6 +498,34 @@
       "when": 1787600000000,
       "tag": "0071_judgment_events",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1787700000000,
+      "tag": "0072_dependency_watches",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1787800000000,
+      "tag": "0073_requirement_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1787900000000,
+      "tag": "0074_dependency_upgrade_contracts",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1788000000000,
+      "tag": "0075_dependency_watch_auto_manager",
+      "breakpoints": true
     }
   ]
 }

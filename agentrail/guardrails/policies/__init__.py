@@ -32,6 +32,7 @@ from agentrail.guardrails.policies import input_contract  # noqa: F401  (registe
 from agentrail.guardrails.policies import red_green  # noqa: F401  (registers on import)
 from agentrail.guardrails.policies import sandbox_enforcement  # noqa: F401  (registers on import)
 from agentrail.guardrails.policies import check_runner  # noqa: F401  (registers on import)
+from agentrail.guardrails.policies import dependency_upgrade  # noqa: F401  (registers on import)
 
 __all__ = [
     "objective",
@@ -43,4 +44,5 @@ __all__ = [
     "red_green",
     "sandbox_enforcement",
     "check_runner",
+    "dependency_upgrade",
 ]

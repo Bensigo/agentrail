@@ -6,6 +6,7 @@ import {
   getRepositoryByName,
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
+  triggerDependencyWatchesForPush,
 } from "@agentrail/db-postgres";
 
 /**
@@ -121,6 +122,40 @@ function ignored(reason?: string): NextResponse {
   );
 }
 
+async function handleDependencyPush(body: Record<string, unknown>): Promise<NextResponse> {
+  const installation = body.installation;
+  const repository = body.repository;
+  const installationId = installation && typeof installation === "object"
+    ? (installation as Record<string, unknown>).id
+    : undefined;
+  const fullName = repository && typeof repository === "object"
+    ? (repository as Record<string, unknown>).full_name
+    : undefined;
+  if (typeof installationId !== "number" || typeof fullName !== "string") return ignored();
+
+  const workspace = await getWorkspaceByGithubInstallationId(installationId);
+  if (!workspace || !enrolledWorkspaceIds().has(workspace.workspaceId)) return ignored();
+  const connectedRepo = await getRepositoryByName(workspace.workspaceId, fullName);
+  if (!connectedRepo) return ignored();
+
+  const changedPaths = new Set<string>();
+  for (const commit of Array.isArray(body.commits) ? body.commits : []) {
+    if (!commit || typeof commit !== "object") continue;
+    for (const key of ["added", "modified", "removed"] as const) {
+      const paths = (commit as Record<string, unknown>)[key];
+      if (Array.isArray(paths)) {
+        for (const path of paths) if (typeof path === "string") changedPaths.add(path);
+      }
+    }
+  }
+  const triggered = await triggerDependencyWatchesForPush(
+    workspace.workspaceId,
+    connectedRepo.id,
+    [...changedPaths],
+  );
+  return NextResponse.json({ ok: true, dependency_watches_triggered: triggered.length, observation_only: true });
+}
+
 export async function POST(request: NextRequest) {
   // (1) fail closed BEFORE the body is even read off the stream.
   const secret = process.env["GITHUB_APP_WEBHOOK_SECRET"];
@@ -139,10 +174,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
-  // Only `pull_request` deliveries carry work here — every other GitHub
+  // Only `pull_request` and enrolled dependency-watch `push` deliveries carry work here — every other GitHub
   // event this App may be subscribed to (ping, issues, push, …) is a benign
   // ignore, decided off the header alone, no body parsing needed.
-  if (request.headers.get(EVENT_HEADER) !== "pull_request") {
+  const githubEvent = request.headers.get(EVENT_HEADER);
+  if (githubEvent !== "pull_request" && githubEvent !== "push") {
     return ignored();
   }
 
@@ -158,6 +194,8 @@ export async function POST(request: NextRequest) {
     return ignored();
   }
   const body = payload as Record<string, unknown>;
+
+  if (githubEvent === "push") return handleDependencyPush(body);
 
   const action = typeof body.action === "string" ? body.action : "";
   const isMergedClose = action === "closed" &&

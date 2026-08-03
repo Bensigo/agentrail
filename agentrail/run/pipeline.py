@@ -56,6 +56,7 @@ from agentrail.run.output_enforcer import (
 from agentrail.run.layer_overrides import layer_override
 from agentrail.run.pricing import cost_breakdown, cost_usd, resolve_price_source
 from agentrail.run.proc import run_with_timeout
+from agentrail.run import reviewability
 from agentrail.run import best_of_n as bestofn
 from agentrail.run import critic as critic_mod
 from agentrail.run import verifier as verifier_mod
@@ -392,6 +393,23 @@ def _independent_review_warning(agent: str, status: str) -> str:
         "(#1270).\n"
         f"{bar}\n"
     )
+
+
+def _load_dependency_evidence_for_gate(run_dir: Path) -> Optional[Dict[str, Any]]:
+    """Load the pre-implementation dependency artifact, if this is one.
+
+    A malformed artifact is intentionally converted to an invalid object so the
+    Objective Gate records a red dependency-evidence row instead of treating a
+    read failure as absence of a dependency check.
+    """
+    path = run_dir / "dependency_evidence.json"
+    if not path.exists():
+        return None
+    try:
+        payload = read_json(path)
+    except Exception as exc:  # noqa: BLE001 - fail closed at the gate seam
+        return {"invalid": f"dependency evidence could not be read: {type(exc).__name__}"}
+    return payload
 
 
 def finalize_objective_gate(
@@ -1489,6 +1507,76 @@ def _head_sha(target_dir: Path) -> str:
         return ""
 
 
+def _reviewability_environment_rung() -> str:
+    """Resolve the environment rung actually hosting this factory run.
+
+    The runner may provide a more specific rung (for example ``preview``).
+    Direct/local factory runs default to ``sandbox``; an unknown explicit
+    value is preserved so the evidence evaluator fails closed rather than
+    silently relabeling it as a verified environment.
+    """
+    return (os.environ.get("AGENTRAIL_ENVIRONMENT_RUNG") or "sandbox").strip() or "unknown"
+
+
+def _reviewability_applies(target_dir: Path) -> bool:
+    """Require PR reviewability only for an actual Git worktree.
+
+    The factory always runs against a cloned Git repository. A few local
+    pipeline callers intentionally use a filesystem fixture without Git to
+    exercise phase orchestration; those runs cannot produce a PR diff and are
+    not candidates for native publish. Keeping that compatibility seam here
+    does not relax the reviewability contract for any publishable run.
+    """
+    return (target_dir / ".git").exists()
+
+
+def _reviewability_detail(evidence: reviewability.ReviewabilityEvidence) -> str:
+    decision = evidence.decision
+    diff = evidence.diff
+    env = evidence.environment
+    return (
+        f"status={decision.status}; proof={'complete' if decision.proof_complete else 'incomplete'}; "
+        f"{len(diff.changed_files)} files/{diff.changed_lines} lines; "
+        f"environment={env.environment_rung}; "
+        f"recommendation={decision.recommendation}"
+    )
+
+
+def apply_reviewability_gate(
+    gate_result: GateResult,
+    evidence: reviewability.ReviewabilityEvidence,
+) -> GateResult:
+    """Fold reviewability evidence into the single Objective Gate verdict.
+
+    Reviewability is a blocking gate. Appending a failed reason to a passing
+    verdict is insufficient because ``ObjectiveVerdict`` derives ``verdict``
+    and ``isGreen`` from its state. Return a new failed verdict whenever the
+    evidence is incomplete, preserving every existing check and evidence row.
+    """
+    evidence_rows = [
+        *gate_result.evidence,
+        Evidence(
+            name="reviewability",
+            passed=evidence.decision.proof_complete,
+            detail=_reviewability_detail(evidence),
+        ),
+    ]
+    failed_reasons = list(gate_result.failed_reasons)
+    if not evidence.decision.proof_complete:
+        reason = (
+            f"reviewability {evidence.decision.status}: "
+            + "; ".join(evidence.decision.reasons)
+        )
+        if reason not in failed_reasons:
+            failed_reasons.append(reason)
+    return dataclasses.replace(
+        gate_result,
+        state="fail" if not evidence.decision.proof_complete else gate_result.state,
+        evidence=evidence_rows,
+        failed_reasons=failed_reasons,
+    )
+
+
 def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
                   agent: str, command: str, repo_dir: Path,
                   log_dir: Optional[Path] = None, run_id: str = "",
@@ -2046,7 +2134,56 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         ac_coverage_detail=(ac_detail if ac_mode == "enforce" and ac_texts else None),
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
+        dependency_evidence=_load_dependency_evidence_for_gate(rc.run_dir),
     )
+
+    # Reviewability is a product-level constraint for publishable Git runs,
+    # not a prose claim. Capture it at the same finalization seam as the
+    # Objective Gate so the exact diff, environment posture, and recommendation
+    # survive in both the standalone artifact and run.json. A collection
+    # failure is represented as an incomplete decision; it can never leave an
+    # otherwise-green Git run green by accident. Non-Git local orchestration
+    # fixtures have no PR surface and retain their historical behavior.
+    if _reviewability_applies(target_dir):
+        try:
+            reviewability_evidence = reviewability.collect_reviewability_evidence(
+                target_dir,
+                verification_commands=tuple(check.command for check in declared),
+                base_ref=os.environ.get("AGENTRAIL_BASE_REF"),
+                expected_head_sha=os.environ.get("AGENTRAIL_EXPECTED_HEAD_SHA"),
+                environment_rung=_reviewability_environment_rung(),
+            )
+        except Exception as exc:  # noqa: BLE001 - evidence must fail closed
+            failed_diff = reviewability.make_diff_evidence(
+                base_sha="",
+                head_sha="",
+                capture_error=f"reviewability collection failed: {type(exc).__name__}",
+            )
+            failed_environment = reviewability.EnvironmentEvidence(
+                package_manager=None,
+                runtime=None,
+                lockfile_hash=None,
+                verification_commands=tuple(check.command for check in declared),
+                environment_rung="unknown",
+                runtime_evidence_available=False,
+            )
+            failed_budget = reviewability.reviewability_budget(target_dir)
+            reviewability_evidence = reviewability.ReviewabilityEvidence(
+                diff=failed_diff,
+                environment=failed_environment,
+                budget=failed_budget,
+                decision=reviewability.evaluate_reviewability(
+                    failed_diff, failed_environment, failed_budget
+                ),
+            )
+
+        gate_result = apply_reviewability_gate(gate_result, reviewability_evidence)
+
+        artifacts.write_reviewability_evidence(
+            rc.run_dir / "reviewability_evidence.json",
+            metadata_path=metadata_file,
+            evidence=reviewability_evidence.to_dict(),
+        )
 
     # Observe mode: a NON-GATING one-line summary joins the gate evidence so
     # run.json surfaces coverage without new readers (spec §5). Appended

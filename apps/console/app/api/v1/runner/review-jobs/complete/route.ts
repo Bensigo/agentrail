@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { completeReviewJob } from "@agentrail/db-postgres";
+import {
+  appendChangeRecordEvent,
+  completeReviewJob,
+  findOrCreateChangeRecord,
+} from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 import { sendWorkspaceNotification } from "../../result/notify";
 
@@ -67,6 +71,8 @@ interface CompleteBody {
   evidenceKeys?: string[];
 }
 
+type CompletedReviewJob = Awaited<ReturnType<typeof completeReviewJob>>;
+
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
@@ -115,6 +121,56 @@ function buildNotifyText(
   return line || url;
 }
 
+function positiveIntegerOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+async function appendReviewPostedChangeRecordEvent(
+  job: NonNullable<CompletedReviewJob>,
+  body: CompleteBody
+): Promise<void> {
+  const prNumber = positiveIntegerOrNull(job.prNumber);
+  if (!job.workspaceId || !job.repo || prNumber == null) {
+    console.warn(
+      `[review-jobs/complete] change-record attach skipped for job ${body.jobId}: missing workspace/repo/pr anchor`
+    );
+    return;
+  }
+
+  try {
+    const record = await findOrCreateChangeRecord({
+      workspaceId: job.workspaceId,
+      repo: job.repo,
+      prNumber,
+      headShas: job.headSha ? [job.headSha] : undefined,
+    });
+    await appendChangeRecordEvent({
+      recordId: record.id,
+      eventKey: `review:posted:${job.id}`,
+      stage: "review",
+      actor: "reviewer-of-record",
+      payloadRef: {
+        kind: "review_job",
+        jobId: job.id,
+        repo: job.repo,
+        prNumber,
+        headSha: job.headSha,
+        postedReviewUrl: body.postedReviewUrl ?? job.postedReviewUrl ?? null,
+        verdict: body.verdict ?? job.verdict ?? null,
+        evidenceKeys: body.evidenceKeys ?? job.evidenceKeys ?? null,
+      },
+      at: job.updatedAt instanceof Date ? job.updatedAt : undefined,
+    });
+  } catch (err) {
+    console.error(
+      `[review-jobs/complete] change-record attach failed for job ${body.jobId}:`,
+      err
+    );
+  }
+}
+
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
   if (authError) return authError;
@@ -157,6 +213,8 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.outcome === "posted") {
+    await appendReviewPostedChangeRecordEvent(result, body);
+
     try {
       await sendWorkspaceNotification(
         result.workspaceId,

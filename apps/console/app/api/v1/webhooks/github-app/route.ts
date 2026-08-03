@@ -4,6 +4,8 @@ import {
   enqueueReviewJob,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
 } from "@agentrail/db-postgres";
 
 /**
@@ -157,7 +159,11 @@ export async function POST(request: NextRequest) {
   const body = payload as Record<string, unknown>;
 
   const action = typeof body.action === "string" ? body.action : "";
-  if (!TRIGGER_ACTIONS.has(action)) {
+  const isMergedClose = action === "closed" &&
+    body.pull_request != null &&
+    typeof body.pull_request === "object" &&
+    (body.pull_request as Record<string, unknown>).merged === true;
+  if (!TRIGGER_ACTIONS.has(action) && !isMergedClose) {
     return ignored();
   }
 
@@ -215,6 +221,42 @@ export async function POST(request: NextRequest) {
 
   if (typeof headSha !== "string" || typeof prNumber !== "number") {
     return ignored();
+  }
+
+  if (isMergedClose) {
+    const mergeCommitSha =
+      typeof prObj.merge_commit_sha === "string" ? prObj.merge_commit_sha : null;
+    try {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: workspace.workspaceId,
+        repo: repoFullName,
+        prNumber,
+        headShas: [headSha],
+        mergedSha: mergeCommitSha,
+        state: "merged",
+      });
+      await appendChangeRecordEvent({
+        recordId: record.id,
+        eventKey: `merge:pr:${prNumber}:merged`,
+        stage: "merge",
+        actor: "github-webhook",
+        payloadRef: {
+          kind: "merge",
+          repo: repoFullName,
+          prNumber,
+          url:
+            typeof prObj.html_url === "string" ? prObj.html_url : null,
+          mergeCommitSha,
+          outcome: "merged",
+        },
+      });
+    } catch (error) {
+      // A signed webhook is acknowledged even when the durable attachment is
+      // temporarily unavailable; GitHub may redeliver, and the event key is
+      // idempotent when it does.
+      console.error("[github-app/webhook] merge change-record attach failed:", error);
+    }
+    return NextResponse.json({ ok: true, merged: true });
   }
 
   const result = await enqueueReviewJob({

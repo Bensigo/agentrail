@@ -75,7 +75,7 @@ async function appendMergeChangeRecordEvent({
     });
     await appendChangeRecordEvent({
       recordId: record.id,
-      eventKey: `merge:result:${queueEntryId}:${outcome}`,
+      eventKey: `merge:pr:${parsed.number}:${outcome}`,
       stage: "merge",
       actor: "runner-result",
       payloadRef: {

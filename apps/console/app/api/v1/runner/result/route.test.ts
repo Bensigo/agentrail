@@ -594,7 +594,7 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     });
     expect(appendChangeRecordEvent).toHaveBeenCalledWith({
       recordId: "change-1",
-      eventKey: "merge:result:qe-1:merged",
+      eventKey: "merge:pr:42:merged",
       stage: "merge",
       actor: "runner-result",
       payloadRef: expect.objectContaining({
@@ -740,7 +740,7 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     });
     expect(appendChangeRecordEvent).toHaveBeenCalledWith({
       recordId: "change-1",
-      eventKey: "merge:result:qe-1:merge_failed",
+      eventKey: "merge:pr:42:merge_failed",
       stage: "merge",
       actor: "runner-result",
       payloadRef: expect.objectContaining({ outcome: "merge_failed", prNumber: 42 }),

@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
@@ -315,6 +315,28 @@ export type ChangeRecordTimeline = {
   record: ChangeRecordRow;
   events: ChangeRecordEventRow[];
 };
+
+export type ListChangeRecordsInput = {
+  workspaceId: string;
+  repo?: string | null;
+  limit?: number;
+};
+
+/** List record headers for the workspace index without loading timelines. */
+export async function listChangeRecords(
+  input: ListChangeRecordsInput
+): Promise<ChangeRecordRow[]> {
+  const predicates = [eq(changeRecords.workspaceId, input.workspaceId)];
+  const repo = input.repo?.trim();
+  if (repo) predicates.push(eq(changeRecords.repo, repo));
+
+  return db
+    .select()
+    .from(changeRecords)
+    .where(and(...predicates))
+    .orderBy(desc(changeRecords.updatedAt), desc(changeRecords.createdAt))
+    .limit(Math.min(Math.max(Math.trunc(input.limit ?? 100), 1), 200));
+}
 
 export async function readChangeRecordTimelineByPr(input: {
   workspaceId: string;

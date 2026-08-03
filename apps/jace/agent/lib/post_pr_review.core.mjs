@@ -69,6 +69,7 @@
 import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 
 export const PR_REVIEW_PATH = "/api/v1/runner/pr-review";
+export const PR_CHANGE_RECORD_PATH = "/api/v1/runner/change-record/pr";
 
 // Backstops against context flooding, not content limits — mirrors
 // sanitize-untrusted.core.mjs's FIELD_CAPS idiom for create_issue's fields.
@@ -571,6 +572,93 @@ export function buildPrReviewUrl(baseUrl) {
   return `${baseUrl}${PR_REVIEW_PATH}`;
 }
 
+export function buildPrChangeRecordUrl(baseUrl) {
+  return `${baseUrl}${PR_CHANGE_RECORD_PATH}`;
+}
+
+function isRenderableStageEvidence(item) {
+  return (
+    item &&
+    typeof item === "object" &&
+    typeof item.stage === "string" &&
+    item.stage.trim().length > 0 &&
+    typeof item.label === "string" &&
+    item.label.trim().length > 0
+  );
+}
+
+function sanitizeChangeRecordUrl(url) {
+  if (typeof url !== "string") return "";
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? sanitizeEvidenceUrl(trimmed) : "";
+}
+
+export function renderChangeRecordBlock(changeRecord) {
+  if (!changeRecord || typeof changeRecord !== "object") return "";
+  if (changeRecord.found !== true) return "";
+  const record = changeRecord.record;
+  if (!record || typeof record !== "object" || typeof record.id !== "string") return "";
+  const workspaceId = typeof record.workspaceId === "string" ? record.workspaceId.trim() : "";
+  const id = record.id.trim();
+  if (!workspaceId || !id) return "";
+
+  const baseUrl = sanitizeChangeRecordUrl(changeRecord.consoleBaseUrl);
+  const path = `/dashboard/${encodeURIComponent(workspaceId)}/changes/${encodeURIComponent(id)}`;
+  const link = baseUrl ? `${baseUrl}${path}` : path;
+  const lines = ["**Change Record**", `- Record: [${id}](${link})`];
+  const evidence = Array.isArray(changeRecord.stageEvidence)
+    ? changeRecord.stageEvidence.filter(isRenderableStageEvidence).slice(0, 6)
+    : [];
+  if (evidence.length > 0) {
+    for (const item of evidence) {
+      const stage = stripLineBreaks(item.stage.trim());
+      const label = stripLineBreaks(item.label.trim());
+      const url = sanitizeChangeRecordUrl(item.url);
+      lines.push(url ? `- ${stage}: [${label}](${url})` : `- ${stage}: ${label}`);
+    }
+  } else {
+    lines.push("- Lifecycle evidence: not attached yet");
+  }
+  return lines.join("\n");
+}
+
+export function composeSummaryWithChangeRecord(summary, changeRecord) {
+  const base = String(summary ?? "");
+  const block = renderChangeRecordBlock(changeRecord);
+  if (!block) return base;
+  const sep = base.trim().length > 0 ? "\n\n" : "";
+  const full = `${base}${sep}${block}`;
+  if (full.length <= SUMMARY_MAX_LEN) return full;
+  const budget = Math.max(0, SUMMARY_MAX_LEN - sep.length - block.length - 1);
+  return `${base.slice(0, budget)}…${sep}${block}`;
+}
+
+async function fetchPrChangeRecord({ cfg, sessionId, repo, prNumber, transport }) {
+  let res;
+  try {
+    res = await transport(buildPrChangeRecordUrl(cfg.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ eveSessionId: sessionId, repo, prNumber }),
+    });
+  } catch {
+    return null;
+  }
+  const status = Number(res && res.status);
+  if (!Number.isFinite(status) || status < 200 || status >= 300) return null;
+  try {
+    const body = await res.json();
+    if (!body || typeof body !== "object" || body.found !== true) return null;
+    return { ...body, consoleBaseUrl: cfg.baseUrl };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Map an HTTP status to an outcome. 2xx -> ok; everything else -> a specific
  * degraded reason. No status triggers a retry from here — the console
@@ -706,7 +794,9 @@ export function sanitizeReviewInput(summary, comments) {
  *           judgment?: unknown,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
- *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
+ *             Promise<{ status: number, json: () => Promise<unknown> }>,
+ *           changeRecordTransport?: null | ((url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
+ *             Promise<{ status: number, json: () => Promise<unknown> }>) }} args
  */
 export async function runPostPrReview({
   eveSessionId,
@@ -718,6 +808,7 @@ export async function runPostPrReview({
   judgment = null,
   env = {},
   transport,
+  changeRecordTransport = null,
 }) {
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) return failure("config_missing");
@@ -738,7 +829,21 @@ export async function runPostPrReview({
   // so their text (untrusted-derived, same as summary/comments) rides the
   // same sanitizer as everything else rather than reaching GitHub unhardened.
   const { postable, dropped } = filterPostableComments(comments);
-  const safe = sanitizeReviewInput(composeSummary(summary, acCoverage, judgment), postable);
+  const changeRecord =
+    typeof changeRecordTransport === "function"
+      ? await fetchPrChangeRecord({
+          cfg,
+          sessionId,
+          repo: repoTrimmed,
+          prNumber: prNum,
+          transport: changeRecordTransport,
+        })
+      : null;
+  const composed = composeSummaryWithChangeRecord(
+    composeSummary(summary, acCoverage, judgment),
+    changeRecord,
+  );
+  const safe = sanitizeReviewInput(composed, postable);
 
   // Nothing worth posting and nothing to say: report it honestly rather than
   // spending a call the console would 400 anyway.

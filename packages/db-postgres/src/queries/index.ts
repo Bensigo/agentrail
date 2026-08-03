@@ -3149,6 +3149,7 @@ export {
   changeRecordEventId,
   findOrCreateChangeRecord,
   appendChangeRecordEvent,
+  readChangeRecordTimelineByPr,
   readChangeRecordTimeline,
   type ChangeRecordAnchor,
   type FindOrCreateChangeRecordInput,

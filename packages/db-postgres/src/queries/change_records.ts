@@ -316,6 +316,34 @@ export type ChangeRecordTimeline = {
   events: ChangeRecordEventRow[];
 };
 
+export async function readChangeRecordTimelineByPr(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+}): Promise<ChangeRecordTimeline | null> {
+  const records = await db
+    .select()
+    .from(changeRecords)
+    .where(
+      and(
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(changeRecords.repo, input.repo),
+        eq(changeRecords.prNumber, input.prNumber)
+      )
+    )
+    .limit(1);
+  const record = records[0];
+  if (!record) return null;
+
+  const events = await db
+    .select()
+    .from(changeRecordEvents)
+    .where(eq(changeRecordEvents.recordId, record.id))
+    .orderBy(asc(changeRecordEvents.at), asc(changeRecordEvents.createdAt));
+
+  return { record, events };
+}
+
 export async function readChangeRecordTimeline(input: {
   workspaceId: string;
   recordId: string;

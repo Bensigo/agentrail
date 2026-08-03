@@ -107,6 +107,8 @@ export function extractGoalSlug(text) {
 
 export const GOAL_FILE_CHECK_PATH = "/api/v1/runner/goals/file-check";
 export const GOAL_FILE_RECORDED_PATH = "/api/v1/runner/goals/file-recorded";
+export const JUDGMENT_CONSTRAINTS_PATH = "/api/v1/runner/judgment-constraints/check";
+export const JUDGMENT_CONSTRAINTS_MODE_ENV = "AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE";
 
 /** @param {string} baseUrl — already trimmed + de-slashed */
 export function buildGoalFileCheckUrl(baseUrl) {
@@ -121,6 +123,97 @@ export function buildGoalFileRecordedUrl(baseUrl) {
 /** The generic, safe-to-relay refusal text used whenever the pre-file leash check itself cannot be trusted (infra failure) — see `checkGoalFileLeash`'s own "fail CLOSED" contract for why this is a refusal, not a silent allow. */
 export const GOAL_CHECK_INFRA_FAILURE_MESSAGE =
   "couldn't verify this goal's leash before filing — try again in a moment";
+
+export const JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE =
+  "couldn't verify workspace judgment constraints before filing — try again in a moment";
+
+export function buildJudgmentConstraintsCheckUrl(baseUrl) {
+  return `${baseUrl}${JUDGMENT_CONSTRAINTS_PATH}`;
+}
+
+function judgmentConstraintMode(env = {}) {
+  const value = String(env[JUDGMENT_CONSTRAINTS_MODE_ENV] ?? "").trim().toLowerCase();
+  return value === "block" || value === "warn" ? value : "off";
+}
+
+/**
+ * Check the hardened issue proposal against workspace-scoped rejected
+ * approaches. The rollout mode is explicit: off (default), warn, or block.
+ * A block-mode transport/config/response failure is a refusal, never an
+ * implicit allow; warn mode records the warning and preserves filing.
+ */
+export async function checkJudgmentConstraints({
+  eveSessionId,
+  repo,
+  proposalText,
+  env = {},
+  transport,
+}) {
+  const cfg = resolveConsoleConfig(env);
+  if (!cfg.ok) return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+
+  const sessionId = String(eveSessionId ?? "").trim();
+  if (!sessionId) return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+
+  let res;
+  try {
+    res = await transport(buildJudgmentConstraintsCheckUrl(cfg.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        eveSessionId: sessionId,
+        ...(repo ? { repo } : {}),
+        text: proposalText,
+      }),
+    });
+  } catch {
+    return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+  }
+
+  const status = Number(res && res.status);
+  if (!Number.isFinite(status) || status < 200 || status >= 300) {
+    return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+  }
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+  }
+  if (!body || typeof body !== "object" || typeof body.allowed !== "boolean") {
+    return { allow: false, reason: JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE };
+  }
+
+  const blocks = Array.isArray(body.blocks) ? body.blocks : [];
+  const reason = blocks[0] && typeof blocks[0].reason === "string"
+    ? blocks[0].reason
+    : "The proposal conflicts with a previously rejected workspace approach.";
+  return { allow: body.allowed, reason, blocks };
+}
+
+async function enforceJudgmentConstraints({ eveSessionId, repo, proposalText, env, transport }) {
+  const mode = judgmentConstraintMode(env);
+  if (mode === "off") return { allow: true };
+  const result = await checkJudgmentConstraints({
+    eveSessionId,
+    repo,
+    proposalText,
+    env,
+    transport,
+  });
+  if (result.allow || mode === "warn") {
+    if (!result.allow && mode === "warn") {
+      console.warn("[create_issue] judgment constraint warning:", result.reason);
+    }
+    return { allow: true };
+  }
+  return result;
+}
 
 /**
  * THE pre-file leash gate. Called by `runCreateIssue` BEFORE it ever shells
@@ -605,6 +698,7 @@ export async function stampCreatedIssueUrl({
  * @param {Function} [input.stampTransport] - test-only: inject the stamp mechanism's HTTP transport.
  * @param {Function} [input.goalCheckTransport] - #1289 test-only: inject the pre-file leash-check's HTTP transport.
  * @param {Function} [input.goalRecordTransport] - #1289 test-only: inject the post-file bookkeeping record's HTTP transport.
+ * @param {Function} [input.constraintCheckTransport] - E2 test-only: inject the judgment-constraint check transport.
  * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string } | { blocked: true, message: string }>}
  */
 export async function runCreateIssue({
@@ -623,6 +717,7 @@ export async function runCreateIssue({
   stampTransport,
   goalCheckTransport,
   goalRecordTransport,
+  constraintCheckTransport,
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
@@ -645,6 +740,20 @@ export async function runCreateIssue({
   // — otherwise a mass-ping token or hidden channel in a researcher-tainted
   // title would reach GitHub unfiltered.
   const safeTitle = hardenUntrusted(title, { maxLen: FIELD_CAPS.title });
+
+  const judgmentCheck = await enforceJudgmentConstraints({
+    eveSessionId,
+    repo: resolvedRepo,
+    proposalText: `${safeTitle}\n${body}`,
+    env: resolvedEnv,
+    transport: constraintCheckTransport ?? realStampTransport,
+  });
+  if (!judgmentCheck.allow) {
+    return {
+      blocked: true,
+      message: judgmentCheck.reason ?? JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE,
+    };
+  }
 
   // #1289 (Jace goal loop, adversarial-review fix) — THE PRE-FILE LEASH
   // GATE. Detect a goal stamp in the FINAL, already-hardened title+body

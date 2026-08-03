@@ -145,6 +145,72 @@ export type ListJudgmentEventsInput = {
   order?: "asc" | "desc";
 };
 
+export type JudgmentConstraint = {
+  eventId: string;
+  eventKey: string;
+  terms: string[];
+  reason: string;
+};
+
+/**
+ * Extract the deterministic constraint contract from a rejected approach.
+ * Producers should write `payload.blockedTerms` as the non-empty phrases that
+ * must all occur before the approach is considered a match. Malformed legacy
+ * rows are ignored rather than becoming accidental global blockers.
+ */
+export function parseJudgmentConstraint(event: JudgmentEventRow): JudgmentConstraint | null {
+  const payload = event.payload;
+  const rawTerms = payload.blockedTerms;
+  if (!Array.isArray(rawTerms)) return null;
+  const terms = Array.from(
+    new Set(
+      rawTerms
+        .filter((term): term is string => typeof term === "string")
+        .map((term) => term.trim().toLocaleLowerCase())
+        .filter((term) => term.length >= 3)
+    )
+  );
+  if (terms.length === 0) return null;
+  const reason = typeof payload.reason === "string" && payload.reason.trim()
+    ? payload.reason.trim()
+    : "This approach was previously rejected by the workspace.";
+  return { eventId: event.id, eventKey: event.eventKey, terms, reason };
+}
+
+export async function listJudgmentConstraints(input: {
+  workspaceId: string;
+  repo: string;
+}): Promise<JudgmentConstraint[]> {
+  const events = await listJudgmentEvents({
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    type: "rejected_approach",
+    order: "asc",
+    limit: 500,
+  });
+  return events.flatMap((event) => {
+    const constraint = parseJudgmentConstraint(event);
+    return constraint ? [constraint] : [];
+  });
+}
+
+export type JudgmentConstraintMatch = JudgmentConstraint & { matched: true };
+
+export function evaluateJudgmentConstraints(input: {
+  proposalText: string;
+  constraints: readonly JudgmentConstraint[];
+}): { allowed: boolean; blocks: JudgmentConstraintMatch[]; warnings: string[] } {
+  const proposal = input.proposalText.trim().toLocaleLowerCase();
+  const blocks = input.constraints
+    .filter((constraint) => constraint.terms.every((term) => proposal.includes(term)))
+    .map((constraint) => ({ ...constraint, matched: true as const }));
+  return {
+    allowed: blocks.length === 0,
+    blocks,
+    warnings: [],
+  };
+}
+
 export async function listJudgmentEvents(
   input: ListJudgmentEventsInput
 ): Promise<JudgmentEventRow[]> {

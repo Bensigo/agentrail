@@ -3165,6 +3165,11 @@ export {
   judgmentEventId,
   appendJudgmentEvent,
   listJudgmentEvents,
+  listJudgmentConstraints,
+  evaluateJudgmentConstraints,
+  parseJudgmentConstraint,
   type AppendJudgmentEventInput,
   type ListJudgmentEventsInput,
+  type JudgmentConstraint,
+  type JudgmentConstraintMatch,
 } from "./judgment_events.js";

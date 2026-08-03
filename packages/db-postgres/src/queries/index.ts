@@ -3133,9 +3133,12 @@ export {
   recordReviewEvent,
   recordHumanReviewTime,
   getReviewMetrics,
+  getReviewMetricsReport,
   type RecordReviewEventInput,
   type RecordReviewEventResult,
   type ReviewMetricsQuery,
+  type ReviewMetricsReportQuery,
+  type ReviewMetricsReport,
 } from "./review_events.js";
 
 // Reviewer of Record queue (Arc B §2-§3, spec

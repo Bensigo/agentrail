@@ -168,21 +168,12 @@ export async function findOrCreateChangeRecord(
 
     if (issueRecord && prRecord && issueRecord.id !== prRecord.id) {
       await tx.execute(sql`
-        UPDATE change_records
-        SET pr_number = COALESCE(pr_number, ${input.prNumber ?? null}),
-            head_shas = ${mergeHeadShasSql(headShas)},
-            merged_sha = COALESCE(${input.mergedSha ?? null}, merged_sha),
-            state = COALESCE(${input.state ?? null}, state),
-            updated_at = now()
-        WHERE id = ${issueRecord.id as string}
-      `);
-      await tx.execute(sql`
         DELETE FROM change_record_events old
         WHERE old.record_id = ${prRecord.id as string}
           AND EXISTS (
             SELECT 1 FROM change_record_events kept
             WHERE kept.record_id = ${issueRecord.id as string}
-              AND kept.event_key = old.event_key
+          AND kept.event_key = old.event_key
           )
       `);
       await tx.execute(sql`
@@ -193,6 +184,19 @@ export async function findOrCreateChangeRecord(
       await tx.execute(sql`
         DELETE FROM change_records
         WHERE id = ${prRecord.id as string}
+      `);
+      const mergedHeadShas = normalizeHeadShas([
+        ...headShas,
+        ...((prRecord.head_shas as string[] | null | undefined) ?? []),
+      ]);
+      await tx.execute(sql`
+        UPDATE change_records
+        SET pr_number = COALESCE(pr_number, ${input.prNumber ?? null}),
+            head_shas = ${mergeHeadShasSql(mergedHeadShas)},
+            merged_sha = COALESCE(${input.mergedSha ?? null}, merged_sha),
+            state = COALESCE(${input.state ?? null}, state),
+            updated_at = now()
+        WHERE id = ${issueRecord.id as string}
       `);
       const rows = Array.from(
         await tx.execute(sql`

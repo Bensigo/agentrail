@@ -1,11 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Radio, AlertCircle, CheckCircle2, X } from "lucide-react";
+import {
+  Radio,
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ExternalLink,
+  X,
+} from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   capabilitySummary,
+  shouldShowOauthSetupHint,
+  validateConnectorCredential,
+  type ConnectorConnectMeta,
   type ConnectorView,
 } from "./connector-helpers";
 
@@ -202,15 +212,131 @@ function OauthConnectButton({
 }
 
 // --------------------------------------------------------------------------- //
-// Secret connector management — the shared broker action for connectors whose
-// catalog kind is currently represented as `connectMethod: "secret"`.
+// Setup details are deliberately behind the first Connect action. The user
+// starts every connector from the same place, but the broker is honest about
+// what happens next: OAuth, an API credential, or a self-hosted endpoint.
 // --------------------------------------------------------------------------- //
+function ConnectionPathSummary({ connector }: { connector: ConnectorView }) {
+  const connection = connector.connection;
+  if (!connection) return null;
+
+  const isSelfHosted = connection.supportedDeployments.includes("self-hosted");
+  let title: string;
+  let detail: string;
+
+  if (connection.mode === "direct-oauth") {
+    title = connector.oauthReady ? "Hosted OAuth" : "Hosted OAuth not enabled";
+    detail = connector.oauthReady
+      ? "Connect opens the provider's consent screen and returns you here."
+      : connection.manualFallback
+        ? "This deployment will use the provider credential path instead."
+        : "A workspace administrator must configure this provider first.";
+  } else if (connection.mode === "remote-mcp-oauth") {
+    title = connector.oauthReady
+      ? "Hosted MCP · OAuth"
+      : connection.manualFallback
+        ? "Hosted MCP · credential fallback"
+        : "Hosted MCP · OAuth not enabled";
+    detail = connector.oauthReady
+      ? "Jace connects to the provider's hosted MCP server after consent."
+      : connection.manualFallback
+        ? "This deployment does not have MCP OAuth enabled, so the provider credential is required."
+        : "A workspace administrator must enable the MCP authorization broker.";
+  } else {
+    title = isSelfHosted ? "Self-hosted endpoint" : "Provider credential";
+    detail = isSelfHosted
+      ? "After Connect, provide the reachable endpoint and its credential."
+      : "After Connect, provide the provider credential; it is encrypted and verified before saving.";
+  }
+
+  return (
+    <div className="rounded border border-[var(--gray-04)] bg-[var(--gray-02)] px-2.5 py-2">
+      <p className="text-xs font-medium text-[var(--gray-11)]">{title}</p>
+      <p className="mt-0.5 text-xs leading-relaxed text-[var(--gray-09)]">{detail}</p>
+    </div>
+  );
+}
+
+function SetupHelp({ connector }: { connector: ConnectorView }) {
+  const [open, setOpen] = useState(false);
+  if (!connector.connect) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1 self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)]"
+      >
+        <ChevronDown size={12} className={open ? "rotate-180" : ""} />
+        How to connect {connector.label}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 rounded border border-[var(--gray-04)] bg-[var(--gray-02)] p-2.5">
+          <ol className="ml-3.5 list-decimal space-y-1 text-xs leading-relaxed text-[var(--gray-10)]">
+            {connector.connect.setupSteps.map((step, index) => (
+              <li key={index}>{step}</li>
+            ))}
+          </ol>
+          <a
+            href={connector.connect.helpUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
+          >
+            Open {connector.label} docs
+            <ExternalLink size={11} />
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OauthUnavailableNotice({ connector }: { connector: ConnectorView }) {
+  const setup = connector.oauthSetup;
+  if (!setup || connector.oauthReady || !shouldShowOauthSetupHint(connector)) {
+    return null;
+  }
+  return (
+    <div className="rounded border border-[var(--amber-09)]/30 bg-[var(--amber-09)]/10 p-2.5">
+      <p className="text-xs font-medium text-[var(--gray-11)]">
+        OAuth is not enabled on this deployment
+      </p>
+      <p className="mt-0.5 text-xs leading-relaxed text-[var(--gray-09)]">
+        An administrator must configure the provider OAuth app. You can use the
+        credential path below when this provider supports it.
+      </p>
+      {setup.missingEnv.length > 0 && (
+        <p className="mt-1.5 text-xs text-[var(--gray-09)]">
+          Missing: {setup.missingEnv.map((name) => (
+            <code key={name} className="ml-1 font-mono text-[var(--gray-11)]">
+              {name}
+            </code>
+          ))}
+        </p>
+      )}
+      {connector.connect?.oauthRegistrationUrl && (
+        <a
+          href={connector.connect.oauthRegistrationUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-1.5 inline-flex items-center gap-1 text-xs text-[var(--blue-11-alt)] hover:underline"
+        >
+          Registration steps
+          <ExternalLink size={11} />
+        </a>
+      )}
+    </div>
+  );
+}
 
 // --------------------------------------------------------------------------- //
-// Broker connector management — every disconnected connector has one primary
-// action. The broker decides whether that click starts OAuth or MCP OAuth;
-// the UI never asks the user to discover, paste, or configure credentials.
+// Secret connector management — the initial action is consistent, but the
+// next step follows the provider's actual capability declaration.
 // --------------------------------------------------------------------------- //
+const NO_SECRET_PARTS: NonNullable<ConnectorConnectMeta["secretParts"]> = [];
+const NO_EXTRA_FIELDS: NonNullable<ConnectorConnectMeta["extraConfigFields"]> = [];
+
 function SecretManage({
   connector,
   workspaceId,
@@ -224,61 +350,208 @@ function SecretManage({
 }) {
   const isConnected = connector.status === "connected";
   const meta = connector.connect;
+  const secretParts = meta?.secretParts ?? NO_SECRET_PARTS;
+  const extraFields = meta?.extraConfigFields ?? NO_EXTRA_FIELDS;
+  const isComposite = secretParts.length > 0;
+  const [secret, setSecret] = useState("");
+  const [partValues, setPartValues] = useState<string[]>(() => secretParts.map(() => ""));
+  const [extraValues, setExtraValues] = useState<Record<string, string>>({});
+  const [manualOpen, setManualOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const disconnect = useCallback(async () => {
-    setSaving(true);
-    setErr(null);
-    try {
-      const res = await fetch(
-        `/api/v1/workspaces/${workspaceId}/connectors/secret`,
-        {
+  const save = useCallback(
+    async (credential: string | null) => {
+      setSaving(true);
+      setErr(null);
+      try {
+        const configEntries = extraFields
+          .map((field) => [field.key, (extraValues[field.key] ?? "").trim()] as const)
+          .filter(([, value]) => value.length > 0);
+        const res = await fetch(`/api/v1/workspaces/${workspaceId}/connectors/secret`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: connector.kind, secret: null }),
+          body: JSON.stringify({
+            provider: connector.kind,
+            secret: credential,
+            ...(credential !== null ? Object.fromEntries(configEntries) : {}),
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
         }
-      );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+        if (credential !== null && configEntries.length > 0) {
+          const configRes = await fetch(`/api/v1/workspaces/${workspaceId}/connectors`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: connector.kind, ...Object.fromEntries(configEntries) }),
+          });
+          if (!configRes.ok) {
+            const body = await configRes.json().catch(() => ({}));
+            throw new Error((body as { error?: string }).error ?? `HTTP ${configRes.status}`);
+          }
+        }
+        setSecret("");
+        setPartValues(secretParts.map(() => ""));
+        setExtraValues({});
+        onChanged();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to save");
+      } finally {
+        setSaving(false);
       }
-      onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Failed to disconnect");
-    } finally {
-      setSaving(false);
-    }
-  }, [workspaceId, connector.kind, onChanged]);
+    },
+    [workspaceId, connector.kind, extraFields, extraValues, secretParts, onChanged]
+  );
 
-  if (!isConnected) {
+  if (isConnected) {
     return (
-      <OauthConnectButton
-        connector={connector}
-        workspaceId={workspaceId}
-        canManage={canManage}
-      />
+      <div className="flex flex-col gap-2">
+        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
+          {meta?.credentialLabel ?? "Connection"} connected
+          {connector.target ? <code className="font-mono text-[var(--gray-11)]">· {connector.target}</code> : null}
+        </p>
+        <button
+          type="button"
+          onClick={() => save(null)}
+          disabled={!canManage || saving}
+          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+        >
+          {saving ? "Disconnecting…" : "Disconnect"}
+        </button>
+        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
+      </div>
+    );
+  }
+
+  const missingRequiredExtra = extraFields.find(
+    (field) => field.required !== false && (extraValues[field.key] ?? "").trim().length === 0
+  );
+
+  const tokenForm = (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        let credential: string;
+        if (isComposite) {
+          if (partValues.some((value) => value.trim().length === 0)) {
+            setErr("All credential fields are required.");
+            return;
+          }
+          if (partValues.some((value) => value.includes(":"))) {
+            setErr('Credential fields must not contain ":".');
+            return;
+          }
+          credential = partValues.map((value) => value.trim()).join(":");
+        } else {
+          credential = secret.trim();
+        }
+        const check = validateConnectorCredential(connector.kind, credential);
+        if (!check.ok) {
+          setErr(check.error);
+          return;
+        }
+        if (missingRequiredExtra) {
+          setErr(`${missingRequiredExtra.label} is required.`);
+          return;
+        }
+        save(credential);
+      }}
+      className="flex flex-col gap-2"
+    >
+      {meta?.tokenStandardNote && <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.tokenStandardNote}</p>}
+      {isComposite ? secretParts.map((part, index) => (
+        <input
+          key={part.name}
+          aria-label={part.name}
+          type="password"
+          autoComplete="off"
+          placeholder={part.name}
+          value={partValues[index] ?? ""}
+          disabled={!canManage}
+          onChange={(event) => setPartValues((prev) => prev.map((value, i) => i === index ? event.target.value : value))}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      )) : (
+        <input
+          aria-label={meta?.credentialLabel ?? "Credential"}
+          type="password"
+          autoComplete="off"
+          placeholder={meta?.credentialPlaceholder}
+          value={secret}
+          disabled={!canManage}
+          onChange={(event) => setSecret(event.target.value)}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      )}
+      {meta?.credentialHint && <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>}
+      {extraFields.map((field) => (
+        <input
+          key={field.key}
+          aria-label={field.label}
+          type="text"
+          autoComplete="off"
+          placeholder={field.placeholder}
+          value={extraValues[field.key] ?? ""}
+          disabled={!canManage}
+          onChange={(event) => setExtraValues((prev) => ({ ...prev, [field.key]: event.target.value }))}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+        />
+      ))}
+      <button
+        type="submit"
+        disabled={!canManage || saving || (isComposite ? partValues.some((value) => value.trim().length === 0) : secret.trim().length === 0) || Boolean(missingRequiredExtra)}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {saving ? "Connecting…" : "Connect"}
+      </button>
+      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
+      <SetupHelp connector={connector} />
+    </form>
+  );
+
+  if (connector.oauthReady) {
+    return (
+      <div className="flex flex-col gap-2">
+        {meta?.oauthHint && <p className="text-xs leading-relaxed text-[var(--gray-09)]">{meta.oauthHint}</p>}
+        <OauthConnectButton connector={connector} workspaceId={workspaceId} canManage={canManage} />
+        {connector.connection?.manualFallback && (
+          manualOpen ? tokenForm : (
+            <button type="button" onClick={() => setManualOpen(true)} className="self-start text-xs text-[var(--gray-09)] underline-offset-2 hover:text-[var(--gray-11)] hover:underline">
+              Use provider credential instead
+            </button>
+          )
+        )}
+      </div>
+    );
+  }
+
+  if (connector.connection?.manualFallback || connector.connection?.mode === "manual") {
+    return manualOpen ? (
+      tokenForm
+    ) : (
+      <div className="flex flex-col gap-2">
+        <OauthUnavailableNotice connector={connector} />
+        <button
+          type="button"
+          onClick={() => setManualOpen(true)}
+          disabled={!canManage}
+          className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+        >
+          Connect {connector.label}
+        </button>
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-        <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-        {meta?.credentialLabel ?? "Connection"} connected
-        {connector.target ? (
-          <code className="font-mono text-[var(--gray-11)]">· {connector.target}</code>
-        ) : null}
+      <OauthUnavailableNotice connector={connector} />
+      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+        This connector is not enabled for this deployment. Ask a workspace administrator to configure it.
       </p>
-      <button
-        type="button"
-        onClick={disconnect}
-        disabled={!canManage || saving}
-        className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-      >
-        {saving ? "Disconnecting…" : "Disconnect"}
-      </button>
-      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
     </div>
   );
 }
@@ -514,6 +787,8 @@ export function ConnectorSheet({
           <p className="text-xs leading-relaxed text-[var(--gray-09)]">
             {shown.description}
           </p>
+
+          <ConnectionPathSummary connector={shown} />
 
           {shown.connectMethod === "oauth" ? (
             <OAuthManage

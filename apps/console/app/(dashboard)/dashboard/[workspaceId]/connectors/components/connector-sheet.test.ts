@@ -7,23 +7,26 @@ const source = readFileSync(
   "utf8"
 );
 
-describe("connector sheet one-click contract", () => {
-  it("routes disconnected connectors through the broker action", () => {
-    expect(source).toContain("if (!isConnected)");
+describe("connector sheet connection-path contract", () => {
+  it("keeps one entry point while selecting OAuth or credential flow", () => {
+    expect(source).toContain("if (isConnected)");
     expect(source).toContain("<OauthConnectButton");
     expect(source).toContain("/connectors/oauth/link");
+    expect(source).toContain("connection?.manualFallback");
+    expect(source).toContain('mode === "manual"');
+    expect(source).toContain("type=\"password\"");
   });
 
-  it("does not expose credential collection or setup instructions", () => {
-    expect(source).not.toContain('type="password"');
-    expect(source).not.toContain("Use an API token instead");
-    expect(source).not.toContain("Connect {connector.label} manually");
-    expect(source).not.toContain("Missing:");
-    expect(source).not.toContain("OauthSetupNotice");
+  it("explains deployment capability and keeps setup behind Connect", () => {
+    expect(source).toContain("ConnectionPathSummary");
+    expect(source).toContain("Hosted MCP · credential fallback");
+    expect(source).toContain("Self-hosted endpoint");
+    expect(source).toContain("OAuth is not enabled on this deployment");
+    expect(source).toContain("How to connect");
   });
 
   it("keeps disconnect available for an existing connection", () => {
-    expect(source).toContain('secret: null');
+    expect(source).toContain('save(null)');
     expect(source).toContain('Disconnecting…');
   });
 });

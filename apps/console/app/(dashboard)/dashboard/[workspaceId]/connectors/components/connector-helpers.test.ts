@@ -70,6 +70,18 @@ describe("projectConnectors", () => {
     expect(github.target).toBe("org/repo");
   });
 
+  it("projects the broker path so the UI does not guess OAuth", () => {
+    const rows = projectConnectors([]);
+    expect(rows.find((row) => row.kind === "linear")?.connection).toMatchObject({
+      mode: "remote-mcp-oauth",
+      manualFallback: true,
+    });
+    expect(rows.find((row) => row.kind === "prometheus")?.connection).toMatchObject({
+      mode: "manual",
+      supportedDeployments: ["self-hosted"],
+    });
+  });
+
   it("defaults the ingest label when connected without an explicit one", () => {
     const github = projectConnectors([{ kind: "github", connected: true }]).find(
       (r) => r.kind === "github"

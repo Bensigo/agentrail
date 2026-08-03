@@ -131,10 +131,16 @@ function issueContentChanged(payload: Record<string, unknown>): boolean {
 }
 
 const MAX_REQUIREMENT_TEXT_LENGTH = 16_000;
+const MAX_REVERT_MESSAGE_LENGTH = 4_000;
 
 function boundedText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return value.slice(0, MAX_REQUIREMENT_TEXT_LENGTH);
+}
+
+function boundedRevertMessage(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.slice(0, MAX_REVERT_MESSAGE_LENGTH);
 }
 
 function requirementCorrectionEventKey(
@@ -192,6 +198,75 @@ async function appendRequirementCorrection(
     });
   } catch (err) {
     console.error("[github/webhook] requirement correction capture failed:", err);
+  }
+}
+
+function revertedCommitSha(message: string): string | null {
+  const match = message.match(/\bThis reverts commit ([0-9a-f]{7,40})\b/i);
+  return match?.[1] ?? null;
+}
+
+function revertedPullRequestNumber(message: string): number | null {
+  const match = message.match(/\(#(\d+)\)/) ?? message.match(/\bPR #(\d+)\b/i);
+  if (!match?.[1]) return null;
+  const num = Number(match[1]);
+  return Number.isSafeInteger(num) && num > 0 ? num : null;
+}
+
+async function appendFalseGreenEventsFromPush(
+  payload: Record<string, unknown>,
+  repo: string,
+  workspaceId: string,
+  deliveryId: string | null
+): Promise<void> {
+  const commits = payload.commits;
+  if (!Array.isArray(commits)) return;
+
+  const sender = payload.sender as Record<string, unknown> | undefined;
+  const actorId = typeof sender?.login === "string" ? sender.login : undefined;
+
+  for (const rawCommit of commits) {
+    if (!rawCommit || typeof rawCommit !== "object") continue;
+    const commit = rawCommit as Record<string, unknown>;
+    const message = typeof commit.message === "string" ? commit.message : "";
+    const revertedSha = revertedCommitSha(message);
+    if (!revertedSha) continue;
+
+    const commitSha = typeof commit.id === "string" ? commit.id : undefined;
+    if (!commitSha) continue;
+
+    const prNumber = revertedPullRequestNumber(message);
+    const occurredAt =
+      typeof commit.timestamp === "string" && !Number.isNaN(Date.parse(commit.timestamp))
+        ? new Date(commit.timestamp)
+        : undefined;
+
+    try {
+      await appendJudgmentEvent({
+        workspaceId,
+        repo,
+        eventKey: `false-green:revert:${commitSha}`,
+        type: "false_green",
+        refs: {
+          revertCommitSha: commitSha,
+          revertedCommitSha: revertedSha,
+          ...(prNumber ? { pullRequestNumber: prNumber } : {}),
+        },
+        payload: {
+          gateOutcome: "reverted",
+          revertCommitSha: commitSha,
+          revertedCommitSha: revertedSha,
+          ...(prNumber ? { pullRequestNumber: prNumber } : {}),
+          message: boundedRevertMessage(message),
+          messageTruncated: message.length > MAX_REVERT_MESSAGE_LENGTH,
+        },
+        actorRef: { kind: "github_user", ...(actorId ? { id: actorId } : {}) },
+        sourceRef: { kind: "github_webhook", ...(deliveryId ? { id: deliveryId } : {}) },
+        ...(occurredAt ? { occurredAt } : {}),
+      });
+    } catch (err) {
+      console.error("[github/webhook] false-green capture failed:", err);
+    }
   }
 }
 
@@ -308,13 +383,9 @@ async function handleIssuesEdited(
 async function handlePush(
   payload: Record<string, unknown>,
   repoFullNameRaw: unknown,
-  workspaceId: string | null
+  workspaceId: string | null,
+  deliveryId: string | null
 ): Promise<NextResponse> {
-  if (process.env[WIKI_RECOMPILE_ON_PUSH_FLAG] !== "1") {
-    console.log("[github/webhook] push: AGENTRAIL_WIKI_RECOMPILE_ON_PUSH is off, ignoring");
-    return NextResponse.json({ event: "push", status: "ignored:flag_off" }, { status: 202 });
-  }
-
   if (typeof repoFullNameRaw !== "string") {
     return NextResponse.json({ event: "push", status: "ignored:unknown_repo" }, { status: 202 });
   }
@@ -346,6 +417,13 @@ async function handlePush(
   const commits = payload.commits;
   if (Array.isArray(commits) && commits.length === 0) {
     return NextResponse.json({ event: "push", status: "ignored:zero_commit" }, { status: 202 });
+  }
+
+  await appendFalseGreenEventsFromPush(payload, repoFullName, workspaceId, deliveryId);
+
+  if (process.env[WIKI_RECOMPILE_ON_PUSH_FLAG] !== "1") {
+    console.log("[github/webhook] push: AGENTRAIL_WIKI_RECOMPILE_ON_PUSH is off, ignoring");
+    return NextResponse.json({ event: "push", status: "ignored:flag_off" }, { status: 202 });
   }
 
   // Minimum-interval guard — see PUSH_MIN_INTERVAL_ENV's own comment above.
@@ -444,7 +522,7 @@ export async function POST(request: NextRequest) {
     if (!payload) {
       return NextResponse.json({ error: "invalid json" }, { status: 400 });
     }
-    return handlePush(payload, repoFullName, workspaceId);
+    return handlePush(payload, repoFullName, workspaceId, request.headers.get("x-github-delivery"));
   }
 
   if (event !== "issues") {

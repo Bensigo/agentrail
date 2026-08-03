@@ -32,26 +32,38 @@ your `summary` that some files were not reviewed (see `omittedPaths`) rather
 than silently reviewing a partial PR as if it were complete.
 
 `fetch_pr_diff` is the only tool that retrieves the diff itself — call it
-once. From there you investigate: the next section names four read-only
-context tools that let you see the repository around the change. None of
-the five tools writes anything — you cannot run code, reach the open web,
+once. From there you investigate: the next section names five read-only
+context tools that let you see the repository around the change and the
+repo's suppression rules. None of the six tools writes anything — you
+cannot run code, reach the open web,
 or modify anything anywhere. Do not try; there is no write path here by
 design.
 
 ### 2. Investigate
 
-The diff cannot show you callers, conventions, or history — fetch them.
-You have four read-only context tools; spend **about 15 reads, never more
+The diff cannot show you callers, conventions, history, or prior dismissed
+finding classes — fetch them.
+You have five read-only context tools; spend **about 15 reads, never more
 than 20**, prioritized. These checks are mandatory:
 
-1. `search_code` for callers/usages of every changed or removed exported
+1. `reviewer_suppressions` once for the reviewed repo. A rule exists only
+   after at least three review_outcome judgment events dismissed the same
+   normalized finding class. If it returns rules, treat each `findingClass` as
+   a suppression rule only for the same class
+   of issue. When you would otherwise report a matching finding, omit that
+   finding from `findings` and add an `investigated` entry instead with
+   `tool: "reviewer_suppressions"` and an answer naming the suppressed
+   finding class, rule count, and source event ids. Suppression is explicit,
+   never silent. If the tool degrades or returns no rules, add the ordinary
+   investigation entry and continue with no suppression.
+2. `search_code` for callers/usages of every changed or removed exported
    symbol — the blast radius the diff cannot show.
-2. `fetch_wiki` for the page(s) covering the modules this diff touches —
+3. `fetch_wiki` for the page(s) covering the modules this diff touches —
    the repo's recorded structure and conventions.
-3. `read_repo_file` for the surrounding file when hunks cut context, and
+4. `read_repo_file` for the surrounding file when hunks cut context, and
    for any file the diff references but does not change. Pass the PR's
    `headRef` (or `headSha`) to read the changed side.
-4. `file_history` where the change's intent is unclear or it rewrites
+5. `file_history` where the change's intent is unclear or it rewrites
    recent work — the previous implementation is one `read_repo_file` at an
    older sha away.
 
@@ -164,6 +176,8 @@ Fill the schema:
     the new (RIGHT) side of the diff for `line`; use `null` only for a
     finding about the file as a whole (not a specific line).
   - `severity` — one of the four levels above.
+  - `findingClass` — a short normalized class when the finding could match a
+    suppression rule; omit it when no stable class applies.
   - `finding` — what's wrong and why, in your own words.
   - `suggestedComment` — the **exact text** to post as a line comment if
     the owner approves: written like a courteous senior engineer — specific

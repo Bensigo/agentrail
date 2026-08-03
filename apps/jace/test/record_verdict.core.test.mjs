@@ -303,6 +303,27 @@ test("recordVerdict: mechanismSummary is hardened before it ever leaves this mod
   assert.match(sentBody.mechanismSummary, /javascript\[:\]alert\(1\)/);
 });
 
+test("recordVerdict: forwards optional Change Record incident linkage for missed_check capture", async () => {
+  let seenInit = null;
+  const transport = fakeTransport((_url, init) => {
+    seenInit = init;
+    return okVerdictResponse();
+  });
+  await recordVerdict({
+    eveSessionId: EVE_SESSION_ID,
+    slug: "checkout-500s",
+    verdict: "undetermined",
+    missingEvidence: ["metrics"],
+    changeRecord: { recordId: "record-1", missedCheck: "Add an error-rate alert" },
+    env: ENV,
+    transport,
+  });
+  assert.deepEqual(JSON.parse(seenInit.body).changeRecord, {
+    recordId: "record-1",
+    missedCheck: "Add an error-rate alert",
+  });
+});
+
 // ---------------------------------------------------------------------------
 // recordVerdict — transport outcomes, never throws, never retries
 // ---------------------------------------------------------------------------

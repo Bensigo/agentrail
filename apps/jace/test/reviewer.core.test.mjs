@@ -124,8 +124,8 @@ test("REVIEW_SCHEMA findings items require an id matching ^f\\d+$", () => {
   assert.equal(REVIEW_SCHEMA.properties.findings.items.properties.id.pattern, "^f\\d+$");
 });
 
-test("the investigation tool vocabulary is exactly search_code|read_repo_file|file_history|fetch_wiki, matching the schema enum", () => {
-  assert.deepEqual(INVESTIGATION_TOOLS, ["search_code", "read_repo_file", "file_history", "fetch_wiki"]);
+test("the investigation tool vocabulary includes reviewer suppression lookup, matching the schema enum", () => {
+  assert.deepEqual(INVESTIGATION_TOOLS, ["search_code", "read_repo_file", "file_history", "fetch_wiki", "reviewer_suppressions"]);
   assert.deepEqual(REVIEW_SCHEMA.properties.investigated.items.properties.tool.enum, INVESTIGATION_TOOLS);
 });
 

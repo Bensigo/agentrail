@@ -960,6 +960,108 @@ test("runCreateIssue: a normal, non-goal issue never touches the goal-check/goal
   assert.equal(recordCalled, false, "no goal stamp -> the post-file record must never fire");
 });
 
+test("runCreateIssue: block mode checks the hardened proposal before invoking the CLI", async () => {
+  let cliCalled = false;
+  const constraintTransport = fakeTransport(async (url, init) => {
+    assert.equal(url, "https://console.example.com/api/v1/runner/judgment-constraints/check");
+    const body = JSON.parse(init.body);
+    assert.equal(body.eveSessionId, "eve-session-1");
+    assert.match(body.text, /Add Redis/);
+    return {
+      status: 200,
+      json: async () => ({
+        allowed: false,
+        blocks: [{ reason: "Redis was rejected." }],
+        warnings: [],
+      }),
+    };
+  });
+
+  const result = await runCreateIssue({
+    execFileFn: async () => {
+      cliCalled = true;
+      return { stdout: SUCCESS_STDOUT, stderr: "" };
+    },
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add Redis",
+    acceptanceCriteria: ["Use Redis for retries"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: constraintTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "Redis was rejected." });
+  assert.equal(cliCalled, false);
+  assert.equal(constraintTransport.calls.length, 1);
+});
+
+test("runCreateIssue: a blocked requirement records the refusal denominator without filing", async () => {
+  const eventTransport = fakeTransport(async (url, init) => {
+    assert.equal(url, "https://console.example.com/api/v1/runner/judgment-events");
+    const body = JSON.parse(init.body);
+    assert.equal(body.eveSessionId, "eve-session-1");
+    assert.equal(body.type, "requirement_correction");
+    assert.equal(body.payload.decisionAttempted, true);
+    assert.equal(body.payload.refusalKind, "requirements_conflict");
+    return { status: 201, json: async () => ({ ok: true }) };
+  });
+
+  const result = await runCreateIssue({
+    execFileFn: async () => ({ stdout: SUCCESS_STDOUT, stderr: "" }),
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add Redis",
+    acceptanceCriteria: ["Use Redis for retries"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: async () => ({
+      status: 200,
+      json: async () => ({ allowed: false, blocks: [{ reason: "Redis was rejected." }] }),
+    }),
+    judgmentEventTransport: eventTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "Redis was rejected." });
+  assert.equal(eventTransport.calls.length, 1);
+});
+
+test("runCreateIssue: block-mode constraint infrastructure failure fails closed", async () => {
+  let cliCalled = false;
+  const result = await runCreateIssue({
+    execFileFn: async () => {
+      cliCalled = true;
+      return { stdout: SUCCESS_STDOUT, stderr: "" };
+    },
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add a queue",
+    acceptanceCriteria: ["Retries are bounded"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+
+  assert.deepEqual(result, {
+    blocked: true,
+    message: "couldn't verify workspace judgment constraints before filing — try again in a moment",
+  });
+  assert.equal(cliCalled, false);
+});
+
+test("runCreateIssue: constraint mode off preserves the existing path without a check", async () => {
+  let checkCalled = false;
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    constraintCheckTransport: async () => {
+      checkCalled = true;
+      return { status: 503, json: async () => ({}) };
+    },
+  });
+
+  assert.equal(ref.number, 1042);
+  assert.equal(checkCalled, false);
+});
+
 test("runCreateIssue: a goal-stamped issue that the console ALLOWS is filed AND recorded via recordGoalIssueFiled — the wiring the adversarial review found missing", async () => {
   const checkTransport = fakeTransport(
     async (url, init) => {

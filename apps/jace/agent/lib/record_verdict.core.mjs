@@ -287,6 +287,7 @@ export function pushVerdictScore({ baseUrl, publicKey, secretKey, fetchImpl, bod
  *
  * @param {{ eveSessionId: string, slug: string, verdict: string, confidence?: string,
  *           mechanismSummary?: string, missingEvidence?: string[],
+ *           changeRecord?: { recordId: string, missedCheck: string },
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }>,
@@ -299,6 +300,7 @@ export async function recordVerdict({
   confidence,
   mechanismSummary,
   missingEvidence,
+  changeRecord,
   env = {},
   transport,
   fetchImpl,
@@ -323,6 +325,11 @@ export async function recordVerdict({
     requestBody.missingEvidence = (Array.isArray(missingEvidence) ? missingEvidence : [])
       .filter((s) => typeof s === "string")
       .map((s) => hardenUntrusted(s, { maxLen: MISSING_EVIDENCE_ENTRY_MAX_LEN }));
+  }
+  if (changeRecord !== undefined && changeRecord !== null && typeof changeRecord === "object") {
+    const recordId = String(changeRecord.recordId ?? "").trim();
+    const missedCheck = String(changeRecord.missedCheck ?? "").trim();
+    if (recordId && missedCheck) requestBody.changeRecord = { recordId, missedCheck };
   }
 
   const url = buildRecordVerdictUrl(cfg.baseUrl);

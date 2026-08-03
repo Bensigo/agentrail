@@ -78,7 +78,13 @@
  * the backing store errored.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { getJaceSessionByEveSessionId, getInvestigationBySlug, recordVerdict } from "@agentrail/db-postgres";
+import {
+  appendJudgmentEvent,
+  getJaceSessionByEveSessionId,
+  getInvestigationBySlug,
+  readChangeRecordTimeline,
+  recordVerdict,
+} from "@agentrail/db-postgres";
 import type { InvestigationVerdict, VerdictConfidence } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 import { scanForSecrets, summarizeFindings } from "../../../../../../lib/secret-scan";
@@ -93,6 +99,7 @@ interface RawVerdictBody {
   confidence?: string;
   mechanismSummary?: string;
   missingEvidence?: string[];
+  changeRecord?: { recordId: string; missedCheck: string };
 }
 
 function isRawVerdictBody(v: unknown): v is RawVerdictBody {
@@ -115,6 +122,17 @@ function isRawVerdictBody(v: unknown): v is RawVerdictBody {
     (!Array.isArray(o.missingEvidence) || !(o.missingEvidence as unknown[]).every((s) => typeof s === "string"))
   ) {
     return false;
+  }
+  if (o.changeRecord !== undefined) {
+    if (!o.changeRecord || typeof o.changeRecord !== "object" || Array.isArray(o.changeRecord)) return false;
+    const changeRecord = o.changeRecord as Record<string, unknown>;
+    if (
+      typeof changeRecord.recordId !== "string" ||
+      changeRecord.recordId.trim().length === 0 ||
+      typeof changeRecord.missedCheck !== "string" ||
+      changeRecord.missedCheck.trim().length === 0 ||
+      changeRecord.missedCheck.length > 4000
+    ) return false;
   }
   return true;
 }
@@ -174,6 +192,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `Investigation ${slug} not found` }, { status: 404 });
     }
 
+    const changeRecord = raw.changeRecord
+      ? await readChangeRecordTimeline({
+          workspaceId,
+          recordId: raw.changeRecord.recordId.trim(),
+        })
+      : null;
+    if (raw.changeRecord && !changeRecord) {
+      return NextResponse.json({ error: "Change Record not found" }, { status: 404 });
+    }
+
     const result = await recordVerdict(found.investigation.id, {
       verdict: raw.verdict as InvestigationVerdict,
       confidence: raw.confidence as VerdictConfidence | undefined,
@@ -184,11 +212,39 @@ export async function POST(request: NextRequest) {
     if (!result.ok) {
       return NextResponse.json({ ok: false, blocking: result.blocking }, { status: 409 });
     }
+    let judgmentEvent: { inserted: boolean; eventId: string } | null = null;
+    if (raw.changeRecord && changeRecord) {
+      try {
+        const appended = await appendJudgmentEvent({
+          workspaceId,
+          repo: changeRecord.record.repo,
+          eventKey: `missed-check:investigation:${found.investigation.id}:record:${changeRecord.record.id}`,
+          type: "missed_check",
+          refs: {
+            investigatedId: found.investigation.id,
+            changeRecordId: changeRecord.record.id,
+          },
+          payload: {
+            check: raw.changeRecord.missedCheck.trim(),
+            verdict: raw.verdict,
+            investigationSlug: slug,
+          },
+          actorRef: { kind: "jace", id: "record_verdict" },
+          sourceRef: { kind: "investigation_verdict", id: found.investigation.id },
+        });
+        judgmentEvent = { inserted: appended.inserted, eventId: appended.event.id };
+      } catch (error) {
+        console.error("[runner/investigations/verdict] missed_check capture failed:", error);
+      }
+    }
     // investigationId = the uuid already resolved above via getInvestigationBySlug
     // — see this route's own doc-comment ("Final-review fix") for why this
     // must be the id, not the slug: it is the calibration join key the
     // Langfuse investigation_verdict score's metadata.investigation_id reads.
-    return NextResponse.json({ ok: true, investigationId: found.investigation.id }, { status: 200 });
+    return NextResponse.json(
+      { ok: true, investigationId: found.investigation.id, ...(judgmentEvent ? { judgmentEvent } : {}) },
+      { status: 200 }
+    );
   } catch (err) {
     console.error("[runner/investigations/verdict] write failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

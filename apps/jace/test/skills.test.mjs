@@ -238,6 +238,14 @@ test("to-issues is honest that the gate is enforced at the skill level, not insi
   );
 });
 
+test("to-issues treats a judgment constraint block as a planner refusal", () => {
+  const src = skillSource("to-issues");
+  assert.match(src, /complete\s+proposed issue text as a\s+constraint-checked proposal/i);
+  assert.match(src, /real\s+planner refusal/i);
+  assert.match(src, /never retry the same\s+proposal unchanged/i);
+  assert.match(src, /revise the proposal or\s+ask the human/i);
+});
+
 test("instructions.md wires all four skills into Jace's persona", () => {
   const src = readFileSync(instructionsPath, "utf8");
   for (const name of ALL_SKILLS) {

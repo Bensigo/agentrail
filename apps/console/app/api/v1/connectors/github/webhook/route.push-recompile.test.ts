@@ -25,6 +25,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   findWorkspaceByRepo: vi.fn(),
   getConnector: vi.fn(),
+  appendJudgmentEvent: vi.fn(),
   enqueueGithubIssue: vi.fn(),
   findQueueEntryByExternalId: vi.fn(),
   getRepositoryByName: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("../../../../../../lib/alignment-reconciler", () => ({
 
 import { POST } from "./route";
 import {
+  appendJudgmentEvent,
   findWorkspaceByRepo,
   getConnector,
   getRepositoryByName,
@@ -50,6 +52,7 @@ import {
 
 const mockFindWorkspace = vi.mocked(findWorkspaceByRepo);
 const mockGetConnector = vi.mocked(getConnector);
+const mockAppendJudgmentEvent = vi.mocked(appendJudgmentEvent);
 const mockGetRepo = vi.mocked(getRepositoryByName);
 const mockEnqueueOnboard = vi.mocked(enqueueOnboard);
 const mockFindOnboardStatus = vi.mocked(findOnboardEntryStatus);
@@ -66,7 +69,11 @@ const REPO = "acme/widgets";
 function req(body: unknown): NextRequest {
   return new NextRequest("http://localhost/api/v1/connectors/github/webhook", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-github-event": "push" },
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "push",
+      "x-github-delivery": "delivery-1",
+    },
     body: JSON.stringify(body),
   });
 }
@@ -119,14 +126,13 @@ afterEach(() => {
 });
 
 describe("POST /api/v1/connectors/github/webhook — push: flag gate", () => {
-  it("flag unset: ignored:flag_off, touches NO push machinery at all", async () => {
+  it("flag unset: ignored:flag_off, skips wiki enqueue but still permits judgment-ledger capture", async () => {
     delete process.env[FLAG];
     const res = await POST(req(pushPayload()));
     const body = await res.json();
 
     expect(res.status).toBe(202);
     expect(body).toEqual({ event: "push", status: "ignored:flag_off" });
-    expect(mockGetRepo).not.toHaveBeenCalled();
     expect(mockFindOnboardStatus).not.toHaveBeenCalled();
     expect(mockEnqueueOnboard).not.toHaveBeenCalled();
   });
@@ -138,6 +144,78 @@ describe("POST /api/v1/connectors/github/webhook — push: flag gate", () => {
 
     expect(body).toEqual({ event: "push", status: "ignored:flag_off" });
     expect(mockEnqueueOnboard).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/v1/connectors/github/webhook — push: false_green capture", () => {
+  it("default-branch GitHub revert commit appends one false_green judgment event", async () => {
+    const res = await POST(
+      req(
+        pushPayload({
+          commits: [
+            {
+              id: "def456",
+              timestamp: "2026-08-03T12:34:56.000Z",
+              message:
+                'Revert "Add reviewer smoke VM (#1547)"\n\nThis reverts commit abc123def4567890abc123def4567890abc123de.',
+            },
+          ],
+          sender: { login: "bensigo" },
+        })
+      )
+    );
+
+    expect((await res.json()).status).toBe("queued");
+    expect(mockAppendJudgmentEvent).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repo: REPO,
+      eventKey: "false-green:revert:def456",
+      type: "false_green",
+      refs: {
+        revertCommitSha: "def456",
+        revertedCommitSha: "abc123def4567890abc123def4567890abc123de",
+        pullRequestNumber: 1547,
+      },
+      payload: {
+        gateOutcome: "reverted",
+        revertCommitSha: "def456",
+        revertedCommitSha: "abc123def4567890abc123def4567890abc123de",
+        pullRequestNumber: 1547,
+        message:
+          'Revert "Add reviewer smoke VM (#1547)"\n\nThis reverts commit abc123def4567890abc123def4567890abc123de.',
+        messageTruncated: false,
+      },
+      actorRef: { kind: "github_user", id: "bensigo" },
+      sourceRef: { kind: "github_webhook", id: "delivery-1" },
+      occurredAt: new Date("2026-08-03T12:34:56.000Z"),
+    });
+  });
+
+  it("non-revert commits and non-default branch revert commits do not append false_green", async () => {
+    await POST(req(pushPayload({ commits: [{ id: "c1", message: "fix: normal change" }] })));
+    expect(mockAppendJudgmentEvent).not.toHaveBeenCalled();
+
+    await POST(
+      req(
+        pushPayload({
+          ref: "refs/heads/feature-x",
+          commits: [{ id: "c2", message: "This reverts commit abc1234." }],
+        })
+      )
+    );
+    expect(mockAppendJudgmentEvent).not.toHaveBeenCalled();
+  });
+
+  it("false_green capture failure is logged and never changes the push response", async () => {
+    mockAppendJudgmentEvent.mockRejectedValue(new Error("ledger down"));
+
+    const res = await POST(
+      req(pushPayload({ commits: [{ id: "def456", message: "This reverts commit abc1234." }] }))
+    );
+
+    expect(res.status).toBe(202);
+    expect((await res.json()).status).toBe("queued");
+    expect(console.error).toHaveBeenCalled();
   });
 });
 

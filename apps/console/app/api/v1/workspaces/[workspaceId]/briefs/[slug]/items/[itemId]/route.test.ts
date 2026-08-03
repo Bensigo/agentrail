@@ -16,6 +16,8 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     briefItemKindEnum: actual.briefItemKindEnum,
     briefItemResolutionEnum: actual.briefItemResolutionEnum,
     briefItemStateEnum: actual.briefItemStateEnum,
+    appendJudgmentEvent: vi.fn(),
+    getRepository: vi.fn(),
     getWorkspaceMembership: vi.fn(),
     getBriefBySlug: vi.fn(),
     updateBriefItemAsHuman: vi.fn(),
@@ -25,8 +27,10 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
 
 import { auth } from "@agentrail/auth";
 import {
+  appendJudgmentEvent,
   deleteBriefItem,
   getBriefBySlug,
+  getRepository,
   getWorkspaceMembership,
   updateBriefItemAsHuman,
 } from "@agentrail/db-postgres";
@@ -63,6 +67,7 @@ const updatedItem = {
   state: "resolved",
   resolution: "implemented",
   authority: "human",
+  updatedAt: new Date("2026-08-03T16:00:00.000Z"),
 };
 
 function mockMember(role: string) {
@@ -129,7 +134,10 @@ describe("PATCH /api/v1/workspaces/:workspaceId/briefs/:slug/items/:itemId", () 
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.item).toEqual(updatedItem);
+    expect(body.item).toEqual({
+      ...updatedItem,
+      updatedAt: updatedItem.updatedAt.toISOString(),
+    });
     expect(updateBriefItemAsHuman).toHaveBeenCalledWith("brief-1", ITEM_ID, {
       statement: "single approver model (typo fixed)",
     });
@@ -145,6 +153,37 @@ describe("PATCH /api/v1/workspaces/:workspaceId/briefs/:slug/items/:itemId", () 
 
     const res = await PATCH(makeRequest("PATCH", { statement: "x" }), makeParams());
     expect(res.status).toBe(200);
+  });
+
+  it("captures a human grilling correction in the judgment ledger when the brief is repo-linked", async () => {
+    mockMember("owner");
+    const existingItem = { ...updatedItem, statement: "single approver model" };
+    vi.mocked(getBriefBySlug).mockResolvedValue({
+      ...briefRow,
+      repositoryId: "repo-1",
+      items: [existingItem],
+    } as never);
+    vi.mocked(getRepository).mockResolvedValue({ name: "Bensigo/agentrail" } as never);
+    vi.mocked(updateBriefItemAsHuman).mockResolvedValue({
+      item: updatedItem,
+      refusedUnknownResolved: false,
+    } as never);
+
+    const res = await PATCH(makeRequest("PATCH", { statement: updatedItem.statement }), makeParams());
+
+    expect(res.status).toBe(200);
+    expect(appendJudgmentEvent).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      repo: "Bensigo/agentrail",
+      type: "requirement_correction",
+      refs: { acId: ITEM_ID, briefId: "brief-1" },
+      payload: expect.objectContaining({
+        source: "grilling",
+        before: expect.objectContaining({ statement: "single approver model" }),
+        after: updatedItem,
+      }),
+      actorRef: { kind: "workspace_member", id: USER_ID },
+    }));
   });
 
   // The exact bug class the store slice already shipped once

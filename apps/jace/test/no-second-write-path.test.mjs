@@ -192,6 +192,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "record_judgment.ts", // UNGATED by design: records bounded internal chat/grilling learning evidence only; no GitHub/workspace mutation and no child_process
   "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
   "request_preview_boot.ts", // operational + ungated by design (B2b reviewer wiring): requests/polls a console preview boot for the calling root session; no repo/workspace mutation, no approval, no child_process
   "save_brief.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): autosaves a per-item DELTA into AgentRail's own brief store only (never GitHub/a workspace/any outside system); human-authority + unknown-can't-resolve invariants enforced at the console route, not here; no child_process (HTTP to the console, like post_pr_review)
@@ -226,7 +227,13 @@ const EXPECTED_MUTATING_TOOLS = [
 // a ceiling as much as a floor: the test below asserts each one wires NO
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
-const UNGATED_ADVISORY_WRITES = ["post_pr_review.ts", "save_brief.ts", "save_investigation.ts", "record_verdict.ts"];
+const UNGATED_ADVISORY_WRITES = [
+  "post_pr_review.ts",
+  "record_judgment.ts",
+  "save_brief.ts",
+  "save_investigation.ts",
+  "record_verdict.ts",
+];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

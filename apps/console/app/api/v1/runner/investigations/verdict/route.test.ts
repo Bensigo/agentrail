@@ -2,17 +2,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  appendJudgmentEvent: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   getInvestigationBySlug: vi.fn(),
+  readChangeRecordTimeline: vi.fn(),
   recordVerdict: vi.fn(),
 }));
 
 import { POST } from "./route";
-import { getJaceSessionByEveSessionId, getInvestigationBySlug, recordVerdict } from "@agentrail/db-postgres";
+import {
+  appendJudgmentEvent,
+  getJaceSessionByEveSessionId,
+  getInvestigationBySlug,
+  readChangeRecordTimeline,
+  recordVerdict,
+} from "@agentrail/db-postgres";
 
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockGetBySlug = vi.mocked(getInvestigationBySlug);
 const mockRecordVerdict = vi.mocked(recordVerdict);
+const mockAppendJudgmentEvent = vi.mocked(appendJudgmentEvent);
+const mockReadChangeRecordTimeline = vi.mocked(readChangeRecordTimeline);
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const SESSION_ID = "00000000-0000-0000-0000-0000000005e5";
@@ -61,6 +71,11 @@ beforeEach(() => {
   mockGetSession.mockResolvedValue({ id: SESSION_ID, workspaceId: WS } as never);
   mockGetBySlug.mockResolvedValue({ investigation: EXISTING_INVESTIGATION, items: [] } as never);
   mockRecordVerdict.mockResolvedValue({ ok: true } as never);
+  mockReadChangeRecordTimeline.mockResolvedValue({
+    record: { id: "record-1", workspaceId: WS, repo: "acme/widgets" },
+    events: [],
+  } as never);
+  mockAppendJudgmentEvent.mockResolvedValue({ event: { id: "judgment-1" }, inserted: true } as never);
 });
 
 afterEach(() => {
@@ -148,6 +163,47 @@ describe("POST /api/v1/runner/investigations/verdict", () => {
   it("scopes the investigation lookup to the caller's own workspace", async () => {
     await POST(postReq(validBody));
     expect(mockGetBySlug).toHaveBeenCalledWith(WS, SLUG);
+  });
+
+  it("captures a missed_check row when a verdict links a workspace Change Record", async () => {
+    const res = await POST(
+      postReq({
+        ...validBody,
+        changeRecord: { recordId: "record-1", missedCheck: "Add a checkout error-rate alert" },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockReadChangeRecordTimeline).toHaveBeenCalledWith({ workspaceId: WS, recordId: "record-1" });
+    expect(mockAppendJudgmentEvent).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repo: "acme/widgets",
+      eventKey: `missed-check:investigation:${INVESTIGATION_ID}:record:record-1`,
+      type: "missed_check",
+      refs: { investigatedId: INVESTIGATION_ID, changeRecordId: "record-1" },
+      payload: {
+        check: "Add a checkout error-rate alert",
+        verdict: "undetermined",
+        investigationSlug: SLUG,
+      },
+      actorRef: { kind: "jace", id: "record_verdict" },
+      sourceRef: { kind: "investigation_verdict", id: INVESTIGATION_ID },
+    });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      investigationId: INVESTIGATION_ID,
+      judgmentEvent: { inserted: true, eventId: "judgment-1" },
+    });
+  });
+
+  it("rejects a missing Change Record before recording the verdict", async () => {
+    mockReadChangeRecordTimeline.mockResolvedValue(null);
+    const res = await POST(
+      postReq({ ...validBody, changeRecord: { recordId: "missing", missedCheck: "Add an alert" } })
+    );
+    expect(res.status).toBe(404);
+    expect(mockRecordVerdict).not.toHaveBeenCalled();
+    expect(mockAppendJudgmentEvent).not.toHaveBeenCalled();
   });
 
   describe("secret scan on mechanismSummary (Fix round 1: read-back path — GET mode=get/anchor re-serves the verdict item's body into model context on every future resume)", () => {

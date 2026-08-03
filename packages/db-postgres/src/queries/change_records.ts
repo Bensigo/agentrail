@@ -365,7 +365,6 @@ export async function readChangeRecordTimelineByPr(input: {
 
   return { record, events };
 }
-
 export async function readChangeRecordTimeline(input: {
   workspaceId: string;
   recordId: string;

@@ -4,56 +4,44 @@
  * offsets): no scroll listeners, nothing to degrade — reduced-motion and
  * mobile get the same markup, which simply reads as stacked cards.
  *
- * Owner ruling 2026-07-23: the deck is the TOP FIVE differentiators, not a
- * task-type catalog. Commodity work (issue lists, small features, tests,
- * chores) is already told by the phone act + "How I work"; each card here
- * must carry a mechanic competitors don't claim, and every card maps to a
- * REAL product surface:
- * 1. stacktrace — the verify gate's red-green rule: the failure is
- *    reproduced as a failing test before the fix counts.
- * 2. review     — the reviewer subagent (owner round 2026-07-23, replacing
- *    the research card as the bigger differentiator): reviews a GitHub PR,
- *    leaves line comments, and escalates findings too big for a comment
- *    into scoped house-format issues the factory can execute.
- * 3. ideas      — Jace's ideation door (grill-me / to-issues skills): a
- *    rough goal becomes scoped, house-format GitHub issues.
- * 4. goal       — the goal loop (create_goal + console leash meter):
- *    goal + repo in, scoped issues worked under a leash the owner sets.
- * 5. qa         — the codebase-qa skill: answers cite the file + line range
- *    the context CLI returned, or say "not found" — never model memory.
+ * The deck is now outcome-led. It names the acceptance mechanics from the
+ * market research without implying that the future dependency workflow is
+ * already shipped. “Coming soon” is deliberately part of the card data.
  */
 
 interface UseCase {
   title: string;
   line: string;
-  visual: "stacktrace" | "review" | "ideas" | "goal" | "qa";
+  visual: "dependency" | "contract" | "reviewable" | "regression" | "proof";
+  comingSoon?: boolean;
 }
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Paste the stack trace",
-    line: "Hand me a bug report. I reproduce it with a failing test, then fix until it passes.",
-    visual: "stacktrace",
+    title: "Keep dependencies moving",
+    line: "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+    visual: "dependency",
+    comingSoon: true,
   },
   {
-    title: "Review my pull requests",
-    line: "Point me at a pull request. I leave line comments, and findings too big for a comment become scoped issues I can fix.",
-    visual: "review",
+    title: "Start with an acceptance contract",
+    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions before implementation begins.",
+    visual: "contract",
   },
   {
-    title: "Turn an idea into scoped work",
-    line: "Describe what you want in chat. I ask the hard questions, then file scoped issues your whole team can read.",
-    visual: "ideas",
+    title: "Keep changes reviewable",
+    line: "Work should arrive as a small, focused pull request your team can understand and accept without reconstructing the whole run.",
+    visual: "reviewable",
   },
   {
-    title: "Hand me a goal",
-    line: "Give me a goal and a repo. I break it into scoped issues and work through them, on a leash you set.",
-    visual: "goal",
+    title: "Verify non-regression",
+    line: "The change earns its way through tests and independent verification. A green diff is not enough on its own.",
+    visual: "regression",
   },
   {
-    title: "Ask about your codebase",
-    line: "Answers come from the code and cite the file and line. If I can't find it, I say so.",
-    visual: "qa",
+    title: "Show proof — or stop",
+    line: "The pull request carries the evidence behind the result. If the acceptance contract cannot be proven, Jace refuses to present success.",
+    visual: "proof",
   },
 ];
 
@@ -68,7 +56,14 @@ export function UseCases() {
         >
           <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10">
             <div className="max-w-[44ch]">
-              <h3 className="text-heading-2">{useCase.title}</h3>
+              <div className="flex flex-wrap items-center gap-3">
+                <h3 className="text-heading-2">{useCase.title}</h3>
+                {useCase.comingSoon ? (
+                  <span className="text-label rounded-sm border border-[var(--gray-07)] px-2 py-1 text-[var(--gray-11)]">
+                    Coming soon
+                  </span>
+                ) : null}
+              </div>
               <p className="mt-3 text-[var(--gray-11)]">{useCase.line}</p>
             </div>
             <CaseVisual visual={useCase.visual} />
@@ -84,47 +79,47 @@ export function UseCases() {
  *  panel showing the card's mechanic. The mascot renders live outside the
  *  stack — hero-adjacent phone, channels background, closing wave. */
 function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
-  if (visual === "stacktrace") {
+  if (visual === "dependency") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
-        <span className="text-[var(--red-11)]">✗ repro test · red</span>
-        <span className="text-[var(--gray-11)]">fix: clamp retry spend</span>
-        <span className="text-[var(--green-11)]">✓ same test · green</span>
+        <span>dependency candidate</span>
+        <span className="text-[var(--gray-12)]">→ inspect changelog</span>
+        <span className="text-[var(--gray-12)]">→ compatibility evidence</span>
       </div>
     );
   }
-  if (visual === "review") {
+  if (visual === "contract") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-        <span>PR #98 · payment retries</span>
-        <span className="text-[var(--gray-12)]">→ 3 line comments</span>
-        <span className="text-[var(--gray-12)]">→ 1 scoped issue filed</span>
+        <span>goal · payment retries</span>
+        <span className="text-[var(--gray-12)]">non-goals · no API change</span>
+        <span className="text-[var(--gray-12)]">stop · evidence missing</span>
       </div>
     );
   }
-  if (visual === "ideas") {
+  if (visual === "reviewable") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-        <span>you: “billing needs retries”</span>
-        <span className="text-[var(--gray-12)]">→ issue #1 webhook backoff</span>
-        <span className="text-[var(--gray-12)]">→ issue #2 failure ledger</span>
+        <span>pull request · focused</span>
+        <span className="text-[var(--gray-12)]">blast radius · named</span>
+        <span className="text-[var(--gray-12)]">review · bounded</span>
       </div>
     );
   }
-  if (visual === "goal") {
+  if (visual === "regression") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-        <span>goal: retire the legacy queue</span>
-        <span className="text-[var(--gray-12)]">→ scoped into 6 issues</span>
-        <span className="text-[var(--gray-12)]">leash: set by you</span>
+        <span>tests · green</span>
+        <span className="text-[var(--gray-12)]">independent check · passed</span>
+        <span className="text-[var(--gray-12)]">regression · not found</span>
       </div>
     );
   }
   return (
     <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-      <span>you: “where do retries get budgeted?”</span>
-      <span className="text-[var(--gray-12)]">→ run/pricing.py:41–63</span>
-      <span className="text-[var(--gray-12)]">cited, or “not found”</span>
+      <span>acceptance criteria</span>
+      <span className="text-[var(--gray-12)]">→ evidence attached</span>
+      <span className="text-[var(--gray-12)]">or → refused</span>
     </div>
   );
 }

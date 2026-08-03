@@ -23,6 +23,15 @@ describe("computeLandingStats", () => {
     expect(stats).toEqual({ ...DOGFOOD_BASELINE, source: "baseline-only" });
   });
 
+  it("keeps the documented baseline when the live table is healthy but empty", async () => {
+    const stats = await computeLandingStats(async () => ({
+      success: 0,
+      humanReview: 0,
+      failed: 0,
+    }));
+    expect(stats).toEqual({ ...DOGFOOD_BASELINE, source: "baseline-only" });
+  });
+
   it("keeps the baseline pinned to the documented dogfood record (docs/benchmarks/results/dogfood-track-record.md)", () => {
     // didn't land = worked on - shipped: the three numbers must stay one
     // consistent record, not three independently editable literals.

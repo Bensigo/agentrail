@@ -92,7 +92,7 @@ const RETIRED_PHRASES = [
   "Pay for what you use",
   // Fix round (coordinator call): the wallet-flow STEPS list ("Top up your
   // balance... You're charged when the task is done") sat one section under
-  // the new "Starter $80/mo" tier cards / subscription heading — the same
+  // the new "Starter $199/mo" tier cards / subscription heading — the same
   // contradiction this whole task exists to retire, just spelled
   // differently. Both lines are gone from the STEPS content on both pages.
   "Top up",
@@ -111,23 +111,20 @@ const RETIRED_PHRASES = [
 
 /**
  * Spec §10 feature-line vocabulary not already covered by its own dedicated
- * `it()` below (`architecture assistance` / `premium reasoning` /
- * `dedicated support` were named individually since the task brief called
- * them out by name) — the remaining 10 of the full 13-phrase vocabulary (4
- * Starter + 4 Growth + 5 Enterprise). Array-driven, same convention as
- * `RETIRED_PHRASES` above, so all 13 are covered without 10 near-duplicate
- * hand-written its.
+ * `it()` below (`dependency upgrades` / `compatibility evidence` /
+ * `dedicated support` are named individually since they are the key outcome
+ * vocabulary) — the remaining feature lines are array-driven.
  */
 const REMAINING_FEATURE_LINES = [
-  "PR reviews",
-  "bug fixes",
-  "documentation",
-  "everyday engineering",
+  "acceptance contracts",
+  "verification evidence",
+  "reviewable changes",
+  "team approvals",
   "everything in Starter",
-  "large refactors",
-  "custom AI policies",
-  "SSO",
-  "self-hosting",
+  "calibrated refusal",
+  "custom acceptance policies",
+  "review-cost reporting",
+  "environment fidelity",
   "SLA",
 ];
 
@@ -142,12 +139,20 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     });
   }
 
-  it("pricing page names the Starter tier's real price ($80)", () => {
-    expect(pricingSource).toContain("$80");
+  it("pricing page names the Starter tier's real price ($199)", () => {
+    expect(pricingSource).toContain("$199");
   });
 
-  it("pricing page names the Growth tier's real price ($200)", () => {
-    expect(pricingSource).toContain("$200");
+  it("pricing page names the Growth tier's real price ($399)", () => {
+    expect(pricingSource).toContain("$399");
+  });
+
+  it("pricing page names Starter's conservative launch capacity (≈34 tasks)", () => {
+    expect(pricingSource).toContain("≈34 engineering tasks/mo");
+  });
+
+  it("pricing page names Growth's conservative launch capacity (≈74 tasks)", () => {
+    expect(pricingSource).toContain("≈74 engineering tasks/mo");
   });
 
   it("pricing page ships an Enterprise contact path (\"Contact us\")", () => {
@@ -169,12 +174,12 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).not.toMatch(/\$\d+(\.\d{2})?\s*(per|\/)\s*task/i);
   });
 
-  it("pricing page's Growth tier names architecture assistance (spec §10 feature vocabulary)", () => {
-    expect(pricingSource).toContain("architecture assistance");
+  it("pricing page's Growth tier labels the dependency workflow as coming soon", () => {
+    expect(pricingSource).toContain("dependency upgrade workflow — coming soon");
   });
 
-  it("pricing page's Growth tier names premium reasoning (spec §10 feature vocabulary)", () => {
-    expect(pricingSource).toContain("premium reasoning");
+  it("pricing page's Growth tier names compatibility evidence", () => {
+    expect(pricingSource).toContain("compatibility evidence");
   });
 
   it("pricing page's Enterprise tier names dedicated support (spec §10 feature vocabulary)", () => {

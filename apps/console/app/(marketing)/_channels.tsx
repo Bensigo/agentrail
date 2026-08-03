@@ -11,7 +11,7 @@ import type { MessageJaceCta } from "./_cta";
 import type { ChannelCard } from "./_channel-cards";
 
 /**
- * "Where you'll find me" — landing v2's scroll-pinned channel scene
+ * "Meet Jace where work already gets discussed" — the channel scene
  * (plan: docs/superpowers/plans/2026-07-22-landing-v2.md §Task 7).
  *
  * PRESENTATION vs LINKS (owner ruling 2026-07-22, recorded in TASTE.md by
@@ -141,7 +141,7 @@ export function Channels({
   return (
     <>
       {staticStack}
-      <div ref={containerRef} className="relative hidden h-[280vh] sm:block">
+      <div ref={containerRef} className="relative hidden h-[125vh] sm:block">
         <div className="sticky top-24 flex h-[calc(100vh-8rem)] items-center">
           {/* Jace on his beanbag, working the corner of the scene at real
               scale (owner feedback 2026-07-22 ×2: fill the section, don't

@@ -66,13 +66,6 @@ from agentrail.dependencies.manager import (
     detect_dependency_manager,
 )
 
-from agentrail.dependencies.publication import (
-    DependencyPublicationDecision,
-    build_dependency_pr_body,
-    evaluate_dependency_publication,
-    is_dependency_publication,
-)
-
 __all__ = [
     "ApprovedPnpmUpgrade",
     "CandidateIdentity",
@@ -82,7 +75,6 @@ __all__ = [
     "DependencyEvidence",
     "DependencyEvidenceDecision",
     "DependencyExecutionResult",
-    "DependencyPublicationDecision",
     "CandidatesResult",
     "DependencyCandidate",
     "DependencySnapshot",
@@ -127,9 +119,6 @@ __all__ = [
     "scan_usage_evidence",
     "security_evidence_from_advisory_payload",
     "write_dependency_evidence",
-    "build_dependency_pr_body",
-    "evaluate_dependency_publication",
-    "is_dependency_publication",
     "observe_dependencies",
     "observe_dependency_candidates",
     "detect_dependency_manager",

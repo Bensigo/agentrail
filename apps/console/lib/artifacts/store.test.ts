@@ -484,6 +484,17 @@ describe("putArtifact — CI-safe coverage via a scoped @aws-sdk/client-s3 mock 
     });
   });
 
+  it("allows Railway-style virtual-host addressing when S3_FORCE_PATH_STYLE=0", async () => {
+    process.env.S3_FORCE_PATH_STYLE = "0";
+
+    await mockedStore.putArtifact("k", Buffer.from("x"), "text/plain");
+
+    expect(constructedConfigs[0]).toMatchObject({
+      endpoint: "http://minio.internal:9000",
+      forcePathStyle: false,
+    });
+  });
+
   it("propagates a rejected send() (e.g. an S3/minio network or auth failure) uncaught", async () => {
     sendMock.mockRejectedValueOnce(new Error("simulated S3 failure"));
     await expect(

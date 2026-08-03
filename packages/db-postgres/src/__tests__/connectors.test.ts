@@ -22,6 +22,7 @@ import {
   MAX_POLL_INTERVAL_SECONDS,
 } from "../queries/connectors.js";
 import { encryptSecret, isEncrypted } from "../crypto.js";
+import { serializeOauthEnvelope } from "../secret-envelope.js";
 
 const mockDb = vi.mocked(db);
 
@@ -303,6 +304,27 @@ describe("connector secret encryption at rest", () => {
     const keys = await getMcpConnectorKeys("ws-1");
     // Only connected providers appear, decrypted; figma (no secret) is absent.
     expect(keys).toEqual({ linear: "lin_api_v", context7: "ctx7sk-v" });
+  });
+
+  it("does not pass OAuth envelopes through the legacy API-key runner path", async () => {
+    mockDb.select
+      .mockReturnValueOnce(
+        makeSelectLimitChain([
+          {
+            secret: encryptSecret(
+              serializeOauthEnvelope({
+                access: "access-token",
+                refresh: "refresh-token",
+                expiresAt: "2099-01-01T00:00:00.000Z",
+              })
+            ),
+          },
+        ]) as never
+      )
+      .mockReturnValueOnce(makeSelectLimitChain([]) as never)
+      .mockReturnValueOnce(makeSelectLimitChain([]) as never);
+
+    expect(await getMcpConnectorKeys("ws-1")).toEqual({});
   });
 
   it("getConnectorSecret decrypts the stored ciphertext back to plaintext", async () => {

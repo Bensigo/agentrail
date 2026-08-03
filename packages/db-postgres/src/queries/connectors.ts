@@ -2,6 +2,7 @@ import { eq, and, sql } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { db } from "../db.js";
 import { encryptSecret, decryptSecret } from "../crypto.js";
+import { parseSecretEnvelope } from "../secret-envelope.js";
 import {
   connectors,
   connectorProviderEnum,
@@ -1265,7 +1266,13 @@ export async function getMcpConnectorKeys(
   const out: Record<string, string> = {};
   for (const provider of MCP_PROVIDERS) {
     const secret = await getConnectorSecret(workspaceId, provider);
-    if (secret) out[provider] = secret;
+    if (!secret) continue;
+    const parsed = parseSecretEnvelope(secret);
+    // OAuth credentials are intentionally excluded from the legacy API-key
+    // runner path. Passing the encrypted-envelope plaintext as a key would
+    // produce a connected-looking but unusable MCP config and expose a
+    // refresh token to the runner. OAuth MCP sessions use the broker path.
+    if (parsed.kind === "token") out[provider] = parsed.value;
   }
   return out;
 }

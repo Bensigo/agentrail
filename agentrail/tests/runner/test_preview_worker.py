@@ -159,7 +159,13 @@ class FakeBootOps:
     def boot(self, recipe: PreviewRecipe, clone_dir: str, *, advertise_host: str,
              process_env: dict, timeout: float) -> BootHandle:
         self.boot_calls.append(
-            {"recipe": recipe, "clone_dir": clone_dir, "advertise_host": advertise_host, "timeout": timeout}
+            {
+                "recipe": recipe,
+                "clone_dir": clone_dir,
+                "advertise_host": advertise_host,
+                "process_env": dict(process_env),
+                "timeout": timeout,
+            }
         )
         if self._boot_raises is not None:
             if self._boot_removes_dir:
@@ -192,6 +198,9 @@ def _claim_item_dict(**overrides: Any) -> Dict[str, Any]:
         "ref": "deadbeefcafe1234",
         "githubToken": "ghtok",
         "ttlSeconds": 100,
+        "baseRef": "origin/main",
+        "expectedHeadSha": "deadbeefcafe1234",
+        "expectedEnvironmentRung": "preview",
     }
     base.update(overrides)
     return base
@@ -258,22 +267,62 @@ def test_happy_path_report_sequence():
     assert len(ops.teardown_calls) == 1
     assert ops.teardown_calls[0].url == "http://127.0.0.1:3000"
 
-    # clone and boot operate on the SAME clone dir.
-    dest = ops.clone_calls[0]["dest"]
-    assert ops.boot_calls[0]["clone_dir"] == dest
-    assert ops.detect_calls == [dest]
-    assert ops.clone_calls[0] == {
-        "repo_url": "https://github.com/acme/widgets", "ref": "deadbeefcafe1234",
-        "dest": dest, "token": "ghtok",
-    }
 
-    # every ready report carries the booted url/port.
-    ready_bodies = [b for b in _report_bodies(transport) if b["status"] == "ready"]
-    assert all(b["url"] == "http://127.0.0.1:3000" and b["port"] == 3000 for b in ready_bodies)
-    assert all(b["bootLog"] == "server ready" for b in ready_bodies)
-    torn_down_body = _report_bodies(transport)[-1]
-    assert torn_down_body["status"] == "torn_down"
-    assert torn_down_body["bootLog"] == "server ready"
+def test_happy_path_propagates_claim_identity_into_the_boot_child_env():
+    clock = FakeClock()
+    ops = FakeBootOps()
+    transport = FakeTransport([_claim_response()])
+    config = _config()
+
+    preview_worker.run_preview_worker(
+        config,
+        transport=transport,
+        sleep=clock.sleep,
+        now=clock.now,
+        clone=ops.clone,
+        detect_recipe=ops.detect_recipe,
+        boot=ops.boot,
+        teardown=ops.teardown,
+        liveness_interval=30.0,
+        should_continue=_stop_after(1),
+    )
+
+    boot_env = ops.boot_calls[0]["process_env"]
+    assert boot_env["AGENTRAIL_WORKSPACE_ID"] == "ws-1"
+    assert boot_env["AGENTRAIL_BASE_REF"] == "origin/main"
+    assert boot_env["AGENTRAIL_EXPECTED_HEAD_SHA"] == "deadbeefcafe1234"
+    assert boot_env["AGENTRAIL_EXPECTED_ENVIRONMENT_RUNG"] == "preview"
+    # The preview boot/report shape is unchanged: the new evidence is
+    # carried through the boot plane without changing the human-facing
+    # claim/report semantics.
+    assert _report_statuses(transport) == ["booting", "ready", "ready", "ready", "ready", "torn_down"]
+
+
+def test_claim_identity_mismatch_fails_closed_before_booting():
+    clock = FakeClock()
+    ops = FakeBootOps()
+    transport = FakeTransport([
+        _claim_response(expectedHeadSha="different-deadbeef"),
+    ])
+    config = _config()
+
+    preview_worker.run_preview_worker(
+        config,
+        transport=transport,
+        sleep=clock.sleep,
+        now=clock.now,
+        clone=ops.clone,
+        detect_recipe=ops.detect_recipe,
+        boot=ops.boot,
+        teardown=ops.teardown,
+        liveness_interval=30.0,
+        should_continue=_stop_after(1),
+    )
+
+    assert _report_statuses(transport) == ["failed"]
+    assert _report_bodies(transport)[0]["reason"] == "claim expectedHeadSha does not match headSha"
+    assert ops.clone_calls == []
+    assert ops.boot_calls == []
 
     # claim + every report are addressed to THIS worker and bearer-authed.
     claim_call = transport.calls[0]

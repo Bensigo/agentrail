@@ -977,7 +977,11 @@ function requirementEvidenceFromToolInput(input: Record<string, unknown>): {
   requirementRefusalCode: string | null;
   requirementConfidence: { state: "unknown"; basis: string[] } | null;
 } | null {
-  const raw = input["requirementDecision"];
+  const brief =
+    input["_brief"] && typeof input["_brief"] === "object" && !Array.isArray(input["_brief"])
+      ? (input["_brief"] as Record<string, unknown>)
+      : null;
+  const raw = input["requirementDecision"] ?? brief?.["requirementDecision"];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
   const decision = record["decision"];

@@ -191,6 +191,53 @@ function renderUpdateIssue(input: Record<string, unknown>): string {
   return hardTruncate(lines.join("\n"));
 }
 
+function renderRequirementDecision(input: Record<string, unknown>): string[] {
+  const rawDecision = input["requirementDecision"];
+  if (!rawDecision || typeof rawDecision !== "object" || Array.isArray(rawDecision)) {
+    return [];
+  }
+
+  const decision = rawDecision as Record<string, unknown>;
+  if (decision["decision"] !== "refuse") return [];
+
+  const rawRefusal = decision["refusal"];
+  const refusal =
+    rawRefusal && typeof rawRefusal === "object" && !Array.isArray(rawRefusal)
+      ? (rawRefusal as Record<string, unknown>)
+      : null;
+  const rawConfidence = decision["confidence"];
+  const confidence =
+    rawConfidence && typeof rawConfidence === "object" && !Array.isArray(rawConfidence)
+      ? (rawConfidence as Record<string, unknown>)
+      : null;
+  const basis = Array.isArray(confidence?.["basis"])
+    ? confidence["basis"].map((item) => sanitizeField(item, 200)).filter(Boolean)
+    : [];
+
+  const lines = ["", "Requirement decision: refuse"];
+  const label = sanitizeField(refusal?.["label"], 120);
+  if (label) {
+    lines.push(`Refusal reason: ${label}`);
+  }
+  const cannotEstablish = sanitizeField(refusal?.["cannotEstablish"], 240);
+  if (cannotEstablish) {
+    lines.push(`Cannot establish: ${cannotEstablish}`);
+  }
+  const requiredToProceed = sanitizeField(refusal?.["requiredToProceed"], 240);
+  if (requiredToProceed) {
+    lines.push(`Required to proceed: ${requiredToProceed}`);
+  }
+  const taskFamily = sanitizeField(decision["taskFamily"], 40);
+  if (taskFamily) {
+    lines.push(`Task family: ${taskFamily}`);
+  }
+  if (basis.length > 0) {
+    lines.push("Confidence basis:");
+    for (const item of basis) lines.push(`- ${item}`);
+  }
+  return lines;
+}
+
 /**
  * The alignment brief (#1274 PR ①). Defensive against a malformed toolInput
  * exactly like every renderer above — this is untyped JSONB by the time it
@@ -283,6 +330,8 @@ function renderAlignmentBrief(input: Record<string, unknown>): string {
     lines.push("", "Acceptance criteria:");
     for (const item of criteria) lines.push(`- ${item}`);
   }
+
+  lines.push(...renderRequirementDecision(input));
 
   if (estimateUsd !== null) {
     lines.push("", scopeSentence(estimateUsd));

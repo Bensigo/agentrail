@@ -48,6 +48,10 @@ import { selectExecuteModel, describeModelSelection } from "./alignment/selector
 import type { SelectExecuteModelOptions } from "./alignment/selector";
 import type { QualityProfile } from "./alignment/quality-profile";
 import { validateAcceptanceCriteria } from "@agentrail/db-postgres";
+import {
+  decideRequirementContract,
+  type RequirementDecision,
+} from "./alignment/requirement-decision";
 // Subscription-platform slice 2, Task 11 — the admission-side entitlement
 // filter. `alignment-brief.ts` lives OUTSIDE `lib/alignment/` (it's a
 // sibling file, not a member of that directory), so importing `lib/policy/`
@@ -226,6 +230,7 @@ export interface AlignmentBriefToolInput {
   title: string;
   whatToBuild: string;
   acceptanceCriteria: string[];
+  requirementDecision?: RequirementDecision;
   taskType: TaskType;
   suggestedModel: { slug: string; displayName: string };
   estimateUsd: number;
@@ -288,6 +293,11 @@ export function composeAlignmentBrief(input: {
   modelSelection?: ModelSelectionForBrief;
 }): AlignmentBriefToolInput {
   const acceptanceCriteria = parseAcceptanceCriteriaForBrief(input.body);
+  const requirementDecision = decideRequirementContract({
+    title: input.title,
+    body: input.body,
+    acceptanceCriteria,
+  });
   const estimate = estimateBrief(
     {
       title: input.title,
@@ -301,6 +311,7 @@ export function composeAlignmentBrief(input: {
     title: input.title,
     whatToBuild: input.body,
     acceptanceCriteria,
+    requirementDecision,
     taskType: estimate.taskType,
     suggestedModel: {
       slug: estimate.suggestedModel.slug,
@@ -329,6 +340,7 @@ export function composeAlignmentBrief(input: {
  * fields back into the full shape — see that file's own comment.
  */
 export interface ChatBornBrief {
+  requirementDecision?: RequirementDecision;
   taskType: TaskType;
   suggestedModel: { slug: string; displayName: string };
   estimateUsd: number;
@@ -361,11 +373,17 @@ export function composeChatBornBrief(input: {
   acceptanceCriteria: string[];
   modelSelection?: ModelSelectionForBrief;
 }): ChatBornBrief {
+  const requirementDecision = decideRequirementContract({
+    title: input.title,
+    body: input.whatToBuild,
+    acceptanceCriteria: input.acceptanceCriteria,
+  });
   const estimate = estimateBrief(
     input,
     input.modelSelection ? { modelOverride: input.modelSelection.model } : {}
   );
   return {
+    requirementDecision,
     taskType: estimate.taskType,
     suggestedModel: {
       slug: estimate.suggestedModel.slug,

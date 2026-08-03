@@ -186,15 +186,15 @@ function confidenceFor(taskFamily: RequirementTaskFamily, observedSignals: strin
     state: "unknown",
     basis: [
       taskFamily === "unknown"
-        ? "No task-family classification was supplied"
-        : `Task family is ${taskFamily}, but no measured outcome history was supplied`,
+        ? "Task family: unknown"
+        : `Task family: ${taskFamily}`,
       ...observedSignals,
     ],
   };
 }
 
 function observedSignal(code: RequirementRefusalCode): string {
-  return `The brief matched the explicit ${code} intake signal`;
+  return `Evidence basis: the brief matched the explicit ${code} intake signal`;
 }
 
 /**
@@ -212,7 +212,9 @@ export function decideRequirementContract(input: RequirementDecisionInput): Requ
     return {
       decision: "accept",
       taskFamily,
-      confidence: confidenceFor(taskFamily, ["No explicit refusal signal was found in the brief"]),
+      confidence: confidenceFor(taskFamily, [
+        "Evidence basis: no explicit refusal signal was found in the brief",
+      ]),
     };
   }
 

@@ -31,6 +31,8 @@ describe("getRequirementDecisionReport", () => {
         taskFamily: "mechanical",
         evaluatedDenominator: "4",
         refusalCount: "2",
+        overrideCount: "1",
+        overrideDenominator: "2",
         falseRefusalCount: "1",
         falseRefusalDenominator: "2",
         falseAcceptCount: "1",
@@ -41,6 +43,8 @@ describe("getRequirementDecisionReport", () => {
         taskFamily: null,
         evaluatedDenominator: "1",
         refusalCount: "1",
+        overrideCount: "0",
+        overrideDenominator: "1",
         falseRefusalCount: "0",
         falseRefusalDenominator: "0",
         falseAcceptCount: "0",
@@ -62,6 +66,9 @@ describe("getRequirementDecisionReport", () => {
       evaluatedDenominator: 5,
       refusalCount: 3,
       refusalRate: 3 / 5,
+      overrideCount: 1,
+      overrideDenominator: 3,
+      overrideRate: 1 / 3,
       falseRefusalCount: 1,
       falseRefusalDenominator: 2,
       falseRefusalRate: 0.5,
@@ -79,7 +86,9 @@ describe("getRequirementDecisionReport", () => {
       {
         taskFamily: "general",
         evaluatedDenominator: "1",
-        refusalCount: "1",
+        refusalCount: "0",
+        overrideCount: "0",
+        overrideDenominator: "0",
         falseRefusalCount: "0",
         falseRefusalDenominator: "0",
         falseAcceptCount: "0",
@@ -92,7 +101,9 @@ describe("getRequirementDecisionReport", () => {
 
     expect(report.falseRefusalRate).toBeNull();
     expect(report.falseAcceptRate).toBeNull();
+    expect(report.overrideRate).toBeNull();
     expect(report.byTaskFamily[0]?.falseRefusalRate).toBeNull();
+    expect(report.byTaskFamily[0]?.overrideRate).toBeNull();
   });
 
   it("rejects an empty or reversed date range", async () => {

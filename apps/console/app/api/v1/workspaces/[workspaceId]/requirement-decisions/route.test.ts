@@ -33,6 +33,9 @@ beforeEach(() => {
     evaluatedDenominator: 0,
     refusalCount: 0,
     refusalRate: null,
+    overrideCount: 0,
+    overrideDenominator: 0,
+    overrideRate: null,
     falseRefusalCount: 0,
     falseRefusalDenominator: 0,
     falseRefusalRate: null,
@@ -81,5 +84,6 @@ describe("GET requirement-decision report (#1583)", () => {
     const body = await response.json();
     expect(body.falseRefusalRate).toBeNull();
     expect(body.falseAcceptRate).toBeNull();
+    expect(body.overrideRate).toBeNull();
   });
 });

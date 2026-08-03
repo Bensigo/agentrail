@@ -133,6 +133,86 @@ describe("recordApprovalRequest — intro-anchor optionality (#1273 PR ①)", ()
     expect(valuesArgs.chatIdentityId).toBeUndefined();
   });
 
+  it("extracts the requirement decision from a nested _brief on chat-born create_issue approvals, so the waiver/refusal audit is preserved without changing the caller shape", async () => {
+    const returnedRow = {
+      id: "approval-brief-1",
+      workspaceId: "ws-1",
+      chatIdentityId: "chat-identity-1",
+      sessionId: "session-1",
+      eveSessionId: "eve-session-1",
+      requestId: "req-brief-1",
+      callbackToken: "brief123",
+      toolName: "create_issue",
+      toolInput: {
+        title: "Add dark mode",
+        _brief: {
+          requirementDecision: {
+            decision: "refuse",
+            taskFamily: "ui",
+            confidence: { state: "unknown", basis: ["Task family: ui"] },
+            refusal: {
+              code: "missing_proof_path",
+              label: "Missing proof path",
+              cannotEstablish: "the acceptance criteria can be checked by a test, build, lint, or other declared verification",
+              requiredToProceed: "add a concrete verification command or explain the observable evidence that will prove the criteria",
+              taskFamily: "ui",
+              confidence: { state: "unknown", basis: [] },
+            },
+          },
+        },
+      },
+      approveOptionId: "approve",
+      denyOptionId: "deny",
+      status: "pending",
+      publishedIssueUrl: null,
+      createdAt: new Date("2026-07-18T00:00:00Z"),
+      resolvedAt: null,
+      requirementDecision: "refuse",
+      requirementTaskFamily: "ui",
+      requirementRefusalCode: "missing_proof_path",
+      requirementConfidence: { state: "unknown", basis: ["Task family: ui"] },
+      requirementStatus: "pending",
+      requirementOverride: false,
+      requirementOverrideAt: null,
+    };
+    const insertChain = makeChain("returning", [returnedRow]);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+
+    const result = await recordApprovalRequest({
+      ...BASE_INPUT,
+      workspaceId: "ws-1",
+      chatIdentityId: "chat-identity-1",
+      toolInput: {
+        title: "Add dark mode",
+        _brief: {
+          requirementDecision: {
+            decision: "refuse",
+            taskFamily: "ui",
+            confidence: { state: "unknown", basis: ["Task family: ui"] },
+            refusal: {
+              code: "missing_proof_path",
+              label: "Missing proof path",
+              cannotEstablish: "the acceptance criteria can be checked by a test, build, lint, or other declared verification",
+              requiredToProceed: "add a concrete verification command or explain the observable evidence that will prove the criteria",
+              taskFamily: "ui",
+              confidence: { state: "unknown", basis: [] },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result).toEqual({ approval: returnedRow, created: true });
+    const valuesArgs = (insertChain.values as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(valuesArgs.requirementDecision).toBe("refuse");
+    expect(valuesArgs.requirementTaskFamily).toBe("ui");
+    expect(valuesArgs.requirementRefusalCode).toBe("missing_proof_path");
+    expect(valuesArgs.requirementConfidence).toEqual({
+      state: "unknown",
+      basis: ["Task family: ui"],
+    });
+  });
+
   it("passes BOTH anchors through when the caller supplies both (graduated session, identity known for the sender check)", async () => {
     const returnedRow = {
       id: "approval-3",

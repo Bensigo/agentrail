@@ -162,7 +162,29 @@ export type JudgmentCalibrationSummary = {
   to: string | null;
   totalEvents: number;
   counts: Record<JudgmentCalibrationEventType, number>;
+  metrics: {
+    reviewerAgreement: {
+      total: number;
+      accepted: number;
+      edited: number;
+      dismissed: number;
+      confirmed: number;
+      rate: number | null;
+    };
+    gateOutcome: { held: number; reverted: number; rate: number | null };
+    refusals: {
+      count: number;
+      attempts: number;
+      rate: number | null;
+      byReason: Record<string, number>;
+    };
+  };
 };
+
+// Calibration is intentionally payload-contract driven: producers may attach
+// disposition, gateOutcome, refusal/refusalKind, and decisionAttempted to the
+// existing append-only rows. Missing denominators stay null rather than
+// masquerading as a perfect rate.
 
 export type GetJudgmentCalibrationSummaryInput = {
   workspaceId: string;
@@ -180,6 +202,21 @@ function emptyJudgmentCalibrationCounts(): Record<JudgmentCalibrationEventType, 
   };
 }
 
+function emptyJudgmentCalibrationMetrics(): JudgmentCalibrationSummary["metrics"] {
+  return {
+    reviewerAgreement: {
+      total: 0,
+      accepted: 0,
+      edited: 0,
+      dismissed: 0,
+      confirmed: 0,
+      rate: null,
+    },
+    gateOutcome: { held: 0, reverted: 0, rate: null },
+    refusals: { count: 0, attempts: 0, rate: null, byReason: {} },
+  };
+}
+
 export async function getJudgmentCalibrationSummary(
   input: GetJudgmentCalibrationSummaryInput
 ): Promise<JudgmentCalibrationSummary> {
@@ -189,6 +226,22 @@ export async function getJudgmentCalibrationSummary(
     await db.execute(sql`
       SELECT
         type,
+        payload->>'disposition' AS disposition,
+        CASE
+          WHEN type = 'false_green' OR payload->>'gateOutcome' = 'reverted' THEN 'reverted'
+          WHEN payload->>'gateOutcome' = 'held' THEN 'held'
+          ELSE NULL
+        END AS gate_outcome,
+        CASE
+          WHEN type = 'requirement_correction'
+            AND (
+              payload->>'refusal' = 'true'
+              OR payload->>'outcome' IN ('refused', 'unverifiable', 'requirements_conflict')
+            )
+            THEN COALESCE(NULLIF(payload->>'refusalKind', ''), 'unspecified')
+          ELSE NULL
+        END AS refusal_kind,
+        CASE WHEN payload->>'decisionAttempted' = 'true' THEN 1 ELSE 0 END AS decision_attempt,
         COUNT(*)::int AS count
       FROM judgment_events
       WHERE workspace_id = ${input.workspaceId}
@@ -196,15 +249,50 @@ export async function getJudgmentCalibrationSummary(
         AND type IN ('review_outcome', 'false_green', 'missed_check', 'rejected_approach')
         AND (${fromIso}::timestamptz IS NULL OR occurred_at >= ${fromIso}::timestamptz)
         AND (${toIso}::timestamptz IS NULL OR occurred_at < ${toIso}::timestamptz)
-      GROUP BY type
+      GROUP BY type, disposition, gate_outcome, refusal_kind, decision_attempt
     `)
-  ) as Array<{ type: JudgmentCalibrationEventType; count: number }>;
+  ) as Array<{
+    type: JudgmentCalibrationEventType;
+    disposition: string | null;
+    gate_outcome: "held" | "reverted" | null;
+    refusal_kind: string | null;
+    decision_attempt: number;
+    count: number;
+  }>;
 
   const counts = emptyJudgmentCalibrationCounts();
+  const metrics = emptyJudgmentCalibrationMetrics();
   for (const row of rows) {
+    const count = Number(row.count ?? 0);
     if (JUDGMENT_CALIBRATION_EVENT_TYPES.includes(row.type)) {
-      counts[row.type] = Number(row.count ?? 0);
+      counts[row.type] += count;
     }
+    if (row.type === "review_outcome") {
+      metrics.reviewerAgreement.total += count;
+      if (row.disposition === "accepted") metrics.reviewerAgreement.accepted += count;
+      if (row.disposition === "edited") metrics.reviewerAgreement.edited += count;
+      if (row.disposition === "dismissed") metrics.reviewerAgreement.dismissed += count;
+    }
+    if (row.gate_outcome === "held") metrics.gateOutcome.held += count;
+    if (row.gate_outcome === "reverted") metrics.gateOutcome.reverted += count;
+    if (row.refusal_kind) {
+      metrics.refusals.count += count;
+      metrics.refusals.byReason[row.refusal_kind] =
+        (metrics.refusals.byReason[row.refusal_kind] ?? 0) + count;
+    }
+    if (Number(row.decision_attempt) === 1) metrics.refusals.attempts += count;
+  }
+
+  metrics.reviewerAgreement.confirmed =
+    metrics.reviewerAgreement.accepted + metrics.reviewerAgreement.edited;
+  if (metrics.reviewerAgreement.total > 0) {
+    metrics.reviewerAgreement.rate =
+      metrics.reviewerAgreement.confirmed / metrics.reviewerAgreement.total;
+  }
+  const gateTotal = metrics.gateOutcome.held + metrics.gateOutcome.reverted;
+  if (gateTotal > 0) metrics.gateOutcome.rate = metrics.gateOutcome.held / gateTotal;
+  if (metrics.refusals.attempts > 0) {
+    metrics.refusals.rate = metrics.refusals.count / metrics.refusals.attempts;
   }
 
   return {
@@ -214,6 +302,7 @@ export async function getJudgmentCalibrationSummary(
     to: toIso,
     totalEvents: Object.values(counts).reduce((sum, count) => sum + count, 0),
     counts,
+    metrics,
   };
 }
 

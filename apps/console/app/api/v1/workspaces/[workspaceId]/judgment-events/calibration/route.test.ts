@@ -61,6 +61,11 @@ describe("workspace judgment events calibration route", () => {
         missed_check: 0,
         rejected_approach: 0,
       },
+      metrics: {
+        reviewerAgreement: { total: 0, accepted: 0, edited: 0, dismissed: 0, confirmed: 0, rate: null },
+        gateOutcome: { held: 0, reverted: 0, rate: null },
+        refusals: { count: 0, attempts: 0, rate: null, byReason: {} },
+      },
     } as never);
   });
 
@@ -134,6 +139,11 @@ describe("workspace judgment events calibration route", () => {
           false_green: 0,
           missed_check: 0,
           rejected_approach: 0,
+        },
+        metrics: {
+          reviewerAgreement: { total: 0, accepted: 0, edited: 0, dismissed: 0, confirmed: 0, rate: null },
+          gateOutcome: { held: 0, reverted: 0, rate: null },
+          refusals: { count: 0, attempts: 0, rate: null, byReason: {} },
         },
       },
     });

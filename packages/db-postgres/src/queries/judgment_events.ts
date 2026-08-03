@@ -84,6 +84,7 @@ export async function appendJudgmentEvent(
   const payloadJson = JSON.stringify(input.payload);
   const actorRefJson = JSON.stringify(input.actorRef);
   const sourceRefJson = JSON.stringify(input.sourceRef);
+  const occurredAt = (input.occurredAt ?? new Date()).toISOString();
 
   const inserted = Array.from(
     await db.execute(sql`
@@ -101,7 +102,7 @@ export async function appendJudgmentEvent(
         ${payloadJson}::jsonb,
         ${actorRefJson}::jsonb,
         ${sourceRefJson}::jsonb,
-        ${input.occurredAt ?? new Date()}
+        ${occurredAt}
       )
       ON CONFLICT (workspace_id, repo, event_key) DO NOTHING
       RETURNING *

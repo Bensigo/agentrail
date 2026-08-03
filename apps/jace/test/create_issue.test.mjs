@@ -915,6 +915,34 @@ test("runCreateIssue: block mode checks the hardened proposal before invoking th
   assert.equal(constraintTransport.calls.length, 1);
 });
 
+test("runCreateIssue: a blocked requirement records the refusal denominator without filing", async () => {
+  const eventTransport = fakeTransport(async (url, init) => {
+    assert.equal(url, "https://console.example.com/api/v1/runner/judgment-events");
+    const body = JSON.parse(init.body);
+    assert.equal(body.eveSessionId, "eve-session-1");
+    assert.equal(body.type, "requirement_correction");
+    assert.equal(body.payload.decisionAttempted, true);
+    assert.equal(body.payload.refusalKind, "requirements_conflict");
+    return { status: 201, json: async () => ({ ok: true }) };
+  });
+
+  const result = await runCreateIssue({
+    execFileFn: async () => ({ stdout: SUCCESS_STDOUT, stderr: "" }),
+    env: { ...STAMP_ENV, AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE: "block" },
+    title: "Add Redis",
+    acceptanceCriteria: ["Use Redis for retries"],
+    eveSessionId: "eve-session-1",
+    constraintCheckTransport: async () => ({
+      status: 200,
+      json: async () => ({ allowed: false, blocks: [{ reason: "Redis was rejected." }] }),
+    }),
+    judgmentEventTransport: eventTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "Redis was rejected." });
+  assert.equal(eventTransport.calls.length, 1);
+});
+
 test("runCreateIssue: block-mode constraint infrastructure failure fails closed", async () => {
   let cliCalled = false;
   const result = await runCreateIssue({

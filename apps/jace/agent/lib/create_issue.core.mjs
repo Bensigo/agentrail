@@ -16,6 +16,7 @@
 // rendered onto GitHub. See sanitize-untrusted.core.mjs for what that removes
 // and, honestly, what it cannot.
 
+import { createHash } from "node:crypto";
 import { hardenUntrusted, FIELD_CAPS } from "./sanitize-untrusted.core.mjs";
 import {
   resolveConsoleConfig,
@@ -108,6 +109,7 @@ export function extractGoalSlug(text) {
 export const GOAL_FILE_CHECK_PATH = "/api/v1/runner/goals/file-check";
 export const GOAL_FILE_RECORDED_PATH = "/api/v1/runner/goals/file-recorded";
 export const JUDGMENT_CONSTRAINTS_PATH = "/api/v1/runner/judgment-constraints/check";
+export const JUDGMENT_EVENTS_PATH = "/api/v1/runner/judgment-events";
 export const JUDGMENT_CONSTRAINTS_MODE_ENV = "AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE";
 
 /** @param {string} baseUrl — already trimmed + de-slashed */
@@ -129,6 +131,10 @@ export const JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE =
 
 export function buildJudgmentConstraintsCheckUrl(baseUrl) {
   return `${baseUrl}${JUDGMENT_CONSTRAINTS_PATH}`;
+}
+
+export function buildJudgmentEventsUrl(baseUrl) {
+  return `${baseUrl}${JUDGMENT_EVENTS_PATH}`;
 }
 
 function judgmentConstraintMode(env = {}) {
@@ -213,6 +219,67 @@ async function enforceJudgmentConstraints({ eveSessionId, repo, proposalText, en
     return { allow: true };
   }
   return result;
+}
+
+/**
+ * Record a blocked requirement decision without making ledger availability a
+ * second filing gate. The constraint check already refused the write; this
+ * best-effort call supplies E3's refusal denominator and keeps the refusal
+ * tied to the exact proposal hash rather than storing the full issue text.
+ */
+async function recordJudgmentRefusal({
+  eveSessionId,
+  repo,
+  proposalText,
+  result,
+  env = {},
+  transport,
+}) {
+  const cfg = resolveConsoleConfig(env);
+  const sessionId = String(eveSessionId ?? "").trim();
+  const resolvedRepo = String(repo ?? "").trim();
+  if (!cfg.ok || !sessionId || !resolvedRepo || typeof transport !== "function") return;
+
+  const refusalKind = result.reason === JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE
+    ? "unverifiable"
+    : "requirements_conflict";
+  const proposalHash = createHash("sha256")
+    .update(`${resolvedRepo}\n${proposalText}`)
+    .digest("hex")
+    .slice(0, 24);
+
+  try {
+    await transport(buildJudgmentEventsUrl(cfg.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        eveSessionId: sessionId,
+        repo: resolvedRepo,
+        eventKey: `requirement-refusal:${proposalHash}`,
+        type: "requirement_correction",
+        refs: {},
+        payload: {
+          decisionAttempted: true,
+          refusal: true,
+          outcome: refusalKind,
+          refusalKind,
+          reason: result.reason,
+          blocks: Array.isArray(result.blocks) ? result.blocks : [],
+        },
+        actor: { kind: "jace" },
+        source: { kind: "create_issue" },
+      }),
+    });
+  } catch (error) {
+    console.warn(
+      "[create_issue] judgment refusal capture failed:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 /**
@@ -699,6 +766,7 @@ export async function stampCreatedIssueUrl({
  * @param {Function} [input.goalCheckTransport] - #1289 test-only: inject the pre-file leash-check's HTTP transport.
  * @param {Function} [input.goalRecordTransport] - #1289 test-only: inject the post-file bookkeeping record's HTTP transport.
  * @param {Function} [input.constraintCheckTransport] - E2 test-only: inject the judgment-constraint check transport.
+ * @param {Function} [input.judgmentEventTransport] - E1 test-only: inject the refusal ledger transport.
  * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string } | { blocked: true, message: string }>}
  */
 export async function runCreateIssue({
@@ -718,6 +786,7 @@ export async function runCreateIssue({
   goalCheckTransport,
   goalRecordTransport,
   constraintCheckTransport,
+  judgmentEventTransport,
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
@@ -749,6 +818,14 @@ export async function runCreateIssue({
     transport: constraintCheckTransport ?? realStampTransport,
   });
   if (!judgmentCheck.allow) {
+    await recordJudgmentRefusal({
+      eveSessionId,
+      repo: resolvedRepo,
+      proposalText: `${safeTitle}\n${body}`,
+      result: judgmentCheck,
+      env: resolvedEnv,
+      transport: judgmentEventTransport ?? realStampTransport,
+    });
     return {
       blocked: true,
       message: judgmentCheck.reason ?? JUDGMENT_CONSTRAINT_INFRA_FAILURE_MESSAGE,

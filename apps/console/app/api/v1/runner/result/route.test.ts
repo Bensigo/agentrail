@@ -41,6 +41,8 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     isBillingEnabled: vi.fn(),
     chargeCompletedTask: vi.fn(),
     usdToCents: actual.usdToCents,
+    appendChangeRecordEvent: vi.fn(),
+    findOrCreateChangeRecord: vi.fn(),
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -77,6 +79,8 @@ import {
   getMergePermission,
   getInstallationToken,
   recordRunOutcome,
+  appendChangeRecordEvent,
+  findOrCreateChangeRecord,
   ONBOARD_FORCE_BODY,
 } from "@agentrail/db-postgres";
 import {
@@ -149,6 +153,8 @@ beforeEach(() => {
   // opts in (see route.run-outcome-capture.test.ts for the dedicated suite).
   vi.mocked(getRunCosts).mockResolvedValue([]);
   vi.mocked(recordRunOutcome).mockResolvedValue(undefined as never);
+  vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
+  vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
 });
 
 const ORIGINAL_FETCH = global.fetch;
@@ -580,6 +586,26 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
       WS,
       expect.objectContaining({ outcome: "green", prUrl: PR_URL, merged: true })
     );
+    expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repo: "octocat/hello-world",
+      prNumber: 42,
+      state: "merged",
+    });
+    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
+      recordId: "change-1",
+      eventKey: "merge:result:qe-1:merged",
+      stage: "merge",
+      actor: "runner-result",
+      payloadRef: expect.objectContaining({
+        kind: "merge",
+        queueEntryId: "qe-1",
+        repo: "octocat/hello-world",
+        prNumber: 42,
+        url: PR_URL,
+        outcome: "merged",
+      }),
+    });
   });
 
   it("permission OFF: zero GitHub calls at all (regression-pin) — no token fetch, no merge lifecycle event, notify says merged:false", async () => {
@@ -706,6 +732,19 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
       expect.stringContaining(PR_URL),
       expect.any(Number)
     );
+    expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repo: "octocat/hello-world",
+      prNumber: 42,
+      state: "open",
+    });
+    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
+      recordId: "change-1",
+      eventKey: "merge:result:qe-1:merge_failed",
+      stage: "merge",
+      actor: "runner-result",
+      payloadRef: expect.objectContaining({ outcome: "merge_failed", prNumber: 42 }),
+    });
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
   });

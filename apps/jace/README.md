@@ -121,6 +121,7 @@ to migrate an existing self-hosted workspace onto the shared bot.
 | `AGENTRAIL_WORKSPACE_ID` | The workspace this Jace deployment / its `agentrail` CLI invocations act for — the key the CLI uses to look up the connected GitHub repo + token in Postgres. |
 | `DATABASE_URL` | Postgres connection the CLI's workspace lookup reads (the same store the console writes "connect a repo" to). Required only for the automatic repo/token resolution above; unused when `GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN` and `JACE_TARGET_REPO` (or an explicit `repo`) are both already set. |
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
+| `AGENTRAIL_JUDGMENT_CONSTRAINTS_MODE` | Judgment Ledger E2 pre-create constraint mode for `create_issue`: `off` skips the check, `warn` records/returns violations but still creates, and `block` refuses before GitHub issue creation when a recorded decision or rejected approach is violated. Defaults to `off`. |
 | `EVE_HOST` | Base URL used by the round-trip harness. Defaults to `http://127.0.0.1:2000`. |
 | `TELEGRAM_BOT_USERNAME` | The Telegram bot's @username (without `@`) for the native `telegram` channel. |
 | `TELEGRAM_BOT_TOKEN` | BotFather token for proactive Telegram sends. |

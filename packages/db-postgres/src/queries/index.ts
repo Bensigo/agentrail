@@ -391,6 +391,39 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
   return rows as MemoryItemRow[];
 }
 
+export async function listJudgmentConstraintMemoryItems(
+  workspaceId: string
+): Promise<MemoryItemRow[]> {
+  const rows = await db
+    .select({
+      id: memoryItems.id,
+      workspaceId: memoryItems.workspaceId,
+      repositoryId: memoryItems.repositoryId,
+      repositoryName: repositories.name,
+      source: memoryItems.source,
+      content: memoryItems.content,
+      type: memoryItems.type,
+      writtenBy: memoryItems.writtenBy,
+      tags: memoryItems.tags,
+      createdAt: memoryItems.createdAt,
+      lastUsedAt: memoryItems.lastUsedAt,
+    })
+    .from(memoryItems)
+    .leftJoin(repositories, eq(memoryItems.repositoryId, repositories.id))
+    .where(
+      and(
+        eq(memoryItems.workspaceId, workspaceId),
+        or(
+          eq(memoryItems.type, "decision"),
+          sql`${memoryItems.tags} && ARRAY['rejected_approach','judgment_constraint']::text[]`
+        )
+      )
+    )
+    .orderBy(desc(memoryItems.createdAt))
+    .limit(50);
+  return rows as MemoryItemRow[];
+}
+
 // ---- retrieveMemory: BM25 + heuristic-rerank workspace-memory retriever ----
 //
 // `listMemoryItems` above returns EVERY row for a workspace — no limit, no

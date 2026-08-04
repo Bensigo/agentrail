@@ -97,6 +97,32 @@ export async function getRunQueueEntryIdentity(
 }
 
 /**
+ * Read the durable alignment-brief reference for the queue entry that produced
+ * a run. Both ids are scoped in SQL: a queue id from another workspace must
+ * look absent rather than leaking an otherwise valid brief identifier.
+ *
+ * A null return means the queue row is not present in this workspace. A row
+ * with `alignmentBriefId: null` is deliberately distinct: it is a real
+ * legacy/external queue row whose brief lineage remains unknown.
+ */
+export async function getQueueEntryBriefReference(
+  workspaceId: string,
+  queueEntryId: string
+): Promise<{ alignmentBriefId: string | null } | null> {
+  const rows = await db
+    .select({ alignmentBriefId: queueEntries.alignmentBriefId })
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        eq(queueEntries.id, queueEntryId)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
  * Look up a run by its own primary key, with NO workspace scope — the read
  * behind `GET /api/v1/runner/failure-bundle` under the central-secret auth
  * model (JACE_CONSOLE_TOKEN, no per-workspace bearer to scope by). `id` is

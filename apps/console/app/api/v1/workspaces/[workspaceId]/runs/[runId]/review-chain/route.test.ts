@@ -8,6 +8,7 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getRun: vi.fn(),
   getRunQueueEntryIdentity: vi.fn(),
+  getQueueEntryBriefReference: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   listReviewEventsForPr: vi.fn(),
   listReviewJobsForPr: vi.fn(),
@@ -17,6 +18,7 @@ import { auth } from "@agentrail/auth";
 import {
   getRun,
   getRunQueueEntryIdentity,
+  getQueueEntryBriefReference,
   getWorkspaceMembership,
   listReviewEventsForPr,
   listReviewJobsForPr,
@@ -131,6 +133,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     expect(res.status).toBe(404);
     expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
+    expect(getQueueEntryBriefReference).not.toHaveBeenCalled();
   });
 
   it("returns the queue-entry identity and ordered review history for a resolved PR", async () => {
@@ -138,6 +141,9 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     vi.mocked(getRun).mockResolvedValue(RUN as never);
     vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
       externalId: "ada/widgets#41",
+    } as never);
+    vi.mocked(getQueueEntryBriefReference).mockResolvedValue({
+      alignmentBriefId: "brief-123",
     } as never);
     vi.mocked(listReviewJobsForPr).mockResolvedValue([
       {
@@ -193,6 +199,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
         queueEntryId: "queue-entry-1",
         prUrl: "https://github.com/ada/widgets/pull/42",
       },
+      alignmentBrief: { state: "linked", id: "brief-123" },
       prResolution: {
         state: "resolved",
         repo: "ada/widgets",
@@ -251,6 +258,10 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
       repo: "ada/widgets",
       prNumber: 42,
     });
+    expect(getQueueEntryBriefReference).toHaveBeenCalledWith(
+      WORKSPACE_ID,
+      "queue-entry-1"
+    );
   });
 
   it("returns unknown and does not query history when a valid PR URL belongs to another repository", async () => {
@@ -299,12 +310,16 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
   it("returns an explicit no_pr state and never guesses history when pr_url is empty", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue({ ...RUN, prUrl: "" } as never);
+    vi.mocked(getQueueEntryBriefReference).mockResolvedValue({
+      alignmentBriefId: null,
+    } as never);
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
 
     expect(res.status).toBe(200);
     expect(json.prResolution).toEqual({ state: "no_pr", repo: null, number: null });
+    expect(json.alignmentBrief).toEqual({ state: "unknown", id: null });
     expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
     expect(json.reviewJobs).toEqual([]);
@@ -316,6 +331,9 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     vi.mocked(getRun).mockResolvedValue(
       { ...RUN, prUrl: "https://example.com/ada/widgets/pull/42" } as never
     );
+    vi.mocked(getQueueEntryBriefReference).mockResolvedValue({
+      alignmentBriefId: null,
+    } as never);
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
@@ -329,6 +347,42 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     });
     expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
+  });
+
+  it("returns explicit absence when the run has no queue-entry relation", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue({ ...RUN, queueEntryId: null } as never);
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alignmentBrief).toEqual({ state: "absent", id: null });
+    expect(getQueueEntryBriefReference).not.toHaveBeenCalled();
+  });
+
+  it("keeps a missing queue row unknown rather than inventing an absent brief", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getQueueEntryBriefReference).mockResolvedValue(null as never);
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.alignmentBrief).toEqual({ state: "unknown", id: null });
+  });
+
+  it("returns 500 when the workspace-scoped brief lookup fails", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getQueueEntryBriefReference).mockRejectedValue(new Error("db down"));
+
+    const res = await GET(makeRequest(), makeParams());
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Failed to load review chain" });
+    expect(listReviewJobsForPr).not.toHaveBeenCalled();
   });
 
   it("returns 500 with a stable error when the review-history query throws", async () => {

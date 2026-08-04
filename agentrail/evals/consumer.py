@@ -91,6 +91,10 @@ _ROUTING_REGRET_HEADER = "## Routing cost-regret"
 _SENTINEL_PREFIX = "_Not available:"
 _REGRET_LINE_PREFIX = "- Total routing cost-regret:"
 _NET_DELTA_LINE_PREFIX = "- Net $-delta vs baseline:"
+_PROVENANCE_HEADER = "## Evaluation provenance"
+_PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Scorer", "Gate")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MIN_PROMOTION_REPETITIONS_PER_ARM = 5
 
 # Table-row labels in the `## New-flow vs full` section, in render order.
 NEW_FLOW_ROW_LABELS = (
@@ -135,6 +139,21 @@ class RoutingFacts:
     net_delta_usd: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class ProvenanceFacts:
+    """The five immutable input hashes printed by the real report writer."""
+
+    fingerprints: Dict[str, str]
+
+    @property
+    def missing_or_invalid(self) -> List[str]:
+        return [
+            key.lower()
+            for key in _PROVENANCE_KEYS
+            if not _SHA256_RE.fullmatch(self.fingerprints.get(key, ""))
+        ]
+
+
 @dataclass
 class ReportFacts:
     path: Path
@@ -144,6 +163,8 @@ class ReportFacts:
     generated_at: Optional[date] = None
     arm_summaries: List[ArmSummaryFacts] = field(default_factory=list)
     content_sha256: Optional[str] = None
+    provenance: Optional[ProvenanceFacts] = None
+    network_artifact_count: int = 0
 
 
 # --- Reverse parsers for reporter.py's _fmt_* helpers ----------------------
@@ -240,6 +261,9 @@ def parse_report(path: Path) -> ReportFacts:
     lines = text.splitlines()
     generated_at: Optional[date] = None
     arm_summaries: List[ArmSummaryFacts] = []
+    provenance: Optional[ProvenanceFacts] = None
+    provenance_rows: Dict[str, str] = {}
+    network_artifact_count = 0
 
     has_new_flow_header = any(line.strip() == _NEW_FLOW_HEADER for line in lines)
     has_routing_header = any(
@@ -268,6 +292,14 @@ def parse_report(path: Path) -> ReportFacts:
             if cells[0] in {"Arm", "---"}:
                 continue
             arm_summaries.append(_parse_arm_summary_row(cells))
+        if section == _PROVENANCE_HEADER and stripped.startswith("|"):
+            cells = _row_cells(stripped)
+            if len(cells) == 2 and cells[0] in _PROVENANCE_KEYS:
+                provenance_rows[cells[0]] = cells[1]
+        if stripped.startswith("- Network artifacts (excluded from all metrics):"):
+            count = re.search(r":\s*(\d+)\s+ECONNRESET", stripped)
+            if count is not None:
+                network_artifact_count += int(count.group(1))
         if section != _NEW_FLOW_HEADER:
             continue
         if stripped.startswith(_SENTINEL_PREFIX):
@@ -289,6 +321,8 @@ def parse_report(path: Path) -> ReportFacts:
             elif label == "False-green rate":
                 new_flow.false_green_rate_delta = _parse_signed_pct(delta_cell)
     new_flow.available = len(new_flow.rows) == len(NEW_FLOW_ROW_LABELS)
+    if provenance_rows:
+        provenance = ProvenanceFacts(fingerprints=provenance_rows)
 
     routing = RoutingFacts()
     for line in lines:
@@ -314,6 +348,8 @@ def parse_report(path: Path) -> ReportFacts:
         generated_at=generated_at,
         arm_summaries=arm_summaries,
         content_sha256=hashlib.sha256(raw).hexdigest(),
+        provenance=provenance,
+        network_artifact_count=network_artifact_count,
     )
 
 
@@ -452,7 +488,30 @@ def _report_hold_reasons(
     if not facts.arm_summaries:
         reasons.append("report evidence is unknown: missing Per-arm summary rows")
     elif all(summary.repetitions == 0 for summary in facts.arm_summaries):
-        reasons.append("zero-evidence report: every arm recorded zero repetitions")
+        if facts.network_artifact_count:
+            reasons.append(
+                "synthetic-only report: every measured repetition was excluded as a network artifact"
+            )
+        else:
+            reasons.append("zero-evidence report: every arm recorded zero repetitions")
+    elif any(
+        summary.repetitions < MIN_PROMOTION_REPETITIONS_PER_ARM
+        for summary in facts.arm_summaries
+    ):
+        reasons.append(
+            "underpowered report: every promotion arm needs at least "
+            f"{MIN_PROMOTION_REPETITIONS_PER_ARM} real repetitions"
+        )
+
+    if facts.provenance is None:
+        reasons.append("report lineage is unknown: missing Evaluation provenance section")
+    else:
+        missing_or_invalid = facts.provenance.missing_or_invalid
+        if missing_or_invalid:
+            reasons.append(
+                "report lineage is incomplete or invalid: "
+                + ", ".join(missing_or_invalid)
+            )
     return reasons
 
 

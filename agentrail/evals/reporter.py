@@ -39,6 +39,7 @@ from agentrail.run.usage_capture import Usage
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS, FAMILY_TAGS
 from agentrail.evals.pack_scorer import ArmPackScore
+from agentrail.evals.provenance import EvalProvenance
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
     FalseClaimReport,
@@ -904,6 +905,7 @@ def render_markdown(
     generated_at: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
     pack_scores: Optional[Sequence[ArmPackScore]] = None,
+    provenance: Optional[EvalProvenance] = None,
 ) -> str:
     """Render the per-arm reports as a markdown document.
 
@@ -931,6 +933,14 @@ def render_markdown(
     lines.append("")
     lines.append(f"Generated: {generated_at}")
     lines.append("")
+    if provenance is not None:
+        lines.append("## Evaluation provenance")
+        lines.append("")
+        lines.append("| Input | SHA-256 |")
+        lines.append("| --- | --- |")
+        for name, fingerprint in provenance.as_rows():
+            lines.append(f"| {name} | {fingerprint} |")
+        lines.append("")
     lines.append(
         "Headline cost metric is **dollars-per-solved-task** (never cost per "
         "task). Reports include failures, ties, and spread — not only wins. All "
@@ -1746,6 +1756,7 @@ def write_markdown_report(
     date: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
     pack_scores: Optional[Sequence[ArmPackScore]] = None,
+    provenance: Optional[EvalProvenance] = None,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
@@ -1769,7 +1780,11 @@ def write_markdown_report(
     path = base / f"eval-report-{date}.md"
     path.write_text(
         render_markdown(
-            reports, generated_at=date, records=records, pack_scores=pack_scores
+            reports,
+            generated_at=date,
+            records=records,
+            pack_scores=pack_scores,
+            provenance=provenance,
         ),
         encoding="utf-8",
     )

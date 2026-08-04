@@ -34,6 +34,7 @@ let insertedValues: Array<Record<string, unknown>> = [];
 let updateCalls: Array<Record<string, unknown>> = [];
 let mockRequireAlignment: boolean | undefined; // undefined = "no workspace row" (select returns [])
 let mockConfirmedApprovalToolInput: Record<string, unknown> | undefined; // undefined = no confirmed-brief approval matches
+let mockBriefLineageRows: Array<{ id: string }>;
 let mockUnmetBlockerRows: unknown[]; // rows unmetBlockers' own select resolves to, AND (#1341) the "green" rows confirmAlignmentBrief's own db.execute mock checks against
 let mockConfirmRowLookup: unknown[]; // (#1341) the parked row confirmAlignmentBrief's single UPDATE should match — [] simulates "no parked row with this id"
 let updateMatches: boolean; // simulates the WHERE state='parked' guard matching (or not)
@@ -93,6 +94,9 @@ vi.mock("../db.js", () => {
             return mockConfirmedApprovalToolInput === undefined
               ? []
               : [{ toolInput: mockConfirmedApprovalToolInput }];
+          }
+          if (cols && Object.prototype.hasOwnProperty.call(cols, "id")) {
+            return mockBriefLineageRows;
           }
           return mockUnmetBlockerRows;
         },
@@ -189,6 +193,7 @@ beforeEach(() => {
   updateCalls = [];
   mockRequireAlignment = undefined;
   mockConfirmedApprovalToolInput = undefined;
+  mockBriefLineageRows = [];
   lastConfirmedLookupWhere = undefined;
   mockUnmetBlockerRows = [];
   mockConfirmRowLookup = [
@@ -267,6 +272,49 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBe(2.5);
     expect(insertedValues[0]?.["modelOverride"]).toBe("anthropic/claude-sonnet-5");
     expect(insertedValues[0]?.["taskType"]).toBeNull();
+  });
+
+  it("records a durable brief id only when the matched approval has a resolvable server-stamped marker", async () => {
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        estimateUsd: 2.5,
+        suggestedModel: { slug: "anthropic/claude-sonnet-5" },
+      },
+      _briefLineage: { briefId: "brief-1" },
+    };
+    mockBriefLineageRows = [{ id: "brief-1" }];
+
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 1,
+      title: "A title",
+      body: GOOD_BODY,
+    });
+
+    expect(insertedValues[0]?.["alignmentBriefId"]).toBe("brief-1");
+  });
+
+  it("keeps lineage null for legacy or stale markers instead of inferring a brief", async () => {
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        estimateUsd: 2.5,
+        suggestedModel: { slug: "anthropic/claude-sonnet-5" },
+      },
+      _briefLineage: { briefId: "deleted-brief" },
+    };
+
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 1,
+      title: "A title",
+      body: GOOD_BODY,
+    });
+
+    expect(insertedValues[0]?.["alignmentBriefId"]).toBeNull();
   });
 
   it("#1274 PR②: requireAlignment=true + a confirmed brief WITH a _brief -> admits queued AND writes estimated_budget_usd/model_override from that brief", async () => {

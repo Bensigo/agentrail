@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { sql, and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db.js";
 import { queueEntries } from "../schema/queue_entries.js";
+import { briefs } from "../schema/briefs.js";
 import { workspaces } from "../schema/workspaces.js";
 import { jaceApprovals } from "../schema/jace_sessions.js";
 
@@ -922,6 +923,37 @@ function extractBriefBudgetAndModel(
 }
 
 /**
+ * Read the server-stamped durable-brief marker from a create-issue approval
+ * and verify that it still belongs to the queue's workspace. The marker is
+ * optional provenance, never an admission gate: deleted, malformed, stale,
+ * or foreign data leaves the queue link null rather than stopping work or
+ * inventing a relationship from a session's current anchor.
+ */
+async function resolveBriefLineageId(
+  workspaceId: string,
+  toolInput: Record<string, unknown>
+): Promise<string | null> {
+  const marker = toolInput["_briefLineage"];
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+  const briefId = (marker as Record<string, unknown>)["briefId"];
+  if (typeof briefId !== "string" || briefId.length === 0) return null;
+
+  try {
+    const rows = await db
+      .select({ id: briefs.id })
+      .from(briefs)
+      .where(and(eq(briefs.id, briefId), eq(briefs.workspaceId, workspaceId)));
+    return rows[0]?.id ?? null;
+  } catch (err) {
+    console.warn(
+      `[github-intake] unable to resolve durable brief lineage ${briefId}; queue entry will retain unknown lineage:`,
+      err
+    );
+    return null;
+  }
+}
+
+/**
  * The exact, house-format park reason vocabulary the alignment hold writes.
  * `apps/console/lib/work-vocabulary.ts::formatParkReason` renders the STORED
  * reason verbatim (issue #1239), so this literal string IS what a human sees
@@ -1553,11 +1585,19 @@ export async function enqueueGithubIssue(data: {
   // the SAME matched brief's `_brief.taskType` — same lifecycle, same
   // "written regardless of queued vs dependency-parked" rule below.
   let taskType: string | null = null;
+  // This resolution is deliberately separate from the cost envelope below:
+  // a valid durable brief marker proves provenance even if an old approval
+  // lacks `_brief` cost fields, while missing provenance must not be inferred
+  // from the session that happens to be active now.
+  const issueUrl = githubIssueUrl(data.repoFullName, data.number);
+  const matchedApproval = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
+  const alignmentBriefId = matchedApproval
+    ? await resolveBriefLineageId(data.workspaceId, matchedApproval.toolInput)
+    : null;
   if (!v2Parked) {
     const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
     if (requireAlignment) {
-      const issueUrl = githubIssueUrl(data.repoFullName, data.number);
-      const matched = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
+      const matched = matchedApproval;
 
       if (matched) {
         const briefValues = extractBriefBudgetAndModel(matched.toolInput);
@@ -1640,6 +1680,7 @@ export async function enqueueGithubIssue(data: {
       estimatedBudgetUsd,
       modelOverride,
       taskType,
+      alignmentBriefId,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });

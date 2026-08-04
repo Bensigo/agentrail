@@ -9,6 +9,7 @@ import {
   numeric,
 } from "drizzle-orm/pg-core";
 import { workspaces } from "./workspaces.js";
+import { briefs } from "./briefs.js";
 
 /**
  * Where a queue entry was sourced from. Mirrors the Python store's `source`
@@ -51,6 +52,12 @@ export const queueEntries = pgTable("queue_entries", {
   workspaceId: uuid("workspace_id")
     .notNull()
     .references(() => workspaces.id, { onDelete: "cascade" }),
+  // Durable, explicit provenance for work Jace created from a product brief.
+  // Nullable on purpose: legacy, externally-created, and unproven work stays
+  // unknown rather than being reconstructed from the current chat anchor.
+  alignmentBriefId: uuid("alignment_brief_id").references(() => briefs.id, {
+    onDelete: "set null",
+  }),
   source: queueSourceEnum("source").notNull(),
   // What kind of work this entry represents: 'issue' (default — run the SDLC
   // spine against a GitHub/CLI issue) or 'onboard' (index a freshly connected

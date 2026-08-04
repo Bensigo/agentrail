@@ -1,9 +1,9 @@
 """Immutable input fingerprints for a single eval run.
 
 The report is a decision record, not merely a rendered scorecard.  These
-fingerprints identify the exact code, configuration, frozen corpus, scorer,
-and gate implementation that produced it.  They deliberately use content
-hashes rather than a git revision alone: a dirty checkout is still identified
+fingerprints identify the exact code, configuration, frozen corpus, hidden
+answer key, scorer, and gate implementation that produced it. They deliberately
+use content hashes rather than a git revision alone: a dirty checkout is identified
 honestly instead of being mistaken for its last commit.
 """
 
@@ -20,11 +20,12 @@ from typing import Any, Iterable, Mapping
 
 @dataclass(frozen=True)
 class EvalProvenance:
-    """Five required content-addressed inputs for a promotable eval report."""
+    """Six required content-addressed inputs for a promotable eval report."""
 
     code_sha256: str
     config_sha256: str
     corpus_sha256: str
+    answer_key_sha256: str
     scorer_sha256: str
     gate_sha256: str
 
@@ -33,6 +34,7 @@ class EvalProvenance:
             ("Code", self.code_sha256),
             ("Config", self.config_sha256),
             ("Corpus", self.corpus_sha256),
+            ("Answer key", self.answer_key_sha256),
             ("Scorer", self.scorer_sha256),
             ("Gate", self.gate_sha256),
         )
@@ -168,6 +170,34 @@ def _corpus_files(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file() and "__pycache__" not in path.parts]
 
 
+def _answer_key_files(root: Path) -> list[Path]:
+    """Declared hidden-test files only; report their hash without content."""
+    files: list[Path] = []
+    for manifest in root.rglob("task.json"):
+        try:
+            record = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        hidden = record.get("hiddenTests") if isinstance(record, dict) else None
+        if not isinstance(hidden, dict):
+            continue
+        hidden_root = hidden.get("root")
+        hidden_files = hidden.get("files")
+        if not isinstance(hidden_root, str) or not isinstance(hidden_files, list):
+            continue
+        for filename in hidden_files:
+            if not isinstance(filename, str):
+                continue
+            candidate = (manifest.parent / hidden_root / filename).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            if candidate.is_file():
+                files.append(candidate)
+    return files
+
+
 def _config_payload(config: Any) -> Mapping[str, Any]:
     """Canonical representation of the eval invocation."""
     arms = []
@@ -211,6 +241,9 @@ def build_eval_provenance(*, config: Any, package_root: Path, corpus_root: Path)
         code_sha256=_hash_files(_python_sources(package_root), relative_to=package_root),
         config_sha256=hashlib.sha256(config_bytes).hexdigest(),
         corpus_sha256=_hash_files(_corpus_files(corpus_root), relative_to=corpus_root),
+        answer_key_sha256=_hash_files(
+            _answer_key_files(corpus_root), relative_to=corpus_root
+        ),
         scorer_sha256=_hash_files(
             [package_root / "evals" / "scorer.py", package_root / "evals" / "run_record.py"],
             relative_to=package_root,

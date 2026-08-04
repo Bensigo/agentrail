@@ -84,6 +84,22 @@ def test_provenance_is_deterministic_and_identifies_the_changed_input(tmp_path: 
     assert corpus_changed.scorer_sha256 == gate_changed.scorer_sha256
     assert corpus_changed.gate_sha256 == gate_changed.gate_sha256
 
+    answer_key = corpus / "hidden-task" / "secret-tests" / "test_hidden.py"
+    answer_key.parent.mkdir(parents=True)
+    (answer_key.parent.parent / "task.json").write_text(
+        '{"hiddenTests":{"root":"secret-tests","files":["test_hidden.py"]}}\n',
+        encoding="utf-8",
+    )
+    answer_key.write_text("assert True\n", encoding="utf-8")
+    with_answer_key = build_eval_provenance(
+        config=config, package_root=package_root, corpus_root=corpus
+    )
+    answer_key.write_text("assert False\n", encoding="utf-8")
+    answer_key_changed = build_eval_provenance(
+        config=config, package_root=package_root, corpus_root=corpus
+    )
+    assert answer_key_changed.answer_key_sha256 != with_answer_key.answer_key_sha256
+
 
 def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
     valid = EvalCycle(

@@ -55,6 +55,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from agentrail.context.snapshot_push import load_link
 from agentrail.evals.arms import NEW_FLOW_LAYERS
+from agentrail.evals.provenance import EvalCycle
 from agentrail.run.layer_overrides import overrides_path
 from agentrail.run.routing import _apply_routing, cheaper_model
 
@@ -91,7 +92,17 @@ _SENTINEL_PREFIX = "_Not available:"
 _REGRET_LINE_PREFIX = "- Total routing cost-regret:"
 _NET_DELTA_LINE_PREFIX = "- Net $-delta vs baseline:"
 _PROVENANCE_HEADER = "## Evaluation provenance"
-_PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Scorer", "Gate")
+_PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Answer key", "Scorer", "Gate")
+_PROTECTED_EVALUATOR_KEYS = ("Corpus", "Answer key", "Scorer", "Gate")
+_CYCLE_HEADER = "## Evaluation cycle"
+_CYCLE_ROW_KEYS = (
+    "Cycle ID",
+    "Parent cycle ID",
+    "Hypothesis",
+    "Changed layers",
+    "Declared budget",
+    "Status",
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MIN_PROMOTION_REPETITIONS_PER_ARM = 5
 
@@ -140,7 +151,7 @@ class RoutingFacts:
 
 @dataclass(frozen=True)
 class ProvenanceFacts:
-    """The five immutable input hashes printed by the real report writer."""
+    """The six immutable input hashes printed by the real report writer."""
 
     fingerprints: Dict[str, str]
 
@@ -153,6 +164,29 @@ class ProvenanceFacts:
         ]
 
 
+@dataclass(frozen=True)
+class EvalCycleFacts:
+    """Cycle fields parsed from the report metadata table."""
+
+    cycle_id: Optional[str]
+    parent_cycle_id: Optional[str]
+    hypothesis: Optional[str]
+    changed_layers: tuple[str, ...]
+    declared_budget_usd: Optional[str]
+    status: Optional[str]
+
+    @property
+    def issues(self) -> tuple[str, ...]:
+        return EvalCycle(
+            cycle_id=self.cycle_id,
+            parent_cycle_id=self.parent_cycle_id,
+            hypothesis=self.hypothesis,
+            changed_layers=self.changed_layers,
+            declared_budget_usd=self.declared_budget_usd,
+            status=self.status,
+        ).issues()
+
+
 @dataclass
 class ReportFacts:
     path: Path
@@ -163,6 +197,7 @@ class ReportFacts:
     arm_summaries: List[ArmSummaryFacts] = field(default_factory=list)
     content_sha256: Optional[str] = None
     provenance: Optional[ProvenanceFacts] = None
+    eval_cycle: Optional[EvalCycleFacts] = None
     network_artifact_count: int = 0
 
 
@@ -206,6 +241,23 @@ def _row_cells(line: str) -> List[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _missing_table_value(value: Optional[str]) -> Optional[str]:
+    if value is None or value.strip() == "missing":
+        return None
+    return value.strip()
+
+
+def _none_table_value(value: Optional[str]) -> Optional[str]:
+    if value is None or value.strip() in {"none", "missing"}:
+        return None
+    return value.strip()
+
+
+def _budget_table_value(value: Optional[str]) -> Optional[str]:
+    parsed = _missing_table_value(value)
+    return parsed.removeprefix("$") if parsed is not None else None
+
+
 def parse_report(path: Path) -> ReportFacts:
     """Parse a rendered eval report into the facts the proposal rules need.
 
@@ -223,6 +275,7 @@ def parse_report(path: Path) -> ReportFacts:
     arm_summaries: List[ArmSummaryFacts] = []
     provenance: Optional[ProvenanceFacts] = None
     provenance_rows: Dict[str, str] = {}
+    cycle_rows: Dict[str, str] = {}
     network_artifact_count = 0
 
     has_new_flow_header = any(line.strip() == _NEW_FLOW_HEADER for line in lines)
@@ -270,6 +323,10 @@ def parse_report(path: Path) -> ReportFacts:
             cells = _row_cells(stripped)
             if len(cells) == 2 and cells[0] in _PROVENANCE_KEYS:
                 provenance_rows[cells[0]] = cells[1]
+        if section == _CYCLE_HEADER and stripped.startswith("|"):
+            cells = _row_cells(stripped)
+            if len(cells) == 2 and cells[0] in _CYCLE_ROW_KEYS:
+                cycle_rows[cells[0]] = cells[1]
         if stripped.startswith("- Network artifacts (excluded from all metrics):"):
             count = re.search(r":\s*(\d+)\s+ECONNRESET", stripped)
             if count is not None:
@@ -297,6 +354,23 @@ def parse_report(path: Path) -> ReportFacts:
     new_flow.available = len(new_flow.rows) == len(NEW_FLOW_ROW_LABELS)
     if provenance_rows:
         provenance = ProvenanceFacts(fingerprints=provenance_rows)
+    eval_cycle = None
+    if cycle_rows:
+        changed_layers_text = cycle_rows.get("Changed layers", "")
+        eval_cycle = EvalCycleFacts(
+            cycle_id=_missing_table_value(cycle_rows.get("Cycle ID")),
+            parent_cycle_id=_none_table_value(cycle_rows.get("Parent cycle ID")),
+            hypothesis=_missing_table_value(cycle_rows.get("Hypothesis")),
+            changed_layers=tuple(
+                layer.strip()
+                for layer in changed_layers_text.split(",")
+                if layer.strip() and layer.strip() != "missing"
+            ),
+            declared_budget_usd=_budget_table_value(
+                cycle_rows.get("Declared budget")
+            ),
+            status=_missing_table_value(cycle_rows.get("Status")),
+        )
 
     routing = RoutingFacts()
     for line in lines:
@@ -323,6 +397,7 @@ def parse_report(path: Path) -> ReportFacts:
         arm_summaries=arm_summaries,
         content_sha256=hashlib.sha256(raw).hexdigest(),
         provenance=provenance,
+        eval_cycle=eval_cycle,
         network_artifact_count=network_artifact_count,
     )
 
@@ -353,6 +428,8 @@ class Proposal:
     report_name: str
     report_path: Path
     report_sha256: Optional[str] = None
+    parent_report_path: Optional[Path] = None
+    parent_report_sha256: Optional[str] = None
     promotion_decision: PromotionDecision = PromotionDecision.HOLD
     decision_reasons: List[str] = field(default_factory=list)
     hold_reasons: List[str] = field(default_factory=list)
@@ -486,13 +563,66 @@ def _report_hold_reasons(
                 "report lineage is incomplete or invalid: "
                 + ", ".join(missing_or_invalid)
             )
+    if facts.eval_cycle is None:
+        reasons.append("report cycle lineage is unknown: missing Evaluation cycle section")
+    else:
+        cycle_issues = facts.eval_cycle.issues
+        if cycle_issues:
+            reasons.append(
+                "report cycle lineage is incomplete or invalid: "
+                + ", ".join(cycle_issues)
+            )
     return reasons
+
+
+def _parent_evaluator_hold_reasons(
+    facts: ReportFacts, parent_facts: Optional[ReportFacts]
+) -> List[str]:
+    """Hold when an explicit parent cannot prove evaluator continuity."""
+    if facts.eval_cycle is None or facts.eval_cycle.parent_cycle_id is None:
+        if parent_facts is not None:
+            return ["parent report supplied but this cycle declares no parent id"]
+        return []
+    if parent_facts is None:
+        return [
+            "parent cycle declared but parent report was not supplied for "
+            "evaluator-integrity review"
+        ]
+    if parent_facts.eval_cycle is None:
+        return ["parent report cycle lineage is unknown"]
+    if parent_facts.eval_cycle.issues:
+        return [
+            "parent report cycle lineage is incomplete or invalid: "
+            + ", ".join(parent_facts.eval_cycle.issues)
+        ]
+    if parent_facts.eval_cycle.cycle_id != facts.eval_cycle.parent_cycle_id:
+        return [
+            "parent report cycle id does not match the child report's declared "
+            "parent id"
+        ]
+    if facts.provenance is None or parent_facts.provenance is None:
+        return ["evaluator identity is unknown: child or parent provenance is missing"]
+    if facts.provenance.missing_or_invalid or parent_facts.provenance.missing_or_invalid:
+        return ["evaluator identity is unknown: child or parent provenance is invalid"]
+    changed = [
+        key
+        for key in _PROTECTED_EVALUATOR_KEYS
+        if facts.provenance.fingerprints[key]
+        != parent_facts.provenance.fingerprints[key]
+    ]
+    if changed:
+        return [
+            "evaluator integrity quarantine: protected inputs changed versus "
+            f"parent cycle ({', '.join(changed)})"
+        ]
+    return []
 
 
 def build_proposal(
     facts: ReportFacts,
     target: Path,
     *,
+    parent_facts: Optional[ReportFacts] = None,
     today: Optional[date] = None,
     max_report_age_days: int = DEFAULT_MAX_REPORT_AGE_DAYS,
 ) -> Proposal:
@@ -504,7 +634,12 @@ def build_proposal(
         report_name=facts.name,
         report_path=facts.path,
         report_sha256=facts.content_sha256,
+        parent_report_path=parent_facts.path if parent_facts is not None else None,
+        parent_report_sha256=(
+            parent_facts.content_sha256 if parent_facts is not None else None
+        ),
     )
+    proposal.hold_reasons.extend(_parent_evaluator_hold_reasons(facts, parent_facts))
     proposal.hold_reasons.extend(
         _report_hold_reasons(
             facts,
@@ -751,6 +886,23 @@ def apply_proposal(
         raise ApplyReportGateError(
             "apply refused: report contents changed after the proposal was built"
         )
+    if proposal.parent_report_path is not None:
+        if not proposal.parent_report_sha256:
+            raise ApplyReportGateError(
+                "apply refused: parent report has no immutable fingerprint"
+            )
+        try:
+            current_parent_sha256 = hashlib.sha256(
+                proposal.parent_report_path.read_bytes()
+            ).hexdigest()
+        except OSError as exc:
+            raise ApplyReportGateError(
+                f"apply refused: cannot reread parent report {proposal.parent_report_path}"
+            ) from exc
+        if current_parent_sha256 != proposal.parent_report_sha256:
+            raise ApplyReportGateError(
+                "apply refused: parent report contents changed after the proposal was built"
+            )
     if link_loader(target) is None:
         raise ApplyAuthError(
             "apply refused: no server link is configured for this target "

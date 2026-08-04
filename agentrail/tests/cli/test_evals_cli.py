@@ -88,6 +88,20 @@ class EvalsApplyCliTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("not found", err)
 
+    def test_missing_parent_report_is_rc2(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "eval-report.md"
+            report.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            missing_parent = root / "missing-parent.md"
+            rc, _out, err = _run(
+                ["apply", "--report", str(report), "--parent-report", str(missing_parent)]
+            )
+        self.assertEqual(rc, 2)
+        self.assertIn("parent report not found", err)
+
     def test_proposal_mode_is_read_only_and_prints_mode_banner(self) -> None:
         """Default invocation prints the proposal and writes nothing (AC1)."""
         import tempfile

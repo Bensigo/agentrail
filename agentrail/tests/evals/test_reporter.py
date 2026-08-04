@@ -1229,6 +1229,7 @@ def test_family_strata_in_arm_metric_rows():
 
 
 def test_write_markdown_report_creates_dated_file(tmp_path):
+    from agentrail.evals.provenance import EvalProvenance
     from agentrail.evals.reporter import write_markdown_report
 
     u = _usage(input_tokens=1000, output_tokens=500)
@@ -1237,7 +1238,18 @@ def test_write_markdown_report_creates_dated_file(tmp_path):
         _rep("task-b", "full", False, u),
     ]
     reports = aggregate(records)
-    path = write_markdown_report(reports, reports_dir=tmp_path, date="2026-06-23")
+    path = write_markdown_report(
+        reports,
+        reports_dir=tmp_path,
+        date="2026-06-23",
+        provenance=EvalProvenance(
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+            corpus_sha256="c" * 64,
+            scorer_sha256="d" * 64,
+            gate_sha256="e" * 64,
+        ),
+    )
     assert path.exists()
     assert "2026-06-23" in path.name
     text = path.read_text(encoding="utf-8")
@@ -1248,6 +1260,7 @@ def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):
     """#1029 AC3: pack_scores threaded through write_markdown_report surface the
     rerank-arm precision/recall deltas in the written file (not dropped)."""
     from agentrail.evals.pack_scorer import ArmPackScore
+    from agentrail.evals.provenance import EvalProvenance
     from agentrail.evals.reporter import write_markdown_report
 
     u = _usage(input_tokens=1000, output_tokens=500)
@@ -1277,7 +1290,17 @@ def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):
     ]
 
     path = write_markdown_report(
-        reports, reports_dir=tmp_path, date="2026-06-23", pack_scores=pack_scores
+        reports,
+        reports_dir=tmp_path,
+        date="2026-06-23",
+        pack_scores=pack_scores,
+        provenance=EvalProvenance(
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+            corpus_sha256="c" * 64,
+            scorer_sha256="d" * 64,
+            gate_sha256="e" * 64,
+        ),
     )
     text = path.read_text(encoding="utf-8")
 
@@ -1291,6 +1314,7 @@ def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):
 def test_write_markdown_report_omitting_pack_scores_renders_na(tmp_path):
     """Without pack_scores the rerank precision/recall rows render n/a, never a
     fabricated number — the back-compatible default path."""
+    from agentrail.evals.provenance import EvalProvenance
     from agentrail.evals.reporter import write_markdown_report
 
     u = _usage(input_tokens=1000, output_tokens=500)
@@ -1300,7 +1324,18 @@ def test_write_markdown_report_omitting_pack_scores_renders_na(tmp_path):
     ]
     reports = aggregate(records)
 
-    path = write_markdown_report(reports, reports_dir=tmp_path, date="2026-06-23")
+    path = write_markdown_report(
+        reports,
+        reports_dir=tmp_path,
+        date="2026-06-23",
+        provenance=EvalProvenance(
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+            corpus_sha256="c" * 64,
+            scorer_sha256="d" * 64,
+            gate_sha256="e" * 64,
+        ),
+    )
     text = path.read_text(encoding="utf-8")
 
     assert "## Rerank arm" in text

@@ -68,7 +68,7 @@ export const TIERS: Tier[] = [
     included: "≈74 engineering tasks/mo",
     features: [
       "everything in Starter",
-      "dependency upgrade workflow — coming soon",
+      "dependency upgrade workflow",
       "compatibility evidence",
       "calibrated refusal",
     ],

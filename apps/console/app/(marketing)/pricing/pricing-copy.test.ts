@@ -177,8 +177,9 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).not.toMatch(/\$\d+(\.\d{2})?\s*(per|\/)\s*task/i);
   });
 
-  it("pricing page's Growth tier labels the dependency workflow as coming soon", () => {
-    expect(pricingSource).toContain("dependency upgrade workflow — coming soon");
+  it("pricing page's Growth tier names the dependency upgrade workflow", () => {
+    expect(pricingSource).toContain("dependency upgrade workflow");
+    expect(pricingSource).not.toContain("dependency upgrade workflow — coming soon");
   });
 
   it("pricing page's Growth tier names compatibility evidence", () => {
@@ -260,12 +261,12 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(landingSource).toContain("Attribution unavailable in the current source set.");
   });
 
-  it("the outcome-led use case names migrations while keeping dependency upgrades Coming soon", () => {
-    expect(useCasesSource).toContain("Migrations and dependency upgrades");
+  it("the outcome-led use case presents dependency upgrades as available", () => {
+    expect(useCasesSource).toContain("Keep dependencies moving");
     expect(useCasesSource).toContain(
-      "Migrations are the beachhead. Dependency upgrade workflow stays Coming soon until the capability ships.",
+      "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
     );
-    expect(useCasesSource).toContain("Coming soon");
+    expect(useCasesSource).not.toContain("Coming soon");
   });
 
   // Fix round: the STEPS lists on both pages were rewritten too (see

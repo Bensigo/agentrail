@@ -1256,6 +1256,49 @@ def test_write_markdown_report_creates_dated_file(tmp_path):
     assert "solve-rate" in text.lower()
 
 
+def test_write_markdown_report_renders_complete_or_held_cycle_metadata(tmp_path):
+    from agentrail.evals.provenance import EvalCycle, EvalProvenance
+    from agentrail.evals.reporter import write_markdown_report
+
+    reports = aggregate([_rep("task-a", "full", True, _usage())])
+    provenance = EvalProvenance(
+        code_sha256="a" * 64,
+        config_sha256="b" * 64,
+        corpus_sha256="c" * 64,
+        scorer_sha256="d" * 64,
+        gate_sha256="e" * 64,
+    )
+    complete = EvalCycle(
+        cycle_id="eval-2026-08-04-001",
+        parent_cycle_id="eval-2026-08-03-004",
+        hypothesis="reduce false-green without cost regression",
+        changed_layers=("bestofn",),
+        declared_budget_usd="25",
+        status="proposed",
+    )
+
+    path = write_markdown_report(
+        reports,
+        reports_dir=tmp_path,
+        date="2026-06-23",
+        provenance=provenance,
+        eval_cycle=complete,
+    )
+
+    text = path.read_text(encoding="utf-8")
+    assert "## Evaluation cycle" in text
+    assert "METADATA_COMPLETE" in text
+    assert "eval-2026-08-03-004" in text
+
+    held = write_markdown_report(
+        reports,
+        reports_dir=tmp_path,
+        date="2026-06-24",
+        provenance=provenance,
+    ).read_text(encoding="utf-8")
+    assert "HOLD — missing evaluation cycle metadata" in held
+
+
 def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):
     """#1029 AC3: pack_scores threaded through write_markdown_report surface the
     rerank-arm precision/recall deltas in the written file (not dropped)."""

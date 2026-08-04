@@ -39,7 +39,7 @@ from agentrail.run.usage_capture import Usage
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS, FAMILY_TAGS
 from agentrail.evals.pack_scorer import ArmPackScore
-from agentrail.evals.provenance import EvalProvenance
+from agentrail.evals.provenance import EvalCycle, EvalProvenance
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
     FalseClaimReport,
@@ -906,6 +906,7 @@ def render_markdown(
     records: Optional[Sequence[RepetitionRecord]] = None,
     pack_scores: Optional[Sequence[ArmPackScore]] = None,
     provenance: Optional[EvalProvenance] = None,
+    eval_cycle: Optional[EvalCycle] = None,
 ) -> str:
     """Render the per-arm reports as a markdown document.
 
@@ -932,6 +933,26 @@ def render_markdown(
     lines.append("# AgentRail eval report")
     lines.append("")
     lines.append(f"Generated: {generated_at}")
+    lines.append("")
+    lines.append("## Evaluation cycle")
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("| --- | --- |")
+    cycle_rows = (
+        eval_cycle.as_render_rows()
+        if eval_cycle is not None
+        else (
+            ("Promotion grade", "HOLD — missing evaluation cycle metadata"),
+            ("Cycle ID", "missing"),
+            ("Parent cycle ID", "none"),
+            ("Hypothesis", "missing"),
+            ("Changed layers", "missing"),
+            ("Declared budget", "missing"),
+            ("Status", "missing"),
+        )
+    )
+    for name, value in cycle_rows:
+        lines.append(f"| {name} | {value} |")
     lines.append("")
     if provenance is not None:
         lines.append("## Evaluation provenance")
@@ -1757,6 +1778,7 @@ def write_markdown_report(
     records: Optional[Sequence[RepetitionRecord]] = None,
     pack_scores: Optional[Sequence[ArmPackScore]] = None,
     provenance: EvalProvenance,
+    eval_cycle: Optional[EvalCycle] = None,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
@@ -1789,6 +1811,7 @@ def write_markdown_report(
             records=records,
             pack_scores=pack_scores,
             provenance=provenance,
+            eval_cycle=eval_cycle,
         ),
         encoding="utf-8",
     )

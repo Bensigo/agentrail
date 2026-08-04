@@ -230,5 +230,34 @@ class HeldOutFamilyFlagTests(unittest.TestCase):
         self.assertEqual(config.held_out_family, "bug")
 
 
+class EvalCycleFlagTests(unittest.TestCase):
+    def test_cycle_flags_build_immutable_metadata(self) -> None:
+        from agentrail.cli.commands.evals import _parse_run_args
+
+        config, _smoke, _reports_dir = _parse_run_args(
+            [
+                "--cycle-id", "eval-2026-08-04-001",
+                "--parent-cycle-id", "eval-2026-08-03-004",
+                "--hypothesis", "reduce false-green without cost regression",
+                "--changed-layer", "bestofn,objective_gate",
+                "--cycle-budget-usd", "25.00",
+                "--cycle-status", "proposed",
+            ]
+        )
+
+        assert config.eval_cycle is not None
+        assert config.eval_cycle.cycle_id == "eval-2026-08-04-001"
+        assert config.eval_cycle.parent_cycle_id == "eval-2026-08-03-004"
+        assert config.eval_cycle.changed_layers == ("bestofn", "objective_gate")
+        assert config.eval_cycle.issues() == ()
+
+    def test_absent_cycle_flags_keep_metadata_unknown(self) -> None:
+        from agentrail.cli.commands.evals import _parse_run_args
+
+        config, _smoke, _reports_dir = _parse_run_args(["--smoke"])
+
+        assert config.eval_cycle is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

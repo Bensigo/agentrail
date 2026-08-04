@@ -92,8 +92,8 @@ class EvalCycle:
         )
         return (
             ("Promotion grade", f"{self.promotion_grade} — {hold_reason}"),
-            ("Cycle ID", self.cycle_id or "missing"),
-            ("Parent cycle ID", self.parent_cycle_id or "none"),
+            ("Cycle ID", _markdown_cell(self.cycle_id or "missing")),
+            ("Parent cycle ID", _markdown_cell(self.parent_cycle_id or "none")),
             ("Hypothesis", _markdown_cell(self.hypothesis or "missing")),
             (
                 "Changed layers",
@@ -103,7 +103,7 @@ class EvalCycle:
                 ),
             ),
             ("Declared budget", _format_budget(self.declared_budget_usd)),
-            ("Status", self.status or "missing"),
+            ("Status", _markdown_cell(self.status or "missing")),
         )
 
 

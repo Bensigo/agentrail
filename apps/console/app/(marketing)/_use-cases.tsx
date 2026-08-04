@@ -4,24 +4,21 @@
  * offsets): no scroll listeners, nothing to degrade — reduced-motion and
  * mobile get the same markup, which simply reads as stacked cards.
  *
- * The deck is now outcome-led. It names the acceptance mechanics from the
- * market research without implying that the future dependency workflow is
- * already shipped. “Coming soon” is deliberately part of the card data.
+ * The deck is outcome-led. It names the acceptance mechanics from the market
+ * research and the dependency workflow that is now available.
  */
 
 interface UseCase {
   title: string;
   line: string;
   visual: "dependency" | "contract" | "reviewable" | "regression" | "proof";
-  comingSoon?: boolean;
 }
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Migrations and dependency upgrades",
-    line: "Migrations are the beachhead. Dependency upgrade workflow stays Coming soon until the capability ships.",
+    title: "Keep dependencies moving",
+    line: "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
     visual: "dependency",
-    comingSoon: true,
   },
   {
     title: "Start with an acceptance contract",
@@ -56,14 +53,7 @@ export function UseCases() {
         >
           <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10">
             <div className="max-w-[44ch]">
-              <div className="flex flex-wrap items-center gap-3">
-                <h3 className="text-heading-2">{useCase.title}</h3>
-                {useCase.comingSoon ? (
-                  <span className="text-label rounded-sm border border-[var(--gray-07)] px-2 py-1 text-[var(--gray-11)]">
-                    Coming soon
-                  </span>
-                ) : null}
-              </div>
+              <h3 className="text-heading-2">{useCase.title}</h3>
               <p className="mt-3 text-[var(--gray-11)]">{useCase.line}</p>
             </div>
             <CaseVisual visual={useCase.visual} />
@@ -82,9 +72,9 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
   if (visual === "dependency") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
-        <span>migration plan</span>
-        <span className="text-[var(--gray-12)]">→ dependency upgrade workflow</span>
-        <span className="text-[var(--gray-12)]">→ Coming soon</span>
+        <span>dependency candidate</span>
+        <span className="text-[var(--gray-12)]">→ inspect changelog</span>
+        <span className="text-[var(--gray-12)]">→ compatibility evidence</span>
       </div>
     );
   }

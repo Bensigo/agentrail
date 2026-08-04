@@ -8,6 +8,7 @@ const resolved = {
     prUrl: "https://github.com/acme/repo/pull/42",
   },
   prResolution: { state: "resolved" as const, repo: "acme/repo", number: 42 },
+  alignmentBrief: { state: "linked" as const, id: "brief-1234" },
   reviewJobs: [
     {
       id: "job-1",
@@ -43,6 +44,8 @@ describe("ReviewChainContent", () => {
 
     expect(html).toContain("acme/repo #42");
     expect(html).toContain("Queue entry queue-en");
+    expect(html).toContain("Alignment brief linked");
+    expect(html).not.toContain("brief-1234");
     expect(html).toContain("Human review time: 12 min");
     expect(html).toContain("Reviewer of record");
     expect(html).toContain("approve");
@@ -64,6 +67,7 @@ describe("ReviewChainContent", () => {
     );
 
     expect(html).toContain("did not open a pull request");
+    expect(html).toContain("Alignment brief linked");
     expect(html).not.toContain("Outcome evidence");
   });
 
@@ -80,6 +84,31 @@ describe("ReviewChainContent", () => {
     );
 
     expect(html).toContain("unavailable rather than inferred");
+    expect(html).toContain("Alignment brief linked");
     expect(html).not.toContain("acme/repo #42");
+  });
+
+  it("renders absent and unknown brief lineage honestly", () => {
+    const absentHtml = renderToStaticMarkup(
+      <ReviewChainContent
+        data={{
+          ...resolved,
+          alignmentBrief: { state: "absent", id: null },
+        }}
+      />
+    );
+    const unknownHtml = renderToStaticMarkup(
+      <ReviewChainContent
+        data={{
+          ...resolved,
+          alignmentBrief: undefined,
+        }}
+      />
+    );
+
+    expect(absentHtml).toContain("No queue-backed alignment brief");
+    expect(unknownHtml).toContain(
+      "Alignment brief lineage unavailable (legacy)"
+    );
   });
 });

@@ -24,11 +24,16 @@ type ReviewEvent = {
   humanReviewSource: "human_input" | "timer" | null;
 };
 
+type AlignmentBrief =
+  | { state: "linked"; id: string }
+  | { state: "absent" | "unknown"; id: null };
+
 type ReviewChainResponse = {
   run: { queueEntryId: string | null; prUrl: string | null };
   prResolution: PrResolution;
   reviewJobs: ReviewJob[];
   reviewEvents: ReviewEvent[];
+  alignmentBrief?: AlignmentBrief;
 };
 
 function formatTime(value: string): string {
@@ -54,20 +59,39 @@ function jobTone(state: string): string {
   return "text-[var(--gray-10)]";
 }
 
+function renderAlignmentBrief(alignmentBrief: AlignmentBrief | undefined): string {
+  if (!alignmentBrief || alignmentBrief.state === "unknown") {
+    return "Alignment brief lineage unavailable (legacy)";
+  }
+  if (alignmentBrief.state === "absent") {
+    return "No queue-backed alignment brief";
+  }
+  // The response still carries the durable ID for API consumers, but a UUID is
+  // not useful primary console copy. The evidence room should state the
+  // relationship honestly without making an implementation identifier the UI.
+  return "Alignment brief linked";
+}
+
 export function ReviewChainContent({ data }: { data: ReviewChainResponse }) {
   if (data.prResolution.state === "no_pr") {
     return (
-      <p className="py-4 text-sm text-[var(--gray-09)]">
-        This run did not open a pull request, so there is no review outcome to report.
-      </p>
+      <div className="py-4 text-sm text-[var(--gray-09)]">
+        <p>
+          This run did not open a pull request, so there is no review outcome to report.
+        </p>
+        <p className="mt-1">{renderAlignmentBrief(data.alignmentBrief)}</p>
+      </div>
     );
   }
 
   if (data.prResolution.state === "unknown") {
     return (
-      <p className="py-4 text-sm text-[var(--gray-09)]">
-        The recorded PR link is not a GitHub pull request. Review evidence is unavailable rather than inferred.
-      </p>
+      <div className="py-4 text-sm text-[var(--gray-09)]">
+        <p>
+          The recorded PR link is not a GitHub pull request. Review evidence is unavailable rather than inferred.
+        </p>
+        <p className="mt-1">{renderAlignmentBrief(data.alignmentBrief)}</p>
+      </div>
     );
   }
 
@@ -91,6 +115,9 @@ export function ReviewChainContent({ data }: { data: ReviewChainResponse }) {
           ) : (
             <p className="mt-1 text-[var(--gray-09)]">Queue entry unknown</p>
           )}
+          <p className="mt-1 text-[var(--gray-09)]">
+            {renderAlignmentBrief(data.alignmentBrief)}
+          </p>
         </div>
         <div className="text-[var(--gray-09)]">
           Human review time: {hasKnownMinutes ? `${explicitMinutes.toFixed(0)} min` : "unknown"}

@@ -35,6 +35,7 @@ from agentrail.evals.consumer import (
     NewFlowFacts,
     Proposal,
     PromotionDecision,
+    ProvenanceFacts,
     ReportFacts,
     ReportParseError,
     RoutingFacts,
@@ -46,6 +47,7 @@ from agentrail.evals.consumer import (
     parse_report,
     render_proposal,
 )
+from agentrail.evals.provenance import EvalProvenance
 from agentrail.evals.reporter import ArmReport, render_markdown
 from agentrail.run.routing import cheaper_model
 
@@ -115,12 +117,22 @@ _TWO_SECTION_REPORT = f"""# Eval report
 
 Generated: {date.today().isoformat()}
 
+## Evaluation provenance
+
+| Input | SHA-256 |
+| --- | --- |
+| Code | {'a' * 64} |
+| Config | {'b' * 64} |
+| Corpus | {'c' * 64} |
+| Scorer | {'d' * 64} |
+| Gate | {'e' * 64} |
+
 ## Per-arm summary
 
 | Arm | Reps | Solved | Failed | Solve-rate | Spread | False-green rate | Wall-time per task | Total tokens | Total cost | Dollars-per-solved-task |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | 1000 | $1.0000 | $1.0000 |
-| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |
+| full | 5 | 3 | 2 | 60.0% | 0.0000 | 0.0% | 40.0s | 1000 | $1.0000 | $1.0000 |
+| new-flow | 5 | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |
 
 ## New-flow vs full
 
@@ -243,12 +255,15 @@ def _facts_with_deltas(
         arm_summaries=[
             ArmSummaryFacts(
                 arm="full",
-                repetitions=2,
+                repetitions=5,
                 solved=1,
                 total_tokens=1000,
                 total_cost_usd=1.0,
             )
         ],
+        provenance=ProvenanceFacts(
+            fingerprints={key: "a" * 64 for key in ("Code", "Config", "Corpus", "Scorer", "Gate")}
+        ),
     )
 
 
@@ -342,6 +357,61 @@ class ApplyEvidenceGateTests(unittest.TestCase):
         self.assertTrue(any("zero-evidence" in reason for reason in proposal.hold_reasons))
         self.assertIn("Apply gate: HOLD", render_proposal(proposal))
         self.assertEqual(before, after)
+
+    def test_underpowered_report_holds_before_auth_or_write(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries[0] = ArmSummaryFacts("full", 4, 3, 1000, 1.0)
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(facts, root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("underpowered" in reason for reason in proposal.hold_reasons))
+
+    def test_synthetic_only_report_holds_explicitly(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries[0] = ArmSummaryFacts("full", 0, 0, 0, 0.0)
+        facts.network_artifact_count = 5
+        proposal = build_proposal(facts, Path("."))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("synthetic-only" in reason for reason in proposal.hold_reasons))
+
+    def test_missing_or_invalid_provenance_holds(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.provenance = ProvenanceFacts(fingerprints={"Code": "not-a-hash"})
+        proposal = build_proposal(facts, Path("."))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("lineage is incomplete" in reason for reason in proposal.hold_reasons))
+
+    def test_parsed_synthetic_only_report_holds_explicitly(self) -> None:
+        report_text = _TWO_SECTION_REPORT.replace(
+            "| full | 5 | 3 | 2 |", "| full | 0 | 0 | 0 |"
+        ).replace(
+            "| new-flow | 5 | 4 | 1 |", "| new-flow | 0 | 0 | 0 |"
+        ) + """
+
+## Failures, ties, and spread
+
+### Arm: full
+
+- Network artifacts (excluded from all metrics): 5 ECONNRESET synthetic-fallback rep(s) — no diff, $0; solved=0 is a network artifact, not a real score
+"""
+        with TemporaryDirectory() as td:
+            report = Path(td) / "eval-report-x.md"
+            report.write_text(report_text, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), Path(td))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("synthetic-only" in reason for reason in proposal.hold_reasons))
+
+    def test_parsed_underpowered_report_holds(self) -> None:
+        report_text = _TWO_SECTION_REPORT.replace("| full | 5 | 3 | 2 |", "| full | 4 | 3 | 1 |")
+        with TemporaryDirectory() as td:
+            report = Path(td) / "eval-report-x.md"
+            report.write_text(report_text, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), Path(td))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("underpowered" in reason for reason in proposal.hold_reasons))
 
     def test_missing_report_metadata_holds_instead_of_being_assumed_fresh(self) -> None:
         facts = ReportFacts(
@@ -591,7 +661,15 @@ class RoundTripTests(unittest.TestCase):
             gate_passed_count=4, false_green_count=0, false_green_rate=0.0,
         )
         return render_markdown(
-            [full, new_flow], generated_at=f"{date.today().isoformat()}T00:00:00Z"
+            [full, new_flow],
+            generated_at=f"{date.today().isoformat()}T00:00:00Z",
+            provenance=EvalProvenance(
+                code_sha256="a" * 64,
+                config_sha256="b" * 64,
+                corpus_sha256="c" * 64,
+                scorer_sha256="d" * 64,
+                gate_sha256="e" * 64,
+            ),
         )
 
     def test_roundtrip_recovers_deltas(self) -> None:
@@ -602,6 +680,17 @@ class RoundTripTests(unittest.TestCase):
             facts = parse_report(p)
         nf = facts.new_flow
         self.assertTrue(nf.available)
+        self.assertIsNotNone(facts.provenance)
+        self.assertEqual(
+            facts.provenance.fingerprints,
+            {
+                "Code": "a" * 64,
+                "Config": "b" * 64,
+                "Corpus": "c" * 64,
+                "Scorer": "d" * 64,
+                "Gate": "e" * 64,
+            },
+        )
         # new-flow minus full: solve +0.20, dollars -0.50, wall -4.0, fg -0.20.
         self.assertAlmostEqual(nf.solve_rate_delta, 0.20)
         self.assertAlmostEqual(nf.dollars_per_solved_delta, -0.50)

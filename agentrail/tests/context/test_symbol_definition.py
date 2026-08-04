@@ -54,6 +54,17 @@ class SymbolDefinitionRankingTests(unittest.TestCase):
             f"defining file should rank above caller; got order {paths}",
         )
 
+    def test_call_style_symbol_query_keeps_definition_promotion(self) -> None:
+        root = make_repo()
+        build_index(root)
+        out = query_context(root, "settleInvoice()", limit=6)
+        paths = [r["path"] for r in out["results"]]
+        self.assertLess(
+            paths.index("lib/ledger.js"),
+            paths.index("lib/worker.js"),
+            f"call-style lookup must keep the definition above callers; got {paths}",
+        )
+
     def test_definition_outranks_dense_reference_files(self) -> None:
         # Mirrors Express: many short test/usage files densely repeat the symbol
         # (high BM25) and would otherwise bury the single definition site.

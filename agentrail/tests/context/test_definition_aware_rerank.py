@@ -262,6 +262,18 @@ class CommonSymbolPipelineEndToEnd(unittest.TestCase):
             f"recall regressed: OFF {off_paths} !<= ON {on_paths}",
         )
 
+    def test_verbose_prose_keeps_imported_definition_promotion(self) -> None:
+        """Natural-language tasks still promote the dependency found from imports."""
+        query = "explain how dashboard assembly turns rows into a report"
+        with _expansion(True):
+            on = query_context(self.repo, query, limit=8, index=self.index)
+        paths = self._paths(on)
+        self.assertIn("pkg/assemble.py", paths)
+        self.assertIn(
+            "pkg/widget_core.py", paths,
+            f"verbose prose lost the injected imported definition; got {paths}",
+        )
+
     def test_flag_off_is_byte_identical_never_touches_new_path(self) -> None:
         """AC3: flag-OFF never invokes the definition-aware code path.
 

@@ -900,9 +900,12 @@ async function findConfirmedAlignmentBriefApproval(
  * the brief-confirm flow depends on.
  */
 function extractBriefBudgetAndModel(
-  toolInput: Record<string, unknown>
+  toolInput: unknown
 ): { estimatedBudgetUsd: number; modelOverride: string; taskType: string | null } | null {
-  const brief = toolInput["_brief"];
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return null;
+  }
+  const brief = (toolInput as Record<string, unknown>)["_brief"];
   if (!brief || typeof brief !== "object" || Array.isArray(brief)) return null;
   const b = brief as Record<string, unknown>;
 
@@ -931,9 +934,12 @@ function extractBriefBudgetAndModel(
  */
 async function resolveBriefLineageId(
   workspaceId: string,
-  toolInput: Record<string, unknown>
+  toolInput: unknown
 ): Promise<string | null> {
-  const marker = toolInput["_briefLineage"];
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return null;
+  }
+  const marker = (toolInput as Record<string, unknown>)["_briefLineage"];
   if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
   const briefId = (marker as Record<string, unknown>)["briefId"];
   if (typeof briefId !== "string" || briefId.length === 0) return null;

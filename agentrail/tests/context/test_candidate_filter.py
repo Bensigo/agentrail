@@ -24,7 +24,7 @@ from agentrail.context.retrieval import query_context
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
-def _make_fixture_repo(num_noise_files: int = 50) -> Path:
+def _make_fixture_repo(num_noise_files: int = 50, shared_prose: str = "") -> Path:
     """Git repo with one searchable file and many noise files."""
     root = Path(tempfile.mkdtemp())
     subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
@@ -44,12 +44,14 @@ def _make_fixture_repo(num_noise_files: int = 50) -> Path:
     }, indent=2), encoding="utf-8")
     (root / "src").mkdir(parents=True)
     (root / "src" / "widget.py").write_text(
-        "def xyzzy_token_handler():\n    return 42\n", encoding="utf-8"
+        f"# {shared_prose}\ndef xyzzy_token_handler():\n    return 42\n",
+        encoding="utf-8",
     )
     (root / "lib").mkdir()
     for i in range(num_noise_files):
         (root / "lib" / f"noise_{i:04d}.py").write_text(
-            f"def func_{i}():\n    return {i}\n", encoding="utf-8"
+            f"# {shared_prose}\ndef func_{i}():\n    return {i}\n",
+            encoding="utf-8",
         )
     return root
 
@@ -229,6 +231,26 @@ class CandidateFilterRegexBoundTests(unittest.TestCase):
         self.assertLess(
             count_without, 10,
             f"without postings: {count_without} regex calls — termCount gate still skips noise",
+        )
+
+    def test_long_prose_only_scans_the_named_code_symbol(self) -> None:
+        """A verbose task description must not turn every prose word into a regex.
+
+        Corpus tasks are intentionally detailed and may repeat generic guidance
+        across every indexed file.  The definition promotion is only useful for
+        the code identifier named in that prose; scanning every generic word
+        against every candidate makes offline eval retrieval effectively hang.
+        """
+        prose = " ".join(f"guidanceword{i}" for i in range(80))
+        root = _make_fixture_repo(num_noise_files=50, shared_prose=prose)
+        build_index(root)
+        index = load_index(root)
+
+        count = _count_pattern_searches(root, f"{prose} update xyzzy_token_handler()", index)
+
+        self.assertLess(
+            count, 10,
+            f"verbose prose triggered {count} definition regex scans; only the named code symbol may be scanned",
         )
 
 

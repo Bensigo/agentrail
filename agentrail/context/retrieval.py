@@ -1526,30 +1526,57 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     # (e.g. "req.accepts =", "function View") is the answer for a symbol lookup —
     # far more precise than symbolHints, which miss chunk-spanning defs and fire
     # on test mocks. Used to tier definitions above dense reference/call sites.
-    definition_patterns: List[Any] = []
+    definition_patterns_by_symbol: Dict[str, List[Any]] = {}
     # Token(s) the patterns require: a chunk can only DEFINE one of these symbols
     # if it contains it, so we gate the (expensive) regex below on an O(1)
     # termCounts membership check — skipping the scan for chunks that can't match.
     definition_symbols: Set[str] = set()
+    # Long task descriptions contain ordinary words that may occur in every
+    # indexed chunk. They are useful for BM25, but they are not definition
+    # lookup targets. Keep the legacy behavior for concise symbol lookups, while
+    # only promoting code-shaped or explicitly declared identifiers in prose.
+    raw_identifiers = re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", query)
+    concise_symbol_query = len(raw_identifiers) <= 3
+    explicit_definition_symbols = {
+        match.group(1).lower()
+        for match in re.finditer(
+            r"\b(?:function|def|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            query,
+            flags=re.IGNORECASE,
+        )
+    }
+    code_like_symbols = {
+        identifier.lower()
+        for identifier in raw_identifiers
+        if "_" in identifier or "$" in identifier or any(char.isupper() for char in identifier[1:])
+    }
+    definition_candidate_symbols = explicit_definition_symbols | code_like_symbols
+
+    def _add_definition_patterns(symbol: str, patterns: List[Any]) -> None:
+        definition_patterns_by_symbol.setdefault(symbol, []).extend(patterns)
+        definition_symbols.add(symbol)
     raw_lower = query.strip().lower()
     definition_use_hint = True
     if re.fullmatch(r"[a-z_$][\w$]*\.[a-z_$][\w$]*", raw_lower):
         # Dotted member ("res.json"): the only definition is the assignment
         # "res.json =". The bare tail ("json") and symbolHints fire on every
         # file defining an unrelated json — so use the precise pattern alone.
-        definition_patterns.append(re.compile(re.escape(raw_lower) + r"\s*[:=]"))
+        _add_definition_patterns(
+            raw_lower.rsplit(".", 1)[-1],
+            [re.compile(re.escape(raw_lower) + r"\s*[:=]")],
+        )
         definition_use_hint = False
         # "res.json" contains the token "json" once tokenized — a necessary
         # condition for the literal to appear, so it's a safe (superset) gate.
-        definition_symbols.add(raw_lower.rsplit(".", 1)[-1])
     else:
         for sym in query_symbols:
-            if len(sym) >= 4:
+            if len(sym) >= 4 and (concise_symbol_query or sym in definition_candidate_symbols):
                 esc = re.escape(sym)
-                definition_patterns.append(re.compile(rf"\bfunction\s+{esc}\b"))
-                definition_patterns.append(re.compile(rf"\b{esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
-                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{esc}\b"))
-                definition_symbols.add(sym)
+                _add_definition_patterns(sym, [
+                    re.compile(rf"\bfunction\s+{esc}\b"),
+                    re.compile(rf"\b{esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"),
+                    re.compile(rf"\b(?:def|class)\s+{esc}\b"),
+                ])
     query_lower = query.lower()
     query_issue_refs = issue_refs(query)
     query_pr_refs = pr_refs(query)
@@ -1632,10 +1659,11 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             # `function NAME` is lifted toward the pack.
             if len(_tok) >= 4 and _tok not in definition_symbols:
                 _esc = re.escape(_tok)
-                definition_patterns.append(re.compile(rf"\bfunction\s+{_esc}\b"))
-                definition_patterns.append(re.compile(rf"\b{_esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
-                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{_esc}\b"))
-                definition_symbols.add(_tok)
+                _add_definition_patterns(_tok, [
+                    re.compile(rf"\bfunction\s+{_esc}\b"),
+                    re.compile(rf"\b{_esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"),
+                    re.compile(rf"\b(?:def|class)\s+{_esc}\b"),
+                ])
 
     # Read embedding config once, before the scoring loop, so we can use it both
     # for candidate filtering and for the semantic scoring section below.
@@ -1782,10 +1810,11 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         for phrase in phrases:
             if len(phrase) > 8 and phrase in doc["textLower"]:
                 keyword += 1; reasons.add("exact identifier")
-        defines_by_pattern = (
-            bool(definition_patterns)
-            and any(s in doc["termCounts"] for s in definition_symbols)
-            and any(p.search(doc["textLower"]) for p in definition_patterns)
+        matching_definition_symbols = definition_symbols.intersection(doc["termCounts"])
+        defines_by_pattern = any(
+            pattern.search(doc["textLower"])
+            for symbol in matching_definition_symbols
+            for pattern in definition_patterns_by_symbol[symbol]
         )
         defines_by_hint = definition_use_hint and bool(query_symbols and any(str(hint).lower() in query_symbols for hint in ((chunk or {}).get("symbolHints") or [])))
         is_definition = defines_by_pattern or defines_by_hint

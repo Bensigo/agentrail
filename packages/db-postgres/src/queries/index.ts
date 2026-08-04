@@ -299,6 +299,7 @@ export interface RunRow {
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
+  queueEntryId: string | null;
   prUrl: string | null;
 }
 
@@ -3134,6 +3135,7 @@ export {
   recordHumanReviewTime,
   getReviewMetrics,
   getReviewMetricsReport,
+  listReviewEventsForPr,
   type RecordReviewEventInput,
   type RecordReviewEventResult,
   type ReviewMetricsQuery,
@@ -3162,6 +3164,7 @@ export {
 export {
   reviewJobId,
   enqueueReviewJob,
+  listReviewJobsForPr,
   claimReviewJob,
   completeReviewJob,
   bindReviewJobSession,

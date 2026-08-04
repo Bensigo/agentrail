@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -36,6 +38,73 @@ class EvalProvenance:
         )
 
 
+_CYCLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+_EVAL_CYCLE_STATUSES = frozenset(
+    {"proposed", "running", "rejected", "promoted", "held"}
+)
+
+
+@dataclass(frozen=True)
+class EvalCycle:
+    """Immutable recursive eval-cycle metadata carried by persisted reports."""
+
+    cycle_id: str | None
+    parent_cycle_id: str | None
+    hypothesis: str | None
+    changed_layers: tuple[str, ...]
+    declared_budget_usd: str | None
+    status: str | None
+
+    def issues(self) -> tuple[str, ...]:
+        issues: list[str] = []
+        if not _valid_cycle_id(self.cycle_id):
+            issues.append("cycle id missing or malformed")
+        if self.parent_cycle_id is not None and not _valid_cycle_id(self.parent_cycle_id):
+            issues.append("parent id is malformed")
+        if self.parent_cycle_id == self.cycle_id and self.cycle_id is not None:
+            issues.append("parent id must not equal cycle id")
+        if not _has_text(self.hypothesis):
+            issues.append("hypothesis missing")
+        if not self.changed_layers:
+            issues.append("changed layers missing")
+        elif any(not _has_text(layer) for layer in self.changed_layers):
+            issues.append("changed layers contain blanks")
+        if _parse_budget(self.declared_budget_usd) is None:
+            issues.append("declared budget missing or invalid")
+        if self.status not in _EVAL_CYCLE_STATUSES:
+            issues.append(
+                "status missing or invalid "
+                f"(expected one of: {', '.join(sorted(_EVAL_CYCLE_STATUSES))})"
+            )
+        return tuple(issues)
+
+    @property
+    def promotion_grade(self) -> str:
+        return "HOLD" if self.issues() else "METADATA_COMPLETE"
+
+    def as_render_rows(self) -> tuple[tuple[str, str], ...]:
+        hold_reason = (
+            "valid immutable metadata supplied"
+            if not self.issues()
+            else "; ".join(self.issues())
+        )
+        return (
+            ("Promotion grade", f"{self.promotion_grade} — {hold_reason}"),
+            ("Cycle ID", self.cycle_id or "missing"),
+            ("Parent cycle ID", self.parent_cycle_id or "none"),
+            ("Hypothesis", _markdown_cell(self.hypothesis or "missing")),
+            (
+                "Changed layers",
+                _markdown_cell(
+                    ", ".join(layer for layer in self.changed_layers if layer)
+                    or "missing"
+                ),
+            ),
+            ("Declared budget", _format_budget(self.declared_budget_usd)),
+            ("Status", self.status or "missing"),
+        )
+
+
 def _hash_files(files: Iterable[Path], *, relative_to: Path) -> str:
     """Hash path names and bytes in a deterministic, unambiguous stream."""
     digest = hashlib.sha256()
@@ -47,6 +116,41 @@ def _hash_files(files: Iterable[Path], *, relative_to: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _has_text(value: str | None) -> bool:
+    return value is not None and bool(value.strip())
+
+
+def _valid_cycle_id(value: str | None) -> bool:
+    return value is not None and bool(_CYCLE_ID_PATTERN.fullmatch(value))
+
+
+def _parse_budget(value: str | None) -> Decimal | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation:
+        return None
+    if parsed.is_nan() or parsed.is_infinite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _format_budget(value: str | None) -> str:
+    parsed = _parse_budget(value)
+    return "missing" if parsed is None else f"${parsed.normalize()}"
+
+
+def _markdown_cell(value: str) -> str:
+    """Keep untrusted cycle text inside one rendered markdown table cell."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
 
 
 def _python_sources(root: Path) -> list[Path]:

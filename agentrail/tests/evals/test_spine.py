@@ -22,6 +22,7 @@ import pytest
 
 from agentrail.evals.arms import Arm, baseline, full, full_minus, gather_arm, gather_arms
 from agentrail.evals.corpus.loader import CorpusTask, load_task
+from agentrail.evals.provenance import EvalCycle
 from agentrail.evals.probes import (
     ScoredRun,
     retry_lift,
@@ -425,7 +426,19 @@ def test_ac3_dated_markdown_report_has_solve_rate_spread_and_dollars(
     # the gate (gate_passed is irrelevant to solved — only hidden tests are).
     executor = SpyExecutor()
 
-    config = SpineConfig(arms=[baseline(), full()], reps=3, corpus_root=corpus_root)
+    config = SpineConfig(
+        arms=[baseline(), full()],
+        reps=3,
+        corpus_root=corpus_root,
+        eval_cycle=EvalCycle(
+            cycle_id="eval-2026-08-04-001",
+            parent_cycle_id="eval-2026-08-03-004",
+            hypothesis="full reduces false-green without cost regression",
+            changed_layers=("bestofn",),
+            declared_budget_usd="25",
+            status="proposed",
+        ),
+    )
 
     result = run_spine(
         config,
@@ -442,6 +455,8 @@ def test_ac3_dated_markdown_report_has_solve_rate_spread_and_dollars(
     assert "Solve-rate" in text
     assert "Spread" in text
     assert "Dollars-per-solved-task" in text
+    assert "## Evaluation cycle" in text
+    assert "eval-2026-08-03-004" in text
     # Date in the file name.
     assert "eval-report-2026-06-23.md" == result.report_path.name
 

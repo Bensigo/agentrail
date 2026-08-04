@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from agentrail.evals.arms import baseline
-from agentrail.evals.provenance import build_eval_provenance
+from agentrail.evals.provenance import EvalCycle, build_eval_provenance
 from agentrail.evals.spine import SpineConfig
 
 
@@ -83,3 +83,52 @@ def test_provenance_is_deterministic_and_identifies_the_changed_input(tmp_path: 
     assert corpus_changed.code_sha256 == gate_changed.code_sha256
     assert corpus_changed.scorer_sha256 == gate_changed.scorer_sha256
     assert corpus_changed.gate_sha256 == gate_changed.gate_sha256
+
+
+def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
+    valid = EvalCycle(
+        cycle_id="eval-2026-08-04-001",
+        parent_cycle_id="eval-2026-08-03-004",
+        hypothesis="best-of-N reduces false-green without more dollars per solve",
+        changed_layers=("bestofn", "objective_gate"),
+        declared_budget_usd="25.00",
+        status="proposed",
+    )
+
+    assert valid.issues() == ()
+    assert valid.promotion_grade == "METADATA_COMPLETE"
+    assert ("Parent cycle ID", "eval-2026-08-03-004") in valid.as_render_rows()
+
+    incomplete = EvalCycle(
+        cycle_id="bad id",
+        parent_cycle_id="also bad",
+        hypothesis=None,
+        changed_layers=(),
+        declared_budget_usd="-1",
+        status="completed",
+    )
+
+    assert incomplete.promotion_grade == "HOLD"
+    assert "cycle id missing or malformed" in incomplete.issues()
+    assert "status missing or invalid (expected one of: held, promoted, proposed, rejected, running)" in incomplete.issues()
+
+    self_parent = EvalCycle(
+        cycle_id="eval-2026-08-04-002",
+        parent_cycle_id="eval-2026-08-04-002",
+        hypothesis="verify recursion rejects a self-parented cycle",
+        changed_layers=("bestofn",),
+        declared_budget_usd="1",
+        status="held",
+    )
+    assert "parent id must not equal cycle id" in self_parent.issues()
+
+    rendered = EvalCycle(
+        cycle_id="eval-2026-08-04-003",
+        parent_cycle_id=None,
+        hypothesis="measure cost | keep the report\non one row",
+        changed_layers=("bestofn|objective_gate",),
+        declared_budget_usd="1",
+        status="running",
+    ).as_render_rows()
+    assert ("Hypothesis", "measure cost \\| keep the report on one row") in rendered
+    assert ("Changed layers", "bestofn\\|objective_gate") in rendered

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from agentrail.evals.arms import Arm, all_arms
+from agentrail.evals.provenance import EvalCycle
 from agentrail.evals.runner import SandboxAgentExecutor
 from agentrail.evals.hidden_tests import ProductionHiddenTestRunner
 from agentrail.evals.spine import (
@@ -100,6 +101,16 @@ def _usage() -> str:
         "                   Per-arm cost ledger (cost-events.jsonl) for the\n"
         "                   gather token-reduction + cache-hit report (#1049 AC4).\n"
         "                   Without it that section says it needs a live run.\n"
+        "  --cycle-id ID     Stable identifier for this recursive eval cycle.\n"
+        "  --parent-cycle-id ID\n"
+        "                   Prior cycle this candidate follows (optional).\n"
+        "  --hypothesis TEXT Expected outcome being tested by this cycle.\n"
+        "  --changed-layer NAME\n"
+        "                   Changed layer (repeatable or comma-separated).\n"
+        "  --cycle-budget-usd AMOUNT\n"
+        "                   Declared USD budget for this cycle.\n"
+        "  --cycle-status STATUS\n"
+        "                   proposed, running, rejected, promoted, or held.\n"
         "  --report PATH    (apply) The eval report file to read.\n"
         "  --date YYYY-MM-DD\n"
         "                   (canary) Date the report as given. (apply) Resolve\n"
@@ -189,6 +200,12 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     # report's gather section renders "not available — needs a live run"; pass an
     # explicit per-arm ``cost-events.jsonl`` (arm-tagged) to surface real numbers.
     cost_ledger_path: Optional[Path] = None
+    cycle_id: Optional[str] = None
+    parent_cycle_id: Optional[str] = None
+    hypothesis: Optional[str] = None
+    changed_layers: List[str] = []
+    cycle_budget_usd: Optional[str] = None
+    cycle_status: Optional[str] = None
 
     i = 0
     while i < len(args):
@@ -259,6 +276,24 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             # the gather section renders "not available — needs a live run".
             cost_ledger_path = Path(_parse_flag_value(args, i, a))
             i += 2
+        elif a == "--cycle-id":
+            cycle_id = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--parent-cycle-id":
+            parent_cycle_id = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--hypothesis":
+            hypothesis = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--changed-layer":
+            changed_layers.extend(_split_csv(_parse_flag_value(args, i, a)))
+            i += 2
+        elif a == "--cycle-budget-usd":
+            cycle_budget_usd = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--cycle-status":
+            cycle_status = _parse_flag_value(args, i, a)
+            i += 2
         else:
             raise ValueError(f"unknown option: {a}")
 
@@ -274,6 +309,26 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     # default and an explicit --pack-index-root.
     if no_pack_scores:
         pack_index_root = None
+    cycle_values = (
+        cycle_id,
+        parent_cycle_id,
+        hypothesis,
+        *changed_layers,
+        cycle_budget_usd,
+        cycle_status,
+    )
+    eval_cycle = (
+        EvalCycle(
+            cycle_id=cycle_id,
+            parent_cycle_id=parent_cycle_id,
+            hypothesis=hypothesis,
+            changed_layers=tuple(changed_layers),
+            declared_budget_usd=cycle_budget_usd,
+            status=cycle_status,
+        )
+        if any(value is not None and value != "" for value in cycle_values)
+        else None
+    )
     return (
         SpineConfig(
             arms=arms,
@@ -285,6 +340,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             concurrency=concurrency,
             pack_index_root=pack_index_root,
             cost_ledger_path=cost_ledger_path,
+            eval_cycle=eval_cycle,
         ),
         smoke,
         reports_dir,

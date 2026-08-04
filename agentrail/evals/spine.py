@@ -97,7 +97,7 @@ from agentrail.evals.gather_report import (
 )
 from agentrail.evals.memory_report import render_memory_report_from_ledger
 from agentrail.evals.pack_scorer import ArmPackScore
-from agentrail.evals.provenance import build_eval_provenance
+from agentrail.evals.provenance import EvalCycle, build_eval_provenance
 from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
     ArmReport,
@@ -239,6 +239,10 @@ class SpineConfig:
     # renders an honest "not available — needs a live run" note (never a fake 0),
     # so existing runs are unchanged and the section is always discoverable.
     cost_ledger_path: Optional[Path] = None
+    # Recursive eval-cycle evidence (#1617 first half). Optional at this stage:
+    # missing or malformed metadata renders an explicit HOLD marker; consumer
+    # enforcement lands in the evaluator-integrity follow-up.
+    eval_cycle: Optional[EvalCycle] = None
 
 
 @dataclass(frozen=True)
@@ -832,6 +836,7 @@ def run_spine(
                 # scorecard still carries the pack quality (None → n/a).
                 pack_scores=pack_scores,
                 provenance=provenance,
+                eval_cycle=config.eval_cycle,
             )
 
     concurrency = max(1, config.concurrency)
@@ -871,6 +876,7 @@ def run_spine(
         # delta (#1029 AC2/AC3) — None → n/a, never a fabricated 0.0.
         pack_scores=pack_scores,
         provenance=provenance,
+        eval_cycle=config.eval_cycle,
     )
 
     # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-

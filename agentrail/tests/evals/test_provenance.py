@@ -148,3 +148,15 @@ def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
     ).as_render_rows()
     assert ("Hypothesis", "measure cost \\| keep the report on one row") in rendered
     assert ("Changed layers", "bestofn\\|objective_gate") in rendered
+
+    malformed_rows = EvalCycle(
+        cycle_id="bad|id\nnext-row",
+        parent_cycle_id="bad\rparent",
+        hypothesis="valid hypothesis",
+        changed_layers=("bestofn",),
+        declared_budget_usd="1",
+        status="held|inject\nrow",
+    ).as_render_rows()
+    assert ("Cycle ID", "bad\\|id next-row") in malformed_rows
+    assert ("Parent cycle ID", "bad parent") in malformed_rows
+    assert ("Status", "held\\|inject row") in malformed_rows

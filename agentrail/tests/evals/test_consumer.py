@@ -34,6 +34,7 @@ from agentrail.evals.consumer import (
     LayerChange,
     NewFlowFacts,
     Proposal,
+    PromotionDecision,
     ReportFacts,
     ReportParseError,
     RoutingFacts,
@@ -147,6 +148,18 @@ Generated: {date.today().isoformat()}
 
 
 class ParseReportTests(unittest.TestCase):
+    def test_report_fingerprint_is_the_exact_file_content(self) -> None:
+        import hashlib
+
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            facts = parse_report(p)
+        self.assertEqual(
+            facts.content_sha256,
+            hashlib.sha256(_TWO_SECTION_REPORT.encode("utf-8")).hexdigest(),
+        )
+
     def test_section_scoped_ignores_rerank_rows(self) -> None:
         with TemporaryDirectory() as td:
             p = Path(td) / "eval-report-x.md"
@@ -295,16 +308,17 @@ class GateRuleTests(unittest.TestCase):
             [(layer, True) for layer in NEW_FLOW_LAYERS],
         )
         self.assertIsNotNone(proposal.overrides_content)
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.PROMOTE)
 
-    def test_any_gate_fails_pins_new_flow_layers_false(self) -> None:
+    def test_any_gate_fails_rejects_candidate_without_changing_default(self) -> None:
         # Dollars went UP (>= 0) → fails the "< 0" gate.
         facts = _facts_with_deltas(solve=0.20, dollars=0.10, wall=-4.0, fg=-0.20)
         with TemporaryDirectory() as td:
             proposal = build_proposal(facts, Path(td))
-        self.assertEqual(
-            [(c.name, c.value) for c in proposal.layer_changes],
-            [(layer, False) for layer in NEW_FLOW_LAYERS],
-        )
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.REJECT)
+        self.assertEqual(proposal.layer_changes, [])
+        self.assertIsNone(proposal.overrides_content)
+        self.assertIn("Apply gate: REJECT", render_proposal(proposal))
 
     def test_unknown_only_proposes_no_change(self) -> None:
         # One gate n/a, none failing → no layer change at all.
@@ -313,6 +327,7 @@ class GateRuleTests(unittest.TestCase):
             proposal = build_proposal(facts, Path(td))
         self.assertEqual(proposal.layer_changes, [])
         self.assertIsNone(proposal.overrides_content)
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.HOLD)
 
     def test_unavailable_new_flow_proposes_no_change(self) -> None:
         facts = _facts_with_deltas(
@@ -384,6 +399,33 @@ class ApplyEvidenceGateTests(unittest.TestCase):
         proposal = build_proposal(facts, Path("."))
         self.assertTrue(proposal.is_held)
         self.assertIn("freshness is unknown", proposal.hold_reasons[0])
+
+    def test_rejected_candidate_never_writes_even_when_linked(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=0.10, wall=-4.0, fg=-0.20)
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(facts, root)
+            before = _snapshot_tree(root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertEqual(before, after)
+
+    def test_apply_refuses_when_fingerprinted_report_changes(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            report = root / "eval-report-x.md"
+            report.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), root)
+            report.write_text(
+                _TWO_SECTION_REPORT + "\nmutated after proposal\n",
+                encoding="utf-8",
+            )
+            before = _snapshot_tree(root)
+            with self.assertRaisesRegex(ApplyReportGateError, "contents changed"):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertEqual(before, after)
 
 
 # --- AC1: default path writes nothing --------------------------------------
@@ -543,13 +585,17 @@ class AC3FailClosedTests(unittest.TestCase):
             agentrail_dir / "layer-overrides.json", after,
         )
 
-    def test_auth_checked_before_proposal_even_when_empty(self) -> None:
-        # An EMPTY proposal must ALSO be rejected when unlinked — auth is
-        # checked before the proposal is even inspected.
-        empty = Proposal(report_name="x.md", report_path=Path("x.md"))
+    def test_unfingerprinted_proposal_is_rejected_before_auth(self) -> None:
+        # A hand-built proposal has no immutable report source, so it cannot
+        # be applied even when it is otherwise empty or unlinked.
+        empty = Proposal(
+            report_name="x.md",
+            report_path=Path("x.md"),
+            promotion_decision=PromotionDecision.PROMOTE,
+        )
         self.assertFalse(empty.has_changes)
         with TemporaryDirectory() as td:
-            with self.assertRaises(ApplyAuthError):
+            with self.assertRaises(ApplyReportGateError):
                 apply_proposal(empty, Path(td), link_loader=_unlinked)
 
 
@@ -557,15 +603,15 @@ class AC3FailClosedTests(unittest.TestCase):
 
 
 class EmptyProposalApplyTests(unittest.TestCase):
-    def test_empty_proposal_apply_writes_nothing_but_reports(self) -> None:
+    def test_empty_proposal_without_report_lineage_is_refused(self) -> None:
         empty = Proposal(report_name="x.md", report_path=Path("x.md"))
         with TemporaryDirectory() as td:
             root = Path(td)
             before = _snapshot_tree(root)
-            lines = apply_proposal(empty, root, link_loader=_linked)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(empty, root, link_loader=_linked)
             after = _snapshot_tree(root)
-        self.assertEqual(before, after)  # linked, but nothing to write
-        self.assertEqual(lines, ["Nothing to apply: the proposal contains no changes."])
+        self.assertEqual(before, after)
 
 
 # --- Render → parse round-trip against the REAL reporter -------------------

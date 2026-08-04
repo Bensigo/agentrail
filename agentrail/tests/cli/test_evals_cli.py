@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +30,15 @@ def _run(args):
     return rc, out.getvalue(), err.getvalue()
 
 
-_ONE_ARM_REPORT = """# Eval report 2026-07-01
+_ONE_ARM_REPORT = f"""# Eval report {date.today().isoformat()}
+
+Generated: {date.today().isoformat()}
+
+## Per-arm summary
+
+| Arm | Reps | Solved | Failed | Solve-rate | Spread | False-green rate | Wall-time per task | Total tokens | Total cost | Dollars-per-solved-task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| full | 1 | 1 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |
 
 ## New-flow vs full
 
@@ -116,6 +125,26 @@ class EvalsApplyCliTests(unittest.TestCase):
             ])
         self.assertEqual(rc, 0, msg=f"stderr={err}")
         self.assertIn("2026-07-01", out)
+
+    def test_apply_rejects_a_held_report_before_any_write(self) -> None:
+        import tempfile
+
+        stale = _ONE_ARM_REPORT.replace(
+            f"Generated: {date.today().isoformat()}",
+            "Generated: 2020-01-01",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "stale-report.md"
+            report.write_text(stale, encoding="utf-8")
+            target = root / "checkout"
+            target.mkdir()
+            rc, out, err = _run([
+                "apply", "--report", str(report), "--target", str(target), "--apply",
+            ])
+        self.assertEqual(rc, 2)
+        self.assertIn("Apply gate: HOLD", out)
+        self.assertIn("stale report", err)
 
 
 class EvalsRunNewFlowCliTests(unittest.TestCase):

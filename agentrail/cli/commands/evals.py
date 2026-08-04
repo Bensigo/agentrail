@@ -45,7 +45,7 @@ def _usage() -> str:
         "  agentrail evals packer-ab [--corpus DIR] [--task NAME[,NAME...]] "
         "[--reps N]\n"
         "  agentrail evals apply (--report PATH | --date YYYY-MM-DD)\n"
-        "                        [--reports-dir DIR] [--target DIR] [--apply]\n"
+        "                        [--reports-dir DIR] [--target DIR] [--max-report-age-days N] [--apply]\n"
         "\n"
         "Subcommands:\n"
         "  run     Run the eval spine (corpus -> runner -> hidden-test scorer\n"
@@ -108,6 +108,9 @@ def _usage() -> str:
         "                   Reports directory (default: agentrail/evals/reports).\n"
         "  --target DIR     Target checkout to propose/apply against\n"
         "                   (default: current directory).\n"
+        "  --max-report-age-days N\n"
+        "                   (apply) Maximum age of a dated report before apply\n"
+        "                   holds it (default: 1).\n"
         "  --apply          (apply) Perform the printed writes. Without it the\n"
         "                   command is read-only.\n"
         "  -h, --help       Show this help\n"
@@ -638,6 +641,8 @@ def _run_apply(args: List[str]) -> int:
     """
     from agentrail.evals.consumer import (
         ApplyAuthError,
+        ApplyReportGateError,
+        DEFAULT_MAX_REPORT_AGE_DAYS,
         ReportParseError,
         apply_proposal,
         build_proposal,
@@ -651,6 +656,7 @@ def _run_apply(args: List[str]) -> int:
     reports_dir: Optional[Path] = None
     target: Optional[Path] = None
     do_apply = False
+    max_report_age_days = DEFAULT_MAX_REPORT_AGE_DAYS
 
     i = 0
     while i < len(args):
@@ -669,6 +675,16 @@ def _run_apply(args: List[str]) -> int:
             i += 2
         elif a == "--target":
             target = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--max-report-age-days":
+            try:
+                max_report_age_days = int(_parse_flag_value(args, i, a))
+            except ValueError:
+                print("error: --max-report-age-days requires a non-negative integer", file=sys.stderr)
+                return 2
+            if max_report_age_days < 0:
+                print("error: --max-report-age-days requires a non-negative integer", file=sys.stderr)
+                return 2
             i += 2
         elif a == "--apply":
             do_apply = True
@@ -699,7 +715,11 @@ def _run_apply(args: List[str]) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
-    proposal = build_proposal(facts, resolved_target)
+    proposal = build_proposal(
+        facts,
+        resolved_target,
+        max_report_age_days=max_report_age_days,
+    )
     print(render_proposal(proposal))
 
     if not do_apply:
@@ -707,7 +727,7 @@ def _run_apply(args: List[str]) -> int:
 
     try:
         result_lines = apply_proposal(proposal, resolved_target)
-    except ApplyAuthError as error:
+    except (ApplyAuthError, ApplyReportGateError) as error:
         # FAIL CLOSED (#1048 AC3): unconfigured auth rejects the apply — zero
         # writes happen. Deliberate contrast with the GitHub webhook's
         # fail-open `if (!secret) return true` signature skip.

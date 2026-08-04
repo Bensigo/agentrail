@@ -31,6 +31,7 @@ from agentrail.evals.consumer import (
     ApplyAuthError,
     ApplyReportGateError,
     ArmSummaryFacts,
+    EvalCycleFacts,
     LayerChange,
     NewFlowFacts,
     Proposal,
@@ -47,7 +48,7 @@ from agentrail.evals.consumer import (
     parse_report,
     render_proposal,
 )
-from agentrail.evals.provenance import EvalProvenance
+from agentrail.evals.provenance import EvalCycle, EvalProvenance
 from agentrail.evals.reporter import ArmReport, render_markdown
 from agentrail.run.routing import cheaper_model
 
@@ -124,8 +125,21 @@ Generated: {date.today().isoformat()}
 | Code | {'a' * 64} |
 | Config | {'b' * 64} |
 | Corpus | {'c' * 64} |
+| Answer key | {'f' * 64} |
 | Scorer | {'d' * 64} |
 | Gate | {'e' * 64} |
+
+## Evaluation cycle
+
+| Field | Value |
+| --- | --- |
+| Promotion grade | METADATA_COMPLETE — valid immutable metadata supplied |
+| Cycle ID | eval-2026-08-04-001 |
+| Parent cycle ID | none |
+| Hypothesis | reduce false-green without cost regression |
+| Changed layers | bestofn |
+| Declared budget | $25 |
+| Status | proposed |
 
 ## Per-arm summary
 
@@ -262,7 +276,25 @@ def _facts_with_deltas(
             )
         ],
         provenance=ProvenanceFacts(
-            fingerprints={key: "a" * 64 for key in ("Code", "Config", "Corpus", "Scorer", "Gate")}
+            fingerprints={
+                key: "a" * 64
+                for key in (
+                    "Code",
+                    "Config",
+                    "Corpus",
+                    "Answer key",
+                    "Scorer",
+                    "Gate",
+                )
+            }
+        ),
+        eval_cycle=EvalCycleFacts(
+            cycle_id="eval-2026-08-04-001",
+            parent_cycle_id=None,
+            hypothesis="reduce false-green without cost regression",
+            changed_layers=("bestofn",),
+            declared_budget_usd="25",
+            status="proposed",
         ),
     )
 
@@ -305,6 +337,92 @@ class GateRuleTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             proposal = build_proposal(facts, Path(td))
         self.assertEqual(proposal.layer_changes, [])
+
+
+class EvaluatorIntegrityTests(unittest.TestCase):
+    def _child_report(self, *, answer_key: str = "f" * 64) -> str:
+        return (
+            _TWO_SECTION_REPORT.replace(
+                "| Cycle ID | eval-2026-08-04-001 |",
+                "| Cycle ID | eval-2026-08-05-001 |",
+            )
+            .replace(
+                "| Parent cycle ID | none |",
+                "| Parent cycle ID | eval-2026-08-04-001 |",
+            )
+            .replace(f"| Answer key | {'f' * 64} |", f"| Answer key | {answer_key} |")
+        )
+
+    def test_changed_answer_key_quarantines_the_child_before_apply(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            parent_path.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            child_path.write_text(self._child_report(answer_key="1" * 64), encoding="utf-8")
+
+            proposal = build_proposal(
+                parse_report(child_path), root, parent_facts=parse_report(parent_path)
+            )
+
+        self.assertTrue(proposal.is_held)
+        self.assertFalse(proposal.has_changes)
+        self.assertTrue(
+            any("evaluator integrity quarantine" in reason for reason in proposal.hold_reasons)
+        )
+
+    def test_matching_parent_evaluator_allows_normal_promotion_gate(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            parent_path.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            child_path.write_text(self._child_report(), encoding="utf-8")
+
+            proposal = build_proposal(
+                parse_report(child_path), root, parent_facts=parse_report(parent_path)
+            )
+
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.PROMOTE)
+        self.assertTrue(proposal.has_changes)
+
+    def test_declared_parent_without_parent_report_holds(self) -> None:
+        with TemporaryDirectory() as td:
+            child_path = Path(td) / "child.md"
+            child_path.write_text(self._child_report(), encoding="utf-8")
+            proposal = build_proposal(parse_report(child_path), Path(td))
+
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("parent report was not supplied" in reason for reason in proposal.hold_reasons))
+
+    def test_invalid_parent_cycle_metadata_holds(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            parent_path.write_text(
+                _TWO_SECTION_REPORT.replace("| Status | proposed |", "| Status | invalid |"),
+                encoding="utf-8",
+            )
+            child_path.write_text(self._child_report(), encoding="utf-8")
+            proposal = build_proposal(
+                parse_report(child_path), root, parent_facts=parse_report(parent_path)
+            )
+
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("parent report cycle lineage is incomplete" in reason for reason in proposal.hold_reasons))
+
+    def test_malformed_cycle_metadata_holds_before_gate_evaluation(self) -> None:
+        malformed = _TWO_SECTION_REPORT.replace(
+            "| Cycle ID | eval-2026-08-04-001 |", "| Cycle ID | bad id |"
+        )
+        with TemporaryDirectory() as td:
+            report = Path(td) / "malformed.md"
+            report.write_text(malformed, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), Path(td))
+
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("cycle id missing or malformed" in reason for reason in proposal.hold_reasons))
 
 
 class ApplyEvidenceGateTests(unittest.TestCase):
@@ -450,6 +568,30 @@ class ApplyEvidenceGateTests(unittest.TestCase):
                 apply_proposal(proposal, root, link_loader=_linked)
             after = _snapshot_tree(root)
         self.assertEqual(before, after)
+
+    def test_apply_refuses_when_parent_report_changes_after_proposal(self) -> None:
+        child_text = (
+            _TWO_SECTION_REPORT.replace(
+                "| Cycle ID | eval-2026-08-04-001 |",
+                "| Cycle ID | eval-2026-08-05-001 |",
+            ).replace(
+                "| Parent cycle ID | none |",
+                "| Parent cycle ID | eval-2026-08-04-001 |",
+            )
+        )
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            parent = root / "parent.md"
+            child = root / "child.md"
+            parent.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            child.write_text(child_text, encoding="utf-8")
+            proposal = build_proposal(
+                parse_report(child), root, parent_facts=parse_report(parent)
+            )
+            parent.write_text(_TWO_SECTION_REPORT + "\nmutated parent\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ApplyReportGateError, "parent report contents changed"):
+                apply_proposal(proposal, root, link_loader=_linked)
 
 
 # --- AC1: default path writes nothing --------------------------------------
@@ -667,8 +809,17 @@ class RoundTripTests(unittest.TestCase):
                 code_sha256="a" * 64,
                 config_sha256="b" * 64,
                 corpus_sha256="c" * 64,
+                answer_key_sha256="f" * 64,
                 scorer_sha256="d" * 64,
                 gate_sha256="e" * 64,
+            ),
+            eval_cycle=EvalCycle(
+                cycle_id="eval-2026-08-04-001",
+                parent_cycle_id=None,
+                hypothesis="reduce false-green without cost regression",
+                changed_layers=("bestofn",),
+                declared_budget_usd="25",
+                status="proposed",
             ),
         )
 
@@ -687,6 +838,7 @@ class RoundTripTests(unittest.TestCase):
                 "Code": "a" * 64,
                 "Config": "b" * 64,
                 "Corpus": "c" * 64,
+                "Answer key": "f" * 64,
                 "Scorer": "d" * 64,
                 "Gate": "e" * 64,
             },

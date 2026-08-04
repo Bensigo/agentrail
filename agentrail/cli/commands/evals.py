@@ -112,6 +112,9 @@ def _usage() -> str:
         "  --cycle-status STATUS\n"
         "                   proposed, running, rejected, promoted, or held.\n"
         "  --report PATH    (apply) The eval report file to read.\n"
+        "  --parent-report PATH\n"
+        "                   (apply) Explicit parent report for protected evaluator\n"
+        "                   identity comparison; required when the cycle has a parent.\n"
         "  --date YYYY-MM-DD\n"
         "                   (canary) Date the report as given. (apply) Resolve\n"
         "                   the report as <reports-dir>/eval-report-<date>.md.\n"
@@ -708,6 +711,7 @@ def _run_apply(args: List[str]) -> int:
     from agentrail.evals.reporter import default_reports_dir
 
     report: Optional[Path] = None
+    parent_report: Optional[Path] = None
     date: Optional[str] = None
     reports_dir: Optional[Path] = None
     target: Optional[Path] = None
@@ -722,6 +726,9 @@ def _run_apply(args: List[str]) -> int:
             return 0
         if a == "--report":
             report = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--parent-report":
+            parent_report = Path(_parse_flag_value(args, i, a))
             i += 2
         elif a == "--date":
             date = _parse_flag_value(args, i, a)
@@ -762,11 +769,15 @@ def _run_apply(args: List[str]) -> int:
     if not report.is_file():
         print(f"error: report not found: {report}", file=sys.stderr)
         return 2
+    if parent_report is not None and not parent_report.is_file():
+        print(f"error: parent report not found: {parent_report}", file=sys.stderr)
+        return 2
 
     resolved_target = target if target is not None else Path.cwd()
 
     try:
         facts = parse_report(report)
+        parent_facts = parse_report(parent_report) if parent_report is not None else None
     except ReportParseError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -774,6 +785,7 @@ def _run_apply(args: List[str]) -> int:
     proposal = build_proposal(
         facts,
         resolved_target,
+        parent_facts=parent_facts,
         max_report_age_days=max_report_age_days,
     )
     print(render_proposal(proposal))

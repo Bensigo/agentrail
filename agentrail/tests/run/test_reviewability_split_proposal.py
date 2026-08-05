@@ -29,6 +29,30 @@ def test_over_budget_changes_return_actionable_split_guidance_with_reasons() -> 
     assert "queue entries" in decision.recommendation
 
 
+def test_risk_budget_failure_is_actionable_and_advisory_without_line_or_file_overage() -> None:
+    """Generated churn alone should produce the AC-required risk split advice."""
+    diff = make_diff_evidence(
+        base_sha="base-123",
+        head_sha="head-456",
+        changed_files=("generated/client.ts",),
+        additions=1,
+        deletions=0,
+    )
+    decision = evaluate_reviewability(
+        diff,
+        _environment(),
+        ReviewabilityBudget(max_changed_files=2, max_changed_lines=2, max_risk_score=1),
+    )
+
+    assert decision.status == "split_recommended"
+    assert decision.split_recommended is True
+    assert decision.reasons == ("non-lockfile risk score 2 exceeds budget 1",)
+    assert "Isolate generated, lockfile, or otherwise high-risk churn" in decision.recommendation
+    assert "advisory only" in decision.recommendation
+    assert "child issues" in decision.recommendation
+    assert "queue entries" in decision.recommendation
+
+
 def test_in_budget_changes_keep_the_existing_output_behavior() -> None:
     decision = evaluate_reviewability(make_diff_evidence(base_sha="base-123", head_sha="head-456"), _environment())
 

@@ -192,6 +192,28 @@ export async function getReviewMetricsReport(
   };
 }
 
+/**
+ * Read the append-only review-event history for one PR, oldest first. The
+ * route uses this only after a run's PR URL has been parsed successfully.
+ */
+export async function listReviewEventsForPr(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+}): Promise<ReviewEventRow[]> {
+  return db
+    .select()
+    .from(reviewEvents)
+    .where(
+      and(
+        eq(reviewEvents.workspaceId, input.workspaceId),
+        eq(reviewEvents.repo, input.repo),
+        eq(reviewEvents.prNumber, input.prNumber)
+      )
+    )
+    .orderBy(reviewEvents.occurredAt, reviewEvents.createdAt);
+}
+
 export type {
   ReviewEventRow,
   ReviewEventType,

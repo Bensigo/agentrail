@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { reviewJobs } from "../schema/review_jobs.js";
 import type { ReviewJobRow } from "../schema/review_jobs.js";
@@ -61,6 +61,29 @@ export function reviewJobId(input: {
   return uuid5Url(
     `review-job:${input.workspaceId}:${input.repo}:${input.prNumber}:${input.headSha}`
   );
+}
+
+/**
+ * Read the review-job history for one PR, oldest first. Workspace-scoped and
+ * repo/pr-specific — a caller must already have resolved the PR identity from
+ * a trusted run row before asking for this history.
+ */
+export async function listReviewJobsForPr(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+}): Promise<ReviewJobRow[]> {
+  return db
+    .select()
+    .from(reviewJobs)
+    .where(
+      and(
+        eq(reviewJobs.workspaceId, input.workspaceId),
+        eq(reviewJobs.repo, input.repo),
+        eq(reviewJobs.prNumber, input.prNumber)
+      )
+    )
+    .orderBy(reviewJobs.createdAt);
 }
 
 // --- row mapping (raw db.execute results are snake_case) --------------------

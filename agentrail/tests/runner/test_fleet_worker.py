@@ -128,7 +128,9 @@ def test_loop_executes_claimed_items_and_reports_them(monkeypatch):
          "gate_reason": "", "logs_tail": "", "pr_url": "",
          # #1338 PR① fix round: the fleet reuses worker._report byte-for-byte,
          # so it forwards execute_model too ("" — this result carries none).
-         "execute_model": ""}
+         "execute_model": "",
+         # #1630: absent publish provenance is explicit but remains empty.
+         "pr_head_sha": ""}
     ]
     assert client.telemetry == [{"id": "ws1-42", "status": "green"}]
 

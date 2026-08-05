@@ -20,6 +20,7 @@ import {
   chatIdentities,
   fleetKeyRotations,
   billingAccounts,
+  queueEntries,
 } from "../schema/index.js";
 import type { EvalArmMetric } from "../schema/index.js";
 import type {
@@ -69,6 +70,30 @@ export async function getRun(
     .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
     .limit(1);
   return (rows[0] as RunRow) ?? null;
+}
+
+/**
+ * Read the queue identity that owns a run. Both sides of the join are
+ * workspace-scoped so a review-chain consumer cannot use a queue entry from
+ * another tenant as the trusted repository identity.
+ */
+export async function getRunQueueEntryIdentity(
+  workspaceId: string,
+  runId: string
+): Promise<{ externalId: string } | null> {
+  const rows = await db
+    .select({ externalId: queueEntries.externalId })
+    .from(runs)
+    .innerJoin(queueEntries, eq(runs.queueEntryId, queueEntries.id))
+    .where(
+      and(
+        eq(runs.workspaceId, workspaceId),
+        eq(runs.id, runId),
+        eq(queueEntries.workspaceId, workspaceId)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /**

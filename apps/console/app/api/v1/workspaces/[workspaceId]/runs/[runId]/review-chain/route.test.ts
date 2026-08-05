@@ -7,6 +7,7 @@ vi.mock("@agentrail/auth", () => ({
 
 vi.mock("@agentrail/db-postgres", () => ({
   getRun: vi.fn(),
+  getRunQueueEntryIdentity: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   listReviewEventsForPr: vi.fn(),
   listReviewJobsForPr: vi.fn(),
@@ -15,11 +16,13 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { auth } from "@agentrail/auth";
 import {
   getRun,
+  getRunQueueEntryIdentity,
   getWorkspaceMembership,
   listReviewEventsForPr,
   listReviewJobsForPr,
 } from "@agentrail/db-postgres";
-import { GET, resolveReviewChainPr } from "./route";
+import { GET } from "./route";
+import { resolveReviewChainPr } from "./review-chain";
 
 const WORKSPACE_ID = "ws-123";
 const RUN_ID = "run-123";
@@ -92,11 +95,13 @@ describe("resolveReviewChainPr", () => {
       state: "unknown",
       repo: null,
       number: null,
+      reason: "malformed_pr_url",
     });
     expect(resolveReviewChainPr("https://github.com/ada/widgets/issues/42")).toEqual({
       state: "unknown",
       repo: null,
       number: null,
+      reason: "malformed_pr_url",
     });
   });
 });
@@ -131,6 +136,9 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
   it("returns the queue-entry identity and ordered review history for a resolved PR", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
+      externalId: "ada/widgets#41",
+    } as never);
     vi.mocked(listReviewJobsForPr).mockResolvedValue([
       {
         id: "job-1",
@@ -245,6 +253,49 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     });
   });
 
+  it("returns unknown and does not query history when a valid PR URL belongs to another repository", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
+      externalId: "trusted/repo#41",
+    } as never);
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.prResolution).toEqual({
+      state: "unknown",
+      repo: null,
+      number: null,
+      reason: "repository_mismatch",
+    });
+    expect(listReviewJobsForPr).not.toHaveBeenCalled();
+    expect(listReviewEventsForPr).not.toHaveBeenCalled();
+  });
+
+  it("queries history when a valid PR URL matches the trusted queue repository", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
+      externalId: "ada/widgets#41",
+    } as never);
+
+    const res = await GET(makeRequest(), makeParams());
+
+    expect(res.status).toBe(200);
+    expect(listReviewJobsForPr).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      repo: "ada/widgets",
+      prNumber: 42,
+    });
+    expect(listReviewEventsForPr).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      repo: "ada/widgets",
+      prNumber: 42,
+    });
+  });
+
   it("returns an explicit no_pr state and never guesses history when pr_url is empty", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue({ ...RUN, prUrl: "" } as never);
@@ -270,7 +321,12 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    expect(json.prResolution).toEqual({ state: "unknown", repo: null, number: null });
+    expect(json.prResolution).toEqual({
+      state: "unknown",
+      repo: null,
+      number: null,
+      reason: "malformed_pr_url",
+    });
     expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
   });
@@ -278,6 +334,9 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
   it("returns 500 with a stable error when the review-history query throws", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue(RUN as never);
+    vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
+      externalId: "ada/widgets#41",
+    } as never);
     vi.mocked(listReviewJobsForPr).mockRejectedValue(new Error("db down"));
 
     const res = await GET(makeRequest(), makeParams());

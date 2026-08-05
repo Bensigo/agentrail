@@ -2,51 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getRun,
+  getRunQueueEntryIdentity,
   getWorkspaceMembership,
   listReviewEventsForPr,
   listReviewJobsForPr,
 } from "@agentrail/db-postgres";
-import { parseGithubPrUrl } from "../../../../../../../../lib/github-merge";
+import { resolveReviewChainPr } from "./review-chain";
 
-export type ReviewChainPrResolution =
-  | {
-      state: "resolved";
-      repo: string;
-      number: number;
-    }
-  | {
-      state: "no_pr";
-      repo: null;
-      number: null;
-    }
-  | {
-      state: "unknown";
-      repo: null;
-      number: null;
-    };
-
-/**
- * Resolve a run's PR URL into the repo slug + PR number the chain queries need.
- * Empty / absent input is a real "no PR" state; malformed or foreign URLs stay
- * explicitly "unknown" so the route never guesses.
- */
-export function resolveReviewChainPr(
-  prUrl: string | null | undefined
-): ReviewChainPrResolution {
-  if (!prUrl) {
-    return { state: "no_pr", repo: null, number: null };
-  }
-
-  const parsed = parseGithubPrUrl(prUrl);
-  if (!parsed) {
-    return { state: "unknown", repo: null, number: null };
-  }
-
-  return {
-    state: "resolved",
-    repo: `${parsed.owner}/${parsed.repo}`,
-    number: parsed.number,
-  };
+function trustedQueueRepository(externalId: string | null | undefined): string | null {
+  if (!externalId) return null;
+  const separator = externalId.lastIndexOf("#");
+  const repo = separator > 0 ? externalId.slice(0, separator) : "";
+  return repo.includes("/") ? repo : null;
 }
 
 export async function GET(
@@ -70,6 +37,46 @@ export async function GET(
   }
 
   const prResolution = resolveReviewChainPr(run.prUrl);
+  if (prResolution.state === "resolved") {
+    const queueIdentity = await getRunQueueEntryIdentity(workspaceId, runId);
+    const trustedRepo = trustedQueueRepository(queueIdentity?.externalId);
+    if (!trustedRepo) {
+      return NextResponse.json({
+        run: {
+          id: run.id,
+          workspaceId: run.workspaceId,
+          queueEntryId: run.queueEntryId ?? null,
+          prUrl: run.prUrl || null,
+        },
+        prResolution: {
+          state: "unknown",
+          repo: null,
+          number: null,
+          reason: "missing_trusted_repository",
+        },
+        reviewJobs: [],
+        reviewEvents: [],
+      });
+    }
+    if (trustedRepo.toLowerCase() !== prResolution.repo.toLowerCase()) {
+      return NextResponse.json({
+        run: {
+          id: run.id,
+          workspaceId: run.workspaceId,
+          queueEntryId: run.queueEntryId ?? null,
+          prUrl: run.prUrl || null,
+        },
+        prResolution: {
+          state: "unknown",
+          repo: null,
+          number: null,
+          reason: "repository_mismatch",
+        },
+        reviewJobs: [],
+        reviewEvents: [],
+      });
+    }
+  }
   let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPr>> = [];
   let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPr>> = [];
 

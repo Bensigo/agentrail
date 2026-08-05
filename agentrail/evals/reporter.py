@@ -1756,7 +1756,7 @@ def write_markdown_report(
     date: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
     pack_scores: Optional[Sequence[ArmPackScore]] = None,
-    provenance: Optional[EvalProvenance] = None,
+    provenance: EvalProvenance,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
@@ -1774,6 +1774,10 @@ def write_markdown_report(
     :func:`pack_scorer.aggregate_pack_scores` output) alongside solve-rate and
     cost. When ``None`` those rows render ``n/a`` — the report is otherwise
     byte-identical to before, so no caller that omits it changes.
+
+    ``provenance`` is required for every persisted eval report. Rendering stays
+    optional for focused reporter-unit tests, but a report on disk is evidence
+    for a later promotion decision and must carry its immutable inputs.
     """
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     base.mkdir(parents=True, exist_ok=True)

@@ -329,6 +329,7 @@ class TestHappyPath:
             _Completed(0),                                  # commit
             _Completed(0),                                  # push
             _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+            _Completed(0, stdout="a" * 40),                 # post-publish HEAD
         ])
         result, _ = self._run(tmp_path, runner, pr_title="Add a thing")
         assert result.status == "green"
@@ -358,6 +359,7 @@ class TestHappyPath:
             _Completed(0),                                  # commit
             _Completed(0),                                  # push
             _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+            _Completed(0, stdout="a" * 40),                 # post-publish HEAD
         ])
 
     def test_green_run_commits_with_neutral_identity_when_no_bot_env(
@@ -445,6 +447,13 @@ class TestHappyPath:
         result, _ = self._run(tmp_path, runner, publish_pr=False)
         assert result.status == "green"
         assert result.pr_url == ""
+        assert result.head_sha == ""
+
+    def test_successful_publication_reports_exact_post_publish_head(self, tmp_path) -> None:
+        runner = self._green_publish_runner(tmp_path / "run-1")
+        result, _ = self._run(tmp_path, runner)
+        assert result.pr_url.endswith("/pull/42")
+        assert result.head_sha == "a" * 40
 
     def test_pr_url_captured_against_faithful_subprocess(self, tmp_path) -> None:
         """Regression guard: the PR URL must survive against a runner that only
@@ -469,6 +478,7 @@ class TestHappyPath:
             _Completed(0),                                  # commit
             _Completed(0),                                  # push
             _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+            _Completed(0, stdout="a" * 40),                 # post-publish HEAD
         ])
         result, _ = self._run(tmp_path, runner, pr_title="Add a thing")
         assert result.status == "green"
@@ -598,6 +608,7 @@ class TestGitTokenThreadedIntoRun:
             _Completed(0),                  # commit
             _Completed(0),                  # push
             _Completed(0, stdout="https://github.com/acme/widgets/pull/9"),  # gh pr create
+            _Completed(0, stdout="a" * 40),
         ])
         self._run(tmp_path, runner, pr_title="Add a thing")
         pr_call = next(c for c in runner.calls if "create" in c["cmd"])
@@ -621,6 +632,7 @@ class TestGitTokenThreadedIntoRun:
             _Completed(0),
             _Completed(0),
             _Completed(0, stdout="https://github.com/acme/widgets/pull/9"),
+            _Completed(0, stdout="a" * 40),
         ])
         self._run(
             tmp_path, runner, pr_title="Add a thing",

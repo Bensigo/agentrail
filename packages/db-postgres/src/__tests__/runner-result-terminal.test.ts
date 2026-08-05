@@ -50,7 +50,7 @@ vi.mock("../db.js", () => ({
   },
 }));
 
-import { recordRunnerResult } from "../queries/runner.js";
+import { canonicalGitCommitSha, recordRunnerResult } from "../queries/runner.js";
 
 const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 
@@ -134,5 +134,46 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
     expect(runUpdateValues).toMatchObject({
       prUrl: "https://github.com/o/r/pull/9",
     });
+  });
+
+  it("persists a valid produced head only with a queue-bound green PR", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "A".repeat(40),
+    });
+
+    expect(runUpdateValues).toMatchObject({ prHeadSha: "a".repeat(40) });
+  });
+
+  it("does not persist an unvalidated head or a head without an accepted green PR", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/attacker/evil-repo/pull/9",
+      prHeadSha: "a".repeat(40),
+    });
+    expect(runUpdateValues).not.toHaveProperty("prHeadSha");
+
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "not-a-commit",
+    });
+    expect(runUpdateValues).not.toHaveProperty("prHeadSha");
+  });
+});
+
+describe("canonicalGitCommitSha", () => {
+  it("normalizes SHA-1 and SHA-256 ids but rejects abbreviated and non-hex values", () => {
+    expect(canonicalGitCommitSha("A".repeat(40))).toBe("a".repeat(40));
+    expect(canonicalGitCommitSha("b".repeat(64))).toBe("b".repeat(64));
+    expect(canonicalGitCommitSha("a".repeat(39))).toBeNull();
+    expect(canonicalGitCommitSha("z".repeat(40))).toBeNull();
   });
 });

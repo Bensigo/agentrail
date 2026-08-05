@@ -312,6 +312,7 @@ class RunnerClient:
         logs_tail: str = "",
         pr_url: str = "",
         execute_model: str = "",
+        pr_head_sha: str = "",
     ) -> bool:
         """POST a run outcome back to the backend. ``True`` only on a 2xx.
 
@@ -326,6 +327,10 @@ class RunnerClient:
         runner / a tier-0 config-default run), for which the backend keeps its
         ClickHouse-reconstruction fallback. Mirrors ``cost_usd``'s
         reported-value shape exactly — a plain payload field.
+
+        ``pr_head_sha`` is optional runner provenance. Older callers may omit it;
+        it remains empty unless an executor has an exact produced/published
+        head to report.
         """
         url = f"{self._base}/api/v1/runner/result"
         payload = json.dumps(
@@ -343,6 +348,7 @@ class RunnerClient:
                 "logs_tail": logs_tail,
                 "pr_url": pr_url,
                 "execute_model": execute_model,
+                "pr_head_sha": pr_head_sha,
             }
         ).encode("utf-8")
         resp = self._transport("POST", url, headers=self._headers(), body=payload)

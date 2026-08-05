@@ -283,6 +283,34 @@ describe("POST /api/v1/runner/result — failure evidence (#1146 AC2)", () => {
   });
 });
 
+describe("POST /api/v1/runner/result — published head provenance (#1630)", () => {
+  it("forwards the runner's optional published head for DB-side validation", async () => {
+    const head = "a".repeat(40);
+
+    const res = await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: "https://github.com/owner/name/pull/42",
+        pr_head_sha: head,
+      })
+    );
+
+    expect(res.status).toBe(202);
+    expect(recordRunnerResult).toHaveBeenCalledWith(
+      expect.objectContaining({ prHeadSha: head })
+    );
+  });
+
+  it("does not reinterpret a non-string head as provenance", async () => {
+    await POST(req({ ...base, status: "green", pr_head_sha: 42 }));
+
+    expect(recordRunnerResult).toHaveBeenCalledWith(
+      expect.objectContaining({ prHeadSha: undefined })
+    );
+  });
+});
+
 /**
  * #1267 PR③ — the route must thread `body.gate_reason` into recordRunnerResult
  * as `gateReason`; without this passthrough the hosted-refusal detection in the

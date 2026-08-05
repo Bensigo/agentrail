@@ -20,7 +20,9 @@ import { PgDialect } from "drizzle-orm/pg-core";
 
 let returnedState = "green";
 let priorState = "running";
+let returnedExternalId = "o/r#42";
 const captured: unknown[] = [];
+let runUpdateValues: Record<string, unknown> | undefined;
 
 vi.mock("../db.js", () => ({
   db: {
@@ -31,7 +33,7 @@ vi.mock("../db.js", () => ({
         {
           id: "x",
           state: returnedState,
-          external_id: "o/r#42",
+          external_id: returnedExternalId,
           task_type: null,
           prior_state: priorState,
         },
@@ -39,7 +41,13 @@ vi.mock("../db.js", () => ({
     },
     // The tail `runs` mirror calls update().set().where() (no returning) —
     // unaffected by the #1343 SQL change, still the fluent chain.
-    update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        runUpdateValues = values;
+        return { where: () => Promise.resolve([]) };
+      },
+    }),
+    insert: () => ({ values: () => Promise.resolve([]) }),
   },
 }));
 
@@ -50,7 +58,9 @@ const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 beforeEach(() => {
   returnedState = "green";
   priorState = "running";
+  returnedExternalId = "o/r#42";
   captured.length = 0;
+  runUpdateValues = undefined;
 });
 
 describe("recordRunnerResult terminalState (green / running)", () => {
@@ -102,5 +112,61 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
     const sql = render(captured[0]);
     expect(sql).toContain("FOR UPDATE");
     expect(sql).toContain("prior_state");
+  });
+
+  it("does not persist a PR URL whose owner/repo conflicts with the queue entry", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/attacker/evil-repo/pull/9",
+    });
+
+    expect(runUpdateValues).not.toHaveProperty("prUrl");
+  });
+
+  it("persists a valid PR URL in canonical form for the queue entry repo", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/O/R/pull/9?tab=files#discussion",
+    });
+
+    expect(runUpdateValues).toMatchObject({
+      prUrl: "https://github.com/o/r/pull/9",
+    });
+  });
+
+  it.each([
+    ["full issue URL", "https://github.com/o/r/issues/42"],
+    ["onboard identity", "onboard:o/r"],
+    ["legacy repository slug", "o/r"],
+  ])("accepts a %s queue identity", async (_label, externalId) => {
+    returnedExternalId = externalId;
+
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/O/R/pull/9",
+    });
+
+    expect(runUpdateValues).toMatchObject({
+      prUrl: "https://github.com/o/r/pull/9",
+    });
+  });
+
+  it("still rejects a valid PR URL from a foreign repository for a full issue URL identity", async () => {
+    returnedExternalId = "https://github.com/o/r/issues/42";
+
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/attacker/evil-repo/pull/9",
+    });
+
+    expect(runUpdateValues).not.toHaveProperty("prUrl");
   });
 });

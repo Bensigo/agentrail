@@ -27,7 +27,7 @@ function params() {
   return { params: Promise.resolve({ workspaceId: WORKSPACE_ID }) };
 }
 
-const metric = {
+const unknownMetric = {
   workspaceId: WORKSPACE_ID,
   taskFamily: "dependency-upgrade",
   dateRange: { from: new Date(FROM), to: new Date(TO) },
@@ -43,11 +43,27 @@ const metric = {
   limitations: ["human review minutes are explicit only"],
 };
 
+const populatedMetric = {
+  workspaceId: WORKSPACE_ID,
+  taskFamily: "dependency-upgrade",
+  dateRange: { from: new Date(FROM), to: new Date(TO) },
+  sampleSize: 4,
+  denominator: { openedPullRequests: 4, terminalPullRequests: 3, mergeRate: 3 },
+  medianTimeToFirstReviewSeconds: { value: 1200, knownSampleSize: 3 },
+  averageReviewCycles: { value: 1.5, knownSampleSize: 3 },
+  medianPrSizeLines: { value: 42, knownSampleSize: 3 },
+  mergeRate: { value: 0.75, knownSampleSize: 3 },
+  postMergeReworkEvents: { value: 1, knownSampleSize: 3 },
+  humanReviewMinutes: { value: 18, knownSampleSize: 3 },
+  exclusions: ["1 conflicting delivery replay(s)"],
+  limitations: ["human review minutes are explicit only"],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ workspaceId: WORKSPACE_ID } as never);
-  vi.mocked(getReviewMetrics).mockResolvedValue([metric] as never);
+  vi.mocked(getReviewMetrics).mockResolvedValue([unknownMetric] as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/cohorts", () => {
@@ -72,7 +88,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/cohorts", () => {
     expect(getReviewMetrics).not.toHaveBeenCalled();
   });
 
-  it("returns populated cohorts and defaults observedUntil to to", async () => {
+  it("returns cohorts and defaults observedUntil to to", async () => {
     const res = await GET(request({ from: FROM, to: TO }), params());
     expect(res.status).toBe(200);
     expect(getReviewMetrics).toHaveBeenCalledWith({
@@ -83,6 +99,23 @@ describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/cohorts", () => {
     });
     expect(await res.json()).toEqual({
       cohorts: [expect.objectContaining({ taskFamily: "dependency-upgrade", sampleSize: 0 })],
+    });
+  });
+
+  it("serializes populated metric values, dates, denominators, and evidence metadata", async () => {
+    vi.mocked(getReviewMetrics).mockResolvedValue([populatedMetric] as never);
+
+    const res = await GET(request({ from: FROM, to: TO }), params());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      cohorts: [{
+        ...populatedMetric,
+        dateRange: {
+          from: new Date(FROM).toISOString(),
+          to: new Date(TO).toISOString(),
+        },
+      }],
     });
   });
 

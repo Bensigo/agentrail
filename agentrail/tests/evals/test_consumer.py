@@ -424,6 +424,32 @@ class EvaluatorIntegrityTests(unittest.TestCase):
         self.assertTrue(proposal.is_held)
         self.assertTrue(any("cycle id missing or malformed" in reason for reason in proposal.hold_reasons))
 
+    def test_non_promotable_cycle_status_cannot_promote_or_apply(self) -> None:
+        """Green score gates do not authorize a held, rejected, or promoted cycle."""
+        for status in ("held", "rejected", "promoted"):
+            with self.subTest(status=status), TemporaryDirectory() as td:
+                root = Path(td)
+                report = root / "eval-report-x.md"
+                report.write_text(
+                    _TWO_SECTION_REPORT.replace(
+                        "| Status | proposed |", f"| Status | {status} |"
+                    ),
+                    encoding="utf-8",
+                )
+                proposal = build_proposal(parse_report(report), root)
+
+                self.assertIsNot(proposal.promotion_decision, PromotionDecision.PROMOTE)
+                self.assertFalse(proposal.has_changes)
+                self.assertTrue(
+                    any(
+                        f"cycle status '{status}' is not promotion-eligible"
+                        in reason
+                        for reason in proposal.hold_reasons
+                    )
+                )
+                with self.assertRaises(ApplyReportGateError):
+                    apply_proposal(proposal, root, link_loader=_linked)
+
 
 class ApplyEvidenceGateTests(unittest.TestCase):
     def test_stale_report_holds_and_never_writes(self) -> None:

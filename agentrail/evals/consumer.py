@@ -618,6 +618,21 @@ def _parent_evaluator_hold_reasons(
     return []
 
 
+def _cycle_status_hold_reasons(facts: ReportFacts) -> List[str]:
+    """Only a newly proposed cycle is eligible for a promotion decision."""
+    if facts.eval_cycle is None or facts.eval_cycle.status not in {
+        "running",
+        "rejected",
+        "promoted",
+        "held",
+    }:
+        return []
+    return [
+        f"cycle status '{facts.eval_cycle.status}' is not promotion-eligible; "
+        "expected 'proposed'"
+    ]
+
+
 def build_proposal(
     facts: ReportFacts,
     target: Path,
@@ -647,6 +662,7 @@ def build_proposal(
             max_report_age_days=max_report_age_days,
         )
     )
+    proposal.hold_reasons.extend(_cycle_status_hold_reasons(facts))
     if proposal.hold_reasons:
         proposal.decision_reasons.extend(proposal.hold_reasons)
         return proposal

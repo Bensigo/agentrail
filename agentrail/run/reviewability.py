@@ -393,10 +393,7 @@ def evaluate_reviewability(
             proof_complete=False,
             split_recommended=True,
             reasons=_as_tuple(over_budget),
-            recommendation=(
-                "Split the change into smaller independently verifiable pull requests "
-                "or escalate it for deliberate review."
-            ),
+            recommendation=_split_recommendation(over_budget),
         )
 
     return ReviewabilityDecision(
@@ -405,6 +402,27 @@ def evaluate_reviewability(
         split_recommended=False,
         recommendation="Evidence is complete within the configured reviewability budget.",
     )
+
+
+def _split_recommendation(reasons: Sequence[str]) -> str:
+    guidance: list[str] = [
+        "Split the change into smaller independently verifiable pull requests.",
+    ]
+    if any("changed files" in reason for reason in reasons):
+        guidance.append(
+            "Group unrelated files or modules into separate PRs so each slice is reviewable on its own."
+        )
+    if any("changed lines" in reason for reason in reasons):
+        guidance.append("Trim the remaining source edits into smaller chunks.")
+    if any("risk score" in reason for reason in reasons):
+        guidance.append(
+            "Isolate generated, lockfile, or otherwise high-risk churn from hand-edited source changes."
+        )
+    guidance.append(
+        "This recommendation is advisory only; it does not create child issues, queue entries, or mutate code."
+    )
+    guidance.append("Reasons: " + "; ".join(reasons))
+    return " ".join(guidance)
 
 
 def _git(repo_dir: Path, args: Sequence[str]) -> tuple[str, Optional[str]]:

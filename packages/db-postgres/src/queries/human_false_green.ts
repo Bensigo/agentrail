@@ -1,6 +1,7 @@
-import { and, eq, gte, lt, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, lte } from "drizzle-orm";
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
+import { runOutcomes } from "../schema/run_outcomes.js";
 import { reviewEvents } from "../schema/review_events.js";
 import {
   computeProductionHumanFalseGreen,
@@ -32,16 +33,23 @@ export async function getProductionHumanFalseGreen(
       .select({
         id: runs.id,
         workspaceId: runs.workspaceId,
-        status: runs.status,
         finishedAt: runs.finishedAt,
-        prUrl: runs.prUrl,
+        prRepo: runs.prRepo,
+        prNumber: runs.prNumber,
         prHeadSha: runs.prHeadSha,
       })
       .from(runs)
+      .innerJoin(
+        runOutcomes,
+        and(
+          eq(runOutcomes.queueEntryId, runs.queueEntryId),
+          eq(runOutcomes.workspaceId, runs.workspaceId)
+        )
+      )
       .where(
         and(
           eq(runs.workspaceId, input.workspaceId),
-          eq(runs.status, "success"),
+          eq(runOutcomes.outcome, "success"),
           gte(runs.finishedAt, input.from),
           lt(runs.finishedAt, input.to)
         )
@@ -52,7 +60,11 @@ export async function getProductionHumanFalseGreen(
       .where(
         and(
           eq(reviewEvents.workspaceId, input.workspaceId),
-          eq(reviewEvents.eventType, "review_submitted"),
+          inArray(reviewEvents.eventType, [
+            "review_submitted",
+            "reverted",
+            "post_merge_rework",
+          ]),
           lte(reviewEvents.occurredAt, input.observedUntil)
         )
       ),

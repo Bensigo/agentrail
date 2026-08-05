@@ -45,9 +45,8 @@ beforeEach(() => {
     falseGreenCount: 1,
     falseGreenRate: 1,
     unknown: {
-      missingPr: 1,
+      missingPrIdentity: 1,
       missingPublishedHead: 0,
-      malformedPr: 0,
       noMatchingHumanOutcome: 1,
     },
     limitations: ["explicit human outcomes only"],
@@ -96,7 +95,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/human-false-green"
       },
       observedUntil: new Date(OBSERVED_UNTIL).toISOString(),
       falseGreenRate: 1,
-      unknown: { missingPr: 1, noMatchingHumanOutcome: 1 },
+      unknown: { missingPrIdentity: 1, noMatchingHumanOutcome: 1 },
     });
   });
 });

@@ -1,13 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 
-const state = vi.hoisted(() => ({ responses: [] as unknown[][], queries: [] as unknown[] }));
+const state = vi.hoisted(() => ({
+  responses: [] as unknown[][],
+  queries: [] as unknown[],
+  joins: [] as unknown[],
+}));
 
 vi.mock("../db.js", () => ({
   db: {
     select: () => {
       const chain: Record<string, unknown> = {};
       chain.from = vi.fn(() => chain);
+      chain.innerJoin = vi.fn((_table: unknown, condition: unknown) => {
+        state.joins.push(condition);
+        return chain;
+      });
       chain.where = vi.fn((query: unknown) => {
         state.queries.push(query);
         return Promise.resolve(state.responses.shift() ?? []);
@@ -32,6 +40,7 @@ const input = {
 beforeEach(() => {
   state.responses = [];
   state.queries = [];
+  state.joins = [];
 });
 
 describe("getProductionHumanFalseGreen", () => {
@@ -41,9 +50,9 @@ describe("getProductionHumanFalseGreen", () => {
         {
           id: "run-1",
           workspaceId: WS,
-          status: "success",
           finishedAt: new Date("2026-08-01T10:00:00Z"),
-          prUrl: "https://github.com/acme/widgets/pull/42",
+          prRepo: "acme/widgets",
+          prNumber: 42,
           prHeadSha: HEAD,
         },
       ],
@@ -76,9 +85,13 @@ describe("getProductionHumanFalseGreen", () => {
     });
     expect(state.queries).toHaveLength(2);
     const queries = state.queries.map((query) => dialect.sqlToQuery(query as never).sql);
-    expect(queries[0]).toContain('"runs"."status" = $2');
+    expect(state.joins).toHaveLength(1);
+    expect(dialect.sqlToQuery(state.joins[0] as never).sql).toContain(
+      '"run_outcomes"."queue_entry_id"'
+    );
+    expect(queries[0]).toContain('"run_outcomes"."outcome" = $2');
     expect(queries[0]).toContain('"runs"."finished_at" >= $3');
-    expect(queries[1]).toContain('"review_events"."event_type" = $2');
-    expect(queries[1]).toContain('"review_events"."occurred_at" <= $3');
+    expect(queries[1]).toContain('"review_events"."event_type" in');
+    expect(queries[1]).toContain('"review_events"."occurred_at" <= $5');
   });
 });

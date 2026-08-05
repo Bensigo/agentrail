@@ -3,9 +3,9 @@ import type { ReviewEventRow } from "./schema/review_events.js";
 export type SuccessfulRunForHumanFalseGreen = {
   id: string;
   workspaceId: string;
-  status: "success" | "queued" | "running" | "failed";
   finishedAt: Date | null;
-  prUrl: string | null;
+  prRepo: string | null;
+  prNumber: number | null;
   prHeadSha: string | null;
 };
 
@@ -27,41 +27,24 @@ export type ProductionHumanFalseGreenReport = {
   falseGreenCount: number;
   falseGreenRate: number | null;
   unknown: {
-    missingPr: number;
+    missingPrIdentity: number;
     missingPublishedHead: number;
-    malformedPr: number;
     noMatchingHumanOutcome: number;
   };
   limitations: string[];
 };
-
-type PullRequestIdentity = { repo: string; prNumber: number };
-
-function parsePullRequest(url: string | null): PullRequestIdentity | null {
-  if (!url) return null;
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return null;
-  const match = parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
-  if (!match) return null;
-  const prNumber = Number(match[3]);
-  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
-  return { repo: `${match[1]}/${match[2]}`.toLowerCase(), prNumber };
-}
 
 function canonicalCommit(value: string | null): string | null {
   if (!value || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(value)) return null;
   return value.toLowerCase();
 }
 
-function isExplicitHumanDecision(event: ReviewEventRow): boolean {
-  if (event.eventType !== "review_submitted" || event.actorType !== "human") {
+function isExplicitHumanOutcome(event: ReviewEventRow): boolean {
+  if (event.actorType !== "human") {
     return false;
   }
+  if (event.eventType === "reverted" || event.eventType === "post_merge_rework") return true;
+  if (event.eventType !== "review_submitted") return false;
   const state = event.reviewState?.toLowerCase();
   return state === "approved" || state === "changes_requested";
 }
@@ -71,8 +54,8 @@ function isExplicitHumanDecision(event: ReviewEventRow): boolean {
  *
  * This deliberately does not look at offline evaluations, generic GitHub
  * pushes, commit messages, or elapsed calendar time. A known denominator row
- * needs: a successful completed run, a canonical PR, its exact published
- * commit, and an explicit human approval/change-request on that same tuple.
+ * needs: a successful terminal run outcome, normalized PR identity, its exact
+ * published commit, and an explicit human outcome on that same tuple.
  */
 export function computeProductionHumanFalseGreen(
   runs: SuccessfulRunForHumanFalseGreen[],
@@ -88,28 +71,22 @@ export function computeProductionHumanFalseGreen(
 
   const successfulRuns = runs.filter(
     (run) =>
-      run.status === "success" &&
       run.finishedAt !== null &&
       run.finishedAt >= window.from &&
       run.finishedAt < window.to
   );
-  let missingPr = 0;
+  let missingPrIdentity = 0;
   let missingPublishedHead = 0;
-  let malformedPr = 0;
   let noMatchingHumanOutcome = 0;
   let knownSampleSize = 0;
   let falseGreenCount = 0;
 
   for (const run of successfulRuns) {
-    if (!run.prUrl) {
-      missingPr += 1;
+    if (!run.prRepo || !run.prNumber || !Number.isSafeInteger(run.prNumber) || run.prNumber <= 0) {
+      missingPrIdentity += 1;
       continue;
     }
-    const pr = parsePullRequest(run.prUrl);
-    if (!pr) {
-      malformedPr += 1;
-      continue;
-    }
+    const repo = run.prRepo.toLowerCase();
     const headSha = canonicalCommit(run.prHeadSha);
     if (!headSha) {
       missingPublishedHead += 1;
@@ -120,12 +97,12 @@ export function computeProductionHumanFalseGreen(
       const eventHead = canonicalCommit(event.headSha);
       return (
         event.workspaceId === run.workspaceId &&
-        event.repo.toLowerCase() === pr.repo &&
-        event.prNumber === pr.prNumber &&
+        event.repo.toLowerCase() === repo &&
+        event.prNumber === run.prNumber &&
         eventHead === headSha &&
         event.occurredAt >= run.finishedAt! &&
         event.occurredAt <= window.observedUntil &&
-        isExplicitHumanDecision(event)
+        isExplicitHumanOutcome(event)
       );
     });
     if (matchingDecisions.length === 0) {
@@ -136,7 +113,10 @@ export function computeProductionHumanFalseGreen(
     knownSampleSize += 1;
     if (
       matchingDecisions.some(
-        (event) => event.reviewState?.toLowerCase() === "changes_requested"
+        (event) =>
+          event.reviewState?.toLowerCase() === "changes_requested" ||
+          event.eventType === "reverted" ||
+          event.eventType === "post_merge_rework"
       )
     ) {
       falseGreenCount += 1;
@@ -151,13 +131,12 @@ export function computeProductionHumanFalseGreen(
     falseGreenCount,
     falseGreenRate: knownSampleSize > 0 ? falseGreenCount / knownSampleSize : null,
     unknown: {
-      missingPr,
+      missingPrIdentity,
       missingPublishedHead,
-      malformedPr,
       noMatchingHumanOutcome,
     },
     limitations: [
-      "Only explicit human APPROVED or CHANGES_REQUESTED review submissions are outcomes; generic pushes, commit messages, and inferred reverts are excluded.",
+      "Only explicit human APPROVED or CHANGES_REQUESTED reviews and explicit human rework/revert events are outcomes; generic pushes, commit messages, and inferred reverts are excluded.",
       "A human outcome is attributable only when workspace, repository, PR number, and exact published head SHA all match the successful run.",
       "A run without a matching explicit human outcome remains unknown; it is never counted as an approval or a zero false-green result.",
       "This production metric is separate from offline hidden-test false-green evaluation results.",

@@ -18,9 +18,9 @@ function run(overrides: Partial<SuccessfulRunForHumanFalseGreen> = {}): Successf
   return {
     id: "run-1",
     workspaceId: WS,
-    status: "success",
     finishedAt: completed,
-    prUrl: "https://github.com/acme/widgets/pull/42",
+    prRepo: "acme/widgets",
+    prNumber: 42,
     prHeadSha: HEAD,
     ...overrides,
   };
@@ -59,9 +59,8 @@ describe("computeProductionHumanFalseGreen", () => {
       falseGreenCount: 1,
       falseGreenRate: 1,
       unknown: {
-        missingPr: 0,
+        missingPrIdentity: 0,
         missingPublishedHead: 0,
-        malformedPr: 0,
         noMatchingHumanOutcome: 0,
       },
     });
@@ -85,7 +84,7 @@ describe("computeProductionHumanFalseGreen", () => {
     ["different head", event({ headSha: "b".repeat(40) })],
     ["agent review", event({ actorType: "agent" })],
     ["non-decision review", event({ reviewState: "COMMENTED" })],
-    ["generic rework event", event({ eventType: "post_merge_rework", actorType: "human" })],
+    ["generic push", event({ eventType: "head_updated", actorType: "human" })],
     ["outcome before completion", event({ occurredAt: new Date("2026-08-01T09:00:00Z") })],
   ])("leaves %s evidence unknown rather than attributing it", (_label, evidence) => {
     const report = computeProductionHumanFalseGreen([run()], [evidence], window);
@@ -95,15 +94,32 @@ describe("computeProductionHumanFalseGreen", () => {
     expect(report.unknown.noMatchingHumanOutcome).toBe(1);
   });
 
+  it("counts explicit human rework and reverts on the produced head as false green", () => {
+    for (const eventType of ["reverted", "post_merge_rework"] as const) {
+      const report = computeProductionHumanFalseGreen(
+        [run()],
+        [event({ eventType, reviewState: null })],
+        window
+      );
+      expect(report).toMatchObject({ knownSampleSize: 1, falseGreenCount: 1 });
+    }
+  });
+
   it("reports absent PR/head provenance as separate unknown reasons", () => {
     const report = computeProductionHumanFalseGreen(
-      [run({ id: "missing-pr", prUrl: null }), run({ id: "missing-head", prHeadSha: null })],
+      [
+        run({ id: "missing-pr", prRepo: null }),
+        run({ id: "missing-head", prHeadSha: null }),
+      ],
       [],
       window
     );
 
     expect(report.successfulRuns).toBe(2);
-    expect(report.unknown).toMatchObject({ missingPr: 1, missingPublishedHead: 1 });
+    expect(report.unknown).toMatchObject({
+      missingPrIdentity: 1,
+      missingPublishedHead: 1,
+    });
   });
 
   it("rejects an observation cutoff that ends before the report window", () => {

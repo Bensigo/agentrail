@@ -34,6 +34,8 @@ from agentrail.evals.consumer import (
     LayerChange,
     NewFlowFacts,
     Proposal,
+    PromotionDecision,
+    ProvenanceFacts,
     ReportFacts,
     ReportParseError,
     RoutingFacts,
@@ -45,6 +47,7 @@ from agentrail.evals.consumer import (
     parse_report,
     render_proposal,
 )
+from agentrail.evals.provenance import EvalProvenance
 from agentrail.evals.reporter import ArmReport, render_markdown
 from agentrail.run.routing import cheaper_model
 
@@ -114,12 +117,22 @@ _TWO_SECTION_REPORT = f"""# Eval report
 
 Generated: {date.today().isoformat()}
 
+## Evaluation provenance
+
+| Input | SHA-256 |
+| --- | --- |
+| Code | {'a' * 64} |
+| Config | {'b' * 64} |
+| Corpus | {'c' * 64} |
+| Scorer | {'d' * 64} |
+| Gate | {'e' * 64} |
+
 ## Per-arm summary
 
 | Arm | Reps | Solved | Failed | Solve-rate | Spread | False-green rate | Wall-time per task | Total tokens | Total cost | Dollars-per-solved-task |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | 1000 | $1.0000 | $1.0000 |
-| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |
+| full | 5 | 3 | 2 | 60.0% | 0.0000 | 0.0% | 40.0s | 1000 | $1.0000 | $1.0000 |
+| new-flow | 5 | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |
 
 ## New-flow vs full
 
@@ -147,6 +160,18 @@ Generated: {date.today().isoformat()}
 
 
 class ParseReportTests(unittest.TestCase):
+    def test_report_fingerprint_is_the_exact_file_content(self) -> None:
+        import hashlib
+
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            facts = parse_report(p)
+        self.assertEqual(
+            facts.content_sha256,
+            hashlib.sha256(_TWO_SECTION_REPORT.encode("utf-8")).hexdigest(),
+        )
+
     def test_section_scoped_ignores_rerank_rows(self) -> None:
         with TemporaryDirectory() as td:
             p = Path(td) / "eval-report-x.md"
@@ -210,8 +235,8 @@ class ParseReportTests(unittest.TestCase):
             p = Path(td) / "eval-report-x.md"
             p.write_text(
                 _TWO_SECTION_REPORT.replace(
-                    "| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
-                    "| new-flow | malformed | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | 5 | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | malformed | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
                 ),
                 encoding="utf-8",
             )
@@ -220,13 +245,13 @@ class ParseReportTests(unittest.TestCase):
 
     def test_invalid_numeric_per_arm_evidence_rejects_report(self) -> None:
         valid_row = (
-            "| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | "
+            "| full | 5 | 3 | 2 | 60.0% | 0.0000 | 0.0% | 40.0s | "
             "1000 | $1.0000 | $1.0000 |"
         )
         invalid_rows = (
-            ("negative repetitions", valid_row.replace("| 2 | 1 |", "| -1 | 1 |")),
-            ("negative solved", valid_row.replace("| 2 | 1 |", "| 2 | -1 |")),
-            ("solved exceeds repetitions", valid_row.replace("| 2 | 1 |", "| 1 | 2 |")),
+            ("negative repetitions", valid_row.replace("| 5 | 3 | 2 |", "| -1 | 3 | 2 |")),
+            ("negative solved", valid_row.replace("| 5 | 3 | 2 |", "| 5 | -1 | 2 |")),
+            ("solved exceeds repetitions", valid_row.replace("| 5 | 3 | 2 |", "| 2 | 3 | 2 |")),
             ("negative tokens", valid_row.replace("| 40.0s | 1000 |", "| 40.0s | -1 |")),
             ("negative cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $-1.0000 | $1.0000 |")),
             ("non-finite cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $nan | $1.0000 |")),
@@ -276,12 +301,22 @@ def _facts_with_deltas(
         arm_summaries=[
             ArmSummaryFacts(
                 arm="full",
-                repetitions=2,
+                repetitions=5,
                 solved=1,
                 total_tokens=1000,
                 total_cost_usd=1.0,
-            )
+            ),
+            ArmSummaryFacts(
+                arm="new-flow",
+                repetitions=5,
+                solved=1,
+                total_tokens=1000,
+                total_cost_usd=1.0,
+            ),
         ],
+        provenance=ProvenanceFacts(
+            fingerprints={key: "a" * 64 for key in ("Code", "Config", "Corpus", "Scorer", "Gate")}
+        ),
     )
 
 
@@ -295,16 +330,17 @@ class GateRuleTests(unittest.TestCase):
             [(layer, True) for layer in NEW_FLOW_LAYERS],
         )
         self.assertIsNotNone(proposal.overrides_content)
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.PROMOTE)
 
-    def test_any_gate_fails_pins_new_flow_layers_false(self) -> None:
+    def test_any_gate_fails_rejects_candidate_without_changing_default(self) -> None:
         # Dollars went UP (>= 0) → fails the "< 0" gate.
         facts = _facts_with_deltas(solve=0.20, dollars=0.10, wall=-4.0, fg=-0.20)
         with TemporaryDirectory() as td:
             proposal = build_proposal(facts, Path(td))
-        self.assertEqual(
-            [(c.name, c.value) for c in proposal.layer_changes],
-            [(layer, False) for layer in NEW_FLOW_LAYERS],
-        )
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.REJECT)
+        self.assertEqual(proposal.layer_changes, [])
+        self.assertIsNone(proposal.overrides_content)
+        self.assertIn("Apply gate: REJECT", render_proposal(proposal))
 
     def test_unknown_only_proposes_no_change(self) -> None:
         # One gate n/a, none failing → no layer change at all.
@@ -313,6 +349,7 @@ class GateRuleTests(unittest.TestCase):
             proposal = build_proposal(facts, Path(td))
         self.assertEqual(proposal.layer_changes, [])
         self.assertIsNone(proposal.overrides_content)
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.HOLD)
 
     def test_unavailable_new_flow_proposes_no_change(self) -> None:
         facts = _facts_with_deltas(
@@ -324,6 +361,31 @@ class GateRuleTests(unittest.TestCase):
 
 
 class ApplyEvidenceGateTests(unittest.TestCase):
+    def test_missing_required_arm_holds_and_apply_never_writes(self) -> None:
+        for missing_arm in ("full", "new-flow"):
+            with self.subTest(missing_arm=missing_arm), TemporaryDirectory() as td:
+                root = Path(td)
+                facts = _facts_with_deltas(
+                    solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20
+                )
+                facts.arm_summaries = [
+                    summary
+                    for summary in facts.arm_summaries
+                    if summary.arm != missing_arm
+                ]
+                proposal = build_proposal(facts, root)
+                before = _snapshot_tree(root)
+
+                with self.assertRaises(ApplyReportGateError):
+                    apply_proposal(proposal, root, link_loader=_linked)
+
+                self.assertEqual(proposal.promotion_decision, PromotionDecision.HOLD)
+                self.assertFalse(proposal.has_changes)
+                self.assertTrue(
+                    any(missing_arm in reason for reason in proposal.hold_reasons)
+                )
+                self.assertEqual(before, _snapshot_tree(root))
+
     def test_stale_report_holds_and_never_writes(self) -> None:
         facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
         facts.generated_at = date(2026, 8, 1)
@@ -374,6 +436,62 @@ class ApplyEvidenceGateTests(unittest.TestCase):
         self.assertIn("Apply gate: HOLD", render_proposal(proposal))
         self.assertEqual(before, after)
 
+    def test_underpowered_report_holds_before_auth_or_write(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries[0] = ArmSummaryFacts("full", 4, 3, 1000, 1.0)
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(facts, root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("underpowered" in reason for reason in proposal.hold_reasons))
+
+    def test_synthetic_only_report_holds_explicitly(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries[0] = ArmSummaryFacts("full", 0, 0, 0, 0.0)
+        facts.arm_summaries[1] = ArmSummaryFacts("new-flow", 0, 0, 0, 0.0)
+        facts.network_artifact_count = 5
+        proposal = build_proposal(facts, Path("."))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("synthetic-only" in reason for reason in proposal.hold_reasons))
+
+    def test_missing_or_invalid_provenance_holds(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.provenance = ProvenanceFacts(fingerprints={"Code": "not-a-hash"})
+        proposal = build_proposal(facts, Path("."))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("lineage is incomplete" in reason for reason in proposal.hold_reasons))
+
+    def test_parsed_synthetic_only_report_holds_explicitly(self) -> None:
+        report_text = _TWO_SECTION_REPORT.replace(
+            "| full | 5 | 3 | 2 |", "| full | 0 | 0 | 0 |"
+        ).replace(
+            "| new-flow | 5 | 4 | 1 |", "| new-flow | 0 | 0 | 0 |"
+        ) + """
+
+## Failures, ties, and spread
+
+### Arm: full
+
+- Network artifacts (excluded from all metrics): 5 ECONNRESET synthetic-fallback rep(s) — no diff, $0; solved=0 is a network artifact, not a real score
+"""
+        with TemporaryDirectory() as td:
+            report = Path(td) / "eval-report-x.md"
+            report.write_text(report_text, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), Path(td))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("synthetic-only" in reason for reason in proposal.hold_reasons))
+
+    def test_parsed_underpowered_report_holds(self) -> None:
+        report_text = _TWO_SECTION_REPORT.replace("| full | 5 | 3 | 2 |", "| full | 4 | 3 | 1 |")
+        with TemporaryDirectory() as td:
+            report = Path(td) / "eval-report-x.md"
+            report.write_text(report_text, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), Path(td))
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("underpowered" in reason for reason in proposal.hold_reasons))
+
     def test_missing_report_metadata_holds_instead_of_being_assumed_fresh(self) -> None:
         facts = ReportFacts(
             path=Path("legacy.md"),
@@ -384,6 +502,33 @@ class ApplyEvidenceGateTests(unittest.TestCase):
         proposal = build_proposal(facts, Path("."))
         self.assertTrue(proposal.is_held)
         self.assertIn("freshness is unknown", proposal.hold_reasons[0])
+
+    def test_rejected_candidate_never_writes_even_when_linked(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=0.10, wall=-4.0, fg=-0.20)
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(facts, root)
+            before = _snapshot_tree(root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertEqual(before, after)
+
+    def test_apply_refuses_when_fingerprinted_report_changes(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            report = root / "eval-report-x.md"
+            report.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            proposal = build_proposal(parse_report(report), root)
+            report.write_text(
+                _TWO_SECTION_REPORT + "\nmutated after proposal\n",
+                encoding="utf-8",
+            )
+            before = _snapshot_tree(root)
+            with self.assertRaisesRegex(ApplyReportGateError, "contents changed"):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertEqual(before, after)
 
 
 # --- AC1: default path writes nothing --------------------------------------
@@ -543,13 +688,17 @@ class AC3FailClosedTests(unittest.TestCase):
             agentrail_dir / "layer-overrides.json", after,
         )
 
-    def test_auth_checked_before_proposal_even_when_empty(self) -> None:
-        # An EMPTY proposal must ALSO be rejected when unlinked — auth is
-        # checked before the proposal is even inspected.
-        empty = Proposal(report_name="x.md", report_path=Path("x.md"))
+    def test_unfingerprinted_proposal_is_rejected_before_auth(self) -> None:
+        # A hand-built proposal has no immutable report source, so it cannot
+        # be applied even when it is otherwise empty or unlinked.
+        empty = Proposal(
+            report_name="x.md",
+            report_path=Path("x.md"),
+            promotion_decision=PromotionDecision.PROMOTE,
+        )
         self.assertFalse(empty.has_changes)
         with TemporaryDirectory() as td:
-            with self.assertRaises(ApplyAuthError):
+            with self.assertRaises(ApplyReportGateError):
                 apply_proposal(empty, Path(td), link_loader=_unlinked)
 
 
@@ -557,15 +706,15 @@ class AC3FailClosedTests(unittest.TestCase):
 
 
 class EmptyProposalApplyTests(unittest.TestCase):
-    def test_empty_proposal_apply_writes_nothing_but_reports(self) -> None:
+    def test_empty_proposal_without_report_lineage_is_refused(self) -> None:
         empty = Proposal(report_name="x.md", report_path=Path("x.md"))
         with TemporaryDirectory() as td:
             root = Path(td)
             before = _snapshot_tree(root)
-            lines = apply_proposal(empty, root, link_loader=_linked)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(empty, root, link_loader=_linked)
             after = _snapshot_tree(root)
-        self.assertEqual(before, after)  # linked, but nothing to write
-        self.assertEqual(lines, ["Nothing to apply: the proposal contains no changes."])
+        self.assertEqual(before, after)
 
 
 # --- Render → parse round-trip against the REAL reporter -------------------
@@ -591,7 +740,15 @@ class RoundTripTests(unittest.TestCase):
             gate_passed_count=4, false_green_count=0, false_green_rate=0.0,
         )
         return render_markdown(
-            [full, new_flow], generated_at=f"{date.today().isoformat()}T00:00:00Z"
+            [full, new_flow],
+            generated_at=f"{date.today().isoformat()}T00:00:00Z",
+            provenance=EvalProvenance(
+                code_sha256="a" * 64,
+                config_sha256="b" * 64,
+                corpus_sha256="c" * 64,
+                scorer_sha256="d" * 64,
+                gate_sha256="e" * 64,
+            ),
         )
 
     def test_roundtrip_recovers_deltas(self) -> None:
@@ -602,6 +759,17 @@ class RoundTripTests(unittest.TestCase):
             facts = parse_report(p)
         nf = facts.new_flow
         self.assertTrue(nf.available)
+        self.assertIsNotNone(facts.provenance)
+        self.assertEqual(
+            facts.provenance.fingerprints,
+            {
+                "Code": "a" * 64,
+                "Config": "b" * 64,
+                "Corpus": "c" * 64,
+                "Scorer": "d" * 64,
+                "Gate": "e" * 64,
+            },
+        )
         # new-flow minus full: solve +0.20, dollars -0.50, wall -4.0, fg -0.20.
         self.assertAlmostEqual(nf.solve_rate_delta, 0.20)
         self.assertAlmostEqual(nf.dollars_per_solved_delta, -0.50)

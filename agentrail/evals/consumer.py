@@ -23,9 +23,10 @@ Three invariants, straight from the PRD's risk list:
    content and routing edits; :func:`apply_proposal` writes that content, not
    a recomputation.
 3. **Fail-closed apply.** :func:`apply_proposal` refuses (raises
-   :class:`ApplyAuthError`) when the target has no configured server link —
-   BEFORE looking at what would be written, even for an empty proposal. This
-   is the opposite of the GitHub webhook's fail-open skip
+   :class:`ApplyAuthError`) when a verified promotion has no configured server
+   link — before any write. Hold/reject decisions and report-lineage checks
+   also refuse before the auth check. This is the opposite of the GitHub
+   webhook's fail-open skip
    (``verifySignature`` returning true when its secret is unset): an
    unconfigured secret here rejects, never skips.
 
@@ -36,18 +37,20 @@ invents evidence.
 
 The first real consumer is the #981 HITL default-flip: when a canary report
 shows the new flow passing all four #981 AC1 gates (solve-rate ≥ full, lower
-dollars-per-solved, lower wall-time, false-green ≤ full), the proposal pins
-``critic``/``bestofn``/``warmcache`` to ``true`` — the recorded human go
-decision. A definably regressing report proposes ``false`` instead: the same
-lever, pointed the other way.
+dollars-per-solved, lower wall-time, false-green ≤ full), the proposal can
+promote ``critic``/``bestofn``/``warmcache`` to ``true``. A definably
+regressing report rejects the candidate without inventing an automatic
+rollback; incomplete evidence holds it for a fresh evaluation.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -73,6 +76,14 @@ class ApplyReportGateError(RuntimeError):
     """Apply refused because the report cannot safely support a decision."""
 
 
+class PromotionDecision(str, Enum):
+    """The only honest outcomes for a canary candidate."""
+
+    PROMOTE = "promote"
+    HOLD = "hold"
+    REJECT = "reject"
+
+
 # --- Report facts (parse output) ------------------------------------------
 
 _NEW_FLOW_HEADER = "## New-flow vs full"
@@ -80,6 +91,11 @@ _ROUTING_REGRET_HEADER = "## Routing cost-regret"
 _SENTINEL_PREFIX = "_Not available:"
 _REGRET_LINE_PREFIX = "- Total routing cost-regret:"
 _NET_DELTA_LINE_PREFIX = "- Net $-delta vs baseline:"
+_PROVENANCE_HEADER = "## Evaluation provenance"
+_PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Scorer", "Gate")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MIN_PROMOTION_REPETITIONS_PER_ARM = 5
+REQUIRED_PROMOTION_ARMS = ("full", "new-flow")
 
 # Table-row labels in the `## New-flow vs full` section, in render order.
 NEW_FLOW_ROW_LABELS = (
@@ -124,6 +140,21 @@ class RoutingFacts:
     net_delta_usd: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class ProvenanceFacts:
+    """The five immutable input hashes printed by the real report writer."""
+
+    fingerprints: Dict[str, str]
+
+    @property
+    def missing_or_invalid(self) -> List[str]:
+        return [
+            key.lower()
+            for key in _PROVENANCE_KEYS
+            if not _SHA256_RE.fullmatch(self.fingerprints.get(key, ""))
+        ]
+
+
 @dataclass
 class ReportFacts:
     path: Path
@@ -132,6 +163,9 @@ class ReportFacts:
     routing: RoutingFacts
     generated_at: Optional[date] = None
     arm_summaries: List[ArmSummaryFacts] = field(default_factory=list)
+    content_sha256: Optional[str] = None
+    provenance: Optional[ProvenanceFacts] = None
+    network_artifact_count: int = 0
 
 
 # --- Reverse parsers for reporter.py's _fmt_* helpers ----------------------
@@ -223,10 +257,14 @@ def parse_report(path: Path) -> ReportFacts:
     (the file is not an eval report at all); a missing individual section just
     yields absent evidence, which proposes nothing.
     """
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_bytes()
+    text = raw.decode("utf-8")
     lines = text.splitlines()
     generated_at: Optional[date] = None
     arm_summaries: List[ArmSummaryFacts] = []
+    provenance: Optional[ProvenanceFacts] = None
+    provenance_rows: Dict[str, str] = {}
+    network_artifact_count = 0
 
     has_new_flow_header = any(line.strip() == _NEW_FLOW_HEADER for line in lines)
     has_routing_header = any(
@@ -255,6 +293,14 @@ def parse_report(path: Path) -> ReportFacts:
             if cells[0] in {"Arm", "---"}:
                 continue
             arm_summaries.append(_parse_arm_summary_row(cells))
+        if section == _PROVENANCE_HEADER and stripped.startswith("|"):
+            cells = _row_cells(stripped)
+            if len(cells) == 2 and cells[0] in _PROVENANCE_KEYS:
+                provenance_rows[cells[0]] = cells[1]
+        if stripped.startswith("- Network artifacts (excluded from all metrics):"):
+            count = re.search(r":\s*(\d+)\s+ECONNRESET", stripped)
+            if count is not None:
+                network_artifact_count += int(count.group(1))
         if section != _NEW_FLOW_HEADER:
             continue
         if stripped.startswith(_SENTINEL_PREFIX):
@@ -276,6 +322,8 @@ def parse_report(path: Path) -> ReportFacts:
             elif label == "False-green rate":
                 new_flow.false_green_rate_delta = _parse_signed_pct(delta_cell)
     new_flow.available = len(new_flow.rows) == len(NEW_FLOW_ROW_LABELS)
+    if provenance_rows:
+        provenance = ProvenanceFacts(fingerprints=provenance_rows)
 
     routing = RoutingFacts()
     for line in lines:
@@ -300,6 +348,9 @@ def parse_report(path: Path) -> ReportFacts:
         routing=routing,
         generated_at=generated_at,
         arm_summaries=arm_summaries,
+        content_sha256=hashlib.sha256(raw).hexdigest(),
+        provenance=provenance,
+        network_artifact_count=network_artifact_count,
     )
 
 
@@ -328,6 +379,9 @@ class RoutingChange:
 class Proposal:
     report_name: str
     report_path: Path
+    report_sha256: Optional[str] = None
+    promotion_decision: PromotionDecision = PromotionDecision.HOLD
+    decision_reasons: List[str] = field(default_factory=list)
     hold_reasons: List[str] = field(default_factory=list)
     layer_changes: List[LayerChange] = field(default_factory=list)
     overrides_content: Optional[dict] = None  # exact JSON --apply writes
@@ -343,7 +397,11 @@ class Proposal:
 
     @property
     def is_held(self) -> bool:
-        return bool(self.hold_reasons)
+        return self.promotion_decision is PromotionDecision.HOLD
+
+    @property
+    def is_rejected(self) -> bool:
+        return self.promotion_decision is PromotionDecision.REJECT
 
 
 # The four #981 AC1 gates. Delta convention is the reporter's: new-flow minus
@@ -431,7 +489,39 @@ def _report_hold_reasons(
     if not facts.arm_summaries:
         reasons.append("report evidence is unknown: missing Per-arm summary rows")
     elif all(summary.repetitions == 0 for summary in facts.arm_summaries):
-        reasons.append("zero-evidence report: every arm recorded zero repetitions")
+        if facts.network_artifact_count:
+            reasons.append(
+                "synthetic-only report: every measured repetition was excluded as a network artifact"
+            )
+        else:
+            reasons.append("zero-evidence report: every arm recorded zero repetitions")
+    elif any(
+        summary.repetitions < MIN_PROMOTION_REPETITIONS_PER_ARM
+        for summary in facts.arm_summaries
+    ):
+        reasons.append(
+            "underpowered report: every promotion arm needs at least "
+            f"{MIN_PROMOTION_REPETITIONS_PER_ARM} real repetitions"
+        )
+    present_arms = {summary.arm for summary in facts.arm_summaries}
+    missing_promotion_arms = [
+        arm for arm in REQUIRED_PROMOTION_ARMS if arm not in present_arms
+    ]
+    if missing_promotion_arms:
+        reasons.append(
+            "incomplete promotion evidence: missing required arm(s) "
+            + ", ".join(missing_promotion_arms)
+        )
+
+    if facts.provenance is None:
+        reasons.append("report lineage is unknown: missing Evaluation provenance section")
+    else:
+        missing_or_invalid = facts.provenance.missing_or_invalid
+        if missing_or_invalid:
+            reasons.append(
+                "report lineage is incomplete or invalid: "
+                + ", ".join(missing_or_invalid)
+            )
     return reasons
 
 
@@ -446,7 +536,11 @@ def build_proposal(
     reading the target's existing config/overrides to render exact content."""
     if max_report_age_days < 0:
         raise ValueError("max_report_age_days must be non-negative")
-    proposal = Proposal(report_name=facts.name, report_path=facts.path)
+    proposal = Proposal(
+        report_name=facts.name,
+        report_path=facts.path,
+        report_sha256=facts.content_sha256,
+    )
     proposal.hold_reasons.extend(
         _report_hold_reasons(
             facts,
@@ -454,7 +548,8 @@ def build_proposal(
             max_report_age_days=max_report_age_days,
         )
     )
-    if proposal.is_held:
+    if proposal.hold_reasons:
+        proposal.decision_reasons.extend(proposal.hold_reasons)
         return proposal
 
     # --- Layer stream: the #981 four-gate rule ---------------------------
@@ -464,6 +559,10 @@ def build_proposal(
             "the report has no `## New-flow vs full` table (section or rows "
             "missing)"
         )
+        proposal.hold_reasons.append(
+            "promotion evidence is incomplete: " + reason
+        )
+        proposal.decision_reasons.extend(proposal.hold_reasons)
         proposal.layer_notes.append("No change proposed.")
         proposal.layer_evidence.append(reason)
     else:
@@ -478,6 +577,7 @@ def build_proposal(
             "wall-time delta < 0, false-green delta <= 0"
         )
         if not failing and not unknown:
+            proposal.promotion_decision = PromotionDecision.PROMOTE
             proposal.layer_notes.append(
                 f"All four #981 gates pass ({gates_text}). Pin the new-flow "
                 "layers ON — the recorded default-flip decision."
@@ -486,14 +586,21 @@ def build_proposal(
                 LayerChange(name=layer, value=True) for layer in NEW_FLOW_LAYERS
             ]
         elif failing:
+            proposal.promotion_decision = PromotionDecision.REJECT
+            proposal.decision_reasons.append(
+                f"Gate(s) failed: {', '.join(failing)} (rule: {gates_text})."
+            )
             proposal.layer_notes.append(
                 f"Gate(s) failed: {', '.join(failing)} (rule: {gates_text}). "
-                "Pin the new-flow layers OFF."
+                "Reject this candidate; do not change the current default."
             )
-            proposal.layer_changes = [
-                LayerChange(name=layer, value=False) for layer in NEW_FLOW_LAYERS
-            ]
         else:
+            proposal.promotion_decision = PromotionDecision.HOLD
+            proposal.hold_reasons.append(
+                "promotion evidence is incomplete: gate(s) "
+                f"{', '.join(unknown)} are n/a"
+            )
+            proposal.decision_reasons.extend(proposal.hold_reasons)
             proposal.layer_notes.append(
                 "No change proposed: gate(s) "
                 f"{', '.join(unknown)} are n/a in the report — undefined "
@@ -506,6 +613,12 @@ def build_proposal(
             proposal.overrides_content = _overrides_content(
                 target, proposal.layer_changes, facts.name
             )
+
+    if proposal.promotion_decision is not PromotionDecision.PROMOTE:
+        proposal.routing_notes.append(
+            "No routing change proposed: this report did not earn a promotion decision."
+        )
+        return proposal
 
     # --- Routing stream: measured overspend → model step-down ------------
     rt = facts.routing
@@ -578,13 +691,23 @@ def render_proposal(proposal: Proposal) -> str:
     """The proposal as printed by the default (read-only) invocation."""
     out: List[str] = []
     out.append(f"Proposal from {proposal.report_name}")
+    if proposal.report_sha256:
+        out.append(f"Report SHA-256: {proposal.report_sha256}")
     out.append("Mode: proposal only — nothing is written without --apply.")
     out.append("")
 
     if proposal.is_held:
         out.append("Apply gate: HOLD")
-        for reason in proposal.hold_reasons:
+        for reason in proposal.decision_reasons:
             out.append(f"  Hold reason: {reason}")
+        out.append("")
+    elif proposal.is_rejected:
+        out.append("Apply gate: REJECT")
+        for reason in proposal.decision_reasons:
+            out.append(f"  Rejection reason: {reason}")
+        out.append("")
+    else:
+        out.append("Promotion decision: PROMOTE")
         out.append("")
 
     out.append("Layer overrides (.agentrail/layer-overrides.json):")
@@ -614,6 +737,8 @@ def render_proposal(proposal: Proposal) -> str:
 
     if proposal.is_held:
         out.append("Hold in effect. Nothing can be applied.")
+    elif proposal.is_rejected:
+        out.append("Candidate rejected. Nothing can be applied.")
     elif proposal.has_changes:
         out.append(
             "Apply with: agentrail evals apply --report "
@@ -632,20 +757,36 @@ def apply_proposal(
     target: Path,
     link_loader: Callable[[Path], Optional[dict]] = load_link,
 ) -> List[str]:
-    """Write the proposal. Evidence gate first, then auth, then exact writes.
+    """Write a verified promotion. Decision and lineage checks precede auth.
 
     Fail-closed (AC3): when the target has no configured server link — no
     ``.agentrail/server.json`` and incomplete ``AGENTRAIL_SERVER_*`` env —
-    this raises :class:`ApplyAuthError` BEFORE inspecting the proposal, so an
-    unconfigured secret can never fall through to a write. The GitHub
-    webhook's ``if (!secret) return true`` fail-open skip is the named
-    anti-pattern this refuses to copy.
+    this raises :class:`ApplyAuthError` before any write, so an unconfigured
+    secret can never fall through to a write. The GitHub webhook's ``if
+    (!secret) return true`` fail-open skip is the named anti-pattern this
+    refuses to copy.
 
     Returns the human-readable result lines (``Applied:`` / ``No-op:``).
     """
-    if proposal.is_held:
-        raise ApplyReportGateError("apply refused: " + "; ".join(proposal.hold_reasons))
-
+    if proposal.promotion_decision is not PromotionDecision.PROMOTE:
+        reasons = proposal.decision_reasons or proposal.hold_reasons
+        raise ApplyReportGateError(
+            "apply refused: " + "; ".join(reasons or ["proposal is not an approved promotion"])
+        )
+    if not proposal.report_sha256:
+        raise ApplyReportGateError(
+            "apply refused: proposal has no immutable report fingerprint"
+        )
+    try:
+        current_sha256 = hashlib.sha256(proposal.report_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ApplyReportGateError(
+            f"apply refused: cannot reread report {proposal.report_path}"
+        ) from exc
+    if current_sha256 != proposal.report_sha256:
+        raise ApplyReportGateError(
+            "apply refused: report contents changed after the proposal was built"
+        )
     if link_loader(target) is None:
         raise ApplyAuthError(
             "apply refused: no server link is configured for this target "

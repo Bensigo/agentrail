@@ -90,13 +90,14 @@ from agentrail.evals.arms import (
     symbol_packing_arm,
     tightened_packer_arm,
 )
-from agentrail.evals.corpus.loader import CorpusTask, load_corpus
+from agentrail.evals.corpus.loader import CorpusTask, corpus_root, load_corpus
 from agentrail.evals.gather_report import (
     render_gather_precision_from_records,
     render_gather_report_from_ledger,
 )
 from agentrail.evals.memory_report import render_memory_report_from_ledger
 from agentrail.evals.pack_scorer import ArmPackScore
+from agentrail.evals.provenance import build_eval_provenance
 from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
     ArmReport,
@@ -534,6 +535,11 @@ def run_spine(
     tasks = _select_tasks(tasks, config.task_filter)
     if not tasks:
         raise ValueError("no corpus tasks selected")
+    provenance = build_eval_provenance(
+        config=config,
+        package_root=Path(__file__).resolve().parents[1],
+        corpus_root=Path(config.corpus_root) if config.corpus_root is not None else corpus_root(),
+    )
 
     # Offline context-pack precision/recall (#1029 AC2/AC3). Computed ONCE up
     # front (it depends only on task prompts + the pinned repo's context index,
@@ -825,6 +831,7 @@ def run_spine(
                 # rendered on every checkpoint, so an interrupted run's partial
                 # scorecard still carries the pack quality (None → n/a).
                 pack_scores=pack_scores,
+                provenance=provenance,
             )
 
     concurrency = max(1, config.concurrency)
@@ -863,6 +870,7 @@ def run_spine(
         # Real context-pack precision/recall + the full-vs-full-minus-rerank
         # delta (#1029 AC2/AC3) — None → n/a, never a fabricated 0.0.
         pack_scores=pack_scores,
+        provenance=provenance,
     )
 
     # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-

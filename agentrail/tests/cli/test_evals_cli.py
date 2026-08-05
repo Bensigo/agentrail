@@ -104,8 +104,8 @@ class EvalsApplyCliTests(unittest.TestCase):
             ])
             self.assertEqual(rc, 0, msg=f"stderr={err}")
             self.assertIn("proposal only", out)
-            # This report has only the full arm + $0 regret -> nothing to do.
-            self.assertIn("No changes proposed", out)
+            # A single arm is incomplete evidence, not a silent no-op.
+            self.assertIn("Apply gate: HOLD", out)
             # Read-only: no .agentrail directory was created under the target.
             self.assertFalse((target / ".agentrail").exists())
 

@@ -28,7 +28,7 @@ vi.mock("../db.js", () => {
 });
 
 import { reviewJobs } from "../schema/review_jobs.js";
-import { listReviewJobsForPr } from "./review_jobs.js";
+import { listReviewJobsForPr, listReviewJobsForPrHead } from "./review_jobs.js";
 
 const dialect = new PgDialect();
 function renderCondition(condition: unknown) {
@@ -81,5 +81,22 @@ describe("listReviewJobsForPr", () => {
       )
     );
     expect(state.lastOrderBy).toEqual([reviewJobs.createdAt]);
+  });
+});
+
+describe("listReviewJobsForPrHead", () => {
+  it("filters by workspace, repo, PR number, and exact head", async () => {
+    await listReviewJobsForPrHead({
+      workspaceId: "ws-1", repo: "ada/widgets", prNumber: 42, headSha: "head-a",
+    });
+
+    expect(renderCondition(state.lastWhere)).toEqual(
+      renderCondition(and(
+        eq(reviewJobs.workspaceId, "ws-1"),
+        eq(reviewJobs.repo, "ada/widgets"),
+        eq(reviewJobs.prNumber, 42),
+        eq(reviewJobs.headSha, "head-a")
+      ))
+    );
   });
 });

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import date
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -29,7 +30,15 @@ def _run(args):
     return rc, out.getvalue(), err.getvalue()
 
 
-_ONE_ARM_REPORT = """# Eval report 2026-07-01
+_ONE_ARM_REPORT = f"""# Eval report {date.today().isoformat()}
+
+Generated: {date.today().isoformat()}
+
+## Per-arm summary
+
+| Arm | Reps | Solved | Failed | Solve-rate | Spread | False-green rate | Wall-time per task | Total tokens | Total cost | Dollars-per-solved-task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| full | 1 | 1 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |
 
 ## New-flow vs full
 
@@ -116,6 +125,60 @@ class EvalsApplyCliTests(unittest.TestCase):
             ])
         self.assertEqual(rc, 0, msg=f"stderr={err}")
         self.assertIn("2026-07-01", out)
+
+    def test_apply_rejects_a_held_report_before_any_write(self) -> None:
+        import tempfile
+
+        stale = _ONE_ARM_REPORT.replace(
+            f"Generated: {date.today().isoformat()}",
+            "Generated: 2020-01-01",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "stale-report.md"
+            report.write_text(stale, encoding="utf-8")
+            target = root / "checkout"
+            target.mkdir()
+            rc, out, err = _run([
+                "apply", "--report", str(report), "--target", str(target), "--apply",
+            ])
+        self.assertEqual(rc, 2)
+        self.assertIn("Apply gate: HOLD", out)
+        self.assertIn("stale report", err)
+
+    def test_apply_rejects_invalid_numeric_evidence_before_any_write(self) -> None:
+        """Malformed arm numbers cannot reach either override or routing writes."""
+        import json
+        import tempfile
+
+        invalid = _ONE_ARM_REPORT.replace(
+            "| full | 1 | 1 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |",
+            "| full | 1 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |",
+        ).replace(
+            "- Total routing cost-regret: $0.0000",
+            "- Total routing cost-regret: $2.0000",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "invalid-report.md"
+            report.write_text(invalid, encoding="utf-8")
+            target = root / "checkout"
+            agentrail_dir = target / ".agentrail"
+            agentrail_dir.mkdir(parents=True)
+            config = agentrail_dir / "config.json"
+            config.write_text(
+                json.dumps({"runners": {"default": {"models": {"execute": "claude-opus-4-8"}}}}),
+                encoding="utf-8",
+            )
+            before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            rc, out, err = _run([
+                "apply", "--report", str(report), "--target", str(target), "--apply",
+            ])
+            after = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        self.assertEqual(rc, 2)
+        self.assertIn("Per-arm summary row", err)
+        self.assertEqual(before, after)
+        self.assertNotIn("Applied:", out)
 
 
 class EvalsRunNewFlowCliTests(unittest.TestCase):

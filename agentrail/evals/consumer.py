@@ -44,8 +44,10 @@ lever, pointed the other way.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -65,6 +67,10 @@ class ApplyAuthError(RuntimeError):
     Fail-closed by design — contrast with the GitHub webhook's fail-open
     ``if (!secret) return true`` skip, which this family must never copy.
     """
+
+
+class ApplyReportGateError(RuntimeError):
+    """Apply refused because the report cannot safely support a decision."""
 
 
 # --- Report facts (parse output) ------------------------------------------
@@ -97,6 +103,17 @@ class NewFlowFacts:
     false_green_rate_delta: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class ArmSummaryFacts:
+    """One evidence row from the reporter's ``## Per-arm summary`` table."""
+
+    arm: str
+    repetitions: int
+    solved: int
+    total_tokens: int
+    total_cost_usd: float
+
+
 @dataclass
 class RoutingFacts:
     """The routing cost lines, kept raw for evidence plus parsed values."""
@@ -113,6 +130,8 @@ class ReportFacts:
     name: str
     new_flow: NewFlowFacts
     routing: RoutingFacts
+    generated_at: Optional[date] = None
+    arm_summaries: List[ArmSummaryFacts] = field(default_factory=list)
 
 
 # --- Reverse parsers for reporter.py's _fmt_* helpers ----------------------
@@ -155,6 +174,45 @@ def _row_cells(line: str) -> List[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _parse_generated_date(value: str) -> date:
+    """Accept only a complete ISO date or ISO datetime from the reporter."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError as exc:
+            raise ReportParseError(
+                "Generated timestamp must be a complete ISO date or datetime"
+            ) from exc
+
+
+def _parse_arm_summary_row(cells: List[str]) -> ArmSummaryFacts:
+    """Parse a renderer-owned arm row without silently dropping bad evidence."""
+    if len(cells) != 11:
+        raise ReportParseError("Per-arm summary row has the wrong column count")
+    try:
+        summary = ArmSummaryFacts(
+            arm=cells[0],
+            repetitions=int(cells[1]),
+            solved=int(cells[2]),
+            total_tokens=int(cells[8]),
+            total_cost_usd=float(cells[9].removeprefix("$")),
+        )
+    except ValueError as exc:
+        raise ReportParseError("Per-arm summary row has invalid evidence") from exc
+    if (
+        summary.repetitions < 0
+        or summary.solved < 0
+        or summary.total_tokens < 0
+        or summary.total_cost_usd < 0
+        or not math.isfinite(summary.total_cost_usd)
+        or summary.solved > summary.repetitions
+    ):
+        raise ReportParseError("Per-arm summary row has invalid evidence")
+    return summary
+
+
 def parse_report(path: Path) -> ReportFacts:
     """Parse a rendered eval report into the facts the proposal rules need.
 
@@ -167,6 +225,8 @@ def parse_report(path: Path) -> ReportFacts:
     """
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
+    generated_at: Optional[date] = None
+    arm_summaries: List[ArmSummaryFacts] = []
 
     has_new_flow_header = any(line.strip() == _NEW_FLOW_HEADER for line in lines)
     has_routing_header = any(
@@ -183,9 +243,18 @@ def parse_report(path: Path) -> ReportFacts:
     section: Optional[str] = None
     for line in lines:
         stripped = line.strip()
+        if stripped.startswith("Generated:"):
+            generated_text = stripped.removeprefix("Generated:").strip()
+            generated_at = _parse_generated_date(generated_text)
+            continue
         if stripped.startswith("## "):
             section = stripped
             continue
+        if section == "## Per-arm summary" and stripped.startswith("|"):
+            cells = _row_cells(stripped)
+            if cells[0] in {"Arm", "---"}:
+                continue
+            arm_summaries.append(_parse_arm_summary_row(cells))
         if section != _NEW_FLOW_HEADER:
             continue
         if stripped.startswith(_SENTINEL_PREFIX):
@@ -225,7 +294,12 @@ def parse_report(path: Path) -> ReportFacts:
                 routing.net_delta_usd = _parse_signed_usd(rest.split(" ", 1)[0])
 
     return ReportFacts(
-        path=path, name=path.name, new_flow=new_flow, routing=routing
+        path=path,
+        name=path.name,
+        new_flow=new_flow,
+        routing=routing,
+        generated_at=generated_at,
+        arm_summaries=arm_summaries,
     )
 
 
@@ -254,6 +328,7 @@ class RoutingChange:
 class Proposal:
     report_name: str
     report_path: Path
+    hold_reasons: List[str] = field(default_factory=list)
     layer_changes: List[LayerChange] = field(default_factory=list)
     overrides_content: Optional[dict] = None  # exact JSON --apply writes
     layer_notes: List[str] = field(default_factory=list)
@@ -265,6 +340,10 @@ class Proposal:
     @property
     def has_changes(self) -> bool:
         return bool(self.layer_changes or self.routing_changes)
+
+    @property
+    def is_held(self) -> bool:
+        return bool(self.hold_reasons)
 
 
 # The four #981 AC1 gates. Delta convention is the reporter's: new-flow minus
@@ -327,10 +406,56 @@ def _overrides_content(
     return content
 
 
-def build_proposal(facts: ReportFacts, target: Path) -> Proposal:
+DEFAULT_MAX_REPORT_AGE_DAYS = 1
+
+
+def _report_hold_reasons(
+    facts: ReportFacts,
+    *,
+    today: date,
+    max_report_age_days: int,
+) -> List[str]:
+    reasons: List[str] = []
+    if facts.generated_at is None:
+        reasons.append("report freshness is unknown: missing or invalid Generated date")
+    elif facts.generated_at > today:
+        reasons.append(
+            f"report freshness is invalid: generated {facts.generated_at.isoformat()} is in the future"
+        )
+    elif (today - facts.generated_at).days > max_report_age_days:
+        reasons.append(
+            f"stale report: generated {facts.generated_at.isoformat()} exceeds the "
+            f"{max_report_age_days}-day freshness boundary"
+        )
+
+    if not facts.arm_summaries:
+        reasons.append("report evidence is unknown: missing Per-arm summary rows")
+    elif all(summary.repetitions == 0 for summary in facts.arm_summaries):
+        reasons.append("zero-evidence report: every arm recorded zero repetitions")
+    return reasons
+
+
+def build_proposal(
+    facts: ReportFacts,
+    target: Path,
+    *,
+    today: Optional[date] = None,
+    max_report_age_days: int = DEFAULT_MAX_REPORT_AGE_DAYS,
+) -> Proposal:
     """Pure decision rules: report facts → proposal. No writes, no I/O beyond
     reading the target's existing config/overrides to render exact content."""
+    if max_report_age_days < 0:
+        raise ValueError("max_report_age_days must be non-negative")
     proposal = Proposal(report_name=facts.name, report_path=facts.path)
+    proposal.hold_reasons.extend(
+        _report_hold_reasons(
+            facts,
+            today=today or date.today(),
+            max_report_age_days=max_report_age_days,
+        )
+    )
+    if proposal.is_held:
+        return proposal
 
     # --- Layer stream: the #981 four-gate rule ---------------------------
     nf = facts.new_flow
@@ -456,6 +581,12 @@ def render_proposal(proposal: Proposal) -> str:
     out.append("Mode: proposal only — nothing is written without --apply.")
     out.append("")
 
+    if proposal.is_held:
+        out.append("Apply gate: HOLD")
+        for reason in proposal.hold_reasons:
+            out.append(f"  Hold reason: {reason}")
+        out.append("")
+
     out.append("Layer overrides (.agentrail/layer-overrides.json):")
     for note in proposal.layer_notes:
         out.append(f"  {note}")
@@ -481,7 +612,9 @@ def render_proposal(proposal: Proposal) -> str:
         out.append(f'  Evidence: "{evidence}"')
     out.append("")
 
-    if proposal.has_changes:
+    if proposal.is_held:
+        out.append("Hold in effect. Nothing can be applied.")
+    elif proposal.has_changes:
         out.append(
             "Apply with: agentrail evals apply --report "
             f"{proposal.report_path} --apply"
@@ -499,7 +632,7 @@ def apply_proposal(
     target: Path,
     link_loader: Callable[[Path], Optional[dict]] = load_link,
 ) -> List[str]:
-    """Write the proposal. Auth first, writes second, exactly as proposed.
+    """Write the proposal. Evidence gate first, then auth, then exact writes.
 
     Fail-closed (AC3): when the target has no configured server link — no
     ``.agentrail/server.json`` and incomplete ``AGENTRAIL_SERVER_*`` env —
@@ -510,6 +643,9 @@ def apply_proposal(
 
     Returns the human-readable result lines (``Applied:`` / ``No-op:``).
     """
+    if proposal.is_held:
+        raise ApplyReportGateError("apply refused: " + "; ".join(proposal.hold_reasons))
+
     if link_loader(target) is None:
         raise ApplyAuthError(
             "apply refused: no server link is configured for this target "

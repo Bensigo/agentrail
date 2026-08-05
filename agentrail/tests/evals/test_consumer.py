@@ -22,12 +22,15 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from agentrail.evals.arms import NEW_FLOW_LAYERS
 from agentrail.evals.consumer import (
     ApplyAuthError,
+    ApplyReportGateError,
+    ArmSummaryFacts,
     LayerChange,
     NewFlowFacts,
     Proposal,
@@ -107,7 +110,16 @@ class SignedParserTests(unittest.TestCase):
 # A minimal report whose New-flow section neighbours a rerank section with
 # IDENTICAL row labels and an identical sentinel prefix. If the parser weren't
 # section-scoped, the rerank rows would clobber the new-flow deltas.
-_TWO_SECTION_REPORT = """# Eval report
+_TWO_SECTION_REPORT = f"""# Eval report
+
+Generated: {date.today().isoformat()}
+
+## Per-arm summary
+
+| Arm | Reps | Solved | Failed | Solve-rate | Spread | False-green rate | Wall-time per task | Total tokens | Total cost | Dollars-per-solved-task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | 1000 | $1.0000 | $1.0000 |
+| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |
 
 ## New-flow vs full
 
@@ -180,6 +192,52 @@ class ParseReportTests(unittest.TestCase):
         self.assertEqual(facts.new_flow.sentinel, "_Not available: only one arm ran._")
         self.assertIsNone(facts.routing.regret_line)
 
+    def test_invalid_generated_timestamp_rejects_report(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(
+                _TWO_SECTION_REPORT.replace(
+                    f"Generated: {date.today().isoformat()}",
+                    f"Generated: {date.today().isoformat()} not-a-timestamp",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReportParseError, "Generated timestamp"):
+                parse_report(p)
+
+    def test_malformed_per_arm_row_rejects_partial_evidence(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(
+                _TWO_SECTION_REPORT.replace(
+                    "| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | malformed | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReportParseError, "Per-arm summary row"):
+                parse_report(p)
+
+    def test_invalid_numeric_per_arm_evidence_rejects_report(self) -> None:
+        valid_row = (
+            "| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | "
+            "1000 | $1.0000 | $1.0000 |"
+        )
+        invalid_rows = (
+            ("negative repetitions", valid_row.replace("| 2 | 1 |", "| -1 | 1 |")),
+            ("negative solved", valid_row.replace("| 2 | 1 |", "| 2 | -1 |")),
+            ("solved exceeds repetitions", valid_row.replace("| 2 | 1 |", "| 1 | 2 |")),
+            ("negative tokens", valid_row.replace("| 40.0s | 1000 |", "| 40.0s | -1 |")),
+            ("negative cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $-1.0000 | $1.0000 |")),
+            ("non-finite cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $nan | $1.0000 |")),
+        )
+        for label, invalid_row in invalid_rows:
+            with self.subTest(label=label), TemporaryDirectory() as td:
+                p = Path(td) / "eval-report-x.md"
+                p.write_text(_TWO_SECTION_REPORT.replace(valid_row, invalid_row), encoding="utf-8")
+                with self.assertRaisesRegex(ReportParseError, "Per-arm summary row"):
+                    parse_report(p)
+
 
 # --- The three-outcome gate rule (build_proposal, layer stream) ------------
 
@@ -214,6 +272,16 @@ def _facts_with_deltas(
         name="eval-report-x.md",
         new_flow=nf,
         routing=RoutingFacts(),
+        generated_at=date.today(),
+        arm_summaries=[
+            ArmSummaryFacts(
+                arm="full",
+                repetitions=2,
+                solved=1,
+                total_tokens=1000,
+                total_cost_usd=1.0,
+            )
+        ],
     )
 
 
@@ -253,6 +321,69 @@ class GateRuleTests(unittest.TestCase):
         with TemporaryDirectory() as td:
             proposal = build_proposal(facts, Path(td))
         self.assertEqual(proposal.layer_changes, [])
+
+
+class ApplyEvidenceGateTests(unittest.TestCase):
+    def test_stale_report_holds_and_never_writes(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.generated_at = date(2026, 8, 1)
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(
+                facts,
+                root,
+                today=date(2026, 8, 4),
+                max_report_age_days=1,
+            )
+            before = _snapshot_tree(root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertTrue(proposal.is_held)
+        self.assertFalse(proposal.has_changes)
+        self.assertTrue(any("stale report" in reason for reason in proposal.hold_reasons))
+        self.assertEqual(before, after)
+
+    def test_zero_repetition_report_holds_and_never_writes(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries = [
+            ArmSummaryFacts(
+                arm="full",
+                repetitions=0,
+                solved=0,
+                total_tokens=0,
+                total_cost_usd=0.0,
+            ),
+            ArmSummaryFacts(
+                arm="new-flow",
+                repetitions=0,
+                solved=0,
+                total_tokens=0,
+                total_cost_usd=0.0,
+            ),
+        ]
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            proposal = build_proposal(facts, root)
+            before = _snapshot_tree(root)
+            with self.assertRaises(ApplyReportGateError):
+                apply_proposal(proposal, root, link_loader=_linked)
+            after = _snapshot_tree(root)
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(any("zero-evidence" in reason for reason in proposal.hold_reasons))
+        self.assertIn("Apply gate: HOLD", render_proposal(proposal))
+        self.assertEqual(before, after)
+
+    def test_missing_report_metadata_holds_instead_of_being_assumed_fresh(self) -> None:
+        facts = ReportFacts(
+            path=Path("legacy.md"),
+            name="legacy.md",
+            new_flow=NewFlowFacts(),
+            routing=RoutingFacts(),
+        )
+        proposal = build_proposal(facts, Path("."))
+        self.assertTrue(proposal.is_held)
+        self.assertIn("freshness is unknown", proposal.hold_reasons[0])
 
 
 # --- AC1: default path writes nothing --------------------------------------
@@ -460,7 +591,7 @@ class RoundTripTests(unittest.TestCase):
             gate_passed_count=4, false_green_count=0, false_green_rate=0.0,
         )
         return render_markdown(
-            [full, new_flow], generated_at="2026-06-29T00:00:00Z"
+            [full, new_flow], generated_at=f"{date.today().isoformat()}T00:00:00Z"
         )
 
     def test_roundtrip_recovers_deltas(self) -> None:

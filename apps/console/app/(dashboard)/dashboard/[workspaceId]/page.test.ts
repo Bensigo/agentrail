@@ -31,6 +31,10 @@ vi.mock("./components/health-rates-panel", () => ({
   HealthRatesPanel: () => null,
 }));
 
+vi.mock("./components/review-metrics-panel", () => ({
+  ReviewMetricsPanel: () => null,
+}));
+
 import { getWorkspace } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
 import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
@@ -271,9 +275,10 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
     const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, digestPanel, healthRatesPanel] = wrapperChildren;
+    const [, digestPanel, reviewMetricsPanel, healthRatesPanel] = wrapperChildren;
 
     expect(asElement(digestPanel).type).toBe(DigestPanel);
+    expect(reviewMetricsPanel).toBeDefined();
     expect(asElement(healthRatesPanel).type).toBe(HealthRatesPanel);
     expect(asElement(healthRatesPanel).props.workspaceId).toBe(WORKSPACE_ID);
 

@@ -6,6 +6,7 @@ import {
   pgEnum,
   jsonb,
   doublePrecision,
+  integer,
   index,
   check,
 } from "drizzle-orm/pg-core";
@@ -67,6 +68,16 @@ export const runs = pgTable(
     // and (in #891b) reconcile the displayed status against the PR's real CI,
     // instead of showing a green-CI PR as "failed" from the local gate verdict.
     prUrl: text("pr_url").default(""),
+    // Canonical repository/PR identity corresponding to `prUrl`. Persisting
+    // these independently avoids making production attribution re-parse an
+    // untrusted string and gives exact run-to-review joins a stable key.
+    prRepo: text("pr_repo"),
+    prNumber: integer("pr_number"),
+    // Exact commit produced by the factory and published to `prUrl`. This is
+    // separate from the mutable PR head observed by GitHub webhooks: production
+    // outcome metrics may attribute a human result only when the two match.
+    // Null means the runner did not provide durable publish provenance.
+    prHeadSha: text("pr_head_sha"),
     // #1388: execution-**liveness** timestamp. The fleet worker stamps this
     // (~every 60s) while a claim runs; `reconcileStaleRuns` keys reclaim on its
     // staleness (a still-alive long run is never reaped, a silently-dead runner

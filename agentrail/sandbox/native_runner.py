@@ -865,7 +865,13 @@ def run_issue_on_host(
                     branch=branch or result.branch,
                 )
             else:
-                result = replace(result, pr_url=pr_url, branch=branch or result.branch)
+                head_sha = _published_head_sha(runner, repo_dir) if pr_url else ""
+                result = replace(
+                    result,
+                    pr_url=pr_url,
+                    branch=branch or result.branch,
+                    head_sha=head_sha,
+                )
         return result
     finally:
         # Teardown is unconditional; a failure to clean up is swallowed (a leftover
@@ -1052,6 +1058,30 @@ def _publish_body(run_dir: Optional[Path], issue_number: str) -> str:
             raise
         pass
     return fallback
+
+
+def _published_head_sha(runner, repo_dir: Path) -> str:
+    """Read the exact committed head after publication has succeeded.
+
+    This is called only after ``_publish_green`` has completed, including its
+    reviewability head refresh and push/PR publication. A pre-publish SHA would
+    be wrong when the factory commit is created during publication.
+    """
+    try:
+        head = runner.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_dir),
+            env=None,
+            timeout=120,
+            capture_output=True,
+            text=True,
+        )
+        head_sha = (getattr(head, "stdout", "") or "").strip()
+        if getattr(head, "returncode", 1) != 0 or not head_sha:
+            return ""
+        return head_sha
+    except Exception:  # noqa: BLE001 - provenance is fail-closed
+        return ""
 
 
 def _refresh_reviewability_after_commit(

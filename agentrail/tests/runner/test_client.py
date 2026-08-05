@@ -285,6 +285,7 @@ def test_report_result_posts_outcome_back_with_auth():
         gate_reason="all checks pass",
         logs_tail="...done",
         execute_model="anthropic/claude-sonnet-5",
+        pr_head_sha="a" * 40,
     )
     assert ok is True
 
@@ -301,6 +302,7 @@ def test_report_result_posts_outcome_back_with_auth():
     assert sent["gate_reason"] == "all checks pass"
     # #1338 PR① fix round: the authoritative execute model rides the payload.
     assert sent["execute_model"] == "anthropic/claude-sonnet-5"
+    assert sent["pr_head_sha"] == "a" * 40
 
 
 def test_report_result_execute_model_defaults_empty():
@@ -311,6 +313,13 @@ def test_report_result_execute_model_defaults_empty():
     _client(transport).report_result(_work_item(), status="green")
     sent = _json.loads(transport.calls[0]["body"].decode())
     assert sent["execute_model"] == ""
+
+
+def test_report_result_pr_head_sha_defaults_empty():
+    transport = FakeTransport([Response(status=202, body=b"")])
+    _client(transport).report_result(_work_item(), status="green")
+    sent = _json.loads(transport.calls[0]["body"].decode())
+    assert sent["pr_head_sha"] == ""
 
 
 def test_report_result_false_on_non_2xx():

@@ -23,6 +23,7 @@ let priorState = "running";
 let returnedExternalId = "o/r#42";
 const captured: unknown[] = [];
 let runUpdateValues: Record<string, unknown> | undefined;
+let persistedRunValues: Record<string, unknown> = {};
 
 vi.mock("../db.js", () => ({
   db: {
@@ -44,6 +45,7 @@ vi.mock("../db.js", () => ({
     update: () => ({
       set: (values: Record<string, unknown>) => {
         runUpdateValues = values;
+        persistedRunValues = { ...persistedRunValues, ...values };
         return { where: () => Promise.resolve([]) };
       },
     }),
@@ -51,7 +53,11 @@ vi.mock("../db.js", () => ({
   },
 }));
 
-import { recordRunnerResult } from "../queries/runner.js";
+import {
+  canonicalGitCommitSha,
+  canonicalPrIdentityForQueueEntry,
+  recordRunnerResult,
+} from "../queries/runner.js";
 
 const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 
@@ -61,6 +67,7 @@ beforeEach(() => {
   returnedExternalId = "o/r#42";
   captured.length = 0;
   runUpdateValues = undefined;
+  persistedRunValues = {};
 });
 
 describe("recordRunnerResult terminalState (green / running)", () => {
@@ -135,6 +142,8 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
 
     expect(runUpdateValues).toMatchObject({
       prUrl: "https://github.com/o/r/pull/9",
+      prRepo: "o/r",
+      prNumber: 9,
     });
   });
 
@@ -168,5 +177,84 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
     });
 
     expect(runUpdateValues).not.toHaveProperty("prUrl");
+  });
+
+  it("persists a valid produced head only with a queue-bound green PR", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "A".repeat(40),
+    });
+
+    expect(runUpdateValues).toMatchObject({ prHeadSha: "a".repeat(40) });
+  });
+
+  it("does not persist an unvalidated head or a head without an accepted green PR", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/attacker/evil-repo/pull/9",
+      prHeadSha: "a".repeat(40),
+    });
+    expect(runUpdateValues).not.toHaveProperty("prHeadSha");
+
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "not-a-commit",
+    });
+    expect(runUpdateValues).not.toHaveProperty("prHeadSha");
+  });
+
+  it("does not overwrite first-green PR provenance on a duplicate green replay", async () => {
+    priorState = "running";
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "a".repeat(40),
+    });
+
+    priorState = "green";
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/10",
+      prHeadSha: "b".repeat(40),
+    });
+
+    expect(persistedRunValues).toMatchObject({
+      prUrl: "https://github.com/o/r/pull/9",
+      prRepo: "o/r",
+      prNumber: 9,
+      prHeadSha: "a".repeat(40),
+    });
+  });
+});
+
+describe("canonicalGitCommitSha", () => {
+  it("normalizes SHA-1 and SHA-256 ids but rejects abbreviated and non-hex values", () => {
+    expect(canonicalGitCommitSha("A".repeat(40))).toBe("a".repeat(40));
+    expect(canonicalGitCommitSha("b".repeat(64))).toBe("b".repeat(64));
+    expect(canonicalGitCommitSha("a".repeat(39))).toBeNull();
+    expect(canonicalGitCommitSha("z".repeat(40))).toBeNull();
+  });
+});
+
+describe("canonicalPrIdentityForQueueEntry", () => {
+  it("returns the server-bound canonical URL, repository, and PR number together", () => {
+    expect(
+      canonicalPrIdentityForQueueEntry(
+        "https://github.com/O/R/pull/9?tab=files#discussion",
+        "o/r#42"
+      )
+    ).toEqual({ url: "https://github.com/o/r/pull/9", repo: "o/r", number: 9 });
   });
 });

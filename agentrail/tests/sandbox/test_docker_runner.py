@@ -156,6 +156,18 @@ class TestHappyPath:
         assert env["AGENT_API_KEY"] == "sk-secret"
         assert env["GIT_TOKEN"] == "ght-secret"
 
+    def test_green_result_accepts_payload_head_sha(self) -> None:
+        runner = FakeRunner([
+            ContainerResult(
+                exit_code=0,
+                stdout=_wrap_result(_green_payload(head_sha="a" * 40)),
+                stderr="",
+            ),
+            ContainerResult(exit_code=0, stdout="", stderr=""),
+        ])
+        result = self._run(runner)
+        assert result.head_sha == "a" * 40
+
     def test_container_is_always_removed(self) -> None:
         runner = FakeRunner([
             ContainerResult(exit_code=0, stdout=_wrap_result(_green_payload()), stderr=""),
@@ -178,6 +190,7 @@ class TestHappyPath:
         result = self._run(runner)
         assert result.status == "red"
         assert result.gate_reason == "AC2 unverified"
+        assert result.head_sha == ""
 
 
 # ---------------------------------------------------------------------------

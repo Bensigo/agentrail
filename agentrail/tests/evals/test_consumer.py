@@ -235,8 +235,8 @@ class ParseReportTests(unittest.TestCase):
             p = Path(td) / "eval-report-x.md"
             p.write_text(
                 _TWO_SECTION_REPORT.replace(
-                    "| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
-                    "| new-flow | malformed | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | 5 | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | malformed | 4 | 1 | 80.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
                 ),
                 encoding="utf-8",
             )
@@ -245,13 +245,13 @@ class ParseReportTests(unittest.TestCase):
 
     def test_invalid_numeric_per_arm_evidence_rejects_report(self) -> None:
         valid_row = (
-            "| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | "
+            "| full | 5 | 3 | 2 | 60.0% | 0.0000 | 0.0% | 40.0s | "
             "1000 | $1.0000 | $1.0000 |"
         )
         invalid_rows = (
-            ("negative repetitions", valid_row.replace("| 2 | 1 |", "| -1 | 1 |")),
-            ("negative solved", valid_row.replace("| 2 | 1 |", "| 2 | -1 |")),
-            ("solved exceeds repetitions", valid_row.replace("| 2 | 1 |", "| 1 | 2 |")),
+            ("negative repetitions", valid_row.replace("| 5 | 3 | 2 |", "| -1 | 3 | 2 |")),
+            ("negative solved", valid_row.replace("| 5 | 3 | 2 |", "| 5 | -1 | 2 |")),
+            ("solved exceeds repetitions", valid_row.replace("| 5 | 3 | 2 |", "| 2 | 3 | 2 |")),
             ("negative tokens", valid_row.replace("| 40.0s | 1000 |", "| 40.0s | -1 |")),
             ("negative cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $-1.0000 | $1.0000 |")),
             ("non-finite cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $nan | $1.0000 |")),

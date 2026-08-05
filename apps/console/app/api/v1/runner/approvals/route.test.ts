@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   recordApprovalRequest: vi.fn(),
+  getBriefById: vi.fn(),
   getInvestigationById: vi.fn(),
 }));
 vi.mock("../../../../../lib/approval-message", () => ({
@@ -18,6 +19,7 @@ import { POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   recordApprovalRequest,
+  getBriefById,
   getInvestigationById,
 } from "@agentrail/db-postgres";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
@@ -31,6 +33,7 @@ const mockRecord = vi.mocked(recordApprovalRequest);
 const mockRender = vi.mocked(renderApprovalMessage);
 const mockSend = vi.mocked(sendTelegramMessage);
 const mockBuildKeyboard = vi.mocked(buildApprovalKeyboard);
+const mockGetBrief = vi.mocked(getBriefById);
 const mockGetInvestigation = vi.mocked(getInvestigationById);
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
@@ -88,6 +91,26 @@ const MOCK_SESSION_INTRO = {
 const MOCK_SESSION_ANCHORED = {
   ...MOCK_SESSION_WS,
   anchoredInvestigationId: "inv-1",
+};
+
+const MOCK_SESSION_BRIEF_ANCHORED = {
+  ...MOCK_SESSION_WS,
+  anchoredBriefId: "brief-1",
+};
+
+const MOCK_BRIEF = {
+  id: "brief-1",
+  workspaceId: "ws-1",
+  repositoryId: null,
+  slug: "dark-mode",
+  title: "Dark mode",
+  status: "draft",
+  openQuestion: "",
+  grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
+  jaceSessionIds: ["session-1"],
+  createdAt: NOW,
+  updatedAt: NOW,
+  items: [],
 };
 
 const MOCK_INVESTIGATION = {
@@ -578,6 +601,66 @@ describe("POST /api/v1/runner/approvals — #1274 PR ② chat-born enrichment (c
     );
 
     expect(res.status).toBe(201);
+  });
+});
+
+describe("POST /api/v1/runner/approvals — durable brief lineage (create_issue only)", () => {
+  it("stamps only the server-resolved brief anchor onto the approval", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_BRIEF_ANCHORED as never);
+    mockGetBrief.mockResolvedValue(MOCK_BRIEF as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(req(MOCK_BODY));
+
+    expect(mockGetBrief).toHaveBeenCalledWith("ws-1", "brief-1");
+    expect(mockRecord.mock.calls[0]?.[0]?.toolInput).toMatchObject({
+      _briefLineage: { briefId: "brief-1" },
+    });
+  });
+
+  it("strips a caller-supplied lineage marker when the session has no brief anchor", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          ...MOCK_BODY.toolInput,
+          _briefLineage: { briefId: "attacker-brief" },
+        },
+      })
+    );
+
+    expect(mockGetBrief).not.toHaveBeenCalled();
+    expect(mockRecord.mock.calls[0]?.[0]?.toolInput).not.toHaveProperty("_briefLineage");
+  });
+
+  it("does not stamp a stale or cross-workspace brief anchor", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_BRIEF_ANCHORED as never);
+    mockGetBrief.mockResolvedValue(null);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(req(MOCK_BODY));
+
+    expect(mockRecord.mock.calls[0]?.[0]?.toolInput).not.toHaveProperty("_briefLineage");
+  });
+
+  it("does not alter other approval types", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_BRIEF_ANCHORED as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        eveSessionId: "eve-session-1",
+        toolName: "create_workspace",
+        toolInput: { name: "Acme Corp" },
+        idempotencyKey: "k-workspace-brief-anchored",
+      })
+    );
+
+    expect(mockGetBrief).not.toHaveBeenCalled();
+    expect(mockRecord.mock.calls[0]?.[0]?.toolInput).toEqual({ name: "Acme Corp" });
   });
 });
 

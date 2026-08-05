@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  getBriefById,
   getJaceSessionByEveSessionId,
   getInvestigationById,
   recordApprovalRequest,
@@ -130,14 +131,14 @@ import {
 async function enrichCreateIssueToolInput(
   toolInput: Record<string, unknown>,
   workspaceId: string | null | undefined,
+  anchoredBriefId: string | null | undefined,
   anchoredInvestigationId: string | null | undefined
 ): Promise<Record<string, unknown>> {
-  // Both reserved keys are stripped in the SAME destructure, unconditionally,
-  // before either enrichment computation runs — see the two INJECTION GUARD
-  // paragraphs above (this one for `_brief`, Task 12's below for
-  // `_investigation`) for why neither can ever survive from caller input.
+  // Reserved keys are stripped unconditionally before any server-side
+  // enrichment: Jace can request work, but it cannot assert its own lineage.
   const {
     _brief: _ignoredCallerSuppliedBrief,
+    _briefLineage: _ignoredCallerSuppliedBriefLineage,
     _investigation: _ignoredCallerSuppliedInvestigation,
     ...rest
   } = toolInput;
@@ -171,10 +172,44 @@ async function enrichCreateIssueToolInput(
     withBrief = rest;
   }
 
-  // Task 12: independent of (and unaffected by) whatever happened above —
-  // see stampInvestigationLink's own doc-comment below for the injection
-  // guard / tenant re-check / role-parsing rules.
-  return stampInvestigationLink(withBrief, workspaceId, anchoredInvestigationId);
+  // Both stamps are independent of the pricing brief. A missing, stale, or
+  // foreign anchor leaves no marker rather than creating an inferred link.
+  const withBriefLineage = await stampBriefLineage(
+    withBrief,
+    workspaceId,
+    anchoredBriefId
+  );
+  return stampInvestigationLink(withBriefLineage, workspaceId, anchoredInvestigationId);
+}
+
+/**
+ * Records the server-resolved durable brief that produced this create-issue
+ * approval. It is deliberately a distinct `_briefLineage` marker: `_brief`
+ * is an alignment/cost envelope composed from issue text, not proof that the
+ * issue came from Jace's durable product brief. The next P0 slice consumes
+ * this immutable approval marker when it admits the matching GitHub issue to
+ * the queue.
+ */
+async function stampBriefLineage(
+  toolInput: Record<string, unknown>,
+  workspaceId: string | null | undefined,
+  anchoredBriefId: string | null | undefined
+): Promise<Record<string, unknown>> {
+  if (!workspaceId || !anchoredBriefId) return toolInput;
+
+  try {
+    // getBriefById scopes the lookup to the session's workspace. A stale or
+    // cross-workspace anchor therefore produces no marker, never a claim.
+    const brief = await getBriefById(workspaceId, anchoredBriefId);
+    if (!brief) return toolInput;
+    return { ...toolInput, _briefLineage: { briefId: brief.id } };
+  } catch (err) {
+    console.error(
+      "[runner/approvals] brief lineage stamp failed; recording create_issue approval without a brief lineage marker:",
+      err
+    );
+    return toolInput;
+  }
 }
 
 /**
@@ -372,6 +407,7 @@ export async function POST(request: NextRequest) {
       ? await enrichCreateIssueToolInput(
           body.toolInput,
           session.workspaceId ?? undefined,
+          session.anchoredBriefId,
           session.anchoredInvestigationId
         )
       : body.toolInput;

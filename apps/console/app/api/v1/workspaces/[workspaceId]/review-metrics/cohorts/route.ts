@@ -6,6 +6,10 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{
 
 function parseIsoDate(value: string | null): Date | null {
   if (!value || !ISO_DATE.test(value)) return null;
+  const [yearValue, monthValue, dayValue] = value.split("T", 1)[0].split("-").map(Number);
+  const leapYear = yearValue % 4 === 0 && (yearValue % 100 !== 0 || yearValue % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthValue - 1] ?? 0;
+  if (monthValue < 1 || monthValue > 12 || dayValue < 1 || dayValue > daysInMonth) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }

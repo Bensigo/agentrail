@@ -79,6 +79,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/cohorts", () => {
 
   it.each([
     { from: "not-a-date", to: TO },
+    { from: "2026-02-30T00:00:00Z", to: TO },
     { from: FROM, to: "2026-08-03T00:00:00Z" },
     { from: TO, to: FROM },
     { from: FROM, to: TO, observedUntil: "bad" },
@@ -86,6 +87,21 @@ describe("GET /api/v1/workspaces/[workspaceId]/review-metrics/cohorts", () => {
     const res = await GET(request(query), params());
     expect(res.status).toBe(400);
     expect(getReviewMetrics).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid strict ISO instant", async () => {
+    const res = await GET(request({
+      from: "2026-02-28T23:59:59.123+00:00",
+      to: "2026-03-01T00:00:00Z",
+    }), params());
+
+    expect(res.status).toBe(200);
+    expect(getReviewMetrics).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      from: new Date("2026-02-28T23:59:59.123+00:00"),
+      to: new Date("2026-03-01T00:00:00Z"),
+      observedUntil: new Date("2026-03-01T00:00:00Z"),
+    });
   });
 
   it("returns cohorts and defaults observedUntil to to", async () => {

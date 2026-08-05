@@ -23,6 +23,7 @@ let priorState = "running";
 let returnedExternalId = "o/r#42";
 const captured: unknown[] = [];
 let runUpdateValues: Record<string, unknown> | undefined;
+let persistedRunValues: Record<string, unknown> = {};
 
 vi.mock("../db.js", () => ({
   db: {
@@ -44,6 +45,7 @@ vi.mock("../db.js", () => ({
     update: () => ({
       set: (values: Record<string, unknown>) => {
         runUpdateValues = values;
+        persistedRunValues = { ...persistedRunValues, ...values };
         return { where: () => Promise.resolve([]) };
       },
     }),
@@ -65,6 +67,7 @@ beforeEach(() => {
   returnedExternalId = "o/r#42";
   captured.length = 0;
   runUpdateValues = undefined;
+  persistedRunValues = {};
 });
 
 describe("recordRunnerResult terminalState (green / running)", () => {
@@ -206,6 +209,33 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
       prHeadSha: "not-a-commit",
     });
     expect(runUpdateValues).not.toHaveProperty("prHeadSha");
+  });
+
+  it("does not overwrite first-green PR provenance on a duplicate green replay", async () => {
+    priorState = "running";
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      prHeadSha: "a".repeat(40),
+    });
+
+    priorState = "green";
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/o/r/pull/10",
+      prHeadSha: "b".repeat(40),
+    });
+
+    expect(persistedRunValues).toMatchObject({
+      prUrl: "https://github.com/o/r/pull/9",
+      prRepo: "o/r",
+      prNumber: 9,
+      prHeadSha: "a".repeat(40),
+    });
   });
 });
 

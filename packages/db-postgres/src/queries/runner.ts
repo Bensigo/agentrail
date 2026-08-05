@@ -1364,6 +1364,7 @@ export async function recordRunnerResult(data: {
 
   const canonicalPr = canonicalPrIdentityForQueueEntry(data.prUrl, completedExternalId);
   const canonicalPrHeadSha = canonicalGitCommitSha(data.prHeadSha);
+  const shouldPersistGreenProvenance = data.status !== "green" || transitioned;
 
   // Dependency awareness: a green entry may release parked dependents that were
   // blocked on it. Best-effort — never fail the result on this.
@@ -1395,7 +1396,7 @@ export async function recordRunnerResult(data: {
       // Persist the PR the run opened (#891a) so the dashboard can surface it
       // and (#891b) reconcile status against the PR's real CI. Only overwrite
       // with a non-empty value — a later heartbeat with no PR must not clear it.
-      ...(canonicalPr
+      ...(canonicalPr && shouldPersistGreenProvenance
         ? {
             prUrl: canonicalPr.url,
             prRepo: canonicalPr.repo,
@@ -1404,7 +1405,7 @@ export async function recordRunnerResult(data: {
         : {}),
       // A head without an accepted PR, or from any non-green result, is not
       // run-to-PR provenance. Preserve the existing evidence in both cases.
-      ...(data.status === "green" && canonicalPr && canonicalPrHeadSha
+      ...(data.status === "green" && transitioned && canonicalPr && canonicalPrHeadSha
         ? { prHeadSha: canonicalPrHeadSha }
         : {}),
     })

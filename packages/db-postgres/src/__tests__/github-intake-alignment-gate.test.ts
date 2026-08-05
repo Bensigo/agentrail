@@ -34,6 +34,10 @@ let insertedValues: Array<Record<string, unknown>> = [];
 let updateCalls: Array<Record<string, unknown>> = [];
 let mockRequireAlignment: boolean | undefined; // undefined = "no workspace row" (select returns [])
 let mockConfirmedApprovalToolInput: Record<string, unknown> | undefined; // undefined = no confirmed-brief approval matches
+let mockBriefLineageRows: Array<{ id: string }>;
+let preserveLineageWrite = false;
+const VALID_BRIEF_ID = "11111111-1111-4111-8111-111111111111";
+const FOREIGN_BRIEF_ID = "22222222-2222-4222-8222-222222222222";
 let mockUnmetBlockerRows: unknown[]; // rows unmetBlockers' own select resolves to, AND (#1341) the "green" rows confirmAlignmentBrief's own db.execute mock checks against
 let mockConfirmRowLookup: unknown[]; // (#1341) the parked row confirmAlignmentBrief's single UPDATE should match — [] simulates "no parked row with this id"
 let updateMatches: boolean; // simulates the WHERE state='parked' guard matching (or not)
@@ -94,13 +98,23 @@ vi.mock("../db.js", () => {
               ? []
               : [{ toolInput: mockConfirmedApprovalToolInput }];
           }
+          if (cols && Object.prototype.hasOwnProperty.call(cols, "id")) {
+            return mockBriefLineageRows;
+          }
           return mockUnmetBlockerRows;
         },
       }),
     }),
     insert: vi.fn(() => ({
       values: vi.fn((v: Record<string, unknown>) => {
-        insertedValues.push(v);
+        const persisted = { ...v };
+        const lineage = v["alignmentBriefId"] as { queryChunks?: unknown[] } | null;
+        if (lineage && Array.isArray(lineage.queryChunks) && !preserveLineageWrite) {
+          const params = extractSqlParams(lineage);
+          persisted["alignmentBriefId"] =
+            mockBriefLineageRows.find((row) => params.includes(row.id))?.id ?? null;
+        }
+        insertedValues.push(persisted);
         return {
           onConflictDoNothing: () => ({
             returning: async () => [{ id: v["id"] }],
@@ -189,6 +203,8 @@ beforeEach(() => {
   updateCalls = [];
   mockRequireAlignment = undefined;
   mockConfirmedApprovalToolInput = undefined;
+  mockBriefLineageRows = [];
+  preserveLineageWrite = false;
   lastConfirmedLookupWhere = undefined;
   mockUnmetBlockerRows = [];
   mockConfirmRowLookup = [
@@ -267,6 +283,87 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBe(2.5);
     expect(insertedValues[0]?.["modelOverride"]).toBe("anthropic/claude-sonnet-5");
     expect(insertedValues[0]?.["taskType"]).toBeNull();
+  });
+
+  it("records a durable brief id only when the matched approval has a resolvable server-stamped marker", async () => {
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        estimateUsd: 2.5,
+        suggestedModel: { slug: "anthropic/claude-sonnet-5" },
+      },
+      _briefLineage: { briefId: VALID_BRIEF_ID },
+    };
+    mockBriefLineageRows = [{ id: VALID_BRIEF_ID }];
+
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 1,
+      title: "A title",
+      body: GOOD_BODY,
+    });
+
+    expect(insertedValues[0]?.["alignmentBriefId"]).toBe(VALID_BRIEF_ID);
+  });
+
+  it("keeps lineage null for legacy or stale markers instead of inferring a brief", async () => {
+    preserveLineageWrite = true;
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        estimateUsd: 2.5,
+        suggestedModel: { slug: "anthropic/claude-sonnet-5" },
+      },
+      _briefLineage: { briefId: "deleted-brief" },
+    };
+
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 1,
+      title: "A title",
+      body: GOOD_BODY,
+    });
+
+    expect(insertedValues[0]?.["alignmentBriefId"]).toBeNull();
+  });
+
+  it("validates brief lineage in the queue INSERT against the queue workspace", async () => {
+    preserveLineageWrite = true;
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        estimateUsd: 2.5,
+        suggestedModel: { slug: "anthropic/claude-sonnet-5" },
+      },
+      _briefLineage: { briefId: FOREIGN_BRIEF_ID },
+    };
+    // The write seam, not this pre-write fixture lookup, must decide whether
+    // the marker is usable. The baseline implementation writes a plain string
+    // after a separate SELECT, so this assertion is red before the fix.
+    mockBriefLineageRows = [{ id: FOREIGN_BRIEF_ID }];
+
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 1,
+      title: "A title",
+      body: GOOD_BODY,
+    });
+
+    const lineageWrite = insertedValues[0]?.["alignmentBriefId"] as {
+      queryChunks?: unknown[];
+    };
+    expect(lineageWrite).toHaveProperty("queryChunks");
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    collectWhereParts(lineageWrite, cols, vals);
+    expect(cols).toContain("id");
+    expect(cols).toContain("workspace_id");
+    const writeParams = extractSqlParams(lineageWrite);
+    expect(writeParams).toContain(FOREIGN_BRIEF_ID);
+    expect(writeParams).toContain("ws-1");
   });
 
   it("#1274 PR②: requireAlignment=true + a confirmed brief WITH a _brief -> admits queued AND writes estimated_budget_usd/model_override from that brief", async () => {

@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { sql, and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db.js";
 import { queueEntries } from "../schema/queue_entries.js";
+import { briefs } from "../schema/briefs.js";
 import { workspaces } from "../schema/workspaces.js";
 import { jaceApprovals } from "../schema/jace_sessions.js";
 
@@ -899,9 +900,12 @@ async function findConfirmedAlignmentBriefApproval(
  * the brief-confirm flow depends on.
  */
 function extractBriefBudgetAndModel(
-  toolInput: Record<string, unknown>
+  toolInput: unknown
 ): { estimatedBudgetUsd: number; modelOverride: string; taskType: string | null } | null {
-  const brief = toolInput["_brief"];
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return null;
+  }
+  const brief = (toolInput as Record<string, unknown>)["_brief"];
   if (!brief || typeof brief !== "object" || Array.isArray(brief)) return null;
   const b = brief as Record<string, unknown>;
 
@@ -919,6 +923,25 @@ function extractBriefBudgetAndModel(
   const taskType = typeof taskTypeValue === "string" && taskTypeValue.length > 0 ? taskTypeValue : null;
 
   return { estimatedBudgetUsd: estimateUsd, modelOverride: slug, taskType };
+}
+
+/**
+ * Read the server-stamped durable-brief marker from a create-issue approval.
+ * The returned candidate is optional provenance, never an admission gate. It
+ * is validated against the queue workspace in the INSERT itself below, so a
+ * deleted, stale, or foreign marker can only persist as NULL.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function extractBriefLineageId(toolInput: unknown): string | null {
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return null;
+  }
+  const marker = (toolInput as Record<string, unknown>)["_briefLineage"];
+  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+  const briefId = (marker as Record<string, unknown>)["briefId"];
+  if (typeof briefId !== "string" || !UUID_PATTERN.test(briefId)) return null;
+  return briefId;
 }
 
 /**
@@ -1553,11 +1576,19 @@ export async function enqueueGithubIssue(data: {
   // the SAME matched brief's `_brief.taskType` — same lifecycle, same
   // "written regardless of queued vs dependency-parked" rule below.
   let taskType: string | null = null;
+  // This resolution is deliberately separate from the cost envelope below:
+  // a valid durable brief marker proves provenance even if an old approval
+  // lacks `_brief` cost fields, while missing provenance must not be inferred
+  // from the session that happens to be active now.
+  const issueUrl = githubIssueUrl(data.repoFullName, data.number);
+  const matchedApproval = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
+  const alignmentBriefId = matchedApproval
+    ? extractBriefLineageId(matchedApproval.toolInput)
+    : null;
   if (!v2Parked) {
     const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
     if (requireAlignment) {
-      const issueUrl = githubIssueUrl(data.repoFullName, data.number);
-      const matched = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
+      const matched = matchedApproval;
 
       if (matched) {
         const briefValues = extractBriefBudgetAndModel(matched.toolInput);
@@ -1640,6 +1671,19 @@ export async function enqueueGithubIssue(data: {
       estimatedBudgetUsd,
       modelOverride,
       taskType,
+      // Resolve the marker in the SAME INSERT that persists the queue row.
+      // The workspace predicate prevents a valid UUID from another tenant
+      // becoming false provenance; no row (or a deleted row) yields NULL.
+      alignmentBriefId:
+        alignmentBriefId === null
+          ? null
+          : sql`(
+              SELECT ${briefs.id}
+              FROM ${briefs}
+              WHERE ${briefs.id} = ${alignmentBriefId}
+                AND ${briefs.workspaceId} = ${data.workspaceId}
+              LIMIT 1
+            )`,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });

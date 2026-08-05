@@ -407,10 +407,16 @@ function issueNumberOf(externalId: string): string {
  * without query/hash decorations. A missing or conflicting identity fails
  * closed by returning null, so it cannot become a cross-repository run link.
  */
-function canonicalPrUrlForQueueEntry(
+export type CanonicalPrIdentity = {
+  url: string;
+  repo: string;
+  number: number;
+};
+
+export function canonicalPrIdentityForQueueEntry(
   prUrl: string | undefined,
   externalId: string
-): string | null {
+): CanonicalPrIdentity | null {
   if (!prUrl) return null;
 
   const expectedRepoSlug = repoSlugFromExternalId(externalId);
@@ -436,7 +442,18 @@ function canonicalPrUrlForQueueEntry(
   if (actualRepo !== expectedRepo) return null;
 
   // Use the queue's server-controlled casing, not the runner's spelling.
-  return `https://github.com/${expectedRepoSlug}/pull/${number}`;
+  return {
+    url: `https://github.com/${expectedRepoSlug}/pull/${number}`,
+    repo: expectedRepoSlug,
+    number,
+  };
+}
+
+export function canonicalPrUrlForQueueEntry(
+  prUrl: string | undefined,
+  externalId: string
+): string | null {
+  return canonicalPrIdentityForQueueEntry(prUrl, externalId)?.url ?? null;
 }
 
 /**
@@ -1345,7 +1362,7 @@ export async function recordRunnerResult(data: {
       ? (resultingState as TerminalQueueState)
       : null;
 
-  const canonicalPrUrl = canonicalPrUrlForQueueEntry(data.prUrl, completedExternalId);
+  const canonicalPr = canonicalPrIdentityForQueueEntry(data.prUrl, completedExternalId);
   const canonicalPrHeadSha = canonicalGitCommitSha(data.prHeadSha);
 
   // Dependency awareness: a green entry may release parked dependents that were
@@ -1378,10 +1395,16 @@ export async function recordRunnerResult(data: {
       // Persist the PR the run opened (#891a) so the dashboard can surface it
       // and (#891b) reconcile status against the PR's real CI. Only overwrite
       // with a non-empty value — a later heartbeat with no PR must not clear it.
-      ...(canonicalPrUrl ? { prUrl: canonicalPrUrl } : {}),
+      ...(canonicalPr
+        ? {
+            prUrl: canonicalPr.url,
+            prRepo: canonicalPr.repo,
+            prNumber: canonicalPr.number,
+          }
+        : {}),
       // A head without an accepted PR, or from any non-green result, is not
       // run-to-PR provenance. Preserve the existing evidence in both cases.
-      ...(data.status === "green" && canonicalPrUrl && canonicalPrHeadSha
+      ...(data.status === "green" && canonicalPr && canonicalPrHeadSha
         ? { prHeadSha: canonicalPrHeadSha }
         : {}),
     })

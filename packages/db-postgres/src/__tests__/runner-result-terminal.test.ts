@@ -51,7 +51,11 @@ vi.mock("../db.js", () => ({
   },
 }));
 
-import { canonicalGitCommitSha, recordRunnerResult } from "../queries/runner.js";
+import {
+  canonicalGitCommitSha,
+  canonicalPrIdentityForQueueEntry,
+  recordRunnerResult,
+} from "../queries/runner.js";
 
 const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 
@@ -135,6 +139,8 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
 
     expect(runUpdateValues).toMatchObject({
       prUrl: "https://github.com/o/r/pull/9",
+      prRepo: "o/r",
+      prNumber: 9,
     });
   });
 
@@ -209,5 +215,16 @@ describe("canonicalGitCommitSha", () => {
     expect(canonicalGitCommitSha("b".repeat(64))).toBe("b".repeat(64));
     expect(canonicalGitCommitSha("a".repeat(39))).toBeNull();
     expect(canonicalGitCommitSha("z".repeat(40))).toBeNull();
+  });
+});
+
+describe("canonicalPrIdentityForQueueEntry", () => {
+  it("returns the server-bound canonical URL, repository, and PR number together", () => {
+    expect(
+      canonicalPrIdentityForQueueEntry(
+        "https://github.com/O/R/pull/9?tab=files#discussion",
+        "o/r#42"
+      )
+    ).toEqual({ url: "https://github.com/o/r/pull/9", repo: "o/r", number: 9 });
   });
 });

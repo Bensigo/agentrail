@@ -2271,6 +2271,8 @@ export {
   claimQueueEntry,
   listQueueEntries,
   recordRunnerResult,
+  canonicalPrUrlForQueueEntry,
+  canonicalPrIdentityForQueueEntry,
   reconcileStaleRuns,
   recordRunnerLiveness,
   latestRunForIssue,

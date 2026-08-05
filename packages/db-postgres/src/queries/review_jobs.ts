@@ -86,6 +86,31 @@ export async function listReviewJobsForPr(input: {
     .orderBy(reviewJobs.createdAt);
 }
 
+/**
+ * Read only review jobs for the exact head a run published. A run-level
+ * evidence surface must use this instead of the PR-wide history so a later
+ * push cannot be presented as evidence for an earlier run.
+ */
+export async function listReviewJobsForPrHead(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+}): Promise<ReviewJobRow[]> {
+  return db
+    .select()
+    .from(reviewJobs)
+    .where(
+      and(
+        eq(reviewJobs.workspaceId, input.workspaceId),
+        eq(reviewJobs.repo, input.repo),
+        eq(reviewJobs.prNumber, input.prNumber),
+        eq(reviewJobs.headSha, input.headSha)
+      )
+    )
+    .orderBy(reviewJobs.createdAt);
+}
+
 // --- row mapping (raw db.execute results are snake_case) --------------------
 
 /**

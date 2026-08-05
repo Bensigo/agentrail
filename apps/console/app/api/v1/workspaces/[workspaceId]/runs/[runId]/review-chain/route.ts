@@ -3,8 +3,8 @@ import { auth } from "@agentrail/auth";
 import {
   getRun,
   getWorkspaceMembership,
-  listReviewEventsForPr,
-  listReviewJobsForPr,
+  listReviewEventsForPrHead,
+  listReviewJobsForPrHead,
 } from "@agentrail/db-postgres";
 import { parseGithubPrUrl } from "../../../../../../../../lib/github-merge";
 
@@ -24,6 +24,10 @@ export type ReviewChainPrResolution =
       repo: null;
       number: null;
     };
+
+export type ReviewChainEvidenceResolution =
+  | { state: "head_bound"; headSha: string }
+  | { state: "unknown"; headSha: null };
 
 /**
  * Resolve a run's PR URL into the repo slug + PR number the chain queries need.
@@ -70,21 +74,27 @@ export async function GET(
   }
 
   const prResolution = resolveReviewChainPr(run.prUrl);
-  let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPr>> = [];
-  let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPr>> = [];
+  const publishedHead = run.prHeadSha?.trim() || null;
+  const evidenceResolution: ReviewChainEvidenceResolution = publishedHead
+    ? { state: "head_bound", headSha: publishedHead }
+    : { state: "unknown", headSha: null };
+  let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPrHead>> = [];
+  let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPrHead>> = [];
 
-  if (prResolution.state === "resolved") {
+  if (prResolution.state === "resolved" && publishedHead) {
     try {
       [reviewJobs, reviewEvents] = await Promise.all([
-        listReviewJobsForPr({
+        listReviewJobsForPrHead({
           workspaceId,
           repo: prResolution.repo,
           prNumber: prResolution.number,
+          headSha: publishedHead,
         }),
-        listReviewEventsForPr({
+        listReviewEventsForPrHead({
           workspaceId,
           repo: prResolution.repo,
           prNumber: prResolution.number,
+          headSha: publishedHead,
         }),
       ]);
     } catch (err) {
@@ -102,8 +112,10 @@ export async function GET(
       workspaceId: run.workspaceId,
       queueEntryId: run.queueEntryId ?? null,
       prUrl: run.prUrl || null,
+      prHeadSha: publishedHead,
     },
     prResolution,
+    evidenceResolution,
     reviewJobs,
     reviewEvents,
   });

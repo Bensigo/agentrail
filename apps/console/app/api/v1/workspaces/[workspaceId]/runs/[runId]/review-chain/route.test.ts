@@ -8,16 +8,16 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getRun: vi.fn(),
   getWorkspaceMembership: vi.fn(),
-  listReviewEventsForPr: vi.fn(),
-  listReviewJobsForPr: vi.fn(),
+  listReviewEventsForPrHead: vi.fn(),
+  listReviewJobsForPrHead: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   getRun,
   getWorkspaceMembership,
-  listReviewEventsForPr,
-  listReviewJobsForPr,
+  listReviewEventsForPrHead,
+  listReviewJobsForPrHead,
 } from "@agentrail/db-postgres";
 import { GET, resolveReviewChainPr } from "./route";
 
@@ -40,6 +40,7 @@ const RUN = {
   createdAt: NOW,
   queueEntryId: "queue-entry-1",
   prUrl: "https://github.com/ada/widgets/pull/42",
+  prHeadSha: "a".repeat(40),
 };
 
 function makeRequest(): NextRequest {
@@ -124,14 +125,14 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
 
     const res = await GET(makeRequest(), makeParams());
     expect(res.status).toBe(404);
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
-    expect(listReviewEventsForPr).not.toHaveBeenCalled();
+    expect(listReviewJobsForPrHead).not.toHaveBeenCalled();
+    expect(listReviewEventsForPrHead).not.toHaveBeenCalled();
   });
 
   it("returns the queue-entry identity and ordered review history for a resolved PR", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue(RUN as never);
-    vi.mocked(listReviewJobsForPr).mockResolvedValue([
+    vi.mocked(listReviewJobsForPrHead).mockResolvedValue([
       {
         id: "job-1",
         workspaceId: WORKSPACE_ID,
@@ -152,7 +153,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
         updatedAt: new Date("2026-08-04T10:01:00.000Z"),
       },
     ] as never);
-    vi.mocked(listReviewEventsForPr).mockResolvedValue([
+    vi.mocked(listReviewEventsForPrHead).mockResolvedValue([
       {
         id: "event-1",
         workspaceId: WORKSPACE_ID,
@@ -184,7 +185,9 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
         workspaceId: WORKSPACE_ID,
         queueEntryId: "queue-entry-1",
         prUrl: "https://github.com/ada/widgets/pull/42",
+        prHeadSha: "a".repeat(40),
       },
+      evidenceResolution: { state: "head_bound", headSha: "a".repeat(40) },
       prResolution: {
         state: "resolved",
         repo: "ada/widgets",
@@ -233,15 +236,17 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
         },
       ],
     });
-    expect(listReviewJobsForPr).toHaveBeenCalledWith({
+    expect(listReviewJobsForPrHead).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       repo: "ada/widgets",
       prNumber: 42,
+      headSha: "a".repeat(40),
     });
-    expect(listReviewEventsForPr).toHaveBeenCalledWith({
+    expect(listReviewEventsForPrHead).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       repo: "ada/widgets",
       prNumber: 42,
+      headSha: "a".repeat(40),
     });
   });
 
@@ -254,8 +259,8 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
 
     expect(res.status).toBe(200);
     expect(json.prResolution).toEqual({ state: "no_pr", repo: null, number: null });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
-    expect(listReviewEventsForPr).not.toHaveBeenCalled();
+    expect(listReviewJobsForPrHead).not.toHaveBeenCalled();
+    expect(listReviewEventsForPrHead).not.toHaveBeenCalled();
     expect(json.reviewJobs).toEqual([]);
     expect(json.reviewEvents).toEqual([]);
   });
@@ -271,17 +276,32 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
 
     expect(res.status).toBe(200);
     expect(json.prResolution).toEqual({ state: "unknown", repo: null, number: null });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
-    expect(listReviewEventsForPr).not.toHaveBeenCalled();
+    expect(listReviewJobsForPrHead).not.toHaveBeenCalled();
+    expect(listReviewEventsForPrHead).not.toHaveBeenCalled();
   });
 
   it("returns 500 with a stable error when the review-history query throws", async () => {
     mockMember();
     vi.mocked(getRun).mockResolvedValue(RUN as never);
-    vi.mocked(listReviewJobsForPr).mockRejectedValue(new Error("db down"));
+    vi.mocked(listReviewJobsForPrHead).mockRejectedValue(new Error("db down"));
 
     const res = await GET(makeRequest(), makeParams());
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Failed to load review chain" });
+  });
+
+  it("returns unknown evidence rather than PR-wide history when the produced head is absent", async () => {
+    mockMember();
+    vi.mocked(getRun).mockResolvedValue({ ...RUN, prHeadSha: null } as never);
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.evidenceResolution).toEqual({ state: "unknown", headSha: null });
+    expect(json.reviewJobs).toEqual([]);
+    expect(json.reviewEvents).toEqual([]);
+    expect(listReviewJobsForPrHead).not.toHaveBeenCalled();
+    expect(listReviewEventsForPrHead).not.toHaveBeenCalled();
   });
 });

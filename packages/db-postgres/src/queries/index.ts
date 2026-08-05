@@ -301,6 +301,9 @@ export interface RunRow {
   createdAt: Date;
   queueEntryId: string | null;
   prUrl: string | null;
+  // Nullable for legacy rows and runners that did not prove the published
+  // commit. Consumers must expose that absence as unknown, never PR-wide.
+  prHeadSha: string | null;
 }
 
 export interface ListRunsResult {
@@ -3138,6 +3141,7 @@ export {
   getReviewMetrics,
   getReviewMetricsReport,
   listReviewEventsForPr,
+  listReviewEventsForPrHead,
   type RecordReviewEventInput,
   type RecordReviewEventResult,
   type ReviewMetricsQuery,
@@ -3167,6 +3171,7 @@ export {
   reviewJobId,
   enqueueReviewJob,
   listReviewJobsForPr,
+  listReviewJobsForPrHead,
   claimReviewJob,
   completeReviewJob,
   bindReviewJobSession,

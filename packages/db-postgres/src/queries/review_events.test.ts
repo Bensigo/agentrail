@@ -36,7 +36,7 @@ vi.mock("../db.js", () => {
 });
 
 import { reviewEvents } from "../schema/review_events.js";
-import { recordHumanReviewTime, recordReviewEvent, listReviewEventsForPr } from "./review_events.js";
+import { recordHumanReviewTime, recordReviewEvent, listReviewEventsForPr, listReviewEventsForPrHead } from "./review_events.js";
 
 const dialect = new PgDialect();
 function renderCondition(condition: unknown) {
@@ -143,5 +143,22 @@ describe("listReviewEventsForPr", () => {
       )
     );
     expect(state.lastOrderBy).toEqual([reviewEvents.occurredAt, reviewEvents.createdAt]);
+  });
+});
+
+describe("listReviewEventsForPrHead", () => {
+  it("filters by workspace, repo, PR number, and exact head", async () => {
+    await listReviewEventsForPrHead({
+      workspaceId: "ws-1", repo: "ada/widgets", prNumber: 42, headSha: "head-a",
+    });
+
+    expect(renderCondition(state.lastWhere)).toEqual(
+      renderCondition(and(
+        eq(reviewEvents.workspaceId, "ws-1"),
+        eq(reviewEvents.repo, "ada/widgets"),
+        eq(reviewEvents.prNumber, 42),
+        eq(reviewEvents.headSha, "head-a")
+      ))
+    );
   });
 });

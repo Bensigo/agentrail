@@ -393,6 +393,47 @@ function issueNumberOf(externalId: string): string {
 }
 
 /**
+ * Bind a runner-reported PR URL to the server-controlled queue repository.
+ *
+ * The runner owns `prUrl`, but it does not own the queue entry's
+ * `external_id`. Accept only a canonical GitHub PR URL whose owner/repo
+ * matches the issue's `owner/repo#number` identity, and return a stable URL
+ * without query/hash decorations. A missing or conflicting identity fails
+ * closed by returning null, so it cannot become a cross-repository run link.
+ */
+function canonicalPrUrlForQueueEntry(
+  prUrl: string | undefined,
+  externalId: string
+): string | null {
+  if (!prUrl) return null;
+
+  const repoMatch = externalId.match(/^([^/\s#]+\/[^/\s#]+)#\d+$/);
+  if (!repoMatch) return null;
+  const expectedRepo = repoMatch[1]!.toLowerCase();
+
+  let parsed: URL;
+  try {
+    parsed = new URL(prUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+    return null;
+  }
+
+  const pathMatch = parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
+  if (!pathMatch) return null;
+  const number = Number(pathMatch[3]);
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+
+  const actualRepo = `${pathMatch[1]}/${pathMatch[2]}`.toLowerCase();
+  if (actualRepo !== expectedRepo) return null;
+
+  // Use the queue's server-controlled casing, not the runner's spelling.
+  return `https://github.com/${repoMatch[1]}/pull/${number}`;
+}
+
+/**
  * #1388 — liveness reclaim timings, the ONE source of truth shared with the
  * Python runtime. These MIRROR `agentrail/runner/liveness_config.json`; the
  * lockstep test `queries/liveness.lockstep.test.ts` reads that JSON and fails
@@ -1286,6 +1327,8 @@ export async function recordRunnerResult(data: {
       ? (resultingState as TerminalQueueState)
       : null;
 
+  const canonicalPrUrl = canonicalPrUrlForQueueEntry(data.prUrl, completedExternalId);
+
   // Dependency awareness: a green entry may release parked dependents that were
   // blocked on it. Best-effort — never fail the result on this.
   if (data.status === "green" && completedExternalId) {
@@ -1316,7 +1359,7 @@ export async function recordRunnerResult(data: {
       // Persist the PR the run opened (#891a) so the dashboard can surface it
       // and (#891b) reconcile status against the PR's real CI. Only overwrite
       // with a non-empty value — a later heartbeat with no PR must not clear it.
-      ...(data.prUrl ? { prUrl: data.prUrl } : {}),
+      ...(canonicalPrUrl ? { prUrl: canonicalPrUrl } : {}),
     })
     .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
 

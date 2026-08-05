@@ -21,6 +21,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 let returnedState = "green";
 let priorState = "running";
 const captured: unknown[] = [];
+let runUpdateValues: Record<string, unknown> | undefined;
 
 vi.mock("../db.js", () => ({
   db: {
@@ -39,7 +40,13 @@ vi.mock("../db.js", () => ({
     },
     // The tail `runs` mirror calls update().set().where() (no returning) —
     // unaffected by the #1343 SQL change, still the fluent chain.
-    update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        runUpdateValues = values;
+        return { where: () => Promise.resolve([]) };
+      },
+    }),
+    insert: () => ({ values: () => Promise.resolve([]) }),
   },
 }));
 
@@ -51,6 +58,7 @@ beforeEach(() => {
   returnedState = "green";
   priorState = "running";
   captured.length = 0;
+  runUpdateValues = undefined;
 });
 
 describe("recordRunnerResult terminalState (green / running)", () => {
@@ -102,5 +110,29 @@ describe("recordRunnerResult transitioned (#1343 duplicate-green guard)", () => 
     const sql = render(captured[0]);
     expect(sql).toContain("FOR UPDATE");
     expect(sql).toContain("prior_state");
+  });
+
+  it("does not persist a PR URL whose owner/repo conflicts with the queue entry", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/attacker/evil-repo/pull/9",
+    });
+
+    expect(runUpdateValues).not.toHaveProperty("prUrl");
+  });
+
+  it("persists a valid PR URL in canonical form for the queue entry repo", async () => {
+    await recordRunnerResult({
+      id: "1",
+      workspaceId: "w",
+      status: "green",
+      prUrl: "https://github.com/O/R/pull/9?tab=files#discussion",
+    });
+
+    expect(runUpdateValues).toMatchObject({
+      prUrl: "https://github.com/o/r/pull/9",
+    });
   });
 });

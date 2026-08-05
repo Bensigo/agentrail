@@ -24,6 +24,7 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // ...and its second one: the first-onboard-vs-recompile read that keeps a
     // push-triggered wiki recompile from re-sending the welcome notice.
     findOnboardEntryStatus: vi.fn(),
+    findAlignmentBriefCandidates: vi.fn(),
     // #1278 PR②: merge enforcement's two DB reads.
     getMergePermission: vi.fn(),
     getInstallationToken: vi.fn(),
@@ -707,6 +708,92 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
 
     expect(res.status).toBe(202);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["cross-repository", "https://github.com/attacker/evil-repo/pull/1"],
+    ["malformed", "not a url"],
+  ])(
+    "does not record a misleading pr_opened event for a %s runner URL",
+    async (_kind, prUrl) => {
+      vi.mocked(recordRunnerResult).mockResolvedValue(
+        greenResult("octocat/hello-world#42")
+      );
+      vi.mocked(getMergePermission).mockResolvedValue(false);
+
+      await POST(req({ ...base, status: "green", pr_url: prUrl }));
+
+      expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+        WS,
+        base.id,
+        "pr_opened",
+        expect.anything(),
+        expect.anything()
+      );
+    }
+  );
+
+  it.each([
+    ["foreign", "https://github.com/attacker/evil-repo/pull/1"],
+    ["malformed", "not a url"],
+    ["missing", undefined],
+  ])(
+    "with merge permission enabled, %s PR URLs do not create merged or merge_failed lifecycle evidence",
+    async (_kind, prUrl) => {
+      vi.mocked(recordRunnerResult).mockResolvedValue(
+        greenResult("octocat/hello-world#42")
+      );
+      vi.mocked(getMergePermission).mockResolvedValue(true);
+      vi.mocked(getInstallationToken).mockResolvedValue(TOKEN);
+      global.fetch = vi.fn() as unknown as typeof fetch;
+
+      await POST(
+        req({
+          ...base,
+          status: "green",
+          ...(prUrl ? { pr_url: prUrl } : {}),
+        })
+      );
+
+      expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+        WS,
+        base.id,
+        "merged",
+        expect.anything(),
+        expect.anything()
+      );
+      expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+        WS,
+        base.id,
+        "merge_failed",
+        expect.anything(),
+        expect.anything()
+      );
+      expect(findOrCreateChangeRecord).not.toHaveBeenCalled();
+      expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    }
+  );
+
+  it("records the accepted canonical URL for a valid runner PR URL", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(
+      greenResult("octocat/hello-world#42")
+    );
+
+    await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: `${PR_URL}?tab=files#discussion`,
+      })
+    );
+
+    expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "pr_opened",
+      `Pull request opened: ${PR_URL}`,
+      expect.any(Number)
+    );
   });
 
   it("merge-failure path (GitHub rejects, e.g. not-mergeable 405): result stays recorded, notify still carries the PR link, merge_failed event, exactly one attempt (never retry-loops)", async () => {

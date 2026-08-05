@@ -172,6 +172,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const parsedPrUrl =
+    typeof body.pr_url === "string" ? parseGithubPrUrl(body.pr_url) : null;
+  const acceptedPrUrl =
+    parsedPrUrl && prUrlMatchesQueueEntryRepo(body.pr_url!, result.externalId)
+      ? `https://github.com/${parsedPrUrl.owner}/${parsedPrUrl.repo}/pull/${parsedPrUrl.number}`
+      : null;
+
   // #1274 PR③: a runner result is genuine "next queue activity" — use it to
   // sweep for OTHER stale, brief-less parked entries IN THIS WORKSPACE
   // (workspace-scoped by the sweep itself — I2 fix round; see
@@ -430,12 +437,12 @@ export async function POST(request: NextRequest) {
         : `Objective gate ${status}${body.gate_reason ? `: ${body.gate_reason}` : ""}`,
     now
   );
-  if (typeof body.pr_url === "string" && body.pr_url) {
+  if (acceptedPrUrl) {
     await recordRunLifecycleEvent(
       workspace_id,
       id,
       "pr_opened",
-      `Pull request opened: ${body.pr_url}`,
+      `Pull request opened: ${acceptedPrUrl}`,
       now + 1
     );
   }
@@ -443,33 +450,32 @@ export async function POST(request: NextRequest) {
   // dot on the run-detail timeline). Only fires when a merge was actually
   // attempted (mergeOutcome stays "not_attempted" — no event — for every
   // permission-OFF run, byte-identical to before this feature existed).
-  if (mergeOutcome === "merged") {
+  if (mergeOutcome === "merged" && acceptedPrUrl) {
     await recordRunLifecycleEvent(
       workspace_id,
       id,
       "merged",
-      `Pull request merged: ${body.pr_url}`,
+      `Pull request merged: ${acceptedPrUrl}`,
       now + 2
     );
-  } else if (mergeOutcome === "merge_failed") {
+  } else if (mergeOutcome === "merge_failed" && acceptedPrUrl) {
     await recordRunLifecycleEvent(
       workspace_id,
       id,
       "merge_failed",
-      `Merge attempt failed — PR left open: ${body.pr_url}`,
+      `Merge attempt failed — PR left open: ${acceptedPrUrl}`,
       now + 2
     );
   }
 
   if (
     (mergeOutcome === "merged" || mergeOutcome === "merge_failed") &&
-    typeof body.pr_url === "string" &&
-    body.pr_url
+    acceptedPrUrl
   ) {
     await appendMergeChangeRecordEvent({
       workspaceId: workspace_id,
       queueEntryId: id,
-      prUrl: body.pr_url,
+      prUrl: acceptedPrUrl,
       outcome: mergeOutcome,
     });
   }

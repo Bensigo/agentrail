@@ -15,6 +15,7 @@ import { ContextSection } from "./components/context-section";
 import { MemorySection } from "./components/memory-section";
 import { BehaviorLintSection } from "./components/behavior-lint-section";
 import { ReplaySection } from "./components/replay-section";
+import { ReviewChainSection } from "./components/review-chain-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -242,6 +243,15 @@ export default function RunDetailPage() {
             </a>
           </div>
           <ReviewGatesSection workspaceId={workspaceId} runId={runId} runStatus={run.status} />
+        </div>
+      )}
+
+      {run && (
+        <div className="mt-6">
+          <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+            Review outcome
+          </h2>
+          <ReviewChainSection workspaceId={workspaceId} runId={runId} />
         </div>
       )}
 

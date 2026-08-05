@@ -192,6 +192,32 @@ class ParseReportTests(unittest.TestCase):
         self.assertEqual(facts.new_flow.sentinel, "_Not available: only one arm ran._")
         self.assertIsNone(facts.routing.regret_line)
 
+    def test_invalid_generated_timestamp_rejects_report(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(
+                _TWO_SECTION_REPORT.replace(
+                    f"Generated: {date.today().isoformat()}",
+                    f"Generated: {date.today().isoformat()} not-a-timestamp",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReportParseError, "Generated timestamp"):
+                parse_report(p)
+
+    def test_malformed_per_arm_row_rejects_partial_evidence(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(
+                _TWO_SECTION_REPORT.replace(
+                    "| new-flow | 2 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                    "| new-flow | malformed | 2 | 0 | 100.0% | 0.0000 | 0.0% | 36.0s | 900 | $0.5000 | $0.5000 |",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReportParseError, "Per-arm summary row"):
+                parse_report(p)
+
 
 # --- The three-outcome gate rule (build_proposal, layer stream) ------------
 

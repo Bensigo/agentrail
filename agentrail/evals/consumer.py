@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -173,6 +173,35 @@ def _row_cells(line: str) -> List[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _parse_generated_date(value: str) -> date:
+    """Accept only a complete ISO date or ISO datetime from the reporter."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError as exc:
+            raise ReportParseError(
+                "Generated timestamp must be a complete ISO date or datetime"
+            ) from exc
+
+
+def _parse_arm_summary_row(cells: List[str]) -> ArmSummaryFacts:
+    """Parse a renderer-owned arm row without silently dropping bad evidence."""
+    if len(cells) != 11:
+        raise ReportParseError("Per-arm summary row has the wrong column count")
+    try:
+        return ArmSummaryFacts(
+            arm=cells[0],
+            repetitions=int(cells[1]),
+            solved=int(cells[2]),
+            total_tokens=int(cells[8]),
+            total_cost_usd=float(cells[9].removeprefix("$")),
+        )
+    except ValueError as exc:
+        raise ReportParseError("Per-arm summary row has invalid evidence") from exc
+
+
 def parse_report(path: Path) -> ReportFacts:
     """Parse a rendered eval report into the facts the proposal rules need.
 
@@ -205,30 +234,16 @@ def parse_report(path: Path) -> ReportFacts:
         stripped = line.strip()
         if stripped.startswith("Generated:"):
             generated_text = stripped.removeprefix("Generated:").strip()
-            try:
-                generated_at = date.fromisoformat(generated_text[:10])
-            except ValueError:
-                generated_at = None
+            generated_at = _parse_generated_date(generated_text)
             continue
         if stripped.startswith("## "):
             section = stripped
             continue
         if section == "## Per-arm summary" and stripped.startswith("|"):
             cells = _row_cells(stripped)
-            if len(cells) < 10 or cells[0] in {"Arm", "---"}:
+            if cells[0] in {"Arm", "---"}:
                 continue
-            try:
-                arm_summaries.append(
-                    ArmSummaryFacts(
-                        arm=cells[0],
-                        repetitions=int(cells[1]),
-                        solved=int(cells[2]),
-                        total_tokens=int(cells[8]),
-                        total_cost_usd=float(cells[9].removeprefix("$")),
-                    )
-                )
-            except ValueError:
-                continue
+            arm_summaries.append(_parse_arm_summary_row(cells))
         if section != _NEW_FLOW_HEADER:
             continue
         if stripped.startswith(_SENTINEL_PREFIX):

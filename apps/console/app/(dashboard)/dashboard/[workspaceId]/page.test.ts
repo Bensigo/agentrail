@@ -35,6 +35,10 @@ vi.mock("./components/review-metrics-panel", () => ({
   ReviewMetricsPanel: () => null,
 }));
 
+vi.mock("./components/human-false-green-panel", () => ({
+  HumanFalseGreenPanel: () => null,
+}));
+
 import { getWorkspace } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
 import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
@@ -43,6 +47,7 @@ import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
 import { HealthRatesPanel } from "./components/health-rates-panel";
+import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
 
 // This repo's vitest config runs with `environment: "node"` — there is no
 // DOM/render harness (no @testing-library/react, no jsdom) anywhere in the
@@ -275,15 +280,33 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
     const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, digestPanel, reviewMetricsPanel, healthRatesPanel] = wrapperChildren;
+    const [, digestPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
 
     expect(asElement(digestPanel).type).toBe(DigestPanel);
     expect(reviewMetricsPanel).toBeDefined();
+    expect(asElement(humanFalseGreenPanel).type).toBe(HumanFalseGreenPanel);
     expect(asElement(healthRatesPanel).type).toBe(HealthRatesPanel);
     expect(asElement(healthRatesPanel).props.workspaceId).toBe(WORKSPACE_ID);
 
     // Cross-check via the same whole-tree search the "undefined" case uses
     // above — exactly one mount, not merely "found at the expected index".
     expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(1);
+  });
+});
+
+describe("WorkspaceDashboardPage production human false-green evidence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockHappyPath();
+  });
+
+  it("mounts the production evidence panel for every accessible workspace", async () => {
+    const root = await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    });
+
+    const panels = findElementsByType(root, HumanFalseGreenPanel);
+    expect(panels).toHaveLength(1);
+    expect(panels[0]?.props.workspaceId).toBe(WORKSPACE_ID);
   });
 });

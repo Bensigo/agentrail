@@ -926,37 +926,22 @@ function extractBriefBudgetAndModel(
 }
 
 /**
- * Read the server-stamped durable-brief marker from a create-issue approval
- * and verify that it still belongs to the queue's workspace. The marker is
- * optional provenance, never an admission gate: deleted, malformed, stale,
- * or foreign data leaves the queue link null rather than stopping work or
- * inventing a relationship from a session's current anchor.
+ * Read the server-stamped durable-brief marker from a create-issue approval.
+ * The returned candidate is optional provenance, never an admission gate. It
+ * is validated against the queue workspace in the INSERT itself below, so a
+ * deleted, stale, or foreign marker can only persist as NULL.
  */
-async function resolveBriefLineageId(
-  workspaceId: string,
-  toolInput: unknown
-): Promise<string | null> {
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function extractBriefLineageId(toolInput: unknown): string | null {
   if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) {
     return null;
   }
   const marker = (toolInput as Record<string, unknown>)["_briefLineage"];
   if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
   const briefId = (marker as Record<string, unknown>)["briefId"];
-  if (typeof briefId !== "string" || briefId.length === 0) return null;
-
-  try {
-    const rows = await db
-      .select({ id: briefs.id })
-      .from(briefs)
-      .where(and(eq(briefs.id, briefId), eq(briefs.workspaceId, workspaceId)));
-    return rows[0]?.id ?? null;
-  } catch (err) {
-    console.warn(
-      `[github-intake] unable to resolve durable brief lineage ${briefId}; queue entry will retain unknown lineage:`,
-      err
-    );
-    return null;
-  }
+  if (typeof briefId !== "string" || !UUID_PATTERN.test(briefId)) return null;
+  return briefId;
 }
 
 /**
@@ -1598,7 +1583,7 @@ export async function enqueueGithubIssue(data: {
   const issueUrl = githubIssueUrl(data.repoFullName, data.number);
   const matchedApproval = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
   const alignmentBriefId = matchedApproval
-    ? await resolveBriefLineageId(data.workspaceId, matchedApproval.toolInput)
+    ? extractBriefLineageId(matchedApproval.toolInput)
     : null;
   if (!v2Parked) {
     const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
@@ -1686,7 +1671,19 @@ export async function enqueueGithubIssue(data: {
       estimatedBudgetUsd,
       modelOverride,
       taskType,
-      alignmentBriefId,
+      // Resolve the marker in the SAME INSERT that persists the queue row.
+      // The workspace predicate prevents a valid UUID from another tenant
+      // becoming false provenance; no row (or a deleted row) yields NULL.
+      alignmentBriefId:
+        alignmentBriefId === null
+          ? null
+          : sql`(
+              SELECT ${briefs.id}
+              FROM ${briefs}
+              WHERE ${briefs.id} = ${alignmentBriefId}
+                AND ${briefs.workspaceId} = ${data.workspaceId}
+              LIMIT 1
+            )`,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });

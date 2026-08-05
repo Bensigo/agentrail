@@ -28,6 +28,22 @@ export function reviewMetricsWindow(now = new Date()): { from: string; to: strin
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
+/**
+ * One stable request shape for the mounted panel. `observedUntil` deliberately
+ * matches the evidence-view cutoff instead of being recomputed during a render.
+ */
+export function reviewMetricsCohortUrl(
+  workspaceId: string,
+  window: { from: string; to: string }
+): string {
+  const search = new URLSearchParams({
+    from: window.from,
+    to: window.to,
+    observedUntil: window.to,
+  });
+  return `/api/v1/workspaces/${workspaceId}/review-metrics/cohorts?${search}`;
+}
+
 export function formatReviewMetric(value: number | null, kind: "minutes" | "seconds" | "cycles" | "percent" | "count"): string {
   if (value === null) return "unknown";
   if (kind === "minutes") return `${Math.round(value)} min`;

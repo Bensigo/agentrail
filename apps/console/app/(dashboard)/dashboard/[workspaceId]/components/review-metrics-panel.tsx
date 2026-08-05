@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Skeleton } from "../../../../components/loading-skeleton";
 import {
   formatKnownSampleSize,
+  reviewMetricsCohortUrl,
   formatReviewDateRange,
   formatReviewMetric,
   reviewMetricsWindow,
@@ -21,12 +22,7 @@ export function ReviewMetricsPanel({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     let active = true;
-    const search = new URLSearchParams({
-      from: dateWindow.from,
-      to: dateWindow.to,
-      observedUntil: dateWindow.to,
-    });
-    fetch(`/api/v1/workspaces/${workspaceId}/review-metrics/cohorts?${search}`)
+    fetch(reviewMetricsCohortUrl(workspaceId, dateWindow))
       .then(async (response) => {
         if (!response.ok) {
           const body = (await response.json().catch(() => ({}))) as { error?: string };
@@ -75,7 +71,7 @@ export function ReviewMetricsPanel({ workspaceId }: { workspaceId: string }) {
 export function ReviewMetricsCohortRow({ cohort }: { cohort: ReviewMetricsCohort }) {
   const metric = (label: string, value: { value: number | null; knownSampleSize: number }, kind: "minutes" | "seconds" | "cycles" | "percent" | "count") => <div><dt className="text-xs text-[var(--gray-09)]">{label}</dt><dd className="font-mono text-sm text-[var(--gray-12)]">{formatReviewMetric(value.value, kind)} <span className="text-xs text-[var(--gray-09)]">({formatKnownSampleSize(value)})</span></dd></div>;
   return <div className="border-b border-[var(--gray-04)] pb-3 last:border-0 last:pb-0">
-    <div className="mb-2 flex items-baseline justify-between gap-3"><h3 className="text-sm font-medium text-[var(--gray-12)]">{cohort.taskFamily}</h3><span className="font-mono text-xs text-[var(--gray-09)]">{cohort.sampleSize} opened PRs</span></div>
+    <div className="mb-2 flex items-baseline justify-between gap-3"><h3 className="text-sm font-medium text-[var(--gray-12)]">{cohort.taskFamily}</h3><span className="font-mono text-xs text-[var(--gray-09)]">{cohort.denominator.openedPullRequests} opened · {cohort.denominator.terminalPullRequests} terminal · merge n={cohort.denominator.mergeRate}</span></div>
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-5">{metric("Human review", cohort.humanReviewMinutes, "minutes")}{metric("First review", cohort.medianTimeToFirstReviewSeconds, "seconds")}{metric("Review cycles", cohort.averageReviewCycles, "cycles")}{metric("Merge rate", cohort.mergeRate, "percent")}{metric("Rework / revert", cohort.postMergeReworkEvents, "count")}</dl>
     {(cohort.exclusions.length > 0 || cohort.limitations.length > 0) && <p className="mt-2 text-xs text-[var(--gray-09)]">Excluded or limited: {[...cohort.exclusions, ...cohort.limitations].join("; ")}</p>}
   </div>;

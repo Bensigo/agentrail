@@ -94,6 +94,10 @@ _PROVENANCE_HEADER = "## Evaluation provenance"
 _PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Scorer", "Gate")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MIN_PROMOTION_REPETITIONS_PER_ARM = 5
+# The layer-promotion decision is specifically the new-flow-vs-full
+# comparison. Other arms may appear in a report, but they cannot substitute for
+# either side of this comparison.
+PROMOTION_COMPARISON_ARMS = ("full", "new-flow")
 
 # Table-row labels in the `## New-flow vs full` section, in render order.
 NEW_FLOW_ROW_LABELS = (
@@ -126,6 +130,9 @@ class ArmSummaryFacts:
     solved: int
     total_tokens: int
     total_cost_usd: float
+    # Task names recovered from the reporter's per-arm breakdown. Promotion
+    # requires these to be present and identical across comparison arms.
+    tasks: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -224,6 +231,7 @@ def parse_report(path: Path) -> ReportFacts:
     provenance: Optional[ProvenanceFacts] = None
     provenance_rows: Dict[str, str] = {}
     network_artifact_count = 0
+    arm_tasks: Dict[str, set[str]] = {}
 
     has_new_flow_header = any(line.strip() == _NEW_FLOW_HEADER for line in lines)
     has_routing_header = any(
@@ -238,6 +246,7 @@ def parse_report(path: Path) -> ReportFacts:
 
     new_flow = NewFlowFacts(available=False)
     section: Optional[str] = None
+    current_arm: Optional[str] = None
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("Generated:"):
@@ -249,7 +258,16 @@ def parse_report(path: Path) -> ReportFacts:
             continue
         if stripped.startswith("## "):
             section = stripped
+            current_arm = None
             continue
+        if section == "## Failures, ties, and spread" and stripped.startswith("### Arm: "):
+            current_arm = stripped.removeprefix("### Arm: ").strip()
+            arm_tasks.setdefault(current_arm, set())
+            continue
+        if section == "## Failures, ties, and spread" and current_arm:
+            task_match = re.match(r"^- (.+): [-+]?\d+(?:\.\d+)?%$", stripped)
+            if task_match:
+                arm_tasks[current_arm].add(task_match.group(1))
         if section == "## Per-arm summary" and stripped.startswith("|"):
             cells = _row_cells(stripped)
             if len(cells) < 10 or cells[0] in {"Arm", "---"}:
@@ -262,6 +280,7 @@ def parse_report(path: Path) -> ReportFacts:
                         solved=int(cells[2]),
                         total_tokens=int(cells[8]),
                         total_cost_usd=float(cells[9].removeprefix("$")),
+                        tasks=tuple(sorted(arm_tasks.get(cells[0], set()))),
                     )
                 )
             except ValueError:
@@ -297,6 +316,20 @@ def parse_report(path: Path) -> ReportFacts:
     new_flow.available = len(new_flow.rows) == len(NEW_FLOW_ROW_LABELS)
     if provenance_rows:
         provenance = ProvenanceFacts(fingerprints=provenance_rows)
+
+    # The summary table appears before the per-arm task breakdown, so attach
+    # task coverage after parsing the whole document.
+    arm_summaries = [
+        ArmSummaryFacts(
+            arm=summary.arm,
+            repetitions=summary.repetitions,
+            solved=summary.solved,
+            total_tokens=summary.total_tokens,
+            total_cost_usd=summary.total_cost_usd,
+            tasks=tuple(sorted(arm_tasks.get(summary.arm, set()))),
+        )
+        for summary in arm_summaries
+    ]
 
     routing = RoutingFacts()
     for line in lines:
@@ -459,6 +492,20 @@ def _report_hold_reasons(
             f"{max_report_age_days}-day freshness boundary"
         )
 
+    summaries_by_arm = {summary.arm: summary for summary in facts.arm_summaries}
+    missing_comparison_arms = [
+        arm for arm in PROMOTION_COMPARISON_ARMS if arm not in summaries_by_arm
+    ]
+    if missing_comparison_arms:
+        reasons.append(
+            "missing comparison arm(s): " + ", ".join(missing_comparison_arms)
+        )
+    comparison_summaries = [
+        summaries_by_arm[arm]
+        for arm in PROMOTION_COMPARISON_ARMS
+        if arm in summaries_by_arm
+    ]
+
     if not facts.arm_summaries:
         reasons.append("report evidence is unknown: missing Per-arm summary rows")
     elif all(summary.repetitions == 0 for summary in facts.arm_summaries):
@@ -476,6 +523,36 @@ def _report_hold_reasons(
             "underpowered report: every promotion arm needs at least "
             f"{MIN_PROMOTION_REPETITIONS_PER_ARM} real repetitions"
         )
+
+    if len(comparison_summaries) == len(PROMOTION_COMPARISON_ARMS):
+        repetition_counts = {summary.repetitions for summary in comparison_summaries}
+        if len(repetition_counts) != 1:
+            reasons.append(
+                "inconsistent comparison repetition coverage: "
+                + ", ".join(
+                    f"{summary.arm}={summary.repetitions}"
+                    for summary in comparison_summaries
+                )
+            )
+
+        missing_task_coverage = [
+            summary.arm for summary in comparison_summaries if not summary.tasks
+        ]
+        if missing_task_coverage:
+            reasons.append(
+                "task coverage is unknown for comparison arm(s): "
+                + ", ".join(missing_task_coverage)
+            )
+        else:
+            task_sets = {summary.tasks for summary in comparison_summaries}
+            if len(task_sets) != 1:
+                reasons.append(
+                    "inconsistent comparison task coverage: "
+                    + ", ".join(
+                        f"{summary.arm}={len(summary.tasks)} tasks"
+                        for summary in comparison_summaries
+                    )
+                )
 
     if facts.provenance is None:
         reasons.append("report lineage is unknown: missing Evaluation provenance section")

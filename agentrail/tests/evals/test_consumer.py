@@ -156,6 +156,20 @@ Generated: {date.today().isoformat()}
 
 - Total routing cost-regret: $2.5000
 - Net $-delta vs baseline: +$1.2500 (positive = overspend)
+
+## Failures, ties, and spread
+
+### Arm: full
+
+- Failed repetitions: 2 of 5
+- Per-task solve-rate:
+  - task-a: 60.0%
+
+### Arm: new-flow
+
+- Failed repetitions: 1 of 5
+- Per-task solve-rate:
+  - task-a: 80.0%
 """
 
 
@@ -259,7 +273,16 @@ def _facts_with_deltas(
                 solved=1,
                 total_tokens=1000,
                 total_cost_usd=1.0,
-            )
+                tasks=("task-a",),
+            ),
+            ArmSummaryFacts(
+                arm="new-flow",
+                repetitions=5,
+                solved=1,
+                total_tokens=1000,
+                total_cost_usd=1.0,
+                tasks=("task-a",),
+            ),
         ],
         provenance=ProvenanceFacts(
             fingerprints={key: "a" * 64 for key in ("Code", "Config", "Corpus", "Scorer", "Gate")}
@@ -308,6 +331,36 @@ class GateRuleTests(unittest.TestCase):
 
 
 class ApplyEvidenceGateTests(unittest.TestCase):
+    def test_missing_comparison_arm_holds_even_when_existing_arm_is_powered(self) -> None:
+        """A single qualifying arm is not a promotion comparison."""
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        # The fixture deliberately contains only the qualifying ``full`` arm;
+        # the new-flow comparison arm is absent.
+        facts.arm_summaries = [facts.arm_summaries[0]]
+        with TemporaryDirectory() as td:
+            proposal = build_proposal(facts, Path(td))
+
+        self.assertTrue(proposal.is_held)
+        self.assertEqual(proposal.layer_changes, [])
+        self.assertIsNone(proposal.overrides_content)
+        self.assertTrue(any("missing comparison arm" in reason for reason in proposal.hold_reasons))
+
+    def test_comparison_arms_need_matching_task_and_repetition_coverage(self) -> None:
+        facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
+        facts.arm_summaries[1] = ArmSummaryFacts(
+            "new-flow", 6, 5, 1200, 1.2, tasks=("task-b",)
+        )
+
+        proposal = build_proposal(facts, Path("."))
+
+        self.assertTrue(proposal.is_held)
+        self.assertTrue(
+            any("inconsistent comparison repetition coverage" in reason for reason in proposal.hold_reasons)
+        )
+        self.assertTrue(
+            any("inconsistent comparison task coverage" in reason for reason in proposal.hold_reasons)
+        )
+
     def test_stale_report_holds_and_never_writes(self) -> None:
         facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
         facts.generated_at = date(2026, 8, 1)
@@ -372,6 +425,7 @@ class ApplyEvidenceGateTests(unittest.TestCase):
     def test_synthetic_only_report_holds_explicitly(self) -> None:
         facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
         facts.arm_summaries[0] = ArmSummaryFacts("full", 0, 0, 0, 0.0)
+        facts.arm_summaries[1] = ArmSummaryFacts("new-flow", 0, 0, 0, 0.0)
         facts.network_artifact_count = 5
         proposal = build_proposal(facts, Path("."))
         self.assertTrue(proposal.is_held)
@@ -654,11 +708,13 @@ class RoundTripTests(unittest.TestCase):
             "full", 5, 3, 2, 0.60, 0.0, 1000, 500, 0, 0, 1500, 3.00, 1.00,
             mean_wall_time_s=40.0, total_wall_time_s=200.0,
             gate_passed_count=3, false_green_count=1, false_green_rate=0.20,
+            per_task_solve_rate={"task-a": 0.60},
         )
         new_flow = ArmReport(
             "new-flow", 5, 4, 1, 0.80, 0.0, 900, 400, 0, 0, 1300, 2.00, 0.50,
             mean_wall_time_s=36.0, total_wall_time_s=180.0,
             gate_passed_count=4, false_green_count=0, false_green_rate=0.0,
+            per_task_solve_rate={"task-a": 0.80},
         )
         return render_markdown(
             [full, new_flow],

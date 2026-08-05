@@ -223,6 +223,31 @@ export async function listReviewEventsForPr(input: {
     .orderBy(reviewEvents.occurredAt, reviewEvents.createdAt);
 }
 
+/**
+ * Read events attributable to one exact published PR head. Events without a
+ * head are intentionally excluded: their relationship to a specific run is
+ * unknown and must never be guessed from the PR number alone.
+ */
+export async function listReviewEventsForPrHead(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+}): Promise<ReviewEventRow[]> {
+  return db
+    .select()
+    .from(reviewEvents)
+    .where(
+      and(
+        eq(reviewEvents.workspaceId, input.workspaceId),
+        eq(reviewEvents.repo, input.repo),
+        eq(reviewEvents.prNumber, input.prNumber),
+        eq(reviewEvents.headSha, input.headSha)
+      )
+    )
+    .orderBy(reviewEvents.occurredAt, reviewEvents.createdAt);
+}
+
 export type {
   ReviewEventRow,
   ReviewEventType,

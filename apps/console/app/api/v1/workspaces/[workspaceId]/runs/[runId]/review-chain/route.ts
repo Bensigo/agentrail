@@ -5,8 +5,8 @@ import {
   getRunQueueEntryIdentity,
   getQueueEntryBriefReference,
   getWorkspaceMembership,
-  listReviewEventsForPr,
-  listReviewJobsForPr,
+  listReviewEventsForPrHead,
+  listReviewJobsForPrHead,
 } from "@agentrail/db-postgres";
 import { resolveReviewChainPr } from "./review-chain";
 
@@ -38,6 +38,10 @@ export async function GET(
   }
 
   const prResolution = resolveReviewChainPr(run.prUrl);
+  const publishedHead = run.prHeadSha?.trim() || null;
+  const evidenceResolution = publishedHead
+    ? { state: "head_bound" as const, headSha: publishedHead }
+    : { state: "unknown" as const, headSha: null };
   type AlignmentBriefResolution =
     | { state: "linked"; id: string }
     | { state: "absent"; id: null }
@@ -71,6 +75,7 @@ export async function GET(
           workspaceId: run.workspaceId,
           queueEntryId: run.queueEntryId ?? null,
           prUrl: run.prUrl || null,
+          prHeadSha: publishedHead,
         },
         prResolution: {
           state: "unknown",
@@ -79,6 +84,7 @@ export async function GET(
           reason: "missing_trusted_repository",
         },
         alignmentBrief,
+        evidenceResolution,
         reviewJobs: [],
         reviewEvents: [],
       });
@@ -90,6 +96,7 @@ export async function GET(
           workspaceId: run.workspaceId,
           queueEntryId: run.queueEntryId ?? null,
           prUrl: run.prUrl || null,
+          prHeadSha: publishedHead,
         },
         prResolution: {
           state: "unknown",
@@ -98,27 +105,30 @@ export async function GET(
           reason: "repository_mismatch",
         },
         alignmentBrief,
+        evidenceResolution,
         reviewJobs: [],
         reviewEvents: [],
       });
     }
   }
 
-  let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPr>> = [];
-  let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPr>> = [];
+  let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPrHead>> = [];
+  let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPrHead>> = [];
 
-  if (prResolution.state === "resolved") {
+  if (prResolution.state === "resolved" && publishedHead) {
     try {
       [reviewJobs, reviewEvents] = await Promise.all([
-        listReviewJobsForPr({
+        listReviewJobsForPrHead({
           workspaceId,
           repo: prResolution.repo,
           prNumber: prResolution.number,
+          headSha: publishedHead,
         }),
-        listReviewEventsForPr({
+        listReviewEventsForPrHead({
           workspaceId,
           repo: prResolution.repo,
           prNumber: prResolution.number,
+          headSha: publishedHead,
         }),
       ]);
     } catch (err) {
@@ -136,9 +146,11 @@ export async function GET(
       workspaceId: run.workspaceId,
       queueEntryId: run.queueEntryId ?? null,
       prUrl: run.prUrl || null,
+      prHeadSha: publishedHead,
     },
     alignmentBrief,
     prResolution,
+    evidenceResolution,
     reviewJobs,
     reviewEvents,
   });

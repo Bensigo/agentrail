@@ -337,6 +337,19 @@ function repoSlugToUrl(slug: string): string {
   return `https://github.com/${trimmed}`;
 }
 
+/** Extract the repository slug encoded in a queue external ID, if present. */
+function repoSlugFromExternalId(externalId: string): string | null {
+  const id = externalId.startsWith(ONBOARD_EXTERNAL_ID_PREFIX)
+    ? externalId.slice(ONBOARD_EXTERNAL_ID_PREFIX.length)
+    : externalId;
+
+  const urlMatch = id.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);
+  if (urlMatch) return urlMatch[1]!;
+
+  const slugMatch = id.match(/^([\w.-]+\/[\w.-]+)(?:#.*)?$/);
+  return slugMatch?.[1] ?? null;
+}
+
 /**
  * Derive the `owner/name` slug for a claimed entry. Prefer a repo encoded on the
  * entry's `externalId` (a full issue URL or `owner/name#123`); otherwise fall
@@ -354,15 +367,8 @@ async function deriveRepoSlug(
   // itself; otherwise the colon fails both patterns and we'd fall back to the
   // workspace's first configured repo — onboarding the wrong repo on a
   // multi-repo workspace (#1149).
-  const id = externalId.startsWith(ONBOARD_EXTERNAL_ID_PREFIX)
-    ? externalId.slice(ONBOARD_EXTERNAL_ID_PREFIX.length)
-    : externalId;
-
-  const urlMatch = id.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);
-  if (urlMatch) return urlMatch[1]!;
-
-  const slugMatch = id.match(/^([\w.-]+\/[\w.-]+)(?:#.*)?$/);
-  if (slugMatch) return slugMatch[1]!;
+  const encodedRepo = repoSlugFromExternalId(externalId);
+  if (encodedRepo) return encodedRepo;
 
   const rows = await db
     .select({ config: connectors.config })
@@ -407,9 +413,9 @@ function canonicalPrUrlForQueueEntry(
 ): string | null {
   if (!prUrl) return null;
 
-  const repoMatch = externalId.match(/^([^/\s#]+\/[^/\s#]+)#\d+$/);
-  if (!repoMatch) return null;
-  const expectedRepo = repoMatch[1]!.toLowerCase();
+  const expectedRepoSlug = repoSlugFromExternalId(externalId);
+  if (!expectedRepoSlug) return null;
+  const expectedRepo = expectedRepoSlug.toLowerCase();
 
   let parsed: URL;
   try {
@@ -430,7 +436,7 @@ function canonicalPrUrlForQueueEntry(
   if (actualRepo !== expectedRepo) return null;
 
   // Use the queue's server-controlled casing, not the runner's spelling.
-  return `https://github.com/${repoMatch[1]}/pull/${number}`;
+  return `https://github.com/${expectedRepoSlug}/pull/${number}`;
 }
 
 /**

@@ -305,7 +305,14 @@ def _facts_with_deltas(
                 solved=1,
                 total_tokens=1000,
                 total_cost_usd=1.0,
-            )
+            ),
+            ArmSummaryFacts(
+                arm="new-flow",
+                repetitions=5,
+                solved=1,
+                total_tokens=1000,
+                total_cost_usd=1.0,
+            ),
         ],
         provenance=ProvenanceFacts(
             fingerprints={key: "a" * 64 for key in ("Code", "Config", "Corpus", "Scorer", "Gate")}
@@ -354,6 +361,31 @@ class GateRuleTests(unittest.TestCase):
 
 
 class ApplyEvidenceGateTests(unittest.TestCase):
+    def test_missing_required_arm_holds_and_apply_never_writes(self) -> None:
+        for missing_arm in ("full", "new-flow"):
+            with self.subTest(missing_arm=missing_arm), TemporaryDirectory() as td:
+                root = Path(td)
+                facts = _facts_with_deltas(
+                    solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20
+                )
+                facts.arm_summaries = [
+                    summary
+                    for summary in facts.arm_summaries
+                    if summary.arm != missing_arm
+                ]
+                proposal = build_proposal(facts, root)
+                before = _snapshot_tree(root)
+
+                with self.assertRaises(ApplyReportGateError):
+                    apply_proposal(proposal, root, link_loader=_linked)
+
+                self.assertEqual(proposal.promotion_decision, PromotionDecision.HOLD)
+                self.assertFalse(proposal.has_changes)
+                self.assertTrue(
+                    any(missing_arm in reason for reason in proposal.hold_reasons)
+                )
+                self.assertEqual(before, _snapshot_tree(root))
+
     def test_stale_report_holds_and_never_writes(self) -> None:
         facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
         facts.generated_at = date(2026, 8, 1)
@@ -418,6 +450,7 @@ class ApplyEvidenceGateTests(unittest.TestCase):
     def test_synthetic_only_report_holds_explicitly(self) -> None:
         facts = _facts_with_deltas(solve=0.20, dollars=-0.50, wall=-4.0, fg=-0.20)
         facts.arm_summaries[0] = ArmSummaryFacts("full", 0, 0, 0, 0.0)
+        facts.arm_summaries[1] = ArmSummaryFacts("new-flow", 0, 0, 0, 0.0)
         facts.network_artifact_count = 5
         proposal = build_proposal(facts, Path("."))
         self.assertTrue(proposal.is_held)

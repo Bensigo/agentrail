@@ -95,6 +95,7 @@ _PROVENANCE_HEADER = "## Evaluation provenance"
 _PROVENANCE_KEYS = ("Code", "Config", "Corpus", "Scorer", "Gate")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MIN_PROMOTION_REPETITIONS_PER_ARM = 5
+REQUIRED_PROMOTION_ARMS = ("full", "new-flow")
 
 # Table-row labels in the `## New-flow vs full` section, in render order.
 NEW_FLOW_ROW_LABELS = (
@@ -501,6 +502,15 @@ def _report_hold_reasons(
         reasons.append(
             "underpowered report: every promotion arm needs at least "
             f"{MIN_PROMOTION_REPETITIONS_PER_ARM} real repetitions"
+        )
+    present_arms = {summary.arm for summary in facts.arm_summaries}
+    missing_promotion_arms = [
+        arm for arm in REQUIRED_PROMOTION_ARMS if arm not in present_arms
+    ]
+    if missing_promotion_arms:
+        reasons.append(
+            "incomplete promotion evidence: missing required arm(s) "
+            + ", ".join(missing_promotion_arms)
         )
 
     if facts.provenance is None:

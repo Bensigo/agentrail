@@ -2220,6 +2220,7 @@ export {
   claimQueueEntry,
   listQueueEntries,
   recordRunnerResult,
+  canonicalPrUrlForQueueEntry,
   reconcileStaleRuns,
   recordRunnerLiveness,
   latestRunForIssue,

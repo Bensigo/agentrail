@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   recordRunnerResult,
+  canonicalPrUrlForQueueEntry,
   touchApiKeyLastUsed,
   getMergePermission,
   getInstallationToken,
@@ -171,6 +172,11 @@ export async function POST(request: NextRequest) {
       { status: 404 }
     );
   }
+
+  const acceptedPrUrl = canonicalPrUrlForQueueEntry(
+    typeof body.pr_url === "string" ? body.pr_url : undefined,
+    result.externalId
+  );
 
   // #1274 PR③: a runner result is genuine "next queue activity" — use it to
   // sweep for OTHER stale, brief-less parked entries IN THIS WORKSPACE
@@ -430,12 +436,12 @@ export async function POST(request: NextRequest) {
         : `Objective gate ${status}${body.gate_reason ? `: ${body.gate_reason}` : ""}`,
     now
   );
-  if (typeof body.pr_url === "string" && body.pr_url) {
+  if (acceptedPrUrl) {
     await recordRunLifecycleEvent(
       workspace_id,
       id,
       "pr_opened",
-      `Pull request opened: ${body.pr_url}`,
+      `Pull request opened: ${acceptedPrUrl}`,
       now + 1
     );
   }
@@ -448,7 +454,7 @@ export async function POST(request: NextRequest) {
       workspace_id,
       id,
       "merged",
-      `Pull request merged: ${body.pr_url}`,
+      `Pull request merged: ${acceptedPrUrl}`,
       now + 2
     );
   } else if (mergeOutcome === "merge_failed") {
@@ -456,20 +462,19 @@ export async function POST(request: NextRequest) {
       workspace_id,
       id,
       "merge_failed",
-      `Merge attempt failed — PR left open: ${body.pr_url}`,
+      `Merge attempt failed — PR left open: ${acceptedPrUrl}`,
       now + 2
     );
   }
 
   if (
     (mergeOutcome === "merged" || mergeOutcome === "merge_failed") &&
-    typeof body.pr_url === "string" &&
-    body.pr_url
+    acceptedPrUrl
   ) {
     await appendMergeChangeRecordEvent({
       workspaceId: workspace_id,
       queueEntryId: id,
-      prUrl: body.pr_url,
+      prUrl: acceptedPrUrl,
       outcome: mergeOutcome,
     });
   }

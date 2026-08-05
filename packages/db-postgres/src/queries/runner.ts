@@ -400,8 +400,12 @@ function issueNumberOf(externalId: string): string {
  * matches the issue's `owner/repo#number` identity, and return a stable URL
  * without query/hash decorations. A missing or conflicting identity fails
  * closed by returning null, so it cannot become a cross-repository run link.
+ *
+ * This is shared by runner-result persistence and lifecycle evidence so a
+ * runner cannot create a PR link in one surface that the trusted result path
+ * rejected in another.
  */
-function canonicalPrUrlForQueueEntry(
+export function canonicalPrUrlForQueueEntry(
   prUrl: string | undefined,
   externalId: string
 ): string | null {

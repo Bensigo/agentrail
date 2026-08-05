@@ -15,6 +15,7 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // first-onboard-vs-recompile gate compares against the literal
     // `enqueueOnboard` actually stamps.
     ONBOARD_FORCE_BODY: actual.ONBOARD_FORCE_BODY,
+    canonicalPrUrlForQueueEntry: actual.canonicalPrUrlForQueueEntry,
     recordRunnerResult: vi.fn(),
     touchApiKeyLastUsed: vi.fn(),
     // #1268 PR②: onboard-notify.ts's real implementation runs in this suite
@@ -573,18 +574,29 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     vi.mocked(getInstallationToken).mockResolvedValue(TOKEN);
     global.fetch = vi.fn().mockResolvedValue(githubMergeSuccess()) as unknown as typeof fetch;
 
-    await POST(req({ ...base, status: "green", pr_url: PR_URL, cost_usd: 1.2 }));
+    await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: `${PR_URL}?tab=files#discussion`,
+        cost_usd: 1.2,
+      })
+    );
 
     expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
       WS,
       base.id,
       "merged",
-      expect.stringContaining(PR_URL),
+      `Pull request merged: ${PR_URL}`,
       expect.any(Number)
     );
     expect(notifyRunOutcome).toHaveBeenCalledWith(
       WS,
-      expect.objectContaining({ outcome: "green", prUrl: PR_URL, merged: true })
+      expect.objectContaining({
+        outcome: "green",
+        prUrl: `${PR_URL}?tab=files#discussion`,
+        merged: true,
+      })
     );
     expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
       workspaceId: WS,
@@ -709,6 +721,51 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["cross-repository", "https://github.com/attacker/evil-repo/pull/1"],
+    ["malformed", "not a url"],
+  ])(
+    "does not record a misleading pr_opened event for a %s runner URL",
+    async (_kind, prUrl) => {
+      vi.mocked(recordRunnerResult).mockResolvedValue(
+        greenResult("octocat/hello-world#42")
+      );
+      vi.mocked(getMergePermission).mockResolvedValue(false);
+
+      await POST(req({ ...base, status: "green", pr_url: prUrl }));
+
+      expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+        WS,
+        base.id,
+        "pr_opened",
+        expect.anything(),
+        expect.anything()
+      );
+    }
+  );
+
+  it("records the accepted canonical URL for a valid runner PR URL", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(
+      greenResult("octocat/hello-world#42")
+    );
+
+    await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: `${PR_URL}?tab=files#discussion`,
+      })
+    );
+
+    expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "pr_opened",
+      `Pull request opened: ${PR_URL}`,
+      expect.any(Number)
+    );
+  });
+
   it("merge-failure path (GitHub rejects, e.g. not-mergeable 405): result stays recorded, notify still carries the PR link, merge_failed event, exactly one attempt (never retry-loops)", async () => {
     vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
     vi.mocked(getMergePermission).mockResolvedValue(true);
@@ -717,19 +774,24 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     global.fetch = fetchMock as unknown as typeof fetch;
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+    const res = await POST(
+      req({ ...base, status: "green", pr_url: `${PR_URL}?tab=files#discussion` })
+    );
 
     expect(res.status).toBe(202);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(notifyRunOutcome).toHaveBeenCalledWith(
       WS,
-      expect.objectContaining({ prUrl: PR_URL, merged: false })
+      expect.objectContaining({
+        prUrl: `${PR_URL}?tab=files#discussion`,
+        merged: false,
+      })
     );
     expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
       WS,
       base.id,
       "merge_failed",
-      expect.stringContaining(PR_URL),
+      `Merge attempt failed — PR left open: ${PR_URL}`,
       expect.any(Number)
     );
     expect(findOrCreateChangeRecord).toHaveBeenCalledWith({
@@ -743,7 +805,11 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
       eventKey: "merge:pr:42:merge_failed",
       stage: "merge",
       actor: "runner-result",
-      payloadRef: expect.objectContaining({ outcome: "merge_failed", prNumber: 42 }),
+      payloadRef: expect.objectContaining({
+        outcome: "merge_failed",
+        prNumber: 42,
+        url: PR_URL,
+      }),
     });
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();

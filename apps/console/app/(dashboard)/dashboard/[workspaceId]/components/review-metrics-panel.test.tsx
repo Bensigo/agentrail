@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ReviewMetricsCohortRow } from "./review-metrics-panel";
+import { reviewMetricsCohortUrl } from "./review-metrics-panel-helpers";
 
 type ElementLike = { props?: { children?: unknown } };
 
@@ -33,10 +34,22 @@ describe("ReviewMetricsCohortRow", () => {
     );
 
     expect(text).toContain("dependency-upgrade");
+    expect(text).toContain("2 opened · 1 terminal · merge n=1");
     expect(text).toContain("23 min");
     expect(text).toContain("unknown");
     expect(text).toContain("(n=0)");
     expect(text).toContain("1 PR without an opened event");
     expect(text).toContain("Human review minutes are explicit only.");
+  });
+
+  it("keeps the client request dated and observation-bounded", () => {
+    expect(
+      reviewMetricsCohortUrl("ws-1", {
+        from: "2026-08-01T00:00:00.000Z",
+        to: "2026-08-02T00:00:00.000Z",
+      })
+    ).toBe(
+      "/api/v1/workspaces/ws-1/review-metrics/cohorts?from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-02T00%3A00%3A00.000Z&observedUntil=2026-08-02T00%3A00%3A00.000Z"
+    );
   });
 });

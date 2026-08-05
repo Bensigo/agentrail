@@ -146,6 +146,40 @@ class EvalsApplyCliTests(unittest.TestCase):
         self.assertIn("Apply gate: HOLD", out)
         self.assertIn("stale report", err)
 
+    def test_apply_rejects_invalid_numeric_evidence_before_any_write(self) -> None:
+        """Malformed arm numbers cannot reach either override or routing writes."""
+        import json
+        import tempfile
+
+        invalid = _ONE_ARM_REPORT.replace(
+            "| full | 1 | 1 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |",
+            "| full | 1 | 2 | 0 | 100.0% | 0.0000 | 0.0% | 5.0s | 100 | $0.1000 | $0.1000 |",
+        ).replace(
+            "- Total routing cost-regret: $0.0000",
+            "- Total routing cost-regret: $2.0000",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "invalid-report.md"
+            report.write_text(invalid, encoding="utf-8")
+            target = root / "checkout"
+            agentrail_dir = target / ".agentrail"
+            agentrail_dir.mkdir(parents=True)
+            config = agentrail_dir / "config.json"
+            config.write_text(
+                json.dumps({"runners": {"default": {"models": {"execute": "claude-opus-4-8"}}}}),
+                encoding="utf-8",
+            )
+            before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            rc, out, err = _run([
+                "apply", "--report", str(report), "--target", str(target), "--apply",
+            ])
+            after = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        self.assertEqual(rc, 2)
+        self.assertIn("Per-arm summary row", err)
+        self.assertEqual(before, after)
+        self.assertNotIn("Applied:", out)
+
 
 class EvalsRunNewFlowCliTests(unittest.TestCase):
     def test_full_and_new_flow_both_run_with_deltas(self) -> None:

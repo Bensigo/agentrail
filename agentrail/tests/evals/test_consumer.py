@@ -218,6 +218,26 @@ class ParseReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ReportParseError, "Per-arm summary row"):
                 parse_report(p)
 
+    def test_invalid_numeric_per_arm_evidence_rejects_report(self) -> None:
+        valid_row = (
+            "| full | 2 | 1 | 1 | 50.0% | 0.0000 | 0.0% | 40.0s | "
+            "1000 | $1.0000 | $1.0000 |"
+        )
+        invalid_rows = (
+            ("negative repetitions", valid_row.replace("| 2 | 1 |", "| -1 | 1 |")),
+            ("negative solved", valid_row.replace("| 2 | 1 |", "| 2 | -1 |")),
+            ("solved exceeds repetitions", valid_row.replace("| 2 | 1 |", "| 1 | 2 |")),
+            ("negative tokens", valid_row.replace("| 40.0s | 1000 |", "| 40.0s | -1 |")),
+            ("negative cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $-1.0000 | $1.0000 |")),
+            ("non-finite cost", valid_row.replace("| $1.0000 | $1.0000 |", "| $nan | $1.0000 |")),
+        )
+        for label, invalid_row in invalid_rows:
+            with self.subTest(label=label), TemporaryDirectory() as td:
+                p = Path(td) / "eval-report-x.md"
+                p.write_text(_TWO_SECTION_REPORT.replace(valid_row, invalid_row), encoding="utf-8")
+                with self.assertRaisesRegex(ReportParseError, "Per-arm summary row"):
+                    parse_report(p)
+
 
 # --- The three-outcome gate rule (build_proposal, layer stream) ------------
 

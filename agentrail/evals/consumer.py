@@ -44,6 +44,7 @@ lever, pointed the other way.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -191,7 +192,7 @@ def _parse_arm_summary_row(cells: List[str]) -> ArmSummaryFacts:
     if len(cells) != 11:
         raise ReportParseError("Per-arm summary row has the wrong column count")
     try:
-        return ArmSummaryFacts(
+        summary = ArmSummaryFacts(
             arm=cells[0],
             repetitions=int(cells[1]),
             solved=int(cells[2]),
@@ -200,6 +201,16 @@ def _parse_arm_summary_row(cells: List[str]) -> ArmSummaryFacts:
         )
     except ValueError as exc:
         raise ReportParseError("Per-arm summary row has invalid evidence") from exc
+    if (
+        summary.repetitions < 0
+        or summary.solved < 0
+        or summary.total_tokens < 0
+        or summary.total_cost_usd < 0
+        or not math.isfinite(summary.total_cost_usd)
+        or summary.solved > summary.repetitions
+    ):
+        raise ReportParseError("Per-arm summary row has invalid evidence")
+    return summary
 
 
 def parse_report(path: Path) -> ReportFacts:

@@ -106,14 +106,16 @@ def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
         cycle_id="eval-2026-08-04-001",
         parent_cycle_id="eval-2026-08-03-004",
         hypothesis="best-of-N reduces false-green without more dollars per solve",
-        changed_layers=("bestofn", "objective_gate"),
+        changed_layers=("bestofn",),
         declared_budget_usd="25.00",
+        cumulative_budget_cap_usd="75.00",
         status="proposed",
     )
 
     assert valid.issues() == ()
     assert valid.promotion_grade == "METADATA_COMPLETE"
     assert ("Parent cycle ID", "eval-2026-08-03-004") in valid.as_render_rows()
+    assert ("Cumulative budget cap", "$75") in valid.as_render_rows()
 
     incomplete = EvalCycle(
         cycle_id="bad id",
@@ -121,6 +123,7 @@ def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
         hypothesis=None,
         changed_layers=(),
         declared_budget_usd="-1",
+        cumulative_budget_cap_usd="75",
         status="completed",
     )
 
@@ -134,6 +137,7 @@ def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
         hypothesis="verify recursion rejects a self-parented cycle",
         changed_layers=("bestofn",),
         declared_budget_usd="1",
+        cumulative_budget_cap_usd="75",
         status="held",
     )
     assert "parent id must not equal cycle id" in self_parent.issues()
@@ -144,7 +148,22 @@ def test_eval_cycle_requires_complete_metadata_for_promotion_grade() -> None:
         hypothesis="measure cost | keep the report\non one row",
         changed_layers=("bestofn|objective_gate",),
         declared_budget_usd="1",
+        cumulative_budget_cap_usd="75",
         status="running",
     ).as_render_rows()
     assert ("Hypothesis", "measure cost \\| keep the report on one row") in rendered
     assert ("Changed layers", "bestofn\\|objective_gate") in rendered
+
+
+def test_eval_cycle_rejects_more_than_one_changed_layer_for_promotion() -> None:
+    cycle = EvalCycle(
+        cycle_id="eval-2026-08-04-004",
+        parent_cycle_id=None,
+        hypothesis="test one layer at a time",
+        changed_layers=("bestofn", "objective_gate"),
+        declared_budget_usd="1",
+        cumulative_budget_cap_usd="3",
+        status="proposed",
+    )
+
+    assert "changed layers exceed the one-layer cycle limit" in cycle.issues()

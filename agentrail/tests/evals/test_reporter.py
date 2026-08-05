@@ -1276,6 +1276,7 @@ def test_write_markdown_report_renders_complete_or_held_cycle_metadata(tmp_path)
         hypothesis="reduce false-green without cost regression",
         changed_layers=("bestofn",),
         declared_budget_usd="25",
+        cumulative_budget_cap_usd="75",
         status="proposed",
     )
 
@@ -1291,6 +1292,8 @@ def test_write_markdown_report_renders_complete_or_held_cycle_metadata(tmp_path)
     assert "## Evaluation cycle" in text
     assert "METADATA_COMPLETE" in text
     assert "eval-2026-08-03-004" in text
+    assert "Cumulative budget cap" in text
+    assert "$75" in text
 
     held = write_markdown_report(
         reports,

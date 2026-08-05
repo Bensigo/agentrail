@@ -109,12 +109,18 @@ def _usage() -> str:
         "                   Changed layer (repeatable or comma-separated).\n"
         "  --cycle-budget-usd AMOUNT\n"
         "                   Declared USD budget for this cycle.\n"
+        "  --cumulative-budget-cap-usd AMOUNT\n"
+        "                   Immutable USD cap for all declared budgets in this\n"
+        "                   cycle's recursive lineage.\n"
         "  --cycle-status STATUS\n"
         "                   proposed, running, rejected, promoted, or held.\n"
         "  --report PATH    (apply) The eval report file to read.\n"
         "  --parent-report PATH\n"
         "                   (apply) Explicit parent report for protected evaluator\n"
         "                   identity comparison; required when the cycle has a parent.\n"
+        "  --ancestor-report PATH\n"
+        "                   (apply, repeatable) Parent-of-parent report, ordered\n"
+        "                   immediate-parent outward after --parent-report.\n"
         "  --date YYYY-MM-DD\n"
         "                   (canary) Date the report as given. (apply) Resolve\n"
         "                   the report as <reports-dir>/eval-report-<date>.md.\n"
@@ -208,6 +214,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     hypothesis: Optional[str] = None
     changed_layers: List[str] = []
     cycle_budget_usd: Optional[str] = None
+    cumulative_budget_cap_usd: Optional[str] = None
     cycle_status: Optional[str] = None
 
     i = 0
@@ -294,6 +301,9 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
         elif a == "--cycle-budget-usd":
             cycle_budget_usd = _parse_flag_value(args, i, a)
             i += 2
+        elif a == "--cumulative-budget-cap-usd":
+            cumulative_budget_cap_usd = _parse_flag_value(args, i, a)
+            i += 2
         elif a == "--cycle-status":
             cycle_status = _parse_flag_value(args, i, a)
             i += 2
@@ -318,6 +328,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
         hypothesis,
         *changed_layers,
         cycle_budget_usd,
+        cumulative_budget_cap_usd,
         cycle_status,
     )
     eval_cycle = (
@@ -327,6 +338,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             hypothesis=hypothesis,
             changed_layers=tuple(changed_layers),
             declared_budget_usd=cycle_budget_usd,
+            cumulative_budget_cap_usd=cumulative_budget_cap_usd,
             status=cycle_status,
         )
         if any(value is not None and value != "" for value in cycle_values)
@@ -712,6 +724,7 @@ def _run_apply(args: List[str]) -> int:
 
     report: Optional[Path] = None
     parent_report: Optional[Path] = None
+    ancestor_reports: List[Path] = []
     date: Optional[str] = None
     reports_dir: Optional[Path] = None
     target: Optional[Path] = None
@@ -729,6 +742,9 @@ def _run_apply(args: List[str]) -> int:
             i += 2
         elif a == "--parent-report":
             parent_report = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--ancestor-report":
+            ancestor_reports.append(Path(_parse_flag_value(args, i, a)))
             i += 2
         elif a == "--date":
             date = _parse_flag_value(args, i, a)
@@ -772,12 +788,26 @@ def _run_apply(args: List[str]) -> int:
     if parent_report is not None and not parent_report.is_file():
         print(f"error: parent report not found: {parent_report}", file=sys.stderr)
         return 2
+    if ancestor_reports and parent_report is None:
+        print(
+            "error: --ancestor-report requires --parent-report",
+            file=sys.stderr,
+        )
+        return 2
+    for ancestor_report in ancestor_reports:
+        if not ancestor_report.is_file():
+            print(
+                f"error: ancestor report not found: {ancestor_report}",
+                file=sys.stderr,
+            )
+            return 2
 
     resolved_target = target if target is not None else Path.cwd()
 
     try:
         facts = parse_report(report)
         parent_facts = parse_report(parent_report) if parent_report is not None else None
+        ancestor_facts = [parse_report(path) for path in ancestor_reports]
     except ReportParseError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -786,6 +816,7 @@ def _run_apply(args: List[str]) -> int:
         facts,
         resolved_target,
         parent_facts=parent_facts,
+        ancestor_facts=ancestor_facts,
         max_report_age_days=max_report_age_days,
     )
     print(render_proposal(proposal))

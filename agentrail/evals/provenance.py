@@ -55,6 +55,7 @@ class EvalCycle:
     hypothesis: str | None
     changed_layers: tuple[str, ...]
     declared_budget_usd: str | None
+    cumulative_budget_cap_usd: str | None
     status: str | None
 
     def issues(self) -> tuple[str, ...]:
@@ -71,8 +72,12 @@ class EvalCycle:
             issues.append("changed layers missing")
         elif any(not _has_text(layer) for layer in self.changed_layers):
             issues.append("changed layers contain blanks")
+        if len(self.changed_layers) > 1:
+            issues.append("changed layers exceed the one-layer cycle limit")
         if _parse_budget(self.declared_budget_usd) is None:
             issues.append("declared budget missing or invalid")
+        if _parse_budget(self.cumulative_budget_cap_usd) is None:
+            issues.append("cumulative budget cap missing or invalid")
         if self.status not in _EVAL_CYCLE_STATUSES:
             issues.append(
                 "status missing or invalid "
@@ -103,6 +108,10 @@ class EvalCycle:
                 ),
             ),
             ("Declared budget", _format_budget(self.declared_budget_usd)),
+            (
+                "Cumulative budget cap",
+                _format_budget(self.cumulative_budget_cap_usd),
+            ),
             ("Status", self.status or "missing"),
         )
 

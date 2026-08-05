@@ -49,6 +49,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -101,10 +102,12 @@ _CYCLE_ROW_KEYS = (
     "Hypothesis",
     "Changed layers",
     "Declared budget",
+    "Cumulative budget cap",
     "Status",
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MIN_PROMOTION_REPETITIONS_PER_ARM = 5
+MAX_LINEAGE_DEPTH = 3
 
 # Table-row labels in the `## New-flow vs full` section, in render order.
 NEW_FLOW_ROW_LABELS = (
@@ -173,6 +176,7 @@ class EvalCycleFacts:
     hypothesis: Optional[str]
     changed_layers: tuple[str, ...]
     declared_budget_usd: Optional[str]
+    cumulative_budget_cap_usd: Optional[str]
     status: Optional[str]
 
     @property
@@ -183,6 +187,7 @@ class EvalCycleFacts:
             hypothesis=self.hypothesis,
             changed_layers=self.changed_layers,
             declared_budget_usd=self.declared_budget_usd,
+            cumulative_budget_cap_usd=self.cumulative_budget_cap_usd,
             status=self.status,
         ).issues()
 
@@ -369,6 +374,9 @@ def parse_report(path: Path) -> ReportFacts:
             declared_budget_usd=_budget_table_value(
                 cycle_rows.get("Declared budget")
             ),
+            cumulative_budget_cap_usd=_budget_table_value(
+                cycle_rows.get("Cumulative budget cap")
+            ),
             status=_missing_table_value(cycle_rows.get("Status")),
         )
 
@@ -430,9 +438,12 @@ class Proposal:
     report_sha256: Optional[str] = None
     parent_report_path: Optional[Path] = None
     parent_report_sha256: Optional[str] = None
+    ancestor_report_paths: List[Path] = field(default_factory=list)
+    ancestor_report_sha256s: List[str] = field(default_factory=list)
     promotion_decision: PromotionDecision = PromotionDecision.HOLD
     decision_reasons: List[str] = field(default_factory=list)
     hold_reasons: List[str] = field(default_factory=list)
+    hold_codes: List[str] = field(default_factory=list)
     layer_changes: List[LayerChange] = field(default_factory=list)
     overrides_content: Optional[dict] = None  # exact JSON --apply writes
     layer_notes: List[str] = field(default_factory=list)
@@ -618,11 +629,177 @@ def _parent_evaluator_hold_reasons(
     return []
 
 
+def _decimal_budget(value: Optional[str]) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(value)
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed >= 0 else None
+
+
+def _lineage_hold_reasons(
+    facts: ReportFacts,
+    parent_facts: Optional[ReportFacts],
+    ancestor_facts: List[ReportFacts],
+) -> List[Tuple[str, str]]:
+    """Return stable hold codes and explanations for recursive termination.
+
+    ``parent_facts`` is always the immediate parent.  ``ancestor_facts`` is
+    ordered from the parent's parent outward, matching repeatable CLI input.
+    This function validates the complete declared chain before any promotion
+    gate is evaluated.
+    """
+    holds: List[Tuple[str, str]] = []
+    child_cycle = facts.eval_cycle
+    supplied = ([parent_facts] if parent_facts is not None else []) + ancestor_facts
+
+    if ancestor_facts and parent_facts is None:
+        holds.append(
+            (
+                "lineage_incomplete_or_invalid",
+                "ancestor reports were supplied without an immediate parent report",
+            )
+        )
+    if len(supplied) + 1 > MAX_LINEAGE_DEPTH:
+        holds.append(
+            (
+                "lineage_depth_exceeded",
+                f"lineage depth exceeds the maximum of {MAX_LINEAGE_DEPTH} cycles including the child",
+            )
+        )
+
+    if child_cycle is None:
+        return holds
+
+    if len(child_cycle.changed_layers) > 1:
+        holds.append(
+            (
+                "changed_layer_limit",
+                "current cycle proposes more than one changed layer",
+            )
+        )
+
+    if child_cycle.parent_cycle_id is None and supplied:
+        holds.append(
+            (
+                "lineage_incomplete_or_invalid",
+                "reports were supplied but the child declares no parent cycle",
+            )
+        )
+    elif child_cycle.parent_cycle_id is not None and parent_facts is None:
+        holds.append(
+            (
+                "lineage_incomplete_or_invalid",
+                "child declares a parent cycle but the parent report was not supplied",
+            )
+        )
+    cycles = [child_cycle]
+    expected_id = child_cycle.parent_cycle_id
+    for index, report in enumerate(supplied):
+        cycle = report.eval_cycle
+        if cycle is None or cycle.issues:
+            holds.append(
+                (
+                    "lineage_incomplete_or_invalid",
+                    f"lineage report {report.name} has incomplete or invalid cycle metadata",
+                )
+            )
+        else:
+            cycles.append(cycle)
+        if cycle is None:
+            continue
+        if cycle.cycle_id != expected_id:
+            holds.append(
+                (
+                    "lineage_incomplete_or_invalid",
+                    f"lineage report {report.name} cycle id does not match the declared parent id",
+                )
+            )
+        expected_id = cycle.parent_cycle_id
+
+    if supplied and expected_id is not None:
+        holds.append(
+            (
+                "lineage_incomplete_or_invalid",
+                "declared parent chain continues beyond the supplied ancestor reports",
+            )
+        )
+
+    ids = [cycle.cycle_id for cycle in cycles if cycle.cycle_id is not None]
+    if len(ids) != len(set(ids)):
+        holds.append(
+            (
+                "lineage_incomplete_or_invalid",
+                "lineage cycle ids are not unique",
+            )
+        )
+
+    valid_cycles = [cycle for cycle in cycles if not cycle.issues]
+    budgets = [_decimal_budget(cycle.declared_budget_usd) for cycle in valid_cycles]
+    caps = [_decimal_budget(cycle.cumulative_budget_cap_usd) for cycle in valid_cycles]
+    if all(budget is not None for budget in budgets) and all(cap is not None for cap in caps):
+        resolved_caps = [cap for cap in caps if cap is not None]
+        if len(set(resolved_caps)) != 1:
+            holds.append(
+                (
+                    "lineage_budget_cap_changed",
+                    "cumulative budget cap changes within the supplied lineage",
+                )
+            )
+        running_total = Decimal("0")
+        # The reports arrive child-first, but every historical prefix must
+        # satisfy the cap declared at that point in time. A later child cannot
+        # raise its cap to legitimize an ancestor's overage.
+        for cycle, budget, cap in zip(
+            reversed(valid_cycles), reversed(budgets), reversed(caps)
+        ):
+            assert budget is not None and cap is not None
+            running_total += budget
+            if running_total > cap:
+                holds.append(
+                    (
+                        "lineage_budget_exceeded",
+                        f"cumulative declared cycle budget ${running_total.normalize()} exceeds "
+                        f"the cap ${cap.normalize()} at cycle {cycle.cycle_id}",
+                    )
+                )
+
+    ancestor_cycles = valid_cycles[1:]
+    proposal_key = (child_cycle.hypothesis, child_cycle.changed_layers)
+    if any(
+        (cycle.hypothesis, cycle.changed_layers) == proposal_key
+        for cycle in ancestor_cycles
+    ):
+        holds.append(
+            (
+                "recurring_proposal",
+                "the same hypothesis and changed-layer proposal recurs in the supplied lineage",
+            )
+        )
+
+    statuses = [cycle.status for cycle in ancestor_cycles]
+    if any(
+        left == "rejected" and right == "rejected"
+        for left, right in zip(statuses, statuses[1:])
+    ):
+        holds.append(
+            (
+                "consecutive_rejections",
+                "two consecutive rejected ancestors appear in the supplied lineage",
+            )
+        )
+
+    return holds
+
+
 def build_proposal(
     facts: ReportFacts,
     target: Path,
     *,
     parent_facts: Optional[ReportFacts] = None,
+    ancestor_facts: Optional[List[ReportFacts]] = None,
     today: Optional[date] = None,
     max_report_age_days: int = DEFAULT_MAX_REPORT_AGE_DAYS,
 ) -> Proposal:
@@ -638,8 +815,22 @@ def build_proposal(
         parent_report_sha256=(
             parent_facts.content_sha256 if parent_facts is not None else None
         ),
+        ancestor_report_paths=[report.path for report in (ancestor_facts or [])],
+        ancestor_report_sha256s=[
+            report.content_sha256 or "" for report in (ancestor_facts or [])
+        ],
     )
-    proposal.hold_reasons.extend(_parent_evaluator_hold_reasons(facts, parent_facts))
+    lineage_reports = ([parent_facts] if parent_facts is not None else []) + (
+        ancestor_facts or []
+    )
+    for current, parent in zip([facts] + lineage_reports, lineage_reports):
+        proposal.hold_reasons.extend(_parent_evaluator_hold_reasons(current, parent))
+    for code, reason in _lineage_hold_reasons(
+        facts, parent_facts, ancestor_facts or []
+    ):
+        if code not in proposal.hold_codes:
+            proposal.hold_codes.append(code)
+        proposal.hold_reasons.append(reason)
     proposal.hold_reasons.extend(
         _report_hold_reasons(
             facts,
@@ -797,6 +988,8 @@ def render_proposal(proposal: Proposal) -> str:
 
     if proposal.is_held:
         out.append("Apply gate: HOLD")
+        for code in proposal.hold_codes:
+            out.append(f"  Hold code: {code}")
         for reason in proposal.decision_reasons:
             out.append(f"  Hold reason: {reason}")
         out.append("")
@@ -902,6 +1095,27 @@ def apply_proposal(
         if current_parent_sha256 != proposal.parent_report_sha256:
             raise ApplyReportGateError(
                 "apply refused: parent report contents changed after the proposal was built"
+            )
+    if len(proposal.ancestor_report_paths) != len(proposal.ancestor_report_sha256s):
+        raise ApplyReportGateError(
+            "apply refused: ancestor report fingerprints are incomplete"
+        )
+    for path, expected_sha256 in zip(
+        proposal.ancestor_report_paths, proposal.ancestor_report_sha256s
+    ):
+        if not expected_sha256:
+            raise ApplyReportGateError(
+                "apply refused: ancestor report has no immutable fingerprint"
+            )
+        try:
+            current_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ApplyReportGateError(
+                f"apply refused: cannot reread ancestor report {path}"
+            ) from exc
+        if current_sha256 != expected_sha256:
+            raise ApplyReportGateError(
+                "apply refused: ancestor report contents changed after the proposal was built"
             )
     if link_loader(target) is None:
         raise ApplyAuthError(

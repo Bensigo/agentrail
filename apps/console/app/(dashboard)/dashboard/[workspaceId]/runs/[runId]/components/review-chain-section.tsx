@@ -7,6 +7,10 @@ type PrResolution =
   | { state: "resolved"; repo: string; number: number }
   | { state: "no_pr" | "unknown"; repo: null; number: null };
 
+type EvidenceResolution =
+  | { state: "head_bound"; headSha: string }
+  | { state: "unknown"; headSha: null };
+
 type ReviewJob = {
   id: string;
   state: string;
@@ -25,8 +29,9 @@ type ReviewEvent = {
 };
 
 type ReviewChainResponse = {
-  run: { queueEntryId: string | null; prUrl: string | null };
+  run: { queueEntryId: string | null; prUrl: string | null; prHeadSha: string | null };
   prResolution: PrResolution;
+  evidenceResolution: EvidenceResolution;
   reviewJobs: ReviewJob[];
   reviewEvents: ReviewEvent[];
 };
@@ -71,6 +76,14 @@ export function ReviewChainContent({ data }: { data: ReviewChainResponse }) {
     );
   }
 
+  if (data.evidenceResolution.state === "unknown") {
+    return (
+      <p className="py-4 text-sm text-[var(--gray-09)]">
+        This run has no recorded published commit. Review evidence is unavailable rather than inferred from the pull request.
+      </p>
+    );
+  }
+
   const latestJob = data.reviewJobs.at(-1) ?? null;
   const explicitMinutes = data.reviewEvents
     .filter((event) => event.eventType === "human_review_time")
@@ -91,6 +104,7 @@ export function ReviewChainContent({ data }: { data: ReviewChainResponse }) {
           ) : (
             <p className="mt-1 text-[var(--gray-09)]">Queue entry unknown</p>
           )}
+          <p className="mt-1 font-mono text-[var(--gray-09)]">Published head {data.evidenceResolution.headSha.slice(0, 12)}</p>
         </div>
         <div className="text-[var(--gray-09)]">
           Human review time: {hasKnownMinutes ? `${explicitMinutes.toFixed(0)} min` : "unknown"}

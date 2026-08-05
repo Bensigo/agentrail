@@ -6,8 +6,10 @@ const resolved = {
   run: {
     queueEntryId: "queue-entry-1234",
     prUrl: "https://github.com/acme/repo/pull/42",
+    prHeadSha: "a".repeat(40),
   },
   prResolution: { state: "resolved" as const, repo: "acme/repo", number: 42 },
+  evidenceResolution: { state: "head_bound" as const, headSha: "a".repeat(40) },
   reviewJobs: [
     {
       id: "job-1",
@@ -43,6 +45,7 @@ describe("ReviewChainContent", () => {
 
     expect(html).toContain("acme/repo #42");
     expect(html).toContain("Queue entry queue-en");
+    expect(html).toContain("Published head aaaaaaaaaaaa");
     expect(html).toContain("Human review time: 12 min");
     expect(html).toContain("Reviewer of record");
     expect(html).toContain("approve");
@@ -81,5 +84,23 @@ describe("ReviewChainContent", () => {
 
     expect(html).toContain("unavailable rather than inferred");
     expect(html).not.toContain("acme/repo #42");
+  });
+
+  it("does not borrow PR-wide history when the run head is unknown", () => {
+    const html = renderToStaticMarkup(
+      <ReviewChainContent
+        data={{
+          ...resolved,
+          run: { ...resolved.run, prHeadSha: null },
+          evidenceResolution: { state: "unknown", headSha: null },
+          reviewJobs: [],
+          reviewEvents: [],
+        }}
+      />
+    );
+
+    expect(html).toContain("no recorded published commit");
+    expect(html).toContain("unavailable rather than inferred");
+    expect(html).not.toContain("Outcome evidence");
   });
 });

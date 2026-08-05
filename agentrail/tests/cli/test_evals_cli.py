@@ -65,6 +65,8 @@ class EvalsApplyCliTests(unittest.TestCase):
         self.assertEqual(rc, 0, msg=f"stderr={err}")
         self.assertIn("apply", out)
         self.assertIn("--apply", out)
+        self.assertIn("--cumulative-budget-cap-usd", out)
+        self.assertIn("--ancestor-report", out)
 
     def test_no_report_or_date_is_rc2_and_names_report(self) -> None:
         rc, out, err = _run(["apply"])
@@ -101,6 +103,45 @@ class EvalsApplyCliTests(unittest.TestCase):
             )
         self.assertEqual(rc, 2)
         self.assertIn("parent report not found", err)
+
+    def test_ancestor_report_requires_an_immediate_parent(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "eval-report.md"
+            ancestor = root / "ancestor.md"
+            report.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            ancestor.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            rc, _out, err = _run(
+                ["apply", "--report", str(report), "--ancestor-report", str(ancestor)]
+            )
+        self.assertEqual(rc, 2)
+        self.assertIn("requires --parent-report", err)
+
+    def test_missing_ancestor_report_is_rc2(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "eval-report.md"
+            parent = root / "parent.md"
+            missing_ancestor = root / "missing-ancestor.md"
+            report.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            parent.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            rc, _out, err = _run(
+                [
+                    "apply",
+                    "--report",
+                    str(report),
+                    "--parent-report",
+                    str(parent),
+                    "--ancestor-report",
+                    str(missing_ancestor),
+                ]
+            )
+        self.assertEqual(rc, 2)
+        self.assertIn("ancestor report not found", err)
 
     def test_proposal_mode_is_read_only_and_prints_mode_banner(self) -> None:
         """Default invocation prints the proposal and writes nothing (AC1)."""
@@ -253,8 +294,9 @@ class EvalCycleFlagTests(unittest.TestCase):
                 "--cycle-id", "eval-2026-08-04-001",
                 "--parent-cycle-id", "eval-2026-08-03-004",
                 "--hypothesis", "reduce false-green without cost regression",
-                "--changed-layer", "bestofn,objective_gate",
+                "--changed-layer", "bestofn",
                 "--cycle-budget-usd", "25.00",
+                "--cumulative-budget-cap-usd", "75.00",
                 "--cycle-status", "proposed",
             ]
         )
@@ -262,7 +304,8 @@ class EvalCycleFlagTests(unittest.TestCase):
         assert config.eval_cycle is not None
         assert config.eval_cycle.cycle_id == "eval-2026-08-04-001"
         assert config.eval_cycle.parent_cycle_id == "eval-2026-08-03-004"
-        assert config.eval_cycle.changed_layers == ("bestofn", "objective_gate")
+        assert config.eval_cycle.changed_layers == ("bestofn",)
+        assert config.eval_cycle.cumulative_budget_cap_usd == "75.00"
         assert config.eval_cycle.issues() == ()
 
     def test_absent_cycle_flags_keep_metadata_unknown(self) -> None:

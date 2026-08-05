@@ -139,6 +139,7 @@ Generated: {date.today().isoformat()}
 | Hypothesis | reduce false-green without cost regression |
 | Changed layers | bestofn |
 | Declared budget | $25 |
+| Cumulative budget cap | $75 |
 | Status | proposed |
 
 ## Per-arm summary
@@ -200,6 +201,15 @@ class ParseReportTests(unittest.TestCase):
         self.assertAlmostEqual(nf.false_green_rate_delta, -0.20)
         # Evidence rows are the new-flow rows.
         self.assertIn("80.0%", nf.rows["Solve-rate"])
+
+    def test_eval_cycle_parser_reads_cumulative_budget_cap(self) -> None:
+        with TemporaryDirectory() as td:
+            p = Path(td) / "eval-report-x.md"
+            p.write_text(_TWO_SECTION_REPORT, encoding="utf-8")
+            facts = parse_report(p)
+
+        assert facts.eval_cycle is not None
+        self.assertEqual(facts.eval_cycle.cumulative_budget_cap_usd, "75")
 
     def test_routing_lines_parsed(self) -> None:
         with TemporaryDirectory() as td:
@@ -294,6 +304,7 @@ def _facts_with_deltas(
             hypothesis="reduce false-green without cost regression",
             changed_layers=("bestofn",),
             declared_budget_usd="25",
+            cumulative_budget_cap_usd="75",
             status="proposed",
         ),
     )
@@ -349,6 +360,10 @@ class EvaluatorIntegrityTests(unittest.TestCase):
             .replace(
                 "| Parent cycle ID | none |",
                 "| Parent cycle ID | eval-2026-08-04-001 |",
+            )
+            .replace(
+                "| Hypothesis | reduce false-green without cost regression |",
+                "| Hypothesis | improve false-green without cost regression |",
             )
             .replace(f"| Answer key | {'f' * 64} |", f"| Answer key | {answer_key} |")
         )
@@ -423,6 +438,159 @@ class EvaluatorIntegrityTests(unittest.TestCase):
 
         self.assertTrue(proposal.is_held)
         self.assertTrue(any("cycle id missing or malformed" in reason for reason in proposal.hold_reasons))
+
+    def test_three_level_lineage_is_accepted_in_parent_then_ancestor_order(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            ancestor_path = root / "ancestor.md"
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            ancestor_path.write_text(_TWO_SECTION_REPORT.replace(
+                "eval-2026-08-04-001", "eval-2026-08-03-001"
+            ).replace("| Declared budget | $25 |", "| Declared budget | $5 |"), encoding="utf-8")
+            parent_path.write_text(_TWO_SECTION_REPORT.replace(
+                "eval-2026-08-04-001", "eval-2026-08-04-001"
+            ).replace("| Parent cycle ID | none |", "| Parent cycle ID | eval-2026-08-03-001 |")
+            .replace("| Declared budget | $25 |", "| Declared budget | $10 |"), encoding="utf-8")
+            child_path.write_text(self._child_report().replace(
+                "| Declared budget | $25 |", "| Declared budget | $5 |"
+            ), encoding="utf-8")
+
+            proposal = build_proposal(
+                parse_report(child_path),
+                root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path)],
+            )
+
+        self.assertEqual(proposal.promotion_decision, PromotionDecision.PROMOTE)
+        self.assertEqual(proposal.hold_codes, [])
+
+    def test_lineage_limits_hold_with_machine_readable_codes(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            ancestor = _TWO_SECTION_REPORT.replace(
+                "eval-2026-08-04-001", "eval-2026-08-02-001"
+            ).replace("| Declared budget | $25 |", "| Declared budget | $5 |")
+            parent = _TWO_SECTION_REPORT.replace(
+                "| Parent cycle ID | none |", "| Parent cycle ID | eval-2026-08-02-001 |"
+            ).replace("| Declared budget | $25 |", "| Declared budget | $10 |")
+            child = self._child_report().replace(
+                "| Declared budget | $25 |", "| Declared budget | $10 |"
+            ).replace("| Cumulative budget cap | $75 |", "| Cumulative budget cap | $20 |")
+            ancestor_path = root / "ancestor.md"
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            ancestor_path.write_text(ancestor, encoding="utf-8")
+            parent_path.write_text(parent, encoding="utf-8")
+            child_path.write_text(child, encoding="utf-8")
+
+            budget = build_proposal(
+                parse_report(child_path), root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path)],
+            )
+
+            too_deep = build_proposal(
+                parse_report(child_path), root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path), parse_report(ancestor_path), parse_report(ancestor_path)],
+            )
+
+        self.assertIn("lineage_budget_exceeded", budget.hold_codes)
+        self.assertIn("lineage_depth_exceeded", too_deep.hold_codes)
+        self.assertIn("lineage_incomplete_or_invalid", too_deep.hold_codes)
+
+    def test_each_lineage_prefix_honors_one_immutable_cumulative_budget_cap(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            ancestor_path = root / "ancestor.md"
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            ancestor_path.write_text(
+                _TWO_SECTION_REPORT.replace("eval-2026-08-04-001", "eval-2026-08-02-001")
+                .replace("| Declared budget | $25 |", "| Declared budget | $5 |")
+                .replace("| Cumulative budget cap | $75 |", "| Cumulative budget cap | $5 |"),
+                encoding="utf-8",
+            )
+            parent_path.write_text(
+                _TWO_SECTION_REPORT.replace(
+                    "| Parent cycle ID | none |", "| Parent cycle ID | eval-2026-08-02-001 |"
+                )
+                .replace("| Declared budget | $25 |", "| Declared budget | $10 |")
+                .replace("| Cumulative budget cap | $75 |", "| Cumulative budget cap | $10 |"),
+                encoding="utf-8",
+            )
+            child_path.write_text(
+                self._child_report()
+                .replace("| Declared budget | $25 |", "| Declared budget | $10 |")
+                .replace("| Cumulative budget cap | $75 |", "| Cumulative budget cap | $100 |"),
+                encoding="utf-8",
+            )
+
+            proposal = build_proposal(
+                parse_report(child_path),
+                root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path)],
+            )
+
+        self.assertIn("lineage_budget_cap_changed", proposal.hold_codes)
+        self.assertIn("lineage_budget_exceeded", proposal.hold_codes)
+        self.assertFalse(proposal.has_changes)
+
+    def test_recurring_proposal_and_two_rejected_ancestors_hold(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            ancestor = _TWO_SECTION_REPORT.replace(
+                "eval-2026-08-04-001", "eval-2026-08-02-001"
+            ).replace("| Status | proposed |", "| Status | rejected |")
+            parent = _TWO_SECTION_REPORT.replace(
+                "| Parent cycle ID | none |", "| Parent cycle ID | eval-2026-08-02-001 |"
+            ).replace("| Status | proposed |", "| Status | rejected |")
+            child = self._child_report().replace(
+                "| Hypothesis | improve false-green without cost regression |",
+                "| Hypothesis | reduce false-green without cost regression |",
+            )
+            ancestor_path = root / "ancestor.md"
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            ancestor_path.write_text(ancestor, encoding="utf-8")
+            parent_path.write_text(parent, encoding="utf-8")
+            child_path.write_text(child, encoding="utf-8")
+
+            proposal = build_proposal(
+                parse_report(child_path), root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path)],
+            )
+
+        self.assertIn("recurring_proposal", proposal.hold_codes)
+        self.assertIn("consecutive_rejections", proposal.hold_codes)
+        self.assertFalse(proposal.has_changes)
+
+    def test_apply_rechecks_all_ancestor_report_fingerprints(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            ancestor_path = root / "ancestor.md"
+            parent_path = root / "parent.md"
+            child_path = root / "child.md"
+            ancestor_path.write_text(_TWO_SECTION_REPORT.replace(
+                "eval-2026-08-04-001", "eval-2026-08-03-001"
+            ), encoding="utf-8")
+            parent_path.write_text(_TWO_SECTION_REPORT.replace(
+                "| Parent cycle ID | none |", "| Parent cycle ID | eval-2026-08-03-001 |"
+            ), encoding="utf-8")
+            child_path.write_text(self._child_report(), encoding="utf-8")
+            proposal = build_proposal(
+                parse_report(child_path), root,
+                parent_facts=parse_report(parent_path),
+                ancestor_facts=[parse_report(ancestor_path)],
+            )
+            ancestor_path.write_text(_TWO_SECTION_REPORT + "\nmutated ancestor\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ApplyReportGateError, "ancestor report contents changed"):
+                apply_proposal(proposal, root, link_loader=_linked)
 
 
 class ApplyEvidenceGateTests(unittest.TestCase):
@@ -577,6 +745,9 @@ class ApplyEvidenceGateTests(unittest.TestCase):
             ).replace(
                 "| Parent cycle ID | none |",
                 "| Parent cycle ID | eval-2026-08-04-001 |",
+            ).replace(
+                "| Hypothesis | reduce false-green without cost regression |",
+                "| Hypothesis | improve false-green without cost regression |",
             )
         )
         with TemporaryDirectory() as td:
@@ -819,6 +990,7 @@ class RoundTripTests(unittest.TestCase):
                 hypothesis="reduce false-green without cost regression",
                 changed_layers=("bestofn",),
                 declared_budget_usd="25",
+                cumulative_budget_cap_usd="75",
                 status="proposed",
             ),
         )

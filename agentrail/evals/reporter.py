@@ -948,6 +948,7 @@ def render_markdown(
             ("Hypothesis", "missing"),
             ("Changed layers", "missing"),
             ("Declared budget", "missing"),
+            ("Cumulative budget cap", "missing"),
             ("Status", "missing"),
         )
     )

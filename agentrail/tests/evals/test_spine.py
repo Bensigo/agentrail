@@ -433,10 +433,11 @@ def test_ac3_dated_markdown_report_has_solve_rate_spread_and_dollars(
         eval_cycle=EvalCycle(
             cycle_id="eval-2026-08-04-001",
             parent_cycle_id="eval-2026-08-03-004",
-            hypothesis="full reduces false-green without cost regression",
-            changed_layers=("bestofn",),
-            declared_budget_usd="25",
-            status="proposed",
+        hypothesis="full reduces false-green without cost regression",
+        changed_layers=("bestofn",),
+        declared_budget_usd="25",
+        cumulative_budget_cap_usd="75",
+        status="proposed",
         ),
     )
 

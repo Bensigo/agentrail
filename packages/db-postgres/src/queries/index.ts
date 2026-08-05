@@ -3195,6 +3195,10 @@ export {
   type ReviewMetricsReportQuery,
   type ReviewMetricsReport,
 } from "./review_events.js";
+export {
+  getProductionHumanFalseGreen,
+  type ProductionHumanFalseGreenQuery,
+} from "./human_false_green.js";
 
 // Reviewer of Record queue (Arc B §2-§3, spec
 // docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The

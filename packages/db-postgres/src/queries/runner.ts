@@ -440,6 +440,16 @@ function canonicalPrUrlForQueueEntry(
 }
 
 /**
+ * A Git object id reported by a runner. SHA-1 is the deployed GitHub shape;
+ * SHA-256 is accepted so the evidence contract does not hard-code Git's hash
+ * algorithm. Any other value is unknown rather than a useful-looking guess.
+ */
+export function canonicalGitCommitSha(value: string | undefined): string | null {
+  if (!value || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(value)) return null;
+  return value.toLowerCase();
+}
+
+/**
  * #1388 — liveness reclaim timings, the ONE source of truth shared with the
  * Python runtime. These MIRROR `agentrail/runner/liveness_config.json`; the
  * lockstep test `queries/liveness.lockstep.test.ts` reads that JSON and fails
@@ -1094,6 +1104,8 @@ export async function recordRunnerResult(data: {
   status: RunnerStatus;
   costUsd?: number;
   prUrl?: string;
+  /** Exact final published commit, supplied only by runners that can prove it. */
+  prHeadSha?: string;
   /** The runner's reported gate_reason (#1267 PR③, additive/optional — see
    * {@link nextQueueTransition}). Only a hosted-refusal `error` (prefixed with
    * {@link HOSTED_REFUSAL_PREFIX}) changes behavior; every other value
@@ -1334,6 +1346,7 @@ export async function recordRunnerResult(data: {
       : null;
 
   const canonicalPrUrl = canonicalPrUrlForQueueEntry(data.prUrl, completedExternalId);
+  const canonicalPrHeadSha = canonicalGitCommitSha(data.prHeadSha);
 
   // Dependency awareness: a green entry may release parked dependents that were
   // blocked on it. Best-effort — never fail the result on this.
@@ -1366,6 +1379,11 @@ export async function recordRunnerResult(data: {
       // and (#891b) reconcile status against the PR's real CI. Only overwrite
       // with a non-empty value — a later heartbeat with no PR must not clear it.
       ...(canonicalPrUrl ? { prUrl: canonicalPrUrl } : {}),
+      // A head without an accepted PR, or from any non-green result, is not
+      // run-to-PR provenance. Preserve the existing evidence in both cases.
+      ...(data.status === "green" && canonicalPrUrl && canonicalPrHeadSha
+        ? { prHeadSha: canonicalPrHeadSha }
+        : {}),
     })
     .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
 

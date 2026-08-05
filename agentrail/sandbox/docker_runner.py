@@ -118,6 +118,8 @@ class RunResult:
     gate_reason: human-readable reason for a red/error outcome ('' when green).
     logs_tail  : last lines of the container output, for triage.
     pr_url     : the pull request opened for a green run ('' when none/not green).
+    head_sha   : exact produced head supplied by the result payload ('' when
+                 absent or the result is not green).
     execute_model: the FINAL execute-phase model this attempt ran on — the
                  model ``_make_execute`` resolved (escalation model for a
                  tier>=1 retry, else the brief-confirmed override), stamped
@@ -136,6 +138,7 @@ class RunResult:
     gate_reason: str = ""
     logs_tail: str = ""
     pr_url: str = ""
+    head_sha: str = ""
     execute_model: str = ""
 
 
@@ -317,12 +320,14 @@ def _result_from_payload(payload: dict, logs_tail: str) -> RunResult:
         cost = float(payload.get("cost_usd") or 0.0)
     except (TypeError, ValueError):
         cost = 0.0
+    head_sha = str(payload.get("head_sha") or "") if status == "green" else ""
     return RunResult(
         status=status,
         cost_usd=cost,
         branch=str(payload.get("branch") or ""),
         gate_reason=str(payload.get("gate_reason") or ""),
         logs_tail=logs_tail,
+        head_sha=head_sha,
     )
 
 

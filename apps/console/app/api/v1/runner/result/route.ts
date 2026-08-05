@@ -122,6 +122,7 @@ export async function POST(request: NextRequest) {
     gate_reason?: string;
     logs_tail?: string;
     pr_url?: string;
+    pr_head_sha?: string;
     // #1338 PR① fix round: the runner's AUTHORITATIVE final execute model
     // (resolved by _make_execute at dispatch). Preferred over reconstructing
     // it from ClickHouse cost_events below; absent on older runners.
@@ -158,6 +159,7 @@ export async function POST(request: NextRequest) {
     status,
     costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
     prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
+    prHeadSha: typeof body.pr_head_sha === "string" ? body.pr_head_sha : undefined,
     // #1267 PR③: thread the runner's gate_reason into the queue transition so a
     // hosted-refusal `error` (gate_reason prefixed "hosted-refusal: ") escalates
     // straight to a human, spending no retry budget — without this passthrough

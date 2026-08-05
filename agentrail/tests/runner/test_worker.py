@@ -82,6 +82,7 @@ def test_worker_claims_runs_and_reports_one_item():
             # #1338 PR① fix round: forwarded from RunResult.execute_model (""
             # here — this result carries no decided model).
             "execute_model": "",
+            "pr_head_sha": "",
         }
     ]
 
@@ -106,6 +107,23 @@ def test_worker_forwards_execute_model_to_report_result():
     )
 
     assert client.reported[0]["execute_model"] == "anthropic/claude-sonnet-5"
+
+
+def test_worker_forwards_run_result_head_as_pr_head_sha():
+    client = FakeClient([_item("42")])
+
+    def execute(item: WorkItem) -> RunResult:
+        return RunResult(status="green", head_sha="a" * 40)
+
+    run_worker(
+        client,
+        execute=execute,
+        sleep=lambda _s: None,
+        idle_seconds=1,
+        should_continue=_stop_after(1),
+    )
+
+    assert client.reported[0]["pr_head_sha"] == "a" * 40
 
 
 def test_worker_reports_telemetry_after_each_run():

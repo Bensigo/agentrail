@@ -51,6 +51,8 @@ def _report(client, item: WorkItem, result: RunResult) -> None:
         # without the field reports "" and the backend falls back to
         # ClickHouse — the pre-existing behavior).
         execute_model=getattr(result, "execute_model", ""),
+        # Optional for older RunResult implementations and test doubles.
+        pr_head_sha=getattr(result, "head_sha", ""),
     )
 
 

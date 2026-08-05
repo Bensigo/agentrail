@@ -1254,6 +1254,15 @@ def test_write_markdown_report_creates_dated_file(tmp_path):
     assert "2026-06-23" in path.name
     text = path.read_text(encoding="utf-8")
     assert "solve-rate" in text.lower()
+    assert "## Evaluation provenance" in text
+    for label, fingerprint in (
+        ("Code", "a" * 64),
+        ("Config", "b" * 64),
+        ("Corpus", "c" * 64),
+        ("Scorer", "d" * 64),
+        ("Gate", "e" * 64),
+    ):
+        assert f"| {label} | {fingerprint} |" in text
 
 
 def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):

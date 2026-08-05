@@ -102,6 +102,23 @@ describe("review event recording", () => {
       })
     ).resolves.toEqual({ recorded: true, eventId: "event-1" });
   });
+
+  it("requires a human actor and exact head for explicit rework/revert outcomes", async () => {
+    await expect(
+      recordReviewEvent({ ...base, eventType: "reverted", actorType: "agent", headSha: "a".repeat(40) })
+    ).rejects.toThrow("explicit human actor");
+    await expect(
+      recordReviewEvent({ ...base, eventType: "post_merge_rework", actorType: "human" })
+    ).rejects.toThrow("exact head SHA");
+    await expect(
+      recordReviewEvent({
+        ...base,
+        eventType: "post_merge_rework",
+        actorType: "human",
+        headSha: "a".repeat(40),
+      })
+    ).resolves.toEqual({ recorded: true, eventId: "event-1" });
+  });
 });
 
 describe("listReviewEventsForPr", () => {

@@ -49,6 +49,15 @@ function validateReviewEvent(input: RecordReviewEventInput): void {
   } else if (input.humanReviewMinutes != null || input.humanReviewSource != null) {
     throw new Error("human review minutes are only valid on human_review_time events");
   }
+
+  if (input.eventType === "reverted" || input.eventType === "post_merge_rework") {
+    if (input.actorType !== "human") {
+      throw new Error("rework and revert evidence requires an explicit human actor");
+    }
+    if (!input.headSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.headSha)) {
+      throw new Error("rework and revert evidence requires an exact head SHA");
+    }
+  }
 }
 
 /**

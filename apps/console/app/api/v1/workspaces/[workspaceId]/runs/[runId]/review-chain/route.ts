@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getRun,
   getRunQueueEntryIdentity,
+  getQueueEntryBriefReference,
   getWorkspaceMembership,
   listReviewEventsForPr,
   listReviewJobsForPr,
@@ -37,6 +38,29 @@ export async function GET(
   }
 
   const prResolution = resolveReviewChainPr(run.prUrl);
+  type AlignmentBriefResolution =
+    | { state: "linked"; id: string }
+    | { state: "absent"; id: null }
+    | { state: "unknown"; id: null };
+  let alignmentBrief: AlignmentBriefResolution = { state: "absent", id: null };
+  if (run.queueEntryId) {
+    try {
+      const briefReference = await getQueueEntryBriefReference(
+        workspaceId,
+        run.queueEntryId
+      );
+      alignmentBrief = briefReference?.alignmentBriefId
+        ? { state: "linked", id: briefReference.alignmentBriefId }
+        : { state: "unknown", id: null };
+    } catch (err) {
+      console.error("[review chain] failed to load alignment brief reference:", err);
+      return NextResponse.json(
+        { error: "Failed to load review chain" },
+        { status: 500 }
+      );
+    }
+  }
+
   if (prResolution.state === "resolved") {
     const queueIdentity = await getRunQueueEntryIdentity(workspaceId, runId);
     const trustedRepo = trustedQueueRepository(queueIdentity?.externalId);
@@ -54,6 +78,7 @@ export async function GET(
           number: null,
           reason: "missing_trusted_repository",
         },
+        alignmentBrief,
         reviewJobs: [],
         reviewEvents: [],
       });
@@ -72,11 +97,13 @@ export async function GET(
           number: null,
           reason: "repository_mismatch",
         },
+        alignmentBrief,
         reviewJobs: [],
         reviewEvents: [],
       });
     }
   }
+
   let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPr>> = [];
   let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPr>> = [];
 
@@ -110,6 +137,7 @@ export async function GET(
       queueEntryId: run.queueEntryId ?? null,
       prUrl: run.prUrl || null,
     },
+    alignmentBrief,
     prResolution,
     reviewJobs,
     reviewEvents,

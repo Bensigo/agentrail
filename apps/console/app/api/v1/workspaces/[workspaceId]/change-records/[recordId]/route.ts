@@ -109,7 +109,8 @@ export async function PATCH(
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { workspaceId, recordId } = await params;
-  if (!(await getWorkspaceMembership(session.user.id, workspaceId))) {
+  const membership = await getWorkspaceMembership(session.user.id, workspaceId);
+  if (!membership) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
@@ -120,11 +121,17 @@ export async function PATCH(
       { status: 400 }
     );
   }
+  if (membership.role !== "owner" && membership.role !== "admin") {
+    return NextResponse.json(
+      { error: "Only workspace owners or admins can confirm an Acceptance Contract" },
+      { status: 403 }
+    );
+  }
   try {
     const contracts = await readAcceptanceContracts({ workspaceId, recordId });
     if (contracts == null) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const contract = await confirmAcceptanceContract({
-      recordId,
+      workspaceId, recordId,
       version: version as number,
       confirmedBy: `user:${session.user.id}`,
     });

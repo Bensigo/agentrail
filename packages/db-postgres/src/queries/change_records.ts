@@ -606,6 +606,7 @@ export async function createDraftAcceptanceContract(
 }
 
 export async function confirmAcceptanceContract(input: {
+  workspaceId: string;
   recordId: string;
   version: number;
   confirmedBy: string;
@@ -613,6 +614,19 @@ export async function confirmAcceptanceContract(input: {
   const lockKey = `acceptance-contract:${input.recordId}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const records = await tx
+      .select({ id: changeRecords.id })
+      .from(changeRecords)
+      .where(
+        and(
+          eq(changeRecords.id, input.recordId),
+          eq(changeRecords.workspaceId, input.workspaceId)
+        )
+      )
+      .limit(1);
+    if (!records[0]) {
+      throw new Error("Acceptance Record was not found in workspace");
+    }
     const confirmed = await tx
       .select()
       .from(acceptanceContracts)

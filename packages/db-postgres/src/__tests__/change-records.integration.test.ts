@@ -263,6 +263,7 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       expect(secondDraft.version).toBe(2);
       const confirmed = await confirmAcceptanceContract({
+        workspaceId,
         recordId: draft.record.id,
         version: secondDraft.version,
         confirmedBy: "user:lead",

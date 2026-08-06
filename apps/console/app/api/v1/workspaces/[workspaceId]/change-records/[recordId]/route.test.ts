@@ -213,13 +213,21 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
   });
 
   it("confirms a draft only after workspace membership and returns the recorded actor", async () => {
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
     const res = await PATCH(confirmRequest({ action: "confirm_contract", version: 2 }), { params: params() });
     expect(res.status).toBe(200);
     expect(confirmAcceptanceContract).toHaveBeenCalledWith({
-      recordId: RECORD, version: 2, confirmedBy: `user:${USER}`,
+      workspaceId: WS, recordId: RECORD, version: 2, confirmedBy: `user:${USER}`,
     });
     await expect(res.json()).resolves.toMatchObject({
       contract: { recordId: RECORD, version: 2, status: "confirmed", confirmedBy: `user:${USER}` },
     });
+  });
+
+  it("does not let a regular member confirm the team contract", async () => {
+    const res = await PATCH(confirmRequest({ action: "confirm_contract", version: 2 }), { params: params() });
+
+    expect(res.status).toBe(403);
+    expect(confirmAcceptanceContract).not.toHaveBeenCalled();
   });
 });

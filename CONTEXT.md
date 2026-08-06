@@ -29,9 +29,11 @@ Three components, one repo:
   Acceptance Records, Context Packs, exact-head proof, blockers, corrections,
   and human decisions. It is not a code-generation surface.
 
-Design authority: `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md`
-(the end-to-end arc — message-first door, cloud factory, alignment gate) and
-`TASTE.md` (product quality bar; light-first design direction).
+Design and product authority: [ADR 0012](docs/adr/0012-jace-owns-the-acceptance-spine.md)
+and [the trust-layer migration ledger](docs/trust-layer-migration-ledger.md).
+The `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md` document
+is historical factory-era execution context only; `TASTE.md` remains the
+product quality bar and light-first visual direction.
 
 ## Language
 

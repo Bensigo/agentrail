@@ -44,7 +44,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs never enter the advisory queue |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
-| Correction queue and builder-task MCP inbox | `7d560fcd`, `f5d95e08` | focused queue/ack/inbox route tests and DB typecheck. MCP retrieval returns the packet and exact review revision only for the recorded builder/task context; retrieval and queueing are not notification or confirmed receipt. |
+| Correction queue, builder-task inbox, and GitHub fallback dispatch | `7d560fcd` through `91ce7ad1` | focused queue/ack/inbox/dispatch tests and DB typecheck. Packets retain exact review revision and runtime evidence; GitHub dispatch posts a COMMENT-only PR issue-comment only for the current exact head and records delivered/failed. Neither carrier is builder acknowledgement. |
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
@@ -59,10 +59,10 @@ dispatcher has proven notification.
 1. Run the new worker against a safe exact-head environment and prove a
    criterion-specific UI flow end to end. Add redacted API/job/data execution
    and artifacts rather than forcing those modalities through screenshots.
-2. Add correction-delivery dispatch/readback for supported MCP task contexts
-   and durable GitHub/Jace fallback, retaining attempt/outcome and
-   acknowledgement. The MCP inbox is a readback carrier only; GitHub/Jace
-   dispatch and a confirmed external-builder integration remain missing.
+2. Trigger correction delivery automatically after a blocking review for the
+   recorded builder task context, then add Jace inbox dispatch/readback.
+   Existing MCP readback and GitHub fallback dispatch retain attempt/outcome,
+   but neither establishes acknowledgement or a resumed builder.
 3. Implement supported channel intake, missing-question replies, human
    confirmation, and Context Pack handoff. Slack/Discord are not implemented
    merely because their names appear in this document.
@@ -97,14 +97,14 @@ dispatcher has proven notification.
 
 - No Codex/Claude live pickup, Slack/Discord runtime integration, GitHub
   canonical PR fetch, context compiler attestation, deployed safe-preview
-  execution, browser proof, non-UI artifact capture, GitHub/Jace live delivery dispatch,
+  execution, browser proof, non-UI artifact capture, Jace live delivery dispatch,
   or migration smoke exists yet. The opt-in Eve worker is unit-tested only;
   its runtime must not be represented as an exercised criterion. A supported
   MCP client can now retrieve its evidence-bound correction from a durable
   task inbox, but only acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `f5d95e08` (builder-task correction inbox). The only expected untracked
+  `91ce7ad1` (GitHub correction fallback dispatch). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

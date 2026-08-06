@@ -5,7 +5,7 @@ import {
   resolveEvidenceVerificationPlanForArtifact,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
-import { artifactKey, putArtifact, storageConfigured } from "../../../../../lib/artifacts/store";
+import { artifactKey, putArtifact, signedGetUrl, storageConfigured } from "../../../../../lib/artifacts/store";
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_ARTIFACT_INDEX = 10;
@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
       contentSha256: digest,
       collectedBy: body.collectedBy as string,
     });
+    const url = await signedGetUrl(key);
     return NextResponse.json({
       artifact: {
         id: artifact.id,
@@ -76,6 +77,7 @@ export async function POST(request: NextRequest) {
         environmentId: resolved.plan.environmentId,
         headSha: resolved.headSha,
       },
+      url,
     }, { status: 201 });
   } catch (error) {
     console.error("[evidence-verification-artifacts] store or record failed:", error);

@@ -8,13 +8,14 @@ vi.mock("@agentrail/db-postgres", () => ({
 vi.mock("../../../../../lib/artifacts/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../../lib/artifacts/store")>()),
   putArtifact: vi.fn(),
+  signedGetUrl: vi.fn(),
 }));
 
 import {
   recordEvidenceVerificationArtifact,
   resolveEvidenceVerificationPlanForArtifact,
 } from "@agentrail/db-postgres";
-import { putArtifact } from "../../../../../lib/artifacts/store";
+import { putArtifact, signedGetUrl } from "../../../../../lib/artifacts/store";
 import { POST } from "./route";
 
 const secret = "secret";
@@ -51,6 +52,7 @@ beforeEach(() => {
   vi.mocked(recordEvidenceVerificationArtifact).mockResolvedValue({
     id: "artifact", verificationPlanId: "plan", artifactKey: "review-evidence/ws/ada__widgets/42/abcdef0123456789/save-digest/1.png",
   } as never);
+  vi.mocked(signedGetUrl).mockResolvedValue("https://signed.example/artifact" as never);
 });
 
 describe("verification artifact upload", () => {

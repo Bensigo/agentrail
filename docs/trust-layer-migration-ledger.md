@@ -62,6 +62,11 @@ matches that claim, then caps changed files and textual patch bytes. A missing
 patch, a foreign head, or over-budget diff produces no review input. Any
 subsequent static evidence reference must fit a retained exact-head diff line;
 this is source/unit enforcement, not a live GitHub fetch.
+The worker-side GitHub adapter makes only authenticated read requests for that
+PR's metadata and up-to-61 file entries, then feeds the bounded compiler in
+memory. It refuses an absent token, non-2xx response, or different head. It
+does not clone, persist source, or itself produce a review; no live GitHub
+call has been exercised.
 
 ## Canonical MVP flow
 

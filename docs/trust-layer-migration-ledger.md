@@ -57,6 +57,11 @@ The Jace review-worker protocol core now holds one exact claim at a time and
 pins its completion identity from that claim. It is not started until a
 separate bounded PR-evidence evaluator exists; evaluator errors produce no
 completion or verdict and let the lease recover honestly.
+The evaluator input compiler accepts only GitHub pull metadata whose head
+matches that claim, then caps changed files and textual patch bytes. A missing
+patch, a foreign head, or over-budget diff produces no review input. Any
+subsequent static evidence reference must fit a retained exact-head diff line;
+this is source/unit enforcement, not a live GitHub fetch.
 
 ## Canonical MVP flow
 

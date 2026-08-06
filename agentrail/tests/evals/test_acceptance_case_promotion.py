@@ -3,10 +3,11 @@ from agentrail.evals.acceptance_case.scorecards import AcceptanceObservation
 
 
 def observation(**overrides):
+    provenance = {"caseVersion":"case-v1","corpusVersion":"corpus-v1","repository":"acme/app","repositoryCommit":"base","contractVersion":"contract-v1","model":"builder-v1","configVersion":"config-v1","promptVersion":"prompt-v1","guardrailVersion":"guardrail-v1","contextPackHash":"sha256:pack","contextPackTokenBudget":"900","prHead":"deadbeef","diffIdentity":"sha256:diff","environmentId":"preview-1","artifactRefs":"artifact-1","scorerVersion":"scorer-v1","outcomeSource":"independent-label-v1"}
     base = dict(
         case="held-case", arm="full-jace-loop", scorecard="proof", segment="ui",
         evidence_class="offline", independent_truth=True, jace_claim=True,
-        provenance={"caseVersion": "v1", "scorerVersion": "s1"},
+        provenance=provenance,
     )
     base.update(overrides)
     return AcceptanceObservation(**base)
@@ -22,7 +23,16 @@ def policy(*, min_scored=1, max_false_green_rate=0.0):
 
 
 def complete_arms(**overrides):
-    return [observation(arm=arm, **overrides) for arm in ("agent-alone", "contract-only", "contract-plus-pack", "full-jace-loop")]
+    items = []
+    for arm in ("agent-alone", "contract-only", "contract-plus-pack", "full-jace-loop"):
+        arm_overrides = dict(overrides)
+        if arm in {"agent-alone", "contract-only"}:
+            provenance = observation().provenance.copy()
+            provenance["contextPackHash"] = "none"
+            provenance["contextPackTokenBudget"] = "none"
+            arm_overrides["provenance"] = provenance
+        items.append(observation(arm=arm, **arm_overrides))
+    return items
 
 
 def test_promotes_only_complete_held_out_independent_evidence():

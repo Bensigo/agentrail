@@ -9,6 +9,32 @@ from .loader import ARMS
 SCORECARDS = ("contract", "context", "review", "proof", "correction", "outcome")
 EvidenceClass = Literal["offline", "canary", "production"]
 
+# An Acceptance Case report cannot inherit the legacy execution evaluator's
+# vague run lineage.  Every observation has to identify the exact frozen input,
+# builder/configuration, review revision, proof environment, and independent
+# scoring source that produced it.  ``none`` is an explicit absence marker for
+# arms that cannot legitimately carry a Context Pack or artifact; blank/missing
+# fields are never quietly interpreted as "same as last run".
+REQUIRED_PROVENANCE = {
+    "caseVersion",
+    "corpusVersion",
+    "repository",
+    "repositoryCommit",
+    "contractVersion",
+    "model",
+    "configVersion",
+    "promptVersion",
+    "guardrailVersion",
+    "contextPackHash",
+    "contextPackTokenBudget",
+    "prHead",
+    "diffIdentity",
+    "environmentId",
+    "artifactRefs",
+    "scorerVersion",
+    "outcomeSource",
+}
+
 
 @dataclass(frozen=True)
 class AcceptanceObservation:
@@ -29,9 +55,17 @@ class AcceptanceObservation:
             raise ValueError(f"unknown Acceptance Case scorecard: {self.scorecard}")
         if not self.case or not self.segment:
             raise ValueError("case and segment are required")
-        required = {"caseVersion", "scorerVersion"}
-        if not required.issubset(self.provenance):
-            raise ValueError("Acceptance Case observations require caseVersion and scorerVersion provenance")
+        if not REQUIRED_PROVENANCE.issubset(self.provenance):
+            raise ValueError("Acceptance Case observations require complete immutable provenance")
+        if any(not isinstance(self.provenance[key], str) or not self.provenance[key].strip() for key in REQUIRED_PROVENANCE):
+            raise ValueError("Acceptance Case observation provenance values must be non-empty strings")
+        pack_hash = self.provenance["contextPackHash"]
+        pack_budget = self.provenance["contextPackTokenBudget"]
+        if self.arm in {"agent-alone", "contract-only"}:
+            if pack_hash != "none" or pack_budget != "none":
+                raise ValueError("non-pack arms must declare context Pack provenance as none")
+        elif pack_hash == "none" or pack_budget == "none":
+            raise ValueError("pack-bearing arms require Context Pack provenance")
 
 
 def aggregate(observations: Iterable[AcceptanceObservation]) -> Dict[str, Dict[str, int]]:

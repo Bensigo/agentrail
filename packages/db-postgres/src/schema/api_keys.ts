@@ -18,7 +18,8 @@ export type ApiKeyKind = "self_hosted" | "fleet" | "agent_mcp";
 export type ApiKeyScope =
   | "acceptance:read"
   | "acceptance:draft:write"
-  | "acceptance:context:write";
+  | "acceptance:context:write"
+  | "acceptance:correction:ack";
 
 export const apiKeys = pgTable(
   "api_keys",
@@ -52,7 +53,7 @@ export const apiKeys = pgTable(
       sql`(
         (${t.kind} = 'agent_mcp'
           AND cardinality(${t.scopes}) > 0
-          AND ${t.scopes} <@ ARRAY['acceptance:read', 'acceptance:draft:write', 'acceptance:context:write']::text[])
+          AND ${t.scopes} <@ ARRAY['acceptance:read', 'acceptance:draft:write', 'acceptance:context:write', 'acceptance:correction:ack']::text[])
         OR
         (${t.kind} IN ('self_hosted', 'fleet') AND ${t.scopes} = ARRAY[]::text[])
       )`

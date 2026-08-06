@@ -12,6 +12,7 @@ import {
   evidenceReviews,
   evidenceReviewCriteria,
   evidenceReviewCorrections,
+  evidenceReviewCorrectionDeliveries,
   type AcceptanceContractRow,
   type AcceptanceContextPackDeliveryRow,
   type AcceptanceContextPackRow,
@@ -131,6 +132,10 @@ export function changeRecordPrRevisionId(input: { prAttachmentId: string; headSh
 
 export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
   return uuid5Url(`evidence-review:${input.recordId}:${input.prRevisionId}`);
+}
+
+export function correctionDeliveryId(input: { correctionId: string; deliveryKey: string }): string {
+  return uuid5Url(`evidence-review-correction-delivery:${input.correctionId}:${input.deliveryKey}`);
 }
 
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
@@ -709,6 +714,47 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
     })));
     return { id, inserted: true };
   });
+}
+
+export async function queueEvidenceReviewCorrectionDelivery(input: {
+  workspaceId: string; correctionId: string; deliveryKey: string; channel: string; target: Record<string, unknown>;
+}) {
+  const id = correctionDeliveryId(input);
+  return db.transaction(async (tx) => {
+    const scoped = await tx.select({ review: evidenceReviews, record: changeRecords })
+      .from(evidenceReviewCorrections)
+      .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+      .innerJoin(changeRecords, eq(evidenceReviews.recordId, changeRecords.id))
+      .where(and(eq(evidenceReviewCorrections.id, input.correctionId), eq(changeRecords.workspaceId, input.workspaceId)))
+      .limit(1);
+    const item = scoped[0];
+    if (!item) throw new Error("Correction packet was not found in workspace");
+    const inserted = await tx.insert(evidenceReviewCorrectionDeliveries).values({
+      id, correctionId: input.correctionId, deliveryKey: input.deliveryKey, channel: input.channel,
+      target: input.target, reviewRevisionId: item.review.prRevisionId, outcome: "queued",
+    }).onConflictDoNothing().returning();
+    return { id, inserted: Boolean(inserted[0]), reviewRevisionId: item.review.prRevisionId };
+  });
+}
+
+/** An agent acknowledgement is the only transition that proves it received a packet. */
+export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
+  workspaceId: string; deliveryId: string; detail?: string | null;
+}) {
+  const rows = await db.update(evidenceReviewCorrectionDeliveries).set({
+    outcome: "acknowledged", outcomeDetail: input.detail ?? null, confirmedAt: new Date(),
+  }).where(and(
+    eq(evidenceReviewCorrectionDeliveries.id, input.deliveryId),
+    sql`EXISTS (
+      SELECT 1 FROM evidence_review_corrections c
+      JOIN evidence_reviews r ON r.id = c.review_id
+      JOIN change_records cr ON cr.id = r.record_id
+      WHERE c.id = ${evidenceReviewCorrectionDeliveries.correctionId}
+        AND cr.workspace_id = ${input.workspaceId}
+    )`,
+    sql`${evidenceReviewCorrectionDeliveries.confirmedAt} IS NULL`,
+  )).returning();
+  return rows[0] ?? null;
 }
 
 /** Adds a new immutable draft version; confirmed versions are never edited. */

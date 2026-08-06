@@ -13,6 +13,7 @@ const ALLOWED_SCOPES: ApiKeyScope[] = [
   "acceptance:read",
   "acceptance:draft:write",
   "acceptance:context:write",
+  "acceptance:correction:ack",
 ];
 
 async function requireWorkspaceAdmin(workspaceId: string) {

@@ -480,16 +480,11 @@ export function AcceptanceContextPackPanel({
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Context Pack delivery
         </h2>
-        <p className="mt-1 text-xs text-[var(--gray-09)]">
-          Recorded context is observable. Its delivery is not proof that the agent implemented or verified the change.
-        </p>
       </div>
-      {canRequest ? <div className="border-b border-[var(--gray-05)] px-4 py-3"><button type="button" disabled={requestingExecute} onClick={() => onRequestExecute?.(confirmed!)} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{requestingExecute ? "Queuing…" : "Prepare execute Context Pack"}</button><p className="mt-2 text-xs text-[var(--gray-09)]">This queues a bounded compiler job. It does not claim a Pack exists until the worker reports it.</p>{requestError ? <p className="mt-2 text-sm text-[var(--red-11)]">{requestError}</p> : null}{requestStatus ? <p className="mt-2 text-sm text-[var(--green-11)]">{requestStatus}</p> : null}</div> : null}
+      {canRequest ? <div className="border-b border-[var(--gray-05)] px-4 py-3"><button type="button" disabled={requestingExecute} onClick={() => onRequestExecute?.(confirmed!)} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{requestingExecute ? "Preparing…" : "Prepare Context Pack"}</button>{requestError ? <p className="mt-2 text-sm text-[var(--red-11)]">{requestError}</p> : null}{requestStatus ? <p className="mt-2 text-sm text-[var(--green-11)]">{requestStatus}</p> : null}</div> : null}
       {compilations.length ? <ol className="border-b border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{compilations.map((compilation) => <li key={compilation.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3"><div className="flex flex-wrap justify-between gap-2"><span><span className="font-mono">{compilation.phase}</span> compilation · <span className="font-mono">{compilation.status}</span></span><time dateTime={compilation.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(compilation.updatedAt)}</time></div><p className="mt-2 text-[var(--gray-09)]">{compilation.status === "compiled" ? "The compiler recorded a bounded Pack. Builder handoff still requires the matching confirmed Contract." : compilation.status === "queued" || compilation.status === "claimed" ? "The bounded Pack is not available yet. Builder handoff stays disabled until compilation succeeds." : "No usable Pack was produced. Jace will not expose a builder handoff from this compilation."}</p>{compilation.reason ? <p className="mt-2 break-words text-[var(--red-11)]">Reason: {compilation.reason}</p> : null}</li>)}</ol> : null}
       {contextPacks.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-[var(--gray-09)]">
-          {compilations.length ? "No compiled Context Pack has been recorded for this Acceptance Record." : "No Context Pack has been recorded for this Acceptance Record."}
-        </p>
+        <p className="px-4 py-4 text-sm text-[var(--gray-09)]">{compilations.length ? "Preparing Context Pack." : "Not prepared."}</p>
       ) : (
         <ol className="flex flex-col gap-3 px-4 py-4">
           {contextPacks.map((pack) => (
@@ -603,9 +598,8 @@ export function BuilderHandoffPanel({
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Selected external builder</h2>
-        <p className="mt-1 text-xs text-[var(--gray-09)]">Keep your coding agent. Bind its task and branch to this confirmed Contract and bounded Context Pack before it starts work.</p>
       </div>
-      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Confirm a Contract and wait for the matching execute Context Pack compilation before selecting a builder.</p> : (
+      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Context Pack required.</p> : (
         <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); if (!canRecord) return; onCreate({ builder, taskContextKey, branchName, agentMcpCredentialId, contract: contract!, contextPack: contextPack! }); }}>
           <div className="grid gap-3 sm:grid-cols-4">
             <label className="text-xs text-[var(--gray-11)]">Builder<input value={builder} onChange={(event) => setBuilder(event.target.value)} maxLength={64} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="codex or claude-code" /></label>
@@ -613,7 +607,7 @@ export function BuilderHandoffPanel({
             <label className="text-xs text-[var(--gray-11)]">Planned branch<input value={branchName} onChange={(event) => setBranchName(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="feature/save-status" /></label>
             <label className="text-xs text-[var(--gray-11)]">MCP credential<select value={agentMcpCredentialId} onChange={(event) => setAgentMcpCredentialId(event.target.value)} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs"><option value="">Select a dedicated credential</option>{agentMcpCredentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name}</option>)}</select></label>
           </div>
-          <p className="text-xs text-[var(--gray-09)]">Uses Contract v{contract!.version} and execute Pack v{contextPack!.version}. Jace will bind the selected MCP credential to this task; another workspace credential cannot read its Pack or corrections.</p>
+          <p className="text-xs text-[var(--gray-09)]">Contract v{contract!.version} · Context Pack v{contextPack!.version}</p>
           {agentMcpCredentials.length === 0 ? <p className="text-xs text-[var(--yellow-11)]">No active MCP credential is available. An owner or admin must create one with read and correction-acknowledgement access before recording this handoff.</p> : null}
           <button type="submit" disabled={pending || !canRecord} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{pending ? "Recording…" : "Record builder handoff"}</button>
           {error ? <p className="text-sm text-[var(--red-11)]">{error}</p> : null}
@@ -645,9 +639,8 @@ export function AcceptanceReviewRequestPanel({ requests }: { requests: Acceptanc
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Acceptance Review</h2>
-        <p className="mt-1 text-xs text-[var(--gray-09)]">Only an exact-head request can start Jace&apos;s blocking-only evidence review. A queued request is never a pass.</p>
       </div>
-      {requests.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No exact-head Acceptance Review has been requested for this Acceptance Record.</p> : (
+      {requests.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Not requested.</p> : (
         <ol className="flex flex-col gap-3 px-4 py-4">
           {requests.map((request) => <li key={request.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
             <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]"><span><span className="font-mono">{request.status}</span> · Contract v{request.acceptanceContractVersion}</span><time dateTime={request.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(request.updatedAt)}</time></div>
@@ -667,9 +660,8 @@ export function CorrectionDeliveryPanel({ deliveries }: { deliveries: Acceptance
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Correction delivery</h2>
-        <p className="mt-1 text-xs text-[var(--gray-09)]">A queued or delivered packet is not proof that the builder received it or repaired the PR. Only an acknowledgement proves receipt.</p>
       </div>
-      {deliveries.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No blocking correction delivery is recorded for this Acceptance Record.</p> : (
+      {deliveries.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No corrections.</p> : (
         <ol className="flex flex-col gap-3 px-4 py-4">
           {deliveries.map((delivery) => (
             <li key={delivery.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
@@ -729,9 +721,7 @@ export function FinalPrDecisionPanel({
     return (
       <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
-        <p className="mt-2 text-sm text-[var(--gray-09)]">
-          No current exact-head evidence review is available. Jace cannot record a final decision against an unreviewed or superseded PR revision.
-        </p>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">No review yet.</p>
       </section>
     );
   }
@@ -753,9 +743,6 @@ export function FinalPrDecisionPanel({
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
-        <p className="mt-1 text-xs text-[var(--gray-09)]">
-          A human decides this exact reviewed head. Recording a decision never merges code or changes Jace&apos;s evidence verdict.
-        </p>
       </div>
       <div className="space-y-3 px-4 py-4">
         <dl className="grid gap-2 text-xs sm:grid-cols-2">
@@ -976,9 +963,6 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           subtitle={`${data.record.repo} · ${data.record.state}`}
           actions={<CopyId id={data.record.id} label="Record" />}
         />
-        <p className="text-xs text-[var(--gray-09)]">
-          Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
-        </p>
       </div>
       <AcceptanceBriefPanel workspaceId={workspaceId} binding={data.briefBinding} />
       <AcceptanceContractPanel

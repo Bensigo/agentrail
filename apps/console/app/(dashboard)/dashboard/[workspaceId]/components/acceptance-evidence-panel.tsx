@@ -32,9 +32,6 @@ export function AcceptanceEvidencePanel({
           <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Acceptance evidence
           </h2>
-          <p className="mt-1 text-xs text-[var(--gray-09)]">
-            Recent Change/Acceptance Records from Jace&apos;s acceptance layer.
-          </p>
         </div>
         {records.length > 0 && (
           <Link
@@ -52,9 +49,6 @@ export function AcceptanceEvidencePanel({
             <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--gray-09)]" />
             <div>
               <p className="text-sm text-[var(--gray-12)]">No acceptance records yet.</p>
-              <p className="mt-1 text-xs text-[var(--gray-09)]">
-                Bring a task to Jace. Once a Change/Acceptance Record exists, its evidence will appear here.
-              </p>
               <Link
                 href={`/dashboard/${workspaceId}/work`}
                 className="mt-3 inline-flex items-center gap-0.5 text-xs text-[var(--blue-11)] hover:underline"

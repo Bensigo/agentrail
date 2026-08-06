@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceContracts,
+  acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
   acceptanceContextPacks,
   changeRecordEvents,
@@ -77,6 +78,17 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceContextPackDeliveries.contextPackId.notNull).toBe(true);
     expect(acceptanceContextPackDeliveries.deliveryKey.notNull).toBe(true);
     expect(acceptanceContextPackDeliveries.metadata.getSQLType()).toBe("jsonb");
+  });
+
+  it("binds a compiler job to one repository ref and confirmed-contract version without source content", () => {
+    expect(acceptanceContextPackCompilations.recordId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.repositoryId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.repositoryRef.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.acceptanceContractVersion.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.status.hasDefault).toBe(true);
+    const config = getTableConfig(acceptanceContextPackCompilations);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_context_pack_compilations_binding_key")).toBeDefined();
   });
 
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
@@ -208,5 +220,23 @@ describe("0082_acceptance_context_packs migration", () => {
       (e: { tag: string }) => e.tag === "0082_acceptance_context_packs"
     );
     expect(entry).toMatchObject({ idx: 87, version: "7", breakpoints: true });
+  });
+});
+
+describe("0093_acceptance_context_pack_compilations migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0093_acceptance_context_pack_compilations.sql");
+
+  it("creates a branch-bound worker queue with an explicit non-source result lifecycle", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_pack_compilations"');
+    expect(sqlText).toContain('"repository_ref" text NOT NULL');
+    expect(sqlText).toContain("'compiled', 'not_proven', 'failed'");
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_compilations_binding_key"');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0093_acceptance_context_pack_compilations");
+    expect(entry).toMatchObject({ idx: 98, version: "7", breakpoints: true });
   });
 });

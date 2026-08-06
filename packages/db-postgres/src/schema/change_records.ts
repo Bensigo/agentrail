@@ -160,6 +160,54 @@ export const acceptanceContextPacks = pgTable(
   })
 );
 
+/**
+ * A durable, worker-claimable request to compile one bounded Context Pack.
+ *
+ * The repository ref is captured at admission rather than resolved at claim
+ * time, so a moving default branch cannot silently change the worker's input.
+ * Raw checkout content remains exclusively in the disposable compiler worker.
+ */
+export const acceptanceContextPackCompilations = pgTable(
+  "acceptance_context_pack_compilations",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    repositoryId: uuid("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "restrict" }),
+    /** Admission-time snapshot of the connected repository's default branch. */
+    repositoryRef: text("repository_ref").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id")
+      .notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    phase: text("phase").notNull(),
+    status: text("status").notNull().default("queued"),
+    workerId: text("worker_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
+    contextPackId: uuid("context_pack_id").references(() => acceptanceContextPacks.id, { onDelete: "restrict" }),
+    reason: text("reason"),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    deterministicJob: uniqueIndex("acceptance_context_pack_compilations_binding_key").on(
+      t.recordId, t.acceptanceContractVersion, t.repositoryId, t.phase
+    ),
+    queued: index("acceptance_context_pack_compilations_queued_idx")
+      .on(t.createdAt)
+      .where(sql`${t.status} = 'queued'`),
+    record: index("acceptance_context_pack_compilations_record_idx").on(t.recordId, t.createdAt),
+  })
+);
+
 /** An idempotent audit of a pack being exposed through MCP, copy, or download. */
 export const acceptanceContextPackDeliveries = pgTable(
   "acceptance_context_pack_deliveries",
@@ -541,6 +589,7 @@ export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceContextPackRow = typeof acceptanceContextPacks.$inferSelect;
+export type AcceptanceContextPackCompilationRow = typeof acceptanceContextPackCompilations.$inferSelect;
 export type AcceptanceContextPackDeliveryRow =
   typeof acceptanceContextPackDeliveries.$inferSelect;
 export type ChangeRecordPrRow = typeof changeRecordPrs.$inferSelect;

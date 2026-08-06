@@ -141,10 +141,22 @@ Required vertical slices:
    local worker smoke against a disposable repository. A deployed clone and
    external-builder retrieval remain separate live proof.
 
-No compiler bridge is implemented yet. In particular, the Console/MCP Pack
-routes currently validate and persist caller-supplied metadata/artifact refs;
-they must not be described as having compiled context. The legacy factory's
-context pack file is not a substitute for this Acceptance Record-bound worker.
+Implemented foundation: an owner/admin can now admit an idempotent Context Pack
+compilation job only for the Record's connected repository and an exact
+confirmed Contract version. Admission snapshots the repository default branch
+as `repositoryRef`; the Jace-secret claim atomically returns only that job,
+confirmed contract, repository/ref, and a fresh workspace clone credential.
+It has no source payload and cannot choose a builder, modify code, create a PR,
+or merge. Tests cover human admission authority, missing record/repository,
+claim authentication/empty queue, deterministic identity, and migration/schema
+invariants.
+
+Still missing: the disposable compiler worker, exact resolved-commit and
+compiler attestation report, validated Pack recording from that report, retry
+or claim-expiry policy, and deployed proof. The Console/MCP Pack routes still
+also permit separately validated caller-supplied metadata/artifact refs; they
+must not be described as having compiled context. The legacy factory's Context
+Pack file is not a substitute for this Acceptance Record-bound worker.
 
 ## Dependency approval-lane removal plan (pre-destructive audit)
 
@@ -214,11 +226,12 @@ perform cleanup. No market-value claim follows from current factory results.
   endpoint, but no live external builder has done so; only its recorded
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`; the most recent product slices are
-  `3675acea` (exact-review final human decision), `6eee9453` (copy-only
-  landing pivot), `8848332e` (dependency Acceptance Record draft), and the
-  uncommitted former-proposal-route migration (canonical draft only). The only
-  expected untracked paths are generated dependency directories.
+  `codex/trust-layer-acceptance-record`; committed product slices include
+  `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
+  plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
+  Acceptance Record). The current uncommitted slice adds the compiler job
+  admission/claim foundation. The only expected unrelated untracked paths are
+  generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012
@@ -255,9 +268,11 @@ The outbound-reply worker was stopped after it did not return a bounded result;
 its persistence commit appeared on the branch and was independently inspected,
 then the coordinator added and verified the minimal post-delivery channel
 wiring in a separate commit. This does not establish a live channel flow. The
-current former-proposal-route migration remains local because no callable
-bounded worker is available and it overlaps the coordinator-owned dependency
-converter and runner API test fixture. The next slice should be a bounded
-read-only dependency-lane dependency map before any destructive cleanup; it
-must identify every approval/publisher caller and classify it as remove,
-neutral infrastructure, or still-needed compatibility.
+former-proposal-route migration remained local because it overlapped the
+coordinator-owned dependency converter and runner API fixture. The attempted
+smaller-model Context Pack job delegation was stopped after it did not return a
+bounded implementation; its persistence glue was completed locally without
+expanding scope. The next slice is the disposable compiler worker and its
+report seam; separately, a bounded dependency-lane map remains required before
+any destructive cleanup and must classify every approval/publisher caller as
+remove, neutral infrastructure, or still-needed compatibility.

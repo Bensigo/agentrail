@@ -2,11 +2,13 @@ import { createHash, randomUUID } from "crypto";
 import { and, asc, count, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
+import { repositories } from "../schema/repositories.js";
 import {
   changeRecordEvents,
   changeRecords,
   acceptanceContracts,
   acceptanceContextPacks,
+  acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
   changeRecordPrs,
   changeRecordPrRevisions,
@@ -23,6 +25,7 @@ import {
   type AcceptanceContractRow,
   type AcceptanceContextPackDeliveryRow,
   type AcceptanceContextPackRow,
+  type AcceptanceContextPackCompilationRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
   type ChangeRecordPrRow,
@@ -124,6 +127,18 @@ export function acceptanceContextPackId(input: {
   contentHash: string;
 }): string {
   return uuid5Url(`acceptance-context-pack:${input.recordId}:${input.contentHash}`);
+}
+
+export function acceptanceContextPackCompilationId(input: {
+  recordId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repositoryId: string;
+  phase: string;
+}): string {
+  return uuid5Url(
+    `acceptance-context-pack-compilation:${input.recordId}:${input.acceptanceContractId}:${input.acceptanceContractVersion}:${input.repositoryId}:${input.phase}`
+  );
 }
 
 export function acceptanceContextPackDeliveryId(input: {
@@ -993,6 +1008,141 @@ export type CreateAcceptanceBuilderHandoffInput = {
   contextPackId: string;
   createdBy: string;
 };
+
+export type EnqueueAcceptanceContextPackCompilationInput = {
+  workspaceId: string;
+  recordId: string;
+  repositoryId: string;
+  contractId: string;
+  contractVersion: number;
+  phase: "plan" | "execute" | "verify" | "review";
+  createdBy: string;
+};
+
+/**
+ * Admits exactly one compiler job for a confirmed contract and its connected
+ * repository. The ref is copied from the connected repository inside this
+ * transaction; callers cannot supply a branch or source payload.
+ */
+export async function enqueueAcceptanceContextPackCompilation(
+  input: EnqueueAcceptanceContextPackCompilationInput
+): Promise<{ compilation: AcceptanceContextPackCompilationRow; inserted: boolean }> {
+  const id = acceptanceContextPackCompilationId({
+    recordId: input.recordId,
+    acceptanceContractId: input.contractId,
+    acceptanceContractVersion: input.contractVersion,
+    repositoryId: input.repositoryId,
+    phase: input.phase,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`acceptance-context-pack-compilation:${id}`}))`);
+    const binding = await tx.select({ repositoryRef: repositories.defaultBranch })
+      .from(changeRecords)
+      .innerJoin(acceptanceContracts, eq(acceptanceContracts.recordId, changeRecords.id))
+      .innerJoin(repositories, and(
+        eq(repositories.id, input.repositoryId),
+        eq(repositories.workspaceId, input.workspaceId),
+        eq(repositories.name, changeRecords.repo)
+      ))
+      .where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(acceptanceContracts.id, input.contractId),
+        eq(acceptanceContracts.version, input.contractVersion),
+        eq(acceptanceContracts.status, "confirmed")
+      ))
+      .limit(1);
+    if (!binding[0]) {
+      throw new Error("Confirmed Acceptance Contract and connected repository must be bound to the Acceptance Record");
+    }
+    const existing = await tx.select().from(acceptanceContextPackCompilations)
+      .where(eq(acceptanceContextPackCompilations.id, id)).limit(1);
+    if (existing[0]) return { compilation: existing[0], inserted: false };
+    const rows = await tx.insert(acceptanceContextPackCompilations).values({
+      id,
+      workspaceId: input.workspaceId,
+      recordId: input.recordId,
+      repositoryId: input.repositoryId,
+      repositoryRef: binding[0].repositoryRef,
+      acceptanceContractId: input.contractId,
+      acceptanceContractVersion: input.contractVersion,
+      phase: input.phase,
+      createdBy: input.createdBy,
+    }).returning();
+    const compilation = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-context-pack-compilation:${compilation.id}`,
+      stage: "context_pack_compilation",
+      actor: input.createdBy,
+      payloadRef: {
+        kind: "acceptance_context_pack_compilation",
+        compilationId: compilation.id,
+        acceptanceContractId: compilation.acceptanceContractId,
+        acceptanceContractVersion: compilation.acceptanceContractVersion,
+        repositoryId: compilation.repositoryId,
+        repositoryRef: compilation.repositoryRef,
+        phase: compilation.phase,
+      },
+    });
+    return { compilation, inserted: true };
+  });
+}
+
+/**
+ * Atomically claims the oldest admitted compilation. It returns no source
+ * content: only the confirmed contract and the repository/ref the worker must
+ * clone into its disposable environment.
+ */
+export async function claimAcceptanceContextPackCompilation(input: { workerId: string }): Promise<{
+  compilation: AcceptanceContextPackCompilationRow;
+  repository: { id: string; name: string; url: string | null; ref: string };
+  contract: Pick<AcceptanceContractRow, "id" | "version" | "contract">;
+} | null> {
+  const claimed = Array.from(await db.execute(sql`
+    UPDATE acceptance_context_pack_compilations
+    SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(),
+        attempts = attempts + 1, updated_at = now()
+    WHERE id = (
+      SELECT id FROM acceptance_context_pack_compilations
+      WHERE status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id
+  `)) as Array<Record<string, unknown>>;
+  const id = claimed[0]?.id as string | undefined;
+  if (!id) return null;
+  const rows = await db.select({
+    compilation: acceptanceContextPackCompilations,
+    repository: repositories,
+    contract: acceptanceContracts,
+  })
+    .from(acceptanceContextPackCompilations)
+    .innerJoin(repositories, eq(acceptanceContextPackCompilations.repositoryId, repositories.id))
+    .innerJoin(acceptanceContracts, eq(acceptanceContextPackCompilations.acceptanceContractId, acceptanceContracts.id))
+    .where(and(
+      eq(acceptanceContextPackCompilations.id, id),
+      eq(acceptanceContextPackCompilations.workerId, input.workerId),
+      eq(acceptanceContextPackCompilations.status, "claimed"),
+      eq(acceptanceContracts.version, acceptanceContextPackCompilations.acceptanceContractVersion),
+      eq(acceptanceContracts.status, "confirmed")
+    ))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    compilation: row.compilation,
+    repository: {
+      id: row.repository.id,
+      name: row.repository.name,
+      url: row.repository.url,
+      ref: row.compilation.repositoryRef,
+    },
+    contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
+  };
+}
 
 /**
  * Records the approved builder route before implementation starts. The

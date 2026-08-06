@@ -86,7 +86,10 @@ Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task p
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; a deployed UI exercise and non-UI artifact dispatch; API
 redaction worker; GitHub/Jace fallback delivery; human outcomes/dependency
-workflow; and UI/browser E2E.
+workflow; and UI/browser E2E. A scoped MCP credential can retrieve the
+evidence-bound packet for its recorded builder task context, but this is a
+durable inbox/readback mechanism—not proof that the external builder was
+notified or resumed; acknowledgement remains required.
 
 ## Consequences
 

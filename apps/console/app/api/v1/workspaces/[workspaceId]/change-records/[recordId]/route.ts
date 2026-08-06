@@ -16,6 +16,7 @@ import {
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
   validateAcceptancePrDecision,
+  type AcceptanceBriefBindingRead,
 } from "@agentrail/db-postgres";
 
 function serializeContract(contract: Awaited<ReturnType<typeof confirmAcceptanceContract>>) {
@@ -155,9 +156,7 @@ function serializeCorrectionDelivery(
   };
 }
 
-function serializeBriefBinding(
-  read: NonNullable<Awaited<ReturnType<typeof readAcceptanceBriefBinding>>>
-) {
+function serializeBriefBinding(read: AcceptanceBriefBindingRead) {
   return {
     binding: {
       id: read.binding.id,

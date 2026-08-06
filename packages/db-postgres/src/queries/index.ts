@@ -3303,6 +3303,7 @@ export {
   recordEvidenceVerificationArtifact,
   queueEvidenceReviewCorrectionDelivery,
   readEvidenceReviewCorrectionDeliveriesForTask,
+  readEvidenceReviewCorrectionDeliveriesForRecord,
   claimEvidenceReviewCorrectionDeliveryForGithubDispatch,
   reportEvidenceReviewCorrectionGithubDispatch,
   acknowledgeEvidenceReviewCorrectionDelivery,

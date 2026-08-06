@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AcceptanceContractPanel,
   AcceptanceContextPackPanel,
+  CorrectionDeliveryPanel,
   canRequestExecuteContextPack,
   canSelectExternalBuilder,
   FinalPrDecisionPanel,
@@ -13,6 +14,7 @@ import {
   type AcceptanceContract,
   type AcceptanceContextPack,
   type AcceptanceContextPackCompilation,
+  type AcceptanceCorrectionDelivery,
   type AcceptanceEvidenceReview,
   type ChangeRecord,
   type ChangeRecordEvent,
@@ -116,6 +118,18 @@ const compiledCompilation: AcceptanceContextPackCompilation = {
   ...queuedCompilation, id: "compilation-2", status: "compiled", contextPackId: contextPack.id,
 };
 
+const correctionDelivery: AcceptanceCorrectionDelivery = {
+  id: "delivery-1", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task-1" },
+  reviewRevisionId: "revision-1", headSha: "deadbeef", prNumber: 98, attempt: 1, outcome: "delivered",
+  outcomeDetail: "carrier accepted", queuedAt: "2026-08-03T10:02:00.000Z", attemptedAt: "2026-08-03T10:03:00.000Z", confirmedAt: null,
+  correction: {
+    id: "correction-1", criterionId: "AC-1", observedBehavior: "Save does nothing", expectedBehavior: "Save persists",
+    evidenceRefs: [{ artifact: "proof-1" }], likelyAffectedUnits: ["src/save.ts"], contextRefs: [{ source: "contract" }],
+    scopeBoundary: "Save flow", concreteImpact: "Users lose work", requiredCorrection: "Persist the draft",
+    reverification: "Click Save in the exact preview", repairPath: null,
+  },
+};
+
 const review: AcceptanceEvidenceReview = {
   id: "review-1", prRevisionId: "revision-1", headSha: "a".repeat(40), repositoryFullName: "ada/widgets", prNumber: 98,
   overallStatus: "failed", contractId: "contract-1", contractVersion: 1, createdAt: "2026-08-03T10:03:00.000Z", supersededAt: null,
@@ -215,6 +229,16 @@ describe("Change Record detail view", () => {
     expect(textContent(queued)).toContain("No compiled Context Pack has been recorded");
     expect(textContent(failed)).toContain("No usable Pack was produced");
     expect(textContent(failed)).toContain("Reason: clone failed");
+  });
+
+  it("makes correction delivery and receipt state inspectable without claiming a repair", () => {
+    const delivered = CorrectionDeliveryPanel({ deliveries: [correctionDelivery] });
+    const acknowledged = CorrectionDeliveryPanel({ deliveries: [{ ...correctionDelivery, outcome: "acknowledged", confirmedAt: "2026-08-03T10:04:00.000Z" }] });
+
+    expect(textContent(delivered)).toContain("The carrier reported delivery. The builder has not acknowledged receipt.");
+    expect(textContent(delivered)).toContain("Persist the draft");
+    expect(textContent(delivered)).toContain("deadbeef");
+    expect(textContent(acknowledged)).toContain("acknowledged receipt. This does not prove the repair is complete.");
   });
 
   it("keeps a non-proven review out of the normal approval path but permits an explicit human exception", () => {

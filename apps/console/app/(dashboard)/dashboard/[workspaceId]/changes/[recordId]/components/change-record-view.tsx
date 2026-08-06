@@ -97,6 +97,35 @@ export type AcceptanceBuilderHandoff = {
   prAttachedAt: string | null;
 };
 
+export type AcceptanceCorrectionDelivery = {
+  id: string;
+  channel: string;
+  target: Record<string, unknown>;
+  reviewRevisionId: string;
+  headSha: string;
+  prNumber: number;
+  attempt: number;
+  outcome: string;
+  outcomeDetail: string | null;
+  queuedAt: string;
+  attemptedAt: string | null;
+  confirmedAt: string | null;
+  correction: {
+    id: string;
+    criterionId: string | null;
+    observedBehavior: string;
+    expectedBehavior: string;
+    evidenceRefs: Record<string, unknown>[];
+    likelyAffectedUnits: string[];
+    contextRefs: Record<string, unknown>[];
+    scopeBoundary: string;
+    concreteImpact: string;
+    requiredCorrection: string;
+    reverification: string;
+    repairPath: string | null;
+  };
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
@@ -105,6 +134,7 @@ type ChangeRecordResponse = {
   contextPackCompilations: AcceptanceContextPackCompilation[];
   reviews: AcceptanceEvidenceReview[];
   handoffs: AcceptanceBuilderHandoff[];
+  correctionDeliveries: AcceptanceCorrectionDelivery[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -502,6 +532,49 @@ export function BuilderHandoffPanel({
   );
 }
 
+function correctionDeliveryMeaning(outcome: string): string {
+  if (outcome === "acknowledged") return "The recorded builder task acknowledged receipt. This does not prove the repair is complete.";
+  if (outcome === "delivered") return "The carrier reported delivery. The builder has not acknowledged receipt.";
+  if (outcome === "failed") return "The carrier failed. Jace must not claim the builder was notified.";
+  if (outcome === "dispatching") return "A carrier attempt is in progress. Receipt is not proven.";
+  return "The correction is queued only. It has not been sent or acknowledged.";
+}
+
+export function CorrectionDeliveryPanel({ deliveries }: { deliveries: AcceptanceCorrectionDelivery[] }) {
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Correction delivery</h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">A queued or delivered packet is not proof that the builder received it or repaired the PR. Only an acknowledgement proves receipt.</p>
+      </div>
+      {deliveries.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No blocking correction delivery is recorded for this Acceptance Record.</p> : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {deliveries.map((delivery) => (
+            <li key={delivery.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]">
+                <span><span className="font-mono">{delivery.channel}</span> · <span className="font-mono">{delivery.outcome}</span> · PR #{delivery.prNumber}</span>
+                <time dateTime={delivery.queuedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(delivery.queuedAt)}</time>
+              </div>
+              <p className="mt-2 text-xs text-[var(--gray-09)]">{correctionDeliveryMeaning(delivery.outcome)}</p>
+              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <div><dt className="text-[var(--gray-09)]">Exact head</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{delivery.headSha}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Attempts</dt><dd className="mt-1 font-mono text-[var(--gray-11)]">{delivery.attempt}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Delivery target</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{JSON.stringify(delivery.target)}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Receipt</dt><dd className="mt-1 text-[var(--gray-11)]">{delivery.confirmedAt ? formatChangeRecordDate(delivery.confirmedAt) : "Not acknowledged"}</dd></div>
+              </dl>
+              {delivery.outcomeDetail ? <p className="mt-3 break-words text-xs text-[var(--red-11)]">Carrier detail: {delivery.outcomeDetail}</p> : null}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">View evidence-bound correction packet</summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">{JSON.stringify(delivery.correction, null, 2)}</pre>
+              </details>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function FinalPrDecisionPanel({
   reviews,
   onDecide,
@@ -607,7 +680,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.contextPacks) ||
           !Array.isArray(body.contextPackCompilations) ||
           !Array.isArray(body.reviews) ||
-          !Array.isArray(body.handoffs)
+          !Array.isArray(body.handoffs) ||
+          !Array.isArray(body.correctionDeliveries)
         ) {
           throw new Error("Change record response was incomplete");
         }
@@ -756,6 +830,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       />
       <AcceptanceContextPackPanel contextPacks={data.contextPacks} compilations={data.contextPackCompilations} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
       <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
+      <CorrectionDeliveryPanel deliveries={data.correctionDeliveries} />
       <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />

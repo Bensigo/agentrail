@@ -4,9 +4,9 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 
 ## Coordinator checkpoint (2026-08-06, current branch)
 
-The current branch head is `7dff5d40` after the runtime-proof, builder-handoff,
-and Console-admission slices. The worktree has no tracked changes; the only
-untracked paths are local dependency/output directories. The recent commits
+The current committed branch head is `14dcc0f3` after the runtime-proof,
+builder-handoff, Console-admission, and Context Pack lifecycle slices. The
+only expected untracked paths are local dependency/output directories. The recent commits
 `9c05442d`, `0a615e7f`, `e4864b27`, and `e6f39939` add bounded UI/API
 criterion execution, while `c2e395fd`, `b47a0717`, `cf192b8c`, `4d5edce4`,
 and `7dff5d40` add recorded builder delivery, proof-eval checks, human builder
@@ -30,6 +30,14 @@ diff; the coordinator verified that fact before applying this narrow fallback.
 This advances the confirmed contract → bounded Pack → external builder flow and
 does not introduce code generation, a chat interface, semantic search, or a
 new verification modality.
+
+The human Record now also exposes each evidence-bound correction delivery with
+its exact review revision/head, channel/target, carrier attempts/outcome,
+receipt timestamp, and inspectable correction packet. `queued`, `delivered`,
+and `acknowledged` are explicitly distinct: only the latter proves the recorded
+builder task received the packet, and none proves a repair or merge. This is
+local source/unit evidence; no carrier, builder, or authenticated Console flow
+has run live.
 
 ## Canonical MVP flow
 

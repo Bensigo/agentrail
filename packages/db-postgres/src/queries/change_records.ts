@@ -2263,6 +2263,34 @@ export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
 }
 
 /**
+ * Human-facing delivery ledger for one Acceptance Record. This joins only the
+ * persisted correction packet and exact review/revision identity; it never
+ * turns a queued carrier row into a notification or receipt claim.
+ */
+export async function readEvidenceReviewCorrectionDeliveriesForRecord(input: {
+  workspaceId: string;
+  recordId: string;
+}) {
+  return db.select({
+    delivery: evidenceReviewCorrectionDeliveries,
+    correction: evidenceReviewCorrections,
+    review: evidenceReviews,
+    revision: changeRecordPrRevisions,
+    pr: changeRecordPrs,
+  }).from(evidenceReviewCorrectionDeliveries)
+    .innerJoin(evidenceReviewCorrections, eq(evidenceReviewCorrectionDeliveries.correctionId, evidenceReviewCorrections.id))
+    .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+    .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .where(and(
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      eq(evidenceReviews.recordId, input.recordId),
+      eq(changeRecordPrs.recordId, input.recordId),
+    ))
+    .orderBy(desc(evidenceReviewCorrectionDeliveries.queuedAt));
+}
+
+/**
  * Atomically reserves one current-head GitHub fallback delivery. The caller
  * must report the actual carrier result with `report...GithubDispatch`.
  */

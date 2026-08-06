@@ -13,6 +13,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   readAcceptanceContextPackCompilations: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
   readAcceptanceBuilderHandoffs: vi.fn(),
+  readEvidenceReviewCorrectionDeliveriesForRecord: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
   validateAcceptancePrDecision: vi.fn(),
@@ -28,6 +29,7 @@ import {
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
+  readEvidenceReviewCorrectionDeliveriesForRecord,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
   validateAcceptancePrDecision,
@@ -112,6 +114,7 @@ beforeEach(() => {
   vi.mocked(readAcceptanceContextPackCompilations).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceBuilderHandoffs).mockResolvedValue([] as never);
+  vi.mocked(readEvidenceReviewCorrectionDeliveriesForRecord).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({ inserted: true, event: {
     id: "decision-1", recordId: RECORD, eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: `user:${USER}`,
@@ -223,8 +226,40 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       contextPackCompilations: [],
       reviews: [],
       handoffs: [],
+      correctionDeliveries: [],
     });
     expect(readAcceptanceContextPackCompilations).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+    expect(readEvidenceReviewCorrectionDeliveriesForRecord).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+  });
+
+  it("exposes evidence-bound correction delivery state without claiming receipt", async () => {
+    vi.mocked(readEvidenceReviewCorrectionDeliveriesForRecord).mockResolvedValue([{
+      delivery: {
+        id: "delivery-1", correctionId: "correction-1", deliveryKey: "mcp:handoff", channel: "mcp_task_context",
+        target: { builder: "codex", taskContextKey: "task-1" }, reviewRevisionId: "revision-1", attempt: 1,
+        outcome: "delivered", outcomeDetail: "carrier accepted", queuedAt: CREATED, attemptedAt: UPDATED, confirmedAt: null,
+      },
+      correction: {
+        id: "correction-1", reviewId: "review-1", criterionId: "AC-1", observedBehavior: "button does nothing",
+        expectedBehavior: "button saves", evidenceRefs: [{ artifact: "proof-1" }], reproductionSteps: [], likelyAffectedUnits: ["src/save.ts"],
+        contextRefs: [{ source: "contract" }], scopeBoundary: "Save flow", concreteImpact: "Users cannot save", requiredCorrection: "Persist the draft",
+        reverification: "Click save in exact preview", repairPath: null, createdAt: CREATED,
+      },
+      review: { id: "review-1" },
+      revision: { id: "revision-1", headSha: "deadbeef" },
+      pr: { prNumber: 98 },
+    }] as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      correctionDeliveries: [{
+        id: "delivery-1", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task-1" },
+        reviewRevisionId: "revision-1", headSha: "deadbeef", prNumber: 98, attempt: 1, outcome: "delivered",
+        confirmedAt: null, correction: { criterionId: "AC-1", requiredCorrection: "Persist the draft", reverification: "Click save in exact preview" },
+      }],
+    });
   });
 
   it("serializes only safe Context Pack compilation lifecycle metadata", async () => {

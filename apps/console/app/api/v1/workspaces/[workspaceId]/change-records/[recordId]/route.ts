@@ -10,6 +10,7 @@ import {
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
+  readEvidenceReviewCorrectionDeliveriesForRecord,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
   validateAcceptancePrDecision,
@@ -101,6 +102,39 @@ function serializeBuilderHandoff(
   };
 }
 
+function serializeCorrectionDelivery(
+  row: Awaited<ReturnType<typeof readEvidenceReviewCorrectionDeliveriesForRecord>>[number]
+) {
+  return {
+    id: row.delivery.id,
+    channel: row.delivery.channel,
+    target: row.delivery.target,
+    reviewRevisionId: row.delivery.reviewRevisionId,
+    headSha: row.revision.headSha,
+    prNumber: row.pr.prNumber,
+    attempt: row.delivery.attempt,
+    outcome: row.delivery.outcome,
+    outcomeDetail: row.delivery.outcomeDetail,
+    queuedAt: row.delivery.queuedAt.toISOString(),
+    attemptedAt: row.delivery.attemptedAt?.toISOString() ?? null,
+    confirmedAt: row.delivery.confirmedAt?.toISOString() ?? null,
+    correction: {
+      id: row.correction.id,
+      criterionId: row.correction.criterionId,
+      observedBehavior: row.correction.observedBehavior,
+      expectedBehavior: row.correction.expectedBehavior,
+      evidenceRefs: row.correction.evidenceRefs,
+      likelyAffectedUnits: row.correction.likelyAffectedUnits,
+      contextRefs: row.correction.contextRefs,
+      scopeBoundary: row.correction.scopeBoundary,
+      concreteImpact: row.correction.concreteImpact,
+      requiredCorrection: row.correction.requiredCorrection,
+      reverification: row.correction.reverification,
+      repairPath: row.correction.repairPath,
+    },
+  };
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -122,12 +156,13 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, contextPackCompilations, reviews, handoffs] = await Promise.all([
+    const [contracts, contextPacks, contextPackCompilations, reviews, handoffs, correctionDeliveries] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
       readAcceptanceContextPackCompilations({ workspaceId, recordId }),
       readAcceptanceEvidenceReviewSummaries({ workspaceId, recordId }),
       readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
+      readEvidenceReviewCorrectionDeliveriesForRecord({ workspaceId, recordId }),
     ]);
     return NextResponse.json({
       record: {
@@ -157,6 +192,7 @@ export async function GET(
       contextPackCompilations: (contextPackCompilations ?? []).map(serializeContextPackCompilation),
       reviews: (reviews ?? []).map(serializeReview),
       handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
+      correctionDeliveries: correctionDeliveries.map(serializeCorrectionDelivery),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);

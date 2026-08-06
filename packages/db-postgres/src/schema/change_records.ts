@@ -112,6 +112,81 @@ export const acceptanceContracts = pgTable(
 );
 
 /**
+ * Metadata-only Context Pack versions delivered for an Acceptance Record.
+ *
+ * The pack's bounded source snippets remain under workspace custody. This
+ * table records the immutable delivery manifest, hash, compiler identity, and
+ * artifact references without turning the central database into an unrestricted
+ * source mirror.
+ */
+export const acceptanceContextPacks = pgTable(
+  "acceptance_context_packs",
+  {
+    id: uuid("id").primaryKey(),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    phase: text("phase").notNull(),
+    contentHash: text("content_hash").notNull(),
+    compilerVersion: text("compiler_version").notNull(),
+    /** Cited metadata only: no raw file/snippet content. */
+    manifest: jsonb("manifest").$type<Record<string, unknown>>().notNull(),
+    custody: jsonb("custody").$type<Record<string, unknown>>().notNull(),
+    freshness: jsonb("freshness").$type<Record<string, unknown>>().notNull(),
+    jsonArtifactRef: text("json_artifact_ref"),
+    markdownArtifactRef: text("markdown_artifact_ref"),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    recordVersion: uniqueIndex("acceptance_context_packs_record_version_key").on(
+      t.recordId,
+      t.version
+    ),
+    recordContentHash: uniqueIndex("acceptance_context_packs_record_content_hash_key").on(
+      t.recordId,
+      t.contentHash
+    ),
+    recordCreated: index("acceptance_context_packs_record_created_idx").on(
+      t.recordId,
+      t.createdAt
+    ),
+  })
+);
+
+/** An idempotent audit of a pack being exposed through MCP, copy, or download. */
+export const acceptanceContextPackDeliveries = pgTable(
+  "acceptance_context_pack_deliveries",
+  {
+    id: uuid("id").primaryKey(),
+    contextPackId: uuid("context_pack_id")
+      .notNull()
+      .references(() => acceptanceContextPacks.id, { onDelete: "cascade" }),
+    deliveryKey: text("delivery_key").notNull(),
+    method: text("method").notNull(),
+    recipient: text("recipient"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    deliveredBy: text("delivered_by").notNull(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    packDeliveryKey: uniqueIndex("acceptance_context_pack_deliveries_pack_key").on(
+      t.contextPackId,
+      t.deliveryKey
+    ),
+    packDelivered: index("acceptance_context_pack_deliveries_pack_delivered_idx").on(
+      t.contextPackId,
+      t.deliveredAt
+    ),
+  })
+);
+
+/**
  * Append-only timeline entries attached to a Change Record. The row is
  * immutable by convention and by query helper: append uses
  * `ON CONFLICT (record_id, event_key) DO NOTHING`, never update.
@@ -145,3 +220,6 @@ export const changeRecordEvents = pgTable(
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
+export type AcceptanceContextPackRow = typeof acceptanceContextPacks.$inferSelect;
+export type AcceptanceContextPackDeliveryRow =
+  typeof acceptanceContextPackDeliveries.$inferSelect;

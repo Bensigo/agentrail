@@ -5,7 +5,11 @@ import {
   changeRecordEvents,
   changeRecords,
   acceptanceContracts,
+  acceptanceContextPacks,
+  acceptanceContextPackDeliveries,
   type AcceptanceContractRow,
+  type AcceptanceContextPackDeliveryRow,
+  type AcceptanceContextPackRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
@@ -92,6 +96,22 @@ export function acceptanceContractId(input: {
   version: number;
 }): string {
   return uuid5Url(`acceptance-contract:${input.recordId}:${input.version}`);
+}
+
+export function acceptanceContextPackId(input: {
+  recordId: string;
+  contentHash: string;
+}): string {
+  return uuid5Url(`acceptance-context-pack:${input.recordId}:${input.contentHash}`);
+}
+
+export function acceptanceContextPackDeliveryId(input: {
+  contextPackId: string;
+  deliveryKey: string;
+}): string {
+  return uuid5Url(
+    `acceptance-context-pack-delivery:${input.contextPackId}:${input.deliveryKey}`
+  );
 }
 
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
@@ -663,4 +683,217 @@ export async function readAcceptanceContracts(input: {
     .from(acceptanceContracts)
     .where(eq(acceptanceContracts.recordId, input.recordId))
     .orderBy(asc(acceptanceContracts.version));
+}
+
+function hasSourceContent(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasSourceContent);
+  if (value == null || typeof value !== "object") return false;
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => {
+    const normalized = key.toLowerCase();
+    return normalized === "content" || normalized === "fullsource" || hasSourceContent(nested);
+  });
+}
+
+function assertMetadataOnly(manifest: Record<string, unknown>): void {
+  if (hasSourceContent(manifest)) {
+    throw new Error("Acceptance Context Pack manifest must not contain source content");
+  }
+}
+
+export type RecordAcceptanceContextPackInput = {
+  workspaceId: string;
+  recordId: string;
+  phase: "plan" | "execute" | "verify" | "review";
+  contentHash: string;
+  compilerVersion: string;
+  manifest: Record<string, unknown>;
+  custody: Record<string, unknown>;
+  freshness: Record<string, unknown>;
+  jsonArtifactRef?: string | null;
+  markdownArtifactRef?: string | null;
+  createdBy: string;
+};
+
+/**
+ * Adds one immutable metadata-only Context Pack version to an Acceptance
+ * Record. Same record/content hash is replay-safe; raw source content is
+ * rejected before it reaches the central database.
+ */
+export async function recordAcceptanceContextPack(
+  input: RecordAcceptanceContextPackInput
+): Promise<{ pack: AcceptanceContextPackRow; inserted: boolean }> {
+  if (!/^sha256:[a-f0-9]{64}$/i.test(input.contentHash)) {
+    throw new Error("Acceptance Context Pack contentHash must be a sha256 hash");
+  }
+  assertMetadataOnly(input.manifest);
+  const lockKey = `acceptance-context-pack:${input.recordId}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const records = await tx
+      .select({ id: changeRecords.id })
+      .from(changeRecords)
+      .where(
+        and(
+          eq(changeRecords.workspaceId, input.workspaceId),
+          eq(changeRecords.id, input.recordId)
+        )
+      )
+      .limit(1);
+    if (!records[0]) throw new Error("Acceptance Record was not found in workspace");
+
+    const existing = await tx
+      .select()
+      .from(acceptanceContextPacks)
+      .where(
+        and(
+          eq(acceptanceContextPacks.recordId, input.recordId),
+          eq(acceptanceContextPacks.contentHash, input.contentHash)
+        )
+      )
+      .limit(1);
+    if (existing[0]) return { pack: existing[0], inserted: false };
+
+    const latest = await tx
+      .select({ version: acceptanceContextPacks.version })
+      .from(acceptanceContextPacks)
+      .where(eq(acceptanceContextPacks.recordId, input.recordId))
+      .orderBy(desc(acceptanceContextPacks.version))
+      .limit(1);
+    const version = (latest[0]?.version ?? 0) + 1;
+    const rows = await tx
+      .insert(acceptanceContextPacks)
+      .values({
+        id: acceptanceContextPackId({
+          recordId: input.recordId,
+          contentHash: input.contentHash,
+        }),
+        recordId: input.recordId,
+        version,
+        phase: input.phase,
+        contentHash: input.contentHash,
+        compilerVersion: input.compilerVersion,
+        manifest: input.manifest,
+        custody: input.custody,
+        freshness: input.freshness,
+        jsonArtifactRef: input.jsonArtifactRef ?? null,
+        markdownArtifactRef: input.markdownArtifactRef ?? null,
+        createdBy: input.createdBy,
+      })
+      .returning();
+    const pack = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-context-pack:built:${pack.version}`,
+      stage: "context_pack",
+      actor: input.createdBy,
+      payloadRef: {
+        kind: "acceptance_context_pack",
+        contextPackId: pack.id,
+        version: pack.version,
+        phase: pack.phase,
+        contentHash: pack.contentHash,
+        compilerVersion: pack.compilerVersion,
+      },
+    });
+    return { pack, inserted: true };
+  });
+}
+
+export async function readAcceptanceContextPacks(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceContextPackRow[] | null> {
+  const records = await db
+    .select({ id: changeRecords.id })
+    .from(changeRecords)
+    .where(
+      and(
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(changeRecords.id, input.recordId)
+      )
+    )
+    .limit(1);
+  if (!records[0]) return null;
+  return db
+    .select()
+    .from(acceptanceContextPacks)
+    .where(eq(acceptanceContextPacks.recordId, input.recordId))
+    .orderBy(desc(acceptanceContextPacks.version));
+}
+
+export type RecordAcceptanceContextPackDeliveryInput = {
+  workspaceId: string;
+  recordId: string;
+  contextPackId: string;
+  deliveryKey: string;
+  method: "mcp" | "copy" | "download" | "local_bridge";
+  recipient?: string | null;
+  metadata?: Record<string, unknown>;
+  deliveredBy: string;
+};
+
+/** Records access without confusing context delivery for implementation proof. */
+export async function recordAcceptanceContextPackDelivery(
+  input: RecordAcceptanceContextPackDeliveryInput
+): Promise<{ delivery: AcceptanceContextPackDeliveryRow; inserted: boolean }> {
+  const lockKey = `acceptance-context-pack-delivery:${input.contextPackId}:${input.deliveryKey}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const packs = await tx
+      .select({ id: acceptanceContextPacks.id })
+      .from(acceptanceContextPacks)
+      .innerJoin(changeRecords, eq(acceptanceContextPacks.recordId, changeRecords.id))
+      .where(
+        and(
+          eq(acceptanceContextPacks.id, input.contextPackId),
+          eq(acceptanceContextPacks.recordId, input.recordId),
+          eq(changeRecords.workspaceId, input.workspaceId)
+        )
+      )
+      .limit(1);
+    if (!packs[0]) throw new Error("Acceptance Context Pack was not found in workspace");
+
+    const existing = await tx
+      .select()
+      .from(acceptanceContextPackDeliveries)
+      .where(
+        and(
+          eq(acceptanceContextPackDeliveries.contextPackId, input.contextPackId),
+          eq(acceptanceContextPackDeliveries.deliveryKey, input.deliveryKey)
+        )
+      )
+      .limit(1);
+    if (existing[0]) return { delivery: existing[0], inserted: false };
+
+    const rows = await tx
+      .insert(acceptanceContextPackDeliveries)
+      .values({
+        id: acceptanceContextPackDeliveryId({
+          contextPackId: input.contextPackId,
+          deliveryKey: input.deliveryKey,
+        }),
+        contextPackId: input.contextPackId,
+        deliveryKey: input.deliveryKey,
+        method: input.method,
+        recipient: input.recipient ?? null,
+        metadata: input.metadata ?? {},
+        deliveredBy: input.deliveredBy,
+      })
+      .returning();
+    const delivery = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-context-pack:delivery:${delivery.id}`,
+      stage: "context_delivery",
+      actor: input.deliveredBy,
+      payloadRef: {
+        kind: "acceptance_context_pack_delivery",
+        contextPackId: input.contextPackId,
+        deliveryId: delivery.id,
+        method: delivery.method,
+        recipient: delivery.recipient,
+      },
+    });
+    return { delivery, inserted: true };
+  });
 }

@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceContracts,
+  acceptanceContextPackDeliveries,
+  acceptanceContextPacks,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -63,6 +65,18 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceContracts.contract.getSQLType()).toBe("jsonb");
     expect(acceptanceContracts.confirmedBy.notNull).toBe(false);
     expect(acceptanceContracts.confirmedAt.notNull).toBe(false);
+  });
+
+  it("stores metadata-only Context Pack versions and delivery audit rows", () => {
+    expect(acceptanceContextPacks.recordId.notNull).toBe(true);
+    expect(acceptanceContextPacks.version.notNull).toBe(true);
+    expect(acceptanceContextPacks.contentHash.notNull).toBe(true);
+    expect(acceptanceContextPacks.manifest.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPacks.custody.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPacks.freshness.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPackDeliveries.contextPackId.notNull).toBe(true);
+    expect(acceptanceContextPackDeliveries.deliveryKey.notNull).toBe(true);
+    expect(acceptanceContextPackDeliveries.metadata.getSQLType()).toBe("jsonb");
   });
 
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
@@ -164,5 +178,35 @@ describe("0081_acceptance_contracts migration", () => {
       (e: { tag: string }) => e.tag === "0081_acceptance_contracts"
     );
     expect(entry).toMatchObject({ idx: 86, version: "7", breakpoints: true });
+  });
+});
+
+describe("0082_acceptance_context_packs migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0082_acceptance_context_packs.sql"
+  );
+
+  it("creates metadata-only pack and delivery tables", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_packs"');
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_pack_deliveries"');
+    expect(sqlText).toContain('"manifest" jsonb NOT NULL');
+    expect(sqlText).toContain('"metadata" jsonb DEFAULT \'{}\'::jsonb NOT NULL');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_packs_record_content_hash_key"');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_deliveries_pack_key"');
+  });
+
+  it("is registered in the journal", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0082_acceptance_context_packs"
+    );
+    expect(entry).toMatchObject({ idx: 87, version: "7", breakpoints: true });
   });
 });

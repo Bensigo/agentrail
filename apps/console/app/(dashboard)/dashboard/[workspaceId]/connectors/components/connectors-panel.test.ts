@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { ConnectorTile } from "./connectors-panel";
 import { ConnectorStatusBadge } from "./connector-status-badge";
-import { projectConnectors } from "./connector-helpers";
+import { filterPublicConnectors, projectConnectors } from "./connector-helpers";
 
 interface ReactElementLike {
   type: unknown;
@@ -66,6 +66,20 @@ describe("ConnectorTile — one-click surface", () => {
 });
 
 describe("ConnectorsPanel — trust-layer presentation", () => {
+  it("filters API-projected optional providers to GitHub only", () => {
+    const rows = projectConnectors([]);
+    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github"]);
+  });
+
+  it("keeps public catalog copy free of legacy setup claims", () => {
+    const pageSource = readFileSync(
+      new URL("../page.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(pageSource).toContain("Gateways");
+    expect(pageSource).not.toMatch(/factory|autonomous|coming soon|generate code/i);
+  });
+
   it("does not render the removed Heartbeat/autonomous-loop block", () => {
     const source = readFileSync(
       new URL("./connectors-panel.tsx", import.meta.url),

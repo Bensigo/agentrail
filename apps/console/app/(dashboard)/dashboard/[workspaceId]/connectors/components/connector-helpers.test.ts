@@ -10,6 +10,7 @@ import {
   extraConfigFieldKeys,
   projectConnectors,
   projectExtraConfigValues,
+  filterPublicConnectors,
   shouldShowOauthSetupHint,
   validateConnectorCredential,
   type ConnectorCatalogEntry,
@@ -18,6 +19,12 @@ import {
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
+  it("has an explicit GitHub-only public projection", () => {
+    expect(filterPublicConnectors(projectConnectors([])).map((row) => row.kind)).toEqual([
+      "github",
+    ]);
+  });
+
   it("returns one row per catalog entry, grouped issue-source → mcp → observability", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([

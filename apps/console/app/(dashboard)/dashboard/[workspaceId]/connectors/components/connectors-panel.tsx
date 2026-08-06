@@ -8,6 +8,7 @@ import { ConnectorSheet } from "./connector-sheet";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
   CONNECTOR_TYPE_META,
+  filterPublicConnectors,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
@@ -260,7 +261,9 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
         connectors: ConnectorView[];
         canManage?: boolean;
       };
-      setConnectors(json.connectors ?? []);
+      // Keep optional providers available to server/evidence consumers, but
+      // expose only the GitHub repository/PR anchor in the public MVP setup.
+      setConnectors(filterPublicConnectors(json.connectors ?? []));
       setCanManage(Boolean(json.canManage));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load connectors");

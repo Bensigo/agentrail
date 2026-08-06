@@ -13,11 +13,9 @@ export default async function ConnectorsPage({
         Connectors
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Connect the tools that provide repository, task, optional tool, and
-        investigation context. GitHub anchors GitHub-backed flows to a
-        repository and its PR/task provenance; MCP and observability
-        connections are optional and do not replace criterion-specific
-        exact-head proof.
+        Connect GitHub to anchor the repository and exact PR identity used by
+        the acceptance record. Chat channels belong on Gateways; optional
+        tools and investigation evidence are not required for this setup.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

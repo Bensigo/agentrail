@@ -1084,6 +1084,18 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   },
 ];
 
+/** The trust-layer MVP's only public Console setup anchor. */
+export const PUBLIC_CONNECTOR_KINDS: readonly ConnectorKind[] = ["github"];
+
+/** Filter API/projected rows without removing backend connector capabilities. */
+export function filterPublicConnectors(
+  connectors: ConnectorView[],
+): ConnectorView[] {
+  return connectors.filter((connector) =>
+    PUBLIC_CONNECTOR_KINDS.includes(connector.kind),
+  );
+}
+
 /** Default ingest label, matching the AFK CLI's ready label / GitHubConnector. */
 export const DEFAULT_INGEST_LABEL = "ready-for-agent";
 

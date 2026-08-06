@@ -1,5 +1,3 @@
-import { verificationExecutionPrompt } from "./verification_execution_prompt.mjs";
-
 /** Isolated claim -> constrained QA turn -> evidence-bound completion loop. */
 export function createVerificationExecutionWorker({ claim, execute, complete, intervalMs = 10_000, log = () => {} }) {
   let inFlight = false;
@@ -12,7 +10,11 @@ export function createVerificationExecutionWorker({ claim, execute, complete, in
       const item = await claim();
       if (!item) return "idle";
       const plan = item.plan ?? item;
-      if ((plan.modality ?? "ui") === "ui" && (!Array.isArray(plan.uiSteps) || plan.uiSteps.length === 0)) {
+      if (plan.modality !== "ui" && plan.modality !== "api") {
+        await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "not_testable", resultReason: "Planned verification modality is missing or unsupported" });
+        return "not_testable";
+      }
+      if (plan.modality === "ui" && (!Array.isArray(plan.uiSteps) || plan.uiSteps.length === 0)) {
         await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "not_testable", resultReason: "Planned UI criterion has no persisted safe uiSteps action list" });
         return "not_testable";
       }
@@ -21,7 +23,7 @@ export function createVerificationExecutionWorker({ claim, execute, complete, in
         return "not_testable";
       }
       let result;
-      try { result = await execute(verificationExecutionPrompt(item)); } catch (error) {
+      try { result = await execute(item); } catch (error) {
         await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "failed", resultReason: error instanceof Error ? error.message : String(error) });
         return "failed";
       }

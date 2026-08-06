@@ -6,6 +6,7 @@ import {
   createClaimFn,
   createCompleteFn,
   createExecuteFn,
+  createRoutedExecuteFn,
 } from "../agent/lib/verification_execution_worker.mjs";
 
 test("builds a process-specific verification worker identifier", () => {
@@ -57,4 +58,22 @@ test("refuses an Eve turn without structured data", async () => {
   });
 
   await assert.rejects(() => execute("verify"), /without structured evidence result/);
+});
+
+test("routes UI claims to the mechanical executor and keeps API on the existing constrained Eve prompt", async () => {
+  const calls = { browser: [], eve: [] };
+  const routed = createRoutedExecuteFn({
+    browserExecute: async (item) => { calls.browser.push(item); return { status: "not_testable", observedBehavior: null, artifactIds: [], reason: "sidecar unavailable" }; },
+    client: { session: () => ({ send: async (input) => { calls.eve.push(input); return { result: async () => ({ status: "completed", data: { status: "not_testable", observedBehavior: null, artifactIds: [], reason: "api unavailable" } }) }; } }) },
+  });
+  const ui = { previewUrl: "https://preview", execution: { id: "ui" }, plan: { modality: "ui", uiSteps: [{ action: "open", path: "/" }] } };
+  const api = { previewUrl: "https://preview", execution: { id: "api" }, workspaceId: "ws", plan: { modality: "api", recordId: "record", prRevisionId: "revision", criterionId: "criterion", flow: "GET", expectedBehavior: "200", apiRequest: { method: "GET", path: "/api/health", expectedStatus: 200 } } };
+
+  assert.equal((await routed(ui)).reason, "sidecar unavailable");
+  assert.equal((await routed(api)).reason, "api unavailable");
+  assert.deepEqual(calls.browser, [ui]);
+  assert.equal(calls.eve.length, 1);
+  assert.match(calls.eve[0].message, /Dispatch qa to fetch only GET/);
+  assert.equal((await routed({ plan: {} })).status, "not_testable");
+  assert.equal(calls.eve.length, 1);
 });

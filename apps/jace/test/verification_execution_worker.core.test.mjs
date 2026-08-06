@@ -18,3 +18,11 @@ test("a historical UI plan without persisted actions is terminalized without inv
   assert.equal(executed, false);
   assert.equal(completed[0].resultReason, "Planned UI criterion has no persisted safe uiSteps action list");
 });
+test("a missing or unsupported modality cannot route into an executor", async () => {
+  let executed = false;
+  const completed = [];
+  const worker = createVerificationExecutionWorker({ claim: async () => ({ ...item, plan: { ...item.plan, modality: null } }), execute: async () => { executed = true; }, complete: async (input) => completed.push(input) });
+  assert.equal(await worker.tick(), "not_testable");
+  assert.equal(executed, false);
+  assert.equal(completed[0].resultReason, "Planned verification modality is missing or unsupported");
+});

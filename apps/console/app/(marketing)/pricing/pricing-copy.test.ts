@@ -298,6 +298,15 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(landingSource).toContain(
       "Jace gives engineering teams the evidence and control they need to trust AI coding agents.",
     );
+    expect(landingSource).not.toContain(
+      "Set the bar before work starts, then see what changed and what can be proven.",
+    );
+    expect(landingSource).toMatch(
+      /<h1 className="ar-rise mt-8"[\s\S]*?>\s*<span className="text-heading-1 block">Approve agent work with confidence\.<\/span>\s*<\/h1>/,
+    );
+    expect(landingSource).toMatch(
+      /<p className="ar-rise mt-6 max-w-\[58ch\] text-\[var\(--gray-11\)\]"[\s\S]*?>\s*Jace gives engineering teams the evidence and control they need to trust AI coding agents\.\s*<\/p>/,
+    );
     expect(landingSource.replace(/\s+/g, " ")).toContain(
       "Before work starts, a request becomes clear scope, acceptance criteria, and planned checks.",
     );

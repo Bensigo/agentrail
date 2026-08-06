@@ -149,13 +149,9 @@ export default async function LandingPage() {
           />
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
             <span className="text-heading-1 block">Approve agent work with confidence.</span>
-            <span className="text-heading-2 mt-5 block text-balance">
-            Jace gives engineering teams the evidence and control they need to trust AI coding agents.
-            </span>
           </h1>
           <p className="ar-rise mt-6 max-w-[58ch] text-[var(--gray-11)]" style={{ animationDelay: "110ms" }}>
-            Set the bar before work starts, then see what changed and what can
-            be proven.
+            Jace gives engineering teams the evidence and control they need to trust AI coding agents.
           </p>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
             <PrimaryCta cta={cta} />

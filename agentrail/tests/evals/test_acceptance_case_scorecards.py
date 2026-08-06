@@ -7,7 +7,12 @@ def observation(**overrides):
 
 def test_preserves_unscored_and_false_green_denominators():
     report = aggregate([observation(), observation(independent_truth=False, jace_claim=True), observation(independent_truth=None, jace_claim=None)])
-    assert report["offline:proof:ui"] == {"total":3,"scored":2,"unscored":1,"claim_true":2,"truth_true":1,"false_green":1,"false_block":0}
+    assert report["full-jace-loop:offline:proof:ui"] == {"total":3,"scored":2,"unscored":1,"claim_true":2,"truth_true":1,"false_green":1,"false_block":0}
+
+
+def test_never_blends_ablations_into_one_scorecard_bucket():
+    report = aggregate([observation(arm="agent-alone"), observation(arm="full-jace-loop")])
+    assert set(report) == {"agent-alone:offline:proof:ui", "full-jace-loop:offline:proof:ui"}
 
 def test_rejects_factory_arm_or_missing_lineage():
     with pytest.raises(ValueError, match="arm"): observation(arm="full")

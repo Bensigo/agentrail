@@ -35,10 +35,13 @@ class AcceptanceObservation:
 
 
 def aggregate(observations: Iterable[AcceptanceObservation]) -> Dict[str, Dict[str, int]]:
-    """Return explicit denominators; production is never merged into offline truth."""
+    """Return arm-separated explicit denominators without mixing evidence classes."""
     result: Dict[str, Dict[str, int]] = {}
     for item in observations:
-        key = f"{item.evidence_class}:{item.scorecard}:{item.segment}"
+        # An ablation is meaningful only when every arm remains independently
+        # reportable.  Omitting ``arm`` here would make a winning builder input
+        # and a failing baseline average into one misleading scorecard.
+        key = f"{item.arm}:{item.evidence_class}:{item.scorecard}:{item.segment}"
         bucket = result.setdefault(key, {"total": 0, "scored": 0, "unscored": 0, "claim_true": 0, "truth_true": 0, "false_green": 0, "false_block": 0})
         bucket["total"] += 1
         if item.independent_truth is None:

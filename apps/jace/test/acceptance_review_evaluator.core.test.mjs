@@ -17,3 +17,10 @@ test("preserves only bounded evidence output for completion", async () => {
   const evaluate = createAcceptanceReviewEvaluator({ fetchEvidence: async () => ({ ok: true, evidence }), generate: async () => ({ overallStatus: "failed", criteria: [{ criterionId: "saved", status: "failed", observedBehavior: "x", expectedBehavior: "y", reason: "x", evidenceRefs: [ref] }], findings: [{ basis: "acceptance_contract", criterionId: "saved", ruleOrBoundary: "AC", concreteImpact: "lost", requiredCorrection: "fix", reverification: "run", evidenceRefs: [ref] }] }) });
   const result = await evaluate(item); assert.equal(result.diffIdentity.headSha, head); assert.equal(result.findings.length, 1);
 });
+
+test("tells the model not to fabricate user-visible runtime proof", async () => {
+  let input;
+  const evaluate = createAcceptanceReviewEvaluator({ fetchEvidence: async () => ({ ok: true, evidence }), generate: async (value) => { input = value; return { overallStatus: "not_proven", criteria: [{ criterionId: "saved", status: "not_proven", observedBehavior: "static only", expectedBehavior: "Save persists", reason: "no runtime artifact", evidenceRefs: [] }], findings: [] }; } });
+  await evaluate({ ...item, contract: { contract: { acceptanceCriteria: [{ id: "saved", text: "Save persists", required: true, userVisible: true }] } } });
+  assert.match(input.instruction, /never mark a user-visible criterion proven/);
+});

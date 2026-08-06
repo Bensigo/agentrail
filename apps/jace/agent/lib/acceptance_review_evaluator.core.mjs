@@ -20,7 +20,7 @@ export function createAcceptanceReviewEvaluator({ fetchEvidence, generate }) {
       contract: item.contract.contract,
       pr: { repository: item.pr.repositoryFullName, number: item.pr.prNumber, headSha: item.request.headSha },
       diff: fetched.evidence.diffText,
-      instruction: "Return only criterion results and blocking findings requiring code changes. Never emit style advice. Cite only provided exact-head diff lines.",
+      instruction: "Return only criterion results and blocking findings requiring code changes. Never emit style advice. Cite only provided exact-head diff lines. This worker has no criterion-specific runtime artifact input: never mark a user-visible criterion proven; return not_proven unless separate bound runtime evidence is supplied.",
     });
     if (!output || !Array.isArray(output.criteria) || !Array.isArray(output.findings)) throw new Error("Evaluator returned no structured review");
     if (!output.criteria.every((criterion) => evidenceRefsFitBoundedDiff(criterion.evidenceRefs ?? [], fetched.evidence))) throw new Error("Evaluator cited a line outside the bounded exact-head diff");

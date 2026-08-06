@@ -67,6 +67,11 @@ PR's metadata and up-to-61 file entries, then feeds the bounded compiler in
 memory. It refuses an absent token, non-2xx response, or different head. It
 does not clone, persist source, or itself produce a review; no live GitHub
 call has been exercised.
+The evaluator core turns unavailable exact evidence into a complete,
+criterion-by-criterion `not_proven` payload and otherwise accepts only an
+injected structured evaluator result whose criterion/finding citations fit the
+retained diff. It does not repair invalid output into a pass. A runtime model
+adapter and worker startup wiring remain required.
 
 ## Canonical MVP flow
 

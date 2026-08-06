@@ -10,13 +10,13 @@
 // read-only docs lookup.
 import { defineMcpClientConnection } from "eve/connections";
 import {
-  CONTEXT7_MCP_URL,
   CONTEXT7_TOOLS,
+  resolveContext7Url,
   resolveContext7Headers,
 } from "../lib/connections.core.mjs";
 
 export default defineMcpClientConnection({
-  url: CONTEXT7_MCP_URL,
+  url: resolveContext7Url(process.env),
   description:
     "Context7: current, version-accurate documentation for external libraries, " +
     "SDKs, and APIs. Resolve a library id, then query its docs to verify any " +

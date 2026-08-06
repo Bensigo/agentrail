@@ -847,7 +847,7 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
 }
 
 export async function queueEvidenceReviewCorrectionDelivery(input: {
-  workspaceId: string; correctionId: string; deliveryKey: string; channel: string; target: Record<string, unknown>;
+  workspaceId: string; recordId: string; correctionId: string; deliveryKey: string; channel: string; target: Record<string, unknown>;
 }) {
   const id = correctionDeliveryId(input);
   return db.transaction(async (tx) => {
@@ -855,7 +855,11 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
       .from(evidenceReviewCorrections)
       .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
       .innerJoin(changeRecords, eq(evidenceReviews.recordId, changeRecords.id))
-      .where(and(eq(evidenceReviewCorrections.id, input.correctionId), eq(changeRecords.workspaceId, input.workspaceId)))
+      .where(and(
+        eq(evidenceReviewCorrections.id, input.correctionId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(evidenceReviews.recordId, input.recordId)
+      ))
       .limit(1);
     const item = scoped[0];
     if (!item) throw new Error("Correction packet was not found in workspace");

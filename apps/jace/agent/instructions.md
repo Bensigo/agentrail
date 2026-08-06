@@ -591,11 +591,11 @@ subagent instead of judging from the diff.
   checklist verbatim into the task prompt under an **Acceptance criteria**
   heading. If the fetch degrades, say so plainly and dispatch QA without
   ACs — never block QA on a failed fetch, and never invent criteria.
-- **Hand QA what the review could not prove.** When this conversation just
-  ran the `reviewer` on the same change, add its `acCoverage` entries
-  whose status was `not_in_diff` or `unclear` as a **Priority focus** list
-  in the task prompt — the browser verifies exactly what the diff could
-  not show.
+- **Hand QA the confirmed criterion, not a diff-derived guess.** For an
+  Acceptance Record execution, the worker supplies one exact criterion and
+  bounded flow. QA must exercise only that criterion, then return
+  `not_proven` or `not_testable` rather than broadening into an advisory
+  review.
 - **Present the per-AC results in chat:** one line per criterion with its
   verdict and evidence, alongside the findings rundown — and never present
   a `not_testable` criterion as passed. When `ac_results` is `null`, say

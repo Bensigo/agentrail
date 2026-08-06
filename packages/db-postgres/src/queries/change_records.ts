@@ -1764,6 +1764,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   repositoryFullName: string;
   prNumber: number;
   headSha: string;
+  previewUrl?: string;
 } | null> {
   const rows = await db.select({
     plan: evidenceVerificationPlans,
@@ -1784,12 +1785,32 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
     ))
     .limit(1);
   const row = rows[0];
-  return row ? {
+  if (!row) return null;
+  const resolved = {
     plan: row.plan,
     repositoryFullName: row.attachment.repositoryFullName,
     prNumber: row.attachment.prNumber,
     headSha: row.revision.headSha,
-  } : null;
+  };
+  // API artifacts may only be admitted from the exact ready preview that the
+  // plan names. UI artifact recording retains its existing semantics: it
+  // resolves the immutable plan/PR tuple but does not require a live preview
+  // at upload time.
+  if (input.modality !== "api") return resolved;
+  if (!row.plan.environmentId) return null;
+  const previews = await db.select({ url: previewBoots.url })
+    .from(previewBoots)
+    .where(and(
+      eq(previewBoots.id, row.plan.environmentId),
+      eq(previewBoots.workspaceId, row.attachment.workspaceId),
+      eq(previewBoots.repo, row.attachment.repositoryFullName),
+      eq(previewBoots.prNumber, row.attachment.prNumber),
+      eq(previewBoots.headSha, row.revision.headSha),
+      eq(previewBoots.status, "ready"),
+    ))
+    .limit(1);
+  const previewUrl = previews[0]?.url?.trim();
+  return previewUrl ? { ...resolved, previewUrl } : null;
 }
 
 /** Queue only a current planned criterion; completion cannot be inferred here. */

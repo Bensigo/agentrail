@@ -94,9 +94,12 @@ Planned API criteria now carry a bounded immutable request descriptor: `GET`,
 a same-preview-origin path, and expected status. The queue can claim such a
 criterion only when its exact PR-head preview is ready; Jace instructs QA to
 fetch only that descriptor and upload a redacted request/response/assertion
-artifact through the plan boundary. No deployed execution or independent
-semantic assertion evaluator is proven. Mutating, credential-bearing, and
-external API requests remain outside this MVP execution path.
+artifact through the plan boundary. Before storing that artifact, the server
+re-resolves the plan against the current exact ready preview and refuses a
+different origin, method, path, query, fragment, or status. No deployed
+execution or independent semantic assertion evaluator is proven. Mutating,
+credential-bearing, and external API requests remain outside this MVP
+execution path.
 
 Jace now has a separate exact-head criterion-execution queue, a guarded worker
 result seam, and a default-off Eve worker that claims only those plan-bound

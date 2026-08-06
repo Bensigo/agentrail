@@ -18,7 +18,7 @@ const secret = "secret";
 const body = {
   workspaceId: "ws", recordId: "record", prRevisionId: "revision", verificationPlanId: "plan", collectedBy: "worker", index: 1,
   evidence: {
-    request: { method: "GET", url: "https://api.example.test/widgets?token=private", headers: { Authorization: "Bearer private" } },
+    request: { method: "GET", url: "https://api.example.test/widgets", headers: { Authorization: "Bearer private" } },
     response: { status: 200, body: { token: "private", ok: true } },
     assertions: ["returns the current widget"],
   },
@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = secret; process.env.REVIEW_EVIDENCE_ENABLED = "1";
   process.env.S3_ENDPOINT = "http://localhost:9000"; process.env.S3_ACCESS_KEY = "key"; process.env.S3_SECRET_KEY = "secret"; process.env.S3_BUCKET = "bucket";
-  vi.mocked(resolveEvidenceVerificationPlanForArtifact).mockResolvedValue({ plan: { id: "plan", criterionId: "widget-api", environmentId: "api-env" }, repositoryFullName: "ada/widgets", prNumber: 42, headSha: "abcdef0123456789" } as never);
+  vi.mocked(resolveEvidenceVerificationPlanForArtifact).mockResolvedValue({ plan: { id: "plan", criterionId: "widget-api", environmentId: "api-env", apiRequest: { method: "GET", path: "/widgets", expectedStatus: 200 } }, repositoryFullName: "ada/widgets", prNumber: 42, headSha: "abcdef0123456789", previewUrl: "https://api.example.test" } as never);
   vi.mocked(recordEvidenceVerificationArtifact).mockResolvedValue({ id: "artifact", verificationPlanId: "plan", artifactKey: "review-evidence/ws/ada__widgets/42/abcdef0123456789/widget-api.json" } as never);
   vi.mocked(signedGetUrl).mockResolvedValue("https://signed.example/artifact" as never);
 });
@@ -50,6 +50,17 @@ describe("API verification artifact upload", () => {
     expect((await POST(request({ ...body, evidence: { request: {}, response: {}, assertions: [] } }))).status).toBe(400);
     vi.mocked(resolveEvidenceVerificationPlanForArtifact).mockResolvedValue(null);
     expect((await POST(request())).status).toBe(409);
+    expect(putArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects an API artifact whose origin, method, path, query, or status differs from the immutable plan", async () => {
+    for (const evidence of [
+      { ...body.evidence, request: { ...body.evidence.request, url: "https://untrusted.example.test/widgets" } },
+      { ...body.evidence, request: { ...body.evidence.request, method: "POST" } },
+      { ...body.evidence, request: { ...body.evidence.request, url: "https://api.example.test/other" } },
+      { ...body.evidence, request: { ...body.evidence.request, url: "https://api.example.test/widgets?extra=1" } },
+      { ...body.evidence, response: { ...body.evidence.response, status: 201 } },
+    ]) expect((await POST(request({ ...body, evidence }))).status).toBe(409);
     expect(putArtifact).not.toHaveBeenCalled();
   });
 

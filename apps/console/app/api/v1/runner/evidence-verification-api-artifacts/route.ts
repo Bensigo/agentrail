@@ -21,6 +21,18 @@ function validApiEvidence(value: unknown): value is Record<string, unknown> {
     && value.assertions.every((assertion) => text(assertion) && assertion.length <= 2_000);
 }
 
+function matchesApiDescriptor(evidence: Record<string, unknown>, descriptor: unknown, previewUrl: string | undefined): boolean {
+  if (!object(descriptor) || descriptor.method !== "GET" || !text(descriptor.path) || !Number.isInteger(descriptor.expectedStatus)) return false;
+  const request = evidence.request as Record<string, unknown>;
+  const response = evidence.response as Record<string, unknown>;
+  if (request.method !== descriptor.method || response.status !== descriptor.expectedStatus) return false;
+  try {
+    const url = new URL(request.url as string);
+    return Boolean(previewUrl) && url.origin === new URL(previewUrl).origin
+      && url.pathname === descriptor.path && url.search === "" && url.hash === "";
+  } catch { return false; }
+}
+
 /** Store one redacted request/response/assertion card for a planned exact-head API criterion. */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
@@ -58,6 +70,9 @@ export async function POST(request: NextRequest) {
   });
   if (!resolved) {
     return NextResponse.json({ error: "current planned API criterion not found for this record and PR revision" }, { status: 409 });
+  }
+  if (!matchesApiDescriptor(body.evidence as Record<string, unknown>, resolved.plan.apiRequest, resolved.previewUrl)) {
+    return NextResponse.json({ error: "API evidence does not match the planned exact-preview GET request and expected status" }, { status: 409 });
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
   let key: string;

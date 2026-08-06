@@ -50,11 +50,9 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Evidence & context exposes only review evidence and the repository wiki", () => {
-    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
-      "review-gates",
-      "wiki",
-    ]);
+  it("Evidence & context exposes only the repository wiki", () => {
+    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual(["wiki"]);
+    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).not.toContain("review-gates");
   });
 
   it("Settings zone: Gateways (gateways-page T3, ABOVE Connectors), Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
@@ -74,7 +72,6 @@ describe("NAV_ZONES data structure", () => {
       // "queue" intentionally excluded: #1231 renamed its nav item's href to
       // "work" — the /queue route itself still exists, but only as a
       // redirect (see the next test), not a nav destination.
-      "review-gates",
       // "api-keys" intentionally excluded: the in-console key list/create/
       // revoke UI was removed (owner ruling, 2026-07-19) — see the dedicated
       // "api-keys is gone from the nav" test below.
@@ -136,7 +133,6 @@ describe("NAV_ZONES data structure", () => {
       "",
       "changes",
       "connectors",
-      "review-gates",
       "approvals", // #1276: pending approvals, parked work, dead letters
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
@@ -193,6 +189,9 @@ describe("isEngineRoomRoute", () => {
     // /queue still exists as a redirect (#1231) — its pathname is likewise
     // not an engine-room route.
     expect(isEngineRoomRoute(`${BASE}/queue`, BASE)).toBe(false);
+    // /review-gates remains reachable for compatibility/history, but is not
+    // a primary navigation or Engine room auto-expand target.
+    expect(isEngineRoomRoute(`${BASE}/review-gates`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/connectors`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/teams`, BASE)).toBe(false);
   });
@@ -200,9 +199,9 @@ describe("isEngineRoomRoute", () => {
 
 describe("resolveEngineRoomOpen", () => {
   it("a direct deep link into an engine-room route always opens, regardless of persisted state", () => {
-    expect(resolveEngineRoomOpen(`${BASE}/review-gates`, BASE, "false")).toBe(true);
-    expect(resolveEngineRoomOpen(`${BASE}/review-gates`, BASE, null)).toBe(true);
-    expect(resolveEngineRoomOpen(`${BASE}/review-gates/review_123`, BASE, "false")).toBe(
+    expect(resolveEngineRoomOpen(`${BASE}/wiki`, BASE, "false")).toBe(true);
+    expect(resolveEngineRoomOpen(`${BASE}/wiki`, BASE, null)).toBe(true);
+    expect(resolveEngineRoomOpen(`${BASE}/wiki/wiki_123`, BASE, "false")).toBe(
       true
     );
   });

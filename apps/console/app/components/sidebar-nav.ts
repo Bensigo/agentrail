@@ -2,7 +2,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
   Inbox,
-  ShieldCheck,
   CreditCard,
   BookOpen,
   Users,
@@ -83,7 +82,6 @@ export const ENGINE_ROOM_ZONE: NavZone = {
   label: "Evidence & context",
   collapsible: true,
   items: [
-    { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
     // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
     // are compiled/advisory knowledge stores read-only from the console, the
     // Wiki about the codebase, Memory about interaction history (CONTEXT.md's

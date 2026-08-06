@@ -69,21 +69,23 @@ deploy, run shell commands, or read another workspace.
 Use `acceptance_intake_start` first with the raw user request and a stable MCP
 task-context key. The hosted boundary derives the `mcp` origin and credential
 provenance; the agent cannot select a repository or submit a contract through
-this tool. Jace must collect unresolved information and a human must confirm
-the Acceptance Contract before a Context Pack handoff or implementation. The
-MCP server does not claim that interactive clarification or confirmation has
-completed. Use `acceptance_intake_get` to read only Jace's bounded task-context
-messages, then use `acceptance_intake_reply` only for an explicit user reply
-with a stable source-message key. MCP task-context provenance is not an
-independently authenticated human identity. When it records a Context Pack,
-the API accepts only a hash,
-provenance/freshness metadata, and artifact references; raw source content does
-not enter the central record.
+this tool. The supported trust workflow requires explicit user/human
+confirmation and a recorded builder handoff before `acceptance_builder_task_get`
+may be used for builder-task read. The MCP server does not claim that
+interactive clarification or confirmation has completed. Use
+`acceptance_intake_get` to read only Jace's bounded task-context messages, then
+use `acceptance_intake_reply` only for an explicit user reply with a stable
+source-message key. MCP task-context provenance is not an independently
+authenticated human identity. When it records a Context Pack, the API accepts
+only a hash, provenance/freshness metadata, and artifact references; raw source
+content does not enter the central record.
 
 To retrieve a correction, the credential needs `acceptance:read`; to confirm
 that the agent has actually received and read it, it also needs
-`acceptance:correction:ack`. Retrieval is not an acknowledgement. Neither tool
-changes code or merges a PR.
+`acceptance:correction:ack`. Correction acknowledgement requires the same
+recorded `builder` and `taskContextKey` as the builder-task read, plus the
+delivery ID; retrieval is not an acknowledgement. Neither tool changes code or
+merges a PR.
 
 ### Claude Code / Claude Desktop / Cursor
 
@@ -101,6 +103,30 @@ changes code or merges a PR.
   }
 }
 ```
+
+### Codex
+
+Configure the same MCP server in Codex with a stable task-context key supplied
+when calling the acceptance tools:
+
+```toml
+[mcp_servers.agentrail-context]
+command = "node"
+args = ["/abs/path/to/agentrail/packages/mcp/dist/index.js"]
+
+[mcp_servers.agentrail-context.env]
+AGENTRAIL_BIN = "/abs/path/to/agentrail/scripts/agentrail"
+AGENTRAIL_TARGET = "/abs/path/to/your/repo"
+JACE_API_URL = "https://console.example.com"
+JACE_WORKSPACE_ID = "workspace-uuid"
+JACE_MCP_TOKEN = "${JACE_MCP_TOKEN}"
+```
+
+Codex and Claude use the same supported workflow: human confirmation and a
+recorded builder handoff must exist before builder-task read; correction
+acknowledgement must include that same builder/task context. This documents the
+configuration and preconditions only; it does not claim live pickup or resume
+behaviour in either client.
 
 ## Why route agents through this
 

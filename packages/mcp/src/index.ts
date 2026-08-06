@@ -270,12 +270,14 @@ server.registerTool(
       "Only call after the agent actually receives and reads the packet. This does not modify code or merge anything.",
     inputSchema: {
       deliveryId: z.string().uuid().describe("Correction delivery UUID."),
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
       detail: z.string().max(2000).optional().describe("Optional acknowledgement detail, up to 2000 characters."),
     },
     annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
   },
-  async ({ deliveryId, detail }) => {
-    const body = detail === undefined ? undefined : { detail };
+  async ({ deliveryId, builder, taskContextKey, detail }) => {
+    const body = { builder, taskContextKey, ...(detail === undefined ? {} : { detail }) };
     return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/correction-deliveries/${deliveryId}/ack`, "POST", body);
   },
 );

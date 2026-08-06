@@ -11,5 +11,6 @@ describe("acceptance Context Pack metadata", () => {
   it("rejects a context dump or criterion drift", () => {
     expect(validateAcceptanceContextPackMetadata({ ...input, manifest: { ...input.manifest, tokenCount: 1001 } }).ok).toBe(false);
     expect(validateAcceptanceContextPackMetadata({ ...input, manifest: { ...input.manifest, acceptanceCriteria: [{ id: "invented" }] } }).ok).toBe(false);
+    expect(validateAcceptanceContextPackMetadata({ ...input, freshness: { ...input.freshness, content: "def save(): secret" } }).ok).toBe(false);
   });
 });

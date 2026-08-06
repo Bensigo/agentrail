@@ -5,6 +5,14 @@ const object = (value: unknown): value is Record<string, unknown> => value != nu
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const array = (value: unknown): value is unknown[] => Array.isArray(value);
 
+function containsSourceContent(value: unknown): boolean {
+  if (array(value)) return value.some(containsSourceContent);
+  if (!object(value)) return false;
+  return Object.entries(value).some(([key, nested]) =>
+    key.toLowerCase() === "content" || key.toLowerCase() === "fullsource" || containsSourceContent(nested)
+  );
+}
+
 /** Reject unbounded or uncited handoff metadata before it reaches the durable record. */
 export function validateAcceptanceContextPackMetadata(input: {
   manifest: Record<string, unknown>;
@@ -13,6 +21,9 @@ export function validateAcceptanceContextPackMetadata(input: {
   contract: AcceptanceContract;
 }): Result {
   const { manifest, custody, freshness, contract } = input;
+  if (containsSourceContent(manifest) || containsSourceContent(custody) || containsSourceContent(freshness)) {
+    return { ok: false, error: "Context Pack metadata must not contain source content" };
+  }
   if (!Number.isInteger(manifest.tokenBudget) || (manifest.tokenBudget as number) <= 0 || !Number.isInteger(manifest.tokenCount) || (manifest.tokenCount as number) < 0 || (manifest.tokenCount as number) > (manifest.tokenBudget as number)) {
     return { ok: false, error: "manifest requires tokenBudget and tokenCount within that explicit budget" };
   }

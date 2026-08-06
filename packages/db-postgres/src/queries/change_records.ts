@@ -1144,6 +1144,104 @@ export async function claimAcceptanceContextPackCompilation(input: { workerId: s
   };
 }
 
+export type ClaimedAcceptanceContextPackCompilation = {
+  compilation: AcceptanceContextPackCompilationRow;
+  contract: Pick<AcceptanceContractRow, "id" | "version" | "contract">;
+};
+
+/** Read one still-claimed compilation only for its owning worker's report. */
+export async function readClaimedAcceptanceContextPackCompilation(input: {
+  compilationId: string;
+  workerId: string;
+}): Promise<ClaimedAcceptanceContextPackCompilation | null> {
+  const rows = await db.select({
+    compilation: acceptanceContextPackCompilations,
+    contract: acceptanceContracts,
+  })
+    .from(acceptanceContextPackCompilations)
+    .innerJoin(acceptanceContracts, eq(acceptanceContextPackCompilations.acceptanceContractId, acceptanceContracts.id))
+    .where(and(
+      eq(acceptanceContextPackCompilations.id, input.compilationId),
+      eq(acceptanceContextPackCompilations.workerId, input.workerId),
+      eq(acceptanceContextPackCompilations.status, "claimed"),
+      eq(acceptanceContracts.version, acceptanceContextPackCompilations.acceptanceContractVersion),
+      eq(acceptanceContracts.status, "confirmed")
+    ))
+    .limit(1);
+  const row = rows[0];
+  return row ? {
+    compilation: row.compilation,
+    contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
+  } : null;
+}
+
+/**
+ * Terminally records the worker result only if it still owns the claim. A
+ * compiled result must point at a Pack that belongs to the exact Record.
+ */
+export async function reportAcceptanceContextPackCompilation(input: {
+  compilationId: string;
+  workerId: string;
+  status: "compiled" | "not_proven" | "failed";
+  contextPackId?: string | null;
+  reason?: string | null;
+}): Promise<AcceptanceContextPackCompilationRow | null> {
+  if (input.status === "compiled" && !input.contextPackId) {
+    throw new Error("A compiled Context Pack job requires its recorded Context Pack");
+  }
+  if (input.status !== "compiled" && input.contextPackId) {
+    throw new Error("A failed or not_proven Context Pack job cannot claim a Context Pack");
+  }
+  return db.transaction(async (tx) => {
+    const jobs = await tx.select()
+      .from(acceptanceContextPackCompilations)
+      .where(and(
+        eq(acceptanceContextPackCompilations.id, input.compilationId),
+        eq(acceptanceContextPackCompilations.workerId, input.workerId),
+        eq(acceptanceContextPackCompilations.status, "claimed")
+      ))
+      .limit(1);
+    const job = jobs[0];
+    if (!job) return null;
+    if (input.contextPackId) {
+      const packs = await tx.select({ id: acceptanceContextPacks.id })
+        .from(acceptanceContextPacks)
+        .where(and(
+          eq(acceptanceContextPacks.id, input.contextPackId),
+          eq(acceptanceContextPacks.recordId, job.recordId)
+        ))
+        .limit(1);
+      if (!packs[0]) throw new Error("Compiled Context Pack must belong to the claimed Acceptance Record");
+    }
+    const rows = await tx.update(acceptanceContextPackCompilations).set({
+      status: input.status,
+      contextPackId: input.contextPackId ?? null,
+      reason: input.reason?.trim() || null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceContextPackCompilations.id, input.compilationId),
+      eq(acceptanceContextPackCompilations.workerId, input.workerId),
+      eq(acceptanceContextPackCompilations.status, "claimed")
+    )).returning();
+    const compilation = rows[0] ?? null;
+    if (!compilation) return null;
+    await appendContractEventInTransaction(tx, {
+      recordId: job.recordId,
+      eventKey: `acceptance-context-pack-compilation:result:${compilation.id}`,
+      stage: "context_pack_compilation",
+      actor: `worker:${input.workerId}`,
+      payloadRef: {
+        kind: "acceptance_context_pack_compilation_result",
+        compilationId: compilation.id,
+        status: compilation.status,
+        contextPackId: compilation.contextPackId,
+        reason: compilation.reason,
+      },
+    });
+    return compilation;
+  });
+}
+
 /**
  * Records the approved builder route before implementation starts. The
  * repository + branch key is intentionally globally unique within a workspace
@@ -2141,9 +2239,9 @@ function hasSourceContent(value: unknown): boolean {
   });
 }
 
-function assertMetadataOnly(manifest: Record<string, unknown>): void {
-  if (hasSourceContent(manifest)) {
-    throw new Error("Acceptance Context Pack manifest must not contain source content");
+function assertMetadataOnly(value: Record<string, unknown>, field: string): void {
+  if (hasSourceContent(value)) {
+    throw new Error(`Acceptance Context Pack ${field} must not contain source content`);
   }
 }
 
@@ -2172,7 +2270,9 @@ export async function recordAcceptanceContextPack(
   if (!/^sha256:[a-f0-9]{64}$/i.test(input.contentHash)) {
     throw new Error("Acceptance Context Pack contentHash must be a sha256 hash");
   }
-  assertMetadataOnly(input.manifest);
+  assertMetadataOnly(input.manifest, "manifest");
+  assertMetadataOnly(input.custody, "custody");
+  assertMetadataOnly(input.freshness, "freshness");
   const lockKey = `acceptance-context-pack:${input.recordId}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);

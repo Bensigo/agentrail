@@ -55,6 +55,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Exact-review final human PR decision | current migration slice | focused Console route/detail and DB decision-validator tests; DB typecheck. Owners/admins can append one immutable `approved`, `changes_requested`, `rejected`, or explicit `approved_with_exception` decision only for a current exact-head Evidence Review. A standard approval is refused unless Jace recorded `proven`; an exception requires a rationale and does not alter Jace's independent verdict. This records no GitHub merge and has no migrated-DB or browser proof yet. The older `review_events` rework/revert ledger remains aggregate outcome infrastructure only; it is not used as the acceptance decision source. |
 | Dependency-proposal Acceptance Record draft | current migration slice | focused converter and both dependency runner-route tests. A dependency candidate proposal becomes one deterministic canonical Acceptance Record for its connected repository. Candidate scope, baseline, expected files, verification commands, stop conditions, and every missing evidence item are preserved; missing evidence is an open question that blocks confirmation. Both the dedicated materialization endpoint and the former proposal endpoint now create/reuse only that draft and source provenance—never an issue, approval, builder handoff, dependency edit, PR, or merge. Legacy dependency approval/publisher code still exists as unused cleanup scope; it is not a supported product lane. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
+| Acceptance Context Pack compilation, custody reduction, and guarded report | `f527d095` plus current slice | Owner/admin admission binds a confirmed Contract, connected repository, captured ref, and phase. A default-off compiler worker claims only that tuple, disposable-clones the ref, rebuilds the index, compiles an `acceptance_record` Pack, reduces it to cited metadata, and reports it through a Jace-secret route. The route re-reads the claimed Contract, validates exact criteria/budget/custody/freshness, records the Pack, then marks the job compiled; raw source is rejected from manifest, custody, and freshness. Hermetic failure and real local clone/index/compiler/cleanup tests pass. No deployed claim/clone/report or external-builder retrieval is proven. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
 observed result to these artifacts. Delivery is currently queue plus
@@ -151,12 +152,18 @@ or merge. Tests cover human admission authority, missing record/repository,
 claim authentication/empty queue, deterministic identity, and migration/schema
 invariants.
 
-Still missing: the disposable compiler worker, exact resolved-commit and
-compiler attestation report, validated Pack recording from that report, retry
-or claim-expiry policy, and deployed proof. The Console/MCP Pack routes still
-also permit separately validated caller-supplied metadata/artifact refs; they
-must not be described as having compiled context. The legacy factory's Context
-Pack file is not a substitute for this Acceptance Record-bound worker.
+Implemented next: a default-off disposable compiler worker claims only the
+bound tuple, shallow-clones its ref, rebuilds its index, builds the local
+Acceptance Record Pack, reduces it to durable metadata, reports it, and always
+deletes the checkout. A successful report re-reads the worker-owned claim and
+its confirmed Contract, validates its metadata, records a Pack, then marks the
+job `compiled`; a failure can only record a bounded `failed` result. A real
+local clone/index/compiler/report smoke passes. Still missing: claim-expiry or
+retry policy, artifact custody beyond metadata-only references, deployed
+claim/clone/report proof, and external-builder retrieval. The Console/MCP Pack
+routes still also permit separately validated caller-supplied metadata/artifact
+refs; they must not be described as a live compiler attestation. The legacy
+factory's Context Pack file is not a substitute for this worker.
 
 ## Dependency approval-lane removal plan (pre-destructive audit)
 
@@ -229,9 +236,10 @@ perform cleanup. No market-value claim follows from current factory results.
   `codex/trust-layer-acceptance-record`; committed product slices include
   `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
   plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
-  Acceptance Record). The current uncommitted slice adds the compiler job
-  admission/claim foundation. The only expected unrelated untracked paths are
-  generated dependency directories.
+  Acceptance Record), and `f527d095` (compiler job admission/claim). The
+  current uncommitted slice adds worker compilation and guarded Pack reporting.
+  The only expected unrelated untracked paths are generated dependency
+  directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012

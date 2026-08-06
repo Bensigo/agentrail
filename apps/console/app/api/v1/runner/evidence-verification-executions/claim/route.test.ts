@@ -23,4 +23,11 @@ describe("criterion execution claim", () => {
     const response = await POST(request({ workerId: "worker" }));
     await expect(response.json()).resolves.toMatchObject({ plan: { modality: "api", apiRequest: { method: "GET", path: "/api/audit", expectedStatus: 200 } } });
   });
+
+  it("returns the immutable data descriptor only from the claimed plan", async () => {
+    const dataRequest = { method: "GET", path: "/api/account", expectedStatus: 200, expectedJson: [{ pointer: "/enabled", equals: true }] };
+    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "account", modality: "data", environmentId: "preview", flow: "read account", dataRequest, expectedBehavior: "Account is enabled" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);
+    const response = await POST(request({ workerId: "worker" }));
+    await expect(response.json()).resolves.toMatchObject({ plan: { modality: "data", dataRequest } });
+  });
 });

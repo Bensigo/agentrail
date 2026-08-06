@@ -474,6 +474,60 @@ describe.skipIf(!DB_AVAILABLE)(
       });
     });
 
+    it.skipIf(!LIVE_RUNTIME_E2E)("runs one bounded exact-head data readback through the real Console, Jace worker, and artifact store", async () => {
+      await withLoopbackOrigin(async (origin) => {
+        fixture = await seedSyntheticApiExecution(`${origin}/api/health`);
+        const updatedPlans = await db
+          .update(evidenceVerificationPlans)
+          .set({
+            modality: "data",
+            apiRequest: null,
+            dataRequest: { method: "GET", path: "/api/health", expectedStatus: 200, expectedJson: [{ pointer: "/ok", equals: true }] },
+          })
+          .where(eq(evidenceVerificationPlans.id, fixture.planId))
+          .returning({ modality: evidenceVerificationPlans.modality, apiRequest: evidenceVerificationPlans.apiRequest, dataRequest: evidenceVerificationPlans.dataRequest });
+        expect(updatedPlans).toEqual([{
+          modality: "data",
+          apiRequest: null,
+          dataRequest: { method: "GET", path: "/api/health", expectedStatus: 200, expectedJson: [{ pointer: "/ok", equals: true }] },
+        }]);
+        const env = { JACE_CONSOLE_BASE_URL: process.env.JACE_CONSOLE_BASE_URL!, JACE_CONSOLE_TOKEN: process.env.JACE_CONSOLE_TOKEN! };
+        const [{ createVerificationExecutionConsole }, { createVerificationExecutionWorker }, { createVerificationDataExecuteFn }] = await Promise.all([
+          import("../../../../apps/jace/agent/lib/verification_execution_console.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_execution_worker.core.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_data_executor.mjs"),
+        ]);
+        const workerId = `live-data-runtime-${randomUUID()}`;
+        const executionConsole = createVerificationExecutionConsole({ env });
+        const worker = createVerificationExecutionWorker({
+          claim: () => executionConsole.claim(workerId),
+          execute: createVerificationDataExecuteFn({ env }),
+          complete: (input: unknown) => executionConsole.complete(input),
+        });
+
+        const outcome = await worker.tick();
+        const storedExecutions = await db
+          .select({ status: evidenceVerificationExecutions.status, resultReason: evidenceVerificationExecutions.resultReason, workerId: evidenceVerificationExecutions.workerId })
+          .from(evidenceVerificationExecutions)
+          .where(eq(evidenceVerificationExecutions.id, fixture.executionId));
+        expect({ outcome, storedExecutions }).toMatchObject({
+          outcome: "proven",
+          storedExecutions: [{ status: "proven", workerId }],
+        });
+        const artifacts = await db
+          .select()
+          .from(evidenceVerificationArtifacts)
+          .where(eq(evidenceVerificationArtifacts.verificationPlanId, fixture.planId));
+        expect(artifacts).toHaveLength(1);
+        liveArtifactKey = artifacts[0]!.artifactKey;
+        expect(await readSyntheticArtifact(liveArtifactKey)).toMatchObject({
+          request: { method: "GET", url: `${origin}/api/health` },
+          response: { status: 200 },
+          assertions: ["JSON /ok equals declared scalar"],
+        });
+      });
+    });
+
     it.skipIf(!LIVE_UI_RUNTIME_E2E)("runs one persisted UI criterion through the real browser sidecar and stores inspectable screenshot proof", async () => {
       await withLoopbackUiOrigin(async (origin) => {
         fixture = await seedSyntheticUiExecution(origin);

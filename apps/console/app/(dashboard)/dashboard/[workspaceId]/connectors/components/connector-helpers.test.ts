@@ -22,6 +22,7 @@ describe("projectConnectors", () => {
   it("has an explicit GitHub and Linear public projection", () => {
     expect(filterPublicConnectors(projectConnectors([])).map((row) => row.kind)).toEqual([
       "github",
+      "linear",
     ]);
   });
 

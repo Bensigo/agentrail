@@ -11,6 +11,11 @@ export function createVerificationExecutionWorker({ claim, execute, complete, in
     try {
       const item = await claim();
       if (!item) return "idle";
+      const plan = item.plan ?? item;
+      if ((plan.modality ?? "ui") === "ui" && (!Array.isArray(plan.uiSteps) || plan.uiSteps.length === 0)) {
+        await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "not_testable", resultReason: "Planned UI criterion has no persisted safe uiSteps action list" });
+        return "not_testable";
+      }
       if (!item.previewUrl) {
         await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "not_testable", resultReason: "No safe preview matched the exact PR head" });
         return "not_testable";

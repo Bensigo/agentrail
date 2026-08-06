@@ -4,9 +4,19 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   readAcceptanceContracts: vi.fn(),
   recordEvidenceVerificationPlans: vi.fn(),
+  parseUiVerificationSteps: vi.fn((value: unknown) => {
+    if (!Array.isArray(value) || value.length === 0) {
+      return { ok: false, error: "uiSteps must be a non-empty action list" };
+    }
+    if (value.some((step) => step === null || typeof step !== "object" || Array.isArray(step))) {
+      return { ok: false, error: "each uiStep must be an action object" };
+    }
+    return { ok: true, value };
+  }),
 }));
 
 import {
+  parseUiVerificationSteps,
   readAcceptanceContracts,
   recordEvidenceVerificationPlans,
 } from "@agentrail/db-postgres";
@@ -34,7 +44,7 @@ const body = {
   contractVersion: 1,
   plannedBy: "worker",
   plans: [
-    { criterionId: "saved", modality: "ui", status: "planned", environmentId: "preview-1", flow: "save a draft" },
+    { criterionId: "saved", modality: "ui", status: "planned", environmentId: "preview-1", flow: "save a draft", uiSteps: [{ action: "open", path: "/drafts/new" }, { action: "fill", selector: "[name=title]", value: "Release notes" }, { action: "click", selector: "[data-testid=save]" }, { action: "expect_text", text: "Saved" }, { action: "screenshot", label: "saved-draft" }] },
     { criterionId: "audit", modality: "api", status: "not_testable", notTestableReason: "no safe credentials" },
   ],
 };
@@ -52,7 +62,7 @@ beforeEach(() => {
   vi.mocked(recordEvidenceVerificationPlans).mockResolvedValue({
     inserted: true,
     plans: [
-      { id: "plan-1", criterionId: "saved", modality: "ui", environmentId: "preview-1", flow: "save a draft", status: "planned" },
+      { id: "plan-1", criterionId: "saved", modality: "ui", environmentId: "preview-1", flow: "save a draft", uiSteps: body.plans[0].uiSteps, status: "planned" },
       { id: "plan-2", criterionId: "audit", modality: "api", environmentId: null, flow: null, status: "not_testable" },
     ],
   } as never);
@@ -68,6 +78,7 @@ describe("evidence verification plan completion", () => {
           expect.objectContaining({
             criterionId: "saved",
             expectedBehavior: "Saving shows confirmation",
+            uiSteps: body.plans[0].uiSteps,
           }),
         ]),
       }),
@@ -91,6 +102,33 @@ describe("evidence verification plan completion", () => {
         plans: [{ ...body.plans[0], flow: undefined }, body.plans[1]],
       }))).status,
     ).toBe(400);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["unknown action", [{ action: "web_fetch", url: "https://outside.example" }]],
+    ["extra payload", [{ action: "click", selector: "button", pageScript: "alert(1)" }]],
+    ["unsafe path", [{ action: "open", path: "https://outside.example" }]],
+    ["oversized selector", [{ action: "click", selector: "x".repeat(513) }]],
+    ["over budget", Array.from({ length: 13 }, (_, index) => ({ action: "screenshot", label: `proof-${index}` }))],
+  ])("rejects %s uiSteps", async (_name, uiSteps) => {
+    vi.mocked(parseUiVerificationSteps).mockReturnValueOnce({
+      ok: false,
+      error: "uiSteps contains an unknown, unsafe, oversized, or extra-payload action",
+    });
+    const response = await POST(request({
+      ...body,
+      plans: [{ ...body.plans[0], uiSteps }, body.plans[1]],
+    }));
+
+    expect(response.status).toBe(400);
+    expect(recordEvidenceVerificationPlans).not.toHaveBeenCalled();
+  });
+
+  it("uses the parser result rather than persisting an unparsed UI action list", async () => {
+    await POST(request());
+
+    expect(parseUiVerificationSteps).toHaveBeenCalledWith(body.plans[0].uiSteps);
   });
 
   it("requires a bounded read-only descriptor for a planned API criterion", async () => {

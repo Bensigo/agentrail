@@ -256,3 +256,21 @@ describe("0094_evidence_verification_api_artifacts migration", () => {
     expect(entry).toMatchObject({ idx: 99, version: "7", breakpoints: true });
   });
 });
+
+describe("0097_evidence_verification_ui_steps migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0097_evidence_verification_ui_steps.sql");
+
+  it("adds a bounded UI-action container without invalidating historical plans", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN "ui_steps" jsonb');
+    expect(sqlText).toContain('"evidence_verification_plans_ui_steps_check"');
+    expect(sqlText).toContain("BETWEEN 1 AND 12");
+    expect(sqlText).toContain("NOT VALID");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0097_evidence_verification_ui_steps");
+    expect(entry).toMatchObject({ idx: 102, version: "7", breakpoints: true });
+  });
+});

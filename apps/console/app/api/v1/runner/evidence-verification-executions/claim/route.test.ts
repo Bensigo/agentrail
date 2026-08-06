@@ -12,10 +12,11 @@ describe("criterion execution claim", () => {
     expect((await POST(request({}))).status).toBe(400);
   });
   it("returns persisted plan, exact PR coordinates, and only a resolved preview", async () => {
-    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "saved", modality: "ui", environmentId: "preview", flow: "save", expectedBehavior: "Saved" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);
+    const uiSteps = [{ action: "open", path: "/drafts/new" }, { action: "click", selector: "[data-testid=save]" }];
+    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ workspaceId: "ws", execution: { id: "e", verificationPlanId: "p" }, plan: { recordId: "record", prRevisionId: "revision", criterionId: "saved", modality: "ui", environmentId: "preview", flow: "save", uiSteps, expectedBehavior: "Saved" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);
     const response = await POST(request({ workerId: "worker" }));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ plan: { criterionId: "saved" }, pr: { headSha: "head" }, previewUrl: "http://safe-preview" });
+    await expect(response.json()).resolves.toMatchObject({ workspaceId: "ws", plan: { criterionId: "saved", recordId: "record", prRevisionId: "revision", uiSteps }, pr: { headSha: "head" }, previewUrl: "http://safe-preview" });
   });
   it("returns the immutable API descriptor only from the claimed plan", async () => {
     vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "audit", modality: "api", environmentId: "preview", flow: "read audit", apiRequest: { method: "GET", path: "/api/audit", expectedStatus: 200 }, expectedBehavior: "Audit recorded" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);

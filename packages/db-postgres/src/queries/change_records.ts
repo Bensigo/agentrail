@@ -1712,6 +1712,72 @@ export async function recordAcceptancePrDecision(
   });
 }
 
+export type UiVerificationStep =
+  | { action: "open"; path: string }
+  | { action: "click"; selector: string }
+  | { action: "fill"; selector: string; value: string }
+  | { action: "press"; key: string }
+  | { action: "expect_text"; text: string }
+  | { action: "screenshot"; label: string };
+
+const UI_STEP_LIMIT = 12;
+const UI_PATH_LIMIT = 512;
+const UI_SELECTOR_LIMIT = 512;
+const UI_TEXT_LIMIT = 2_000;
+const UI_LABEL_LIMIT = 160;
+const SAFE_PRESS_KEYS = new Set([
+  "Enter", "Tab", "Escape", "Space", "Backspace",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+]);
+
+const uiStepObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const boundedUiText = (value: unknown, limit: number): value is string =>
+  typeof value === "string" && value.trim().length > 0 && value.length <= limit;
+const exactUiStepKeys = (value: Record<string, unknown>, keys: string[]) =>
+  Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
+const safeUiPath = (value: unknown): value is string =>
+  boundedUiText(value, UI_PATH_LIMIT)
+  && value === value.trim()
+  && value.startsWith("/")
+  && !value.startsWith("//")
+  && !value.includes("\\")
+  && !/[\u0000-\u001F\u007F]/.test(value);
+
+/** Parse the only browser-user action vocabulary that a planned UI proof may persist. */
+export function parseUiVerificationSteps(value: unknown):
+  | { ok: true; value: UiVerificationStep[] }
+  | { ok: false; error: string } {
+  if (!Array.isArray(value) || value.length === 0) {
+    return { ok: false, error: "uiSteps must be a non-empty action list" };
+  }
+  if (value.length > UI_STEP_LIMIT) {
+    return { ok: false, error: `uiSteps may contain at most ${UI_STEP_LIMIT} actions` };
+  }
+  const steps: UiVerificationStep[] = [];
+  for (const raw of value) {
+    if (!uiStepObject(raw) || typeof raw.action !== "string") {
+      return { ok: false, error: "each uiStep must be an action object" };
+    }
+    if (raw.action === "open" && exactUiStepKeys(raw, ["action", "path"]) && safeUiPath(raw.path)) {
+      steps.push({ action: "open", path: raw.path });
+    } else if (raw.action === "click" && exactUiStepKeys(raw, ["action", "selector"]) && boundedUiText(raw.selector, UI_SELECTOR_LIMIT)) {
+      steps.push({ action: "click", selector: raw.selector });
+    } else if (raw.action === "fill" && exactUiStepKeys(raw, ["action", "selector", "value"]) && boundedUiText(raw.selector, UI_SELECTOR_LIMIT) && boundedUiText(raw.value, UI_TEXT_LIMIT)) {
+      steps.push({ action: "fill", selector: raw.selector, value: raw.value });
+    } else if (raw.action === "press" && exactUiStepKeys(raw, ["action", "key"]) && typeof raw.key === "string" && SAFE_PRESS_KEYS.has(raw.key)) {
+      steps.push({ action: "press", key: raw.key });
+    } else if (raw.action === "expect_text" && exactUiStepKeys(raw, ["action", "text"]) && boundedUiText(raw.text, UI_TEXT_LIMIT)) {
+      steps.push({ action: "expect_text", text: raw.text });
+    } else if (raw.action === "screenshot" && exactUiStepKeys(raw, ["action", "label"]) && boundedUiText(raw.label, UI_LABEL_LIMIT)) {
+      steps.push({ action: "screenshot", label: raw.label });
+    } else {
+      return { ok: false, error: "uiSteps contains an unknown, unsafe, oversized, or extra-payload action" };
+    }
+  }
+  return { ok: true, value: steps };
+}
+
 export type RecordEvidenceVerificationPlansInput = {
   workspaceId: string;
   recordId: string;
@@ -1725,6 +1791,7 @@ export type RecordEvidenceVerificationPlansInput = {
     modality: string;
     environmentId?: string | null;
     flow?: string | null;
+    uiSteps?: UiVerificationStep[] | null;
     apiRequest?: { method: "GET"; path: string; expectedStatus: number } | null;
     expectedBehavior: string;
     status: "planned" | "not_testable";
@@ -1746,6 +1813,12 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
       "job/data must be explicitly marked not_testable until supported"
     );
   }
+  const plans = input.plans.map((plan) => {
+    if (plan.status !== "planned" || plan.modality !== "ui") return plan;
+    const uiSteps = parseUiVerificationSteps(plan.uiSteps);
+    if (!uiSteps.ok) throw new Error(`Cannot persist planned UI verification plan: ${uiSteps.error}`);
+    return { ...plan, uiSteps: uiSteps.value };
+  });
   return db.transaction(async (tx) => {
     const revisions = await tx.select({ revision: changeRecordPrRevisions })
       .from(changeRecordPrRevisions)
@@ -1766,16 +1839,17 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
         eq(acceptanceContracts.status, "confirmed")
       )).limit(1);
     if (!contracts[0]) throw new Error("Confirmed Acceptance Contract does not match verification plan");
-    const ids = input.plans.map((plan) => evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }));
+    const ids = plans.map((plan) => evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }));
     const existing = ids.length === 0 ? [] : await tx.select().from(evidenceVerificationPlans)
       .where(sql`${evidenceVerificationPlans.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
     if (existing.length) return { plans: existing, inserted: false };
-    const rows = await tx.insert(evidenceVerificationPlans).values(input.plans.map((plan) => ({
+    const rows = await tx.insert(evidenceVerificationPlans).values(plans.map((plan) => ({
       id: evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }),
       recordId: input.recordId, prRevisionId: input.prRevisionId,
       acceptanceContractId: input.contractId, acceptanceContractVersion: input.contractVersion,
       criterionId: plan.criterionId, criterionTextSnapshot: plan.criterionTextSnapshot,
       modality: plan.modality, environmentId: plan.environmentId ?? null, flow: plan.flow ?? null,
+      uiSteps: plan.uiSteps ?? null,
       apiRequest: plan.apiRequest ?? null,
       expectedBehavior: plan.expectedBehavior, status: plan.status,
       notTestableReason: plan.notTestableReason ?? null, plannedBy: input.plannedBy,
@@ -1939,6 +2013,7 @@ async function terminalizeUnavailableEvidenceVerificationExecutions(): Promise<v
 export async function claimEvidenceVerificationExecution(input: { workerId: string }): Promise<{
   execution: EvidenceVerificationExecutionRow;
   plan: EvidenceVerificationPlanRow;
+  workspaceId: string;
   repositoryFullName: string;
   prNumber: number;
   headSha: string;
@@ -2010,7 +2085,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
     .from(previewBoots)
     .where(and(eq(previewBoots.id, row.plan.environmentId), eq(previewBoots.workspaceId, row.attachment.workspaceId), eq(previewBoots.repo, row.attachment.repositoryFullName), eq(previewBoots.prNumber, row.attachment.prNumber), eq(previewBoots.headSha, row.revision.headSha), eq(previewBoots.status, "ready")))
     .limit(1) : [];
-  return { execution: row.execution, plan: row.plan, repositoryFullName: row.attachment.repositoryFullName, prNumber: row.attachment.prNumber, headSha: row.revision.headSha, previewUrl: previews[0]?.url ?? null };
+  return { execution: row.execution, plan: row.plan, workspaceId: row.attachment.workspaceId, repositoryFullName: row.attachment.repositoryFullName, prNumber: row.attachment.prNumber, headSha: row.revision.headSha, previewUrl: previews[0]?.url ?? null };
 }
 
 /** Record the immutable reference and digest for a stored UI evidence artifact. */

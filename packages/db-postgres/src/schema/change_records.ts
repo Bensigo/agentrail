@@ -413,6 +413,8 @@ export const evidenceVerificationPlans = pgTable(
     modality: text("modality").notNull(),
     environmentId: text("environment_id"),
     flow: text("flow"),
+    /** Immutable, bounded browser-user actions for a planned UI proof. */
+    uiSteps: jsonb("ui_steps").$type<Array<{ action: string; [key: string]: string }> | null>(),
     /** Immutable, bounded machine-readable API proof request; never a credential container. */
     apiRequest: jsonb("api_request").$type<{ method: "GET"; path: string; expectedStatus: number } | null>(),
     expectedBehavior: text("expected_behavior").notNull(),
@@ -445,6 +447,14 @@ export const evidenceVerificationPlans = pgTable(
           AND ${t.apiRequest}->>'method' = 'GET'
           AND length(trim(coalesce(${t.apiRequest}->>'path', ''))) > 0
           AND (${t.apiRequest}->>'expectedStatus') ~ '^[0-9]{3}$')`
+    ),
+    uiStepsCheck: check(
+      "evidence_verification_plans_ui_steps_check",
+      sql`(${t.modality} <> 'ui')
+        OR (${t.status} <> 'planned')
+        OR (${t.uiSteps} IS NOT NULL
+          AND jsonb_typeof(${t.uiSteps}) = 'array'
+          AND jsonb_array_length(${t.uiSteps}) BETWEEN 1 AND 12)`
     ),
   })
 );

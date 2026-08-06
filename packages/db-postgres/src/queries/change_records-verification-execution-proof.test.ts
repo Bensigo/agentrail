@@ -24,7 +24,7 @@ vi.mock("../db.js", () => {
   return { db: { select, update, transaction: state.transaction } };
 });
 
-import { recordEvidenceVerificationPlans, reportEvidenceVerificationExecution } from "./change_records.js";
+import { parseUiVerificationSteps, recordEvidenceVerificationPlans, reportEvidenceVerificationExecution } from "./change_records.js";
 
 const input = {
   executionId: "execution", workerId: "worker", status: "proven" as const,
@@ -96,4 +96,31 @@ describe("recordEvidenceVerificationPlans planned modality validation", () => {
       expect(state.transaction).not.toHaveBeenCalled();
     }
   );
+});
+
+describe("parseUiVerificationSteps", () => {
+  it("accepts only bounded browser-user actions", () => {
+    expect(parseUiVerificationSteps([
+      { action: "open", path: "/drafts/new" },
+      { action: "fill", selector: "[name=title]", value: "Release notes" },
+      { action: "click", selector: "[data-testid=save]" },
+      { action: "press", key: "Enter" },
+      { action: "expect_text", text: "Saved" },
+      { action: "screenshot", label: "saved-state" },
+    ])).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    undefined,
+    [],
+    [{ action: "open", path: "https://outside.example" }],
+    [{ action: "open", path: "//outside.example" }],
+    [{ action: "web_fetch", url: "https://outside.example" }],
+    [{ action: "click", selector: "button", script: "alert(1)" }],
+    [{ action: "fill", selector: "[name=title]", value: "" }],
+    [{ action: "press", key: "Control+L" }],
+    Array.from({ length: 13 }, (_, index) => ({ action: "screenshot", label: `proof-${index}` })),
+  ])("rejects unsafe or unbounded action input %#", (input) => {
+    expect(parseUiVerificationSteps(input).ok).toBe(false);
+  });
 });

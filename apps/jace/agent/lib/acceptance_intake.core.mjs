@@ -14,5 +14,8 @@ export async function recordHostedAcceptanceIntake({ inbound, env = {}, transpor
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ workspaceId, originChannel: inbound.channel, conversationKey, sourceKey: inbound.sourceKey, text: inbound.message, sourceReferences: [{ kind: "hosted_channel_message", channel: inbound.channel, conversationKey, sourceKey: inbound.sourceKey }], metadata: { target: inbound.target } }),
   });
-  return response.status >= 200 && response.status < 300 ? { ok: true } : { ok: false, reason: `console_${response.status}` };
+  if (response.status < 200 || response.status >= 300) return { ok: false, reason: `console_${response.status}` };
+  const payload = typeof response.json === "function" ? await response.json().catch(() => null) : null;
+  const intakeId = String(payload?.intake?.id ?? "").trim();
+  return intakeId ? { ok: true, intakeId } : { ok: false, reason: "console_missing_intake_id" };
 }

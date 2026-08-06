@@ -11,9 +11,9 @@ const inbound = {
 test("records a bound hosted message with its durable source key", async () => {
   let call;
   const result = await recordHostedAcceptanceIntake({ inbound, env: { JACE_CONSOLE_BASE_URL: "https://console.test/", JACE_CONSOLE_TOKEN: "secret" }, transport: async (url, init) => {
-    call = { url, init }; return { status: 201 };
+    call = { url, init }; return { status: 201, json: async () => ({ intake: { id: "intake-1" } }) };
   } });
-  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(result, { ok: true, intakeId: "intake-1" });
   assert.equal(call.url, `https://console.test${ACCEPTANCE_INTAKE_PATH}`);
   assert.equal(call.init.headers.Authorization, "Bearer secret");
   const body = JSON.parse(call.init.body);
@@ -24,6 +24,6 @@ test("records a bound hosted message with its durable source key", async () => {
 });
 
 test("fails closed for a bound message without a durable source key", async () => {
-  const result = await recordHostedAcceptanceIntake({ inbound: { ...inbound, sourceKey: undefined }, env: { JACE_CONSOLE_BASE_URL: "https://console.test", JACE_CONSOLE_TOKEN: "secret" }, transport: async () => ({ status: 201 }) });
+  const result = await recordHostedAcceptanceIntake({ inbound: { ...inbound, sourceKey: undefined }, env: { JACE_CONSOLE_BASE_URL: "https://console.test", JACE_CONSOLE_TOKEN: "secret" }, transport: async () => ({ status: 201, json: async () => ({}) }) });
   assert.deepEqual(result, { ok: false, reason: "missing_source_key" });
 });

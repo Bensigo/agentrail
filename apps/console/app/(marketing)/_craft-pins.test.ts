@@ -189,19 +189,19 @@ describe("(marketing) craft pins — mono on data moments", () => {
     return /font-mono|text-mono-data/.test(preceding);
   }
 
-  it("the demo's task-type/model line is mono", () => {
+  it("the demo's goal line is mono", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "Task type:")).toBe(true);
+    expect(monoAppliesBefore(source, "Goal:")).toBe(true);
   });
 
-  it("the demo's scope line is mono (subscription slice 6 Task 5 — was the dollar-estimate line pre-swap)", () => {
+  it("the demo's boundary line is mono", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "{scopeSentence(brief.estimateUsd)}")).toBe(true);
+    expect(monoAppliesBefore(source, "Boundary:")).toBe(true);
   });
 
-  it("the demo's outcome ping is mono", () => {
+  it("the demo's Context Pack handoff is mono", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
+    expect(monoAppliesBefore(source, "{getDemoFollowUpMessage()}")).toBe(true);
   });
 
   it("the acceptance-spine markers render in mono rather than repurposing legacy factory run totals", () => {

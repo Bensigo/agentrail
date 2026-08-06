@@ -418,7 +418,7 @@ export default async function LandingPage() {
             className="-rotate-3 mx-auto mb-6"
           />
           <h2 className="text-heading-2">
-            Start with an approved change
+            Start with a confirmed Acceptance Contract
             <span aria-hidden className="ar-cursor animate-pulse font-mono">
               _
             </span>

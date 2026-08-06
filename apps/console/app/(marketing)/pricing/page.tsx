@@ -18,7 +18,7 @@ export const metadata = {
 const STEPS = [
   "Pick a plan: Starter, Growth, or Enterprise.",
   "Talk to Jace on Telegram, Slack, or Discord.",
-  "Approve the work. It ships as a pull request.",
+  "Confirm the Acceptance Contract. A selected builder implements it; Jace reviews exact-head evidence.",
 ];
 
 /**
@@ -104,7 +104,8 @@ export default function PricingPage() {
           Every plan comes with included monthly engineering capacity —
           measured in tasks, not dollars. Starter includes ≈34 tasks a
           month; Growth includes ≈74. Jace asks before anything runs, and
-          finished work ships as a pull request with evidence attached.
+          A selected builder implements the confirmed contract; Jace reviews
+          exact-head evidence before your team decides.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">

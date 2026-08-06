@@ -13,9 +13,7 @@ import { TELEGRAM_SURFACE } from "../../lib/telegram-surface";
  * Hosts the SAME drift-guarded `ConversationDemo` the retired pinned scene
  * used, but drives its `typedChars`/`briefRevealed` choreography with a
  * timer once the phone is actually in view, instead of taxing 2,486px of
- * scroll. The Approve tap stays `ConversationDemo`'s own real click —
- * "nothing merges without you" forbids a scripted approval (controller
- * ruling, 2026-07-19).
+ * scroll. Contract confirmation stays `ConversationDemo`'s own real click.
  *
  * Reduced motion (or no IntersectionObserver): render with no props, which
  * `ConversationDemo` documents as "show everything immediately".
@@ -118,7 +116,7 @@ export function PhoneDemo() {
       {/* The conversation area flexes to fill the frame's TRUE-PHONE aspect
           (owner spec 2026-07-22: 71.5mm x 146.7mm, iPhone Pro = 1:2.052,
           enforced via sm:aspect above) — full-size from first paint, so
-          typing, the brief, and the outcome ping all land INSIDE it. The
+          typing, the contract, and the Context Pack handoff all land INSIDE it. The
           560px floor keeps the narrow mobile variant from clipping the
           transcript. */}
       <div className="min-h-[560px] flex-1">

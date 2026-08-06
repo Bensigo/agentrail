@@ -47,7 +47,7 @@ const PANELS: ChannelPanel[] = [
   {
     id: "slack",
     name: "Slack",
-    line: "Add me to a channel. Mention me with a task and approve from the thread.",
+    line: "Add me to a channel. Mention me with a task and confirm the Acceptance Contract before implementation.",
     buttonLabel: "Add Jace to Slack",
   },
   {

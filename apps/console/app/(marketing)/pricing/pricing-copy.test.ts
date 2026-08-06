@@ -67,6 +67,7 @@ const tiersSource = readFileSync(resolve(PRICING_DIR, "tiers.ts"), "utf8");
 const tierCardsSource = readFileSync(resolve(PRICING_DIR, "tier-cards.tsx"), "utf8");
 const pricingSource = stripComments(`${pricingPageSource}\n${tiersSource}\n${tierCardsSource}`);
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
+const channelsSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_channels.tsx"), "utf8"));
 const layoutSource = stripComments(readFileSync(resolve(APP_DIR, "layout.tsx"), "utf8"));
 const useCasesSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_use-cases.tsx"), "utf8"));
 // Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
@@ -273,8 +274,23 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   // RETIRED_PHRASES' "Top up" / "charged when the task is done" entries
   // above) — assert the replacement content actually landed, not just
   // that the old wording is gone.
-  it("pricing page's new steps mention shipping as a pull request", () => {
-    expect(pricingSource).toContain("ships as a pull request");
+  it("pricing page's new steps name the trust-layer handoff", () => {
+    expect(pricingSource).toContain(
+      "Confirm the Acceptance Contract. A selected builder implements it; Jace reviews exact-head evidence.",
+    );
+    expect(pricingSource).not.toContain("ships as a pull request");
+  });
+
+  it("marketing surfaces describe confirmation, external implementation, and exact-head review", () => {
+    expect(channelsSource).toContain(
+      "confirm the Acceptance Contract before implementation",
+    );
+    expect(landingSource).toContain("Start with a confirmed Acceptance Contract");
+    expect(landingSource).not.toContain("Start with an approved change");
+    expect(pricingSource).not.toContain("Approve the work");
+    expect(pricingSource).toContain(
+      "A selected builder implements the confirmed contract; Jace reviews",
+    );
   });
 
   it("landing §6b hands the confirmed contract and bounded Context Pack to the selected builder", () => {

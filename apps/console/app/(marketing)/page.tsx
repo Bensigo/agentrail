@@ -46,7 +46,7 @@ const HOW_WE_WORK = [
   },
   {
     name: "Execute",
-    line: "The factory works inside the approved scope and records what it did.",
+    line: "Your coding agent works from the confirmed contract and bounded Context Pack; Jace records what can be proven.",
   },
   {
     name: "Size",

@@ -20,11 +20,14 @@ preview, browser/API execution, deployment, external-builder session, or
 authenticated Console browser flow has been exercised. Those remain explicit
 live-only gaps, not failed product verdicts.
 
-Next bounded slice: expose a Context Pack compilation's persisted lifecycle in
-the Acceptance Record Console so an admitted job cannot be mistaken for a
-compiled Pack or builder handoff. This is delegated to one owner with Console
-detail/GET/query paths only; the coordinator owns this ledger and integration.
-It advances the confirmed contract → bounded Pack → external builder flow and
+The Context Pack lifecycle slice is complete locally: the record detail GET
+returns workspace-scoped safe compilation metadata, and the Console separates
+queued/claimed/failed/not-proven work from a compiled Pack. Builder handoff
+requires the matching compiled job, Pack, and confirmed Contract; it remains
+disabled otherwise. Focused Console/DB checks pass. The attempted smaller-agent
+delegation was stopped because it opened an unrelated worktree and returned no
+diff; the coordinator verified that fact before applying this narrow fallback.
+This advances the confirmed contract → bounded Pack → external builder flow and
 does not introduce code generation, a chat interface, semantic search, or a
 new verification modality.
 

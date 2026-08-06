@@ -1034,6 +1034,30 @@ export async function readAcceptanceBuilderHandoffs(input: {
     .orderBy(desc(acceptanceBuilderHandoffs.createdAt));
 }
 
+/**
+ * Reads Context Pack compiler lifecycle metadata only. Compiler checkout
+ * material, source payloads, and clone credentials never leave the worker.
+ */
+export async function readAcceptanceContextPackCompilations(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceContextPackCompilationRow[] | null> {
+  const record = await db
+    .select({ id: changeRecords.id })
+    .from(changeRecords)
+    .where(and(eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId)))
+    .limit(1);
+  if (!record[0]) return null;
+  return db
+    .select()
+    .from(acceptanceContextPackCompilations)
+    .where(and(
+      eq(acceptanceContextPackCompilations.workspaceId, input.workspaceId),
+      eq(acceptanceContextPackCompilations.recordId, input.recordId)
+    ))
+    .orderBy(desc(acceptanceContextPackCompilations.createdAt));
+}
+
 export type EnqueueAcceptanceContextPackCompilationInput = {
   workspaceId: string;
   recordId: string;

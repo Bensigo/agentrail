@@ -3285,6 +3285,7 @@ export {
   attachExternalPullRequest,
   createAcceptanceBuilderHandoff,
   readAcceptanceBuilderHandoffs,
+  readAcceptanceContextPackCompilations,
   findAcceptanceBuilderHandoffForPullRequest,
   readAcceptanceBuilderTask,
   findAcceptanceBuilderHandoffForPrRevision,

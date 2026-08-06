@@ -12,6 +12,7 @@ import {
   isConfirmableContract,
   type AcceptanceContract,
   type AcceptanceContextPack,
+  type AcceptanceContextPackCompilation,
   type AcceptanceEvidenceReview,
   type ChangeRecord,
   type ChangeRecordEvent,
@@ -105,6 +106,16 @@ const contextPack: AcceptanceContextPack = {
   createdAt: "2026-08-03T10:00:00.000Z",
 };
 
+const queuedCompilation: AcceptanceContextPackCompilation = {
+  id: "compilation-1", acceptanceContractId: draftContract.id, acceptanceContractVersion: 1,
+  repositoryId: "repo-1", repositoryRef: "main", phase: "execute", status: "queued",
+  contextPackId: null, reason: null, createdAt: "2026-08-03T10:00:00.000Z", updatedAt: "2026-08-03T10:00:00.000Z",
+};
+
+const compiledCompilation: AcceptanceContextPackCompilation = {
+  ...queuedCompilation, id: "compilation-2", status: "compiled", contextPackId: contextPack.id,
+};
+
 const review: AcceptanceEvidenceReview = {
   id: "review-1", prRevisionId: "revision-1", headSha: "a".repeat(40), repositoryFullName: "ada/widgets", prNumber: 98,
   overallStatus: "failed", contractId: "contract-1", contractVersion: 1, createdAt: "2026-08-03T10:03:00.000Z", supersededAt: null,
@@ -185,13 +196,25 @@ describe("Change Record detail view", () => {
     expect(canRequestExecuteContextPack([confirmed], [])).toBe(true);
     expect(canRequestExecuteContextPack([draftContract], [])).toBe(false);
     expect(canRequestExecuteContextPack([confirmed], [contextPack])).toBe(false);
+    expect(canRequestExecuteContextPack([confirmed], [], [queuedCompilation])).toBe(false);
   });
 
-  it("allows human external-builder selection only after confirmed contract and execute Pack", () => {
+  it("allows human external-builder selection only after matching confirmed compilation and execute Pack", () => {
     const confirmed = { ...draftContract, status: "confirmed" as const };
-    expect(canSelectExternalBuilder([confirmed], [contextPack])).toBe(true);
-    expect(canSelectExternalBuilder([draftContract], [contextPack])).toBe(false);
-    expect(canSelectExternalBuilder([confirmed], [])).toBe(false);
+    expect(canSelectExternalBuilder([confirmed], [contextPack], [{ ...compiledCompilation, acceptanceContractId: confirmed.id }])).toBe(true);
+    expect(canSelectExternalBuilder([confirmed], [contextPack], [queuedCompilation])).toBe(false);
+    expect(canSelectExternalBuilder([draftContract], [contextPack], [compiledCompilation])).toBe(false);
+    expect(canSelectExternalBuilder([confirmed], [], [compiledCompilation])).toBe(false);
+  });
+
+  it("shows a queued or failed compiler state without claiming a usable Pack", () => {
+    const queued = AcceptanceContextPackPanel({ contextPacks: [], compilations: [queuedCompilation] });
+    const failed = AcceptanceContextPackPanel({ contextPacks: [], compilations: [{ ...queuedCompilation, status: "failed", reason: "clone failed" }] });
+
+    expect(textContent(queued)).toContain("The bounded Pack is not available yet");
+    expect(textContent(queued)).toContain("No compiled Context Pack has been recorded");
+    expect(textContent(failed)).toContain("No usable Pack was produced");
+    expect(textContent(failed)).toContain("Reason: clone failed");
   });
 
   it("keeps a non-proven review out of the normal approval path but permits an explicit human exception", () => {

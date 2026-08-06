@@ -7,6 +7,7 @@ import {
   getWorkspaceMembership,
   readAcceptanceEvidenceReviewSummaries,
   readAcceptanceContracts,
+  readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
   readChangeRecordTimeline,
@@ -45,6 +46,24 @@ function serializeContextPack(
     markdownArtifactRef: pack.markdownArtifactRef,
     createdBy: pack.createdBy,
     createdAt: pack.createdAt.toISOString(),
+  };
+}
+
+function serializeContextPackCompilation(
+  compilation: NonNullable<Awaited<ReturnType<typeof readAcceptanceContextPackCompilations>>>[number]
+) {
+  return {
+    id: compilation.id,
+    acceptanceContractId: compilation.acceptanceContractId,
+    acceptanceContractVersion: compilation.acceptanceContractVersion,
+    repositoryId: compilation.repositoryId,
+    repositoryRef: compilation.repositoryRef,
+    phase: compilation.phase,
+    status: compilation.status,
+    contextPackId: compilation.contextPackId,
+    reason: compilation.reason,
+    createdAt: compilation.createdAt.toISOString(),
+    updatedAt: compilation.updatedAt.toISOString(),
   };
 }
 
@@ -103,9 +122,10 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, reviews, handoffs] = await Promise.all([
+    const [contracts, contextPacks, contextPackCompilations, reviews, handoffs] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
+      readAcceptanceContextPackCompilations({ workspaceId, recordId }),
       readAcceptanceEvidenceReviewSummaries({ workspaceId, recordId }),
       readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
     ]);
@@ -134,6 +154,7 @@ export async function GET(
       })),
       contracts: (contracts ?? []).map(serializeContract),
       contextPacks: (contextPacks ?? []).map(serializeContextPack),
+      contextPackCompilations: (contextPackCompilations ?? []).map(serializeContextPackCompilation),
       reviews: (reviews ?? []).map(serializeReview),
       handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
     });

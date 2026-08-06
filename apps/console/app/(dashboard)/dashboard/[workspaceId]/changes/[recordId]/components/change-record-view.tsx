@@ -57,6 +57,20 @@ export type AcceptanceContextPack = {
   createdAt: string;
 };
 
+export type AcceptanceContextPackCompilation = {
+  id: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repositoryId: string;
+  repositoryRef: string;
+  phase: string;
+  status: string;
+  contextPackId: string | null;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AcceptanceEvidenceReview = {
   id: string;
   prRevisionId: string;
@@ -88,6 +102,7 @@ type ChangeRecordResponse = {
   events: ChangeRecordEvent[];
   contracts: AcceptanceContract[];
   contextPacks: AcceptanceContextPack[];
+  contextPackCompilations: AcceptanceContextPackCompilation[];
   reviews: AcceptanceEvidenceReview[];
   handoffs: AcceptanceBuilderHandoff[];
 };
@@ -341,14 +356,21 @@ export function AcceptanceContractPanel({
   );
 }
 
-export function canRequestExecuteContextPack(contracts: AcceptanceContract[], contextPacks: AcceptanceContextPack[]): boolean {
-  return contracts.some((item) => item.status === "confirmed") && !contextPacks.some((item) => item.phase === "execute");
+export function canRequestExecuteContextPack(
+  contracts: AcceptanceContract[],
+  contextPacks: AcceptanceContextPack[],
+  compilations: AcceptanceContextPackCompilation[] = [],
+): boolean {
+  return contracts.some((item) => item.status === "confirmed")
+    && !contextPacks.some((item) => item.phase === "execute")
+    && !compilations.some((item) => item.phase === "execute");
 }
 
 export function AcceptanceContextPackPanel({
-  contextPacks, contracts, onRequestExecute, requestingExecute, requestError, requestStatus,
+  contextPacks, compilations = [], contracts, onRequestExecute, requestingExecute, requestError, requestStatus,
 }: {
   contextPacks: AcceptanceContextPack[];
+  compilations?: AcceptanceContextPackCompilation[];
   contracts?: AcceptanceContract[];
   onRequestExecute?: (contract: AcceptanceContract) => void;
   requestingExecute?: boolean;
@@ -356,7 +378,7 @@ export function AcceptanceContextPackPanel({
   requestStatus?: string | null;
 }) {
   const confirmed = contracts?.find((item) => item.status === "confirmed");
-  const canRequest = Boolean(contracts && confirmed && canRequestExecuteContextPack(contracts, contextPacks));
+  const canRequest = Boolean(contracts && confirmed && canRequestExecuteContextPack(contracts, contextPacks, compilations));
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -368,9 +390,10 @@ export function AcceptanceContextPackPanel({
         </p>
       </div>
       {canRequest ? <div className="border-b border-[var(--gray-05)] px-4 py-3"><button type="button" disabled={requestingExecute} onClick={() => onRequestExecute?.(confirmed!)} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{requestingExecute ? "Queuing…" : "Prepare execute Context Pack"}</button><p className="mt-2 text-xs text-[var(--gray-09)]">This queues a bounded compiler job. It does not claim a Pack exists until the worker reports it.</p>{requestError ? <p className="mt-2 text-sm text-[var(--red-11)]">{requestError}</p> : null}{requestStatus ? <p className="mt-2 text-sm text-[var(--green-11)]">{requestStatus}</p> : null}</div> : null}
+      {compilations.length ? <ol className="border-b border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{compilations.map((compilation) => <li key={compilation.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3"><div className="flex flex-wrap justify-between gap-2"><span><span className="font-mono">{compilation.phase}</span> compilation · <span className="font-mono">{compilation.status}</span></span><time dateTime={compilation.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(compilation.updatedAt)}</time></div><p className="mt-2 text-[var(--gray-09)]">{compilation.status === "compiled" ? "The compiler recorded a bounded Pack. Builder handoff still requires the matching confirmed Contract." : compilation.status === "queued" || compilation.status === "claimed" ? "The bounded Pack is not available yet. Builder handoff stays disabled until compilation succeeds." : "No usable Pack was produced. Jace will not expose a builder handoff from this compilation."}</p>{compilation.reason ? <p className="mt-2 break-words text-[var(--red-11)]">Reason: {compilation.reason}</p> : null}</li>)}</ol> : null}
       {contextPacks.length === 0 ? (
         <p className="px-4 py-4 text-sm text-[var(--gray-09)]">
-          No Context Pack has been recorded for this Acceptance Record.
+          {compilations.length ? "No compiled Context Pack has been recorded for this Acceptance Record." : "No Context Pack has been recorded for this Acceptance Record."}
         </p>
       ) : (
         <ol className="flex flex-col gap-3 px-4 py-4">
@@ -423,15 +446,28 @@ export function AcceptanceContextPackPanel({
   );
 }
 
-export function canSelectExternalBuilder(contracts: AcceptanceContract[], contextPacks: AcceptanceContextPack[]): boolean {
-  return contracts.some((item) => item.status === "confirmed") && contextPacks.some((item) => item.phase === "execute");
+export function canSelectExternalBuilder(
+  contracts: AcceptanceContract[],
+  contextPacks: AcceptanceContextPack[],
+  compilations: AcceptanceContextPackCompilation[] = [],
+): boolean {
+  const contract = contracts.find((item) => item.status === "confirmed");
+  if (!contract) return false;
+  return contextPacks.some((pack) => pack.phase === "execute" && compilations.some((compilation) =>
+    compilation.phase === "execute"
+    && compilation.status === "compiled"
+    && compilation.contextPackId === pack.id
+    && compilation.acceptanceContractId === contract.id
+    && compilation.acceptanceContractVersion === contract.version
+  ));
 }
 
 export function BuilderHandoffPanel({
-  contracts, contextPacks, handoffs, onCreate, pending, error,
+  contracts, contextPacks, compilations = [], handoffs, onCreate, pending, error,
 }: {
   contracts: AcceptanceContract[];
   contextPacks: AcceptanceContextPack[];
+  compilations?: AcceptanceContextPackCompilation[];
   handoffs: AcceptanceBuilderHandoff[];
   onCreate: (input: { builder: string; taskContextKey: string; branchName: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) => void;
   pending: boolean;
@@ -441,15 +477,15 @@ export function BuilderHandoffPanel({
   const [taskContextKey, setTaskContextKey] = useState("");
   const [branchName, setBranchName] = useState("");
   const contract = contracts.find((item) => item.status === "confirmed");
-  const contextPack = contextPacks.find((item) => item.phase === "execute");
-  const ready = canSelectExternalBuilder(contracts, contextPacks) && Boolean(contract && contextPack);
+  const contextPack = contextPacks.find((item) => item.phase === "execute" && compilations.some((compilation) => compilation.phase === "execute" && compilation.status === "compiled" && compilation.contextPackId === item.id && compilation.acceptanceContractId === contract?.id && compilation.acceptanceContractVersion === contract?.version));
+  const ready = canSelectExternalBuilder(contracts, contextPacks, compilations) && Boolean(contract && contextPack);
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
         <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Selected external builder</h2>
         <p className="mt-1 text-xs text-[var(--gray-09)]">Keep your coding agent. Bind its task and branch to this confirmed Contract and bounded Context Pack before it starts work.</p>
       </div>
-      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Confirm a Contract and record an execute Context Pack before selecting a builder.</p> : (
+      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Confirm a Contract and wait for the matching execute Context Pack compilation before selecting a builder.</p> : (
         <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); onCreate({ builder, taskContextKey, branchName, contract: contract!, contextPack: contextPack! }); }}>
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="text-xs text-[var(--gray-11)]">Builder<input value={builder} onChange={(event) => setBuilder(event.target.value)} maxLength={64} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="codex or claude-code" /></label>
@@ -569,6 +605,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.events) ||
           !Array.isArray(body.contracts) ||
           !Array.isArray(body.contextPacks) ||
+          !Array.isArray(body.contextPackCompilations) ||
           !Array.isArray(body.reviews) ||
           !Array.isArray(body.handoffs)
         ) {
@@ -637,8 +674,14 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     setRequestingExecute(true); setContextPackError(null); setContextPackStatus(null);
     try {
       const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/context-pack-compilations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contractId: contract.id, contractVersion: contract.version, phase: "execute" }) });
-      const body = (await response.json().catch(() => ({}))) as { compilation?: { status?: string }; inserted?: boolean; error?: string };
+      const body = (await response.json().catch(() => ({}))) as { compilation?: AcceptanceContextPackCompilation; inserted?: boolean; error?: string };
       if (!response.ok || !body.compilation) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? {
+        ...current,
+        contextPackCompilations: current.contextPackCompilations.some((item) => item.id === body.compilation!.id)
+          ? current.contextPackCompilations
+          : [body.compilation!, ...current.contextPackCompilations],
+      } : current);
       setContextPackStatus(body.inserted ? "Execute Context Pack compilation is queued. Jace will report the bounded Pack when it is ready." : "Execute Context Pack compilation is already queued or recorded.");
     } catch (caught) { setContextPackError(caught instanceof Error ? caught.message : "Failed to queue Context Pack compilation"); }
     finally { setRequestingExecute(false); }
@@ -711,8 +754,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmingVersion={confirmingVersion}
         confirmationError={confirmationError}
       />
-      <AcceptanceContextPackPanel contextPacks={data.contextPacks} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
-      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
+      <AcceptanceContextPackPanel contextPacks={data.contextPacks} compilations={data.contextPackCompilations} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
+      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
       <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />

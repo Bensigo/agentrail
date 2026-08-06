@@ -10,7 +10,9 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   readAcceptanceEvidenceReviewSummaries: vi.fn(),
   readAcceptanceContracts: vi.fn(),
+  readAcceptanceContextPackCompilations: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
+  readAcceptanceBuilderHandoffs: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
   validateAcceptancePrDecision: vi.fn(),
@@ -23,7 +25,9 @@ import {
   getWorkspaceMembership,
   readAcceptanceEvidenceReviewSummaries,
   readAcceptanceContracts,
+  readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
+  readAcceptanceBuilderHandoffs,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
   validateAcceptancePrDecision,
@@ -105,7 +109,9 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceContextPackCompilations).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceBuilderHandoffs).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({ inserted: true, event: {
     id: "decision-1", recordId: RECORD, eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: `user:${USER}`,
@@ -214,7 +220,31 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       ],
       contracts: [],
       contextPacks: [],
+      contextPackCompilations: [],
       reviews: [],
+      handoffs: [],
+    });
+    expect(readAcceptanceContextPackCompilations).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+  });
+
+  it("serializes only safe Context Pack compilation lifecycle metadata", async () => {
+    vi.mocked(readAcceptanceContextPackCompilations).mockResolvedValue([{
+      id: "compilation-1", workspaceId: WS, recordId: RECORD, repositoryId: "repo-1", repositoryRef: "main",
+      acceptanceContractId: "contract-1", acceptanceContractVersion: 2, phase: "execute", status: "failed",
+      workerId: "private-worker", claimedAt: CREATED, attempts: 1, contextPackId: null, reason: "clone failed",
+      createdBy: "user:lead", createdAt: CREATED, updatedAt: UPDATED,
+    }] as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      contextPackCompilations: [{
+        id: "compilation-1", acceptanceContractId: "contract-1", acceptanceContractVersion: 2,
+        repositoryId: "repo-1", repositoryRef: "main", phase: "execute", status: "failed",
+        contextPackId: null, reason: "clone failed",
+        createdAt: "2026-08-03T12:00:00.000Z", updatedAt: "2026-08-03T12:05:00.000Z",
+      }],
     });
   });
 

@@ -50,6 +50,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
 | Task-scoped external-builder Context Pack handoff | `fd297f13` | focused MCP builder-task route test, native MCP protocol test, MCP build/typecheck, and DB typecheck. A scoped builder can retrieve only its recorded handoff's confirmed contract and selected bounded Context Pack metadata/artifact references; it cannot retrieve raw source or treat handoff as proof of implementation. |
 | Canonical hosted intake, session-bound draft, reply evidence, and bounded resume readback | `742eafe9` through `e913c16e` | DB identity/link/readback tests and typecheck; focused Console intake/draft/outbound/readback route tests; Jace hosted-inbound, intake-draft/reply/readback, channel-wiring, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. Jace receives only the Console-returned Intake ID in trusted session attributes. It can draft a parsed immutable Record and, after a compaction, retrieve only a bounded first-inbound plus recent-tail/contract projection. It cannot select a tenant or Intake, confirm, compile/deliver a Pack, select a builder, execute code, or claim success on a degraded response. Final replies are appended only after channel delivery returns. No live channel round-trip is proven. |
+| Console navigation trust-layer pivot | `240ee81a` | focused Sidebar navigation tests. Acceptance Records and Approvals are now primary; the customer navigation exposes only review evidence and repository wiki under Evidence & context. Factory work/runs, autonomous economics, memory/brief/investigation, and failure pages remain URL-reachable but are deliberately not primary product navigation. The connector catalog remains a separate unresolved product-scope slice. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
@@ -70,8 +71,10 @@ acknowledgement only; no dispatcher has proven notification.
    have append-only input/reply evidence and Jace can fetch a bounded resume
    projection, but no deployed channel has exercised that flow or proved that
    only unresolved questions were asked.
-4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
-   of obsolete factory/advisory surfaces, and copy-only landing pivot.
+4. Add human PR outcome, dependency-upgrade acceptance flow, finish Console
+   removal of obsolete connector/factory surfaces, and complete the copy-only
+   landing pivot. The sidebar is now trust-first, but routes/catalogs and the
+   homepage still contain legacy product language or surfaces.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.
@@ -110,7 +113,7 @@ acknowledgement only; no dispatcher has proven notification.
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `e913c16e` (bounded session Intake readback). The only expected untracked
+  `240ee81a` (trust-first Console navigation). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

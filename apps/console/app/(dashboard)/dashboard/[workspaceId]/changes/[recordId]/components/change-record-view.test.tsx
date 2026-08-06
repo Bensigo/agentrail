@@ -8,6 +8,7 @@ import {
   canSelectExternalBuilder,
   FinalPrDecisionPanel,
   ChangeRecordAnchors,
+  AcceptanceBriefPanel,
   LifecycleTimeline,
   changeRecordApiPath,
   formatChangeRecordDate,
@@ -145,6 +146,33 @@ const review: AcceptanceEvidenceReview = {
 };
 
 describe("Change Record detail view", () => {
+  it("renders the editable Brief link and immutable provenance boundary", () => {
+    const rendered = AcceptanceBriefPanel({
+      workspaceId: record.workspaceId,
+      binding: {
+        binding: {
+          id: "binding-1", briefId: "brief-1", recordId: record.id,
+          briefSnapshot: { title: "Original" }, provenance: { transition: "brief_to_record" },
+          createdBy: "user:1", createdAt: record.createdAt,
+        },
+        brief: {
+          id: "brief-1", slug: "status-task", title: "Current status task", status: "draft",
+          openQuestion: "", updatedAt: record.updatedAt,
+        },
+      },
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("Started from Brief");
+    expect(content).toContain("Current status task");
+    expect(content).toContain("immutable snapshot");
+    expect(content).toContain("Current Brief edits do not rewrite the Contract, Context Pack, or evidence");
+    expect(links(rendered)).toContain("/dashboard/00000000-0000-0000-0000-000000000001/briefs/status-task");
+  });
+
+  it("renders no Brief panel when no binding exists", () => {
+    expect(AcceptanceBriefPanel({ workspaceId: record.workspaceId, binding: null })).toBeNull();
+  });
+
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
       "/api/v1/workspaces/workspace%2F1/change-records/record%2F2"

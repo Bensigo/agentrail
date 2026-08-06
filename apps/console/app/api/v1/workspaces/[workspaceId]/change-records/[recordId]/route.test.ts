@@ -14,6 +14,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   readAcceptanceContextPackCompilations: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
   readAcceptanceBuilderHandoffs: vi.fn(),
+  readAcceptanceBriefBinding: vi.fn(),
   readEvidenceReviewCorrectionDeliveriesForRecord: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
@@ -31,6 +32,7 @@ import {
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
+  readAcceptanceBriefBinding,
   readEvidenceReviewCorrectionDeliveriesForRecord,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
@@ -116,6 +118,7 @@ beforeEach(() => {
   vi.mocked(readAcceptanceContextPackCompilations).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceBuilderHandoffs).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceBriefBinding).mockResolvedValue(null as never);
   vi.mocked(readEvidenceReviewCorrectionDeliveriesForRecord).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewRequests).mockResolvedValue([] as never);
@@ -231,10 +234,45 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       reviewRequests: [],
       handoffs: [],
       correctionDeliveries: [],
+      briefBinding: null,
     });
     expect(readAcceptanceContextPackCompilations).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readEvidenceReviewCorrectionDeliveriesForRecord).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readAcceptanceEvidenceReviewRequests).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+    expect(readAcceptanceBriefBinding).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+  });
+
+  it("serializes the current Brief separately from immutable binding provenance", async () => {
+    vi.mocked(readAcceptanceBriefBinding).mockResolvedValue({
+      binding: {
+        id: "binding-1", workspaceId: WS, recordId: RECORD, briefId: "brief-1",
+        briefSnapshot: { title: "Original task", status: "draft" },
+        provenance: { transition: "brief_to_acceptance_record", source: "human" },
+        createdBy: "user:lead", createdAt: CREATED,
+      },
+      record: timeline.record,
+      brief: {
+        id: "brief-1", workspaceId: WS, repositoryId: null, slug: "original-task",
+        title: "Current editable task", status: "draft", openQuestion: "",
+        grounding: {}, jaceSessionIds: [], createdAt: CREATED, updatedAt: UPDATED,
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+    expect(await response.json()).toMatchObject({
+      briefBinding: {
+        binding: {
+          id: "binding-1", briefId: "brief-1", recordId: RECORD,
+          briefSnapshot: { title: "Original task", status: "draft" },
+          provenance: { transition: "brief_to_acceptance_record", source: "human" },
+          createdAt: "2026-08-03T12:00:00.000Z",
+        },
+        brief: {
+          id: "brief-1", slug: "original-task", title: "Current editable task",
+          status: "draft", openQuestion: "", updatedAt: "2026-08-03T12:05:00.000Z",
+        },
+      },
+    });
   });
 
   it("makes an exact-head review request visible without treating it as a review", async () => {

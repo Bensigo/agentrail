@@ -111,6 +111,26 @@ export type AcceptanceBuilderHandoff = {
   prAttachedAt: string | null;
 };
 
+export type AcceptanceBriefBinding = {
+  binding: {
+    id: string;
+    briefId: string;
+    recordId: string;
+    briefSnapshot: Record<string, unknown>;
+    provenance: Record<string, unknown>;
+    createdBy: string;
+    createdAt: string;
+  };
+  brief: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    openQuestion: string;
+    updatedAt: string;
+  };
+};
+
 export type AcceptanceCorrectionDelivery = {
   id: string;
   channel: string;
@@ -150,6 +170,7 @@ type ChangeRecordResponse = {
   reviewRequests: AcceptanceEvidenceReviewRequest[];
   handoffs: AcceptanceBuilderHandoff[];
   correctionDeliveries: AcceptanceCorrectionDelivery[];
+  briefBinding: AcceptanceBriefBinding | null;
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -252,6 +273,27 @@ export function ChangeRecordAnchors({ record }: { record: ChangeRecord }) {
           </dd>
         </div>
       </dl>
+    </section>
+  );
+}
+
+export function AcceptanceBriefPanel({ workspaceId, binding }: { workspaceId: string; binding: AcceptanceBriefBinding | null }) {
+  if (!binding) return null;
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Started from Brief</h2>
+      </div>
+      <div className="flex flex-col gap-2 px-4 py-4 text-xs text-[var(--gray-09)]">
+        <p>
+          This Acceptance Record started from the editable working context in{" "}
+          <a href={`/dashboard/${encodeURIComponent(workspaceId)}/briefs/${encodeURIComponent(binding.brief.slug)}`} className="text-[var(--blue-11)] hover:underline">
+            Brief: {binding.brief.title}
+          </a>.
+        </p>
+        <p>The immutable snapshot below records what transitioned into this Acceptance Record.</p>
+        <p>Current Brief edits do not rewrite the Contract, Context Pack, or evidence.</p>
+      </div>
     </section>
   );
 }
@@ -728,6 +770,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.reviewRequests) ||
           !Array.isArray(body.handoffs) ||
           !Array.isArray(body.correctionDeliveries)
+          || !("briefBinding" in body)
         ) {
           throw new Error("Change record response was incomplete");
         }
@@ -868,6 +911,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
         </p>
       </div>
+      <AcceptanceBriefPanel workspaceId={workspaceId} binding={data.briefBinding} />
       <AcceptanceContractPanel
         contracts={data.contracts}
         onConfirm={confirmContract}

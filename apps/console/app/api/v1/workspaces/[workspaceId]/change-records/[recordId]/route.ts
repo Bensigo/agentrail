@@ -11,6 +11,7 @@ import {
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
+  readAcceptanceBriefBinding,
   readEvidenceReviewCorrectionDeliveriesForRecord,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
@@ -154,6 +155,30 @@ function serializeCorrectionDelivery(
   };
 }
 
+function serializeBriefBinding(
+  read: NonNullable<Awaited<ReturnType<typeof readAcceptanceBriefBinding>>>
+) {
+  return {
+    binding: {
+      id: read.binding.id,
+      briefId: read.binding.briefId,
+      recordId: read.binding.recordId,
+      briefSnapshot: read.binding.briefSnapshot,
+      provenance: read.binding.provenance,
+      createdBy: read.binding.createdBy,
+      createdAt: read.binding.createdAt.toISOString(),
+    },
+    brief: {
+      id: read.brief.id,
+      slug: read.brief.slug,
+      title: read.brief.title,
+      status: read.brief.status,
+      openQuestion: read.brief.openQuestion,
+      updatedAt: read.brief.updatedAt.toISOString(),
+    },
+  };
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -175,7 +200,7 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, contextPackCompilations, reviews, reviewRequests, handoffs, correctionDeliveries] = await Promise.all([
+    const [contracts, contextPacks, contextPackCompilations, reviews, reviewRequests, handoffs, correctionDeliveries, briefBinding] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
       readAcceptanceContextPackCompilations({ workspaceId, recordId }),
@@ -183,6 +208,7 @@ export async function GET(
       readAcceptanceEvidenceReviewRequests({ workspaceId, recordId }),
       readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
       readEvidenceReviewCorrectionDeliveriesForRecord({ workspaceId, recordId }),
+      readAcceptanceBriefBinding({ workspaceId, recordId }),
     ]);
     return NextResponse.json({
       record: {
@@ -214,6 +240,7 @@ export async function GET(
       reviewRequests: reviewRequests.map(serializeReviewRequest),
       handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
       correctionDeliveries: correctionDeliveries.map(serializeCorrectionDelivery),
+      briefBinding: briefBinding ? serializeBriefBinding(briefBinding) : null,
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);

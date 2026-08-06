@@ -2,6 +2,32 @@
 
 Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jace-owns-the-acceptance-spine.md). Canonical post-MVP proof plan: [Jace trust-layer evaluation](prd/jace-trust-layer-evaluation.md).
 
+## Coordinator checkpoint (2026-08-06, current branch)
+
+The current branch head is `7dff5d40` after the runtime-proof, builder-handoff,
+and Console-admission slices. The worktree has no tracked changes; the only
+untracked paths are local dependency/output directories. The recent commits
+`9c05442d`, `0a615e7f`, `e4864b27`, and `e6f39939` add bounded UI/API
+criterion execution, while `c2e395fd`, `b47a0717`, `cf192b8c`, `4d5edce4`,
+and `7dff5d40` add recorded builder delivery, proof-eval checks, human builder
+selection, and human Context Pack compilation admission. Their focused tests
+are source and unit evidence only.
+
+The hosted-runtime inspection found no installed Railway CLI or authenticated
+project/environment identity in this checkout. The repository contains generic
+Railway manifests for preview-worker/fleet only. Therefore no safe exact-head
+preview, browser/API execution, deployment, external-builder session, or
+authenticated Console browser flow has been exercised. Those remain explicit
+live-only gaps, not failed product verdicts.
+
+Next bounded slice: expose a Context Pack compilation's persisted lifecycle in
+the Acceptance Record Console so an admitted job cannot be mistaken for a
+compiled Pack or builder handoff. This is delegated to one owner with Console
+detail/GET/query paths only; the coordinator owns this ledger and integration.
+It advances the confirmed contract → bounded Pack → external builder flow and
+does not introduce code generation, a chat interface, semantic search, or a
+new verification modality.
+
 ## Canonical MVP flow
 
 1. A task starts in Codex, Claude Code, Slack, Discord, or another supported

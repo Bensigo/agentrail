@@ -11,6 +11,8 @@ import {
   changeRecordPrs,
   changeRecordPrRevisions,
   acceptanceBuilderHandoffs,
+  acceptanceIntakes,
+  acceptanceIntakeMessages,
   evidenceReviews,
   evidenceVerificationPlans,
   evidenceVerificationArtifacts,
@@ -26,6 +28,8 @@ import {
   type ChangeRecordPrRow,
   type ChangeRecordPrRevisionRow,
   type AcceptanceBuilderHandoffRow,
+  type AcceptanceIntakeRow,
+  type AcceptanceIntakeMessageRow,
   type EvidenceVerificationPlanRow,
   type EvidenceVerificationArtifactRow,
   type EvidenceVerificationExecutionRow,
@@ -141,6 +145,14 @@ export function changeRecordPrRevisionId(input: { prAttachmentId: string; headSh
 
 export function acceptanceBuilderHandoffId(input: { recordId: string; taskContextKey: string }): string {
   return uuid5Url(`acceptance-builder-handoff:${input.recordId}:${input.taskContextKey}`);
+}
+
+export function acceptanceIntakeId(input: { workspaceId: string; originChannel: string; conversationKey: string }): string {
+  return uuid5Url(`acceptance-intake:${input.workspaceId}:${input.originChannel}:${input.conversationKey}`);
+}
+
+export function acceptanceIntakeMessageId(input: { intakeId: string; sourceKey: string }): string {
+  return uuid5Url(`acceptance-intake-message:${input.intakeId}:${input.sourceKey}`);
 }
 
 export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
@@ -492,6 +504,49 @@ export type AcceptanceRecordDraft = {
   record: ChangeRecordRow;
   contract: AcceptanceContractRow;
 };
+
+export type RecordAcceptanceInboundIntakeInput = {
+  workspaceId: string;
+  originChannel: string;
+  conversationKey: string;
+  sourceReferences?: Record<string, unknown>[];
+  sourceKey: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * Records one source-channel message before repository selection. This never
+ * drafts or confirms a contract and cannot start external implementation.
+ */
+export async function recordAcceptanceInboundIntake(
+  input: RecordAcceptanceInboundIntakeInput
+): Promise<{ intake: AcceptanceIntakeRow; message: AcceptanceIntakeMessageRow; inserted: boolean }> {
+  const originChannel = input.originChannel.trim().toLowerCase();
+  const conversationKey = input.conversationKey.trim();
+  const sourceKey = input.sourceKey.trim();
+  const text = input.text.trim();
+  if (!originChannel || !conversationKey || !sourceKey || !text) throw new Error("Acceptance Intake requires channel, conversation, source key, and message");
+  const intakeId = acceptanceIntakeId({ workspaceId: input.workspaceId, originChannel, conversationKey });
+  const messageId = acceptanceIntakeMessageId({ intakeId, sourceKey });
+  const sourceReferences = normalizeSourceReferences(input.sourceReferences);
+  return db.transaction(async (tx) => {
+    const intakes = await tx.execute(sql`
+      INSERT INTO acceptance_intakes (id, workspace_id, origin_channel, conversation_key, source_references)
+      VALUES (${intakeId}, ${input.workspaceId}, ${originChannel}, ${conversationKey}, ${JSON.stringify(sourceReferences)}::jsonb)
+      ON CONFLICT (workspace_id, origin_channel, conversation_key)
+      DO UPDATE SET updated_at = now()
+      RETURNING *
+    `) as unknown as Array<Record<string, unknown>>;
+    const intake = intakes[0] as unknown as AcceptanceIntakeRow;
+    const messages = await tx.insert(acceptanceIntakeMessages).values({
+      id: messageId, intakeId, sourceKey, direction: "inbound", text,
+      metadata: input.metadata ?? {},
+    }).onConflictDoNothing().returning();
+    const message = messages[0] ?? (await tx.select().from(acceptanceIntakeMessages).where(eq(acceptanceIntakeMessages.id, messageId)).limit(1))[0]!;
+    return { intake, message, inserted: messages.length === 1 };
+  });
+}
 
 function normalizedWorkKey(value: string | undefined): string {
   const candidate = value?.trim();

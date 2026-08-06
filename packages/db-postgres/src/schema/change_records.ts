@@ -279,6 +279,49 @@ export const acceptanceBuilderHandoffs = pgTable(
   })
 );
 
+/**
+ * The canonical pre-repository start of the acceptance spine. A channel
+ * message may name no repository, so it cannot safely become a change record
+ * yet. This durable intake carries provenance and the conversation identity
+ * until Jace has collected the missing repository/context information.
+ */
+export const acceptanceIntakes = pgTable(
+  "acceptance_intakes",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    originChannel: text("origin_channel").notNull(),
+    conversationKey: text("conversation_key").notNull(),
+    sourceReferences: jsonb("source_references").$type<Record<string, unknown>[]>().notNull().default([]),
+    status: text("status").notNull().default("collecting_context"),
+    recordId: uuid("record_id").references(() => changeRecords.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    conversation: uniqueIndex("acceptance_intakes_workspace_channel_conversation_key").on(t.workspaceId, t.originChannel, t.conversationKey),
+    record: uniqueIndex("acceptance_intakes_record_key").on(t.recordId).where(sql`${t.recordId} IS NOT NULL`),
+  })
+);
+
+/** Append-only inbound/outbound conversation evidence for one Acceptance Intake. */
+export const acceptanceIntakeMessages = pgTable(
+  "acceptance_intake_messages",
+  {
+    id: uuid("id").primaryKey(),
+    intakeId: uuid("intake_id").notNull().references(() => acceptanceIntakes.id, { onDelete: "cascade" }),
+    sourceKey: text("source_key").notNull(),
+    direction: text("direction").notNull(),
+    text: text("text").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    source: uniqueIndex("acceptance_intake_messages_source_key").on(t.intakeId, t.sourceKey),
+    timeline: index("acceptance_intake_messages_timeline_idx").on(t.intakeId, t.createdAt),
+  })
+);
+
 /** Immutable independent review for one exact PR revision. */
 export const evidenceReviews = pgTable(
   "evidence_reviews",
@@ -503,6 +546,8 @@ export type AcceptanceContextPackDeliveryRow =
 export type ChangeRecordPrRow = typeof changeRecordPrs.$inferSelect;
 export type ChangeRecordPrRevisionRow = typeof changeRecordPrRevisions.$inferSelect;
 export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$inferSelect;
+export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
+export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
 export type EvidenceVerificationPlanRow = typeof evidenceVerificationPlans.$inferSelect;
 export type EvidenceVerificationArtifactRow = typeof evidenceVerificationArtifacts.$inferSelect;

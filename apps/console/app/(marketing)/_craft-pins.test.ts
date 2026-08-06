@@ -204,11 +204,12 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
   });
 
-  it("the live numbers render in font-mono (landing v2: CountUp carries the mono class beside each {stats.*} marker)", () => {
+  it("the acceptance-spine markers render in mono rather than repurposing legacy factory run totals", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{stats.shipped}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.workedOn}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
+    expect(monoAppliesBefore(source, ">1</p>")).toBe(true);
+    expect(monoAppliesBefore(source, ">2</p>")).toBe(true);
+    expect(monoAppliesBefore(source, ">3</p>")).toBe(true);
+    expect(source).not.toContain("{stats.shipped}");
   });
 
   it("the tier price renders in font-mono (subscription-platform slice 10, Task 1 — TierCards is shared verbatim by /pricing and landing §6b, so this pin now anchors the one real render site instead of landing's retired inline copy)", () => {

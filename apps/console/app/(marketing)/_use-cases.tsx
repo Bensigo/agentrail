@@ -5,7 +5,8 @@
  * mobile get the same markup, which simply reads as stacked cards.
  *
  * The deck is outcome-led. It names the acceptance mechanics from the market
- * research and the dependency workflow that is now available.
+ * research. It names the trust layer around a team's existing coding agent;
+ * it does not promise that Jace writes code or autonomously upgrades a repo.
  */
 
 interface UseCase {
@@ -16,28 +17,28 @@ interface UseCase {
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Keep dependencies moving",
-    line: "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+    title: "Make dependency work reviewable",
+    line: "Turn a selected dependency update into an Acceptance Contract, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
     visual: "dependency",
   },
   {
     title: "Start with an acceptance contract",
-    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions before implementation begins.",
+    line: "Turn a vague request into a human-confirmed goal, non-goals, acceptance criteria, risks, and stop conditions before implementation begins.",
     visual: "contract",
   },
   {
-    title: "Keep changes reviewable",
-    line: "Work should arrive as a small, focused pull request your team can understand and accept without reconstructing the whole run.",
+    title: "Give builders the right context",
+    line: "Codex, Claude Code, or another selected builder receives a bounded Context Pack instead of a whole repository or a growing chat history.",
     visual: "reviewable",
   },
   {
-    title: "Verify non-regression",
-    line: "The change earns its way through tests and independent verification. A green diff is not enough on its own.",
+    title: "Review the exact revision",
+    line: "Jace binds its review to the confirmed contract, repository, pull-request head, and available safe environment. A green diff is not proof on its own.",
     visual: "regression",
   },
   {
-    title: "Show proof — or stop",
-    line: "The pull request carries the evidence behind the result. If the acceptance contract cannot be proven, Jace refuses to present success.",
+    title: "Show proof or uncertainty",
+    line: "For each criterion, Jace returns inspectable evidence, a required correction, or an explicit not-proven or not-testable result. Your team still decides.",
     visual: "proof",
   },
 ];

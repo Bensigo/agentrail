@@ -11,8 +11,6 @@ import { MarketingNav } from "./_nav";
 import { PhoneDemo } from "./_phone-demo";
 import { UseCases } from "./_use-cases";
 import { Channels } from "./_channels";
-import { CountUp } from "./_stats";
-import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
@@ -26,7 +24,9 @@ import { TierCards } from "./pricing/tier-cards";
 
 
 /**
- * How we work together — the real loop, in order (controller ruling, #1279
+ * How Jace owns the acceptance spine while the selected external builder
+ * writes code. The existing six-panel section stays intact; only its product
+ * language changes with the trust-layer pivot.
  * PR ②: "issue→brief→approve→PR→you merge; merge-permission opt-in is now
  * TRUE and worth saying"), now as landing v2's NAMED steps. Merge permission
  * is a real, live, owner-only toggle (Settings → Permissions), off by
@@ -37,28 +37,28 @@ import { TierCards } from "./pricing/tier-cards";
  */
 const HOW_WE_WORK = [
   {
-    name: "Contract",
-    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions.",
+    name: "Intake",
+    line: "Turn a request into the missing questions, risks, non-goals, and acceptance criteria that matter.",
   },
   {
-    name: "Approve",
-    line: "You approve the contract before implementation starts. Nothing runs without that decision.",
+    name: "Confirm",
+    line: "A human confirms the Acceptance Contract before it becomes the standard for implementation and review.",
   },
   {
-    name: "Execute",
-    line: "Your coding agent works from the confirmed contract and bounded Context Pack; Jace records what can be proven.",
+    name: "Context",
+    line: "Jace gives the selected coding agent a bounded Context Pack with the relevant code, decisions, tests, and exclusions.",
   },
   {
-    name: "Size",
-    line: "The target is a focused, reviewable pull request. Oversized or high-risk work is split or escalated before review.",
+    name: "Build",
+    line: "Codex, Claude Code, or another selected builder implements the work. Jace does not silently edit it.",
   },
   {
-    name: "Verify",
-    line: "Tests and independent checks look for regressions before the pull request reaches your team.",
+    name: "Review",
+    line: "When the builder attaches a pull request, Jace checks the exact revision against the confirmed contract and available evidence.",
   },
   {
-    name: "Proof or refusal",
-    line: "The result should carry its evidence. If the contract cannot be proven, Jace should stop.",
+    name: "Decide",
+    line: "Your team sees criterion-specific proof, a required correction, or an explicit not-proven result before deciding the PR.",
   },
 ];
 
@@ -108,10 +108,6 @@ export default async function LandingPage() {
   // (never a dead link) — see `./_cta.ts`.
   const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
 
-  // Landing v2 §6 — live numbers: documented dogfood baseline + platform
-  // terminal outcomes, hourly-cached; baseline-only when the DB is away.
-  const stats = await getLandingStats();
-
   // #1284 AC2 (landing-honesty rule): resolves to null — rendering nothing
   // extra — until BOTH a Discord invite URL is configured AND the channel is
   // explicitly flagged live post-prod-verification. See `./_channel-cards.ts`.
@@ -154,14 +150,14 @@ export default async function LandingPage() {
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
             <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
             <span className="text-heading-2 mt-5 block text-balance">
-            Every other agent gives you more pull requests. Jace gives your
-            team fewer review hours.
+            Your coding agent writes the code. Jace makes the work
+            reviewable.
             </span>
           </h1>
           <p className="ar-rise mt-6 max-w-[58ch] text-[var(--gray-11)]" style={{ animationDelay: "110ms" }}>
-            Approved engineering work, acceptance criteria, verification, and
-            evidence attached to the result. If Jace cannot prove the change,
-            it stops.
+            Jace turns ambiguous work into a confirmed Acceptance Contract,
+            a bounded Context Pack, and an exact-head evidence record your
+            team can inspect.
           </p>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
             <PrimaryCta cta={cta} />
@@ -277,7 +273,8 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Start in chat. The approved change ends as a pull request.
+              Start where the work is discussed. When a builder attaches a
+              pull request, Jace ties the review back to the same record.
             </p>
           </Reveal>
           <div className="mt-12">
@@ -291,19 +288,16 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 6 — The numbers: live stats (baseline + platform outcomes) as
-          tilted paper scraps, count-up on scroll. The failed card is
-          deliberately DIFFERENT (wider, untilted, sentence label) — the
-          slop audit's LS-1/LS-2 fix: honest numbers shouldn't wear the
-          identical-stat-grid costume. Labels sit at --gray-11 (GQ-1). */}
+      {/* 6 — The acceptance spine, retaining the existing three-paper visual
+          rhythm without misusing legacy factory run totals as trust proof. */}
       <section className="px-6 py-24 sm:py-32">
         <div className="mx-auto max-w-[760px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">The numbers</h2>
+            <h2 className="text-heading-2 text-center">The acceptance spine</h2>
           </Reveal>
           <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
-            Runs completed, verification passed, and work that did not land.
-            Counted from the platform database, refreshed hourly.
+            One durable record carries intent, bounded context, exact PR
+            identity, criterion evidence, correction delivery, and the human decision.
           </p>
           <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
             {/* Cards stay inlined: the mono-on-data craft pin scans 300
@@ -311,40 +305,23 @@ export default async function LandingPage() {
                 class, so the class must sit in the same JSX block. */}
             <Reveal>
               <div className="w-[168px] -rotate-2 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.shipped}
-                />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">verification passed</p>
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">1</p>
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">confirmed contract</p>
               </div>
             </Reveal>
             <Reveal delay={70}>
               <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.workedOn}
-                />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">runs completed</p>
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">2</p>
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">bounded Context Pack</p>
               </div>
             </Reveal>
             <Reveal delay={140}>
               <div className="w-[240px] rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[260px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.didntLand}
-                />
-                <p className="mt-2 text-[var(--gray-11)]">
-                  didn&apos;t land — counted, not hidden
-                </p>
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">3</p>
+                <p className="mt-2 text-[var(--gray-11)]">exact-head review and human decision</p>
               </div>
             </Reveal>
           </div>
-          {stats.source === "baseline-only" ? (
-            <p className="text-body-sm mt-8 text-center text-[var(--gray-11)]">
-              Live counts unavailable right now; these are the documented
-              dogfood record.
-            </p>
-          ) : null}
         </div>
       </section>
 
@@ -380,15 +357,15 @@ export default async function LandingPage() {
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
               Plans are priced by team size — Starter for small teams, Growth
-              for bigger ones. Every plan includes monthly engineering
-              capacity, measured in tasks.
+              for bigger ones. The product is the acceptance and evidence
+              layer around the coding agents your team already uses.
             </p>
           </Reveal>
           <ol className="mt-10 flex flex-col gap-6">
             {[
               "Pick a plan for your team size.",
               "Talk to Jace where your team works: Telegram, Slack, or Discord.",
-              "Approve the work. It ships as a pull request.",
+              "Confirm the Acceptance Contract and give the selected builder a bounded Context Pack.",
             ].map((line, i) => (
               <Reveal key={i} delay={i * 70}>
                 <li className="flex items-baseline gap-4">
@@ -403,7 +380,7 @@ export default async function LandingPage() {
           </ol>
           <Reveal delay={240}>
             <p className="mt-10 text-center text-[var(--gray-11)]">
-            The point is fewer review hours, not more generated code.
+            The point is less uncertainty at handoff and review, not another coding agent.
             </p>
           </Reveal>
         </div>
@@ -447,8 +424,8 @@ export default async function LandingPage() {
             </span>
           </h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
-            Connect GitHub, approve the contract, and get a pull request with
-            the proof attached.
+            Connect GitHub, confirm the contract, and review external-agent
+            work against evidence bound to the pull request head.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />

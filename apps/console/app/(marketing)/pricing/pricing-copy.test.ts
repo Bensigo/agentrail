@@ -248,9 +248,9 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   });
 
   it("root metadata no longer renders the stale role wording", () => {
-    expect(layoutSource).toContain("Jace — reviewable pull requests for engineering teams");
+    expect(layoutSource).toContain("Jace — the trust layer for engineering agents");
     expect(layoutSource).toContain(
-      "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
+      "Jace helps engineering teams turn external-agent work into confirmed acceptance criteria, bounded context, and inspectable PR evidence.",
     );
     expect(layoutSource).not.toContain("AI fractional software engineer");
     expect(layoutSource).not.toContain("fractional software engineer");
@@ -261,10 +261,10 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(landingSource).toContain("Attribution unavailable in the current source set.");
   });
 
-  it("the outcome-led use case presents dependency upgrades as available", () => {
-    expect(useCasesSource).toContain("Keep dependencies moving");
+  it("the outcome-led use case frames dependency work as an evidence-bound trust flow", () => {
+    expect(useCasesSource).toContain("Make dependency work reviewable");
     expect(useCasesSource).toContain(
-      "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+      "Turn a selected dependency update into an Acceptance Contract, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
     );
     expect(useCasesSource).not.toContain("Coming soon");
   });
@@ -277,8 +277,8 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(pricingSource).toContain("ships as a pull request");
   });
 
-  it("landing §6b's new steps mention shipping as a pull request", () => {
-    expect(landingSource).toContain("ships as a pull request");
+  it("landing §6b hands the confirmed contract and bounded Context Pack to the selected builder", () => {
+    expect(landingSource).toContain("Confirm the Acceptance Contract and give the selected builder a bounded Context Pack.");
   });
 
   // -----------------------------------------------------------------------
@@ -290,14 +290,14 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   // stay untouched by this task.
   // -----------------------------------------------------------------------
 
-  it("landing §6b's sub speaks capacity vocabulary — priced by team size, measured in tasks (subscription-platform slice 7, Task 2)", () => {
+  it("landing §6b positions the subscription as a trust layer around existing coding agents", () => {
     // Whitespace-normalized locally (not the shared `landingSource` other
     // tests use) so this full-sentence pin survives however the formatter
     // wraps this long JSX text node across lines — same reasoning as
     // collapsing JSX text at render time, just done for the string compare.
     const normalized = landingSource.replace(/\s+/g, " ");
     expect(normalized).toContain(
-      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. Every plan includes monthly engineering capacity, measured in tasks.",
+      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. The product is the acceptance and evidence layer around the coding agents your team already uses.",
     );
   });
 

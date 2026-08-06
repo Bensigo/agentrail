@@ -103,6 +103,7 @@ def _usage() -> str:
   agentrail context benchmark FIXTURE [--target DIR] [--json] [--compare-grep]
   agentrail context build issue NUMBER --phase PHASE [--budget-usd N] [--model M] [--target DIR] [--json]
   agentrail context build pr NUMBER --phase review [--budget-usd N] [--model M] [--target DIR] [--json]
+  agentrail context build acceptance-record RECORD_ID --contract FILE --phase PHASE [--budget-usd N] [--model M] [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
   agentrail context savings [--model M] [--target DIR] [--json]
@@ -947,18 +948,19 @@ def run_context(args: List[str]) -> int:
             return 0 if output.get("passed") else 1
         if kind == "build":
             if len(rest) < 2:
-                raise SystemExit("context build requires target kind: issue or pr")
+                raise SystemExit("context build requires target kind: issue, pr, or acceptance-record")
             target_kind = rest[0]
-            if target_kind not in {"issue", "pr"}:
-                raise SystemExit("context build requires target kind: issue or pr")
-            if not rest[1].isdigit():
+            if target_kind not in {"issue", "pr", "acceptance-record"}:
+                raise SystemExit("context build requires target kind: issue, pr, or acceptance-record")
+            if target_kind in {"issue", "pr"} and not rest[1].isdigit():
                 raise SystemExit("context build requires a numeric target")
-            target_number = int(rest[1])
+            target_number: int | str = int(rest[1]) if target_kind in {"issue", "pr"} else rest[1]
             target: str | None = None
             phase = ""
             json_output = False
             budget_usd: float | None = None
             build_model: str = "claude-sonnet-4-6"
+            contract_file: str | None = None
             index = 2
             while index < len(rest):
                 arg = rest[index]
@@ -988,6 +990,11 @@ def run_context(args: List[str]) -> int:
                         raise SystemExit("--model requires a model name")
                     build_model = rest[index + 1]
                     index += 2
+                elif arg == "--contract":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--contract requires a JSON file path")
+                    contract_file = rest[index + 1]
+                    index += 2
                 elif arg == "--json":
                     json_output = True
                     index += 1
@@ -995,8 +1002,24 @@ def run_context(args: List[str]) -> int:
                     raise SystemExit(f"Unknown context build option: {arg}")
             if not phase:
                 raise SystemExit("context build requires --phase")
-            if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
-                raise SystemExit("context build phase must be one of: issue plan|execute|verify, pr review")
+            valid_phase = (
+                target_kind == "issue" and phase in {"plan", "execute", "verify"}
+            ) or (target_kind == "pr" and phase == "review") or (
+                target_kind == "acceptance-record" and phase in {"plan", "execute", "verify", "review"}
+            )
+            if not valid_phase:
+                raise SystemExit("context build phase must be issue plan|execute|verify, pr review, or acceptance-record plan|execute|verify|review")
+            acceptance_contract: dict | None = None
+            if target_kind == "acceptance-record":
+                if not contract_file:
+                    raise SystemExit("acceptance-record context build requires --contract FILE")
+                try:
+                    loaded_contract = json.loads(Path(contract_file).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise SystemExit(f"could not read Acceptance Contract JSON: {error}") from error
+                if not isinstance(loaded_contract, dict) or not loaded_contract:
+                    raise SystemExit("Acceptance Contract JSON must be a non-empty object")
+                acceptance_contract = loaded_contract
             resolved_target = _resolve_target(target)
             # Read contextBudgetUsd from config if not provided via flag
             if budget_usd is None:
@@ -1021,8 +1044,12 @@ def run_context(args: List[str]) -> int:
                     file=sys.stderr,
                 )
             output = build_context_pack(
-                resolved_target, target_kind, target_number, phase,
+                resolved_target,
+                "acceptance_record" if target_kind == "acceptance-record" else target_kind,
+                target_number,
+                phase,
                 budget_usd=budget_usd, model=build_model,
+                acceptance_contract=acceptance_contract,
             )
             if json_output:
                 _print_json(output)

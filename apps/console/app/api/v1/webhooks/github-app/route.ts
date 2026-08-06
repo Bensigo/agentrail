@@ -13,12 +13,10 @@ import {
 } from "@agentrail/db-postgres";
 
 /**
- * GitHub-App `pull_request` webhook — the intake half of Arc B's reviewer of
- * record (spec docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md
- * §1). Every admitted PR event becomes one durable `review_jobs` row
- * (`enqueueReviewJob`, `@agentrail/db-postgres`); a headless Jace worker
- * (a later task) claims rows and posts the one review of record. This route
- * only ADMITS — it never reviews, never calls GitHub back, and once auth
+ * GitHub-App `pull_request` webhook — the intake boundary for the Acceptance
+ * Record. It may attach only a pre-recorded external-builder handoff to its
+ * exact repository and head; it never creates an advisory review job, reviews,
+ * or calls GitHub back. Once auth
  * passes it is never itself a source of retries: GitHub redelivers on
  * anything but a 2xx, so EVERY post-auth outcome here is 200 (house
  * doctrine, `../../connectors/telegram/webhook/route.ts`) — the only 4xx

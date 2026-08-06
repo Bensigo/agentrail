@@ -41,9 +41,9 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Metadata-only context-pack record and MCP read surface | `989e3b7c` through `a4f7b8cc` | Python context-pack tests and focused console tests |
 | Dedicated scoped agent-MCP credentials | `2b179526`, `c27b6564` | focused bearer/API/MCP tests and package typecheck |
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
-| Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs never enter the advisory queue |
+| Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs are never auto-attached or reviewed |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
-| Blocking-only review boundary | current migration slice | `evidence-review-validation` rejects unsupported bases, missing evidence/impact/correction/reverification, and style-only convention claims. The old `post_pr_review` root tool is explicitly disabled, the advisory review worker is not wired at Jace startup, its standalone entrypoint refuses to start, and the old reviewer subagent is outside Eve discovery. Retained legacy source is quarantined cleanup material only; Canonical exact-head Acceptance Review is the sole supported Jace merge-gate path. Focused Jace legacy/policy/instruction tests and a fresh Node 24 build pass. |
+| Blocking-only review boundary and advisory-lane removal | current migration slice | `evidence-review-validation` rejects unsupported bases, missing evidence/impact/correction/reverification, and style-only convention claims. The Jace reviewer subagent, root PR-comment tool, review-job worker/prompt/console transport, Console PR-comment/review-job endpoints, and their tests are removed. Focused Jace tool-policy, webhook, and acceptance-spine tests plus a fresh Node 24 build pass. Historical `review_jobs` migrations and deployed rows are deliberately retained but have no application schema, query, route, or worker caller. Canonical exact-head Acceptance Review is the sole supported Jace merge-gate path. |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
 | Automatic correction queue, builder-task inbox, native MCP read/ack, and GitHub fallback dispatch | `7d560fcd` through `2890610f`, `f8789d6e` | focused review-completion/queue/ack/inbox/dispatch tests, MCP protocol test, and DB typecheck. A blocking review queues the exact correction only for its unique PR-attached handoff; packets retain exact review revision and runtime evidence. A builder can retrieve its recorded task's packet and acknowledge it through scoped MCP tools. GitHub dispatch posts a COMMENT-only PR issue-comment only for the current exact head and records delivered/failed. Neither carrier proves a live builder was notified or resumed. |
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
@@ -80,9 +80,9 @@ acknowledgement only; no dispatcher has proven notification.
    have append-only input/reply evidence and Jace can fetch a bounded resume
    projection, but no deployed channel has exercised that flow or proved that
    only unresolved questions were asked.
-4. Remove the now-obsolete dependency approval/publisher callers and the
-   quarantined legacy advisory-review core/worker/prompt after scans prove no
-   remaining acceptance-spine caller or retained data depends on them; finish Console removal of obsolete connector/factory surfaces, and
+4. Remove the now-obsolete dependency approval/publisher callers after a
+   production-data audit and forward migration; finish Console removal of
+   obsolete connector/factory surfaces, and
    complete the copy-only landing pivot. The final human PR decision is now a current-review append-only
    seam, but it is not live/migrated-DB/browser verified and does not capture
    post-merge rework/revert; those remain explicit aggregate outcome evidence.

@@ -4,7 +4,6 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   attachExternalPullRequest: vi.fn(),
-  enqueueReviewJob: vi.fn(),
   findAcceptanceBuilderHandoffForPullRequest: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
   getRepositoryByName: vi.fn(),
@@ -16,7 +15,6 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { POST } from "./route";
 import {
   attachExternalPullRequest,
-  enqueueReviewJob,
   findAcceptanceBuilderHandoffForPullRequest,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
@@ -132,11 +130,6 @@ beforeEach(() => {
   process.env[ENROLL_ENV] = WORKSPACE_ID;
   vi.mocked(getWorkspaceByGithubInstallationId).mockResolvedValue(WORKSPACE as never);
   vi.mocked(getRepositoryByName).mockResolvedValue(CONNECTED_REPO as never);
-  vi.mocked(enqueueReviewJob).mockResolvedValue({
-    id: "job-1",
-    deduped: false,
-    superseded: 0,
-  } as never);
   vi.mocked(findAcceptanceBuilderHandoffForPullRequest).mockResolvedValue(HANDOFF as never);
   vi.mocked(attachExternalPullRequest).mockResolvedValue({
     revision: { id: "revision-1", headSha: "abc123def4567890" },
@@ -167,7 +160,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(await res.json()).toEqual({ error: "webhook secret not configured" });
     expect(getWorkspaceByGithubInstallationId).not.toHaveBeenCalled();
     expect(getRepositoryByName).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -204,7 +196,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true });
     expect(getWorkspaceByGithubInstallationId).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -218,7 +209,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, ignored: true });
     }
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("4b. a merged closed PR appends one idempotent merge-stage Change Record event", async () => {
@@ -227,7 +217,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, merged: true });
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
     expect(recordReviewEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
@@ -272,7 +261,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ ok: true, ignored: true });
     }
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("5b. a draft PR's ready_for_review action is NEVER draft-gated — it proceeds to exact handoff correlation", async () => {
@@ -303,7 +291,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true });
     expect(getRepositoryByName).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("6b. payload carries no installation object at all -> 200 ignored without calling the DB", async () => {
@@ -331,7 +318,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true, reason: "not enrolled" });
     expect(getRepositoryByName).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("7b. unset REVIEWER_OF_RECORD_WORKSPACES disables intake for every workspace", async () => {
@@ -367,7 +353,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true });
     expect(getRepositoryByName).toHaveBeenCalledWith(WORKSPACE_ID, "someone/else");
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -411,7 +396,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
       ok: true, linked: true, recordId: "record-1", prRevisionId: "revision-7",
       exactHeadSha: "deadbeef1234", reviewWorker: "not_started",
     });
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("9b. no matching handoff is explicit, unlinked, and never queued", async () => {
@@ -421,7 +405,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true, reason: "no matching builder handoff" });
     expect(attachExternalPullRequest).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("9c. a wrong branch is unlinked even when the repository is connected", async () => {
@@ -441,7 +424,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(await response.json()).toEqual({ ok: true, ignored: true, reason: "missing canonical PR identity" });
     expect(findAcceptanceBuilderHandoffForPullRequest).not.toHaveBeenCalled();
     expect(attachExternalPullRequest).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("9e. pull_request_review submitted records the review ledger and stops after acking", async () => {
@@ -480,7 +462,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
         headSha: "abc123def4567890",
       })
     );
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -493,7 +474,6 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, ignored: true });
     expect(getWorkspaceByGithubInstallationId).not.toHaveBeenCalled();
-    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("10b. syntactically valid JSON missing pull_request/installation/repository shape never throws — 200 ignored", async () => {

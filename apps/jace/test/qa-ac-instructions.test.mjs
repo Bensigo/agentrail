@@ -97,11 +97,6 @@ test("root instructions: fetch_issue resolves the AC checklist before dispatchin
   assert.match(prose, /fetch_issue[\s\S]{0,800}Acceptance criteria/i);
 });
 
-test("root instructions: reviewer coverage hands not_in_diff/unclear to qa as priority focus", () => {
-  const prose = rootInstructions();
-  assert.match(prose, /(not_in_diff|`not_in_diff`)[\s\S]{0,400}[Pp]riority focus|[Pp]riority focus[\s\S]{0,400}not_in_diff/);
-});
-
 test("root instructions: null ac_results reported as QA-without-ACs with the reason", () => {
   const prose = rootInstructions();
   assert.match(prose, /QA ran without acceptance criteria/i);

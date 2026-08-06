@@ -7,18 +7,14 @@
 //    connection_search is deliberately NOT sentineled (this agent declares
 //    MCP connections; stripping connection_search would blind it to them).
 //  - The subagent's own sources import no process/fs/DB capability beyond
-//    its ONE authored tool, and its connections carry explicit allowlists
+//    its three explicitly enumerated evidence-upload tools, and its connections carry explicit allowlists
 //    with no approval gate.
 //
-// WIDENING FROM ZERO TOOLS TO ONE (upload_evidence_image) is this task's own
-// change (B2a §2, design: docs/superpowers/specs/
-// 2026-08-02-b2-behavioral-evidence-design.md) — mirrors how
-// reviewer-read-only.test.mjs documents its own one-to-five widening. QA
-// stays otherwise exactly as isolated and read-only as before: the one
-// authored tool is a narrowly-scoped, ungated write into Jace's OWN
-// evidence-image store (never GitHub, never a second path into the
-// factory), proved below the same way reviewer's authored tools are proved
-// read-only — by scanning the tool's own source, not by trusting a comment.
+// QA has three narrowly-scoped evidence upload tools: the historical generic
+// image uploader plus exact-plan UI and API uploaders. None can post a review,
+// change code, create a PR, or merge; their server boundaries derive or
+// validate the exact Record/plan identity. The test keeps the set explicit so
+// a new write tool cannot silently broaden the QA capability surface.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
@@ -49,12 +45,13 @@ const QA_SENTINELED_TOOLS = [
 ];
 const KEPT_HARNESS_TOOLS = ["web_fetch"];
 
-// The ONE authored tool (B2a §2). Legitimately uses defineTool, so it is
-// EXCLUDED from the sentinel-only assertions and from the defineTool
-// write-path scan below — same posture as reviewer-read-only.test.mjs's own
-// AUTHORED_TOOLS ceiling-and-floor. Adding a second is a deliberate human
-// edit here, not something a maker should do silently.
-const AUTHORED_TOOLS = ["upload_evidence_image.ts"];
+// The exact ceiling for QA-authored writes. Adding a fourth requires a
+// deliberate review of its scope and corresponding proof.
+const AUTHORED_TOOLS = [
+  "upload_evidence_image.ts",
+  "upload_verification_artifact.ts",
+  "upload_verification_api_artifact.ts",
+];
 
 function sourceFiles(dir) {
   const out = [];
@@ -77,7 +74,7 @@ test("every sentinel exists and default-exports disableTool()", () => {
   }
 });
 
-test("tools/ contains the 9 sentinels plus the ONE authored tool (upload_evidence_image) — web_fetch and connection_search stay live", () => {
+test("tools/ contains the 9 sentinels plus the three enumerated evidence upload tools — web_fetch and connection_search stay live", () => {
   const present = readdirSync(TOOLS_DIR)
     .filter((f) => f.endsWith(".ts"))
     .map((f) => f.replace(/\.ts$/, ""))
@@ -91,7 +88,7 @@ test("tools/ contains the 9 sentinels plus the ONE authored tool (upload_evidenc
   }
 });
 
-test("qa sources carry no process/fs/DB capability, and author at most the one enumerated tool (upload_evidence_image)", () => {
+test("qa sources carry no process/fs/DB capability and define only enumerated evidence upload tools", () => {
   const banned = [
     /child_process/,
     /node:fs/,
@@ -109,13 +106,13 @@ test("qa sources carry no process/fs/DB capability, and author at most the one e
     if (!isAuthoredTool) {
       assert.ok(
         !src.includes("defineTool("),
-        `${rel} must not define a tool (only tools/${AUTHORED_TOOLS[0]} may)`,
+        `${rel} must not define a tool outside ${AUTHORED_TOOLS.join(", ")}`,
       );
     }
   }
 });
 
-test("the one authored tool (upload_evidence_image) is a real, narrowly-scoped write: defineTool, no approval gate, resolves session the SUBAGENT way, calls the pure core", () => {
+test("upload_evidence_image is a narrowly-scoped historical image upload: defineTool, no approval gate, session-derived targeting, and a pure core", () => {
   const file = path.join(TOOLS_DIR, "upload_evidence_image.ts");
   assert.ok(existsSync(file), "missing apps/jace/agent/subagents/qa/tools/upload_evidence_image.ts");
   const src = readFileSync(file, "utf8");
@@ -181,6 +178,21 @@ test("upload_evidence_image's inputSchema is EXACTLY the 7 caller-supplied field
     EXPECTED_FIELDS,
     `upload_evidence_image.ts's inputSchema must declare exactly ${EXPECTED_FIELDS.join(", ")} — found ${declaredFields.join(", ") || "(none)"}`,
   );
+});
+
+test("plan-bound UI and API upload tools are the only additional QA writes and delegate to their guarded cores", () => {
+  const planBoundTools = [
+    ["upload_verification_artifact.ts", "upload_verification_artifact.core.mjs", "runUploadVerificationArtifact"],
+    ["upload_verification_api_artifact.ts", "upload_verification_api_artifact.core.mjs", "runUploadVerificationApiArtifact"],
+  ];
+  for (const [fileName, coreName, runnerName] of planBoundTools) {
+    const src = readFileSync(path.join(TOOLS_DIR, fileName), "utf8");
+    assert.match(src, /defineTool\(/, `${fileName} must be an explicit QA tool`);
+    assert.doesNotMatch(src, /\bapproval\s*:/, `${fileName} must not add an approval bypass`);
+    assert.match(src, new RegExp(`from\\s+["']\\.\\.\\/lib\\/${coreName}["']`), `${fileName} must delegate to its guarded core`);
+    assert.match(src, new RegExp(`${runnerName}\\(`), `${fileName} must invoke its guarded core`);
+    assert.match(src, /collectedBy:\s*`qa:\$\{ctx\?\.session\?\.id/, `${fileName} must record the collecting QA session`);
+  }
 });
 
 test("exactly two connections, allowlisted, with no approval gate", () => {

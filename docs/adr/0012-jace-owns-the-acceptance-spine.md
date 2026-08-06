@@ -85,7 +85,8 @@ alone proves that a browser executed the criterion flow.
 Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; a deployed UI exercise and non-UI artifact dispatch; API
-redaction worker; automatic Jace fallback delivery; human outcomes/dependency
+redaction worker; automatic Jace fallback delivery and external-builder receipt;
+human outcomes/dependency
 workflow; and UI/browser E2E. An owner/admin can now dispatch the persisted
 packet as a GitHub PR issue-comment only when the exact review revision is
 still current; it records `delivered` or `failed`, but does not prove that the

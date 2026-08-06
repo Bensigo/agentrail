@@ -75,6 +75,11 @@ derives the repository, PR number, head, criterion, and environment from that
 plan and records an artifact key plus SHA-256 digest. This is a narrow UI
 artifact seam, not a browser-exercise worker or proof of the criterion.
 
+Jace now has a separate exact-head criterion-execution queue and a guarded
+worker result seam. A `proven` result requires observed behavior and artifacts
+bound to that plan; it does not make queueing or a screenshot alone proof that
+a browser executed the criterion flow.
+
 Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; UI exercise and non-UI artifact dispatch; runtime modality-

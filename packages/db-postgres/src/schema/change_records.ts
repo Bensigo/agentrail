@@ -385,13 +385,16 @@ export const evidenceVerificationExecutions = pgTable(
     status: text("status").notNull().default("queued"),
     workerId: text("worker_id"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    observedBehavior: text("observed_behavior"),
+    artifactIds: jsonb("artifact_ids").$type<string[]>().notNull().default([]),
+    resultReason: text("result_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     plan: uniqueIndex("evidence_verification_executions_plan_key").on(t.verificationPlanId),
     queued: index("evidence_verification_executions_queued_idx").on(t.createdAt).where(sql`${t.status} = 'queued'`),
-    statusCheck: check("evidence_verification_executions_status_check", sql`${t.status} IN ('queued', 'claimed', 'not_proven', 'not_testable', 'failed')`),
+    statusCheck: check("evidence_verification_executions_status_check", sql`${t.status} IN ('queued', 'claimed', 'proven', 'not_proven', 'not_testable', 'failed')`),
   })
 );
 

@@ -945,6 +945,32 @@ export async function enqueueEvidenceVerificationExecution(input: {
   return { execution: existing[0], inserted: false };
 }
 
+export async function reportEvidenceVerificationExecution(input: {
+  executionId: string;
+  workerId: string;
+  status: "proven" | "not_proven" | "not_testable" | "failed";
+  observedBehavior?: string | null;
+  artifactIds?: string[];
+  resultReason?: string | null;
+}): Promise<EvidenceVerificationExecutionRow | null> {
+  if (input.status === "proven" && (!input.observedBehavior?.trim() || !input.artifactIds?.length)) {
+    throw new Error("A proven criterion requires observed behavior and verification artifacts");
+  }
+  const rows = await db.select({ execution: evidenceVerificationExecutions, artifact: evidenceVerificationArtifacts })
+    .from(evidenceVerificationExecutions)
+    .innerJoin(evidenceVerificationArtifacts, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationArtifacts.verificationPlanId))
+    .where(and(eq(evidenceVerificationExecutions.id, input.executionId), eq(evidenceVerificationExecutions.workerId, input.workerId)));
+  const availableArtifacts = new Set(rows.map((row) => row.artifact.id));
+  if (input.status === "proven" && input.artifactIds?.some((id) => !availableArtifacts.has(id))) {
+    throw new Error("Every claimed verification artifact must belong to the execution plan");
+  }
+  const updated = await db.update(evidenceVerificationExecutions).set({
+    status: input.status, observedBehavior: input.observedBehavior ?? null,
+    artifactIds: input.artifactIds ?? [], resultReason: input.resultReason ?? null, updatedAt: new Date(),
+  }).where(and(eq(evidenceVerificationExecutions.id, input.executionId), eq(evidenceVerificationExecutions.workerId, input.workerId), eq(evidenceVerificationExecutions.status, "claimed"))).returning();
+  return updated[0] ?? null;
+}
+
 /** Record the immutable reference and digest for a stored UI evidence artifact. */
 export async function recordEvidenceVerificationArtifact(input: {
   verificationPlanId: string;

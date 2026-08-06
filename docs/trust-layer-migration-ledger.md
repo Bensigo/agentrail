@@ -48,6 +48,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
+| Criterion execution queue and guarded result seam | current migration slice | focused admission/completion route tests and DB typecheck. `proven` requires observed behavior plus artifacts bound to the same plan; no browser worker exists yet. |
 
 The next slice must execute a planned safe UI flow and bind its observed result
 to these artifacts. Delivery is currently queue plus acknowledgement only; no

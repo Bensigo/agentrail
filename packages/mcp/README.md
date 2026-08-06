@@ -14,6 +14,8 @@ the MCP/tool-enforcement level from
 | `context_build_pack` | `agentrail context build` | a bounded context pack for an issue/PR phase |
 | `context_explain_pack` | `agentrail context explain` | why sources were included / excluded / boosted / demoted |
 | `acceptance_intake_start` | Jace API | records a raw task with MCP-task provenance; never creates a contract or authorizes implementation |
+| `acceptance_intake_get` | Jace API | bounded task-context messages and compact contract status; never a raw transcript |
+| `acceptance_intake_reply` | Jace API | forwards an explicit task-context user reply idempotently; never writes a contract |
 | `acceptance_record_get` | Jace API | draft/confirmed contract for an existing record |
 | `acceptance_context_pack_record` | Jace API | context-pack metadata and artifact references only |
 | `acceptance_builder_task_get` | Jace API | the recorded builder task's confirmed contract and selected bounded Context Pack |
@@ -70,7 +72,11 @@ provenance; the agent cannot select a repository or submit a contract through
 this tool. Jace must collect unresolved information and a human must confirm
 the Acceptance Contract before a Context Pack handoff or implementation. The
 MCP server does not claim that interactive clarification or confirmation has
-completed. When it records a Context Pack, the API accepts only a hash,
+completed. Use `acceptance_intake_get` to read only Jace's bounded task-context
+messages, then use `acceptance_intake_reply` only for an explicit user reply
+with a stable source-message key. MCP task-context provenance is not an
+independently authenticated human identity. When it records a Context Pack,
+the API accepts only a hash,
 provenance/freshness metadata, and artifact references; raw source content does
 not enter the central record.
 

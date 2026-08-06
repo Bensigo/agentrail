@@ -39,7 +39,7 @@ function waitForRequests(count: number): Promise<void> {
   });
 }
 
-test("MCP intake, builder handoff, and correction delivery tools use bounded task identity", async () => {
+test("MCP intake, task-context messages, builder handoff, and correction delivery use bounded identity", async () => {
   apiRequests.length = 0;
   const address = api.address();
   assert.ok(address && typeof address !== "string");
@@ -58,10 +58,12 @@ test("MCP intake, builder handoff, and correction delivery tools use bounded tas
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "mcp-test", version: "1" } } });
     send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
     send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "acceptance_intake_start", arguments: { taskContextKey: "task / a&b", userTask: "Add a save button" } } });
-    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "acceptance_builder_task_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
-    send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "correction_deliveries_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
-    send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "correction_delivery_acknowledge", arguments: { deliveryId: "22222222-2222-4222-8222-222222222222", detail: "Packet read" } } });
-    await waitForRequests(4);
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "acceptance_intake_get", arguments: { taskContextKey: "task / a&b" } } });
+    send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "acceptance_intake_reply", arguments: { taskContextKey: "task / a&b", userMessage: "Use acme/web", messageKey: "user-turn-2" } } });
+    send({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "acceptance_builder_task_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
+    send({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "correction_deliveries_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
+    send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "correction_delivery_acknowledge", arguments: { deliveryId: "22222222-2222-4222-8222-222222222222", detail: "Packet read" } } });
+    await waitForRequests(6);
   } finally {
     child.kill();
     await new Promise<void>((resolve) => child.on("exit", () => resolve()));
@@ -70,10 +72,13 @@ test("MCP intake, builder handoff, and correction delivery tools use bounded tas
   const requests = apiRequests.map(({ method, url }) => ({ method, url })).sort((a, b) => `${a.method}:${a.url}`.localeCompare(`${b.method}:${b.url}`));
   assert.deepEqual(requests, [
     { method: "POST", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/acceptance-intakes" },
+    { method: "GET", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/acceptance-intakes?taskContextKey=task+%2F+a%26b" },
+    { method: "POST", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/acceptance-intakes/messages" },
     { method: "GET", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/builder-tasks?builder=codex&taskContextKey=task+%2F+a%26b" },
     { method: "GET", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/correction-deliveries?builder=codex&taskContextKey=task+%2F+a%26b" },
     { method: "POST", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/correction-deliveries/22222222-2222-4222-8222-222222222222/ack" },
   ].sort((a, b) => `${a.method}:${a.url}`.localeCompare(`${b.method}:${b.url}`)));
   assert.equal(apiRequests.find((request) => request.url?.endsWith("/acceptance-intakes"))?.body, JSON.stringify({ taskContextKey: "task / a&b", userTask: "Add a save button" }));
+  assert.equal(apiRequests.find((request) => request.url?.endsWith("/acceptance-intakes/messages"))?.body, JSON.stringify({ taskContextKey: "task / a&b", userMessage: "Use acme/web", messageKey: "user-turn-2" }));
   assert.equal(apiRequests.find((request) => request.url?.endsWith("/ack"))?.body, JSON.stringify({ detail: "Packet read" }));
 });

@@ -157,6 +157,41 @@ server.registerTool(
 );
 
 server.registerTool(
+  "acceptance_intake_get",
+  {
+    title: "Read Jace Acceptance Intake status",
+    description:
+      "Read bounded messages and compact contract status for this MCP task context. This is not a raw transcript and cannot independently prove a task-context message came from a human.",
+    inputSchema: {
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ taskContextKey }) => {
+    const query = new URLSearchParams({ taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes?${query}`, "GET");
+  },
+);
+
+server.registerTool(
+  "acceptance_intake_reply",
+  {
+    title: "Send explicit user task-context reply to Jace",
+    description:
+      "Forward an explicit user reply from this MCP task context to Jace. Use a stable message key for retries. This creates no contract and is task-context provenance, not independently authenticated human confirmation.",
+    inputSchema: {
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+      userMessage: z.string().min(1).max(8_000).describe("Exact explicit user reply; do not invent or summarize it as user input."),
+      messageKey: z.string().min(1).max(256).describe("Stable source-message ID for idempotent retry."),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (input) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes/messages`, "POST", input,
+  ),
+);
+
+server.registerTool(
   "acceptance_record_get",
   {
     title: "Read Jace Acceptance Record",

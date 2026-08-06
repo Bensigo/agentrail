@@ -56,6 +56,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Dependency-proposal Acceptance Record draft | current migration slice | focused converter and both dependency runner-route tests. A dependency candidate proposal becomes one deterministic canonical Acceptance Record for its connected repository. Candidate scope, baseline, expected files, verification commands, stop conditions, and every missing evidence item are preserved; missing evidence is an open question that blocks confirmation. Both the dedicated materialization endpoint and the former proposal endpoint now create/reuse only that draft and source provenance—never an issue, approval, builder handoff, dependency edit, PR, or merge. Legacy dependency approval/publisher code still exists as unused cleanup scope; it is not a supported product lane. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 | Acceptance Context Pack compilation, custody reduction, and guarded report | `f527d095` plus current slice | Owner/admin admission binds a confirmed Contract, connected repository, captured ref, and phase. A default-off compiler worker claims only that tuple, disposable-clones the ref, rebuilds the index, compiles an `acceptance_record` Pack, reduces it to cited metadata, and reports it through a Jace-secret route. The route re-reads the claimed Contract, validates exact criteria/budget/custody/freshness, records the Pack, then marks the job compiled; raw source is rejected from manifest, custody, and freshness. Hermetic failure and real local clone/index/compiler/cleanup tests pass. No deployed claim/clone/report or external-builder retrieval is proven. |
+| Acceptance Case corpus, independent scorecards, and non-leaky four-arm inputs | `81468b7d`, `1b6cf127`, current slice | Focused Python tests validate frozen dev/held-out Cases, independent scorecard denominators, a contract version, and a custody-only bounded Pack descriptor. The pure arm-input contract exposes only the frozen request to `agent-alone`; adds only the approved Contract to `contract-only`; adds the bounded Pack descriptor only to `contract-plus-pack`/`full-jace-loop`; and binds evaluator-only lineage to the case/version, contract version, exact PR head/diff, environment, and applicable Pack hash/budget. It neither invokes an agent nor scores a product result. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
 observed result to these artifacts. Delivery is currently queue plus
@@ -86,12 +87,15 @@ acknowledgement only; no dispatcher has proven notification.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.
-6. Build the separate post-MVP trust-layer evaluation program defined in
+6. Continue the separate post-MVP trust-layer evaluation program defined in
    [`docs/prd/jace-trust-layer-evaluation.md`](prd/jace-trust-layer-evaluation.md)
    after the acceptance spine is coherent. It uses Acceptance Cases, not a
    relabelled factory benchmark: frozen dev/held-out labels, four Jace-specific
    arms, independently scored scorecards, complete lineage, segmented tri-state
-   promotion, and strict separation of offline/canary/production evidence.
+   promotion, and strict separation of offline/canary/production evidence. The
+   frozen loader, scorecards, and non-leaky arm-input/lineage seam now exist;
+   there is still no builder executor, proof verifier, reporting/promotion
+   implementation, corpus run, or market-value result.
    Do not preserve legacy factory/execution evals for history alone: first map
    dependencies; classify every component as remove, neutral-infrastructure
    reuse, or replace; build/migrate to the Acceptance-Case spine; run targeted
@@ -239,7 +243,8 @@ perform cleanup. No market-value claim follows from current factory results.
   `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
   plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
   Acceptance Record), and `f527d095` (compiler job admission/claim). The
-  current uncommitted slice adds worker compilation and guarded Pack reporting.
+  current uncommitted slice adds the pure Acceptance-Case arm input and lineage
+  contract; it has no production execution or telemetry effect.
   The only expected unrelated untracked paths are generated dependency
   directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`

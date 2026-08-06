@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Tuple
 
 CASE_FILE = "case.json"
 ARMS = ("agent-alone", "contract-only", "contract-plus-pack", "full-jace-loop")
@@ -17,6 +17,21 @@ ARMS = ("agent-alone", "contract-only", "contract-plus-pack", "full-jace-loop")
 
 class AcceptanceCaseError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ContextPackDescriptor:
+    """The bounded pack supplied only to the pack-bearing eval arms.
+
+    This is deliberately provenance, not source custody: the frozen case keeps
+    the pack hash, explicit token ceiling, and cited ranges, never raw file
+    contents.  A future executor may retrieve the cited snapshot separately;
+    it may not turn the eval fixture into an unbounded repository dump.
+    """
+
+    content_hash: str
+    token_budget: int
+    cited_source_ranges: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -30,6 +45,8 @@ class AcceptanceCase:
     commit: str
     relevant_sources: List[str]
     contract: Dict[str, Any]
+    contract_version: str
+    context_pack: ContextPackDescriptor
     clarification_truth: Dict[str, Any]
     pr_revisions: List[Dict[str, Any]]
     environments: List[Dict[str, Any]]
@@ -56,6 +73,12 @@ def _objects(value: Any, field: str, where: str) -> List[Dict[str, Any]]:
     return value
 
 
+def _positive_int(value: Any, field: str, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise AcceptanceCaseError(f"Acceptance Case {where}: {field} must be a positive integer")
+    return value
+
+
 def load_case(case_dir: Path) -> AcceptanceCase:
     case_dir = Path(case_dir)
     where = repr(case_dir.name)
@@ -72,6 +95,7 @@ def load_case(case_dir: Path) -> AcceptanceCase:
         raise AcceptanceCaseError(f"Acceptance Case {where}: split must be dev or held-out")
     pinned = _object(raw.get("pinned"), "pinned", where)
     contract = _object(raw.get("approvedContract"), "approvedContract", where)
+    contract_version = _text(contract.get("version"), "approvedContract.version", where)
     criteria = contract.get("acceptanceCriteria")
     if not isinstance(criteria, list) or not criteria:
         raise AcceptanceCaseError(f"Acceptance Case {where}: approvedContract requires acceptanceCriteria")
@@ -85,6 +109,22 @@ def load_case(case_dir: Path) -> AcceptanceCase:
     required_scores = {"contract", "context", "review", "proof", "correction", "outcome"}
     if not required_scores.issubset(labels):
         raise AcceptanceCaseError(f"Acceptance Case {where}: independentLabels must cover every trust scorecard")
+    pack = _object(raw.get("contextPack"), "contextPack", where)
+    allowed_pack_keys = {"contentHash", "tokenBudget", "citedSourceRanges"}
+    unknown_pack_keys = set(pack) - allowed_pack_keys
+    if unknown_pack_keys:
+        raise AcceptanceCaseError(
+            f"Acceptance Case {where}: contextPack contains unsupported custody fields: "
+            f"{', '.join(sorted(unknown_pack_keys))}"
+        )
+    cited_source_ranges = [
+        _text(item, "contextPack.citedSourceRanges item", where)
+        for item in pack.get("citedSourceRanges", [])
+    ]
+    if not cited_source_ranges:
+        raise AcceptanceCaseError(
+            f"Acceptance Case {where}: contextPack requires non-empty citedSourceRanges"
+        )
     return AcceptanceCase(
         name=_text(raw.get("name"), "name", where), split=split,
         corpus_version=_text(raw.get("corpusVersion"), "corpusVersion", where),
@@ -92,7 +132,14 @@ def load_case(case_dir: Path) -> AcceptanceCase:
         conversation=_objects(raw.get("sourceConversation"), "sourceConversation", where),
         repo=_text(pinned.get("repo"), "pinned.repo", where), commit=_text(pinned.get("commit"), "pinned.commit", where),
         relevant_sources=[_text(item, "relevantSources item", where) for item in raw.get("relevantSources", [])],
-        contract=contract, clarification_truth=_object(raw.get("clarificationTruth"), "clarificationTruth", where),
+        contract=contract,
+        contract_version=contract_version,
+        context_pack=ContextPackDescriptor(
+            content_hash=_text(pack.get("contentHash"), "contextPack.contentHash", where),
+            token_budget=_positive_int(pack.get("tokenBudget"), "contextPack.tokenBudget", where),
+            cited_source_ranges=tuple(cited_source_ranges),
+        ),
+        clarification_truth=_object(raw.get("clarificationTruth"), "clarificationTruth", where),
         pr_revisions=revisions, environments=environments, labels=labels,
         source=_object(raw.get("source"), "source", where), case_dir=case_dir,
     )

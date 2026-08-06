@@ -3292,6 +3292,7 @@ export {
   findAcceptanceBuilderHandoffForPrRevision,
   markAcceptanceBuilderHandoffPrAttached,
   enqueueAcceptanceEvidenceReviewRequest,
+  claimAcceptanceEvidenceReviewRequest,
   readAcceptanceEvidenceReviewRequests,
   recordEvidenceReview,
   readAcceptanceEvidenceReviewSummaries,

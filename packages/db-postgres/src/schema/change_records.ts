@@ -415,6 +415,10 @@ export const acceptanceEvidenceReviewRequests = pgTable(
     headSha: text("head_sha").notNull(),
     status: text("status").notNull().default("queued"),
     reason: text("reason"),
+    /** Worker identity is private queue custody, not a review verdict. */
+    workerId: text("worker_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
     requestedBy: text("requested_by").notNull(),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -423,7 +427,7 @@ export const acceptanceEvidenceReviewRequests = pgTable(
     revision: uniqueIndex("acceptance_evidence_review_requests_revision_key").on(t.prRevisionId),
     queued: index("acceptance_evidence_review_requests_queued_idx").on(t.requestedAt).where(sql`${t.status} = 'queued'`),
     record: index("acceptance_evidence_review_requests_record_idx").on(t.recordId, t.requestedAt),
-    statusCheck: check("acceptance_evidence_review_requests_status_check", sql`${t.status} IN ('queued', 'completed', 'failed', 'superseded')`),
+    statusCheck: check("acceptance_evidence_review_requests_status_check", sql`${t.status} IN ('queued', 'claimed', 'completed', 'failed', 'superseded')`),
   })
 );
 

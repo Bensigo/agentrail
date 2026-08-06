@@ -998,7 +998,7 @@ export async function attachExternalPullRequest(input: AttachExternalPullRequest
         }).where(and(
           inArray(acceptanceEvidenceReviewRequests.prRevisionId, superseded.map((item) => item.id)),
           eq(acceptanceEvidenceReviewRequests.workspaceId, input.workspaceId),
-          inArray(acceptanceEvidenceReviewRequests.status, ["queued"]),
+          inArray(acceptanceEvidenceReviewRequests.status, ["queued", "claimed"]),
         ));
       }
       const inserted = await tx.insert(changeRecordPrRevisions).values({
@@ -1683,6 +1683,135 @@ export async function readAcceptanceEvidenceReviewRequests(input: {
   )).orderBy(desc(acceptanceEvidenceReviewRequests.requestedAt));
 }
 
+export type ClaimedAcceptanceEvidenceReviewRequest = {
+  request: AcceptanceEvidenceReviewRequestRow;
+  contract: Pick<AcceptanceContractRow, "id" | "version" | "contract">;
+  pr: { repositoryFullName: string; prNumber: number; prUrl: string; headSha: string };
+};
+
+/**
+ * Atomically claim one current, exact-head review request. A lease can be
+ * retried twice; source/diff retrieval remains in the disposable reviewer and
+ * is deliberately not returned by the Console.
+ */
+export async function claimAcceptanceEvidenceReviewRequest(input: { workerId: string }): Promise<ClaimedAcceptanceEvidenceReviewRequest | null> {
+  const claimed = Array.from(await db.execute(sql`
+    WITH expired AS (
+      UPDATE acceptance_evidence_review_requests
+      SET status = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'queued' END,
+          worker_id = NULL,
+          claimed_at = NULL,
+          reason = CASE WHEN attempts >= 3 THEN 'review claim lease expired after 3 attempts' ELSE reason END,
+          updated_at = now()
+      WHERE status = 'claimed'
+        AND claimed_at < now() - interval '15 minutes'
+    ),
+    invalid AS (
+      UPDATE acceptance_evidence_review_requests request
+      SET status = 'failed',
+          reason = 'Exact PR revision or confirmed Acceptance Contract is unavailable for review',
+          worker_id = NULL,
+          claimed_at = NULL,
+          updated_at = now()
+      WHERE request.status = 'queued'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM change_record_pr_revisions revision
+          INNER JOIN change_record_prs attachment ON attachment.id = revision.pr_attachment_id
+          INNER JOIN acceptance_contracts contract ON contract.id = request.acceptance_contract_id
+          WHERE revision.id = request.pr_revision_id
+            AND revision.head_sha = request.head_sha
+            AND revision.superseded_at IS NULL
+            AND attachment.workspace_id = request.workspace_id
+            AND attachment.record_id = request.record_id
+            AND contract.record_id = request.record_id
+            AND contract.version = request.acceptance_contract_version
+            AND contract.status = 'confirmed'
+        )
+    ),
+    candidate AS (
+      SELECT request.id
+      FROM acceptance_evidence_review_requests request
+      INNER JOIN change_record_pr_revisions revision ON revision.id = request.pr_revision_id
+      INNER JOIN change_record_prs attachment ON attachment.id = revision.pr_attachment_id
+      INNER JOIN acceptance_contracts contract ON contract.id = request.acceptance_contract_id
+      WHERE request.status = 'queued'
+        AND revision.head_sha = request.head_sha
+        AND revision.superseded_at IS NULL
+        AND attachment.workspace_id = request.workspace_id
+        AND attachment.record_id = request.record_id
+        AND contract.record_id = request.record_id
+        AND contract.version = request.acceptance_contract_version
+        AND contract.status = 'confirmed'
+      ORDER BY request.requested_at ASC
+      LIMIT 1
+      FOR UPDATE OF request SKIP LOCKED
+    )
+    UPDATE acceptance_evidence_review_requests
+    SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(),
+        attempts = attempts + 1, updated_at = now()
+    WHERE id = (SELECT id FROM candidate)
+    RETURNING id
+  `)) as Array<Record<string, unknown>>;
+  const id = claimed[0]?.id as string | undefined;
+  if (!id) return null;
+
+  const rows = await db.select({
+    request: acceptanceEvidenceReviewRequests,
+    revision: changeRecordPrRevisions,
+    attachment: changeRecordPrs,
+    contract: acceptanceContracts,
+  }).from(acceptanceEvidenceReviewRequests)
+    .innerJoin(changeRecordPrRevisions, eq(acceptanceEvidenceReviewRequests.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .innerJoin(acceptanceContracts, eq(acceptanceEvidenceReviewRequests.acceptanceContractId, acceptanceContracts.id))
+    .where(and(
+      eq(acceptanceEvidenceReviewRequests.id, id),
+      eq(acceptanceEvidenceReviewRequests.workerId, input.workerId),
+      eq(acceptanceEvidenceReviewRequests.status, "claimed"),
+      eq(changeRecordPrRevisions.headSha, acceptanceEvidenceReviewRequests.headSha),
+      isNull(changeRecordPrRevisions.supersededAt),
+      eq(changeRecordPrs.workspaceId, acceptanceEvidenceReviewRequests.workspaceId),
+      eq(changeRecordPrs.recordId, acceptanceEvidenceReviewRequests.recordId),
+      eq(acceptanceContracts.recordId, acceptanceEvidenceReviewRequests.recordId),
+      eq(acceptanceContracts.version, acceptanceEvidenceReviewRequests.acceptanceContractVersion),
+      eq(acceptanceContracts.status, "confirmed"),
+    ))
+    .limit(1);
+  const row = rows[0];
+  if (!row) {
+    const revision = await db.select({ supersededAt: changeRecordPrRevisions.supersededAt })
+      .from(acceptanceEvidenceReviewRequests)
+      .innerJoin(changeRecordPrRevisions, eq(acceptanceEvidenceReviewRequests.prRevisionId, changeRecordPrRevisions.id))
+      .where(eq(acceptanceEvidenceReviewRequests.id, id))
+      .limit(1);
+    await db.update(acceptanceEvidenceReviewRequests).set({
+      status: revision[0]?.supersededAt ? "superseded" : "failed",
+      reason: revision[0]?.supersededAt
+        ? "PR head was superseded while the review was being claimed"
+        : "Exact PR revision or confirmed Acceptance Contract changed while the review was being claimed",
+      workerId: null,
+      claimedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceEvidenceReviewRequests.id, id),
+      eq(acceptanceEvidenceReviewRequests.workerId, input.workerId),
+      eq(acceptanceEvidenceReviewRequests.status, "claimed"),
+    ));
+    return null;
+  }
+  return {
+    request: row.request,
+    contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
+    pr: {
+      repositoryFullName: row.attachment.repositoryFullName,
+      prNumber: row.attachment.prNumber,
+      prUrl: row.attachment.prUrl,
+      headSha: row.revision.headSha,
+    },
+  };
+}
+
 export type RecordEvidenceReviewInput = {
   workspaceId: string; recordId: string; prRevisionId: string; headSha: string;
   contractId: string; contractVersion: number; overallStatus: string;
@@ -2286,7 +2415,7 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
       eq(acceptanceEvidenceReviewRequests.acceptanceContractId, input.contractId),
       eq(acceptanceEvidenceReviewRequests.acceptanceContractVersion, input.contractVersion),
       eq(acceptanceEvidenceReviewRequests.headSha, input.headSha),
-      eq(acceptanceEvidenceReviewRequests.status, "queued"),
+      inArray(acceptanceEvidenceReviewRequests.status, ["queued", "claimed"]),
     ));
     await tx.insert(evidenceReviewCriteria).values(input.criteria.map((criterion) => ({
       id: randomUUID(), reviewId: id, ...criterion,

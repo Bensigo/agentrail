@@ -97,6 +97,8 @@ function serializeReviewRequest(
     headSha: request.headSha,
     status: request.status,
     reason: request.reason,
+    claimedAt: request.claimedAt?.toISOString() ?? null,
+    attempts: request.attempts,
     requestedAt: request.requestedAt.toISOString(),
     updatedAt: request.updatedAt.toISOString(),
   };

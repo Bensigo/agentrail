@@ -92,6 +92,8 @@ export type AcceptanceEvidenceReviewRequest = {
   headSha: string;
   status: string;
   reason: string | null;
+  claimedAt: string | null;
+  attempts: number;
   requestedAt: string;
   updatedAt: string;
 };
@@ -555,6 +557,7 @@ function correctionDeliveryMeaning(outcome: string): string {
 
 function reviewRequestMeaning(status: string): string {
   if (status === "completed") return "A validated exact-head Acceptance Review was recorded. Inspect its evidence before deciding the PR.";
+  if (status === "claimed") return "Jace has reserved this exact head for a bounded independent review. It is not a verdict, proof, blocker, or notification.";
   if (status === "superseded") return "This request belongs to an older PR head and cannot be reviewed for the current change.";
   if (status === "failed") return "Jace could not complete this review request. No verdict was produced.";
   return "Jace has an exact-head Acceptance Review request queued. This is not a verdict or evidence of a passing change.";
@@ -573,6 +576,7 @@ export function AcceptanceReviewRequestPanel({ requests }: { requests: Acceptanc
             <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]"><span><span className="font-mono">{request.status}</span> · Contract v{request.acceptanceContractVersion}</span><time dateTime={request.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(request.updatedAt)}</time></div>
             <p className="mt-2 text-xs text-[var(--gray-09)]">{reviewRequestMeaning(request.status)}</p>
             <p className="mt-2 break-all font-mono text-xs text-[var(--gray-11)]">{request.headSha}</p>
+            <p className="mt-2 text-xs text-[var(--gray-09)]">Attempts: {request.attempts}{request.claimedAt ? ` · Claimed ${formatChangeRecordDate(request.claimedAt)}` : ""}</p>
             {request.reason ? <p className="mt-2 break-words text-xs text-[var(--red-11)]">Reason: {request.reason}</p> : null}
           </li>)}
         </ol>

@@ -4,7 +4,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 
 ## Coordinator checkpoint (2026-08-06, current branch)
 
-The current committed branch head is `95654173` after the runtime-proof,
+The working baseline for this checkpoint was `ecfba3f4` after the runtime-proof,
 builder-handoff, Console-admission, Context Pack lifecycle, and correction
 delivery visibility slices. The
 only expected untracked paths are local dependency/output directories. The recent commits
@@ -45,9 +45,11 @@ for the recorded handoff's exact PR revision and confirmed Contract. It is
 idempotent per revision, becomes `superseded` when a newer head attaches, and
 becomes `completed` only when the existing validated review-completion seam
 records a review. The Console shows the request separately from the review
-verdict. There is no request-claiming/deployed reviewer worker yet: `queued`
-means Jace has work to do, not that Jace reviewed, proved, blocked, notified,
-or approved anything.
+verdict. The current bounded slice introduces only private leased claim custody
+for that exact request and a worker-only contract/PR claim read; it does not
+introduce a reviewer prompt, a verdict, a correction, a notification, or a
+deployed worker. A `queued` or `claimed` request means Jace has work to do,
+not that Jace reviewed, proved, blocked, notified, or approved anything.
 
 ## Canonical MVP flow
 
@@ -388,3 +390,9 @@ and it depended on the just-retired route's exact identity contract. The next
 two implementation slices return to one-owner delegation where capacity is
 available: first an independently scoped runtime-proof modality, then its
 cross-slice integration/verification; neither may edit overlapping paths.
+The next review-request claim slice is a local exception: its claim,
+supersession, and review-completion changes all share one atomic queue state
+machine. A bounded read-only audit was attempted to compare the Context Pack
+lease pattern, but the available subagent thread limit rejected it before any
+work started. The coordinator therefore reuses and tests that pattern locally;
+no broad reviewer or autonomous implementation work is delegated.

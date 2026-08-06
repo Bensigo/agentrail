@@ -695,6 +695,13 @@
       "when": 1790300000000,
       "tag": "0098_acceptance_evidence_review_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1790400000000,
+      "tag": "0099_acceptance_evidence_review_request_claims",
+      "breakpoints": true
     }
   ]
 }

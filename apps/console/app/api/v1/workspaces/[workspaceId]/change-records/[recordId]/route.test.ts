@@ -241,6 +241,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     vi.mocked(readAcceptanceEvidenceReviewRequests).mockResolvedValue([{
       id: "request-1", workspaceId: WS, recordId: RECORD, prRevisionId: "revision-1", acceptanceContractId: "contract-1",
       acceptanceContractVersion: 2, headSha: "deadbeef", status: "queued", reason: null, requestedBy: "github-webhook",
+      workerId: null, claimedAt: null, attempts: 0,
       requestedAt: CREATED, updatedAt: UPDATED,
     }] as never);
 
@@ -248,7 +249,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      reviewRequests: [{ id: "request-1", prRevisionId: "revision-1", acceptanceContractId: "contract-1", acceptanceContractVersion: 2, headSha: "deadbeef", status: "queued" }],
+      reviewRequests: [{ id: "request-1", prRevisionId: "revision-1", acceptanceContractId: "contract-1", acceptanceContractVersion: 2, headSha: "deadbeef", status: "queued", claimedAt: null, attempts: 0 }],
     });
   });
 

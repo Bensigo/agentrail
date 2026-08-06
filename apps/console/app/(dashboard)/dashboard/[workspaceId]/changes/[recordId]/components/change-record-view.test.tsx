@@ -135,6 +135,7 @@ const correctionDelivery: AcceptanceCorrectionDelivery = {
 const reviewRequest: AcceptanceEvidenceReviewRequest = {
   id: "request-1", prRevisionId: "revision-1", acceptanceContractId: draftContract.id,
   acceptanceContractVersion: 1, headSha: "deadbeef", status: "queued", reason: null,
+  claimedAt: null, attempts: 0,
   requestedAt: "2026-08-03T10:00:00.000Z", updatedAt: "2026-08-03T10:00:00.000Z",
 };
 
@@ -251,10 +252,13 @@ describe("Change Record detail view", () => {
 
   it("shows a review request as queued work rather than a verdict", () => {
     const queued = AcceptanceReviewRequestPanel({ requests: [reviewRequest] });
+    const claimed = AcceptanceReviewRequestPanel({ requests: [{ ...reviewRequest, status: "claimed", attempts: 1, claimedAt: "2026-08-03T10:01:00.000Z" }] });
     const superseded = AcceptanceReviewRequestPanel({ requests: [{ ...reviewRequest, status: "superseded", reason: "new head" }] });
 
     expect(textContent(queued)).toContain("This is not a verdict or evidence of a passing change.");
     expect(textContent(queued)).toContain("deadbeef");
+    expect(textContent(claimed)).toContain("It is not a verdict, proof, blocker, or notification.");
+    expect(textContent(claimed)).toContain("Attempts: 1");
     expect(textContent(superseded)).toContain("older PR head");
     expect(textContent(superseded)).toContain("Reason: new head");
   });

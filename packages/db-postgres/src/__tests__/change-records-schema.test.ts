@@ -98,8 +98,20 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceEvidenceReviewRequests.acceptanceContractVersion.notNull).toBe(true);
     expect(acceptanceEvidenceReviewRequests.headSha.notNull).toBe(true);
     expect(acceptanceEvidenceReviewRequests.status.hasDefault).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.workerId.notNull).toBe(false);
+    expect(acceptanceEvidenceReviewRequests.claimedAt.notNull).toBe(false);
+    expect(acceptanceEvidenceReviewRequests.attempts.hasDefault).toBe(true);
     const config = getTableConfig(acceptanceEvidenceReviewRequests);
     expect(config.indexes.find((i) => i.config.name === "acceptance_evidence_review_requests_revision_key")).toBeDefined();
+  });
+
+  it("migrates review requests to a bounded claimed lease lifecycle", () => {
+    const migration = join(__dirname, "../../drizzle/migrations/0099_acceptance_evidence_review_request_claims.sql");
+    const sqlText = readFileSync(migration, "utf8");
+    expect(sqlText).toContain("worker_id");
+    expect(sqlText).toContain("claimed_at");
+    expect(sqlText).toContain("attempts");
+    expect(sqlText).toContain("'claimed'");
   });
 
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {

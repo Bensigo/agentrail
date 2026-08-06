@@ -624,11 +624,8 @@ function OAuthManage({
   if (connector.status === "connected" && connector.appInstalled) {
     return (
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        Jace is installed on your GitHub. Issues labeled{" "}
-        <code className="font-mono text-[var(--gray-11)]">
-          {connector.ingestLabel}
-        </code>{" "}
-        are ingested into the Issue Queue; run results post back on the issue.
+        GitHub provides repository, PR, and task provenance for GitHub-backed
+        flows. Jace records and reviews evidence on the exact attached PR.
       </p>
     );
   }
@@ -638,8 +635,8 @@ function OAuthManage({
       <div className="flex flex-col gap-2">
         <p className="text-xs leading-relaxed text-[var(--gray-09)]">
           Repos are linked from the legacy flow, but the Jace GitHub App
-          isn&apos;t installed yet — install it so Jace can review, push, and
-          open PRs as itself.
+          isn&apos;t installed yet — install it so GitHub can send repository and
+          PR events and Jace can correlate PR evidence.
         </p>
         {installButton}
       </div>

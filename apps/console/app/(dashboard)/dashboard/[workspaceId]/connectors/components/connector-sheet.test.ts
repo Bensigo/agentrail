@@ -29,4 +29,15 @@ describe("connector sheet connection-path contract", () => {
     expect(source).toContain('save(null)');
     expect(source).toContain('Disconnecting…');
   });
+
+  it("uses trust-layer copy for GitHub provenance and evidence", () => {
+    expect(source).toContain("GitHub provides repository, PR, and task provenance");
+    expect(source).toContain("Jace records and reviews evidence on the exact attached PR");
+    expect(source).toContain("GitHub can send repository and");
+    expect(source).toContain("PR events and Jace can correlate PR evidence");
+    expect(source).not.toContain("are ingested into the Issue Queue");
+    expect(source).not.toContain("run results post back");
+    expect(source).not.toContain("review, push");
+    expect(source).not.toContain("open PRs as itself");
+  });
 });

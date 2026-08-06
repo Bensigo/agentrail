@@ -66,7 +66,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const reviewerDir = fileURLToPath(
-  new URL("../agent/subagents/reviewer", import.meta.url),
+  new URL("../legacy/reviewer", import.meta.url),
 );
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 

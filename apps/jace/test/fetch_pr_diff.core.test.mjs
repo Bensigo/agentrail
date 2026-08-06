@@ -13,7 +13,7 @@ import {
   classifyStatus,
   degraded,
   fetchPrDiff,
-} from "../agent/subagents/reviewer/lib/fetch_pr_diff.core.mjs";
+} from "../legacy/reviewer/lib/fetch_pr_diff.core.mjs";
 
 const ENV = {
   JACE_CONSOLE_BASE_URL: "https://console.example.com",

@@ -11,10 +11,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as ReadRepoFile from "../agent/subagents/reviewer/lib/read_repo_file.core.mjs";
-import * as SearchCode from "../agent/subagents/reviewer/lib/search_code.core.mjs";
-import * as FileHistory from "../agent/subagents/reviewer/lib/file_history.core.mjs";
-import * as FetchWiki from "../agent/subagents/reviewer/lib/fetch_wiki.core.mjs";
+import * as ReadRepoFile from "../legacy/reviewer/lib/read_repo_file.core.mjs";
+import * as SearchCode from "../legacy/reviewer/lib/search_code.core.mjs";
+import * as FileHistory from "../legacy/reviewer/lib/file_history.core.mjs";
+import * as FetchWiki from "../legacy/reviewer/lib/fetch_wiki.core.mjs";
 
 const ENV = {
   JACE_CONSOLE_BASE_URL: "https://console.example.com",

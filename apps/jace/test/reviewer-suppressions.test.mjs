@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildReviewerSuppressionsUrl,
   reviewerSuppressions,
-} from "../agent/subagents/reviewer/lib/reviewer_suppressions.core.mjs";
+} from "../legacy/reviewer/lib/reviewer_suppressions.core.mjs";
 
 test("buildReviewerSuppressionsUrl uses the configured runner route and query params", () => {
   assert.equal(

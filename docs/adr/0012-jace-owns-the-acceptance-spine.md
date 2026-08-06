@@ -68,9 +68,11 @@ blocker needs an allowed basis, exact evidence, impact, required correction,
 and re-verification; a repository-convention blocker additionally needs an
 enforced rule identity. The old GitHub advisory-comment tool is disabled from
 Jace's runtime registry, its headless worker is not wired at startup, and its
-standalone entrypoint exits without starting work. Its core/source remains only
-as quarantined historical cleanup material until dependencies and retained data
-are safely migrated; it is not a supported product review or merge-gate path.
+standalone entrypoint exits without starting work. The old reviewer subagent
+also lives outside Eve's `agent/subagents` discovery directory. Its core/source
+remains only as quarantined historical cleanup material until dependencies and
+retained data are safely migrated; it is not a supported product review or
+merge-gate path.
 
 Context Pack recording now rejects an unbounded or uncited manifest. A pack
 must declare an explicit token budget/count, cited source ranges, the exact

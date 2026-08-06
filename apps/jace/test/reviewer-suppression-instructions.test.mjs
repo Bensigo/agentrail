@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const instructionsPath = fileURLToPath(
-  new URL("../agent/subagents/reviewer/instructions.md", import.meta.url),
+  new URL("../legacy/reviewer/instructions.md", import.meta.url),
 );
 
 test("reviewer instructions require explicit suppression investigation entries", () => {

@@ -20,7 +20,7 @@ import {
   GROUNDED_VERDICTS,
   REVIEW_SCHEMA,
   validateReview,
-} from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
+} from "../legacy/reviewer/lib/reviewer.core.mjs";
 
 function finding(overrides = {}) {
   return {

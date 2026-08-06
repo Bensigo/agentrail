@@ -29,11 +29,11 @@ import {
   JUDGMENT_FIELDS,
   JUDGMENT_VERDICTS,
   INVESTIGATION_TOOLS,
-} from "../agent/subagents/reviewer/lib/reviewer.core.mjs";
+} from "../legacy/reviewer/lib/reviewer.core.mjs";
 
 const instructionsPath = fileURLToPath(new URL("../agent/instructions.md", import.meta.url));
 const verdictsPath = fileURLToPath(
-  new URL("../agent/subagents/reviewer/lib/reviewer.core.mjs", import.meta.url),
+  new URL("../legacy/reviewer/lib/reviewer.core.mjs", import.meta.url),
 );
 
 function instructions() {
@@ -58,6 +58,7 @@ test("instructions.md keeps the retired advisory reviewer out of the active path
   const src = instructions();
   assert.match(src, /Do not use the retired advisory reviewer/i);
   assert.match(src, /post PR-review comments/i);
+  assert.doesNotMatch(src, /delegate to the `reviewer` subagent/i);
 });
 
 test("instructions.md requires the canonical exact-head review path", () => {
@@ -73,7 +74,7 @@ test("instructions.md requires explicit not_proven or not_testable when the path
 });
 
 const reviewerInstructionsPath = fileURLToPath(
-  new URL("../agent/subagents/reviewer/instructions.md", import.meta.url),
+  new URL("../legacy/reviewer/instructions.md", import.meta.url),
 );
 
 test("reviewer instructions state the coverage vocabulary in lockstep with AC_COVERAGE_STATUSES", () => {

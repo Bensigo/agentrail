@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspace: vi.fn(),
+  listChangeRecords: vi.fn(),
 }));
 
 vi.mock("../../../../lib/cached", () => ({
@@ -31,15 +32,12 @@ vi.mock("./components/health-rates-panel", () => ({
   HealthRatesPanel: () => null,
 }));
 
-vi.mock("./components/review-metrics-panel", () => ({
-  ReviewMetricsPanel: () => null,
-}));
-
-vi.mock("./components/human-false-green-panel", () => ({
-  HumanFalseGreenPanel: () => null,
+vi.mock("./components/acceptance-evidence-panel", () => ({
+  AcceptanceEvidencePanel: () => null,
 }));
 
 import { getWorkspace } from "@agentrail/db-postgres";
+import { listChangeRecords } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
 import { loadPlanCardData, type PlanCardData } from "../../../../lib/plan-card-data";
 import WorkspaceDashboardPage from "./page";
@@ -47,7 +45,7 @@ import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
 import { HealthRatesPanel } from "./components/health-rates-panel";
-import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
+import { AcceptanceEvidencePanel } from "./components/acceptance-evidence-panel";
 
 // This repo's vitest config runs with `environment: "node"` — there is no
 // DOM/render harness (no @testing-library/react, no jsdom) anywhere in the
@@ -122,6 +120,7 @@ function mockHappyPath() {
   // loadPlanCardData, so this keeps every pre-existing test in this
   // describe block on the exact same "no plan card" rendering path.
   vi.mocked(loadPlanCardData).mockResolvedValue(undefined);
+  vi.mocked(listChangeRecords).mockResolvedValue([]);
 }
 
 async function renderHeader(): Promise<ReactElementLike> {
@@ -245,6 +244,41 @@ describe("WorkspaceDashboardPage plan-card prop threading (subscription slice 6 
   });
 });
 
+describe("WorkspaceDashboardPage acceptance evidence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockHappyPath();
+  });
+
+  it("loads the five latest Change/Acceptance Record headers for this workspace", async () => {
+    await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    });
+
+    expect(listChangeRecords).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      limit: 5,
+    });
+  });
+
+  it("mounts AcceptanceEvidencePanel with the query result", async () => {
+    const records = [{ id: "record-1" }];
+    vi.mocked(listChangeRecords).mockResolvedValue(records as never);
+
+    const root = await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    });
+
+    const element = asElement(root);
+    const [, wrapper] = element.props.children as ReactElementLike[];
+    const [, , acceptancePanel] = asElement(wrapper).props.children as ReactElementLike[];
+
+    expect(asElement(acceptancePanel).type).toBe(AcceptanceEvidencePanel);
+    expect(asElement(acceptancePanel).props.workspaceId).toBe(WORKSPACE_ID);
+    expect(asElement(acceptancePanel).props.records).toBe(records);
+  });
+});
+
 describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Task 6)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -280,33 +314,15 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
     const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, digestPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
+    const [, digestPanel, acceptancePanel, healthRatesPanel] = wrapperChildren;
 
     expect(asElement(digestPanel).type).toBe(DigestPanel);
-    expect(reviewMetricsPanel).toBeDefined();
-    expect(asElement(humanFalseGreenPanel).type).toBe(HumanFalseGreenPanel);
+    expect(asElement(acceptancePanel).type).toBe(AcceptanceEvidencePanel);
     expect(asElement(healthRatesPanel).type).toBe(HealthRatesPanel);
     expect(asElement(healthRatesPanel).props.workspaceId).toBe(WORKSPACE_ID);
 
     // Cross-check via the same whole-tree search the "undefined" case uses
     // above — exactly one mount, not merely "found at the expected index".
     expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(1);
-  });
-});
-
-describe("WorkspaceDashboardPage production human false-green evidence", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockHappyPath();
-  });
-
-  it("mounts the production evidence panel for every accessible workspace", async () => {
-    const root = await WorkspaceDashboardPage({
-      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-    });
-
-    const panels = findElementsByType(root, HumanFalseGreenPanel);
-    expect(panels).toHaveLength(1);
-    expect(panels[0]?.props.workspaceId).toBe(WORKSPACE_ID);
   });
 });

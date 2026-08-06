@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { ConnectorTile } from "./connectors-panel";
@@ -61,5 +62,19 @@ describe("ConnectorTile — one-click surface", () => {
     const rows = asElement(ConnectorTile({ connector, onOpen: NOOP_ON_OPEN })).props.children as ReactElementLike[];
     const bottomRow = asElement(rows[2]);
     expect(asElement(bottomRow.props.children).type).toBe(ConnectorStatusBadge);
+  });
+});
+
+describe("ConnectorsPanel — trust-layer presentation", () => {
+  it("does not render the removed Heartbeat/autonomous-loop block", () => {
+    const source = readFileSync(
+      new URL("./connectors-panel.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).not.toContain("HeartbeatStatusHeader");
+    expect(source).not.toContain("activeHeartbeatConnectors");
+    expect(source).not.toContain("autonomous loop");
+    expect(source).not.toContain("Issue Queue");
   });
 });

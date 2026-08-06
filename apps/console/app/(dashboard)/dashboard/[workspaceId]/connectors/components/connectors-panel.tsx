@@ -2,12 +2,11 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Radio, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, X } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { ConnectorSheet } from "./connector-sheet";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
 import {
-  activeHeartbeatConnectors,
   CONNECTOR_TYPE_META,
   type ConnectorKind,
   type ConnectorType,
@@ -194,60 +193,6 @@ export function ConnectorTile({
 }
 
 // --------------------------------------------------------------------------- //
-// Heartbeat status header (#816 folded in). Unchanged by this redesign.
-// --------------------------------------------------------------------------- //
-function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) {
-  const active = activeHeartbeatConnectors(connectors);
-  return (
-    <div className="rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
-      <div className="flex items-center gap-1.5">
-        <Radio size={14} className="text-[var(--gray-10)]" />
-        <span className="text-xs font-semibold text-[var(--gray-12)]">
-          Heartbeat
-        </span>
-        <span
-          className={`ml-auto inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium ${
-            active.length > 0
-              ? "bg-[var(--green-09)]/15 text-[var(--green-11)]"
-              : "bg-[var(--gray-04)] text-[var(--gray-10)]"
-          }`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              active.length > 0 ? "bg-[var(--green-11)]" : "bg-[var(--gray-08)]"
-            }`}
-          />
-          {active.length > 0
-            ? `${active.length} active`
-            : "No active connectors"}
-        </span>
-      </div>
-      <p className="mt-2 text-xs leading-relaxed text-[var(--gray-09)]">
-        {active.length > 0 ? (
-          <>
-            The autonomous loop polls{" "}
-            <span className="text-[var(--gray-11)]">
-              {active.map((c) => c.label).join(", ")}
-            </span>{" "}
-            for labeled issues and admits them into the Issue Queue.
-          </>
-        ) : (
-          <>
-            No connector is currently driving the heartbeat. Connect and enable an
-            ingest connector below to start the autonomous loop.
-          </>
-        )}
-      </p>
-      <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-[var(--gray-09)]">
-        <AlertCircle size={13} className="mt-0.5 shrink-0" />
-        The daemon only runs once all prerequisite capabilities are present
-        (agentrail/heartbeat/gate.py). Enabling here records operator intent.
-      </p>
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------- //
 // One catalog-type section (Issue sources / MCP / Observability) of tiles —
 // same heading + blurb as before the redesign, uniform tiles instead of
 // accordion cards.
@@ -335,10 +280,6 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
       <Suspense fallback={null}>
         <OauthResultBanner />
       </Suspense>
-
-      {!loading && !error && connectors.length > 0 && (
-        <HeartbeatStatusHeader connectors={connectors} />
-      )}
 
       <div className="flex items-center">
         <button

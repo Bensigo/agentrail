@@ -13,9 +13,11 @@ export default async function ConnectorsPage({
         Connectors
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Connect the tools your team already uses. Issue sources feed the Issue
-        Queue (and configure the autonomous Heartbeat on their cards); MCP
-        servers give runs extra tools.
+        Connect the tools that provide repository, task, optional tool, and
+        investigation context. GitHub anchors GitHub-backed flows to a
+        repository and its PR/task provenance; MCP and observability
+        connections are optional and do not replace criterion-specific
+        exact-head proof.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

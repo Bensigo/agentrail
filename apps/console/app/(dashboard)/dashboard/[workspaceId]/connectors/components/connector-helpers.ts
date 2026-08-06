@@ -436,19 +436,19 @@ export const CONNECTOR_TYPE_META: Record<
   { label: string; description: string }
 > = {
   "issue-source": {
-    label: "Issue sources",
+    label: "Repository & task sources",
     description:
-      "Connect an issue tracker so its labeled issues flow into the Issue Queue and run results post back. GitHub delivers over its webhook; Linear over its own real-time webhook.",
+      "GitHub is the repository and PR anchor for GitHub-backed flows; task-source connections preserve task provenance and issue updates.",
   },
   mcp: {
-    label: "MCP",
+    label: "Optional tools & context",
     description:
-      "Model-Context-Protocol tool servers — codebase-level. Connect once and the coding agent can call the granted tools during a run.",
+      "Optional MCP connections provide provider-specific tools and context during work. Connect only what the task needs.",
   },
   observability: {
-    label: "Observability",
+    label: "Optional investigation evidence",
     description:
-      "Give the debugging investigator evidence about what shipped and what the logs say — deployments and log search, read-only, never used for ingest.",
+      "Optional read-only evidence adapters add investigation context; they do not substitute for criterion-specific exact-head proof.",
   },
 };
 
@@ -466,7 +466,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "oauth",
     label: "GitHub",
     description:
-      "Ingest labeled issues into the Issue Queue and post run results back on the issue.",
+      "Repository and PR anchor for GitHub-backed task provenance.",
     availability: "available",
     capabilities: {
       ingest: true,
@@ -486,7 +486,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Linear",
     description:
-      "Ingest labeled Linear issues and let the agent read & update issues over Linear's MCP.",
+      "Connect Linear for task context, issue updates, and its MCP tools.",
     availability: "available",
     capabilities: { ingest: true, postResult: true, notify: false, tools: true },
     connect: {
@@ -508,7 +508,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Figma",
     description:
-      "Give the agent read access to your Figma files and frames over the Figma MCP.",
+      "Optional design context from Figma files and frames over the Figma MCP.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -529,7 +529,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Context7",
     description:
-      "Up-to-date library docs on demand — the agent pulls current API docs over the Context7 MCP.",
+      "Optional current library documentation over the Context7 MCP.",
     availability: "available",
     capabilities: { ingest: false, postResult: false, notify: false, tools: true },
     connect: {
@@ -551,7 +551,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Railway",
     description:
-      "Give the debugging investigator visibility into your Railway project's deployments and logs.",
+      "Optional Railway investigation evidence from deployments and logs.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -604,7 +604,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Langfuse",
     description:
-      "Give the debugging investigator visibility into your Langfuse traces and observation-level signals (error rate, latency).",
+      "Optional Langfuse investigation evidence from traces and observation-level signals (error rate, latency).",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -664,7 +664,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Sentry",
     description:
-      "Give the debugging investigator visibility into your Sentry error events and RED-shaped signals (error rate, p95 duration).",
+      "Optional Sentry investigation evidence from error events and RED-shaped signals (error rate, p95 duration).",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -731,7 +731,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Datadog",
     description:
-      "Give the debugging investigator visibility into your Datadog host signals (CPU, load, memory) and log search.",
+      "Optional Datadog investigation evidence from host signals (CPU, load, memory) and log search.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -813,7 +813,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Prometheus",
     description:
-      "Give the debugging investigator visibility into your Prometheus request rate, error rate, p95 latency, and target health (RED/USE-shaped signals).",
+      "Optional Prometheus investigation evidence from request rate, errors, latency, and target health.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -868,7 +868,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Grafana",
     description:
-      "Give the debugging investigator visibility into your Grafana alert state changes and annotations.",
+      "Optional Grafana investigation evidence from alert state changes and annotations.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -924,7 +924,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Vercel",
     description:
-      "Give the debugging investigator visibility into your Vercel deployments and build/runtime events.",
+      "Optional Vercel investigation evidence from deployments and build/runtime events.",
     availability: "available",
     capabilities: {
       ingest: false,
@@ -1001,7 +1001,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connectMethod: "secret",
     label: "Cloudflare",
     description:
-      "Give the debugging investigator visibility into your Cloudflare edge traffic signals and firewall/security events.",
+      "Optional Cloudflare investigation evidence from edge traffic and firewall/security events.",
     availability: "available",
     capabilities: {
       ingest: false,

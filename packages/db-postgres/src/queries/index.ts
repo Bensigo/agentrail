@@ -3312,6 +3312,7 @@ export {
   recordEvidenceVerificationPlans,
   enqueueEvidenceVerificationExecution,
   reportEvidenceVerificationExecution,
+  claimEvidenceVerificationExecution,
   resolveEvidenceVerificationPlanForArtifact,
   recordEvidenceVerificationArtifact,
   queueEvidenceReviewCorrectionDelivery,

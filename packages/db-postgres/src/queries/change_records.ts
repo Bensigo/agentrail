@@ -971,6 +971,37 @@ export async function reportEvidenceVerificationExecution(input: {
   return updated[0] ?? null;
 }
 
+export async function claimEvidenceVerificationExecution(input: { workerId: string }): Promise<{
+  execution: EvidenceVerificationExecutionRow;
+  plan: EvidenceVerificationPlanRow;
+  repositoryFullName: string;
+  prNumber: number;
+  headSha: string;
+} | null> {
+  const claimed = Array.from(await db.execute(sql`
+    UPDATE evidence_verification_executions
+    SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(), updated_at = now()
+    WHERE id = (
+      SELECT id FROM evidence_verification_executions
+      WHERE status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING id
+  `)) as Array<Record<string, unknown>>;
+  const id = claimed[0]?.id as string | undefined;
+  if (!id) return null;
+  const rows = await db.select({ execution: evidenceVerificationExecutions, plan: evidenceVerificationPlans, attachment: changeRecordPrs, revision: changeRecordPrRevisions })
+    .from(evidenceVerificationExecutions)
+    .innerJoin(evidenceVerificationPlans, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationPlans.id))
+    .innerJoin(changeRecordPrRevisions, eq(evidenceVerificationPlans.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .where(and(eq(evidenceVerificationExecutions.id, id), eq(evidenceVerificationExecutions.workerId, input.workerId), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)).limit(1);
+  const row = rows[0];
+  return row ? { execution: row.execution, plan: row.plan, repositoryFullName: row.attachment.repositoryFullName, prNumber: row.attachment.prNumber, headSha: row.revision.headSha } : null;
+}
+
 /** Record the immutable reference and digest for a stored UI evidence artifact. */
 export async function recordEvidenceVerificationArtifact(input: {
   verificationPlanId: string;

@@ -604,6 +604,13 @@
       "when": 1789000000000,
       "tag": "0085_agent_mcp_correction_ack_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1789100000000,
+      "tag": "0086_acceptance_builder_handoffs",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import {
   acceptanceContextPackDeliveries,
   changeRecordPrs,
   changeRecordPrRevisions,
+  acceptanceBuilderHandoffs,
   evidenceReviews,
   evidenceReviewCriteria,
   evidenceReviewCorrections,
@@ -20,6 +21,7 @@ import {
   type ChangeRecordRow,
   type ChangeRecordPrRow,
   type ChangeRecordPrRevisionRow,
+  type AcceptanceBuilderHandoffRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -128,6 +130,10 @@ export function changeRecordPrId(input: { recordId: string; repositoryId: string
 
 export function changeRecordPrRevisionId(input: { prAttachmentId: string; headSha: string }): string {
   return uuid5Url(`change-record-pr-revision:${input.prAttachmentId}:${input.headSha}`);
+}
+
+export function acceptanceBuilderHandoffId(input: { recordId: string; taskContextKey: string }): string {
+  return uuid5Url(`acceptance-builder-handoff:${input.recordId}:${input.taskContextKey}`);
 }
 
 export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
@@ -597,6 +603,8 @@ export type AttachExternalPullRequestInput = {
   baseSha: string;
   headSha: string;
   attachedBy: string;
+  /** Human attachment is the fallback; a correlated GitHub webhook says so. */
+  source?: "human_declared" | "github_webhook";
 };
 
 /**
@@ -653,7 +661,8 @@ export async function attachExternalPullRequest(input: AttachExternalPullRequest
         and(eq(changeRecordPrRevisions.prAttachmentId, attachment.id), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)
       );
       const inserted = await tx.insert(changeRecordPrRevisions).values({
-        id: revisionId, prAttachmentId: attachment.id, headSha: input.headSha, source: "human_declared",
+        id: revisionId, prAttachmentId: attachment.id, headSha: input.headSha,
+        source: input.source ?? "human_declared",
       }).returning();
       revision = inserted[0]!;
     }
@@ -664,11 +673,130 @@ export async function attachExternalPullRequest(input: AttachExternalPullRequest
       actor: input.attachedBy,
       payloadRef: {
         kind: "external_pull_request", repo: input.repo, prNumber: input.prNumber, prUrl: input.prUrl,
-        baseSha: input.baseSha, headSha: input.headSha, source: "human_declared",
+        baseSha: input.baseSha, headSha: input.headSha, source: input.source ?? "human_declared",
       },
     });
     return { record: attached, attachment, revision };
   });
+}
+
+export type CreateAcceptanceBuilderHandoffInput = {
+  workspaceId: string;
+  recordId: string;
+  repositoryId: string;
+  builder: string;
+  taskContextKey: string;
+  branchName: string;
+  contractId: string;
+  contractVersion: number;
+  contextPackId: string;
+  createdBy: string;
+};
+
+/**
+ * Records the approved builder route before implementation starts. The
+ * repository + branch key is intentionally globally unique within a workspace
+ * so webhook correlation can fail closed instead of selecting a candidate.
+ */
+export async function createAcceptanceBuilderHandoff(
+  input: CreateAcceptanceBuilderHandoffInput
+): Promise<{ handoff: AcceptanceBuilderHandoffRow; inserted: boolean }> {
+  const lockKey = `acceptance-builder-handoff:${input.workspaceId}:${input.repositoryId}:${input.branchName}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const contract = await tx
+      .select({ id: acceptanceContracts.id })
+      .from(acceptanceContracts)
+      .innerJoin(changeRecords, eq(acceptanceContracts.recordId, changeRecords.id))
+      .where(and(
+        eq(acceptanceContracts.id, input.contractId),
+        eq(acceptanceContracts.recordId, input.recordId),
+        eq(acceptanceContracts.version, input.contractVersion),
+        eq(acceptanceContracts.status, "confirmed"),
+        eq(changeRecords.workspaceId, input.workspaceId)
+      ))
+      .limit(1);
+    if (!contract[0]) throw new Error("Confirmed Acceptance Contract does not match builder handoff");
+    const pack = await tx
+      .select({ id: acceptanceContextPacks.id })
+      .from(acceptanceContextPacks)
+      .where(and(
+        eq(acceptanceContextPacks.id, input.contextPackId),
+        eq(acceptanceContextPacks.recordId, input.recordId)
+      ))
+      .limit(1);
+    if (!pack[0]) throw new Error("Acceptance Context Pack does not match builder handoff");
+    const record = await tx
+      .select({ id: changeRecords.id, repo: changeRecords.repo })
+      .from(changeRecords)
+      .where(and(eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId)))
+      .limit(1);
+    if (!record[0]) throw new Error("Acceptance Record was not found in workspace");
+
+    const existingTask = await tx.select().from(acceptanceBuilderHandoffs).where(and(
+      eq(acceptanceBuilderHandoffs.recordId, input.recordId),
+      eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey)
+    )).limit(1);
+    if (existingTask[0]) return { handoff: existingTask[0], inserted: false };
+    const existingBranch = await tx.select().from(acceptanceBuilderHandoffs).where(and(
+      eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderHandoffs.repositoryId, input.repositoryId),
+      eq(acceptanceBuilderHandoffs.branchName, input.branchName)
+    )).limit(1);
+    if (existingBranch[0]) throw new Error("Builder branch is already bound to a different task context");
+
+    const rows = await tx.insert(acceptanceBuilderHandoffs).values({
+      id: acceptanceBuilderHandoffId(input), recordId: input.recordId, workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId, builder: input.builder, taskContextKey: input.taskContextKey,
+      branchName: input.branchName, acceptanceContractId: input.contractId,
+      acceptanceContractVersion: input.contractVersion, contextPackId: input.contextPackId,
+      createdBy: input.createdBy,
+    }).returning();
+    const handoff = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `builder-handoff:${handoff.id}`,
+      stage: "builder_handoff",
+      actor: input.createdBy,
+      payloadRef: {
+        kind: "acceptance_builder_handoff", handoffId: handoff.id, builder: handoff.builder,
+        taskContextKey: handoff.taskContextKey, branchName: handoff.branchName,
+        acceptanceContractId: handoff.acceptanceContractId,
+        acceptanceContractVersion: handoff.acceptanceContractVersion,
+        contextPackId: handoff.contextPackId,
+      },
+    });
+    return { handoff, inserted: true };
+  });
+}
+
+/**
+ * Correlates only a pre-recorded builder handoff. `null` means unlinked: the
+ * webhook caller must not attach or launch an Acceptance Record review.
+ */
+export async function findAcceptanceBuilderHandoffForPullRequest(input: {
+  workspaceId: string;
+  repositoryId: string;
+  branchName: string;
+}): Promise<AcceptanceBuilderHandoffRow | null> {
+  const rows = await db.select().from(acceptanceBuilderHandoffs).where(and(
+    eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+    eq(acceptanceBuilderHandoffs.repositoryId, input.repositoryId),
+    eq(acceptanceBuilderHandoffs.branchName, input.branchName)
+  )).limit(2);
+  // The database uniqueness constraint makes >1 impossible in a healthy DB;
+  // retain the guard so corrupted legacy data still fails closed.
+  return rows.length === 1 ? rows[0]! : null;
+}
+
+export async function markAcceptanceBuilderHandoffPrAttached(input: {
+  handoffId: string;
+  workspaceId: string;
+}): Promise<void> {
+  await db.update(acceptanceBuilderHandoffs).set({ status: "pr_attached", prAttachedAt: new Date() }).where(and(
+    eq(acceptanceBuilderHandoffs.id, input.handoffId),
+    eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId)
+  ));
 }
 
 export type RecordEvidenceReviewInput = {
@@ -679,7 +807,7 @@ export type RecordEvidenceReviewInput = {
   reviewabilityResult: Record<string, unknown>; environmentRung: string; refusalReason?: string | null;
   verifierName: string; verifierVersion: string; promptVersion: string;
   criteria: Array<{ criterionId: string; criterionTextSnapshot: string; required: boolean; status: string; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; runtimeEvidence: Record<string, unknown>[]; reason: string }>;
-  corrections: Array<{ criterionId?: string | null; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; reproductionSteps?: string[]; likelyAffectedUnits?: string[]; contextRefs?: Record<string, unknown>[]; scopeBoundary: string }>;
+  corrections: Array<{ criterionId?: string | null; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; reproductionSteps?: string[]; likelyAffectedUnits?: string[]; contextRefs?: Record<string, unknown>[]; scopeBoundary: string; concreteImpact: string; requiredCorrection: string; reverification: string; repairPath?: string | null }>;
 };
 
 /** Persist a fully validated review only when its exact revision is current. */
@@ -711,6 +839,8 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
       observedBehavior: correction.observedBehavior, expectedBehavior: correction.expectedBehavior,
       evidenceRefs: correction.evidenceRefs, reproductionSteps: correction.reproductionSteps ?? [],
       likelyAffectedUnits: correction.likelyAffectedUnits ?? [], contextRefs: correction.contextRefs ?? [], scopeBoundary: correction.scopeBoundary,
+      concreteImpact: correction.concreteImpact, requiredCorrection: correction.requiredCorrection,
+      reverification: correction.reverification, repairPath: correction.repairPath ?? null,
     })));
     return { id, inserted: true };
   });

@@ -41,7 +41,14 @@ export async function POST(request: NextRequest) {
       refusalReason: text(body.refusalReason) ? body.refusalReason : null, verifierName: body.verifierName,
       verifierVersion: body.verifierVersion, promptVersion: body.promptVersion,
       criteria: criteria.map((criterion) => ({ ...criterion, criterionTextSnapshot: parsed.value.acceptanceCriteria.find((item) => item.id === criterion.criterionId)!.text, required: parsed.value.acceptanceCriteria.find((item) => item.id === criterion.criterionId)!.required, runtimeEvidence: criterion.runtimeEvidence ?? [] })),
-      corrections: corrections.map((packet) => ({ criterionId: packet.criterionId, observedBehavior: packet.observedBehavior, expectedBehavior: packet.expectedBehavior, evidenceRefs: packet.evidenceRefs, likelyAffectedUnits: packet.relevantLocations.map((location) => `${location.path}:${location.startLine}-${location.endLine}`), contextRefs: [], scopeBoundary: packet.ruleOrBoundary })),
+      corrections: corrections.map((packet) => ({
+        criterionId: packet.criterionId, observedBehavior: packet.observedBehavior,
+        expectedBehavior: packet.expectedBehavior, evidenceRefs: packet.evidenceRefs,
+        likelyAffectedUnits: packet.relevantLocations.map((location) => `${location.path}:${location.startLine}-${location.endLine}`),
+        contextRefs: [], scopeBoundary: packet.ruleOrBoundary,
+        concreteImpact: packet.concreteImpact, requiredCorrection: packet.requiredCorrection,
+        reverification: packet.reverification, repairPath: packet.repairPath ?? null,
+      })),
     });
     return NextResponse.json({ reviewId: result.id, inserted: result.inserted, overallStatus: validation.overallStatus, correctionPackets: corrections }, { status: result.inserted ? 201 : 200 });
   } catch (error) {

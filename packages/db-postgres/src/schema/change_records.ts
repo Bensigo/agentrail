@@ -225,6 +225,59 @@ export const changeRecordPrRevisions = pgTable(
   })
 );
 
+/**
+ * A human-selected external builder handoff.  The branch and opaque task
+ * context are deliberately recorded before a PR exists, so a GitHub webhook
+ * may correlate only an exact, pre-authorised builder route.  It must never
+ * infer a record from PR title, repository, or an arbitrary branch.
+ */
+export const acceptanceBuilderHandoffs = pgTable(
+  "acceptance_builder_handoffs",
+  {
+    id: uuid("id").primaryKey(),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    repositoryId: uuid("repository_id")
+      .notNull()
+      .references(() => repositories.id, { onDelete: "restrict" }),
+    builder: text("builder").notNull(),
+    /** Opaque builder/MCP task identifier; never a PR title heuristic. */
+    taskContextKey: text("task_context_key").notNull(),
+    branchName: text("branch_name").notNull(),
+    acceptanceContractId: uuid("acceptance_contract_id")
+      .notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    contextPackId: uuid("context_pack_id")
+      .notNull()
+      .references(() => acceptanceContextPacks.id, { onDelete: "restrict" }),
+    status: text("status").notNull().default("handed_off"),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    prAttachedAt: timestamp("pr_attached_at", { withTimezone: true }),
+  },
+  (t) => ({
+    recordTask: uniqueIndex("acceptance_builder_handoffs_record_task_key").on(
+      t.recordId,
+      t.taskContextKey
+    ),
+    repositoryBranch: uniqueIndex("acceptance_builder_handoffs_repository_branch_key").on(
+      t.workspaceId,
+      t.repositoryId,
+      t.branchName
+    ),
+    repositoryBranchLookup: index(
+      "acceptance_builder_handoffs_repository_branch_lookup_idx"
+    ).on(t.workspaceId, t.repositoryId, t.branchName),
+  })
+);
+
 /** Immutable independent review for one exact PR revision. */
 export const evidenceReviews = pgTable(
   "evidence_reviews",
@@ -288,6 +341,11 @@ export const evidenceReviewCorrections = pgTable(
     likelyAffectedUnits: jsonb("likely_affected_units").$type<string[]>().notNull().default([]),
     contextRefs: jsonb("context_refs").$type<Record<string, unknown>[]>().notNull().default([]),
     scopeBoundary: text("scope_boundary").notNull(),
+    /** Fully durable correction-packet fields; do not reconstruct claims later. */
+    concreteImpact: text("concrete_impact").notNull(),
+    requiredCorrection: text("required_correction").notNull(),
+    reverification: text("reverification").notNull(),
+    repairPath: text("repair_path"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ reviewCriterion: uniqueIndex("evidence_review_corrections_review_criterion_key").on(t.reviewId, t.criterionId) })
@@ -351,6 +409,7 @@ export type AcceptanceContextPackDeliveryRow =
   typeof acceptanceContextPackDeliveries.$inferSelect;
 export type ChangeRecordPrRow = typeof changeRecordPrs.$inferSelect;
 export type ChangeRecordPrRevisionRow = typeof changeRecordPrRevisions.$inferSelect;
+export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$inferSelect;
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
 export type EvidenceReviewCriterionRow = typeof evidenceReviewCriteria.$inferSelect;
 export type EvidenceReviewCorrectionRow = typeof evidenceReviewCorrections.$inferSelect;

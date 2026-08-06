@@ -182,6 +182,7 @@ const EXPECTED_TOOL_FILES = [
   "create_issue.ts",
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
+  "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
@@ -233,6 +234,7 @@ const UNGATED_ADVISORY_WRITES = [
   "save_brief.ts",
   "save_investigation.ts",
   "record_verdict.ts",
+  "draft_acceptance_contract.ts",
 ];
 
 const EXPECTED_CHILD_PROCESS_SITES = [

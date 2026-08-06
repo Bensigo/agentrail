@@ -44,9 +44,10 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs never enter the advisory queue |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
+| Correction queue, exact record/revision binding | `7d560fcd` | focused queue/ack route tests and DB typecheck; queue is not notification |
 
-The next slice must make correction delivery executable and proof artifacts
-review-bound. The current acknowledgement seam alone is not delivery.
+The next slice must make proof plans and artifacts review-bound. Delivery is
+currently queue plus acknowledgement only; no dispatcher has proven notification.
 
 ## Remaining work, in dependency order
 
@@ -92,7 +93,7 @@ review-bound. The current acknowledgement seam alone is not delivery.
   canonical PR fetch, context compiler attestation, evidence-exercise worker,
   browser proof, live delivery dispatch, or migration smoke exists yet.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`, currently at local commit `5b71194d`.
+  `codex/trust-layer-acceptance-record`, currently at local commit `7d560fcd`.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012
@@ -121,5 +122,7 @@ Before each new slice, the coordinator says why it is local or delegated,
 prunes obsolete context, and confirms it advances the accepted MVP flow. The
 builder-handoff foundation was the one local exception because this policy
 arrived mid-slice; the webhook correlation was delegated, then selectively
-integrated against its newer base. Next, one subagent will own a durable
-correction-delivery queue route and tests; the coordinator will integrate it.
+integrated against its newer base. The delivery-queue subagent could not obtain
+this branch and was stopped; its narrow glue was completed locally. Next, use a
+fresh bounded implementation agent only when its base can be pinned; otherwise
+the coordinator must explicitly retain the review-bound proof-plan slice.

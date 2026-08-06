@@ -1021,12 +1021,23 @@ export async function listApiKeys(workspaceId: string) {
     .orderBy(desc(apiKeys.createdAt));
 }
 
+/** Metadata-only list for the deliberate MCP access surface. */
+export async function listAgentMcpApiKeys(workspaceId: string) {
+  return db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.workspaceId, workspaceId), eq(apiKeys.kind, "agent_mcp")))
+    .orderBy(desc(apiKeys.createdAt));
+}
+
 export async function createApiKey(data: {
   workspaceId: string;
   teamId?: string | null;
   name: string;
   keyPrefix: string;
   keyHash: string;
+  kind?: import("../schema/api_keys.js").ApiKeyKind;
+  scopes?: import("../schema/api_keys.js").ApiKeyScope[];
 }) {
   const rows = await db
     .insert(apiKeys)
@@ -1036,6 +1047,8 @@ export async function createApiKey(data: {
       name: data.name,
       keyPrefix: data.keyPrefix,
       keyHash: data.keyHash,
+      kind: data.kind ?? "self_hosted",
+      scopes: data.scopes ?? [],
     })
     .returning();
   return rows[0]!;
@@ -1049,6 +1062,23 @@ export async function revokeApiKey(workspaceId: string, keyId: string) {
       and(
         eq(apiKeys.id, keyId),
         eq(apiKeys.workspaceId, workspaceId),
+        isNull(apiKeys.revokedAt)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Revoke only an MCP credential in its owning workspace; never delete it. */
+export async function revokeAgentMcpApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(apiKeys.id, keyId),
+        eq(apiKeys.workspaceId, workspaceId),
+        eq(apiKeys.kind, "agent_mcp"),
         isNull(apiKeys.revokedAt)
       )
     )

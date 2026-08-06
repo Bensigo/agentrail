@@ -583,6 +583,13 @@
       "when": 1788700000000,
       "tag": "0082_acceptance_context_packs",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1788800000000,
+      "tag": "0083_agent_mcp_api_keys",
+      "breakpoints": true
     }
   ]
 }

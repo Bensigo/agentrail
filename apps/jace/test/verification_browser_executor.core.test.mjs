@@ -100,3 +100,14 @@ test("missing screenshot bytes, failed browser actions, and failed uploads canno
   const uploadFailure = createVerificationBrowserExecutor({ createClient: async () => clientFor(), uploadArtifact: async () => ({ error: "unreachable" }) });
   assert.equal((await uploadFailure(item)).status, "not_proven");
 });
+
+test("a hung sidecar close cannot strand an otherwise proven criterion", async () => {
+  const client = clientFor();
+  client.close = async () => new Promise(() => {});
+  const execute = createVerificationBrowserExecutor({
+    createClient: async () => client,
+    uploadArtifact: async () => ({ artifactId: "artifact-1" }),
+    closeTimeoutMs: 5,
+  });
+  assert.equal((await execute(item)).status, "proven");
+});

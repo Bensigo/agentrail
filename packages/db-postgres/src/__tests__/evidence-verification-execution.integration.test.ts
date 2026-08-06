@@ -62,6 +62,7 @@ const LIVE_RUNTIME_E2E = process.env.JACE_RUNTIME_E2E === "1"
   && typeof process.env.JACE_CONSOLE_TOKEN === "string"
   && process.env.REVIEW_EVIDENCE_ENABLED === "1"
   && ["S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET"].every((key) => Boolean(process.env[key]));
+const LIVE_UI_RUNTIME_E2E = LIVE_RUNTIME_E2E && process.env.JACE_UI_RUNTIME_E2E === "1";
 
 function syntheticArtifactClient() {
   const endpoint = process.env.S3_ENDPOINT!;
@@ -77,12 +78,17 @@ function syntheticArtifactClient() {
 }
 
 async function readSyntheticArtifact(key: string): Promise<Record<string, unknown>> {
+  const bytes = await readSyntheticArtifactBytes(key);
+  return JSON.parse(Buffer.from(bytes).toString("utf8")) as Record<string, unknown>;
+}
+
+async function readSyntheticArtifactBytes(key: string): Promise<Uint8Array> {
   const bucket = process.env.S3_BUCKET!;
   const { GetObjectCommand } = consoleRequire("@aws-sdk/client-s3");
   const response = await syntheticArtifactClient().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  const body = await response.Body?.transformToString();
-  if (!body) throw new Error("expected stored API evidence bytes");
-  return JSON.parse(body) as Record<string, unknown>;
+  const body = await response.Body?.transformToByteArray();
+  if (!body) throw new Error("expected stored evidence bytes");
+  return body;
 }
 
 async function deleteSyntheticArtifact(key: string): Promise<void> {
@@ -105,6 +111,24 @@ async function withLoopbackOrigin<T>(run: (origin: string) => Promise<T>): Promi
   try {
     return await run(origin);
   } finally {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function withLoopbackUiOrigin<T>(run: (origin: string) => Promise<T>): Promise<T> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end("<!doctype html><main><h1>Jace UI proof</h1><p>Exact preview criterion</p></main>");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("expected loopback server address");
+  try {
+    const host = process.env.JACE_UI_TEST_PREVIEW_HOST || "127.0.0.1";
+    return await run(`http://${host}:${address.port}`);
+  } finally {
+    server.closeAllConnections?.();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
@@ -214,6 +238,50 @@ async function seedSyntheticApiExecution(previewUrl: string): Promise<SyntheticF
       headSha,
       workerId: "worker-a",
     };
+  } catch (error) {
+    await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+    throw error;
+  }
+}
+
+async function seedSyntheticUiExecution(previewUrl: string): Promise<SyntheticFixture> {
+  const workspace = await db
+    .insert(workspaces)
+    .values({ name: "evidence-verification UI execution test workspace", slug: `test-evidence-ui-${randomUUID()}` })
+    .returning({ id: workspaces.id });
+  const workspaceId = workspace[0]!.id;
+  try {
+    const repo = "acme/widgets";
+    const repository = await createRepository({ workspaceId, name: repo, url: "https://github.com/acme/widgets", defaultBranch: "main" });
+    const draft = await createDraftAcceptanceRecord({
+      workspaceId,
+      repo,
+      workKey: `ui-execution-${randomUUID()}`,
+      originChannel: "slack",
+      sourceReferences: [{ kind: "slack_thread", id: `thread-${randomUUID()}` }],
+      contract: { originalRequest: "Show the UI proof heading", acceptanceCriteria: [{ id: "ui-proof", text: "The preview shows Jace UI proof" }], unresolvedQuestions: [] },
+      createdBy: "user:lead",
+    });
+    const confirmed = await confirmAcceptanceContract({ workspaceId, recordId: draft.record.id, version: draft.contract.version, confirmedBy: "user:lead" });
+    const prNumber = 43;
+    const headSha = "c".repeat(40);
+    const attachment = await attachExternalPullRequest({
+      workspaceId, recordId: draft.record.id, repo, repositoryId: repository.id, prNumber,
+      prUrl: `https://github.com/acme/widgets/pull/${prNumber}`, baseSha: "d".repeat(40), headSha, attachedBy: "user:lead",
+    });
+    const bootId = previewBootId({ workspaceId, repo, prNumber, headSha });
+    await db.insert(previewBoots).values({ id: bootId, workspaceId, repo, prNumber, headSha, ref: "refs/pull/43/head", status: "ready", url: previewUrl });
+    const plans = await recordEvidenceVerificationPlans({
+      workspaceId, recordId: draft.record.id, prRevisionId: attachment.revision.id, contractId: confirmed.id, contractVersion: confirmed.version, plannedBy: "user:lead",
+      plans: [{
+        criterionId: "ui-proof", criterionTextSnapshot: "The preview shows Jace UI proof", modality: "ui", environmentId: bootId,
+        flow: "Open /, observe Jace UI proof, capture screenshot",
+        uiSteps: [{ action: "open", path: "/" }, { action: "expect_text", text: "Jace UI proof" }, { action: "screenshot", label: "ui-proof" }],
+        expectedBehavior: "The preview shows Jace UI proof", status: "planned",
+      }],
+    });
+    const execution = await enqueueEvidenceVerificationExecution({ workspaceId, recordId: draft.record.id, prRevisionId: attachment.revision.id, verificationPlanId: plans.plans[0]!.id });
+    return { workspaceId, repositoryId: repository.id, recordId: draft.record.id, contractId: confirmed.id, contractVersion: confirmed.version, attachmentId: attachment.attachment.id, revisionId: attachment.revision.id, previewBootId: bootId, planId: plans.plans[0]!.id, executionId: execution.execution.id, prNumber, headSha, workerId: "worker-ui" };
   } catch (error) {
     await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
     throw error;
@@ -405,5 +473,40 @@ describe.skipIf(!DB_AVAILABLE)(
         });
       });
     });
+
+    it.skipIf(!LIVE_UI_RUNTIME_E2E)("runs one persisted UI criterion through the real browser sidecar and stores inspectable screenshot proof", async () => {
+      await withLoopbackUiOrigin(async (origin) => {
+        fixture = await seedSyntheticUiExecution(origin);
+        const env = {
+          JACE_CONSOLE_BASE_URL: process.env.JACE_CONSOLE_BASE_URL!,
+          JACE_CONSOLE_TOKEN: process.env.JACE_CONSOLE_TOKEN!,
+          JACE_AGENT_BROWSER_MCP_URL: process.env.JACE_AGENT_BROWSER_MCP_URL || "http://127.0.0.1:8932/mcp",
+        };
+        const [{ createVerificationExecutionConsole }, { createVerificationExecutionWorker }, { createVerificationBrowserExecuteFn }] = await Promise.all([
+          import("../../../../apps/jace/agent/lib/verification_execution_console.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_execution_worker.core.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_browser_executor.mjs"),
+        ]);
+        const workerId = `live-ui-runtime-${randomUUID()}`;
+        const executionConsole = createVerificationExecutionConsole({ env });
+        const browserExecute = createVerificationBrowserExecuteFn({ env });
+        const worker = createVerificationExecutionWorker({
+          claim: () => executionConsole.claim(workerId),
+          execute: browserExecute,
+          complete: (input: unknown) => executionConsole.complete(input),
+        });
+
+        expect(await worker.tick()).toBe("proven");
+        const artifacts = await db
+          .select()
+          .from(evidenceVerificationArtifacts)
+          .where(eq(evidenceVerificationArtifacts.verificationPlanId, fixture.planId));
+        expect(artifacts).toHaveLength(1);
+        expect(artifacts[0]).toMatchObject({ verificationPlanId: fixture.planId, contentType: "image/png" });
+        liveArtifactKey = artifacts[0]!.artifactKey;
+        const image = Buffer.from(await readSyntheticArtifactBytes(liveArtifactKey));
+        expect(image.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+      });
+    }, 30_000);
   }
 );

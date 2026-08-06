@@ -12,6 +12,7 @@ export const REQUIRED_BROWSER_TOOLS = [
   "agent_browser_get_url",
   "agent_browser_screenshot",
 ];
+const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 
 class NotTestableError extends Error {}
 class NotProvenError extends Error {}
@@ -90,9 +91,10 @@ function errorResult(error) {
  * Execute only persisted UI actions through an injected MCP-shaped client.
  * Injection keeps all behaviour unit-testable without a browser or network.
  */
-export function createVerificationBrowserExecutor({ createClient, uploadArtifact, makeSessionId = ({ executionId }) => `jace-verification-${executionId.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 96)}` }) {
+export function createVerificationBrowserExecutor({ createClient, uploadArtifact, makeSessionId = ({ executionId }) => `jace-verification-${executionId.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 96)}`, closeTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS }) {
   if (typeof createClient !== "function") throw new TypeError("createClient is required");
   if (typeof uploadArtifact !== "function") throw new TypeError("uploadArtifact is required");
+  if (!Number.isInteger(closeTimeoutMs) || closeTimeoutMs < 1 || closeTimeoutMs > 30_000) throw new TypeError("closeTimeoutMs must be an integer between 1 and 30000");
 
   return async function execute(item) {
     let client;
@@ -173,7 +175,15 @@ export function createVerificationBrowserExecutor({ createClient, uploadArtifact
       return errorResult(error);
     } finally {
       if (client && typeof client.close === "function") {
-        try { await client.close(); } catch { /* a completed claim must not hang on sidecar cleanup */ }
+        let timer;
+        try {
+          await Promise.race([
+            Promise.resolve().then(() => client.close()).catch(() => undefined),
+            new Promise((resolve) => { timer = setTimeout(resolve, closeTimeoutMs); }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
     }
   };

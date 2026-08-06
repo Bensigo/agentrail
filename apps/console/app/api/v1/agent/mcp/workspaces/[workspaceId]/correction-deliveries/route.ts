@@ -27,7 +27,8 @@ export async function GET(
       delivery: {
         id: delivery.id, channel: delivery.channel, target: delivery.target,
         attempt: delivery.attempt, outcome: delivery.outcome, outcomeDetail: delivery.outcomeDetail,
-        attemptedAt: delivery.attemptedAt.toISOString(),
+        queuedAt: delivery.queuedAt.toISOString(),
+        attemptedAt: delivery.attemptedAt?.toISOString() ?? null,
         confirmedAt: delivery.confirmedAt?.toISOString() ?? null,
       },
       reviewRevision: {

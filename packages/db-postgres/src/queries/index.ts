@@ -3317,6 +3317,8 @@ export {
   recordEvidenceVerificationArtifact,
   queueEvidenceReviewCorrectionDelivery,
   readEvidenceReviewCorrectionDeliveriesForTask,
+  claimEvidenceReviewCorrectionDeliveryForGithubDispatch,
+  reportEvidenceReviewCorrectionGithubDispatch,
   acknowledgeEvidenceReviewCorrectionDelivery,
   confirmAcceptanceContract,
   readAcceptanceContracts,

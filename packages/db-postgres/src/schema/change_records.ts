@@ -452,10 +452,12 @@ export const evidenceReviewCorrectionDeliveries = pgTable(
     channel: text("channel").notNull(),
     target: jsonb("target").$type<Record<string, unknown>>().notNull(),
     reviewRevisionId: uuid("review_revision_id").notNull().references(() => changeRecordPrRevisions.id, { onDelete: "restrict" }),
-    attempt: integer("attempt").notNull().default(1),
+    /** Queueing is not an attempt. A carrier increments this only when it sends. */
+    attempt: integer("attempt").notNull().default(0),
     outcome: text("outcome").notNull().default("queued"),
     outcomeDetail: text("outcome_detail"),
-    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
+    queuedAt: timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }),
     confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
   },
   (t) => ({ correctionDeliveryKey: uniqueIndex("evidence_review_correction_deliveries_key").on(t.correctionId, t.deliveryKey) })

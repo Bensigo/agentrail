@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import {
@@ -1097,7 +1097,7 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
     if (!item) throw new Error("Correction packet was not found in workspace");
     const inserted = await tx.insert(evidenceReviewCorrectionDeliveries).values({
       id, correctionId: input.correctionId, deliveryKey: input.deliveryKey, channel: input.channel,
-      target: input.target, reviewRevisionId: item.review.prRevisionId, outcome: "queued",
+      target: input.target, reviewRevisionId: item.review.prRevisionId, attempt: 0, outcome: "queued",
     }).onConflictDoNothing().returning();
     return { id, inserted: Boolean(inserted[0]), reviewRevisionId: item.review.prRevisionId };
   });
@@ -1128,8 +1128,72 @@ export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
       sql`${evidenceReviewCorrectionDeliveries.target}->>'builder' = ${input.builder}`,
       sql`${evidenceReviewCorrectionDeliveries.target}->>'taskContextKey' = ${input.taskContextKey}`,
     ))
-    .orderBy(asc(evidenceReviewCorrectionDeliveries.attemptedAt));
+    .orderBy(asc(evidenceReviewCorrectionDeliveries.queuedAt));
   return rows;
+}
+
+/**
+ * Atomically reserves one current-head GitHub fallback delivery. The caller
+ * must report the actual carrier result with `report...GithubDispatch`.
+ */
+export async function claimEvidenceReviewCorrectionDeliveryForGithubDispatch(input: {
+  workspaceId: string; deliveryId: string;
+}) {
+  return db.transaction(async (tx) => {
+    const rows = await tx.select({
+      delivery: evidenceReviewCorrectionDeliveries,
+      correction: evidenceReviewCorrections,
+      review: evidenceReviews,
+      revision: changeRecordPrRevisions,
+      pr: changeRecordPrs,
+    }).from(evidenceReviewCorrectionDeliveries)
+      .innerJoin(evidenceReviewCorrections, eq(evidenceReviewCorrectionDeliveries.correctionId, evidenceReviewCorrections.id))
+      .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+      .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
+      .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+      .where(and(
+        eq(evidenceReviewCorrectionDeliveries.id, input.deliveryId),
+        eq(evidenceReviewCorrectionDeliveries.channel, "github_pull_request"),
+        eq(evidenceReviewCorrectionDeliveries.outcome, "queued"),
+        eq(changeRecordPrs.workspaceId, input.workspaceId),
+        eq(evidenceReviews.recordId, changeRecordPrs.recordId),
+        isNull(changeRecordPrRevisions.supersededAt),
+      ))
+      .limit(1);
+    const item = rows[0];
+    if (!item) return null;
+    const now = new Date();
+    const updated = await tx.update(evidenceReviewCorrectionDeliveries).set({
+      outcome: "dispatching", attempt: sql`${evidenceReviewCorrectionDeliveries.attempt} + 1`, attemptedAt: now,
+    }).where(and(
+      eq(evidenceReviewCorrectionDeliveries.id, item.delivery.id),
+      eq(evidenceReviewCorrectionDeliveries.outcome, "queued"),
+    )).returning({ id: evidenceReviewCorrectionDeliveries.id, attempt: evidenceReviewCorrectionDeliveries.attempt });
+    if (!updated[0]) return null;
+    return { ...item, attempt: updated[0].attempt };
+  });
+}
+
+/** Records a real GitHub carrier result; it cannot acknowledge or merge anything. */
+export async function reportEvidenceReviewCorrectionGithubDispatch(input: {
+  workspaceId: string; deliveryId: string; reviewRevisionId: string;
+  outcome: "delivered" | "failed"; detail?: string | null;
+}) {
+  const rows = await db.update(evidenceReviewCorrectionDeliveries).set({
+    outcome: input.outcome, outcomeDetail: input.detail ?? null,
+  }).where(and(
+    eq(evidenceReviewCorrectionDeliveries.id, input.deliveryId),
+    eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, input.reviewRevisionId),
+    eq(evidenceReviewCorrectionDeliveries.outcome, "dispatching"),
+    sql`EXISTS (
+      SELECT 1 FROM evidence_review_corrections c
+      JOIN evidence_reviews r ON r.id = c.review_id
+      JOIN change_records cr ON cr.id = r.record_id
+      WHERE c.id = ${evidenceReviewCorrectionDeliveries.correctionId}
+        AND cr.workspace_id = ${input.workspaceId}
+    )`,
+  )).returning();
+  return rows[0] ?? null;
 }
 
 /** An agent acknowledgement is the only transition that proves it received a packet. */

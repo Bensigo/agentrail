@@ -18,7 +18,7 @@ describe("MCP correction-delivery inbox", () => {
   it("returns only the targeted task's evidence-bound packet and exact review revision", async () => {
     vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ workspaceId: WS } as never);
     vi.mocked(readEvidenceReviewCorrectionDeliveriesForTask).mockResolvedValue([{
-      delivery: { id: "delivery", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task" }, attempt: 1, outcome: "queued", outcomeDetail: null, attemptedAt: new Date("2026-08-06T00:00:00Z"), confirmedAt: null },
+      delivery: { id: "delivery", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task" }, attempt: 0, outcome: "queued", outcomeDetail: null, queuedAt: new Date("2026-08-06T00:00:00Z"), attemptedAt: null, confirmedAt: null },
       correction: { id: "correction", criterionId: "saved", expectedBehavior: "saved", observedBehavior: "missing", evidenceRefs: [], reproductionSteps: ["save"], likelyAffectedUnits: ["app.ts:9"], contextRefs: [], scopeBoundary: "contract", concreteImpact: "data loss", requiredCorrection: "persist", reverification: "save", repairPath: null },
       review: { id: "review" }, revision: { id: "revision", headSha: "abc" }, pr: { repositoryFullName: "org/repo", prNumber: 3 },
     }] as never);

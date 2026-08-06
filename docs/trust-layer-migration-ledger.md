@@ -98,8 +98,9 @@ dispatcher has proven notification.
   browser proof, non-UI artifact capture, live delivery dispatch, or migration
   smoke exists yet.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`, currently includes uncommitted
-  artifact-binding work on top of local commit `915e3b15`.
+  `codex/trust-layer-acceptance-record`; the most recent product slice is
+  `d6357492` (review-bound UI artifact storage). The only expected untracked
+  paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012

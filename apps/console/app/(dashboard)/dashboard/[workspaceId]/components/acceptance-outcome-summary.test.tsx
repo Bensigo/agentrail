@@ -3,7 +3,6 @@ import type { AcceptanceWorkspaceOutcomeSummary } from "@agentrail/db-postgres";
 import {
   AcceptanceOutcomeSummaryPanel,
   formatWorkspaceOutcomeSummaryWindow,
-  workspaceOutcomeSummaryWindow,
 } from "./acceptance-outcome-summary";
 
 interface ElementLike {
@@ -48,14 +47,7 @@ function summary(overrides: Partial<AcceptanceWorkspaceOutcomeSummary> = {}): Ac
   };
 }
 
-describe("workspaceOutcomeSummaryWindow", () => {
-  it("uses one explicit half-open UTC 30-day window", () => {
-    expect(workspaceOutcomeSummaryWindow(new Date("2026-08-31T00:00:00.000Z"))).toEqual({
-      from: new Date("2026-08-01T00:00:00.000Z"),
-      to: new Date("2026-08-31T00:00:00.000Z"),
-    });
-  });
-
+describe("formatWorkspaceOutcomeSummaryWindow", () => {
   it("formats the exact UTC range instead of hiding it behind a relative label", () => {
     expect(formatWorkspaceOutcomeSummaryWindow(
       new Date("2026-08-01T00:00:00.000Z"),
@@ -65,21 +57,25 @@ describe("workspaceOutcomeSummaryWindow", () => {
 });
 
 describe("AcceptanceOutcomeSummaryPanel", () => {
-  it("keeps Jace verdicts distinct from human decisions and renders pending work", () => {
-    const text = normalizedText(AcceptanceOutcomeSummaryPanel({ summary: summary() }));
+  it("renders separate trust-outcome cards and keeps Jace verdicts distinct from human decisions", () => {
+    const text = normalizedText(AcceptanceOutcomeSummaryPanel({
+      summary: summary(),
+      activeRange: "7d",
+    }));
 
-    expect(text).toContain("Last 30 days");
-    expect(text).toContain("UTC window (half-open): Aug 01, 2026 00:00 UTC – Aug 08, 2026 00:00 UTC");
-    expect(text).toContain("Reviewed PR revisions: 3");
-    expect(text).toContain("Pending reviews: 3");
+    expect(text).toContain("Trust outcomes");
+    expect(text).toContain("Exact-head evidence and human decisions. Aug 01, 2026 00:00 UTC – Aug 08, 2026 00:00 UTC");
+    expect(text).toContain("24h 7d 30d 1y");
+    expect(text).toContain("Reviewed PR revisions 3");
+    expect(text).toContain("Jace proven 2");
+    expect(text).toContain("Jace not proven 1");
+    expect(text).toContain("Pending review 3");
     expect(text).toContain("queued 1 · claimed 2");
-    expect(text).toContain("Awaiting human decision: 2");
-    expect(text).toContain("Jace verdicts");
-    expect(text).toContain("not proven: 1");
-    expect(text).toContain("blocked: 1");
-    expect(text).toContain("Human decisions");
-    expect(text).toContain("changes requested: 1");
-    expect(text).toContain("approved with exception: 1");
+    expect(text).toContain("Awaiting human decision 2");
+    expect(text).toContain("Jace blocked 1");
+    expect(text).toContain("Approved 1");
+    expect(text).toContain("Changes requested 1");
+    expect(text).toContain("Approved with exception 1");
   });
 
   it("renders honest zeroes and a no-completed-review explanation without hiding current pending work", () => {
@@ -96,13 +92,14 @@ describe("AcceptanceOutcomeSummaryPanel", () => {
         pendingReviews: { queued: 1, claimed: 0, total: 1 },
         pendingHumanDecisions: 1,
       }),
+      activeRange: "30d",
     }));
 
-    expect(text).toContain("No completed evidence reviews landed in this window yet.");
-    expect(text).toContain("Reviewed PR revisions: 0");
-    expect(text).toContain("not proven: 0");
-    expect(text).toContain("changes requested: 0");
-    expect(text).toContain("Pending reviews: 1");
-    expect(text).toContain("Awaiting human decision: 1");
+    expect(text).toContain("No completed evidence reviews in this range. Pending work remains visible below.");
+    expect(text).toContain("Reviewed PR revisions 0");
+    expect(text).toContain("Jace not proven 0");
+    expect(text).toContain("Changes requested 0");
+    expect(text).toContain("Pending review 1");
+    expect(text).toContain("Awaiting human decision 1");
   });
 });

@@ -1,7 +1,9 @@
 import {
+  ACCEPTANCE_WORKSPACE_OUTCOME_RANGES,
   getWorkspace,
   listChangeRecords,
   readAcceptanceWorkspaceOutcomeSummary,
+  type AcceptanceWorkspaceOutcomeRange,
 } from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
@@ -10,16 +12,25 @@ import { CopyId } from "../../../components/copy-id";
 import { AcceptanceEvidencePanel } from "./components/acceptance-evidence-panel";
 import {
   AcceptanceOutcomeSummaryPanel,
-  workspaceOutcomeSummaryWindow,
 } from "./components/acceptance-outcome-summary";
 import { OnboardingBanner } from "./components/onboarding-banner";
 
 export default async function WorkspaceDashboardPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ workspaceId: string }>;
+  searchParams: Promise<{ range?: string | string[] }>;
 }) {
   const { workspaceId } = await params;
+  const requestedRange = (await searchParams).range;
+  const outcomeRange: AcceptanceWorkspaceOutcomeRange =
+    typeof requestedRange === "string" &&
+    ACCEPTANCE_WORKSPACE_OUTCOME_RANGES.includes(
+      requestedRange as AcceptanceWorkspaceOutcomeRange
+    )
+      ? (requestedRange as AcceptanceWorkspaceOutcomeRange)
+      : "30d";
   const session = await getSession();
   if (!session?.user?.id) return notFound();
 
@@ -30,13 +41,11 @@ export default async function WorkspaceDashboardPage({
 
   if (!workspace || !membership) return notFound();
 
-  const outcomeWindow = workspaceOutcomeSummaryWindow();
   const [records, outcomeSummary] = await Promise.all([
     listChangeRecords({ workspaceId, limit: 5 }),
     readAcceptanceWorkspaceOutcomeSummary({
       workspaceId,
-      fromUtcInclusive: outcomeWindow.from,
-      toUtcExclusive: outcomeWindow.to,
+      range: outcomeRange,
     }),
   ]);
 
@@ -57,7 +66,10 @@ export default async function WorkspaceDashboardPage({
 
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
-        <AcceptanceOutcomeSummaryPanel summary={outcomeSummary} />
+        <AcceptanceOutcomeSummaryPanel
+          summary={outcomeSummary}
+          activeRange={outcomeRange}
+        />
         <AcceptanceEvidencePanel workspaceId={workspaceId} records={records} />
       </div>
     </div>

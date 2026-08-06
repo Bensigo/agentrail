@@ -50,8 +50,8 @@ describe("readAcceptanceWorkspaceOutcomeSummary", () => {
 
     const summary = await readAcceptanceWorkspaceOutcomeSummary({
       workspaceId,
-      fromUtcInclusive,
-      toUtcExclusive,
+      range: "24h",
+      now: toUtcExclusive,
     });
 
     expect(summary).toEqual({
@@ -101,21 +101,49 @@ describe("readAcceptanceWorkspaceOutcomeSummary", () => {
     expect(rendered.params).not.toContain(toUtcExclusive);
   });
 
-  it("rejects an empty or reversed UTC interval before issuing SQL", async () => {
+  it("rejects an unsupported range or invalid server clock before issuing SQL", async () => {
     await expect(
       readAcceptanceWorkspaceOutcomeSummary({
         workspaceId,
-        fromUtcInclusive: toUtcExclusive,
-        toUtcExclusive: fromUtcInclusive,
+        range: "7hours" as never,
       })
-    ).rejects.toThrow("workspace outcome summary requires fromUtcInclusive < toUtcExclusive");
+    ).rejects.toThrow("workspace outcome summary requires a supported range");
     await expect(
       readAcceptanceWorkspaceOutcomeSummary({
         workspaceId,
-        fromUtcInclusive: "not-a-date",
-        toUtcExclusive,
-      } as never)
-    ).rejects.toThrow("workspace outcome summary requires valid UTC bounds");
+        range: "7d",
+        now: new Date("not-a-date"),
+      })
+    ).rejects.toThrow("workspace outcome summary requires a valid current time");
     expect(state.executeCalls).toHaveLength(0);
+  });
+
+  it("uses a calendar-year server window for the one-year range", async () => {
+    state.executeRows = [[{
+      workspace_id: workspaceId,
+      window_from_utc_inclusive: new Date("2025-03-01T00:00:00.000Z"),
+      window_to_utc_exclusive: new Date("2026-03-01T00:00:00.000Z"),
+      counted_at_utc: toUtcExclusive,
+      reviewed_pr_revision_count: 0,
+      proven_count: 0,
+      not_proven_count: 0,
+      other_jace_status_counts: {},
+      approved_count: 0,
+      changes_requested_count: 0,
+      rejected_count: 0,
+      approved_with_exception_count: 0,
+      pending_queued_review_count: 0,
+      pending_claimed_review_count: 0,
+      pending_human_decision_count: 0,
+    }]];
+
+    await readAcceptanceWorkspaceOutcomeSummary({
+      workspaceId,
+      range: "1y",
+      now: new Date("2026-03-01T00:00:00.000Z"),
+    });
+
+    const rendered = renderSql(state.executeCalls[0]);
+    expect(rendered.params).toContain("2025-03-01T00:00:00.000Z");
   });
 });

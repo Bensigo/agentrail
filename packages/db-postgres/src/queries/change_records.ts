@@ -2118,11 +2118,45 @@ export type AcceptanceWorkspaceOutcomeSummary = {
   pendingHumanDecisions: number;
 };
 
+export const ACCEPTANCE_WORKSPACE_OUTCOME_RANGES = ["24h", "7d", "30d", "1y"] as const;
+export type AcceptanceWorkspaceOutcomeRange =
+  (typeof ACCEPTANCE_WORKSPACE_OUTCOME_RANGES)[number];
+
 export type ReadAcceptanceWorkspaceOutcomeSummaryInput = {
   workspaceId: string;
-  fromUtcInclusive: Date | string;
-  toUtcExclusive: Date | string;
+  range: AcceptanceWorkspaceOutcomeRange;
+  /** Test-only clock injection; callers never supply arbitrary date bounds. */
+  now?: Date;
 };
+
+function acceptanceWorkspaceOutcomeWindow(
+  range: AcceptanceWorkspaceOutcomeRange,
+  now = new Date()
+): { fromUtcInclusive: Date; toUtcExclusive: Date } {
+  if (!ACCEPTANCE_WORKSPACE_OUTCOME_RANGES.includes(range)) {
+    throw new Error("workspace outcome summary requires a supported range");
+  }
+  if (Number.isNaN(now.getTime())) {
+    throw new Error("workspace outcome summary requires a valid current time");
+  }
+  const toUtcExclusive = new Date(now);
+  const fromUtcInclusive = new Date(toUtcExclusive);
+  switch (range) {
+    case "24h":
+      fromUtcInclusive.setUTCHours(fromUtcInclusive.getUTCHours() - 24);
+      break;
+    case "7d":
+      fromUtcInclusive.setUTCDate(fromUtcInclusive.getUTCDate() - 7);
+      break;
+    case "30d":
+      fromUtcInclusive.setUTCDate(fromUtcInclusive.getUTCDate() - 30);
+      break;
+    case "1y":
+      fromUtcInclusive.setUTCFullYear(fromUtcInclusive.getUTCFullYear() - 1);
+      break;
+  }
+  return { fromUtcInclusive, toUtcExclusive };
+}
 
 /**
  * Workspace-wide outcome summary for the trust layer.
@@ -2138,14 +2172,10 @@ export type ReadAcceptanceWorkspaceOutcomeSummaryInput = {
 export async function readAcceptanceWorkspaceOutcomeSummary(
   input: ReadAcceptanceWorkspaceOutcomeSummaryInput
 ): Promise<AcceptanceWorkspaceOutcomeSummary> {
-  const fromUtcInclusive = toDate(input.fromUtcInclusive);
-  const toUtcExclusive = toDate(input.toUtcExclusive);
-  if (Number.isNaN(fromUtcInclusive.getTime()) || Number.isNaN(toUtcExclusive.getTime())) {
-    throw new Error("workspace outcome summary requires valid UTC bounds");
-  }
-  if (fromUtcInclusive.getTime() >= toUtcExclusive.getTime()) {
-    throw new Error("workspace outcome summary requires fromUtcInclusive < toUtcExclusive");
-  }
+  const { fromUtcInclusive, toUtcExclusive } = acceptanceWorkspaceOutcomeWindow(
+    input.range,
+    input.now
+  );
   // The deployed postgres client accepts timestamp strings but not JavaScript
   // Date objects in this raw SQL path. Keep the public return values as Dates,
   // while binding explicit UTC values for every SQL comparison and cast.

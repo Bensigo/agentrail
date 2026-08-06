@@ -1,4 +1,15 @@
-import type { AcceptanceWorkspaceOutcomeSummary } from "@agentrail/db-postgres";
+import type {
+  AcceptanceWorkspaceOutcomeRange,
+  AcceptanceWorkspaceOutcomeSummary,
+} from "@agentrail/db-postgres";
+import Link from "next/link";
+
+const OUTCOME_RANGES: Array<{ label: string; value: AcceptanceWorkspaceOutcomeRange }> = [
+  { label: "24h", value: "24h" },
+  { label: "7d", value: "7d" },
+  { label: "30d", value: "30d" },
+  { label: "1y", value: "1y" },
+];
 
 const UTC_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
@@ -10,24 +21,11 @@ function formatUtcDateTime(value: Date): string {
   return `${UTC_MONTHS[value.getUTCMonth()]} ${pad2(value.getUTCDate())}, ${value.getUTCFullYear()} ${pad2(value.getUTCHours())}:${pad2(value.getUTCMinutes())} UTC`;
 }
 
-export function workspaceOutcomeSummaryWindow(now = new Date()): {
-  from: Date;
-  to: Date;
-} {
-  const to = new Date(now);
-  const from = new Date(to);
-  from.setUTCDate(from.getUTCDate() - 30);
-  return { from, to };
-}
-
-export function formatWorkspaceOutcomeSummaryWindow(
-  from: Date,
-  to: Date
-): string {
+export function formatWorkspaceOutcomeSummaryWindow(from: Date, to: Date): string {
   return `${formatUtcDateTime(from)} – ${formatUtcDateTime(to)}`;
 }
 
-function OutcomeStat({
+function OutcomeCard({
   label,
   value,
   detail,
@@ -37,112 +35,98 @@ function OutcomeStat({
   detail?: string;
 }) {
   return (
-    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 py-2">
-      <p className="text-[11px] uppercase tracking-wide text-[var(--gray-09)]">
-        {label}: <span className="font-semibold text-[var(--gray-12)]">{value}</span>
-      </p>
-      {detail && <p className="mt-1 text-xs text-[var(--gray-09)]">{detail}</p>}
+    <div className="flex min-h-24 flex-col justify-between rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 py-3">
+      <p className="text-xs uppercase tracking-wide text-[var(--gray-09)]">{label}</p>
+      <p className="mt-3 text-2xl tracking-tight text-[var(--gray-12)]">{value}</p>
+      {detail && <p className="mt-2 text-xs text-[var(--gray-09)]">{detail}</p>}
     </div>
   );
 }
 
-function OutcomeGroup({
-  title,
-  rows,
+function OutcomeRangeSelector({
+  workspaceId,
+  activeRange,
 }: {
-  title: string;
-  rows: Array<{ label: string; value: number }>;
+  workspaceId: string;
+  activeRange: AcceptanceWorkspaceOutcomeRange;
 }) {
   return (
-    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 py-3">
-      <p className="text-[11px] uppercase tracking-wide text-[var(--gray-09)]">{title}</p>
-      <dl className="mt-2 flex flex-col gap-1 text-xs text-[var(--gray-11)]">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-3">
-            <dt className="min-w-0">{row.label}:</dt>
-            <dd className="shrink-0 font-medium text-[var(--gray-12)]">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
+    <nav aria-label="Outcome time range" className="flex items-center gap-1 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-1">
+      {OUTCOME_RANGES.map(({ label, value }) => {
+        const active = value === activeRange;
+        return (
+          <Link
+            key={value}
+            href={`/dashboard/${workspaceId}?range=${value}`}
+            aria-current={active ? "page" : undefined}
+            className={`rounded px-2 py-1 text-xs transition-colors ${
+              active
+                ? "bg-[var(--gray-12)] text-[var(--gray-01)]"
+                : "text-[var(--gray-09)] hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
+            }`}
+          >
+            {label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }
 
 export function AcceptanceOutcomeSummaryPanel({
   summary,
+  activeRange,
 }: {
   summary: AcceptanceWorkspaceOutcomeSummary;
+  activeRange: AcceptanceWorkspaceOutcomeRange;
 }) {
   const otherJaceStatuses = Object.entries(summary.jaceVerdicts.otherStatuses)
     .filter(([, count]) => count > 0)
     .sort(([a], [b]) => a.localeCompare(b));
 
   return (
-    <section className="flex flex-col gap-3">
-      <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
-        <div className="border-b border-[var(--gray-05)] px-4 py-3">
+    <section className="border-y border-[var(--gray-05)] py-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
           <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
-            Outcome summary
+            Trust outcomes
           </h2>
-          <p className="mt-1 text-xs text-[var(--gray-09)]">Last 30 days</p>
           <p className="mt-1 text-xs text-[var(--gray-09)]">
-            UTC window (half-open):{" "}
-            {formatWorkspaceOutcomeSummaryWindow(
+            Exact-head evidence and human decisions. {formatWorkspaceOutcomeSummaryWindow(
               summary.windowFromUtcInclusive,
               summary.windowToUtcExclusive
             )}
           </p>
         </div>
+        <OutcomeRangeSelector workspaceId={summary.workspaceId} activeRange={activeRange} />
+      </div>
 
-        <div className="flex flex-col gap-3 px-4 py-4">
-          {summary.reviewedPrRevisionCount === 0 && (
-            <p className="text-xs text-[var(--gray-09)]">
-              No completed evidence reviews landed in this window yet.
-            </p>
-          )}
+      {summary.reviewedPrRevisionCount === 0 && (
+        <p className="mt-4 text-sm text-[var(--gray-09)]">
+          No completed evidence reviews in this range. Pending work remains visible below.
+        </p>
+      )}
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <OutcomeStat
-              label="Reviewed PR revisions"
-              value={summary.reviewedPrRevisionCount}
-            />
-            <OutcomeStat
-              label="Pending reviews"
-              value={summary.pendingReviews.total}
-              detail={`queued ${summary.pendingReviews.queued} · claimed ${summary.pendingReviews.claimed}`}
-            />
-            <OutcomeStat
-              label="Awaiting human decision"
-              value={summary.pendingHumanDecisions}
-            />
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <OutcomeGroup
-              title="Jace verdicts"
-              rows={[
-                { label: "proven", value: summary.jaceVerdicts.proven },
-                { label: "not proven", value: summary.jaceVerdicts.notProven },
-                ...otherJaceStatuses.map(([status, count]) => ({
-                  label: status,
-                  value: count,
-                })),
-              ]}
-            />
-            <OutcomeGroup
-              title="Human decisions"
-              rows={[
-                { label: "approved", value: summary.humanDecisions.approved },
-                { label: "changes requested", value: summary.humanDecisions.changesRequested },
-                { label: "rejected", value: summary.humanDecisions.rejected },
-                {
-                  label: "approved with exception",
-                  value: summary.humanDecisions.approvedWithException,
-                },
-              ]}
-            />
-          </div>
-        </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <OutcomeCard label="Reviewed PR revisions" value={summary.reviewedPrRevisionCount} />
+        <OutcomeCard label="Jace proven" value={summary.jaceVerdicts.proven} />
+        <OutcomeCard label="Jace not proven" value={summary.jaceVerdicts.notProven} />
+        <OutcomeCard
+          label="Pending review"
+          value={summary.pendingReviews.total}
+          detail={`queued ${summary.pendingReviews.queued} · claimed ${summary.pendingReviews.claimed}`}
+        />
+        <OutcomeCard label="Awaiting human decision" value={summary.pendingHumanDecisions} />
+        <OutcomeCard label="Approved" value={summary.humanDecisions.approved} />
+        <OutcomeCard label="Changes requested" value={summary.humanDecisions.changesRequested} />
+        <OutcomeCard label="Rejected" value={summary.humanDecisions.rejected} />
+        <OutcomeCard
+          label="Approved with exception"
+          value={summary.humanDecisions.approvedWithException}
+        />
+        {otherJaceStatuses.map(([status, value]) => (
+          <OutcomeCard key={status} label={`Jace ${status}`} value={value} />
+        ))}
       </div>
     </section>
   );

@@ -8,6 +8,7 @@ const pageSource = readFileSync(
 );
 
 vi.mock("@agentrail/db-postgres", () => ({
+  ACCEPTANCE_WORKSPACE_OUTCOME_RANGES: ["24h", "7d", "30d", "1y"],
   getWorkspace: vi.fn(),
   listChangeRecords: vi.fn(),
   readAcceptanceWorkspaceOutcomeSummary: vi.fn(),
@@ -28,10 +29,6 @@ vi.mock("./components/acceptance-evidence-panel", () => ({
 
 vi.mock("./components/acceptance-outcome-summary", () => ({
   AcceptanceOutcomeSummaryPanel: () => null,
-  workspaceOutcomeSummaryWindow: () => ({
-    from: new Date("2026-08-01T00:00:00.000Z"),
-    to: new Date("2026-08-31T00:00:00.000Z"),
-  }),
 }));
 
 import { getWorkspace } from "@agentrail/db-postgres";
@@ -105,6 +102,7 @@ async function renderHeader(): Promise<ReactElementLike> {
   const element = asElement(
     await WorkspaceDashboardPage({
       params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+      searchParams: Promise.resolve({}),
     })
   );
   const children = element.props.children as ReactElementLike[];
@@ -170,6 +168,7 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
   it("loads the five latest Change/Acceptance Record headers for this workspace", async () => {
     await WorkspaceDashboardPage({
       params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+      searchParams: Promise.resolve({}),
     });
 
     expect(listChangeRecords).toHaveBeenCalledExactlyOnceWith({
@@ -178,8 +177,19 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
     });
     expect(readAcceptanceWorkspaceOutcomeSummary).toHaveBeenCalledExactlyOnceWith({
       workspaceId: WORKSPACE_ID,
-      fromUtcInclusive: new Date("2026-08-01T00:00:00.000Z"),
-      toUtcExclusive: new Date("2026-08-31T00:00:00.000Z"),
+      range: "30d",
+    });
+  });
+
+  it("falls back to the server-approved 30d range for an invalid query value", async () => {
+    await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+      searchParams: Promise.resolve({ range: "7hours" }),
+    });
+
+    expect(readAcceptanceWorkspaceOutcomeSummary).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      range: "30d",
     });
   });
 
@@ -195,6 +205,7 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
 
     const root = await WorkspaceDashboardPage({
       params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+      searchParams: Promise.resolve({ range: "7d" }),
     });
 
     const element = asElement(root);
@@ -204,6 +215,7 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
 
     expect(asElement(onboardingBanner).type).toBe(OnboardingBanner);
     expect(asElement(outcomeSummaryPanel).type).toBe(AcceptanceOutcomeSummaryPanel);
+    expect(asElement(outcomeSummaryPanel).props.activeRange).toBe("7d");
     expect(asElement(acceptancePanel).type).toBe(AcceptanceEvidencePanel);
     expect(asElement(acceptancePanel).props.workspaceId).toBe(WORKSPACE_ID);
     expect(asElement(acceptancePanel).props.records).toBe(records);

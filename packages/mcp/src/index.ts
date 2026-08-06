@@ -30,6 +30,9 @@ const execFileAsync = promisify(execFile);
 
 const AGENTRAIL_BIN = process.env.AGENTRAIL_BIN || "agentrail";
 const DEFAULT_TARGET = process.env.AGENTRAIL_TARGET || process.cwd();
+const JACE_API_URL = process.env.JACE_API_URL?.replace(/\/$/, "");
+const JACE_MCP_TOKEN = process.env.JACE_MCP_TOKEN;
+const JACE_WORKSPACE_ID = process.env.JACE_WORKSPACE_ID;
 
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -76,6 +79,39 @@ function withTarget(args: string[], target?: string): string[] {
   return [...args, "--target", target || DEFAULT_TARGET, "--json"];
 }
 
+/** Call the hosted Acceptance Record boundary, never the database directly. */
+async function callJace(
+  path: string,
+  method: "GET" | "POST" | "PATCH",
+  body?: Record<string, unknown>,
+): Promise<ToolResult> {
+  if (!JACE_API_URL || !JACE_MCP_TOKEN || !JACE_WORKSPACE_ID) {
+    return {
+      content: [{ type: "text", text: "Jace MCP is not configured. Set JACE_API_URL, JACE_MCP_TOKEN, and JACE_WORKSPACE_ID." }],
+      isError: true,
+    };
+  }
+  try {
+    const response = await fetch(`${JACE_API_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${JACE_MCP_TOKEN}`,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const payload: unknown = await response.json().catch(() => ({ error: "Jace returned no JSON response" }));
+    const text = JSON.stringify(payload, null, 2);
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined,
+      isError: !response.ok,
+    };
+  } catch (error) {
+    return { content: [{ type: "text", text: `Jace API request failed: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
+  }
+}
+
 const server = new McpServer({ name: "agentrail-context", version: "0.1.0" });
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
@@ -101,6 +137,87 @@ server.registerTool(
     if (limit) args.push("--limit", String(limit));
     return runAgentrail(withTarget(args, target));
   },
+);
+
+const acceptanceContractSchema = z.object({
+  originalUserWording: z.string().min(1),
+  goal: z.string().min(1),
+  acceptanceCriteria: z.array(z.object({ id: z.string().min(1), text: z.string().min(1), required: z.boolean().optional() })).min(1),
+  nonGoals: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
+  environmentExpectations: z.array(z.string()).optional(),
+  stopConditions: z.array(z.string()).optional(),
+  affectedCodebaseUnits: z.array(z.string()).optional(),
+  openQuestions: z.array(z.object({ id: z.string().min(1), text: z.string().min(1), status: z.enum(["open", "resolved"]), resolution: z.string().optional() })).optional(),
+});
+
+server.registerTool(
+  "acceptance_record_create_draft",
+  {
+    title: "Create Jace Acceptance Record draft",
+    description: "Create a draft Acceptance Record. This does not authorize implementation; a human owner or admin must confirm the resulting contract in Jace.",
+    inputSchema: {
+      repo: z.string().min(1),
+      originChannel: z.string().min(1).optional(),
+      workKey: z.string().min(1).optional(),
+      sourceReferences: z.array(z.record(z.string(), z.unknown())).max(32).optional(),
+      contract: acceptanceContractSchema,
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async (input) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records`, "POST", input,
+  ),
+);
+
+server.registerTool(
+  "acceptance_record_get",
+  {
+    title: "Read Jace Acceptance Record",
+    description: "Read the Acceptance Record and its draft or confirmed contract. Treat only a confirmed version as authority to implement.",
+    inputSchema: { recordId: z.string().uuid() },
+    annotations: READ_ONLY,
+  },
+  async ({ recordId }) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}`, "GET",
+  ),
+);
+
+server.registerTool(
+  "acceptance_record_create_draft_version",
+  {
+    title: "Revise Jace Acceptance Record draft",
+    description: "Create a new immutable draft version after clarification. This cannot confirm a contract or overwrite a confirmed version.",
+    inputSchema: { recordId: z.string().uuid(), contract: acceptanceContractSchema },
+    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ recordId, contract }) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}`,
+    "PATCH", { action: "create_draft_version", contract },
+  ),
+);
+
+server.registerTool(
+  "acceptance_context_pack_record",
+  {
+    title: "Record Jace Context Pack evidence",
+    description: "After building a local bounded context pack for a confirmed contract, record only its hash, provenance, freshness, and artifact references. Do not send raw repository content.",
+    inputSchema: {
+      recordId: z.string().uuid(),
+      phase: z.enum(["plan", "execute", "verify", "review"]),
+      contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/i),
+      compilerVersion: z.string().min(1),
+      manifest: z.record(z.string(), z.unknown()),
+      custody: z.record(z.string(), z.unknown()),
+      freshness: z.record(z.string(), z.unknown()),
+      jsonArtifactRef: z.string().nullable().optional(),
+      markdownArtifactRef: z.string().nullable().optional(),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ recordId, ...pack }) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}/context-packs`, "POST", pack,
+  ),
 );
 
 server.registerTool(

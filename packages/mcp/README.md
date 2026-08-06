@@ -13,6 +13,10 @@ the MCP/tool-enforcement level from
 | `context_get` | `agentrail context get` | only the requested line range / symbol block — never the whole file |
 | `context_build_pack` | `agentrail context build` | a bounded context pack for an issue/PR phase |
 | `context_explain_pack` | `agentrail context explain` | why sources were included / excluded / boosted / demoted |
+| `acceptance_record_create_draft` | Jace API | creates a draft; never confirms it |
+| `acceptance_record_get` | Jace API | draft/confirmed contract for an existing record |
+| `acceptance_record_create_draft_version` | Jace API | immutable clarification revision; never confirms it |
+| `acceptance_context_pack_record` | Jace API | context-pack metadata and artifact references only |
 
 Each tool shells out to the existing `agentrail context …` CLI, so retrieval
 behaviour has a single source of truth.
@@ -31,6 +35,36 @@ The server resolves:
   `AGENTRAIL_TARGET`, else the server's working directory.
 
 The target repo must already be indexed (`agentrail context index`).
+
+### Connect Jace Acceptance Records
+
+An owner or admin creates a scoped **Agent access** credential in Jace. It is
+returned once with a `jace_mcp_` prefix. Put it in an environment variable; do
+not paste it into a committed MCP configuration file. The hosted boundary only
+permits the scopes selected at creation. It cannot confirm contracts, merge,
+deploy, run shell commands, or read another workspace.
+
+```json
+{
+  "mcpServers": {
+    "jace": {
+      "command": "node",
+      "args": ["/abs/path/to/agentrail/packages/mcp/dist/index.js"],
+      "env": {
+        "JACE_API_URL": "https://console.example.com",
+        "JACE_WORKSPACE_ID": "workspace-uuid",
+        "JACE_MCP_TOKEN": "${JACE_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The agent must use a confirmed Acceptance Contract before implementation. If
+clarification is needed, it creates a new draft version and waits for human
+confirmation. When it records a Context Pack, the API accepts only a hash,
+provenance/freshness metadata, and artifact references; raw source content does
+not enter the central record.
 
 ### Claude Code / Claude Desktop / Cursor
 

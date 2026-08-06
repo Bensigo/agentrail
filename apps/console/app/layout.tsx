@@ -13,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         {/* Prevent dark/light flash: apply saved preference before first paint.
             Light is the default — only an explicit stored "dark" opts back in;

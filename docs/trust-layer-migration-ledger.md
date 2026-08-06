@@ -49,7 +49,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
 | Task-scoped external-builder Context Pack handoff | `fd297f13` | focused MCP builder-task route test, native MCP protocol test, MCP build/typecheck, and DB typecheck. A scoped builder can retrieve only its recorded handoff's confirmed contract and selected bounded Context Pack metadata/artifact references; it cannot retrieve raw source or treat handoff as proof of implementation. |
-| Canonical hosted intake through session-bound Acceptance Contract draft and reply evidence | `742eafe9` through `319affd8` | DB identity/link tests and typecheck; focused Console intake/draft/outbound-message route tests; Jace hosted-inbound, intake-draft/reply, channel-wiring, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. After the Console creates the Intake, Jace receives only its server-returned Intake ID in trusted session attributes. The native `draft_acceptance_contract` tool can use that bound ID and workspace—not model input—to create a parsed immutable draft Record. After each existing channel's final reply has successfully returned, a best-effort Jace-only append records the exact reply with its source channel and a session-plus-turn idempotency key. It cannot confirm, compile/deliver a Pack, select a builder, execute code, or claim the audit append succeeded when it degraded. No live channel round-trip is proven, and Jace cannot yet re-read a compact Intake on a resumed/compacted session. |
+| Canonical hosted intake, session-bound draft, reply evidence, and bounded resume readback | `742eafe9` through `e913c16e` | DB identity/link/readback tests and typecheck; focused Console intake/draft/outbound/readback route tests; Jace hosted-inbound, intake-draft/reply/readback, channel-wiring, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. Jace receives only the Console-returned Intake ID in trusted session attributes. It can draft a parsed immutable Record and, after a compaction, retrieve only a bounded first-inbound plus recent-tail/contract projection. It cannot select a tenant or Intake, confirm, compile/deliver a Pack, select a builder, execute code, or claim success on a degraded response. Final replies are appended only after channel delivery returns. No live channel round-trip is proven. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
@@ -65,13 +65,11 @@ acknowledgement only; no dispatcher has proven notification.
    The automatic task-context queue, native MCP read/ack, and GitHub fallback
    dispatch retain attempt/outcome, but no Codex/Claude builder has retrieved a
    packet, acknowledged it, or resumed work in a live integration test.
-3. Add a session-bound compact Intake read surface so Jace can resume after
-   compaction and ask only still-unresolved questions. Hosted Console,
-   Telegram, Discord, and Slack input plus final replies now have canonical
-   append-only evidence, and the same deterministic Intake can create a draft
-   Acceptance Record; no live channel draft/confirmation round-trip has been
-   proven, and stored Intake evidence is not yet injected back into Jace on a
-   resumed session.
+3. Prove a live supported Intake → missing-question → draft → human
+   confirmation round-trip. Hosted Console, Telegram, Discord, and Slack now
+   have append-only input/reply evidence and Jace can fetch a bounded resume
+   projection, but no deployed channel has exercised that flow or proved that
+   only unresolved questions were asked.
 4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
    of obsolete factory/advisory surfaces, and copy-only landing pivot.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
@@ -112,7 +110,7 @@ acknowledgement only; no dispatcher has proven notification.
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `319affd8` (record final delivered channel replies). The only expected untracked
+  `e913c16e` (bounded session Intake readback). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

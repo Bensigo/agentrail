@@ -1759,6 +1759,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   prRevisionId: string;
   verificationPlanId: string;
   modality?: "ui" | "api";
+  requireReadyPreview?: boolean;
 }): Promise<{
   plan: EvidenceVerificationPlanRow;
   repositoryFullName: string;
@@ -1796,7 +1797,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   // plan names. UI artifact recording retains its existing semantics: it
   // resolves the immutable plan/PR tuple but does not require a live preview
   // at upload time.
-  if (input.modality !== "api") return resolved;
+  if (input.modality !== "api" && !input.requireReadyPreview) return resolved;
   if (!row.plan.environmentId) return null;
   const previews = await db.select({ url: previewBoots.url })
     .from(previewBoots)

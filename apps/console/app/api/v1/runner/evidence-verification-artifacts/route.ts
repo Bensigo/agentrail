@@ -13,6 +13,11 @@ const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const object = (value: unknown): value is Record<string, unknown> => value != null && typeof value === "object" && !Array.isArray(value);
 
+function matchesPreviewOrigin(observedUrl: unknown, previewUrl: string | undefined): boolean {
+  if (!text(observedUrl) || !previewUrl) return false;
+  try { return new URL(observedUrl).origin === new URL(previewUrl).origin; } catch { return false; }
+}
+
 /** Store UI evidence only after deriving its criterion and exact PR head from a persisted plan. */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
@@ -21,7 +26,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "evidence storage not enabled" }, { status: 503 });
   }
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const required = ["workspaceId", "recordId", "prRevisionId", "verificationPlanId", "collectedBy", "imageBase64", "contentType"];
+  const required = ["workspaceId", "recordId", "prRevisionId", "verificationPlanId", "collectedBy", "imageBase64", "contentType", "observedUrl"];
   if (!object(body) || required.some((key) => !text(body[key])) || !Number.isInteger(body.index)) {
     return NextResponse.json({ error: "invalid verification artifact payload" }, { status: 400 });
   }
@@ -40,9 +45,13 @@ export async function POST(request: NextRequest) {
     prRevisionId: body.prRevisionId as string,
     verificationPlanId: body.verificationPlanId as string,
     modality: "ui",
+    requireReadyPreview: true,
   });
   if (!resolved) {
     return NextResponse.json({ error: "current planned UI criterion not found for this record and PR revision" }, { status: 409 });
+  }
+  if (!matchesPreviewOrigin(body.observedUrl, resolved.previewUrl)) {
+    return NextResponse.json({ error: "UI evidence does not match the current exact-preview origin" }, { status: 409 });
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
   let key: string;

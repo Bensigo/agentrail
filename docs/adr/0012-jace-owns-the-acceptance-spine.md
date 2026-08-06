@@ -83,7 +83,9 @@ structural handoff enforcement, not yet a live compiler attestation.
 The runner can now store an inspectable PNG/JPEG only by resolving a current,
 planned UI criterion against its Acceptance Record and exact PR revision. It
 derives the repository, PR number, head, criterion, and environment from that
-plan and records an artifact key plus SHA-256 digest. A parallel API-only
+plan and records an artifact key plus SHA-256 digest. Upload requires the
+browser's observed URL, and the server accepts it only while the plan's exact
+PR-head preview is ready and that URL has its origin. A parallel API-only
 route accepts structured request/response-status/assertion evidence only for a
 current planned API criterion, redacts credential-bearing fields and common
 credential text before storing a JSON artifact, and binds the same exact-head

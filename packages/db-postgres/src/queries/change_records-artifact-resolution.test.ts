@@ -69,4 +69,12 @@ describe("resolveEvidenceVerificationPlanForArtifact", () => {
     });
     expect(state.whereCalls).toHaveLength(1);
   });
+
+  it("can require an exact ready preview for a UI artifact upload", async () => {
+    state.selectReturns = [[{ ...row, plan: { ...row.plan, modality: "ui" } }], [{ url: "https://preview.example.test" }]];
+    await expect(resolveEvidenceVerificationPlanForArtifact({ ...input, modality: "ui", requireReadyPreview: true })).resolves.toMatchObject({
+      plan: { modality: "ui" }, previewUrl: "https://preview.example.test",
+    });
+    expect(state.whereCalls).toHaveLength(2);
+  });
 });

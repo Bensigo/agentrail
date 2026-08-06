@@ -6,7 +6,7 @@ export function verificationExecutionPrompt(item) {
   }
   const action = modality === "api"
     ? `Dispatch qa to fetch only GET ${apiRequest?.path} at this preview origin. It must confirm status ${apiRequest?.expectedStatus}, upload a redacted request/response/assertion card with upload_verification_api_artifact using workspaceId=${workspaceId}, recordId=${recordId}, prRevisionId=${prRevisionId}, verificationPlanId=${verificationPlanId}, and never send credentials or mutate data.`
-    : `Dispatch qa to drive the browser. It must use upload_verification_artifact with workspaceId=${workspaceId}, recordId=${recordId}, prRevisionId=${prRevisionId}, verificationPlanId=${verificationPlanId} for the decisive screenshot.`;
+    : `Dispatch qa to drive the browser. It must use upload_verification_artifact with workspaceId=${workspaceId}, recordId=${recordId}, prRevisionId=${prRevisionId}, verificationPlanId=${verificationPlanId}, and the browser's decisive observedUrl for the decisive screenshot.`;
   return [
     `Execute one Jace Acceptance Record verification, not a PR review: ${executionId}.`,
     `Open only this safe exact-head preview: ${previewUrl}.`,

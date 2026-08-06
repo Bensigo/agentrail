@@ -3,16 +3,16 @@ import { classifyStatus, failure, resolveConsoleConfig } from "./upload_evidence
 export const VERIFICATION_ARTIFACT_PATH = "/api/v1/runner/evidence-verification-artifacts";
 
 /** Upload a browser capture only through the Acceptance Record plan-bound artifact seam. */
-export async function runUploadVerificationArtifact({ env = {}, workspaceId, recordId, prRevisionId, verificationPlanId, collectedBy, index, imageBase64, contentType, transport }) {
+export async function runUploadVerificationArtifact({ env = {}, workspaceId, recordId, prRevisionId, verificationPlanId, collectedBy, index, imageBase64, contentType, observedUrl, transport }) {
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) return failure("config_missing");
-  const values = [workspaceId, recordId, prRevisionId, verificationPlanId, collectedBy, imageBase64, contentType].map((value) => String(value ?? "").trim());
-  const [workspace, record, revision, plan, collector, image, type] = values;
+  const values = [workspaceId, recordId, prRevisionId, verificationPlanId, collectedBy, imageBase64, contentType, observedUrl].map((value) => String(value ?? "").trim());
+  const [workspace, record, revision, plan, collector, image, type, observed] = values;
   const imageIndex = Number(index);
-  if (!workspace || !record || !revision || !plan || !collector || !image || !type || !Number.isInteger(imageIndex) || imageIndex < 1) return failure("bad_request");
+  if (!workspace || !record || !revision || !plan || !collector || !image || !type || !observed || !Number.isInteger(imageIndex) || imageIndex < 1) return failure("bad_request");
   let response;
   try {
-    response = await transport(`${cfg.baseUrl}${VERIFICATION_ARTIFACT_PATH}`, { method: "POST", headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ workspaceId: workspace, recordId: record, prRevisionId: revision, verificationPlanId: plan, collectedBy: collector, index: imageIndex, imageBase64: image, contentType: type }) });
+    response = await transport(`${cfg.baseUrl}${VERIFICATION_ARTIFACT_PATH}`, { method: "POST", headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ workspaceId: workspace, recordId: record, prRevisionId: revision, verificationPlanId: plan, collectedBy: collector, index: imageIndex, imageBase64: image, contentType: type, observedUrl: observed }) });
   } catch { return failure("unreachable"); }
   const status = classifyStatus(Number(response?.status));
   let body;

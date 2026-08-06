@@ -120,6 +120,24 @@ test("the review-job worker gate sits inside setup(), after the Discord gateway'
   assert.ok(reviewIndex < setupCloseIndex, "review worker start must still be inside setup()");
 });
 
+test("imports startVerificationExecutionWorker from ./lib/verification_execution_worker.mjs", () => {
+  assert.match(
+    instrumentationCode,
+    /import\s*{\s*startVerificationExecutionWorker\s*}\s*from\s*["']\.\/lib\/verification_execution_worker\.mjs["']/,
+  );
+});
+
+test("gates the verification-execution worker on JACE_VERIFICATION_EXECUTION_WORKER === \"1\", default off", () => {
+  assert.match(instrumentationCode, /process\.env\.JACE_VERIFICATION_EXECUTION_WORKER\s*===\s*["']1["']/);
+});
+
+test("starts the verification-execution worker fire-and-forget with a .catch, never an escaping rejection", () => {
+  const gateMatch = instrumentationCode.match(
+    /if\s*\(\s*process\.env\.JACE_VERIFICATION_EXECUTION_WORKER\s*===\s*["']1["']\s*\)\s*{\s*[\s\S]*?void startVerificationExecutionWorker\(process\.env\)\.catch\(/,
+  );
+  assert.ok(gateMatch, "JACE_VERIFICATION_EXECUTION_WORKER gate block not found");
+});
+
 // ---------------------------------------------------------------------------
 // (b) No Langfuse env vars set → the config `setup` builds carries ZERO span
 // processors (the explicit inert path — telemetry is enabled by this file's

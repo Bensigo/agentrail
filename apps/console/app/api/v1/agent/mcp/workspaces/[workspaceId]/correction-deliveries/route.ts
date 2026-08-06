@@ -23,7 +23,7 @@ export async function GET(
   }
   const rows = await readEvidenceReviewCorrectionDeliveriesForTask({ workspaceId, builder, taskContextKey });
   return NextResponse.json({
-    deliveries: rows.map(({ delivery, correction, review, revision, pr }) => ({
+    deliveries: rows.map(({ delivery, correction, criterion, review, revision, pr }) => ({
       delivery: {
         id: delivery.id, channel: delivery.channel, target: delivery.target,
         attempt: delivery.attempt, outcome: delivery.outcome, outcomeDetail: delivery.outcomeDetail,
@@ -39,6 +39,7 @@ export async function GET(
         correctionId: correction.id, criterionId: correction.criterionId,
         expectedBehavior: correction.expectedBehavior, observedBehavior: correction.observedBehavior,
         evidenceRefs: correction.evidenceRefs, reproductionSteps: correction.reproductionSteps,
+        runtimeEvidence: criterion?.runtimeEvidence ?? [],
         relevantLocations: correction.likelyAffectedUnits, contextRefs: correction.contextRefs,
         ruleOrBoundary: correction.scopeBoundary, concreteImpact: correction.concreteImpact,
         requiredCorrection: correction.requiredCorrection, reverification: correction.reverification,

@@ -1114,11 +1114,16 @@ export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
     delivery: evidenceReviewCorrectionDeliveries,
     correction: evidenceReviewCorrections,
     review: evidenceReviews,
+    criterion: evidenceReviewCriteria,
     revision: changeRecordPrRevisions,
     pr: changeRecordPrs,
   }).from(evidenceReviewCorrectionDeliveries)
     .innerJoin(evidenceReviewCorrections, eq(evidenceReviewCorrectionDeliveries.correctionId, evidenceReviewCorrections.id))
     .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+    .leftJoin(evidenceReviewCriteria, and(
+      eq(evidenceReviewCriteria.reviewId, evidenceReviews.id),
+      eq(evidenceReviewCriteria.criterionId, evidenceReviewCorrections.criterionId),
+    ))
     .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
     .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
     .where(and(
@@ -1144,11 +1149,16 @@ export async function claimEvidenceReviewCorrectionDeliveryForGithubDispatch(inp
       delivery: evidenceReviewCorrectionDeliveries,
       correction: evidenceReviewCorrections,
       review: evidenceReviews,
+      criterion: evidenceReviewCriteria,
       revision: changeRecordPrRevisions,
       pr: changeRecordPrs,
     }).from(evidenceReviewCorrectionDeliveries)
       .innerJoin(evidenceReviewCorrections, eq(evidenceReviewCorrectionDeliveries.correctionId, evidenceReviewCorrections.id))
       .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+      .leftJoin(evidenceReviewCriteria, and(
+        eq(evidenceReviewCriteria.reviewId, evidenceReviews.id),
+        eq(evidenceReviewCriteria.criterionId, evidenceReviewCorrections.criterionId),
+      ))
       .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
       .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
       .where(and(

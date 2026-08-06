@@ -93,6 +93,13 @@ describe("evidence verification plan completion", () => {
     ).toBe(400);
   });
 
+  it("requires a bounded read-only descriptor for a planned API criterion", async () => {
+    const apiPlan = { criterionId: "audit", modality: "api", status: "planned", environmentId: "preview-1", flow: "read audit", apiRequest: { method: "GET", path: "/api/audit", expectedStatus: 200 } };
+    expect((await POST(request({ ...body, plans: [body.plans[0], apiPlan] }))).status).toBe(201);
+    expect((await POST(request({ ...body, plans: [body.plans[0], { ...apiPlan, apiRequest: { method: "POST", path: "/api/audit", expectedStatus: 200 } }] }))).status).toBe(400);
+    expect((await POST(request({ ...body, plans: [body.plans[0], { ...apiPlan, apiRequest: { method: "GET", path: "https://outside.example", expectedStatus: 200 } }] }))).status).toBe(400);
+  });
+
   it("fails closed without the worker secret", async () => {
     expect((await POST(request(body, false))).status).toBe(401);
     expect(recordEvidenceVerificationPlans).not.toHaveBeenCalled();

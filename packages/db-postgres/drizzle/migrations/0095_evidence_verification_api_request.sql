@@ -1,0 +1,3 @@
+ALTER TABLE "evidence_verification_plans" ADD COLUMN "api_request" jsonb;
+--> statement-breakpoint
+ALTER TABLE "evidence_verification_plans" ADD CONSTRAINT "evidence_verification_plans_api_request_check" CHECK (("evidence_verification_plans"."modality" <> 'api') OR ("evidence_verification_plans"."status" = 'not_testable') OR ("evidence_verification_plans"."api_request" IS NOT NULL AND "evidence_verification_plans"."api_request"->>'method' = 'GET' AND length(trim(coalesce("evidence_verification_plans"."api_request"->>'path', ''))) > 0 AND ("evidence_verification_plans"."api_request"->>'expectedStatus') ~ '^[0-9]{3}$'));

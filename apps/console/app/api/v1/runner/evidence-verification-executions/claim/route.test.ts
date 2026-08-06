@@ -17,4 +17,9 @@ describe("criterion execution claim", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ plan: { criterionId: "saved" }, pr: { headSha: "head" }, previewUrl: "http://safe-preview" });
   });
+  it("returns the immutable API descriptor only from the claimed plan", async () => {
+    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "audit", modality: "api", environmentId: "preview", flow: "read audit", apiRequest: { method: "GET", path: "/api/audit", expectedStatus: 200 }, expectedBehavior: "Audit recorded" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);
+    const response = await POST(request({ workerId: "worker" }));
+    await expect(response.json()).resolves.toMatchObject({ plan: { modality: "api", apiRequest: { method: "GET", path: "/api/audit", expectedStatus: 200 } } });
+  });
 });

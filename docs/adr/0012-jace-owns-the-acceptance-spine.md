@@ -88,6 +88,14 @@ credential text before storing a JSON artifact, and binds the same exact-head
 identity. Neither route exercises its flow, verifies its assertions, or proves
 the criterion.
 
+Planned API criteria now carry a bounded immutable request descriptor: `GET`,
+a same-preview-origin path, and expected status. The queue can claim such a
+criterion only when its exact PR-head preview is ready; Jace instructs QA to
+fetch only that descriptor and upload a redacted request/response/assertion
+artifact through the plan boundary. No deployed execution or independent
+semantic assertion evaluator is proven. Mutating, credential-bearing, and
+external API requests remain outside this MVP execution path.
+
 Jace now has a separate exact-head criterion-execution queue, a guarded worker
 result seam, and a default-off Eve worker that claims only those plan-bound
 jobs, asks root Jace to execute one constrained criterion prompt, and completes

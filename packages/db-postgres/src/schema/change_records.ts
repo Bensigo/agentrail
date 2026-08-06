@@ -413,6 +413,8 @@ export const evidenceVerificationPlans = pgTable(
     modality: text("modality").notNull(),
     environmentId: text("environment_id"),
     flow: text("flow"),
+    /** Immutable, bounded machine-readable API proof request; never a credential container. */
+    apiRequest: jsonb("api_request").$type<{ method: "GET"; path: string; expectedStatus: number } | null>(),
     expectedBehavior: text("expected_behavior").notNull(),
     status: text("status").notNull(),
     notTestableReason: text("not_testable_reason"),
@@ -434,6 +436,15 @@ export const evidenceVerificationPlans = pgTable(
       "evidence_verification_plans_planned_proof_check",
       sql`(${t.status} = 'not_testable' AND length(trim(coalesce(${t.notTestableReason}, ''))) > 0)
         OR (${t.status} = 'planned' AND length(trim(coalesce(${t.environmentId}, ''))) > 0 AND length(trim(coalesce(${t.flow}, ''))) > 0)`
+    ),
+    apiRequestCheck: check(
+      "evidence_verification_plans_api_request_check",
+      sql`(${t.modality} <> 'api')
+        OR (${t.status} = 'not_testable')
+        OR (${t.apiRequest} IS NOT NULL
+          AND ${t.apiRequest}->>'method' = 'GET'
+          AND length(trim(coalesce(${t.apiRequest}->>'path', ''))) > 0
+          AND (${t.apiRequest}->>'expectedStatus') ~ '^[0-9]{3}$')`
     ),
   })
 );

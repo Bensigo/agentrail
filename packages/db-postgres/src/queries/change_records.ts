@@ -1702,6 +1702,7 @@ export type RecordEvidenceVerificationPlansInput = {
     modality: string;
     environmentId?: string | null;
     flow?: string | null;
+    apiRequest?: { method: "GET"; path: string; expectedStatus: number } | null;
     expectedBehavior: string;
     status: "planned" | "not_testable";
     notTestableReason?: string | null;
@@ -1743,6 +1744,7 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
       acceptanceContractId: input.contractId, acceptanceContractVersion: input.contractVersion,
       criterionId: plan.criterionId, criterionTextSnapshot: plan.criterionTextSnapshot,
       modality: plan.modality, environmentId: plan.environmentId ?? null, flow: plan.flow ?? null,
+      apiRequest: plan.apiRequest ?? null,
       expectedBehavior: plan.expectedBehavior, status: plan.status,
       notTestableReason: plan.notTestableReason ?? null, plannedBy: input.plannedBy,
     }))).returning();
@@ -1884,7 +1886,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
       INNER JOIN preview_boots AS preview ON preview.id = plan.environment_id
       WHERE execution.status = 'queued'
         AND plan.status = 'planned'
-        AND plan.modality = 'ui'
+        AND plan.modality IN ('ui', 'api')
         AND revision.superseded_at IS NULL
         AND preview.workspace_id = attachment.workspace_id
         AND preview.repo = attachment.repository_full_name

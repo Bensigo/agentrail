@@ -667,6 +667,13 @@
       "when": 1789900000000,
       "tag": "0094_evidence_verification_api_artifacts",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1790000000000,
+      "tag": "0095_evidence_verification_api_request",
+      "breakpoints": true
     }
   ]
 }

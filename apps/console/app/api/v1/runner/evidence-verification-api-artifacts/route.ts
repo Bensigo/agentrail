@@ -12,24 +12,37 @@ const MAX_EVIDENCE_BYTES = 256 * 1024;
 const MAX_ARTIFACT_INDEX = 10;
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const object = (value: unknown): value is Record<string, unknown> => value != null && typeof value === "object" && !Array.isArray(value);
+const integer = (value: unknown): value is number => Number.isInteger(value);
 
 function validApiEvidence(value: unknown): value is Record<string, unknown> {
-  if (!object(value) || !object(value.request) || !object(value.response)) return false;
-  if (!text(value.request.method) || !text(value.request.url)) return false;
-  if (!Number.isInteger(value.response.status) || (value.response.status as number) < 100 || (value.response.status as number) > 599) return false;
-  return Array.isArray(value.assertions) && value.assertions.length > 0 && value.assertions.length <= 20
-    && value.assertions.every((assertion) => text(assertion) && assertion.length <= 2_000);
+  if (!object(value)) return false;
+  const request = value.request;
+  const response = value.response;
+  const assertions = value.assertions;
+  if (!object(request) || !object(response)) return false;
+  if (!text(request.method) || !text(request.url)) return false;
+  if (!integer(response.status) || response.status < 100 || response.status > 599) return false;
+  return Array.isArray(assertions) && assertions.length > 0 && assertions.length <= 20
+    && assertions.every((assertion) => text(assertion) && assertion.length <= 2_000);
 }
 
 function matchesApiDescriptor(evidence: Record<string, unknown>, descriptor: unknown, previewUrl: string | undefined): boolean {
-  if (!object(descriptor) || descriptor.method !== "GET" || !text(descriptor.path) || !Number.isInteger(descriptor.expectedStatus)) return false;
-  const request = evidence.request as Record<string, unknown>;
-  const response = evidence.response as Record<string, unknown>;
-  if (request.method !== descriptor.method || response.status !== descriptor.expectedStatus) return false;
+  if (!object(descriptor) || descriptor.method !== "GET") return false;
+  const descriptorPath = descriptor.path;
+  const expectedStatus = descriptor.expectedStatus;
+  if (!text(descriptorPath) || !integer(expectedStatus)) return false;
+  const request = evidence.request;
+  const response = evidence.response;
+  if (!object(request) || !object(response)) return false;
+  const requestMethod = request.method;
+  const requestUrl = request.url;
+  if (!text(requestMethod) || !text(requestUrl) || !integer(response.status)) return false;
+  if (requestMethod !== descriptor.method || response.status !== expectedStatus) return false;
+  const previewOrigin = previewUrl ? new URL(previewUrl).origin : null;
+  if (!previewOrigin) return false;
   try {
-    const url = new URL(request.url as string);
-    return Boolean(previewUrl) && url.origin === new URL(previewUrl).origin
-      && url.pathname === descriptor.path && url.search === "" && url.hash === "";
+    const url = new URL(requestUrl);
+    return url.origin === previewOrigin && url.pathname === descriptorPath && url.search === "" && url.hash === "";
   } catch { return false; }
 }
 
@@ -40,20 +53,28 @@ export async function POST(request: NextRequest) {
   if (process.env.REVIEW_EVIDENCE_ENABLED !== "1" || !storageConfigured(process.env)) {
     return NextResponse.json({ error: "evidence storage not enabled" }, { status: 503 });
   }
-  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const parsed = await request.json().catch(() => null);
+  if (!object(parsed)) {
+    return NextResponse.json({ error: "API evidence requires exact plan coordinates plus request, response status, and assertions" }, { status: 400 });
+  }
+  const body = parsed;
+  const workspaceId = body.workspaceId;
+  const recordId = body.recordId;
+  const prRevisionId = body.prRevisionId;
+  const verificationPlanId = body.verificationPlanId;
+  const collectedBy = body.collectedBy;
   const index = body.index;
-  const required = ["workspaceId", "recordId", "prRevisionId", "verificationPlanId", "collectedBy"];
-  if (!object(body) || required.some((key) => !text(body[key])) || typeof index !== "number" || !Number.isInteger(index) || !validApiEvidence(body.evidence)) {
+  const evidenceInput = body.evidence;
+  if (!text(workspaceId) || !text(recordId) || !text(prRevisionId) || !text(verificationPlanId) || !text(collectedBy) || !integer(index) || !validApiEvidence(evidenceInput)) {
     return NextResponse.json({ error: "API evidence requires exact plan coordinates plus request, response status, and assertions" }, { status: 400 });
   }
   if (index < 1 || index > MAX_ARTIFACT_INDEX) {
     return NextResponse.json({ error: `index must be an integer between 1 and ${MAX_ARTIFACT_INDEX}` }, { status: 422 });
   }
-  let evidence: unknown;
   let bytes: Buffer;
   try {
-    evidence = redactApiEvidence(body.evidence);
-    bytes = Buffer.from(JSON.stringify(evidence));
+    const redactedEvidence = redactApiEvidence(evidenceInput);
+    bytes = Buffer.from(JSON.stringify(redactedEvidence));
   } catch (error) {
     const message = error instanceof ApiEvidenceError ? error.message : "API evidence could not be serialized";
     return NextResponse.json({ error: message }, { status: 400 });
@@ -62,23 +83,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "redacted API evidence must be non-empty and no more than 256KB" }, { status: 413 });
   }
   const resolved = await resolveEvidenceVerificationPlanForArtifact({
-    workspaceId: body.workspaceId as string,
-    recordId: body.recordId as string,
-    prRevisionId: body.prRevisionId as string,
-    verificationPlanId: body.verificationPlanId as string,
+    workspaceId,
+    recordId,
+    prRevisionId,
+    verificationPlanId,
     modality: "api",
   });
   if (!resolved) {
     return NextResponse.json({ error: "current planned API criterion not found for this record and PR revision" }, { status: 409 });
   }
-  if (!matchesApiDescriptor(body.evidence as Record<string, unknown>, resolved.plan.apiRequest, resolved.previewUrl)) {
+  if (!matchesApiDescriptor(evidenceInput, resolved.plan.apiRequest, resolved.previewUrl)) {
     return NextResponse.json({ error: "API evidence does not match the planned exact-preview GET request and expected status" }, { status: 409 });
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
   let key: string;
   try {
     key = artifactKey({
-      workspaceId: body.workspaceId as string,
+      workspaceId,
       repo: resolved.repositoryFullName,
       prNumber: resolved.prNumber,
       headSha: resolved.headSha,
@@ -96,7 +117,7 @@ export async function POST(request: NextRequest) {
       artifactKey: key,
       contentType: "application/json",
       contentSha256: digest,
-      collectedBy: body.collectedBy as string,
+      collectedBy,
     });
     return NextResponse.json({
       artifact: {

@@ -64,6 +64,19 @@ describe("API verification artifact upload", () => {
     expect(putArtifact).not.toHaveBeenCalled();
   });
 
+  it("rejects an API artifact when the exact preview URL is absent", async () => {
+    vi.mocked(resolveEvidenceVerificationPlanForArtifact).mockResolvedValueOnce({
+      plan: { id: "plan", criterionId: "widget-api", environmentId: "api-env", apiRequest: { method: "GET", path: "/widgets", expectedStatus: 200 } },
+      repositoryFullName: "ada/widgets",
+      prNumber: 42,
+      headSha: "abcdef0123456789",
+      previewUrl: undefined,
+    } as never);
+
+    expect((await POST(request())).status).toBe(409);
+    expect(putArtifact).not.toHaveBeenCalled();
+  });
+
   it("fails closed without the runner secret", async () => {
     expect((await POST(request(body, false))).status).toBe(401);
     expect(resolveEvidenceVerificationPlanForArtifact).not.toHaveBeenCalled();

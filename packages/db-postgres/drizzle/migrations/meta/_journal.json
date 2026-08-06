@@ -674,6 +674,13 @@
       "when": 1790000000000,
       "tag": "0095_evidence_verification_api_request",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1790100000000,
+      "tag": "0096_agent_mcp_acceptance_intake_scope",
+      "breakpoints": true
     }
   ]
 }

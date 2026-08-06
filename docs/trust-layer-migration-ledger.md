@@ -40,6 +40,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Record, immutable contract draft, human clarification revision, and confirmation | `8bc3a80c` through `0ec7d2e6`, `53cf907b` | focused Console route/contract tests and DB no-open-question unit test. Any workspace member can append a parsed immutable draft; confirmation remains owner/admin-only and fails closed while any question is open. A real migrated Postgres integration test exists but was skipped locally because no migrated database is available. |
 | Metadata-only context-pack record and MCP read surface | `989e3b7c` through `a4f7b8cc` | Python context-pack tests and focused console tests |
 | Dedicated scoped agent-MCP credentials | `2b179526`, `c27b6564` | focused bearer/API/MCP tests and package typecheck |
+| Provenance-bound MCP Intake start; direct MCP contract-write retirement | `1967ed7d` | focused Console intake/credential/record-read tests, native MCP protocol test, package typecheck, DB typecheck, and static route/tool scan. A credential with the new `acceptance:intake:write` scope can submit only a bounded raw task and task-context key. The server derives the workspace-bound `mcp` origin, credential/task provenance, and idempotency keys; it ignores supplied repository, channel, and contract fields. Direct MCP record creation and draft revision routes/tools are removed, and new credentials cannot mint the retired draft-write scope. Existing database scope values remain migration-compatible but have no MCP contract-write route. This starts intake only; it neither asks questions nor drafts/confirms a contract or authorizes implementation. |
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
 | Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs are never auto-attached or reviewed |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
@@ -234,7 +235,7 @@ perform cleanup. No market-value claim follows from current factory results.
 
 ## Unverified assumptions and current boundaries
 
-- No Codex/Claude live pickup, live Slack/Discord/Console acceptance-draft or
+- No Codex/Claude live pickup, live MCP/Slack/Discord/Console acceptance-draft or
   reply-recording round-trip, session-resume Intake read, GitHub canonical PR
   fetch, context compiler attestation, deployed safe-preview execution,
   browser proof, non-UI artifact capture, Jace live delivery dispatch, or
@@ -242,21 +243,21 @@ perform cleanup. No market-value claim follows from current factory results.
   its runtime must not be represented as an exercised criterion. The native
   MCP server is unit-tested to call the durable correction inbox and receipt
   endpoint, but no live external builder has done so; only its recorded
-  acknowledgement proves receipt. Its current direct
-  `acceptance_record_create_draft` / draft-version MCP tools bypass the
-  canonical Intake and accept model-supplied repository, origin, and contract
-  fields. They cannot be called evidence of Codex/Claude channel-neutral
-  Intake or Jace-only missing-question behavior; they need replacement with a
-  credential-bound Intake start and a separately designed clarification and
-  human-confirmation protocol.
+  acknowledgement proves receipt. MCP now has a credential-bound raw Intake
+  start, not direct draft creation: it records fixed `mcp` origin and task
+  provenance, but it has no live inbound/outbound clarification or human
+  confirmation round-trip. It therefore cannot yet be called evidence of
+  Codex/Claude channel-neutral missing-question behavior or completed builder
+  handoff.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; committed product slices include
   `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
   plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
   Acceptance Record), and `f527d095` (compiler job admission/claim). The
   latest committed cleanup is `88c8f153` (removal of the advisory reviewer
-  lane). The current MCP audit found the direct-draft contradiction above; no
-  uncommitted product behavior is being treated as evidence.
+  lane). `1967ed7d` retires the direct-draft contradiction. Its focused test
+  evidence is recorded above; no live MCP clarification/confirmation behavior
+  is being inferred from it.
   The only expected unrelated untracked paths are generated dependency
   directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
@@ -301,9 +302,11 @@ smaller-model Context Pack job delegation was stopped after it did not return a
 bounded implementation; its persistence glue was completed locally without
 expanding scope. The advisory-review cleanup was completed locally after a
 short read-only audit failed to return a bounded result; historical database
-rows were retained while all application callers were removed. The next
-design/implementation decision is the MCP direct-draft bypass: retire it only
-when a credential-bound Intake start and an honest clarification/confirmation
-path are ready. Separately, a bounded dependency-lane map remains required
-before any destructive cleanup and must classify every approval/publisher
-caller as remove, neutral infrastructure, or still-needed compatibility.
+rows were retained while all application callers were removed. The MCP
+direct-draft bypass is now retired in favor of credential-bound Intake start,
+with an explicit no-live-clarification claim. The next slice must either
+provide an honest MCP question/confirmation loop or advance the still-bounded
+runtime-proof/delivery work without claiming that loop exists. Separately, a
+bounded dependency-lane map remains required before any destructive cleanup
+and must classify every approval/publisher caller as remove, neutral
+infrastructure, or still-needed compatibility.

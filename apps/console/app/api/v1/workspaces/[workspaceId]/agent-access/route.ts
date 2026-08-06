@@ -11,7 +11,7 @@ import type { ApiKeyScope } from "@agentrail/db-postgres";
 const ADMIN_ROLES = ["owner", "admin"] as const;
 const ALLOWED_SCOPES: ApiKeyScope[] = [
   "acceptance:read",
-  "acceptance:draft:write",
+  "acceptance:intake:write",
   "acceptance:context:write",
   "acceptance:correction:ack",
 ];

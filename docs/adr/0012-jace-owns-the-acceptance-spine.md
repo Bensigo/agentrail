@@ -52,8 +52,9 @@ Jace owns the spine:
 
 ## Current evidence and gaps
 
-Implemented and tested foundations: manual/MCP draft records, human contract
-confirmation, metadata-only Context Packs, manual and fail-closed webhook
+Implemented and tested foundations: manual and hosted-channel draft records,
+credential-bound MCP raw Intake start, human contract confirmation,
+metadata-only Context Packs, manual and fail-closed webhook
 exact-head PR revisions,
 criterion-level evidence validation, durable blocking correction-packet fields,
 human-selected builder handoff bindings, and MCP acknowledgement of a
@@ -62,6 +63,14 @@ verification plan for every confirmed criterion, bound to its current exact PR
 revision and contract; it rejects generic non-UI plans for user-visible
 criteria and requires a safe environment/flow or an explicit `not_testable`
 reason. A persisted plan is not proof.
+
+MCP can start an Acceptance Intake with only a bounded raw user request and a
+stable task-context key. The service derives the workspace-bound `mcp` origin,
+credential provenance, and durable idempotency keys. MCP cannot submit a
+repository, full contract, origin channel, or direct draft revision; those
+write tools/routes are removed. This prevents a builder from bypassing the
+canonical Intake, but it is not a proven live clarification or human
+confirmation loop.
 
 The canonical Acceptance Review validator rejects advisory/random findings: a
 blocker needs an allowed basis, exact evidence, impact, required correction,

@@ -13,9 +13,8 @@ the MCP/tool-enforcement level from
 | `context_get` | `agentrail context get` | only the requested line range / symbol block — never the whole file |
 | `context_build_pack` | `agentrail context build` | a bounded context pack for an issue/PR phase |
 | `context_explain_pack` | `agentrail context explain` | why sources were included / excluded / boosted / demoted |
-| `acceptance_record_create_draft` | Jace API | creates a draft; never confirms it |
+| `acceptance_intake_start` | Jace API | records a raw task with MCP-task provenance; never creates a contract or authorizes implementation |
 | `acceptance_record_get` | Jace API | draft/confirmed contract for an existing record |
-| `acceptance_record_create_draft_version` | Jace API | immutable clarification revision; never confirms it |
 | `acceptance_context_pack_record` | Jace API | context-pack metadata and artifact references only |
 | `acceptance_builder_task_get` | Jace API | the recorded builder task's confirmed contract and selected bounded Context Pack |
 | `correction_deliveries_get` | Jace API | evidence-bound corrections for the recorded builder task; not proof of receipt |
@@ -65,9 +64,13 @@ deploy, run shell commands, or read another workspace.
 }
 ```
 
-The agent must use a confirmed Acceptance Contract before implementation. If
-clarification is needed, it creates a new draft version and waits for human
-confirmation. When it records a Context Pack, the API accepts only a hash,
+Use `acceptance_intake_start` first with the raw user request and a stable MCP
+task-context key. The hosted boundary derives the `mcp` origin and credential
+provenance; the agent cannot select a repository or submit a contract through
+this tool. Jace must collect unresolved information and a human must confirm
+the Acceptance Contract before a Context Pack handoff or implementation. The
+MCP server does not claim that interactive clarification or confirmation has
+completed. When it records a Context Pack, the API accepts only a hash,
 provenance/freshness metadata, and artifact references; raw source content does
 not enter the central record.
 

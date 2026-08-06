@@ -40,10 +40,10 @@ describe("agent access credentials", () => {
   });
 
   it("mints only a scoped agent_mcp secret and returns it once", async () => {
-    const response = await POST(post({ name: "Codex", scopes: ["acceptance:read", "acceptance:read"] }), { params: params() });
+    const response = await POST(post({ name: "Codex", scopes: ["acceptance:read", "acceptance:intake:write", "acceptance:read"] }), { params: params() });
     expect(response.status).toBe(201);
     expect(createApiKey).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: WS, teamId: null, name: "Codex", kind: "agent_mcp", scopes: ["acceptance:read"],
+      workspaceId: WS, teamId: null, name: "Codex", kind: "agent_mcp", scopes: ["acceptance:read", "acceptance:intake:write"],
       keyPrefix: expect.stringMatching(/^jace_mcp_/),
     }));
     expect((await response.json()).secret).toMatch(/^jace_mcp_[a-f0-9]{64}$/);
@@ -53,6 +53,7 @@ describe("agent access credentials", () => {
     for (const body of [
       { name: "Codex", scopes: [] },
       { name: "Codex", scopes: "acceptance:read" },
+      { name: "Codex", scopes: ["acceptance:draft:write"] },
       { name: "Codex", scopes: ["merge:write"] },
     ]) {
       const response = await POST(post(body), { params: params() });

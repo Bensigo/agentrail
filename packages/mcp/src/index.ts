@@ -139,34 +139,20 @@ server.registerTool(
   },
 );
 
-const acceptanceContractSchema = z.object({
-  originalUserWording: z.string().min(1),
-  goal: z.string().min(1),
-  acceptanceCriteria: z.array(z.object({ id: z.string().min(1), text: z.string().min(1), required: z.boolean().optional() })).min(1),
-  nonGoals: z.array(z.string()).optional(),
-  risks: z.array(z.string()).optional(),
-  environmentExpectations: z.array(z.string()).optional(),
-  stopConditions: z.array(z.string()).optional(),
-  affectedCodebaseUnits: z.array(z.string()).optional(),
-  openQuestions: z.array(z.object({ id: z.string().min(1), text: z.string().min(1), status: z.enum(["open", "resolved"]), resolution: z.string().optional() })).optional(),
-});
-
 server.registerTool(
-  "acceptance_record_create_draft",
+  "acceptance_intake_start",
   {
-    title: "Create Jace Acceptance Record draft",
-    description: "Create a draft Acceptance Record. This does not authorize implementation; a human owner or admin must confirm the resulting contract in Jace.",
+    title: "Start Jace Acceptance Intake",
+    description:
+      "Record the raw user task in Jace with this MCP task context. Jace must collect only missing information and a human must confirm the Acceptance Contract before any Context Pack handoff or implementation. This tool does not create a contract, choose a repository, or authorize implementation.",
     inputSchema: {
-      repo: z.string().min(1),
-      originChannel: z.string().min(1).optional(),
-      workKey: z.string().min(1).optional(),
-      sourceReferences: z.array(z.record(z.string(), z.unknown())).max(32).optional(),
-      contract: acceptanceContractSchema,
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+      userTask: z.string().min(1).max(8_000).describe("Raw user request. Do not pre-fill an Acceptance Contract."),
     },
     annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
   },
   async (input) => callJace(
-    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records`, "POST", input,
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes`, "POST", input,
   ),
 );
 
@@ -180,20 +166,6 @@ server.registerTool(
   },
   async ({ recordId }) => callJace(
     `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}`, "GET",
-  ),
-);
-
-server.registerTool(
-  "acceptance_record_create_draft_version",
-  {
-    title: "Revise Jace Acceptance Record draft",
-    description: "Create a new immutable draft version after clarification. This cannot confirm a contract or overwrite a confirmed version.",
-    inputSchema: { recordId: z.string().uuid(), contract: acceptanceContractSchema },
-    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
-  },
-  async ({ recordId, contract }) => callJace(
-    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}`,
-    "PATCH", { action: "create_draft_version", contract },
   ),
 );
 

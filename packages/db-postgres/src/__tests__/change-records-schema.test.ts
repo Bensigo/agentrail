@@ -3,6 +3,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  acceptanceContracts,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -51,6 +52,21 @@ describe("change_records schema — declarations (Arc D storage)", () => {
       (c) => (c as { name?: string }).name
     );
     expect(columnNames).toEqual(["record_id", "event_key"]);
+  });
+
+  it("declares versioned Acceptance Contracts with explicit draft/confirmed state", () => {
+    expect(acceptanceContracts.recordId.notNull).toBe(true);
+    expect(acceptanceContracts.version.notNull).toBe(true);
+    expect(acceptanceContracts.status.notNull).toBe(true);
+    expect(acceptanceContracts.status.hasDefault).toBe(true);
+    expect(acceptanceContracts.contract.notNull).toBe(true);
+    expect(acceptanceContracts.contract.getSQLType()).toBe("jsonb");
+    expect(acceptanceContracts.confirmedBy.notNull).toBe(false);
+    expect(acceptanceContracts.confirmedAt.notNull).toBe(false);
+  });
+
+  it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
+    expect(changeRecords.workKey.notNull).toBe(false);
   });
 });
 
@@ -109,5 +125,44 @@ describe("0070_change_records migration", () => {
     expect(entry.idx).toBe(74);
     expect(entry.version).toBe("7");
     expect(entry.breakpoints).toBe(true);
+  });
+});
+
+describe("0081_acceptance_contracts migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0081_acceptance_contracts.sql"
+  );
+
+  it("adds manual intake identity and creates immutable contract versions", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "work_key"');
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "origin_channel"');
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "source_references"');
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_contracts"');
+    expect(sqlText).toContain('"contract" jsonb NOT NULL');
+  });
+
+  it("prevents duplicate contract versions and multiple confirmed contracts", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_contracts_record_version_key"'
+    );
+    expect(sqlText).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_contracts_one_confirmed_per_record"'
+    );
+  });
+
+  it("is registered in the journal", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0081_acceptance_contracts"
+    );
+    expect(entry).toMatchObject({ idx: 86, version: "7", breakpoints: true });
   });
 });

@@ -7,7 +7,11 @@ import { changeRecordEvents } from "../schema/change_records.js";
 import {
   appendChangeRecordEvent,
   changeRecordId,
+  confirmAcceptanceContract,
+  createDraftAcceptanceContract,
+  createDraftAcceptanceRecord,
   findOrCreateChangeRecord,
+  readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
 
@@ -16,12 +20,18 @@ const DB_AVAILABLE: boolean = await (async () => {
     const rows = Array.from(
       await db.execute(sql`
         SELECT to_regclass('public.change_records') AS change_records,
-               to_regclass('public.change_record_events') AS change_record_events
+               to_regclass('public.change_record_events') AS change_record_events,
+               to_regclass('public.acceptance_contracts') AS acceptance_contracts
       `)
-    ) as Array<{ change_records: string | null; change_record_events: string | null }>;
+    ) as Array<{
+      change_records: string | null;
+      change_record_events: string | null;
+      acceptance_contracts: string | null;
+    }>;
     return (
       rows[0]?.change_records === "change_records" &&
-      rows[0]?.change_record_events === "change_record_events"
+      rows[0]?.change_record_events === "change_record_events" &&
+      rows[0]?.acceptance_contracts === "acceptance_contracts"
     );
   } catch {
     return false;
@@ -207,6 +217,68 @@ describe.skipIf(!DB_AVAILABLE)(
           .delete(workspaces)
           .where(eq(workspaces.id, otherWorkspace[0]!.id));
       }
+    });
+
+    it("creates a retry-safe manual Acceptance Record and confirms one immutable contract version", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
+        contract: {
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      expect(draft.record.issueNumber).toBeNull();
+      expect(draft.record.prNumber).toBeNull();
+      expect(draft.record.workKey).toBe("manual-trust-loop-1");
+      expect(draft.record.originChannel).toBe("codex_mcp");
+      expect(draft.contract.version).toBe(1);
+      expect(draft.contract.status).toBe("draft");
+
+      const retried = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        contract: { originalRequest: "This retry must not replace the draft" },
+        createdBy: "user:lead",
+      });
+      expect(retried.record.id).toBe(draft.record.id);
+      expect(retried.contract.id).toBe(draft.contract.id);
+      expect(retried.contract.contract).toEqual(draft.contract.contract);
+
+      const secondDraft = await createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: {
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          unresolvedQuestions: [{ id: "Q-1", text: "Which theme token?" }],
+        },
+        createdBy: "user:lead",
+      });
+      expect(secondDraft.version).toBe(2);
+      const confirmed = await confirmAcceptanceContract({
+        recordId: draft.record.id,
+        version: secondDraft.version,
+        confirmedBy: "user:lead",
+      });
+      expect(confirmed.status).toBe("confirmed");
+      expect(confirmed.confirmedBy).toBe("user:lead");
+      expect(confirmed.confirmedAt).not.toBeNull();
+
+      const contracts = await readAcceptanceContracts({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      });
+      expect(contracts?.map((contract) => [contract.version, contract.status])).toEqual([
+        [1, "draft"],
+        [2, "confirmed"],
+      ]);
     });
   }
 );

@@ -1,9 +1,11 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
   changeRecords,
+  acceptanceContracts,
+  type AcceptanceContractRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
@@ -54,11 +56,17 @@ function mergeHeadShasSql(headShas: readonly string[]) {
 export type ChangeRecordAnchor = {
   workspaceId: string;
   repo: string;
+  workKey?: string | null;
   issueNumber?: number | null;
   prNumber?: number | null;
 };
 
 export function changeRecordId(input: ChangeRecordAnchor): string {
+  if (input.workKey != null && input.workKey.trim()) {
+    return uuid5Url(
+      `change-record:work:${input.workspaceId}:${input.repo}:${input.workKey.trim()}`
+    );
+  }
   if (input.issueNumber != null) {
     return uuid5Url(
       `change-record:issue:${input.workspaceId}:${input.repo}:${input.issueNumber}`
@@ -69,7 +77,7 @@ export function changeRecordId(input: ChangeRecordAnchor): string {
       `change-record:pr:${input.workspaceId}:${input.repo}:${input.prNumber}`
     );
   }
-  throw new Error("changeRecordId requires issueNumber or prNumber");
+  throw new Error("changeRecordId requires workKey, issueNumber, or prNumber");
 }
 
 export function changeRecordEventId(input: {
@@ -79,11 +87,22 @@ export function changeRecordEventId(input: {
   return uuid5Url(`change-record-event:${input.recordId}:${input.eventKey}`);
 }
 
+export function acceptanceContractId(input: {
+  recordId: string;
+  version: number;
+}): string {
+  return uuid5Url(`acceptance-contract:${input.recordId}:${input.version}`);
+}
+
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
   return {
     id: row.id as string,
     workspaceId: row.workspace_id as string,
     repo: row.repo as string,
+    workKey: (row.work_key as string | null) ?? null,
+    originChannel: (row.origin_channel as string | null) ?? null,
+    sourceReferences:
+      (row.source_references as Record<string, unknown>[] | null) ?? [],
     issueNumber: (row.issue_number as number | null) ?? null,
     prNumber: (row.pr_number as number | null) ?? null,
     headShas: (row.head_shas as string[] | null) ?? [],
@@ -389,4 +408,259 @@ export async function readChangeRecordTimeline(input: {
     .orderBy(asc(changeRecordEvents.at), asc(changeRecordEvents.createdAt));
 
   return { record, events };
+}
+
+export type AcceptanceContractStatus = "draft" | "confirmed";
+
+export type CreateDraftAcceptanceRecordInput = {
+  workspaceId: string;
+  repo: string;
+  originChannel: string;
+  sourceReferences?: Record<string, unknown>[];
+  contract: Record<string, unknown>;
+  createdBy: string;
+  /** Reusing a work key makes draft creation safe to retry. */
+  workKey?: string;
+};
+
+export type AcceptanceRecordDraft = {
+  record: ChangeRecordRow;
+  contract: AcceptanceContractRow;
+};
+
+function normalizedWorkKey(value: string | undefined): string {
+  const candidate = value?.trim();
+  return candidate || randomUUID();
+}
+
+function normalizeSourceReferences(
+  sourceReferences: Record<string, unknown>[] | undefined
+): Record<string, unknown>[] {
+  return Array.isArray(sourceReferences) ? sourceReferences : [];
+}
+
+async function appendContractEventInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: {
+    recordId: string;
+    eventKey: string;
+    stage: string;
+    actor: string;
+    payloadRef: Record<string, unknown>;
+  }
+): Promise<void> {
+  const id = changeRecordEventId({
+    recordId: input.recordId,
+    eventKey: input.eventKey,
+  });
+  await tx.execute(sql`
+    INSERT INTO change_record_events (
+      id, record_id, event_key, stage, actor, payload_ref
+    ) VALUES (
+      ${id}, ${input.recordId}, ${input.eventKey}, ${input.stage},
+      ${input.actor}, ${JSON.stringify(input.payloadRef)}::jsonb
+    )
+    ON CONFLICT (record_id, event_key) DO NOTHING
+  `);
+}
+
+/**
+ * Starts the trust workflow before an issue or PR exists. A retry with the
+ * same workKey returns the original immutable draft instead of creating a
+ * second change record or contract version.
+ */
+export async function createDraftAcceptanceRecord(
+  input: CreateDraftAcceptanceRecordInput
+): Promise<AcceptanceRecordDraft> {
+  const workKey = normalizedWorkKey(input.workKey);
+  const recordId = changeRecordId({
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    workKey,
+  });
+  const contractId = acceptanceContractId({ recordId, version: 1 });
+  const sourceReferences = normalizeSourceReferences(input.sourceReferences);
+  const lockKey = `acceptance-record:${input.workspaceId}:${input.repo}:${workKey}`;
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const records = Array.from(
+      await tx.execute(sql`
+        INSERT INTO change_records (
+          id, workspace_id, repo, work_key, origin_channel, source_references
+        ) VALUES (
+          ${recordId}, ${input.workspaceId}, ${input.repo}, ${workKey},
+          ${input.originChannel}, ${JSON.stringify(sourceReferences)}::jsonb
+        )
+        ON CONFLICT (workspace_id, repo, work_key) WHERE work_key IS NOT NULL
+        DO UPDATE SET updated_at = now()
+        RETURNING *
+      `)
+    ) as Array<Record<string, unknown>>;
+    const record = mapChangeRecordRow(records[0]!);
+
+    const existing = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(eq(acceptanceContracts.recordId, record.id))
+      .orderBy(desc(acceptanceContracts.version))
+      .limit(1);
+    if (existing[0]) {
+      return { record, contract: existing[0] };
+    }
+
+    const contracts = await tx
+      .insert(acceptanceContracts)
+      .values({
+        id: contractId,
+        recordId: record.id,
+        version: 1,
+        status: "draft",
+        contract: input.contract,
+        createdBy: input.createdBy,
+      })
+      .returning();
+    const contract = contracts[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: record.id,
+      eventKey: `acceptance-contract:draft:${contract.version}`,
+      stage: "acceptance_contract",
+      actor: input.createdBy,
+      payloadRef: {
+        kind: "acceptance_contract",
+        contractId: contract.id,
+        version: contract.version,
+        status: contract.status,
+      },
+    });
+    return { record, contract };
+  });
+}
+
+export type CreateDraftAcceptanceContractInput = {
+  recordId: string;
+  contract: Record<string, unknown>;
+  createdBy: string;
+};
+
+/** Adds a new immutable draft version; confirmed versions are never edited. */
+export async function createDraftAcceptanceContract(
+  input: CreateDraftAcceptanceContractInput
+): Promise<AcceptanceContractRow> {
+  const lockKey = `acceptance-contract:${input.recordId}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const latest = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(eq(acceptanceContracts.recordId, input.recordId))
+      .orderBy(desc(acceptanceContracts.version))
+      .limit(1);
+    const version = (latest[0]?.version ?? 0) + 1;
+    const rows = await tx
+      .insert(acceptanceContracts)
+      .values({
+        id: acceptanceContractId({ recordId: input.recordId, version }),
+        recordId: input.recordId,
+        version,
+        status: "draft",
+        contract: input.contract,
+        createdBy: input.createdBy,
+      })
+      .returning();
+    const contract = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-contract:draft:${contract.version}`,
+      stage: "acceptance_contract",
+      actor: input.createdBy,
+      payloadRef: {
+        kind: "acceptance_contract",
+        contractId: contract.id,
+        version: contract.version,
+        status: contract.status,
+      },
+    });
+    return contract;
+  });
+}
+
+export async function confirmAcceptanceContract(input: {
+  recordId: string;
+  version: number;
+  confirmedBy: string;
+}): Promise<AcceptanceContractRow> {
+  const lockKey = `acceptance-contract:${input.recordId}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const confirmed = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.status, "confirmed")
+        )
+      )
+      .limit(1);
+    if (confirmed[0]) {
+      if (confirmed[0].version === input.version) return confirmed[0];
+      throw new Error("another Acceptance Contract version is already confirmed");
+    }
+
+    const rows = await tx
+      .update(acceptanceContracts)
+      .set({
+        status: "confirmed",
+        confirmedBy: input.confirmedBy,
+        confirmedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.version, input.version),
+          eq(acceptanceContracts.status, "draft")
+        )
+      )
+      .returning();
+    const contract = rows[0];
+    if (!contract) {
+      throw new Error("Acceptance Contract draft was not found");
+    }
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-contract:confirmed:${contract.version}`,
+      stage: "acceptance_contract",
+      actor: input.confirmedBy,
+      payloadRef: {
+        kind: "acceptance_contract",
+        contractId: contract.id,
+        version: contract.version,
+        status: contract.status,
+      },
+    });
+    return contract;
+  });
+}
+
+export async function readAcceptanceContracts(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceContractRow[] | null> {
+  const records = await db
+    .select({ id: changeRecords.id })
+    .from(changeRecords)
+    .where(
+      and(
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(changeRecords.id, input.recordId)
+      )
+    )
+    .limit(1);
+  if (!records[0]) return null;
+  return db
+    .select()
+    .from(acceptanceContracts)
+    .where(eq(acceptanceContracts.recordId, input.recordId))
+    .orderBy(asc(acceptanceContracts.version));
 }

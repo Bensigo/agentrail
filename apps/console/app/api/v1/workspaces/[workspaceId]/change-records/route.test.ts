@@ -20,6 +20,12 @@ import { GET, POST } from "./route";
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const USER = "user-1";
+const contract = {
+  originalUserWording: "Add a button",
+  goal: "Make the action visible",
+  acceptanceCriteria: [{ id: "AC-1", text: "A user can see the button", required: true }],
+  nonGoals: [], risks: [], environmentExpectations: [], stopConditions: [], affectedCodebaseUnits: [], openQuestions: [],
+};
 const record = {
   id: "00000000-0000-0000-0000-000000000111",
   workspaceId: WS,
@@ -65,7 +71,7 @@ beforeEach(() => {
       recordId: record.id,
       version: 1,
       status: "draft",
-      contract: { originalRequest: "Add a button" },
+      contract,
       createdBy: `user:${USER}`,
       confirmedBy: null,
       confirmedAt: null,
@@ -108,7 +114,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records", () => {
     repo: "ada/widgets",
     originChannel: "codex_mcp",
     sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
-    contract: { originalRequest: "Add a button", acceptanceCriteria: [] },
+    contract,
     workKey: "manual-1",
   };
 
@@ -138,7 +144,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/change-records", () => {
       repo: "ada/widgets",
       originChannel: "codex_mcp",
       sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
-      contract: { originalRequest: "Add a button", acceptanceCriteria: [] },
+      contract,
       createdBy: `user:${USER}`,
       workKey: "manual-1",
     });

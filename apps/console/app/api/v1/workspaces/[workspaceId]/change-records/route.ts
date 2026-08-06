@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
+import { parseAcceptanceContract } from "@agentrail/contracts";
 import {
   createDraftAcceptanceRecord,
   getRepositoryByName,
@@ -97,14 +98,14 @@ export async function POST(
     typeof body.originChannel === "string" ? body.originChannel.trim() : "";
   const workKey = typeof body.workKey === "string" ? body.workKey.trim() : undefined;
   const sourceReferences = parseSourceReferences(body.sourceReferences);
-  const contract = isPlainObject(body.contract) ? body.contract : null;
+  const parsedContract = parseAcceptanceContract(body.contract);
   const errors: Record<string, string> = {};
   if (!repo) errors.repo = "repo is required";
   if (!originChannel) errors.originChannel = "originChannel is required";
   if (sourceReferences == null) {
     errors.sourceReferences = "sourceReferences must be an array of at most 32 objects";
   }
-  if (!contract) errors.contract = "contract must be an object";
+  if (!parsedContract.ok) Object.assign(errors, parsedContract.errors);
   if (Object.keys(errors).length > 0) {
     return NextResponse.json({ errors }, { status: 400 });
   }
@@ -118,7 +119,7 @@ export async function POST(
       repo,
       originChannel,
       sourceReferences: sourceReferences!,
-      contract: contract!,
+      contract: parsedContract.value,
       createdBy: `user:${session.user.id}`,
       workKey,
     });

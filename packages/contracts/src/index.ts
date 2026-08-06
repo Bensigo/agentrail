@@ -18,3 +18,5 @@ export interface Workspace {
   slug: string;
   createdAt: string;
 }
+
+export * from "./acceptance-contract.js";

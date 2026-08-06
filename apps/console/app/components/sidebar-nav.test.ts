@@ -56,10 +56,10 @@ describe("NAV_ZONES data structure", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).not.toContain("review-gates");
   });
 
-  it("Settings zone: Channels, GitHub, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
+  it("Settings zone: Channels, Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Channels", "gateways"],
-      ["GitHub", "connectors"],
+      ["Connectors", "connectors"],
       ["Team", "members"],
       ["Permissions", "permissions"],
       ["Plan & billing", "billing"],

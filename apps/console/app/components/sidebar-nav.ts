@@ -109,7 +109,7 @@ export const SETTINGS_ZONE: NavZone = {
     // `channel` group; the owner ruled them onto their own page instead (see
     // `gateways/components/gateway-helpers.ts`'s module doc-comment).
     { label: "Channels", href: "gateways", icon: MessageSquare },
-    { label: "GitHub", href: "connectors", icon: Plug },
+    { label: "Connectors", href: "connectors", icon: Plug },
     // No separate "Repos & Health" item: Repos & Health folded into the Wiki
     // view (owner ruling) — the wiki is now the per-repo evidence page (repo
     // list with health chips + the compiled wiki, one surface instead of

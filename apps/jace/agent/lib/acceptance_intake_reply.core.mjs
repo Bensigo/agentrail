@@ -73,3 +73,33 @@ export async function recordDeliveredAcceptanceReply({
   if (!messageId) return degraded("console_invalid_response", { status });
   return { ok: true, intakeId: binding.intakeId, messageId, inserted: payload.inserted === true };
 }
+
+/**
+ * Builds one idempotent source key for a completed Eve turn. A reply must not
+ * be recorded without both values: session alone spans a conversation, while
+ * turn alone is not globally scoped. Neither is model input.
+ */
+export function acceptanceReplySourceKey(session) {
+  const sessionId = String(session?.id ?? "").trim();
+  const turnId = String(session?.turn?.id ?? "").trim();
+  if (!sessionId || !turnId) return null;
+  return `jace-reply:${sessionId}:${turnId}`;
+}
+
+/**
+ * Best-effort audit write for a reply that the channel already delivered.
+ * This never throws and therefore cannot retroactively make a delivered reply
+ * fail. Direct/unbound native channel sessions are explicitly skipped.
+ */
+export async function recordDeliveredChannelReply({ session, channel, text, env = {}, transport }) {
+  const sourceKey = acceptanceReplySourceKey(session);
+  if (!sourceKey) return degraded("missing_turn_binding");
+  return recordDeliveredAcceptanceReply({
+    sessionAuth: session?.auth,
+    sourceKey,
+    text,
+    metadata: { kind: "jace_channel_reply", channel: String(channel ?? "").trim() || "unknown" },
+    env,
+    transport,
+  });
+}

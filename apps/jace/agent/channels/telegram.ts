@@ -72,6 +72,7 @@ import {
   isProactiveTurn,
 } from "../lib/ack-on-work.core.mjs";
 import { forwardTelegramInbound } from "../lib/telegram_forward.core.mjs";
+import { recordDeliveredChannelReply } from "../lib/acceptance_intake_reply.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
 
@@ -180,6 +181,7 @@ export default telegramChannel({
         if (index > 0) await channel.telegram.startTyping();
         await channel.telegram.post(message);
       }
+      await recordDeliveredChannelReply({ session: ctx?.session, channel: "telegram", text: data.message, env: process.env, transport: fetch });
     },
   },
 });

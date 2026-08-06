@@ -117,9 +117,10 @@ acknowledgement only; no dispatcher has proven notification.
   endpoint, but no live external builder has done so; only its recorded
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `240ee81a` (trust-first Console navigation). The only expected untracked
-  paths are generated dependency directories.
+  `codex/trust-layer-acceptance-record`; the most recent product slices are
+  `3675acea` (exact-review final human decision) and `6eee9453`
+  (copy-only landing pivot). The only expected untracked paths are generated
+  dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012

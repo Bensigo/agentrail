@@ -347,6 +347,33 @@ export const evidenceVerificationPlans = pgTable(
   })
 );
 
+/** Inspectable immutable reference to evidence collected for one planned criterion. */
+export const evidenceVerificationArtifacts = pgTable(
+  "evidence_verification_artifacts",
+  {
+    id: uuid("id").primaryKey(),
+    verificationPlanId: uuid("verification_plan_id")
+      .notNull()
+      .references(() => evidenceVerificationPlans.id, { onDelete: "cascade" }),
+    artifactKey: text("artifact_key").notNull(),
+    contentType: text("content_type").notNull(),
+    contentSha256: text("content_sha256").notNull(),
+    collectedBy: text("collected_by").notNull(),
+    collectedAt: timestamp("collected_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    planCollected: index("evidence_verification_artifacts_plan_collected_idx").on(
+      t.verificationPlanId,
+      t.collectedAt
+    ),
+    artifactKey: uniqueIndex("evidence_verification_artifacts_key").on(t.artifactKey),
+    contentTypeCheck: check(
+      "evidence_verification_artifacts_content_type_check",
+      sql`${t.contentType} IN ('image/png', 'image/jpeg')`
+    ),
+  })
+);
+
 /** One snapshotted status per Acceptance Contract criterion for a review. */
 export const evidenceReviewCriteria = pgTable(
   "evidence_review_criteria",
@@ -452,6 +479,7 @@ export type ChangeRecordPrRevisionRow = typeof changeRecordPrRevisions.$inferSel
 export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$inferSelect;
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
 export type EvidenceVerificationPlanRow = typeof evidenceVerificationPlans.$inferSelect;
+export type EvidenceVerificationArtifactRow = typeof evidenceVerificationArtifacts.$inferSelect;
 export type EvidenceReviewCriterionRow = typeof evidenceReviewCriteria.$inferSelect;
 export type EvidenceReviewCorrectionRow = typeof evidenceReviewCorrections.$inferSelect;
 export type EvidenceReviewCorrectionDeliveryRow = typeof evidenceReviewCorrectionDeliveries.$inferSelect;

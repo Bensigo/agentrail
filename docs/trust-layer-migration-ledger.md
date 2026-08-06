@@ -46,15 +46,18 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
 | Correction queue, exact record/revision binding | `7d560fcd` | focused queue/ack route tests and DB typecheck; queue is not notification |
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
+| Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 
-The next slice must bind artifacts to these persisted plans. Delivery is
-currently queue plus acknowledgement only; no dispatcher has proven notification.
+The next slice must execute a planned safe UI flow and bind its observed result
+to these artifacts. Delivery is currently queue plus acknowledgement only; no
+dispatcher has proven notification.
 
 ## Remaining work, in dependency order
 
-1. Bind artifact storage to persisted verification plans, then build a worker
-   that executes criterion-specific modality plans in a safe exact-head
-   environment; API evidence must redact secrets/sensitive fields.
+1. Build a worker that executes criterion-specific modality plans in a safe
+   exact-head environment. Reuse the UI artifact seam only after it performs
+   the planned flow; add redacted API/job/data evidence rather than forcing
+   those modalities through screenshots.
 2. Add correction-delivery queue/dispatch/readback for supported MCP task
    contexts and durable GitHub/Jace fallback, retaining attempt/outcome and
    acknowledgement.
@@ -91,12 +94,12 @@ currently queue plus acknowledgement only; no dispatcher has proven notification
 ## Unverified assumptions and current boundaries
 
 - No Codex/Claude live pickup, Slack/Discord runtime integration, GitHub
-  canonical PR fetch, context compiler attestation, review-bound artifact
-  storage, evidence-exercise worker, browser proof, live delivery dispatch, or
-  migration smoke exists yet.
+  canonical PR fetch, context compiler attestation, evidence-exercise worker,
+  browser proof, non-UI artifact capture, live delivery dispatch, or migration
+  smoke exists yet.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`, currently includes uncommitted
-  verification-plan work on top of local commit `7d560fcd`.
+  artifact-binding work on top of local commit `915e3b15`.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012

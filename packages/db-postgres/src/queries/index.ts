@@ -3309,6 +3309,8 @@ export {
   markAcceptanceBuilderHandoffPrAttached,
   recordEvidenceReview,
   recordEvidenceVerificationPlans,
+  resolveEvidenceVerificationPlanForArtifact,
+  recordEvidenceVerificationArtifact,
   queueEvidenceReviewCorrectionDelivery,
   acknowledgeEvidenceReviewCorrectionDelivery,
   confirmAcceptanceContract,

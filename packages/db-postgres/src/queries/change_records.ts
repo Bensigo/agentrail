@@ -12,6 +12,7 @@ import {
   acceptanceBuilderHandoffs,
   evidenceReviews,
   evidenceVerificationPlans,
+  evidenceVerificationArtifacts,
   evidenceReviewCriteria,
   evidenceReviewCorrections,
   evidenceReviewCorrectionDeliveries,
@@ -24,6 +25,7 @@ import {
   type ChangeRecordPrRevisionRow,
   type AcceptanceBuilderHandoffRow,
   type EvidenceVerificationPlanRow,
+  type EvidenceVerificationArtifactRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -875,6 +877,64 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
     }))).returning();
     return { plans: rows, inserted: true };
   });
+}
+
+/** Resolve only a current, planned UI criterion and derive its PR identity. */
+export async function resolveEvidenceVerificationPlanForArtifact(input: {
+  workspaceId: string;
+  recordId: string;
+  prRevisionId: string;
+  verificationPlanId: string;
+}): Promise<{
+  plan: EvidenceVerificationPlanRow;
+  repositoryFullName: string;
+  prNumber: number;
+  headSha: string;
+} | null> {
+  const rows = await db.select({
+    plan: evidenceVerificationPlans,
+    attachment: changeRecordPrs,
+    revision: changeRecordPrRevisions,
+  })
+    .from(evidenceVerificationPlans)
+    .innerJoin(changeRecordPrRevisions, eq(evidenceVerificationPlans.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .where(and(
+      eq(evidenceVerificationPlans.id, input.verificationPlanId),
+      eq(evidenceVerificationPlans.recordId, input.recordId),
+      eq(evidenceVerificationPlans.prRevisionId, input.prRevisionId),
+      eq(evidenceVerificationPlans.modality, "ui"),
+      eq(evidenceVerificationPlans.status, "planned"),
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      sql`${changeRecordPrRevisions.supersededAt} IS NULL`
+    ))
+    .limit(1);
+  const row = rows[0];
+  return row ? {
+    plan: row.plan,
+    repositoryFullName: row.attachment.repositoryFullName,
+    prNumber: row.attachment.prNumber,
+    headSha: row.revision.headSha,
+  } : null;
+}
+
+/** Record the immutable reference and digest for a stored UI evidence artifact. */
+export async function recordEvidenceVerificationArtifact(input: {
+  verificationPlanId: string;
+  artifactKey: string;
+  contentType: "image/png" | "image/jpeg";
+  contentSha256: string;
+  collectedBy: string;
+}): Promise<EvidenceVerificationArtifactRow> {
+  const rows = await db.insert(evidenceVerificationArtifacts).values({
+    id: randomUUID(),
+    verificationPlanId: input.verificationPlanId,
+    artifactKey: input.artifactKey,
+    contentType: input.contentType,
+    contentSha256: input.contentSha256,
+    collectedBy: input.collectedBy,
+  }).returning();
+  return rows[0]!;
 }
 
 /** Persist a fully validated review only when its exact revision is current. */

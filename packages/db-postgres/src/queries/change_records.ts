@@ -563,6 +563,58 @@ export type CreateDraftAcceptanceContractInput = {
   createdBy: string;
 };
 
+export type AttachExternalPullRequestInput = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  prUrl: string;
+  baseSha: string;
+  headSha: string;
+  attachedBy: string;
+};
+
+/**
+ * Bind a user-declared external-agent PR to an existing Acceptance Record.
+ * The exact base/head pair is immutable event evidence; later pushes append a
+ * new attachment rather than rewriting the reviewed commit.
+ */
+export async function attachExternalPullRequest(
+  input: AttachExternalPullRequestInput
+): Promise<ChangeRecordRow> {
+  const lockKey = `change-record:${input.workspaceId}:${input.repo}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const records = await tx
+      .select()
+      .from(changeRecords)
+      .where(and(eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId), eq(changeRecords.repo, input.repo)))
+      .limit(1);
+    const record = records[0];
+    if (!record) throw new Error("Acceptance Record was not found in workspace repository");
+    if (record.prNumber != null && record.prNumber !== input.prNumber) {
+      throw new Error("Acceptance Record is already bound to a different pull request");
+    }
+    const rows = await tx
+      .update(changeRecords)
+      .set({ prNumber: input.prNumber, headShas: normalizeHeadShas([...record.headShas, input.headSha]), updatedAt: new Date() })
+      .where(eq(changeRecords.id, input.recordId))
+      .returning();
+    const attached = rows[0]!;
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `external-pr:${input.prNumber}:${input.headSha}`,
+      stage: "external_pr",
+      actor: input.attachedBy,
+      payloadRef: {
+        kind: "external_pull_request", repo: input.repo, prNumber: input.prNumber, prUrl: input.prUrl,
+        baseSha: input.baseSha, headSha: input.headSha, source: "human_declared",
+      },
+    });
+    return attached;
+  });
+}
+
 /** Adds a new immutable draft version; confirmed versions are never edited. */
 export async function createDraftAcceptanceContract(
   input: CreateDraftAcceptanceContractInput

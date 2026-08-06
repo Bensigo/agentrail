@@ -86,8 +86,12 @@ adapter and worker startup wiring remain required.
 
 ## Canonical MVP flow
 
-1. A task starts in Codex, Claude Code, Slack, Discord, or another supported
-   channel and becomes one Acceptance Record carrying origin provenance.
+1. A task may start from a durable, editable Brief or in Codex, Claude Code,
+   Slack, Discord, or another supported channel. A Brief remains the human-
+   correctable working understanding while Jace shapes the task; its explicit,
+   immutable provenance transition creates one Acceptance Record carrying
+   origin provenance. Later Brief edits never silently rewrite a confirmed
+   Contract, Context Pack, or evidence record.
 2. Jace asks only unresolved questions in the originating channel where that
    integration supports it, drafts an Acceptance Contract, and a human
    confirms it.
@@ -116,6 +120,12 @@ adapter and worker startup wiring remain required.
 9. Human decides the PR outcome. Jace never silently edits or merges; the
    exact-head proof and evidence-bound blocking correction are the trust-layer
    product.
+
+The workspace Home must summarize customer-facing trust work rather than
+legacy factory activity. Its dated outcome view counts only canonical
+exact-head Acceptance Reviews, their independent evidence verdicts, the final
+human decision, and currently pending review/decision work. A Jace
+`not_proven` verdict is distinct from a human `changes_requested` decision.
 
 ## Implemented and objectively checked foundations
 
@@ -192,6 +202,12 @@ acknowledgement only; no dispatcher has proven notification.
    post-merge rework/revert; those remain explicit aggregate outcome evidence.
    The sidebar is now trust-first, but routes/catalogs and the homepage still
    contain legacy product language or surfaces.
+   Add the explicitly linked Brief-to-Acceptance transition and the dated
+   canonical outcome summary without replacing the editable Brief or reusing
+   legacy factory/review-event metrics. The link must retain immutable source
+   provenance at Contract/Record creation; the summary must state its time
+   range, show honest empty/zero states, and distinguish evidence verdicts
+   from human outcomes.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.

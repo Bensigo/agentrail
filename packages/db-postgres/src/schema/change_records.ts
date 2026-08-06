@@ -374,6 +374,27 @@ export const evidenceVerificationArtifacts = pgTable(
   })
 );
 
+/** Isolated worker queue for executing one planned criterion on its exact PR head. */
+export const evidenceVerificationExecutions = pgTable(
+  "evidence_verification_executions",
+  {
+    id: uuid("id").primaryKey(),
+    verificationPlanId: uuid("verification_plan_id")
+      .notNull()
+      .references(() => evidenceVerificationPlans.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("queued"),
+    workerId: text("worker_id"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    plan: uniqueIndex("evidence_verification_executions_plan_key").on(t.verificationPlanId),
+    queued: index("evidence_verification_executions_queued_idx").on(t.createdAt).where(sql`${t.status} = 'queued'`),
+    statusCheck: check("evidence_verification_executions_status_check", sql`${t.status} IN ('queued', 'claimed', 'not_proven', 'not_testable', 'failed')`),
+  })
+);
+
 /** One snapshotted status per Acceptance Contract criterion for a review. */
 export const evidenceReviewCriteria = pgTable(
   "evidence_review_criteria",
@@ -480,6 +501,7 @@ export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$infe
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
 export type EvidenceVerificationPlanRow = typeof evidenceVerificationPlans.$inferSelect;
 export type EvidenceVerificationArtifactRow = typeof evidenceVerificationArtifacts.$inferSelect;
+export type EvidenceVerificationExecutionRow = typeof evidenceVerificationExecutions.$inferSelect;
 export type EvidenceReviewCriterionRow = typeof evidenceReviewCriteria.$inferSelect;
 export type EvidenceReviewCorrectionRow = typeof evidenceReviewCorrections.$inferSelect;
 export type EvidenceReviewCorrectionDeliveryRow = typeof evidenceReviewCorrectionDeliveries.$inferSelect;

@@ -13,6 +13,7 @@ import {
   evidenceReviews,
   evidenceVerificationPlans,
   evidenceVerificationArtifacts,
+  evidenceVerificationExecutions,
   evidenceReviewCriteria,
   evidenceReviewCorrections,
   evidenceReviewCorrectionDeliveries,
@@ -26,6 +27,7 @@ import {
   type AcceptanceBuilderHandoffRow,
   type EvidenceVerificationPlanRow,
   type EvidenceVerificationArtifactRow,
+  type EvidenceVerificationExecutionRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -146,6 +148,10 @@ export function evidenceReviewId(input: { recordId: string; prRevisionId: string
 
 export function evidenceVerificationPlanId(input: { prRevisionId: string; criterionId: string }): string {
   return uuid5Url(`evidence-verification-plan:${input.prRevisionId}:${input.criterionId}`);
+}
+
+export function evidenceVerificationExecutionId(input: { verificationPlanId: string }): string {
+  return uuid5Url(`evidence-verification-execution:${input.verificationPlanId}`);
 }
 
 export function correctionDeliveryId(input: { correctionId: string; deliveryKey: string }): string {
@@ -916,6 +922,27 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
     prNumber: row.attachment.prNumber,
     headSha: row.revision.headSha,
   } : null;
+}
+
+/** Queue only a current planned criterion; completion cannot be inferred here. */
+export async function enqueueEvidenceVerificationExecution(input: {
+  workspaceId: string;
+  recordId: string;
+  prRevisionId: string;
+  verificationPlanId: string;
+}): Promise<{ execution: EvidenceVerificationExecutionRow; inserted: boolean }> {
+  const plan = await resolveEvidenceVerificationPlanForArtifact(input);
+  if (!plan) throw new Error("Current planned UI criterion was not found for this record and PR revision");
+  const id = evidenceVerificationExecutionId({ verificationPlanId: plan.plan.id });
+  const rows = await db.insert(evidenceVerificationExecutions).values({
+    id,
+    verificationPlanId: plan.plan.id,
+    status: "queued",
+  }).onConflictDoNothing().returning();
+  if (rows[0]) return { execution: rows[0], inserted: true };
+  const existing = await db.select().from(evidenceVerificationExecutions).where(eq(evidenceVerificationExecutions.id, id)).limit(1);
+  if (!existing[0]) throw new Error("Verification execution was not recorded");
+  return { execution: existing[0], inserted: false };
 }
 
 /** Record the immutable reference and digest for a stored UI evidence artifact. */

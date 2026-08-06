@@ -48,7 +48,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
-| Criterion execution queue and guarded result seam | current migration slice | focused admission/completion route tests and DB typecheck. `proven` requires observed behavior plus artifacts bound to the same plan; no browser worker exists yet. |
+| Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next slice must execute a planned safe UI flow and bind its observed result
 to these artifacts. Delivery is currently queue plus acknowledgement only; no
@@ -56,10 +56,9 @@ dispatcher has proven notification.
 
 ## Remaining work, in dependency order
 
-1. Build a worker that executes criterion-specific modality plans in a safe
-   exact-head environment. Reuse the UI artifact seam only after it performs
-   the planned flow; add redacted API/job/data evidence rather than forcing
-   those modalities through screenshots.
+1. Run the new worker against a safe exact-head environment and prove a
+   criterion-specific UI flow end to end. Add redacted API/job/data execution
+   and artifacts rather than forcing those modalities through screenshots.
 2. Add correction-delivery queue/dispatch/readback for supported MCP task
    contexts and durable GitHub/Jace fallback, retaining attempt/outcome and
    acknowledgement.
@@ -96,12 +95,13 @@ dispatcher has proven notification.
 ## Unverified assumptions and current boundaries
 
 - No Codex/Claude live pickup, Slack/Discord runtime integration, GitHub
-  canonical PR fetch, context compiler attestation, evidence-exercise worker,
-  browser proof, non-UI artifact capture, live delivery dispatch, or migration
-  smoke exists yet.
+  canonical PR fetch, context compiler attestation, deployed safe-preview
+  execution, browser proof, non-UI artifact capture, live delivery dispatch,
+  or migration smoke exists yet. The opt-in Eve worker is unit-tested only;
+  its runtime must not be represented as an exercised criterion.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `d6357492` (review-bound UI artifact storage). The only expected untracked
+  `ec9bfc08` (opt-in criterion-execution worker). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

@@ -75,16 +75,18 @@ derives the repository, PR number, head, criterion, and environment from that
 plan and records an artifact key plus SHA-256 digest. This is a narrow UI
 artifact seam, not a browser-exercise worker or proof of the criterion.
 
-Jace now has a separate exact-head criterion-execution queue and a guarded
-worker result seam. A `proven` result requires observed behavior and artifacts
-bound to that plan; it does not make queueing or a screenshot alone proof that
-a browser executed the criterion flow.
+Jace now has a separate exact-head criterion-execution queue, a guarded worker
+result seam, and a default-off Eve worker that claims only those plan-bound
+jobs, asks root Jace to execute one constrained criterion prompt, and completes
+through the trust endpoint. A `proven` result requires observed behavior and
+artifacts bound to that plan; neither the worker, queueing, nor a screenshot
+alone proves that a browser executed the criterion flow.
 
 Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
-builder task; UI exercise and non-UI artifact dispatch; runtime modality-
-exercise worker; API redaction worker; GitHub/Jace fallback delivery; human
-outcomes/dependency workflow; and UI/browser E2E.
+builder task; a deployed UI exercise and non-UI artifact dispatch; API
+redaction worker; GitHub/Jace fallback delivery; human outcomes/dependency
+workflow; and UI/browser E2E.
 
 ## Consequences
 

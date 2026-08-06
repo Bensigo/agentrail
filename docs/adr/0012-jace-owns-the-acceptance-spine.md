@@ -130,6 +130,14 @@ evidence-bound packet for its recorded builder task context, but this is a
 durable inbox/readback mechanism—not proof that the external builder was
 notified or resumed; acknowledgement remains required.
 
+The hosted-channel path can now confirm a complete draft without moving the
+human to the Console: a trusted inbound provider-message key is bound to the
+Eve session, and confirmation is refused unless that inbound message belongs
+to the same Intake and was recorded after the draft. This records a
+channel-source actor on the immutable Contract but does not compile a Pack,
+select a builder, or start implementation. No live channel round-trip is
+proven.
+
 ## Consequences
 
 All future channel work must write the same Acceptance Record; it must not

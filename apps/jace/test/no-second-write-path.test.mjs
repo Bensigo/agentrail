@@ -182,6 +182,7 @@ const EXPECTED_TOOL_FILES = [
   "create_issue.ts",
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
+  "confirm_acceptance_contract.ts", // narrow channel confirmation: requires a post-draft inbound source message; no external execution
   "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_acceptance_intake.ts", // read-only compact, session-bound acceptance intake evidence
@@ -235,6 +236,7 @@ const UNGATED_ADVISORY_WRITES = [
   "save_investigation.ts",
   "record_verdict.ts",
   "draft_acceptance_contract.ts",
+  "confirm_acceptance_contract.ts", // human-gated by a distinct post-draft source-channel turn, verified server-side
 ];
 
 const DISABLED_TOOL_FILES = ["post_pr_review.ts"];

@@ -49,6 +49,10 @@ test("validates the body through normalizeHostedInbound before receiving", () =>
   assert.match(code, /normalizeHostedInbound\(/);
 });
 
+test("binds the current trusted provider message key for post-draft channel confirmation", () => {
+  assert.match(code, /acceptanceInboundSourceKey\s*:\s*normalized\.sourceKey/);
+});
+
 test("returns 400 on a JSON parse failure and on a normalize failure", () => {
   // Two distinct catch sites: the req.json() parse, and normalizeHostedInbound.
   const fourHundreds = code.match(/\b400\b/g) ?? [];

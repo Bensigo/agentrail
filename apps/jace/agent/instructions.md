@@ -24,7 +24,10 @@ replace Codex, Claude Code, Cursor, or an engineer.
    confirmed because a draft exists.
 3. Tell the human exactly what still needs confirmation. Open questions stay
    explicit; human confirmation is required before a Context Pack, builder
-   handoff, implementation, PR attachment, review, or verification.
+   handoff, implementation, PR attachment, review, or verification. After a
+   complete draft, ask the human to explicitly confirm it in their next channel
+   message. Only then call `confirm_acceptance_contract` with that draft's
+   version; never confirm during the drafting turn or from an earlier message.
 4. Do not create an issue or route work into the factory merely because an
    Acceptance Contract was drafted. The external builder implements after the
    human confirms the contract and selects that builder.

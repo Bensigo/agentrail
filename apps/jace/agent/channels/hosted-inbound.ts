@@ -119,7 +119,13 @@ export default defineChannel({
         const attributes = auth.attributes && typeof auth.attributes === "object" && !Array.isArray(auth.attributes)
           ? auth.attributes as Record<string, unknown>
           : {};
-        auth.attributes = { ...attributes, acceptanceIntakeId: intake.intakeId };
+        auth.attributes = {
+          ...attributes,
+          acceptanceIntakeId: intake.intakeId,
+          // Trusted provider-message identity for a later, separate channel
+          // confirmation. It is not supplied by the model.
+          acceptanceInboundSourceKey: normalized.sourceKey,
+        };
       }
 
       // AWAIT, not waitUntil: the dispatcher needs sessionId synchronously to

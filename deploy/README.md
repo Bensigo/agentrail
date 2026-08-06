@@ -177,6 +177,20 @@ or criterion action list records `not_testable` or `not_proven`; it is never a
 pass. This document does not claim a live preview run—perform and retain a
 criterion-specific smoke before relying on the worker.
 
+### Enable bounded exact-head Acceptance Review only after its dependencies are live
+
+Set `JACE_ACCEPTANCE_REVIEW_WORKER=1` on Jace only when all of the following
+are configured: `JACE_CONSOLE_BASE_URL`, a valid `JACE_CONSOLE_TOKEN`, the
+GitHub installation token broker, and the configured Jace model provider. The
+worker claims a single current PR revision, reads only its PR metadata plus a
+bounded textual diff, and sends only the confirmed contract and that diff to
+the reviewer. It never checks out source, edits code, posts advisory comments,
+or merges. A missing token, head mismatch, incomplete patch, unsafe model
+result, or unavailable runtime proof must remain `not_proven`/`not_testable`;
+do not treat startup or a queued claim as review evidence. Before enabling it
+for a team, retain one live exact-head review showing the contract, evidence,
+and any correction-delivery outcome.
+
 ## 6. Attach a runner
 
 `agentrail runner` authenticates via an OAuth **device flow**

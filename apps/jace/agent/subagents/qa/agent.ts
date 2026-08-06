@@ -17,8 +17,10 @@ import { QA_SCHEMA } from "./lib/qa.core.mjs";
 // unchanged.
 //
 //  - Its prompt lives in this directory's instructions.md.
-//  - It authors two narrowly scoped evidence tools: upload_evidence_image for
-//    legacy review jobs and upload_verification_artifact for Acceptance Record
+//  - It authors three narrowly scoped evidence tools: upload_evidence_image for
+//    legacy review jobs, upload_verification_artifact for Acceptance Record UI
+//    execution claims, and upload_verification_api_artifact for redacted API
+//    execution claims.
 //    execution claims. Neither can write code, GitHub, or a third-party page.
 //    docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md) —
 //    uploads a screenshot QA already captured to the console's per-AC

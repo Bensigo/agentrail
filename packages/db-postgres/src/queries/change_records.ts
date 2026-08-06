@@ -7,11 +7,15 @@ import {
   acceptanceContracts,
   acceptanceContextPacks,
   acceptanceContextPackDeliveries,
+  changeRecordPrs,
+  changeRecordPrRevisions,
   type AcceptanceContractRow,
   type AcceptanceContextPackDeliveryRow,
   type AcceptanceContextPackRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
+  type ChangeRecordPrRow,
+  type ChangeRecordPrRevisionRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -112,6 +116,14 @@ export function acceptanceContextPackDeliveryId(input: {
   return uuid5Url(
     `acceptance-context-pack-delivery:${input.contextPackId}:${input.deliveryKey}`
   );
+}
+
+export function changeRecordPrId(input: { recordId: string; repositoryId: string; prNumber: number }): string {
+  return uuid5Url(`change-record-pr:${input.recordId}:${input.repositoryId}:${input.prNumber}`);
+}
+
+export function changeRecordPrRevisionId(input: { prAttachmentId: string; headSha: string }): string {
+  return uuid5Url(`change-record-pr-revision:${input.prAttachmentId}:${input.headSha}`);
 }
 
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
@@ -567,6 +579,7 @@ export type AttachExternalPullRequestInput = {
   workspaceId: string;
   recordId: string;
   repo: string;
+  repositoryId: string;
   prNumber: number;
   prUrl: string;
   baseSha: string;
@@ -579,9 +592,11 @@ export type AttachExternalPullRequestInput = {
  * The exact base/head pair is immutable event evidence; later pushes append a
  * new attachment rather than rewriting the reviewed commit.
  */
-export async function attachExternalPullRequest(
-  input: AttachExternalPullRequestInput
-): Promise<ChangeRecordRow> {
+export async function attachExternalPullRequest(input: AttachExternalPullRequestInput): Promise<{
+  record: ChangeRecordRow;
+  attachment: ChangeRecordPrRow;
+  revision: ChangeRecordPrRevisionRow;
+}> {
   const lockKey = `change-record:${input.workspaceId}:${input.repo}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
@@ -601,6 +616,35 @@ export async function attachExternalPullRequest(
       .where(eq(changeRecords.id, input.recordId))
       .returning();
     const attached = rows[0]!;
+    const existingAttachments = await tx.select().from(changeRecordPrs).where(
+      and(eq(changeRecordPrs.workspaceId, input.workspaceId), eq(changeRecordPrs.repositoryId, input.repositoryId), eq(changeRecordPrs.prNumber, input.prNumber))
+    ).limit(1);
+    const existingAttachment = existingAttachments[0];
+    if (existingAttachment && existingAttachment.recordId !== input.recordId) {
+      throw new Error("Pull request is already attached to a different Acceptance Record");
+    }
+    const attachmentId = existingAttachment?.id ?? changeRecordPrId(input);
+    if (!existingAttachment) {
+      await tx.insert(changeRecordPrs).values({
+        id: attachmentId, recordId: input.recordId, workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId, repositoryFullName: input.repo, prNumber: input.prNumber,
+        prUrl: input.prUrl, attachedBy: input.attachedBy,
+      });
+    }
+    const attachment = existingAttachment ?? (await tx.select().from(changeRecordPrs).where(eq(changeRecordPrs.id, attachmentId)).limit(1))[0]!;
+    const revisionId = changeRecordPrRevisionId({ prAttachmentId: attachment.id, headSha: input.headSha });
+    const existingRevisions = await tx.select().from(changeRecordPrRevisions)
+      .where(eq(changeRecordPrRevisions.id, revisionId)).limit(1);
+    let revision = existingRevisions[0];
+    if (!revision) {
+      await tx.update(changeRecordPrRevisions).set({ supersededAt: new Date() }).where(
+        and(eq(changeRecordPrRevisions.prAttachmentId, attachment.id), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)
+      );
+      const inserted = await tx.insert(changeRecordPrRevisions).values({
+        id: revisionId, prAttachmentId: attachment.id, headSha: input.headSha, source: "human_declared",
+      }).returning();
+      revision = inserted[0]!;
+    }
     await appendContractEventInTransaction(tx, {
       recordId: input.recordId,
       eventKey: `external-pr:${input.prNumber}:${input.headSha}`,
@@ -611,7 +655,7 @@ export async function attachExternalPullRequest(
         baseSha: input.baseSha, headSha: input.headSha, source: "human_declared",
       },
     });
-    return attached;
+    return { record: attached, attachment, revision };
   });
 }
 

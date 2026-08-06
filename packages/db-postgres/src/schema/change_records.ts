@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -10,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
+import { repositories } from "./repositories.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -186,6 +188,130 @@ export const acceptanceContextPackDeliveries = pgTable(
   })
 );
 
+/** Canonical connected-repository PR attachment, not a caller-supplied repo string. */
+export const changeRecordPrs = pgTable(
+  "change_record_prs",
+  {
+    id: uuid("id").primaryKey(),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    repositoryId: uuid("repository_id").notNull().references(() => repositories.id, { onDelete: "restrict" }),
+    repositoryFullName: text("repository_full_name").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    prUrl: text("pr_url").notNull(),
+    attachedBy: text("attached_by").notNull(),
+    attachedAt: timestamp("attached_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    repositoryPr: uniqueIndex("change_record_prs_repository_pr_key").on(t.workspaceId, t.repositoryId, t.prNumber),
+    record: index("change_record_prs_record_idx").on(t.recordId),
+  })
+);
+
+/** A new full SHA creates a new revision; existing revisions are never rewritten. */
+export const changeRecordPrRevisions = pgTable(
+  "change_record_pr_revisions",
+  {
+    id: uuid("id").primaryKey(),
+    prAttachmentId: uuid("pr_attachment_id").notNull().references(() => changeRecordPrs.id, { onDelete: "cascade" }),
+    headSha: text("head_sha").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    source: text("source").notNull(),
+  },
+  (t) => ({
+    attachmentHead: uniqueIndex("change_record_pr_revisions_attachment_head_key").on(t.prAttachmentId, t.headSha),
+    activePerAttachment: uniqueIndex("change_record_pr_revisions_active_attachment_key").on(t.prAttachmentId).where(sql`${t.supersededAt} IS NULL`),
+  })
+);
+
+/** Immutable independent review for one exact PR revision. */
+export const evidenceReviews = pgTable(
+  "evidence_reviews",
+  {
+    id: uuid("id").primaryKey(),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    prRevisionId: uuid("pr_revision_id").notNull().references(() => changeRecordPrRevisions.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    headSha: text("head_sha").notNull(),
+    diffIdentity: jsonb("diff_identity").$type<Record<string, unknown>>().notNull(),
+    overallStatus: text("overall_status").notNull(),
+    staticFindings: jsonb("static_findings").$type<Record<string, unknown>[]>().notNull().default([]),
+    testResults: jsonb("test_results").$type<Record<string, unknown>[]>().notNull().default([]),
+    independentVerifier: jsonb("independent_verifier").$type<Record<string, unknown>>().notNull(),
+    reviewabilityResult: jsonb("reviewability_result").$type<Record<string, unknown>>().notNull(),
+    environmentRung: text("environment_rung").notNull(),
+    refusalReason: text("refusal_reason"),
+    verifierName: text("verifier_name").notNull(),
+    verifierVersion: text("verifier_version").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    revision: uniqueIndex("evidence_reviews_revision_key").on(t.prRevisionId),
+    recordCreated: index("evidence_reviews_record_created_idx").on(t.recordId, t.createdAt),
+  })
+);
+
+/** One snapshotted status per Acceptance Contract criterion for a review. */
+export const evidenceReviewCriteria = pgTable(
+  "evidence_review_criteria",
+  {
+    id: uuid("id").primaryKey(),
+    reviewId: uuid("review_id").notNull().references(() => evidenceReviews.id, { onDelete: "cascade" }),
+    criterionId: text("criterion_id").notNull(),
+    criterionTextSnapshot: text("criterion_text_snapshot").notNull(),
+    required: boolean("required").notNull(),
+    status: text("status").notNull(),
+    observedBehavior: text("observed_behavior").notNull(),
+    expectedBehavior: text("expected_behavior").notNull(),
+    evidenceRefs: jsonb("evidence_refs").$type<Record<string, unknown>[]>().notNull().default([]),
+    /** Criterion-specific PR-head runtime artifact(s), never a generic smoke result. */
+    runtimeEvidence: jsonb("runtime_evidence").$type<Record<string, unknown>[]>().notNull().default([]),
+    reason: text("reason").notNull(),
+  },
+  (t) => ({ criterion: uniqueIndex("evidence_review_criteria_review_criterion_key").on(t.reviewId, t.criterionId) })
+);
+
+/** A correction packet exists only for a concrete required code correction. */
+export const evidenceReviewCorrections = pgTable(
+  "evidence_review_corrections",
+  {
+    id: uuid("id").primaryKey(),
+    reviewId: uuid("review_id").notNull().references(() => evidenceReviews.id, { onDelete: "cascade" }),
+    criterionId: text("criterion_id"),
+    observedBehavior: text("observed_behavior").notNull(),
+    expectedBehavior: text("expected_behavior").notNull(),
+    evidenceRefs: jsonb("evidence_refs").$type<Record<string, unknown>[]>().notNull(),
+    reproductionSteps: jsonb("reproduction_steps").$type<string[]>().notNull().default([]),
+    likelyAffectedUnits: jsonb("likely_affected_units").$type<string[]>().notNull().default([]),
+    contextRefs: jsonb("context_refs").$type<Record<string, unknown>[]>().notNull().default([]),
+    scopeBoundary: text("scope_boundary").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ reviewCriterion: uniqueIndex("evidence_review_corrections_review_criterion_key").on(t.reviewId, t.criterionId) })
+);
+
+/** Delivery evidence for a correction packet; queued is never equivalent to notified. */
+export const evidenceReviewCorrectionDeliveries = pgTable(
+  "evidence_review_correction_deliveries",
+  {
+    id: uuid("id").primaryKey(),
+    correctionId: uuid("correction_id").notNull().references(() => evidenceReviewCorrections.id, { onDelete: "cascade" }),
+    deliveryKey: text("delivery_key").notNull(),
+    channel: text("channel").notNull(),
+    target: jsonb("target").$type<Record<string, unknown>>().notNull(),
+    reviewRevisionId: uuid("review_revision_id").notNull().references(() => changeRecordPrRevisions.id, { onDelete: "restrict" }),
+    attempt: integer("attempt").notNull().default(1),
+    outcome: text("outcome").notNull().default("queued"),
+    outcomeDetail: text("outcome_detail"),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  },
+  (t) => ({ correctionDeliveryKey: uniqueIndex("evidence_review_correction_deliveries_key").on(t.correctionId, t.deliveryKey) })
+);
+
 /**
  * Append-only timeline entries attached to a Change Record. The row is
  * immutable by convention and by query helper: append uses
@@ -223,3 +349,9 @@ export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceContextPackRow = typeof acceptanceContextPacks.$inferSelect;
 export type AcceptanceContextPackDeliveryRow =
   typeof acceptanceContextPackDeliveries.$inferSelect;
+export type ChangeRecordPrRow = typeof changeRecordPrs.$inferSelect;
+export type ChangeRecordPrRevisionRow = typeof changeRecordPrRevisions.$inferSelect;
+export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
+export type EvidenceReviewCriterionRow = typeof evidenceReviewCriteria.$inferSelect;
+export type EvidenceReviewCorrectionRow = typeof evidenceReviewCorrections.$inferSelect;
+export type EvidenceReviewCorrectionDeliveryRow = typeof evidenceReviewCorrectionDeliveries.$inferSelect;

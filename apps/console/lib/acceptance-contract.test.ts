@@ -4,7 +4,7 @@ import { parseAcceptanceContract } from "@agentrail/contracts";
 const valid = {
   originalUserWording: "Add a visible checkout status.",
   goal: "A signed-in buyer can see checkout status.",
-  acceptanceCriteria: [{ id: "AC-1", text: "Status is visible", required: true }],
+  acceptanceCriteria: [{ id: "AC-1", text: "Status is visible", required: true, userVisible: false }],
   nonGoals: [],
   risks: [],
   environmentExpectations: [],

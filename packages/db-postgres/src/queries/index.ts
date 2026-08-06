@@ -3293,6 +3293,8 @@ export {
   acceptanceContractId,
   acceptanceContextPackId,
   acceptanceContextPackDeliveryId,
+  changeRecordPrId,
+  changeRecordPrRevisionId,
   findOrCreateChangeRecord,
   appendChangeRecordEvent,
   createDraftAcceptanceRecord,

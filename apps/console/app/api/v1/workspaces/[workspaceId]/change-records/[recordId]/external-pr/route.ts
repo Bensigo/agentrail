@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
-import { attachExternalPullRequest, getWorkspaceMembership, readAcceptanceContracts } from "@agentrail/db-postgres";
+import { attachExternalPullRequest, getRepositoryByName, getWorkspaceMembership, readAcceptanceContracts } from "@agentrail/db-postgres";
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i;
 
@@ -35,12 +35,14 @@ export async function POST(
   if (!contracts.some((contract) => contract.status === "confirmed")) {
     return NextResponse.json({ error: "A confirmed Acceptance Contract is required before attaching an external PR" }, { status: 409 });
   }
+  const repository = await getRepositoryByName(workspaceId, repo);
+  if (!repository) return NextResponse.json({ error: "Repository not found" }, { status: 404 });
   try {
-    const record = await attachExternalPullRequest({
+    const attachment = await attachExternalPullRequest({
       workspaceId, recordId, repo, prNumber: prNumber as number, prUrl: body.prUrl,
-      baseSha, headSha, attachedBy: `user:${session.user.id}`,
+      baseSha, headSha, repositoryId: repository.id, attachedBy: `user:${session.user.id}`,
     });
-    return NextResponse.json({ record: { id: record.id, repo: record.repo, prNumber: record.prNumber, headShas: record.headShas }, exactHeadSha: headSha }, { status: 201 });
+    return NextResponse.json({ record: { id: attachment.record.id, repo: attachment.record.repo, prNumber: attachment.record.prNumber, headShas: attachment.record.headShas }, exactHeadSha: headSha, prRevisionId: attachment.revision.id }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to attach external PR";
     return NextResponse.json({ error: message }, { status: message.includes("different pull request") ? 409 : 500 });

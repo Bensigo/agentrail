@@ -2,6 +2,8 @@ export type AcceptanceCriterion = {
   id: string;
   text: string;
   required: boolean;
+  /** Requires criterion-specific runtime evidence when a safe environment exists. */
+  userVisible: boolean;
 };
 
 export type AcceptanceQuestion = {
@@ -76,7 +78,16 @@ export function parseAcceptanceContract(value: unknown): ParseAcceptanceContract
         errors[`acceptanceCriteria.${index}.required`] = "required must be boolean";
         continue;
       }
-      acceptanceCriteria.push({ id, text: text(item.text)!, required: item.required !== false });
+      if (item.userVisible !== undefined && typeof item.userVisible !== "boolean") {
+        errors[`acceptanceCriteria.${index}.userVisible`] = "userVisible must be boolean";
+        continue;
+      }
+      acceptanceCriteria.push({
+        id,
+        text: text(item.text)!,
+        required: item.required !== false,
+        userVisible: item.userVisible === true,
+      });
     }
   }
 

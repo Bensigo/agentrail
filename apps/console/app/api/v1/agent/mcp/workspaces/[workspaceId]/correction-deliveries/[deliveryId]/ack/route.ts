@@ -10,9 +10,12 @@ export async function POST(
   const { workspaceId, deliveryId } = await params;
   const authorization = await requireAgentMcpWorkspace(request, workspaceId, "acceptance:correction:ack");
   if (authorization instanceof NextResponse) return authorization;
-  const body = await request.json().catch(() => ({})) as { detail?: unknown };
+  const body = await request.json().catch(() => ({})) as { detail?: unknown; builder?: unknown; taskContextKey?: unknown };
+  const builder = typeof body.builder === "string" ? body.builder.trim() : "";
+  const taskContextKey = typeof body.taskContextKey === "string" ? body.taskContextKey.trim() : "";
+  if (!builder || !taskContextKey) return NextResponse.json({ error: "builder and taskContextKey are required" }, { status: 400 });
   const detail = typeof body.detail === "string" ? body.detail.trim() : null;
-  const delivery = await acknowledgeEvidenceReviewCorrectionDelivery({ workspaceId, deliveryId, detail });
+  const delivery = await acknowledgeEvidenceReviewCorrectionDelivery({ workspaceId, deliveryId, builder, taskContextKey, detail });
   if (!delivery) return NextResponse.json({ error: "Delivery not found or already acknowledged" }, { status: 404 });
   return NextResponse.json({ delivery: { id: delivery.id, outcome: delivery.outcome, confirmedAt: delivery.confirmedAt?.toISOString() ?? null } });
 }

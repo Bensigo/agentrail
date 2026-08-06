@@ -2134,12 +2134,15 @@ export async function reportEvidenceReviewCorrectionGithubDispatch(input: {
 
 /** An agent acknowledgement is the only transition that proves it received a packet. */
 export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
-  workspaceId: string; deliveryId: string; detail?: string | null;
+  workspaceId: string; deliveryId: string; builder: string; taskContextKey: string; detail?: string | null;
 }) {
   const rows = await db.update(evidenceReviewCorrectionDeliveries).set({
     outcome: "acknowledged", outcomeDetail: input.detail ?? null, confirmedAt: new Date(),
   }).where(and(
     eq(evidenceReviewCorrectionDeliveries.id, input.deliveryId),
+    eq(evidenceReviewCorrectionDeliveries.channel, "mcp_task_context"),
+    sql`${evidenceReviewCorrectionDeliveries.target}->>'builder' = ${input.builder}`,
+    sql`${evidenceReviewCorrectionDeliveries.target}->>'taskContextKey' = ${input.taskContextKey}`,
     sql`EXISTS (
       SELECT 1 FROM evidence_review_corrections c
       JOIN evidence_reviews r ON r.id = c.review_id

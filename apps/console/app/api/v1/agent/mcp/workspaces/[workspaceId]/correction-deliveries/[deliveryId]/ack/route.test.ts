@@ -18,15 +18,20 @@ beforeEach(() => {
 });
 describe("MCP correction acknowledgement", () => {
   it("requires the dedicated acknowledgement scope and records agent confirmation", async () => {
-    const response = await POST(request({ detail: "I have the packet" }), { params: params() });
+    const response = await POST(request({ builder: "codex", taskContextKey: "task-1", detail: "I have the packet" }), { params: params() });
     expect(response.status).toBe(200);
     expect(requireAgentMcpWorkspace).toHaveBeenCalledWith(expect.any(NextRequest), WS, "acceptance:correction:ack");
-    expect(acknowledgeEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith({ workspaceId: WS, deliveryId: DELIVERY, detail: "I have the packet" });
+    expect(acknowledgeEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith({ workspaceId: WS, deliveryId: DELIVERY, builder: "codex", taskContextKey: "task-1", detail: "I have the packet" });
   });
   it("does not claim delivery when the scoped MCP guard fails", async () => {
     vi.mocked(requireAgentMcpWorkspace).mockResolvedValue(new NextResponse(null, { status: 403 }) as never);
     const response = await POST(request({}), { params: params() });
     expect(response.status).toBe(403);
+    expect(acknowledgeEvidenceReviewCorrectionDelivery).not.toHaveBeenCalled();
+  });
+  it("refuses acknowledgement without the recorded builder task coordinates", async () => {
+    const response = await POST(request({ detail: "I have the packet" }), { params: params() });
+    expect(response.status).toBe(400);
     expect(acknowledgeEvidenceReviewCorrectionDelivery).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "crypto";
+import { createRequire } from "node:module";
 
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -54,6 +55,41 @@ const DB_AVAILABLE: boolean = await (async () => {
     return false;
   }
 })();
+const consoleRequire = createRequire(new URL("../../../../apps/console/package.json", import.meta.url));
+
+const LIVE_RUNTIME_E2E = process.env.JACE_RUNTIME_E2E === "1"
+  && typeof process.env.JACE_CONSOLE_BASE_URL === "string"
+  && typeof process.env.JACE_CONSOLE_TOKEN === "string"
+  && process.env.REVIEW_EVIDENCE_ENABLED === "1"
+  && ["S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET"].every((key) => Boolean(process.env[key]));
+
+function syntheticArtifactClient() {
+  const endpoint = process.env.S3_ENDPOINT!;
+  const accessKeyId = process.env.S3_ACCESS_KEY!;
+  const secretAccessKey = process.env.S3_SECRET_KEY!;
+  const { S3Client } = consoleRequire("@aws-sdk/client-s3");
+  return new S3Client({
+    endpoint,
+    region: process.env.S3_REGION || "us-east-1",
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== "0",
+    credentials: { accessKeyId, secretAccessKey },
+  });
+}
+
+async function readSyntheticArtifact(key: string): Promise<Record<string, unknown>> {
+  const bucket = process.env.S3_BUCKET!;
+  const { GetObjectCommand } = consoleRequire("@aws-sdk/client-s3");
+  const response = await syntheticArtifactClient().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const body = await response.Body?.transformToString();
+  if (!body) throw new Error("expected stored API evidence bytes");
+  return JSON.parse(body) as Record<string, unknown>;
+}
+
+async function deleteSyntheticArtifact(key: string): Promise<void> {
+  const bucket = process.env.S3_BUCKET!;
+  const { DeleteObjectCommand } = consoleRequire("@aws-sdk/client-s3");
+  await syntheticArtifactClient().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
 
 async function withLoopbackOrigin<T>(run: (origin: string) => Promise<T>): Promise<T> {
   const server = http.createServer((_req, res) => {
@@ -212,12 +248,15 @@ describe.skipIf(!DB_AVAILABLE)(
   "evidence verification execution integration — live Postgres claim/report",
   () => {
     let fixture: SyntheticFixture | null = null;
+    let liveArtifactKey: string | null = null;
 
     beforeEach(() => {
       fixture = null;
+      liveArtifactKey = null;
     });
 
     afterEach(async () => {
+      if (liveArtifactKey) await deleteSyntheticArtifact(liveArtifactKey);
       if (!fixture) return;
       await db.delete(workspaces).where(eq(workspaces.id, fixture.workspaceId));
       await assertSyntheticFixtureRemoved(fixture);
@@ -309,6 +348,61 @@ describe.skipIf(!DB_AVAILABLE)(
           workerId: fixture.workerId,
         });
         expect(claimed).toBeNull();
+      });
+    });
+
+    it.skipIf(!LIVE_RUNTIME_E2E)("runs one exact-head API criterion through the real Console, Jace worker, artifact store, and completion route", async () => {
+      await withLoopbackOrigin(async (origin) => {
+        fixture = await seedSyntheticApiExecution(`${origin}/api/health`);
+        const env = {
+          JACE_CONSOLE_BASE_URL: process.env.JACE_CONSOLE_BASE_URL!,
+          JACE_CONSOLE_TOKEN: process.env.JACE_CONSOLE_TOKEN!,
+        };
+        const [{ createVerificationExecutionConsole }, { createVerificationExecutionWorker }, { createVerificationApiExecuteFn }] = await Promise.all([
+          import("../../../../apps/jace/agent/lib/verification_execution_console.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_execution_worker.core.mjs"),
+          import("../../../../apps/jace/agent/lib/verification_api_executor.mjs"),
+        ]);
+        const workerId = `live-runtime-${randomUUID()}`;
+        const executionConsole = createVerificationExecutionConsole({ env });
+        const apiExecute = createVerificationApiExecuteFn({ env });
+        const worker = createVerificationExecutionWorker({
+          claim: () => executionConsole.claim(workerId),
+          execute: apiExecute,
+          complete: (input: unknown) => executionConsole.complete(input),
+        });
+
+        expect(await worker.tick()).toBe("proven");
+
+        const stored = await db
+          .select()
+          .from(evidenceVerificationExecutions)
+          .where(eq(evidenceVerificationExecutions.id, fixture.executionId))
+          .limit(1);
+        expect(stored).toHaveLength(1);
+        expect(stored[0]).toMatchObject({
+          id: fixture.executionId,
+          verificationPlanId: fixture.planId,
+          status: "proven",
+          workerId,
+        });
+        expect(stored[0]?.artifactIds).toHaveLength(1);
+
+        const artifacts = await db
+          .select()
+          .from(evidenceVerificationArtifacts)
+          .where(eq(evidenceVerificationArtifacts.verificationPlanId, fixture.planId));
+        expect(artifacts).toHaveLength(1);
+        expect(artifacts[0]).toMatchObject({
+          verificationPlanId: fixture.planId,
+          contentType: "application/json",
+        });
+        liveArtifactKey = artifacts[0]!.artifactKey;
+        expect(await readSyntheticArtifact(liveArtifactKey)).toMatchObject({
+          request: { method: "GET", url: `${origin}/api/health` },
+          response: { status: 200 },
+          assertions: ["criterion api-health: expected status 200; observed status 200"],
+        });
       });
     });
   }

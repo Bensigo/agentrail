@@ -709,6 +709,13 @@
       "when": 1790500000000,
       "tag": "0100_acceptance_brief_bindings",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1790600000000,
+      "tag": "0102_evidence_verification_data_request_repair",
+      "breakpoints": true
     }
   ]
 }

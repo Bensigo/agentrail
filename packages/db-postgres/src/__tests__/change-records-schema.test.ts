@@ -299,6 +299,28 @@ describe("0100_acceptance_brief_bindings migration", () => {
   });
 });
 
+describe("0102_evidence_verification_data_request_repair migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0102_evidence_verification_data_request_repair.sql"
+  );
+
+  it("repairs a missing data_request column and reinstalls the bounded data check idempotently", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "data_request" jsonb');
+    expect(sqlText).toContain('DROP CONSTRAINT IF EXISTS "evidence_verification_plans_data_request_check"');
+    expect(sqlText).toContain('ADD CONSTRAINT "evidence_verification_plans_data_request_check"');
+    expect(sqlText).toContain("NOT VALID");
+    expect(sqlText).toContain("jsonb_array_length");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0102_evidence_verification_data_request_repair");
+    expect(entry).toMatchObject({ idx: 106, version: "7", breakpoints: true });
+  });
+});
+
 describe("0094_evidence_verification_api_artifacts migration", () => {
   const MIGRATION = join(__dirname, "../../drizzle/migrations/0094_evidence_verification_api_artifacts.sql");
 

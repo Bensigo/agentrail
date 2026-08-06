@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
+import { apiKeys } from "../schema/api_keys.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { repositories } from "../schema/repositories.js";
 import { briefs, briefItems } from "../schema/briefs.js";
@@ -45,6 +46,11 @@ import {
 import type { Brief, BriefItem } from "../schema/briefs.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID.test(value);
+}
 
 function uuid5Url(name: string): string {
   const ns = Buffer.from(NAMESPACE_URL.replace(/-/g, ""), "hex");
@@ -1181,8 +1187,14 @@ export type CreateAcceptanceBuilderHandoffInput = {
   contractId: string;
   contractVersion: number;
   contextPackId: string;
+  /** Human-selected active credential for this exact external builder task. */
+  agentMcpCredentialId: string;
   createdBy: string;
 };
+
+/** A newly created handoff always has a selected agent-MCP credential. */
+export type AcceptanceBuilderHandoffWithAgentMcpCredential =
+  AcceptanceBuilderHandoffRow & { agentMcpCredentialId: string };
 
 /** Read recorded human-selected builder routes without resolving Pack content. */
 export async function readAcceptanceBuilderHandoffs(input: {
@@ -1477,7 +1489,7 @@ export async function reportAcceptanceContextPackCompilation(input: {
  */
 export async function createAcceptanceBuilderHandoff(
   input: CreateAcceptanceBuilderHandoffInput
-): Promise<{ handoff: AcceptanceBuilderHandoffRow; inserted: boolean }> {
+): Promise<{ handoff: AcceptanceBuilderHandoffWithAgentMcpCredential; inserted: boolean }> {
   const lockKey = `acceptance-builder-handoff:${input.workspaceId}:${input.repositoryId}:${input.branchName}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
@@ -1521,11 +1533,34 @@ export async function createAcceptanceBuilderHandoff(
       .limit(1);
     if (!record[0]) throw new Error("Acceptance Record was not found in workspace");
 
+    const credential = await tx
+      .select({ id: apiKeys.id })
+      .from(apiKeys)
+      .where(and(
+        eq(apiKeys.id, input.agentMcpCredentialId),
+        eq(apiKeys.workspaceId, input.workspaceId),
+        eq(apiKeys.kind, "agent_mcp"),
+        isNull(apiKeys.revokedAt),
+        sql`${apiKeys.scopes} @> ARRAY['acceptance:read', 'acceptance:correction:ack']::text[]`,
+      ))
+      .limit(1);
+    if (!credential[0]) {
+      throw new Error("Selected agent MCP credential is not active in this workspace with required acceptance scopes");
+    }
+
     const existingTask = await tx.select().from(acceptanceBuilderHandoffs).where(and(
       eq(acceptanceBuilderHandoffs.recordId, input.recordId),
       eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey)
     )).limit(1);
-    if (existingTask[0]) return { handoff: existingTask[0], inserted: false };
+    if (existingTask[0]) {
+      if (existingTask[0].agentMcpCredentialId !== input.agentMcpCredentialId) {
+        throw new Error("Builder task is already bound to a different agent MCP credential");
+      }
+      return {
+        handoff: existingTask[0] as AcceptanceBuilderHandoffWithAgentMcpCredential,
+        inserted: false,
+      };
+    }
     const existingBranch = await tx.select().from(acceptanceBuilderHandoffs).where(and(
       eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
       eq(acceptanceBuilderHandoffs.repositoryId, input.repositoryId),
@@ -1538,9 +1573,10 @@ export async function createAcceptanceBuilderHandoff(
       repositoryId: input.repositoryId, builder: input.builder, taskContextKey: input.taskContextKey,
       branchName: input.branchName, acceptanceContractId: input.contractId,
       acceptanceContractVersion: input.contractVersion, contextPackId: input.contextPackId,
+      agentMcpCredentialId: input.agentMcpCredentialId,
       createdBy: input.createdBy,
     }).returning();
-    const handoff = rows[0]!;
+    const handoff = rows[0]! as AcceptanceBuilderHandoffWithAgentMcpCredential;
     await appendContractEventInTransaction(tx, {
       recordId: input.recordId,
       eventKey: `builder-handoff:${handoff.id}`,
@@ -1552,6 +1588,7 @@ export async function createAcceptanceBuilderHandoff(
         acceptanceContractId: handoff.acceptanceContractId,
         acceptanceContractVersion: handoff.acceptanceContractVersion,
         contextPackId: handoff.contextPackId,
+        agentMcpCredentialId: handoff.agentMcpCredentialId,
       },
     });
     return { handoff, inserted: true };
@@ -1586,6 +1623,7 @@ export type AcceptanceBuilderTaskRead = {
     builder: string;
     taskContextKey: string;
     branchName: string;
+    agentMcpCredentialId: string;
     status: string;
     createdAt: Date;
     prAttachedAt: Date | null;
@@ -1628,9 +1666,10 @@ export async function readAcceptanceBuilderTask(input: {
   workspaceId: string;
   builder: string;
   taskContextKey: string;
+  agentMcpCredentialId: string;
 }): Promise<AcceptanceBuilderTaskRead | null> {
   const builder = input.builder.trim().toLowerCase();
-  if (!builder || !input.taskContextKey) return null;
+  if (!builder || !input.taskContextKey || !isUuid(input.agentMcpCredentialId)) return null;
 
   const rows = await db
     .select({
@@ -1641,6 +1680,14 @@ export async function readAcceptanceBuilderTask(input: {
       compilation: acceptanceContextPackCompilations,
     })
     .from(acceptanceBuilderHandoffs)
+    .innerJoin(apiKeys, and(
+      eq(apiKeys.id, acceptanceBuilderHandoffs.agentMcpCredentialId),
+      eq(apiKeys.id, input.agentMcpCredentialId),
+      eq(apiKeys.workspaceId, input.workspaceId),
+      eq(apiKeys.kind, "agent_mcp"),
+      isNull(apiKeys.revokedAt),
+      sql`${apiKeys.scopes} @> ARRAY['acceptance:read']::text[]`,
+    ))
     .innerJoin(changeRecords, and(
       eq(acceptanceBuilderHandoffs.recordId, changeRecords.id),
       eq(acceptanceBuilderHandoffs.workspaceId, changeRecords.workspaceId),
@@ -1669,6 +1716,7 @@ export async function readAcceptanceBuilderTask(input: {
       eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
       sql`lower(trim(${acceptanceBuilderHandoffs.builder})) = ${builder}`,
       eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey),
+      eq(acceptanceBuilderHandoffs.agentMcpCredentialId, input.agentMcpCredentialId),
     ))
     .limit(2);
 
@@ -1684,6 +1732,7 @@ export async function readAcceptanceBuilderTask(input: {
       builder: row.handoff.builder,
       taskContextKey: row.handoff.taskContextKey,
       branchName: row.handoff.branchName,
+      agentMcpCredentialId: row.handoff.agentMcpCredentialId!,
       status: row.handoff.status,
       createdAt: row.handoff.createdAt,
       prAttachedAt: row.handoff.prAttachedAt,
@@ -3036,6 +3085,7 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
 export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
   workspaceId: string; apiKeyId: string; builder: string; taskContextKey: string;
 }) {
+  if (!isUuid(input.apiKeyId)) return [];
   const rows = await db.select({
     delivery: evidenceReviewCorrectionDeliveries,
     correction: evidenceReviewCorrections,
@@ -3058,6 +3108,15 @@ export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
       eq(acceptanceBuilderHandoffs.repositoryId, changeRecordPrs.repositoryId),
       sql`lower(trim(${acceptanceBuilderHandoffs.builder})) = lower(trim(${input.builder}))`,
       eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey),
+      eq(acceptanceBuilderHandoffs.agentMcpCredentialId, input.apiKeyId),
+    ))
+    .innerJoin(apiKeys, and(
+      eq(apiKeys.id, acceptanceBuilderHandoffs.agentMcpCredentialId),
+      eq(apiKeys.id, input.apiKeyId),
+      eq(apiKeys.workspaceId, input.workspaceId),
+      eq(apiKeys.kind, "agent_mcp"),
+      isNull(apiKeys.revokedAt),
+      sql`${apiKeys.scopes} @> ARRAY['acceptance:read']::text[]`,
     ))
     .innerJoin(acceptanceContextPackDeliveries, and(
       eq(acceptanceContextPackDeliveries.contextPackId, acceptanceBuilderHandoffs.contextPackId),
@@ -3178,6 +3237,7 @@ export async function reportEvidenceReviewCorrectionGithubDispatch(input: {
 export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
   workspaceId: string; apiKeyId: string; deliveryId: string; builder: string; taskContextKey: string; detail?: string | null;
 }) {
+  if (!isUuid(input.apiKeyId)) return null;
   const rows = await db.update(evidenceReviewCorrectionDeliveries).set({
     outcome: "acknowledged", outcomeDetail: input.detail ?? null, confirmedAt: new Date(),
   }).where(and(
@@ -3196,6 +3256,13 @@ export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
         AND handoff.repository_id = pr.repository_id
         AND lower(trim(handoff.builder)) = lower(trim(${input.builder}))
         AND handoff.task_context_key = ${input.taskContextKey}
+        AND handoff.agent_mcp_credential_id = ${input.apiKeyId}
+      JOIN api_keys agent_key ON agent_key.id = handoff.agent_mcp_credential_id
+        AND agent_key.id = ${input.apiKeyId}
+        AND agent_key.workspace_id = ${input.workspaceId}
+        AND agent_key.kind = 'agent_mcp'
+        AND agent_key.revoked_at IS NULL
+        AND agent_key.scopes @> ARRAY['acceptance:correction:ack']::text[]
       JOIN acceptance_context_pack_deliveries pack_delivery ON pack_delivery.context_pack_id = handoff.context_pack_id
         AND pack_delivery.method = 'mcp'
         AND pack_delivery.metadata->>'handoffId' = handoff.id::text

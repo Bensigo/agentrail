@@ -106,9 +106,16 @@ export type AcceptanceBuilderHandoff = {
   acceptanceContractId: string;
   acceptanceContractVersion: number;
   contextPackId: string;
+  agentMcpCredentialId: string | null;
   status: string;
   createdAt: string;
   prAttachedAt: string | null;
+};
+
+export type AgentMcpCredential = {
+  id: string;
+  name: string;
+  scopes: string[];
 };
 
 export type AcceptanceBriefBinding = {
@@ -171,6 +178,7 @@ type ChangeRecordResponse = {
   handoffs: AcceptanceBuilderHandoff[];
   correctionDeliveries: AcceptanceCorrectionDelivery[];
   briefBinding: AcceptanceBriefBinding | null;
+  agentMcpCredentials: AgentMcpCredential[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -549,23 +557,48 @@ export function canSelectExternalBuilder(
   ));
 }
 
+export function canRecordExternalBuilderHandoff(input: {
+  ready: boolean;
+  builder: string;
+  taskContextKey: string;
+  branchName: string;
+  agentMcpCredentialId: string;
+  agentMcpCredentials: AgentMcpCredential[];
+}): boolean {
+  return input.ready
+    && Boolean(input.builder.trim())
+    && Boolean(input.taskContextKey.trim())
+    && Boolean(input.branchName.trim())
+    && input.agentMcpCredentials.some((credential) => credential.id === input.agentMcpCredentialId);
+}
+
 export function BuilderHandoffPanel({
-  contracts, contextPacks, compilations = [], handoffs, onCreate, pending, error,
+  contracts, contextPacks, compilations = [], handoffs, agentMcpCredentials, onCreate, pending, error,
 }: {
   contracts: AcceptanceContract[];
   contextPacks: AcceptanceContextPack[];
   compilations?: AcceptanceContextPackCompilation[];
   handoffs: AcceptanceBuilderHandoff[];
-  onCreate: (input: { builder: string; taskContextKey: string; branchName: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) => void;
+  agentMcpCredentials: AgentMcpCredential[];
+  onCreate: (input: { builder: string; taskContextKey: string; branchName: string; agentMcpCredentialId: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) => void;
   pending: boolean;
   error: string | null;
 }) {
   const [builder, setBuilder] = useState("codex");
   const [taskContextKey, setTaskContextKey] = useState("");
   const [branchName, setBranchName] = useState("");
+  const [agentMcpCredentialId, setAgentMcpCredentialId] = useState("");
   const contract = contracts.find((item) => item.status === "confirmed");
   const contextPack = contextPacks.find((item) => item.phase === "execute" && compilations.some((compilation) => compilation.phase === "execute" && compilation.status === "compiled" && compilation.contextPackId === item.id && compilation.acceptanceContractId === contract?.id && compilation.acceptanceContractVersion === contract?.version));
   const ready = canSelectExternalBuilder(contracts, contextPacks, compilations) && Boolean(contract && contextPack);
+  const canRecord = canRecordExternalBuilderHandoff({
+    ready,
+    builder,
+    taskContextKey,
+    branchName,
+    agentMcpCredentialId,
+    agentMcpCredentials,
+  });
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -573,18 +606,20 @@ export function BuilderHandoffPanel({
         <p className="mt-1 text-xs text-[var(--gray-09)]">Keep your coding agent. Bind its task and branch to this confirmed Contract and bounded Context Pack before it starts work.</p>
       </div>
       {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Confirm a Contract and wait for the matching execute Context Pack compilation before selecting a builder.</p> : (
-        <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); onCreate({ builder, taskContextKey, branchName, contract: contract!, contextPack: contextPack! }); }}>
-          <div className="grid gap-3 sm:grid-cols-3">
+        <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); if (!canRecord) return; onCreate({ builder, taskContextKey, branchName, agentMcpCredentialId, contract: contract!, contextPack: contextPack! }); }}>
+          <div className="grid gap-3 sm:grid-cols-4">
             <label className="text-xs text-[var(--gray-11)]">Builder<input value={builder} onChange={(event) => setBuilder(event.target.value)} maxLength={64} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="codex or claude-code" /></label>
             <label className="text-xs text-[var(--gray-11)]">Builder task key<input value={taskContextKey} onChange={(event) => setTaskContextKey(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="stable task ID" /></label>
             <label className="text-xs text-[var(--gray-11)]">Planned branch<input value={branchName} onChange={(event) => setBranchName(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="feature/save-status" /></label>
+            <label className="text-xs text-[var(--gray-11)]">MCP credential<select value={agentMcpCredentialId} onChange={(event) => setAgentMcpCredentialId(event.target.value)} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs"><option value="">Select a dedicated credential</option>{agentMcpCredentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name}</option>)}</select></label>
           </div>
-          <p className="text-xs text-[var(--gray-09)]">Uses Contract v{contract!.version} and execute Pack v{contextPack!.version}. Jace will not create code, a PR, or a merge.</p>
-          <button type="submit" disabled={pending || !builder.trim() || !taskContextKey.trim() || !branchName.trim()} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{pending ? "Recording…" : "Record builder handoff"}</button>
+          <p className="text-xs text-[var(--gray-09)]">Uses Contract v{contract!.version} and execute Pack v{contextPack!.version}. Jace will bind the selected MCP credential to this task; another workspace credential cannot read its Pack or corrections.</p>
+          {agentMcpCredentials.length === 0 ? <p className="text-xs text-[var(--yellow-11)]">No active MCP credential is available. An owner or admin must create one with read and correction-acknowledgement access before recording this handoff.</p> : null}
+          <button type="submit" disabled={pending || !canRecord} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{pending ? "Recording…" : "Record builder handoff"}</button>
           {error ? <p className="text-sm text-[var(--red-11)]">{error}</p> : null}
         </form>
       )}
-      {handoffs.length ? <ol className="border-t border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{handoffs.map((handoff) => <li key={handoff.id} className="flex flex-wrap justify-between gap-2 py-1"><span><span className="font-mono">{handoff.builder}</span> · {handoff.taskContextKey} · {handoff.branchName}</span><span>{handoff.prAttachedAt ? "PR attached" : "Waiting for PR"}</span></li>)}</ol> : null}
+      {handoffs.length ? <ol className="border-t border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{handoffs.map((handoff) => <li key={handoff.id} className="flex flex-wrap justify-between gap-2 py-1"><span><span className="font-mono">{handoff.builder}</span> · {handoff.taskContextKey} · {handoff.branchName} · <span className="font-mono">{handoff.agentMcpCredentialId ?? "credential binding required"}</span></span><span>{handoff.prAttachedAt ? "PR attached" : "Waiting for PR"}</span></li>)}</ol> : null}
     </section>
   );
 }
@@ -803,6 +838,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.reviewRequests) ||
           !Array.isArray(body.handoffs) ||
           !Array.isArray(body.correctionDeliveries)
+          || !Array.isArray(body.agentMcpCredentials)
           || !("briefBinding" in body)
         ) {
           throw new Error("Change record response was incomplete");
@@ -851,13 +887,13 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
-  async function createBuilderHandoff(input: { builder: string; taskContextKey: string; branchName: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) {
+  async function createBuilderHandoff(input: { builder: string; taskContextKey: string; branchName: string; agentMcpCredentialId: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) {
     if (!data) return;
     setHandoffPending(true); setHandoffError(null);
     try {
       const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/builder-handoff`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ builder: input.builder, taskContextKey: input.taskContextKey, branchName: input.branchName, repo: data.record.repo, contractId: input.contract.id, contractVersion: input.contract.version, contextPackId: input.contextPack.id }),
+        body: JSON.stringify({ builder: input.builder, taskContextKey: input.taskContextKey, branchName: input.branchName, repo: data.record.repo, contractId: input.contract.id, contractVersion: input.contract.version, contextPackId: input.contextPack.id, agentMcpCredentialId: input.agentMcpCredentialId }),
       });
       const body = (await response.json().catch(() => ({}))) as { handoff?: AcceptanceBuilderHandoff; error?: string };
       if (!response.ok || !body.handoff) throw new Error(body.error ?? `HTTP ${response.status}`);
@@ -952,7 +988,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmationError={confirmationError}
       />
       <AcceptanceContextPackPanel contextPacks={data.contextPacks} compilations={data.contextPackCompilations} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
-      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
+      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} agentMcpCredentials={data.agentMcpCredentials} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
       <AcceptanceReviewRequestPanel requests={data.reviewRequests} />
       <CorrectionDeliveryPanel deliveries={data.correctionDeliveries} />
       <FinalPrDecisionPanel recordId={data.record.id} reviews={data.reviews} events={data.events} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />

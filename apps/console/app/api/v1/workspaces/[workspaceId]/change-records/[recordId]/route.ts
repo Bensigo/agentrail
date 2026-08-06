@@ -5,6 +5,7 @@ import {
   confirmAcceptanceContract,
   createDraftAcceptanceContract,
   getWorkspaceMembership,
+  listAgentMcpApiKeys,
   readAcceptanceEvidenceReviewSummaries,
   readAcceptanceEvidenceReviewRequests,
   readAcceptanceContracts,
@@ -117,6 +118,7 @@ function serializeBuilderHandoff(
     acceptanceContractId: handoff.acceptanceContractId,
     acceptanceContractVersion: handoff.acceptanceContractVersion,
     contextPackId: handoff.contextPackId,
+    agentMcpCredentialId: handoff.agentMcpCredentialId,
     status: handoff.status,
     createdAt: handoff.createdAt.toISOString(),
     prAttachedAt: handoff.prAttachedAt?.toISOString() ?? null,
@@ -199,7 +201,7 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, contextPackCompilations, reviews, reviewRequests, handoffs, correctionDeliveries, briefBinding] = await Promise.all([
+    const [contracts, contextPacks, contextPackCompilations, reviews, reviewRequests, handoffs, correctionDeliveries, briefBinding, agentMcpCredentials] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
       readAcceptanceContextPackCompilations({ workspaceId, recordId }),
@@ -208,6 +210,7 @@ export async function GET(
       readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
       readEvidenceReviewCorrectionDeliveriesForRecord({ workspaceId, recordId }),
       readAcceptanceBriefBinding({ workspaceId, recordId }),
+      membership.role === "owner" || membership.role === "admin" ? listAgentMcpApiKeys(workspaceId) : Promise.resolve([]),
     ]);
     return NextResponse.json({
       record: {
@@ -240,6 +243,11 @@ export async function GET(
       handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
       correctionDeliveries: correctionDeliveries.map(serializeCorrectionDelivery),
       briefBinding: briefBinding ? serializeBriefBinding(briefBinding) : null,
+      agentMcpCredentials: agentMcpCredentials
+        .filter((credential) => credential.revokedAt === null
+          && credential.scopes.includes("acceptance:read")
+          && credential.scopes.includes("acceptance:correction:ack"))
+        .map((credential) => ({ id: credential.id, name: credential.name, scopes: credential.scopes })),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);

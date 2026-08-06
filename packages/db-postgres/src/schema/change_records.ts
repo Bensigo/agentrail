@@ -14,6 +14,7 @@ import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 import { repositories } from "./repositories.js";
 import { briefs } from "./briefs.js";
+import { apiKeys } from "./api_keys.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -344,6 +345,15 @@ export const acceptanceBuilderHandoffs = pgTable(
     contextPackId: uuid("context_pack_id")
       .notNull()
       .references(() => acceptanceContextPacks.id, { onDelete: "restrict" }),
+    /**
+     * The one active agent-MCP credential selected by a human for this
+     * builder task. It remains nullable solely so pre-binding rows can migrate
+     * safely; builder-facing reads must treat null as unavailable.
+     */
+    agentMcpCredentialId: uuid("agent_mcp_credential_id").references(
+      () => apiKeys.id,
+      { onDelete: "restrict" }
+    ),
     status: text("status").notNull().default("handed_off"),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })

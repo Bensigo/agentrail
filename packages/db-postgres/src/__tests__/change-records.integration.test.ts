@@ -6,6 +6,7 @@ import { workspaces } from "../schema/workspaces.js";
 import { briefs, briefItems } from "../schema/briefs.js";
 import {
   acceptanceBuilderHandoffs,
+  acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
   acceptanceContextPacks,
   changeRecordEvents,
@@ -25,12 +26,13 @@ import {
   findOrCreateChangeRecord,
   linkAcceptanceBriefToRecord,
   recordAcceptancePrDecision,
+  readAcceptanceBuilderTask,
   readEvidenceReviewCorrectionDeliveriesForTask,
   readAcceptanceContracts,
   readAcceptanceBriefBinding,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
-import { createRepository } from "../queries/index.js";
+import { createApiKey, createRepository } from "../queries/index.js";
 
 const DB_AVAILABLE: boolean = await (async () => {
   try {
@@ -330,7 +332,15 @@ describe.skipIf(!DB_AVAILABLE)(
       const handoffId = randomUUID();
       const builder = "codex";
       const taskContextKey = `task-${randomUUID()}`;
-      const apiKeyId = `mcp-${randomUUID()}`;
+      const agentMcpKey = await createApiKey({
+        workspaceId: wsId,
+        name: "correction-proof builder",
+        keyPrefix: "jace_test",
+        keyHash: `sha256:${randomUUID()}`,
+        kind: "agent_mcp",
+        scopes: ["acceptance:read", "acceptance:correction:ack"],
+      });
+      const apiKeyId = agentMcpKey.id;
       await db.insert(acceptanceContextPacks).values({
         id: contextPackId,
         recordId: draft.record.id,
@@ -345,6 +355,19 @@ describe.skipIf(!DB_AVAILABLE)(
         markdownArtifactRef: "workspace://context/pack.md",
         createdBy: "jace:test",
       });
+      await db.insert(acceptanceContextPackCompilations).values({
+        id: randomUUID(),
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repositoryId: repository.id,
+        repositoryRef: "main",
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        phase: "execute",
+        status: "compiled",
+        contextPackId,
+        createdBy: "jace:test",
+      });
       await db.insert(acceptanceBuilderHandoffs).values({
         id: handoffId,
         recordId: draft.record.id,
@@ -356,6 +379,7 @@ describe.skipIf(!DB_AVAILABLE)(
         acceptanceContractId: contract.id,
         acceptanceContractVersion: contract.version,
         contextPackId,
+        agentMcpCredentialId: apiKeyId,
         status: "pr_attached",
         createdBy: "user:lead",
       });
@@ -424,6 +448,16 @@ describe.skipIf(!DB_AVAILABLE)(
         target: { builder, taskContextKey },
         reviewRevisionId: attachment.revision.id,
       });
+
+      const builderTask = await readAcceptanceBuilderTask({
+        workspaceId: wsId, agentMcpCredentialId: apiKeyId, builder, taskContextKey,
+      });
+      const wrongBuilderTask = await readAcceptanceBuilderTask({
+        workspaceId: wsId, agentMcpCredentialId: randomUUID(), builder, taskContextKey,
+      });
+
+      expect(builderTask?.handoff.agentMcpCredentialId).toBe(apiKeyId);
+      expect(wrongBuilderTask).toBeNull();
 
       const visible = await readEvidenceReviewCorrectionDeliveriesForTask({
         workspaceId: wsId, apiKeyId, builder, taskContextKey,

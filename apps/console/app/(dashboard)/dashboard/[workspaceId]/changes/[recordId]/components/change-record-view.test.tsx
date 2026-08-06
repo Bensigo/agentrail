@@ -9,6 +9,7 @@ import {
   FinalPrDecisionPanel,
   ChangeRecordAnchors,
   AcceptanceBriefPanel,
+  canRecordExternalBuilderHandoff,
   LifecycleTimeline,
   changeRecordApiPath,
   formatChangeRecordDate,
@@ -256,6 +257,25 @@ describe("Change Record detail view", () => {
     expect(canSelectExternalBuilder([confirmed], [contextPack], [queuedCompilation])).toBe(false);
     expect(canSelectExternalBuilder([draftContract], [contextPack], [compiledCompilation])).toBe(false);
     expect(canSelectExternalBuilder([confirmed], [], [compiledCompilation])).toBe(false);
+  });
+
+  it("requires the owner-selected eligible MCP credential before recording the selected builder handoff", () => {
+    const input = {
+      ready: true,
+      builder: "codex",
+      taskContextKey: "task-1",
+      branchName: "jace/save-status",
+      agentMcpCredentialId: "00000000-0000-4000-8000-000000000099",
+      agentMcpCredentials: [{
+        id: "00000000-0000-4000-8000-000000000099",
+        name: "Codex task credential",
+        scopes: ["acceptance:read", "acceptance:correction:ack"],
+      }],
+    };
+
+    expect(canRecordExternalBuilderHandoff(input)).toBe(true);
+    expect(canRecordExternalBuilderHandoff({ ...input, agentMcpCredentialId: "" })).toBe(false);
+    expect(canRecordExternalBuilderHandoff({ ...input, agentMcpCredentialId: "00000000-0000-4000-8000-000000000100" })).toBe(false);
   });
 
   it("shows a queued or failed compiler state without claiming a usable Pack", () => {

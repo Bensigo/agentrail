@@ -47,13 +47,24 @@ describe("MCP builder task handoff", () => {
   it("fails closed when the recorded task does not resolve", async () => {
     vi.mocked(readAcceptanceBuilderTask).mockResolvedValue(null);
     expect((await GET(request(), { params })).status).toBe(404);
-    expect(readAcceptanceBuilderTask).toHaveBeenCalledWith({ workspaceId: WS, builder: "codex", taskContextKey: "task-1" });
+    expect(readAcceptanceBuilderTask).toHaveBeenCalledWith({
+      workspaceId: WS,
+      builder: "codex",
+      taskContextKey: "task-1",
+      agentMcpCredentialId: "key-1",
+    });
     expect(recordAcceptanceContextPackDelivery).not.toHaveBeenCalled();
   });
 
   it("records the authenticated MCP delivery before returning only the selected contract and bounded pack", async () => {
     const response = await GET(request(), { params });
     expect(response.status).toBe(200);
+    expect(readAcceptanceBuilderTask).toHaveBeenCalledWith({
+      workspaceId: WS,
+      builder: "codex",
+      taskContextKey: "task-1",
+      agentMcpCredentialId: "key-1",
+    });
     expect(recordAcceptanceContextPackDelivery).toHaveBeenCalledWith({
       workspaceId: WS, recordId: "record-1", contextPackId: "pack-1",
       deliveryKey: "mcp:key-1:handoff-1", method: "mcp", recipient: "codex:task-1",

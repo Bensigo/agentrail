@@ -10,6 +10,7 @@ import {
 
 const BUILDER = /^[a-z][a-z0-9_-]{0,63}$/;
 const TASK_CONTEXT = /^[^\s][\s\S]{0,255}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function branchName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -43,8 +44,9 @@ export async function POST(
   const contractId = typeof body.contractId === "string" ? body.contractId : "";
   const contractVersion = body.contractVersion;
   const contextPackId = typeof body.contextPackId === "string" ? body.contextPackId : "";
-  if (!BUILDER.test(builder) || !TASK_CONTEXT.test(taskContextKey) || !repo || !branch || !contractId || !Number.isInteger(contractVersion) || (contractVersion as number) < 1 || !contextPackId) {
-    return NextResponse.json({ error: "builder, taskContextKey, repo, safe branchName, contractId, positive contractVersion, and contextPackId are required" }, { status: 400 });
+  const agentMcpCredentialId = typeof body.agentMcpCredentialId === "string" ? body.agentMcpCredentialId.trim() : "";
+  if (!BUILDER.test(builder) || !TASK_CONTEXT.test(taskContextKey) || !repo || !branch || !contractId || !Number.isInteger(contractVersion) || (contractVersion as number) < 1 || !contextPackId || !UUID.test(agentMcpCredentialId)) {
+    return NextResponse.json({ error: "builder, taskContextKey, repo, safe branchName, contractId, positive contractVersion, contextPackId, and an MCP credential ID are required" }, { status: 400 });
   }
   const record = await readChangeRecordTimeline({ workspaceId, recordId });
   if (!record) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -59,7 +61,7 @@ export async function POST(
     const result = await createAcceptanceBuilderHandoff({
       workspaceId, recordId, repositoryId: repository.id, builder, taskContextKey,
       branchName: branch, contractId, contractVersion: contractVersion as number,
-      contextPackId, createdBy: `user:${session.user.id}`,
+      contextPackId, agentMcpCredentialId, createdBy: `user:${session.user.id}`,
     });
     const { handoff } = result;
     return NextResponse.json({
@@ -67,12 +69,13 @@ export async function POST(
         id: handoff.id, builder: handoff.builder, taskContextKey: handoff.taskContextKey,
         branchName: handoff.branchName, acceptanceContractId: handoff.acceptanceContractId,
         acceptanceContractVersion: handoff.acceptanceContractVersion, contextPackId: handoff.contextPackId,
+        agentMcpCredentialId: handoff.agentMcpCredentialId,
         status: handoff.status, createdAt: handoff.createdAt.toISOString(),
       },
       inserted: result.inserted,
     }, { status: result.inserted ? 201 : 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create builder handoff";
-    return NextResponse.json({ error: message }, { status: message.includes("already bound") || message.includes("compiled execute Context Pack") ? 409 : 500 });
+    return NextResponse.json({ error: message }, { status: message.includes("already bound") || message.includes("compiled execute Context Pack") || message.includes("Selected agent MCP credential") ? 409 : 500 });
   }
 }

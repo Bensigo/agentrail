@@ -14,6 +14,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   readAcceptanceContextPackCompilations: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
   readAcceptanceBuilderHandoffs: vi.fn(),
+  listAgentMcpApiKeys: vi.fn(),
   readAcceptanceBriefBinding: vi.fn(),
   readEvidenceReviewCorrectionDeliveriesForRecord: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
@@ -32,6 +33,7 @@ import {
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
   readAcceptanceBuilderHandoffs,
+  listAgentMcpApiKeys,
   readAcceptanceBriefBinding,
   readEvidenceReviewCorrectionDeliveriesForRecord,
   readChangeRecordTimeline,
@@ -118,6 +120,7 @@ beforeEach(() => {
   vi.mocked(readAcceptanceContextPackCompilations).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceBuilderHandoffs).mockResolvedValue([] as never);
+  vi.mocked(listAgentMcpApiKeys).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceBriefBinding).mockResolvedValue(null as never);
   vi.mocked(readEvidenceReviewCorrectionDeliveriesForRecord).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
@@ -235,11 +238,29 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       handoffs: [],
       correctionDeliveries: [],
       briefBinding: null,
+      agentMcpCredentials: [],
     });
     expect(readAcceptanceContextPackCompilations).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readEvidenceReviewCorrectionDeliveriesForRecord).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readAcceptanceEvidenceReviewRequests).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readAcceptanceBriefBinding).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+  });
+
+  it("offers owners only active MCP credentials that can read and acknowledge corrections", async () => {
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(listAgentMcpApiKeys).mockResolvedValue([
+      { id: "eligible", name: "Codex task", scopes: ["acceptance:read", "acceptance:correction:ack"], revokedAt: null },
+      { id: "read-only", name: "Read only", scopes: ["acceptance:read"], revokedAt: null },
+      { id: "revoked", name: "Old task", scopes: ["acceptance:read", "acceptance:correction:ack"], revokedAt: CREATED },
+    ] as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      agentMcpCredentials: [{ id: "eligible", name: "Codex task", scopes: ["acceptance:read", "acceptance:correction:ack"] }],
+    });
+    expect(listAgentMcpApiKeys).toHaveBeenCalledWith(WS);
   });
 
   it("serializes the current Brief separately from immutable binding provenance", async () => {

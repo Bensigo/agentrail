@@ -23,7 +23,7 @@ const params = Promise.resolve({ workspaceId: "ws-1", recordId: "record-1" });
 const body = {
   builder: "codex", taskContextKey: "jace-task-123", repo: "ada/widgets",
   branchName: "jace/saved-state", contractId: "contract-1", contractVersion: 2,
-  contextPackId: "pack-1",
+  contextPackId: "pack-1", agentMcpCredentialId: "00000000-0000-4000-8000-000000000099",
 };
 function request(payload: unknown = body) {
   return new NextRequest("http://localhost/api/v1/workspaces/ws-1/change-records/record-1/builder-handoff", {
@@ -43,7 +43,7 @@ beforeEach(() => {
     handoff: {
       id: "handoff-1", builder: "codex", taskContextKey: "jace-task-123",
       branchName: "jace/saved-state", acceptanceContractId: "contract-1",
-      acceptanceContractVersion: 2, contextPackId: "pack-1", status: "handed_off",
+      acceptanceContractVersion: 2, contextPackId: "pack-1", agentMcpCredentialId: body.agentMcpCredentialId, status: "handed_off",
       createdAt: new Date("2026-08-06T00:00:00.000Z"),
     },
   } as never);
@@ -56,7 +56,7 @@ describe("POST builder handoff", () => {
     expect(createAcceptanceBuilderHandoff).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: "ws-1", recordId: "record-1", repositoryId: "repo-1",
       builder: "codex", taskContextKey: "jace-task-123", branchName: "jace/saved-state",
-      contractId: "contract-1", contractVersion: 2, contextPackId: "pack-1", createdBy: "user:user-1",
+      contractId: "contract-1", contractVersion: 2, contextPackId: "pack-1", agentMcpCredentialId: body.agentMcpCredentialId, createdBy: "user:user-1",
     }));
   });
 
@@ -72,6 +72,12 @@ describe("POST builder handoff", () => {
     vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
     const missingPack = await POST(request(), { params });
     expect(missingPack.status).toBe(409);
+    expect(createAcceptanceBuilderHandoff).not.toHaveBeenCalled();
+  });
+
+  it("requires a valid selected MCP credential ID", async () => {
+    const response = await POST(request({ ...body, agentMcpCredentialId: "not-a-uuid" }), { params });
+    expect(response.status).toBe(400);
     expect(createAcceptanceBuilderHandoff).not.toHaveBeenCalled();
   });
 

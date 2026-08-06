@@ -14,7 +14,12 @@ export async function GET(
   if (!builder || !taskContextKey) {
     return NextResponse.json({ error: "builder and taskContextKey are required" }, { status: 400 });
   }
-  const task = await readAcceptanceBuilderTask({ workspaceId, builder, taskContextKey });
+  const task = await readAcceptanceBuilderTask({
+    workspaceId,
+    builder,
+    taskContextKey,
+    agentMcpCredentialId: authorization.apiKeyId,
+  });
   if (!task) return NextResponse.json({ error: "Recorded builder task not found" }, { status: 404 });
   // The response is the supported handoff carrier. Do not expose a Pack when
   // its delivery cannot be durably recorded. This proves only delivery to the

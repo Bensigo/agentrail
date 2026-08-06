@@ -48,62 +48,28 @@ test("the reviewer's verdict vocabulary is exactly reviewed|degraded — the con
   assert.match(src, /REVIEW_VERDICTS\s*=\s*\[\s*"reviewed"\s*,\s*"degraded"\s*\]/);
 });
 
-test("instructions.md states that `reviewed` is NOT an approval", () => {
+test("instructions.md refuses to treat advisory review as a merge-gate result", () => {
   const src = instructions();
-  assert.match(
-    src,
-    /`reviewed` does\s+NOT\s+mean\s+approved/i,
-    "must state the rule that shipped a false approval to a human",
-  );
-  assert.match(
-    src,
-    /[Zz]ero findings is a legitimate\s+`reviewed`/,
-    "must say an empty review is still not a sign-off",
-  );
+  assert.match(src, /diff-only judgment[\s\S]{0,250}never a merge-gate result/i);
+  assert.match(src, /never substitute[\s\S]{0,100}imply a pass/i);
 });
 
-test("instructions.md forbids root passing its own outputSchema to the reviewer", () => {
+test("instructions.md keeps the retired advisory reviewer out of the active path", () => {
   const src = instructions();
-  assert.match(
-    src,
-    /[Nn]ever hand the\s+`reviewer`\s+an\s+`outputSchema`/,
-    "root inventing a competing verdict enum is what forced the mistranslation",
-  );
+  assert.match(src, /Do not use the retired advisory reviewer/i);
+  assert.match(src, /post PR-review comments/i);
 });
 
-test("instructions.md states a review is a bounded investigation, not a full audit", () => {
+test("instructions.md requires the canonical exact-head review path", () => {
   const src = instructions();
-  // Superseded 2026-08-01: the reviewer now has mandatory repo investigation
-  // (search_code/read_repo_file/file_history/fetch_wiki), so "sees ONLY the
-  // diff, has no repo access" is no longer true — the honest bound is a
-  // BOUNDED, declared read budget, not zero repo access.
-  assert.match(
-    src,
-    /review is not a full\s+audit/i,
-    "must bound what the reviewer's investigation can establish",
-  );
-  // `\s+`/`[^.]*`, not literal spacing: markdown wraps this section at ~75
-  // cols, so a phrase can straddle a newline today and a different one after
-  // any reflow. The rule is what must survive, not the line breaks.
-  assert.match(
-    src,
-    /bounded[^.]*read budget/i,
-    "must name the actual limitation — a bounded read budget, not full repo access",
-  );
-  assert.match(
-    src,
-    /investigation trail/i,
-    "must point at the investigation trail as the record of what was actually consulted",
-  );
+  assert.match(src, /exact-head Acceptance Review worker/i);
+  assert.match(src, /criterion-specific\s+proof/i);
+  assert.match(src, /blocker-only correction packets/i);
 });
 
-test("instructions.md still keeps the pre-existing degraded-verdict honesty rule (regression)", () => {
+test("instructions.md requires explicit not_proven or not_testable when the path is unavailable", () => {
   const src = instructions();
-  assert.match(
-    src,
-    /verdict is `degraded`/,
-    "the new rules are additive — the degraded rule must survive them",
-  );
+  assert.match(src, /state `not_proven` or `not_testable`/i);
 });
 
 const reviewerInstructionsPath = fileURLToPath(
@@ -132,10 +98,10 @@ test("reviewer instructions pin the source order: linked-issue ACs beat the PR b
   assert.ok(/issueNumber: null/.test(prose) || /`issueNumber` of `null`/.test(prose));
 });
 
-test("root instructions: acCoverage is relayed verbatim to post_pr_review, never re-judged", () => {
+test("root instructions: advisory coverage is never presented as merge-gate proof", () => {
   const prose = instructions();
-  assert.ok(prose.includes("acCoverage"));
-  assert.ok(/acCoverage[^.]*verbatim/i.test(prose));
+  assert.match(prose, /diff-only judgment[\s\S]{0,250}never a merge-gate result/i);
+  assert.match(prose, /criterion-specific\s+proof/i);
 });
 
 // B2a's Task 6 (2026-08-02, docs/superpowers/plans/2026-08-02-b2a-visual-
@@ -144,27 +110,21 @@ test("root instructions: acCoverage is relayed verbatim to post_pr_review, never
 // this is root's only instruction that the field exists at all, so deleting
 // it silently stops evidence from ever reaching post_pr_review's acCoverage
 // argument even though the tool and renderer both support it.
-test("root instructions: qa's evidence_images ride the acCoverage fold verbatim into the posted per-AC lines", () => {
+test("root instructions: exact-head evidence review owns proof", () => {
   const prose = instructions();
-  assert.ok(prose.includes("evidence_images"));
-  assert.match(prose, /evidence_images[^.]*verbatim/i);
+  assert.match(prose, /exact-head Acceptance Review worker/i);
+  assert.match(prose, /generic preview[\s\S]{0,100}never a merge-gate result/i);
 });
 
-test("root instructions: null coverage is reported as a diff-only review, echoing the reviewer's reason", () => {
+test("root instructions: unavailable acceptance review fails closed", () => {
   const prose = instructions();
-  assert.ok(/diff-only/.test(prose));
-  assert.ok(/no recognizable ACs|not reliably parseable/i.test(prose));
+  assert.match(prose, /`not_proven` or `not_testable`/i);
 });
 
-test("root instructions: the chat coverage rundown carries the reviewer's evidence for not_in_diff/unclear entries", () => {
+test("root instructions: style stays silent unless a declared rule is violated", () => {
   const prose = instructions();
-  // `\s+`, not a literal space — same reflow-tolerant idiom as the
-  // "review is not a full audit" / "bounded ... read budget" pin above: the
-  // rule must survive a rewrap, not pin today's exact line break.
-  assert.ok(
-    /include\s+the\s+reviewer's\s+`evidence`/.test(prose),
-    "must say the chat rundown carries the reviewer's evidence for not_in_diff/unclear entries",
-  );
+  assert.match(prose, /Leave style feedback silent/i);
+  assert.match(prose, /enforced\s+convention or approved architecture rule/i);
 });
 
 // --- Task 7 pins: identity, Investigate protocol, grounding -----------------
@@ -263,26 +223,19 @@ test("reviewer instructions' protocol heading names all five phases, Read includ
 // rule, not that a model follows it — matching load-bearing keywords, not
 // exact wording, so a reword doesn't break this but a deletion does.
 
-test("root instructions: judgment is relayed to post_pr_review verbatim, never re-judged", () => {
+test("root instructions: blockers require a correction packet, not advisory judgment", () => {
   const prose = instructions();
-  assert.ok(prose.includes("judgment"));
-  assert.match(prose, /judgment[^.]*verbatim/i);
+  assert.match(prose, /A blocker needs a confirmed criterion/i);
+  assert.match(prose, /required correction/i);
 });
 
-test("root instructions: the chat presentation of the judgment names the investigation count", () => {
+test("root instructions: no legacy advisory judgment presentation remains", () => {
   const prose = instructions();
-  assert.match(
-    prose,
-    /investigated \d+|investigation count/,
-    "must surface how many questions the review actually investigated",
-  );
+  assert.doesNotMatch(prose, /Post the review yourself/i);
+  assert.doesNotMatch(prose, /call `post_pr_review`/i);
 });
 
-test("root instructions: a cannot_judge verdict is never softened into a pass", () => {
+test("root instructions: generic smoke cannot become a pass", () => {
   const prose = instructions();
-  assert.match(
-    prose,
-    /cannot_judge[\s\S]{0,300}never soften|never soften[\s\S]{0,300}cannot_judge/i,
-    "cannot_judge must be presented as exactly that, never upgraded",
-  );
+  assert.match(prose, /generic\s+preview\s+smoke is never a merge-gate result/i);
 });

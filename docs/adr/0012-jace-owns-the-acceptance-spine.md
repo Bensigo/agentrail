@@ -66,10 +66,11 @@ reason. A persisted plan is not proof.
 The canonical Acceptance Review validator rejects advisory/random findings: a
 blocker needs an allowed basis, exact evidence, impact, required correction,
 and re-verification; a repository-convention blocker additionally needs an
-enforced rule identity. The older GitHub comment writer has been narrowed to
-post only `blocker` severity, never major/minor/nit, but it remains legacy
-summary/comment machinery until it is removed or fully migrated to the
-canonical exact-head correction path.
+enforced rule identity. The old GitHub advisory-comment tool is disabled from
+Jace's runtime registry, its headless worker is not wired at startup, and its
+standalone entrypoint exits without starting work. Its core/source remains only
+as quarantined historical cleanup material until dependencies and retained data
+are safely migrated; it is not a supported product review or merge-gate path.
 
 Context Pack recording now rejects an unbounded or uncited manifest. A pack
 must declare an explicit token budget/count, cited source ranges, the exact

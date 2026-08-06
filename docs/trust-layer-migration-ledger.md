@@ -43,7 +43,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
 | Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs never enter the advisory queue |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
-| Blocking-only review boundary | current migration slice | `evidence-review-validation` rejects unsupported bases, missing evidence/impact/correction/reverification, and style-only convention claims; the legacy GitHub comment writer now posts only `blocker` severity, never major/minor/nit. It is still a legacy summary/comment mechanism and must be removed or migrated to the canonical exact-head Acceptance Review delivery path before it can be described as the product merge gate. |
+| Blocking-only review boundary | current migration slice | `evidence-review-validation` rejects unsupported bases, missing evidence/impact/correction/reverification, and style-only convention claims. The old `post_pr_review` root tool is explicitly disabled, the advisory review worker is not wired at Jace startup, and its standalone entrypoint refuses to start. The retained core/source is quarantined cleanup material only; Canonical exact-head Acceptance Review is the sole supported Jace merge-gate path. Focused Jace tool-policy, instruction, and instrumentation tests pass. |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
 | Automatic correction queue, builder-task inbox, native MCP read/ack, and GitHub fallback dispatch | `7d560fcd` through `2890610f`, `f8789d6e` | focused review-completion/queue/ack/inbox/dispatch tests, MCP protocol test, and DB typecheck. A blocking review queues the exact correction only for its unique PR-attached handoff; packets retain exact review revision and runtime evidence. A builder can retrieve its recorded task's packet and acknowledge it through scoped MCP tools. GitHub dispatch posts a COMMENT-only PR issue-comment only for the current exact head and records delivered/failed. Neither carrier proves a live builder was notified or resumed. |
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
@@ -78,9 +78,9 @@ acknowledgement only; no dispatcher has proven notification.
    have append-only input/reply evidence and Jace can fetch a bounded resume
    projection, but no deployed channel has exercised that flow or proved that
    only unresolved questions were asked.
-4. Remove the now-obsolete dependency approval/publisher callers only after a
-   dependency scan proves no remaining acceptance-spine caller depends on
-   them; finish Console removal of obsolete connector/factory surfaces, and
+4. Remove the now-obsolete dependency approval/publisher callers and the
+   quarantined legacy advisory-review core/worker/prompt after scans prove no
+   remaining acceptance-spine caller or retained data depends on them; finish Console removal of obsolete connector/factory surfaces, and
    complete the copy-only landing pivot. The final human PR decision is now a current-review append-only
    seam, but it is not live/migrated-DB/browser verified and does not capture
    post-merge rework/revert; those remain explicit aggregate outcome evidence.

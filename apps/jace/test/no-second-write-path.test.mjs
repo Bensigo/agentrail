@@ -193,7 +193,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
-  "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "post_pr_review.ts", // retired: explicit disableTool keeps the old source outside Jace's runtime registry
   "record_judgment.ts", // UNGATED by design: records bounded internal chat/grilling learning evidence only; no GitHub/workspace mutation and no child_process
   "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
   "request_preview_boot.ts", // operational + ungated by design (B2b reviewer wiring): requests/polls a console preview boot for the calling root session; no repo/workspace mutation, no approval, no child_process
@@ -230,13 +230,14 @@ const EXPECTED_MUTATING_TOOLS = [
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
 const UNGATED_ADVISORY_WRITES = [
-  "post_pr_review.ts",
   "record_judgment.ts",
   "save_brief.ts",
   "save_investigation.ts",
   "record_verdict.ts",
   "draft_acceptance_contract.ts",
 ];
+
+const DISABLED_TOOL_FILES = ["post_pr_review.ts"];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",
@@ -319,6 +320,15 @@ test("the enumerated ungated advisory writes wire NO approval gate at all", () =
       /\bapproval\s*:/,
       `${file} must not wire any approval field`,
     );
+  }
+});
+
+test("retired advisory PR review tool is absent from the runtime registry", () => {
+  for (const file of DISABLED_TOOL_FILES) {
+    const src = stripComments(readFileSync(`${toolsDir}/${file}`, "utf8"));
+    assert.match(src, /import\s*\{\s*disableTool\s*\}\s*from\s*["']eve\/tools["']/);
+    assert.match(src, /export\s+default\s+disableTool\(\)/);
+    assert.doesNotMatch(src, /defineTool\(/);
   }
 });
 

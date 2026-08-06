@@ -4,6 +4,7 @@ import {
   confirmAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceContracts,
+  readAcceptanceContextPacks,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
 
@@ -18,6 +19,26 @@ function serializeContract(contract: Awaited<ReturnType<typeof confirmAcceptance
     confirmedBy: contract.confirmedBy,
     confirmedAt: contract.confirmedAt?.toISOString() ?? null,
     createdAt: contract.createdAt.toISOString(),
+  };
+}
+
+function serializeContextPack(
+  pack: NonNullable<Awaited<ReturnType<typeof readAcceptanceContextPacks>>>[number]
+) {
+  return {
+    id: pack.id,
+    recordId: pack.recordId,
+    version: pack.version,
+    phase: pack.phase,
+    contentHash: pack.contentHash,
+    compilerVersion: pack.compilerVersion,
+    manifest: pack.manifest,
+    custody: pack.custody,
+    freshness: pack.freshness,
+    jsonArtifactRef: pack.jsonArtifactRef,
+    markdownArtifactRef: pack.markdownArtifactRef,
+    createdBy: pack.createdBy,
+    createdAt: pack.createdAt.toISOString(),
   };
 }
 
@@ -42,7 +63,10 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const contracts = await readAcceptanceContracts({ workspaceId, recordId });
+    const [contracts, contextPacks] = await Promise.all([
+      readAcceptanceContracts({ workspaceId, recordId }),
+      readAcceptanceContextPacks({ workspaceId, recordId }),
+    ]);
     return NextResponse.json({
       record: {
         id: timeline.record.id,
@@ -67,6 +91,7 @@ export async function GET(
         createdAt: event.createdAt.toISOString(),
       })),
       contracts: (contracts ?? []).map(serializeContract),
+      contextPacks: (contextPacks ?? []).map(serializeContextPack),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);

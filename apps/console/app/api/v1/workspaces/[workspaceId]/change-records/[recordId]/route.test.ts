@@ -8,6 +8,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   confirmAcceptanceContract: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   readAcceptanceContracts: vi.fn(),
+  readAcceptanceContextPacks: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
 }));
 
@@ -16,6 +17,7 @@ import {
   confirmAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceContracts,
+  readAcceptanceContextPacks,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
@@ -89,6 +91,7 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
   vi.mocked(confirmAcceptanceContract).mockResolvedValue({
     id: "contract-1", recordId: RECORD, version: 2, status: "confirmed",
     contract: { originalRequest: "Add a button" }, createdBy: "user:lead",
@@ -105,6 +108,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(401);
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
+    expect(readAcceptanceContextPacks).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -115,6 +119,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(403);
     expect(getWorkspaceMembership).toHaveBeenCalledWith(USER, WS);
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
+    expect(readAcceptanceContextPacks).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -184,6 +189,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
         },
       ],
       contracts: [],
+      contextPacks: [],
     });
   });
 

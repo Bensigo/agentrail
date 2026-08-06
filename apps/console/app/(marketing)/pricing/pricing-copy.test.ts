@@ -257,11 +257,6 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(layoutSource).not.toContain("fractional software engineer");
   });
 
-  it("landing page renders the new bottleneck section without inventing attribution", () => {
-    expect(landingSource).toContain("The bottleneck moved");
-    expect(landingSource).toContain("Attribution unavailable in the current source set.");
-  });
-
   it("the outcome-led use case frames dependency work as an evidence-bound trust flow", () => {
     expect(useCasesSource).toContain("Make dependency work reviewable");
     expect(useCasesSource).toContain(

@@ -1085,7 +1085,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
 ];
 
 /** Customer-facing sources of work and pull-request evidence. */
-export const PUBLIC_CONNECTOR_KINDS: readonly ConnectorKind[] = ["github", "linear"];
+export const PUBLIC_CONNECTOR_KINDS: readonly ConnectorKind[] = ["github"];
 
 /** Filter API/projected rows without removing backend connector capabilities. */
 export function filterPublicConnectors(

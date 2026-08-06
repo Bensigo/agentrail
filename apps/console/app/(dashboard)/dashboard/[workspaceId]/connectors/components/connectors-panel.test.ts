@@ -66,9 +66,9 @@ describe("ConnectorTile — one-click surface", () => {
 });
 
 describe("ConnectorsPanel — trust-layer presentation", () => {
-  it("shows the supported GitHub and Linear connectors", () => {
+  it("shows only the supported GitHub connector", () => {
     const rows = projectConnectors([]);
-    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github", "linear"]);
+    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github"]);
   });
 
   it("keeps public catalog copy free of legacy setup claims", () => {

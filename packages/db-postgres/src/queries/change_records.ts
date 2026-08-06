@@ -1874,20 +1874,7 @@ export async function reportEvidenceVerificationExecution(input: {
   return updated[0] ?? null;
 }
 
-export async function claimEvidenceVerificationExecution(input: { workerId: string }): Promise<{
-  execution: EvidenceVerificationExecutionRow;
-  plan: EvidenceVerificationPlanRow;
-  repositoryFullName: string;
-  prNumber: number;
-  headSha: string;
-  previewUrl: string | null;
-} | null> {
-  // A queued execution must never be claimed before its exact-head preview is
-  // actually ready.  A boot in pending/claimed/booting is a transient state,
-  // not evidence that the criterion is untestable.  Conversely, a superseded
-  // revision or a missing/terminal preview can never become runnable, so close
-  // it honestly before selecting work rather than leaving a permanent queued
-  // row for a worker to rediscover forever.
+async function terminalizeUnavailableEvidenceVerificationExecutions(): Promise<void> {
   await db.execute(sql`
     UPDATE evidence_verification_executions AS execution
     SET status = 'not_testable',
@@ -1909,6 +1896,23 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
         OR preview.status IN ('failed', 'torn_down')
       )
   `);
+}
+
+export async function claimEvidenceVerificationExecution(input: { workerId: string }): Promise<{
+  execution: EvidenceVerificationExecutionRow;
+  plan: EvidenceVerificationPlanRow;
+  repositoryFullName: string;
+  prNumber: number;
+  headSha: string;
+  previewUrl: string | null;
+} | null> {
+  // A queued execution must never be claimed before its exact-head preview is
+  // actually ready.  A boot in pending/claimed/booting is a transient state,
+  // not evidence that the criterion is untestable.  Conversely, a superseded
+  // revision or a missing/terminal preview can never become runnable, so close
+  // it honestly before selecting work rather than leaving a permanent queued
+  // row for a worker to rediscover forever.
+  await terminalizeUnavailableEvidenceVerificationExecutions();
   const claimed = Array.from(await db.execute(sql`
     UPDATE evidence_verification_executions
     SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(), updated_at = now()
@@ -1936,7 +1940,12 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
     RETURNING id
   `)) as Array<Record<string, unknown>>;
   const id = claimed[0]?.id as string | undefined;
-  if (!id) return null;
+  if (!id) {
+    // Preview state can change after the first cleanup but before this claim
+    // query. Reconcile once more so a newly unsafe queued row is not stranded.
+    await terminalizeUnavailableEvidenceVerificationExecutions();
+    return null;
+  }
   const rows = await db.select({ execution: evidenceVerificationExecutions, plan: evidenceVerificationPlans, attachment: changeRecordPrs, revision: changeRecordPrRevisions })
     .from(evidenceVerificationExecutions)
     .innerJoin(evidenceVerificationPlans, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationPlans.id))

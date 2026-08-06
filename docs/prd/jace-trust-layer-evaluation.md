@@ -59,6 +59,19 @@ All rates carry numerator, denominator, unknown/unscored count, case segment,
 and confidence/repetition metadata. A generic preview smoke test has no
 criterion-proof credit.
 
+### Current offline proof-verifier contract
+
+The evaluator now has a pure fixture-owned proof verifier. Each
+`independentLabels.proof.criteria` row names one approved criterion, permitted
+modality, and expected verdict; a passing API row also names its expected
+status. The verifier accepts only metadata bound to the frozen PR head and
+environment. It requires observed behavior plus a PNG/JPEG for UI, a redacted
+JSON request/status card for API, a trigger plus bounded log/output for jobs,
+or authorized readback plus an assertion for data. Missing or ambiguous hidden
+labels are `unscored`; they never become a pass. This checks fixture and
+artifact lineage only. It neither executes a preview nor replaces an
+independent human/outcome scorer.
+
 ## Evidence classes and promotion
 
 Offline controlled truth, canary evidence, and production human outcomes are
@@ -141,7 +154,9 @@ criterion-specific UI/API/job/data evidence.
 2. Extend or adapt `RunRecord` with case/arm/contract/pack/evidence lineage;
    add independent scorecards and tests.
 3. Implement case executor and verifier protocols; retain hidden tests where a
-   frozen code outcome is valid, and add modality proof scoring.
+   frozen code outcome is valid, and add modality proof scoring. The pure
+   criterion-proof verifier now exists; it still needs a real evaluator-owned
+   scorer, fixture corpus, and persisted run/report path.
 4. Migrate spine, CLI, canary, reporter, and regression gate to Acceptance
    Cases. Verify each scorecard carries denominators and sample-size state.
 5. Run targeted replacement coverage and a bounded offline smoke corpus.

@@ -13,6 +13,7 @@ from .offline_runner import (
 )
 from .runner import AcceptanceLineage, BuilderInput, acceptance_lineage, builder_input
 from .promotion import MetricFloor, PromotionPolicy, PromotionResult, evaluate_promotion
+from .proof_verifier import CriterionProofClaim, ProofArtifact, ProofVerification, verify_criterion_proof
 
 __all__ = [
     "ARMS",
@@ -29,6 +30,9 @@ __all__ = [
     "MetricFloor",
     "PromotionPolicy",
     "PromotionResult",
+    "CriterionProofClaim",
+    "ProofArtifact",
+    "ProofVerification",
     "RunProvenance",
     "ScoredAttempt",
     "acceptance_lineage",
@@ -37,4 +41,5 @@ __all__ = [
     "load_case",
     "load_cases",
     "run_offline_four_arm_evaluation",
+    "verify_criterion_proof",
 ]

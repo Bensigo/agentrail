@@ -81,8 +81,10 @@ call has been exercised.
 The evaluator core turns unavailable exact evidence into a complete,
 criterion-by-criterion `not_proven` payload and otherwise accepts only an
 injected structured evaluator result whose criterion/finding citations fit the
-retained diff. It does not repair invalid output into a pass. A runtime model
-adapter and worker startup wiring remain required.
+retained diff. It does not repair invalid output into a pass. The Jace worker
+now has an opt-in model adapter and startup hook; deployment activation plus
+one authenticated exact-head claim, evidence fetch, completion, and persisted
+verdict remain unverified.
 
 ## Canonical MVP flow
 

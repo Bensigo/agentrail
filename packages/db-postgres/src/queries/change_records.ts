@@ -1844,15 +1844,56 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
   headSha: string;
   previewUrl: string | null;
 } | null> {
+  // A queued execution must never be claimed before its exact-head preview is
+  // actually ready.  A boot in pending/claimed/booting is a transient state,
+  // not evidence that the criterion is untestable.  Conversely, a superseded
+  // revision or a missing/terminal preview can never become runnable, so close
+  // it honestly before selecting work rather than leaving a permanent queued
+  // row for a worker to rediscover forever.
+  await db.execute(sql`
+    UPDATE evidence_verification_executions AS execution
+    SET status = 'not_testable',
+        result_reason = 'Exact PR head was superseded or its safe preview became unavailable before execution',
+        updated_at = now()
+    FROM evidence_verification_plans AS plan
+    INNER JOIN change_record_pr_revisions AS revision ON revision.id = plan.pr_revision_id
+    INNER JOIN change_record_prs AS attachment ON attachment.id = revision.pr_attachment_id
+    LEFT JOIN preview_boots AS preview ON preview.id = plan.environment_id
+    WHERE execution.verification_plan_id = plan.id
+      AND execution.status = 'queued'
+      AND (
+        revision.superseded_at IS NOT NULL
+        OR preview.id IS NULL
+        OR preview.workspace_id <> attachment.workspace_id
+        OR preview.repo <> attachment.repository_full_name
+        OR preview.pr_number <> attachment.pr_number
+        OR preview.head_sha <> revision.head_sha
+        OR preview.status IN ('failed', 'torn_down')
+      )
+  `);
   const claimed = Array.from(await db.execute(sql`
     UPDATE evidence_verification_executions
     SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(), updated_at = now()
     WHERE id = (
-      SELECT id FROM evidence_verification_executions
-      WHERE status = 'queued'
-      ORDER BY created_at ASC
+      SELECT execution.id
+      FROM evidence_verification_executions AS execution
+      INNER JOIN evidence_verification_plans AS plan ON plan.id = execution.verification_plan_id
+      INNER JOIN change_record_pr_revisions AS revision ON revision.id = plan.pr_revision_id
+      INNER JOIN change_record_prs AS attachment ON attachment.id = revision.pr_attachment_id
+      INNER JOIN preview_boots AS preview ON preview.id = plan.environment_id
+      WHERE execution.status = 'queued'
+        AND plan.status = 'planned'
+        AND plan.modality = 'ui'
+        AND revision.superseded_at IS NULL
+        AND preview.workspace_id = attachment.workspace_id
+        AND preview.repo = attachment.repository_full_name
+        AND preview.pr_number = attachment.pr_number
+        AND preview.head_sha = revision.head_sha
+        AND preview.status = 'ready'
+        AND preview.url IS NOT NULL
+      ORDER BY execution.created_at ASC
       LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF execution SKIP LOCKED
     )
     RETURNING id
   `)) as Array<Record<string, unknown>>;
@@ -1865,7 +1906,21 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
     .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
     .where(and(eq(evidenceVerificationExecutions.id, id), eq(evidenceVerificationExecutions.workerId, input.workerId), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)).limit(1);
   const row = rows[0];
-  if (!row) return null;
+  if (!row) {
+    // A push/teardown can win the race after the guarded UPDATE but before the
+    // read projection.  Do not strand that claim forever; it can no longer be
+    // proved on the exact head, so record the terminal honest outcome.
+    await db.update(evidenceVerificationExecutions).set({
+      status: "not_testable",
+      resultReason: "Exact PR head or safe preview changed while execution was being claimed",
+      updatedAt: new Date(),
+    }).where(and(
+      eq(evidenceVerificationExecutions.id, id),
+      eq(evidenceVerificationExecutions.workerId, input.workerId),
+      eq(evidenceVerificationExecutions.status, "claimed"),
+    ));
+    return null;
+  }
   const previews = row.plan.environmentId ? await db.select({ url: previewBoots.url })
     .from(previewBoots)
     .where(and(eq(previewBoots.id, row.plan.environmentId), eq(previewBoots.workspaceId, row.attachment.workspaceId), eq(previewBoots.repo, row.attachment.repositoryFullName), eq(previewBoots.prNumber, row.attachment.prNumber), eq(previewBoots.headSha, row.revision.headSha), eq(previewBoots.status, "ready")))

@@ -184,6 +184,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
+  "fetch_acceptance_intake.ts", // read-only compact, session-bound acceptance intake evidence
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
   "fetch_evidence_capabilities.ts", // read-only (debugging spec PR #1501, T11 review fix round 1): reads the workspace's EVIDENCE CAPABILITY MAP (which verbs have a connected/credentialed provider) — no params, no anchored investigation needed — over the console token API; no approval, no child_process

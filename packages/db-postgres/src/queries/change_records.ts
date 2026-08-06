@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import {
@@ -616,6 +616,146 @@ export async function readAcceptanceIntake(input: { workspaceId: string; intakeI
     .where(eq(acceptanceIntakeMessages.intakeId, input.intakeId))
     .orderBy(asc(acceptanceIntakeMessages.createdAt));
   return { intake: intake[0], messages };
+}
+
+export const ACCEPTANCE_INTAKE_READBACK_LIMITS = Object.freeze({
+  messageText: 2_000,
+  recentMessages: 8,
+  contractText: 1_000,
+  contractItems: 24,
+});
+
+type CompactContractItem = {
+  id: string;
+  text: string;
+  required?: boolean;
+  userVisible?: boolean;
+  status?: string;
+  resolution?: string;
+};
+
+function boundedText(value: unknown, limit: number): { value: string; truncated: boolean } {
+  const text = typeof value === "string" ? value : "";
+  return { value: text.slice(0, limit), truncated: text.length > limit };
+}
+
+function compactContractItems(value: unknown, kind: "criterion" | "question") {
+  const items = Array.isArray(value) ? value : [];
+  const included = items.slice(0, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractItems).flatMap((item): CompactContractItem[] => {
+    if (item == null || typeof item !== "object" || Array.isArray(item)) return [];
+    const source = item as Record<string, unknown>;
+    const id = boundedText(source.id, 256).value;
+    const text = boundedText(source.text, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractText).value;
+    if (!id || !text) return [];
+    if (kind === "criterion") {
+      return [{ id, text, required: source.required !== false, userVisible: source.userVisible === true }];
+    }
+    const result: CompactContractItem = { id, text, status: source.status === "resolved" ? "resolved" : "open" };
+    if (typeof source.resolution === "string" && source.resolution) {
+      result.resolution = boundedText(source.resolution, ACCEPTANCE_INTAKE_READBACK_LIMITS.contractText).value;
+    }
+    return [result];
+  });
+  return {
+    items: included,
+    total: items.length,
+    included: included.length,
+    truncated: items.length > included.length,
+  };
+}
+
+function compactAcceptanceContract(value: unknown) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const contract = value as Record<string, unknown>;
+  return {
+    acceptanceCriteria: compactContractItems(contract.acceptanceCriteria, "criterion"),
+    openQuestions: compactContractItems(contract.openQuestions ?? contract.unresolvedQuestions, "question"),
+  };
+}
+
+function compactIntakeMessage(row: AcceptanceIntakeMessageRow) {
+  const text = boundedText(row.text, ACCEPTANCE_INTAKE_READBACK_LIMITS.messageText);
+  return {
+    id: row.id,
+    direction: row.direction,
+    text: text.value,
+    textTruncated: text.truncated,
+    createdAt: row.createdAt,
+  };
+}
+
+export type AcceptanceIntakeReadback = {
+  intake: {
+    id: string;
+    status: string;
+    originChannel: string;
+    recordId: string | null;
+  };
+  firstInbound: ReturnType<typeof compactIntakeMessage> | null;
+  recentMessages: ReturnType<typeof compactIntakeMessage>[];
+  messageCounts: { total: number; included: number; truncated: boolean };
+  contract: {
+    id: string;
+    version: number;
+    status: string;
+    acceptanceCriteria: ReturnType<typeof compactContractItems>;
+    openQuestions: ReturnType<typeof compactContractItems>;
+  } | null;
+};
+
+/**
+ * Read only the bounded evidence Jace needs to resume a compacted intake.
+ * Workspace and intake are always part of the same lookup; source references,
+ * message metadata, and the full contract never cross this boundary.
+ */
+export async function readAcceptanceIntakeReadback(input: {
+  workspaceId: string;
+  intakeId: string;
+}): Promise<AcceptanceIntakeReadback | null> {
+  const intakes = await db
+    .select({ id: acceptanceIntakes.id, status: acceptanceIntakes.status, originChannel: acceptanceIntakes.originChannel, recordId: acceptanceIntakes.recordId })
+    .from(acceptanceIntakes)
+    .where(and(eq(acceptanceIntakes.id, input.intakeId), eq(acceptanceIntakes.workspaceId, input.workspaceId)))
+    .limit(1);
+  const intake = intakes[0];
+  if (!intake) return null;
+
+  const [totalRows, firstRows, recentRows, contracts] = await Promise.all([
+    db.select({ total: count() }).from(acceptanceIntakeMessages).where(eq(acceptanceIntakeMessages.intakeId, input.intakeId)),
+    db.select().from(acceptanceIntakeMessages)
+      .where(and(eq(acceptanceIntakeMessages.intakeId, input.intakeId), eq(acceptanceIntakeMessages.direction, "inbound")))
+      .orderBy(asc(acceptanceIntakeMessages.createdAt), asc(acceptanceIntakeMessages.id)).limit(1),
+    db.select().from(acceptanceIntakeMessages)
+      .where(eq(acceptanceIntakeMessages.intakeId, input.intakeId))
+      .orderBy(desc(acceptanceIntakeMessages.createdAt), desc(acceptanceIntakeMessages.id))
+      .limit(ACCEPTANCE_INTAKE_READBACK_LIMITS.recentMessages),
+    intake.recordId
+      ? db.select({ id: acceptanceContracts.id, version: acceptanceContracts.version, status: acceptanceContracts.status, contract: acceptanceContracts.contract })
+        .from(acceptanceContracts)
+        .where(eq(acceptanceContracts.recordId, intake.recordId))
+        .orderBy(desc(acceptanceContracts.version)).limit(1)
+      : Promise.resolve([]),
+  ]);
+
+  const firstInbound = firstRows[0] ? compactIntakeMessage(firstRows[0]) : null;
+  const recentMessages = recentRows
+    .slice()
+    .reverse()
+    .filter((row) => !firstRows[0] || row.id !== firstRows[0].id)
+    .map(compactIntakeMessage);
+  const total = Number(totalRows[0]?.total ?? 0);
+  const included = (firstInbound ? 1 : 0) + recentMessages.length;
+  const latestContract = contracts[0];
+
+  return {
+    intake: { id: intake.id, status: intake.status, originChannel: intake.originChannel, recordId: intake.recordId },
+    firstInbound,
+    recentMessages,
+    messageCounts: { total, included, truncated: total > included },
+    contract: latestContract
+      ? { id: latestContract.id, version: latestContract.version, status: latestContract.status, ...compactAcceptanceContract(latestContract.contract)! }
+      : null,
+  };
 }
 
 /** Link an Intake once a draft Acceptance Record has been safely created. */

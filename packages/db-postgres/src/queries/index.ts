@@ -3308,6 +3308,8 @@ export {
   recordAcceptanceInboundIntake,
   appendAcceptanceOutboundReply,
   readAcceptanceIntake,
+  readAcceptanceIntakeReadback,
+  ACCEPTANCE_INTAKE_READBACK_LIMITS,
   linkAcceptanceIntakeToRecord,
   createDraftAcceptanceContract,
   attachExternalPullRequest,

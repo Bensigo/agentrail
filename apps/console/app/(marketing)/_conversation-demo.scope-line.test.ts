@@ -5,11 +5,12 @@ const source = readFileSync(new URL("./_conversation-demo.tsx", import.meta.url)
 const dataSource = readFileSync(new URL("./_conversation-demo-data.ts", import.meta.url), "utf8");
 
 describe("conversation demo — acceptance contract", () => {
-  it("shows confirmation and the external builder handoff", () => {
-    expect(source).toContain("✅ Confirm contract");
-    expect(source).toContain("Contract confirmed by you");
-    expect(dataSource).toContain("bounded Context Pack");
-    expect(dataSource).toContain("external builder");
+  it("shows human confirmation and a coding-agent handoff", () => {
+    expect(source).toContain("✅ Confirm plan");
+    expect(source).toContain("Plan confirmed by you");
+    expect(dataSource).toContain("coding agent");
+    expect(dataSource).not.toContain("bounded Context Pack");
+    expect(dataSource).not.toContain("external builder");
   });
 
   it("contains no legacy estimate, model, execution, or delivery outcome claims", () => {

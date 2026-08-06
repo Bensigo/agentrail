@@ -19,7 +19,7 @@ import { TELEGRAM_SURFACE } from "../../lib/telegram-surface";
  * `ConversationDemo` documents as "show everything immediately".
  */
 
-/** ms per typed character — the full DEMO_USER_MESSAGE lands in ~2.4s. */
+/** ms per typed character — the full DEMO_USER_MESSAGE lands in ~0.6s. */
 const TYPE_INTERVAL_MS = 24;
 /** Pause between the message finishing and Jace's brief rising in. */
 const BRIEF_DELAY_MS = 350;

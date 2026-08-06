@@ -2,16 +2,18 @@ import { describe, expect, it } from "vitest";
 import { DEMO_CONTRACT, getDemoFollowUpMessage } from "./_conversation-demo-data";
 
 describe("conversation demo contract", () => {
-  it("contains a goal, boundary, and checkable criteria", () => {
-    expect(DEMO_CONTRACT.goal).toBeTruthy();
-    expect(DEMO_CONTRACT.boundary).toContain("external builder");
-    expect(DEMO_CONTRACT.acceptanceCriteria.length).toBeGreaterThanOrEqual(3);
-    expect(DEMO_CONTRACT.acceptanceCriteria.every(Boolean)).toBe(true);
+  it("contains a compact goal and three checkable acceptance criteria", () => {
+    expect(DEMO_CONTRACT.goal).toBe("Retry failed webhooks safely.");
+    expect(DEMO_CONTRACT.acceptanceCriteria).toEqual([
+      "Try up to 3 times with backoff.",
+      "Stop when a retry succeeds.",
+      "Show retries that still fail.",
+    ]);
   });
 
-  it("hands confirmed work to a bounded Context Pack for the external builder", () => {
+  it("hands confirmed work back to the user's coding agent", () => {
     expect(getDemoFollowUpMessage()).toBe(
-      "Jace prepares a bounded Context Pack for the selected external builder."
+      "Confirmed. I’ll prepare the context for your coding agent."
     );
   });
 });

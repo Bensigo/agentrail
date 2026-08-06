@@ -189,19 +189,22 @@ describe("(marketing) craft pins — mono on data moments", () => {
     return /font-mono|text-mono-data/.test(preceding);
   }
 
-  it("the demo's goal line is mono", () => {
+  it("the demo's goal line uses the calm body treatment", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "Goal:")).toBe(true);
+    expect(monoAppliesBefore(source, ">Goal</span>")).toBe(false);
+    expect(source).toContain("text-body-sm mt-1.5");
   });
 
-  it("the demo's boundary line is mono", () => {
+  it("the demo keeps visible chat copy free of implementation-jargon labels", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "Boundary:")).toBe(true);
+    expect(source).not.toContain("Boundary:");
+    expect(source).not.toContain("Checkable criteria:");
   });
 
-  it("the demo's Context Pack handoff is mono", () => {
+  it("the demo's confirmation handoff is calm body text", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "{getDemoFollowUpMessage()}")).toBe(true);
+    expect(monoAppliesBefore(source, "{getDemoFollowUpMessage()}")).toBe(false);
+    expect(source).toContain("text-body-sm max-w-[84%]");
   });
 
   it("the acceptance-spine markers render in mono rather than repurposing legacy factory run totals", () => {

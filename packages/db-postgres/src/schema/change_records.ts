@@ -460,7 +460,7 @@ export const evidenceVerificationArtifacts = pgTable(
     artifactKey: uniqueIndex("evidence_verification_artifacts_key").on(t.artifactKey),
     contentTypeCheck: check(
       "evidence_verification_artifacts_content_type_check",
-      sql`${t.contentType} IN ('image/png', 'image/jpeg')`
+      sql`${t.contentType} IN ('image/png', 'image/jpeg', 'application/json')`
     ),
   })
 );

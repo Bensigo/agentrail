@@ -60,7 +60,7 @@ describe("verification artifact upload", () => {
     const response = await POST(request());
 
     expect(response.status).toBe(201);
-    expect(resolveEvidenceVerificationPlanForArtifact).toHaveBeenCalledWith({ workspaceId: "ws", recordId: "record", prRevisionId: "revision", verificationPlanId: "plan" });
+    expect(resolveEvidenceVerificationPlanForArtifact).toHaveBeenCalledWith({ workspaceId: "ws", recordId: "record", prRevisionId: "revision", verificationPlanId: "plan", modality: "ui" });
     expect(recordEvidenceVerificationArtifact).toHaveBeenCalledWith(expect.objectContaining({ verificationPlanId: "plan", contentType: "image/png", contentSha256: expect.stringMatching(/^[a-f0-9]{64}$/) }));
     expect(putArtifact).toHaveBeenCalledTimes(1);
   });

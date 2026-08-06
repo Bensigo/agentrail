@@ -240,3 +240,19 @@ describe("0093_acceptance_context_pack_compilations migration", () => {
     expect(entry).toMatchObject({ idx: 98, version: "7", breakpoints: true });
   });
 });
+
+describe("0094_evidence_verification_api_artifacts migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0094_evidence_verification_api_artifacts.sql");
+
+  it("allows inspectable redacted JSON API proof artifacts", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('DROP CONSTRAINT IF EXISTS "evidence_verification_artifacts_content_type_check"');
+    expect(sqlText).toContain("'application/json'");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0094_evidence_verification_api_artifacts");
+    expect(entry).toMatchObject({ idx: 99, version: "7", breakpoints: true });
+  });
+});

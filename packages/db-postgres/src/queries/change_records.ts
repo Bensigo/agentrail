@@ -1750,12 +1750,13 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
   });
 }
 
-/** Resolve only a current, planned UI criterion and derive its PR identity. */
+/** Resolve a current planned criterion of one explicit proof modality. */
 export async function resolveEvidenceVerificationPlanForArtifact(input: {
   workspaceId: string;
   recordId: string;
   prRevisionId: string;
   verificationPlanId: string;
+  modality: "ui" | "api";
 }): Promise<{
   plan: EvidenceVerificationPlanRow;
   repositoryFullName: string;
@@ -1774,7 +1775,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
       eq(evidenceVerificationPlans.id, input.verificationPlanId),
       eq(evidenceVerificationPlans.recordId, input.recordId),
       eq(evidenceVerificationPlans.prRevisionId, input.prRevisionId),
-      eq(evidenceVerificationPlans.modality, "ui"),
+      eq(evidenceVerificationPlans.modality, input.modality),
       eq(evidenceVerificationPlans.status, "planned"),
       eq(changeRecordPrs.workspaceId, input.workspaceId),
       sql`${changeRecordPrRevisions.supersededAt} IS NULL`
@@ -1796,7 +1797,7 @@ export async function enqueueEvidenceVerificationExecution(input: {
   prRevisionId: string;
   verificationPlanId: string;
 }): Promise<{ execution: EvidenceVerificationExecutionRow; inserted: boolean }> {
-  const plan = await resolveEvidenceVerificationPlanForArtifact(input);
+  const plan = await resolveEvidenceVerificationPlanForArtifact({ ...input, modality: "ui" });
   if (!plan) throw new Error("Current planned UI criterion was not found for this record and PR revision");
   const id = evidenceVerificationExecutionId({ verificationPlanId: plan.plan.id });
   const rows = await db.insert(evidenceVerificationExecutions).values({
@@ -1932,7 +1933,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
 export async function recordEvidenceVerificationArtifact(input: {
   verificationPlanId: string;
   artifactKey: string;
-  contentType: "image/png" | "image/jpeg";
+  contentType: "image/png" | "image/jpeg" | "application/json";
   contentSha256: string;
   collectedBy: string;
 }): Promise<EvidenceVerificationArtifactRow> {

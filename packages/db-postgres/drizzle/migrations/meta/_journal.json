@@ -660,6 +660,13 @@
       "when": 1789800000000,
       "tag": "0093_acceptance_context_pack_compilations",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1789900000000,
+      "tag": "0094_evidence_verification_api_artifacts",
+      "breakpoints": true
     }
   ]
 }

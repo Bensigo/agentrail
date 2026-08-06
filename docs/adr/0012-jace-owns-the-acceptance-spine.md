@@ -72,8 +72,12 @@ structural handoff enforcement, not yet a live compiler attestation.
 The runner can now store an inspectable PNG/JPEG only by resolving a current,
 planned UI criterion against its Acceptance Record and exact PR revision. It
 derives the repository, PR number, head, criterion, and environment from that
-plan and records an artifact key plus SHA-256 digest. This is a narrow UI
-artifact seam, not a browser-exercise worker or proof of the criterion.
+plan and records an artifact key plus SHA-256 digest. A parallel API-only
+route accepts structured request/response-status/assertion evidence only for a
+current planned API criterion, redacts credential-bearing fields and common
+credential text before storing a JSON artifact, and binds the same exact-head
+identity. Neither route exercises its flow, verifies its assertions, or proves
+the criterion.
 
 Jace now has a separate exact-head criterion-execution queue, a guarded worker
 result seam, and a default-off Eve worker that claims only those plan-bound
@@ -92,7 +96,7 @@ aggregate outcome evidence, not the final Acceptance Record decision source.
 Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; a deployed UI exercise and non-UI artifact dispatch; API
-redaction worker; automatic Jace fallback delivery and external-builder receipt;
+execution/assertion worker; automatic Jace fallback delivery and external-builder receipt;
 human-decision live/migrated-DB proof; dependency workflow; and UI/browser E2E. An owner/admin can now dispatch the persisted
 packet as a GitHub PR issue-comment only when the exact review revision is
 still current; it records `delivered` or `failed`, but does not prove that the

@@ -56,3 +56,9 @@ exercise worker, human outcomes/dependency workflow, and UI/browser E2E.
 All future channel work must write the same Acceptance Record; it must not
 create a parallel channel-local contract. Any review or delivery claim must be
 bound to the exact contract version, PR revision, target, and recorded result.
+
+Automatic GitHub correlation is fail-closed: a webhook may attach or trigger a
+review only when the connected workspace/repository, exact PR head, and a
+recorded builder task/context identify one Acceptance Record. A missing or
+ambiguous builder binding requires explicit human attachment; it must never
+guess from a title, branch name, or repository alone.

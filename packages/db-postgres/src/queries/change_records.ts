@@ -1758,7 +1758,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   recordId: string;
   prRevisionId: string;
   verificationPlanId: string;
-  modality: "ui" | "api";
+  modality?: "ui" | "api";
 }): Promise<{
   plan: EvidenceVerificationPlanRow;
   repositoryFullName: string;
@@ -1777,7 +1777,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
       eq(evidenceVerificationPlans.id, input.verificationPlanId),
       eq(evidenceVerificationPlans.recordId, input.recordId),
       eq(evidenceVerificationPlans.prRevisionId, input.prRevisionId),
-      eq(evidenceVerificationPlans.modality, input.modality),
+      input.modality ? eq(evidenceVerificationPlans.modality, input.modality) : sql`${evidenceVerificationPlans.modality} IN ('ui', 'api')`,
       eq(evidenceVerificationPlans.status, "planned"),
       eq(changeRecordPrs.workspaceId, input.workspaceId),
       sql`${changeRecordPrRevisions.supersededAt} IS NULL`
@@ -1799,8 +1799,8 @@ export async function enqueueEvidenceVerificationExecution(input: {
   prRevisionId: string;
   verificationPlanId: string;
 }): Promise<{ execution: EvidenceVerificationExecutionRow; inserted: boolean }> {
-  const plan = await resolveEvidenceVerificationPlanForArtifact({ ...input, modality: "ui" });
-  if (!plan) throw new Error("Current planned UI criterion was not found for this record and PR revision");
+  const plan = await resolveEvidenceVerificationPlanForArtifact(input);
+  if (!plan) throw new Error("Current planned UI or API criterion was not found for this record and PR revision");
   const id = evidenceVerificationExecutionId({ verificationPlanId: plan.plan.id });
   const rows = await db.insert(evidenceVerificationExecutions).values({
     id,

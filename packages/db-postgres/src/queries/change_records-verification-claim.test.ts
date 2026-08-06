@@ -50,6 +50,7 @@ describe("claimEvidenceVerificationExecution", () => {
     expect(claim).toContain("'ready'");
     expect(claim).toContain("preview_boots");
     expect(claim).toContain("head_sha");
+    expect(claim).toContain("plan.modality IN ('ui', 'api')");
     expect(claim).not.toContain("status = 'queued'\n      ORDER BY");
   });
 });

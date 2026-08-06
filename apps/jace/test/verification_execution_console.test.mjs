@@ -51,3 +51,25 @@ test("console failures are surfaced to the worker", async () => {
     /execution is not claimed by this worker/,
   );
 });
+
+test("omits absent optional completion fields so a fail-closed result reaches Console validation", async () => {
+  const calls = [];
+  const executionConsole = createVerificationExecutionConsole({
+    env,
+    transport: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return { status: 200, json: async () => ({ execution: { id: "execution", status: "not_proven" } }) };
+    },
+  });
+
+  await executionConsole.complete({
+    executionId: "execution",
+    workerId: "worker",
+    status: "not_proven",
+    observedBehavior: null,
+    artifactIds: [],
+    resultReason: null,
+  });
+
+  assert.deepEqual(calls, [{ workerId: "worker", status: "not_proven", artifactIds: [] }]);
+});

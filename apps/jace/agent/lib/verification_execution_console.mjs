@@ -28,6 +28,12 @@ export function createVerificationExecutionConsole({ env = process.env, transpor
   if (!cfg.ok) throw new Error(`missing console config: ${cfg.missing.join(", ")}`);
   return {
     async claim(workerId) { const value = await post(cfg, CLAIM_PATH, { workerId }, transport); return value ? { ...value, workerId } : null; },
-    async complete(input) { return post(cfg, completePath(input.executionId), { workerId: input.workerId, status: input.status, observedBehavior: input.observedBehavior, artifactIds: input.artifactIds, resultReason: input.resultReason }, transport); },
+    async complete(input) {
+      const body = { workerId: input.workerId, status: input.status };
+      if (typeof input.observedBehavior === "string") body.observedBehavior = input.observedBehavior;
+      if (Array.isArray(input.artifactIds)) body.artifactIds = input.artifactIds;
+      if (typeof input.resultReason === "string") body.resultReason = input.resultReason;
+      return post(cfg, completePath(input.executionId), body, transport);
+    },
   };
 }

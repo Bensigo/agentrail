@@ -5,11 +5,16 @@ vi.mock("@agentrail/auth", () => ({
   auth: vi.fn(),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
+  acceptanceIntakeId: vi.fn(({ workspaceId, originChannel, conversationKey }) =>
+    `derived:${workspaceId}:${originChannel}:${conversationKey}`
+  ),
   getWorkspaceMembership: vi.fn(),
   appendJaceMessage: vi.fn(),
   listJaceMessagesSince: vi.fn(),
   enqueueChannelMessage: vi.fn(),
   pendingApprovalsForWorkspace: vi.fn(),
+  readAcceptanceIntakeReadback: vi.fn(),
+  readAcceptanceBriefBinding: vi.fn(),
 }));
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
   dispatchQueuedChannelMessages: vi.fn(),
@@ -21,11 +26,14 @@ vi.mock("../../../../../../lib/chat/feature-flags", () => ({
 import { GET, POST } from "./route";
 import { auth } from "@agentrail/auth";
 import {
+  acceptanceIntakeId,
   getWorkspaceMembership,
   appendJaceMessage,
   listJaceMessagesSince,
   enqueueChannelMessage,
   pendingApprovalsForWorkspace,
+  readAcceptanceIntakeReadback,
+  readAcceptanceBriefBinding,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
@@ -58,6 +66,8 @@ beforeEach(() => {
   vi.mocked(isConsoleChatEnabled).mockReturnValue(true);
   vi.mocked(listJaceMessagesSince).mockResolvedValue([]);
   vi.mocked(pendingApprovalsForWorkspace).mockResolvedValue([]);
+  vi.mocked(readAcceptanceIntakeReadback).mockResolvedValue(null);
+  vi.mocked(readAcceptanceBriefBinding).mockResolvedValue(null as never);
   vi.mocked(dispatchQueuedChannelMessages).mockResolvedValue({ processed: 0, failed: 0 });
   vi.mocked(enqueueChannelMessage).mockResolvedValue({ id: "row-1", deduped: false });
   vi.mocked(appendJaceMessage).mockResolvedValue({
@@ -98,6 +108,68 @@ describe("GET /api/v1/workspaces/[workspaceId]/chat", () => {
   it("parses after_seq from the query string", async () => {
     await GET(getReq("?after_seq=7"), { params: params() });
     expect(listJaceMessagesSince).toHaveBeenCalledWith(WS, `console:${USER}:1`, 7);
+  });
+
+  it("derives the current member's workspace-scoped console intake and returns no acceptance context when it is missing", async () => {
+    await GET(getReq("?n=3"), { params: params() });
+
+    expect(acceptanceIntakeId).toHaveBeenCalledWith({
+      workspaceId: WS,
+      originChannel: "console",
+      conversationKey: `console:${USER}:3`,
+    });
+    expect(readAcceptanceIntakeReadback).toHaveBeenCalledWith({
+      workspaceId: WS,
+      intakeId: `derived:${WS}:console:console:${USER}:3`,
+    });
+    expect(readAcceptanceBriefBinding).not.toHaveBeenCalled();
+    const json = await (await GET(getReq("?n=3"), { params: params() })).json();
+    expect(json.acceptance).toBeNull();
+  });
+
+  it("returns only bounded intake and record context when no record or Brief is linked", async () => {
+    vi.mocked(readAcceptanceIntakeReadback).mockResolvedValue({
+      intake: { id: "intake-1", status: "draft", originChannel: "console", recordId: null },
+    } as never);
+
+    const json = await (await GET(getReq(), { params: params() })).json();
+    expect(json.acceptance).toEqual({ intake_id: "intake-1", status: "draft" });
+    expect(JSON.stringify(json.acceptance)).not.toContain("source");
+    expect(JSON.stringify(json.acceptance)).not.toContain("contract");
+    expect(JSON.stringify(json.acceptance)).not.toContain("pack");
+    expect(JSON.stringify(json.acceptance)).not.toContain("snapshot");
+  });
+
+  it("resolves a record's Brief server-side and does not leak binding snapshot/source content", async () => {
+    vi.mocked(readAcceptanceIntakeReadback).mockResolvedValue({
+      intake: { id: "intake-1", status: "recorded", originChannel: "console", recordId: "record-1" },
+    } as never);
+    vi.mocked(readAcceptanceBriefBinding).mockResolvedValue({
+      brief: {
+        slug: "checkout-flow",
+        title: "Checkout flow",
+        status: "active",
+        updatedAt: new Date("2026-08-06T10:00:00.000Z"),
+      },
+      binding: { briefSnapshot: { secret: "do-not-return" }, provenance: { source: "private" } },
+      record: { sourceReferences: [{ secret: "do-not-return" }] },
+    } as never);
+
+    const res = await GET(getReq(), { params: params() });
+    const json = await res.json();
+    expect(readAcceptanceBriefBinding).toHaveBeenCalledWith({ workspaceId: WS, recordId: "record-1" });
+    expect(json.acceptance).toEqual({
+      intake_id: "intake-1",
+      status: "recorded",
+      record_id: "record-1",
+      brief: {
+        slug: "checkout-flow",
+        title: "Checkout flow",
+        status: "active",
+        updated_at: "2026-08-06T10:00:00.000Z",
+      },
+    });
+    expect(JSON.stringify(json.acceptance)).not.toContain("do-not-return");
   });
 
   it("scopes to the requested thread via ?n= (multi-thread)", async () => {

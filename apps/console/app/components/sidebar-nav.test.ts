@@ -51,8 +51,8 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Evidence & context exposes only the repository wiki", () => {
-    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual(["wiki"]);
+  it("Evidence & context exposes the repository wiki and Context Packs", () => {
+    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual(["wiki", "context-packs"]);
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).not.toContain("review-gates");
   });
 
@@ -140,6 +140,7 @@ describe("NAV_ZONES data structure", () => {
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
       "wiki", // repo wiki 6/7: read-only Engine-room Wiki view, sibling of Memory
+      "context-packs", // metadata-only Pack index for customer-visible agent context
       "gateways", // Settings-zone page for the supported chat channels
       "billing", // subscription-platform spec, slice-3 plan Task 5: plan card + Starter/Growth checkout + Stripe customer-portal link
       // "api-keys" intentionally excluded: removed from the nav (owner

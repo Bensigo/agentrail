@@ -12,6 +12,7 @@ import {
   Target,
   FileText,
   ClipboardList,
+  Layers3,
 } from "lucide-react";
 
 export interface NavItem {
@@ -92,6 +93,7 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // still gets the page, showing the honest "no wiki compiled yet" empty
     // state rather than disappearing (spec §4.5 empty state).
     { label: "Wiki", href: "wiki", icon: BookOpen },
+    { label: "Context Packs", href: "context-packs", icon: Layers3 },
   ],
 };
 

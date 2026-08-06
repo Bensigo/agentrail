@@ -1084,8 +1084,8 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   },
 ];
 
-/** The trust-layer MVP's only public Console setup anchor. */
-export const PUBLIC_CONNECTOR_KINDS: readonly ConnectorKind[] = ["github"];
+/** Customer-facing sources of work and pull-request evidence. */
+export const PUBLIC_CONNECTOR_KINDS: readonly ConnectorKind[] = ["github", "linear"];
 
 /** Filter API/projected rows without removing backend connector capabilities. */
 export function filterPublicConnectors(

@@ -486,23 +486,12 @@ function OAuthManage({
     </div>
   );
 
-  if (connector.status === "connected" && connector.appInstalled) {
-    return (
-      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        GitHub provides repository, PR, and task provenance for GitHub-backed
-        flows. Jace records and reviews evidence on the exact attached PR.
-      </p>
-    );
-  }
+  if (connector.status === "connected" && connector.appInstalled) return null;
 
   if (connector.status === "connected" && !connector.appInstalled) {
     return (
       <div className="flex flex-col gap-2">
-        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-          Repos are linked from the legacy flow, but the Jace GitHub App
-          isn&apos;t installed yet — install it so GitHub can send repository and
-          PR events and Jace can correlate PR evidence.
-        </p>
+        <p className="text-xs text-[var(--gray-09)]">Install the Jace GitHub App to receive pull-request updates.</p>
         {installButton}
       </div>
     );
@@ -646,10 +635,6 @@ export function ConnectorSheet({
               </code>
             )}
           </div>
-          <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-            {shown.description}
-          </p>
-
           <ConnectionPathSummary connector={shown} />
 
           {shown.connectMethod === "oauth" ? (

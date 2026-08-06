@@ -19,9 +19,10 @@ import {
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("has an explicit GitHub-only public projection", () => {
+  it("has an explicit GitHub and Linear public projection", () => {
     expect(filterPublicConnectors(projectConnectors([])).map((row) => row.kind)).toEqual([
       "github",
+      "linear",
     ]);
   });
 

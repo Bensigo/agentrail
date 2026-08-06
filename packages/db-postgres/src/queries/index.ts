@@ -3324,6 +3324,7 @@ export {
   readClaimedAcceptanceContextPackCompilation,
   reportAcceptanceContextPackCompilation,
   readAcceptanceContextPacks,
+  listAcceptanceContextPacksForWorkspace,
   recordAcceptanceContextPackDelivery,
   readChangeRecordTimelineByPr,
   readChangeRecordTimeline,

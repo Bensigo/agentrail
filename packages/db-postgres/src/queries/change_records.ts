@@ -3638,6 +3638,39 @@ export async function readAcceptanceContextPacks(input: {
     .orderBy(desc(acceptanceContextPacks.version));
 }
 
+/**
+ * Customer-facing Context Pack index. It deliberately returns metadata only:
+ * the cited source content remains in the bounded Pack under workspace custody.
+ */
+export async function listAcceptanceContextPacksForWorkspace(input: {
+  workspaceId: string;
+  limit?: number;
+}): Promise<Array<{
+  id: string;
+  recordId: string;
+  repo: string;
+  prNumber: number | null;
+  version: number;
+  phase: string;
+  createdAt: Date;
+}>> {
+  return db
+    .select({
+      id: acceptanceContextPacks.id,
+      recordId: acceptanceContextPacks.recordId,
+      repo: changeRecords.repo,
+      prNumber: changeRecords.prNumber,
+      version: acceptanceContextPacks.version,
+      phase: acceptanceContextPacks.phase,
+      createdAt: acceptanceContextPacks.createdAt,
+    })
+    .from(acceptanceContextPacks)
+    .innerJoin(changeRecords, eq(changeRecords.id, acceptanceContextPacks.recordId))
+    .where(eq(changeRecords.workspaceId, input.workspaceId))
+    .orderBy(desc(acceptanceContextPacks.createdAt))
+    .limit(Math.min(Math.max(Math.trunc(input.limit ?? 100), 1), 200));
+}
+
 export type RecordAcceptanceContextPackDeliveryInput = {
   workspaceId: string;
   recordId: string;

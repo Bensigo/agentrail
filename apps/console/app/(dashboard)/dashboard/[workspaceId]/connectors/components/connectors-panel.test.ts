@@ -66,9 +66,9 @@ describe("ConnectorTile — one-click surface", () => {
 });
 
 describe("ConnectorsPanel — trust-layer presentation", () => {
-  it("filters API-projected optional providers to GitHub only", () => {
+  it("shows the supported GitHub and Linear connectors", () => {
     const rows = projectConnectors([]);
-    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github"]);
+    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github", "linear"]);
   });
 
   it("keeps public catalog copy free of legacy setup claims", () => {
@@ -76,7 +76,8 @@ describe("ConnectorsPanel — trust-layer presentation", () => {
       new URL("../page.tsx", import.meta.url),
       "utf8",
     );
-    expect(pageSource).toContain("Gateways");
+    expect(pageSource).toContain("Connectors");
+    expect(pageSource).not.toContain("Repository and PR anchor");
     expect(pageSource).not.toMatch(/factory|autonomous|coming soon|generate code/i);
   });
 

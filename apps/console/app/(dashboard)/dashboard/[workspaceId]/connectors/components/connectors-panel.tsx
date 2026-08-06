@@ -6,13 +6,7 @@ import { AlertCircle, CheckCircle2, X } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import { ConnectorSheet } from "./connector-sheet";
 import { KIND_ICON, KIND_TINT } from "./connector-icon-map";
-import {
-  CONNECTOR_TYPE_META,
-  filterPublicConnectors,
-  type ConnectorKind,
-  type ConnectorType,
-  type ConnectorView,
-} from "./connector-helpers";
+import { filterPublicConnectors, type ConnectorKind, type ConnectorView } from "./connector-helpers";
 import { OAUTH_ERROR_REASONS, type OauthErrorReason } from "../../../../../../lib/oauth/redirect";
 
 /**
@@ -37,8 +31,6 @@ import { OAUTH_ERROR_REASONS, type OauthErrorReason } from "../../../../../../li
  * `projectConnectors` / the catalog (`connector-helpers.ts`) are untouched —
  * this file is a render-layer restructure over the exact same data shape.
  */
-
-const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "observability"];
 
 // --------------------------------------------------------------------------- //
 // OAuth connect result banner (W3-T2 fix round, review Finding #1) — reads
@@ -194,37 +186,18 @@ export function ConnectorTile({
 }
 
 // --------------------------------------------------------------------------- //
-// One catalog-type section (Issue sources / MCP / Observability) of tiles —
-// same heading + blurb as before the redesign, uniform tiles instead of
-// accordion cards.
+// The customer setup is a flat list of supported connectors.
 // --------------------------------------------------------------------------- //
 function ConnectorSection({
-  type,
   connectors,
   onOpen,
 }: {
-  type: ConnectorType;
   connectors: ConnectorView[];
   onOpen: (kind: ConnectorKind) => void;
 }) {
   if (connectors.length === 0) return null;
-  const meta = CONNECTOR_TYPE_META[type];
-  const connectedCount = connectors.filter(
-    (c) => c.status === "connected"
-  ).length;
   return (
-    <section className="flex flex-col gap-2.5">
-      <div className="flex items-baseline gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--gray-11)]">
-          {meta.label}
-        </h2>
-        <span className="text-xs text-[var(--gray-08)]">
-          {connectedCount}/{connectors.length} connected
-        </span>
-      </div>
-      <p className="-mt-1 text-xs leading-relaxed text-[var(--gray-09)]">
-        {meta.description}
-      </p>
+    <section>
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {connectors.map((c) => (
           <ConnectorTile key={c.kind} connector={c} onOpen={onOpen} />
@@ -261,8 +234,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
         connectors: ConnectorView[];
         canManage?: boolean;
       };
-      // Keep optional providers available to server/evidence consumers, but
-      // expose only the GitHub repository/PR anchor in the public MVP setup.
+      // The customer setup shows the two supported issue sources.
       setConnectors(filterPublicConnectors(json.connectors ?? []));
       setCanManage(Boolean(json.canManage));
     } catch (e) {
@@ -311,16 +283,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
           No connectors available.
         </div>
       ) : (
-        <div className="flex flex-col gap-6">
-          {SECTION_ORDER.map((type) => (
-            <ConnectorSection
-              key={type}
-              type={type}
-              connectors={connectors.filter((c) => c.type === type)}
-              onOpen={setOpenKind}
-            />
-          ))}
-        </div>
+        <ConnectorSection connectors={connectors} onOpen={setOpenKind} />
       )}
 
       <ConnectorSheet

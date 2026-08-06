@@ -11,10 +11,10 @@ describe("criterion execution claim", () => {
     expect((await POST(request({ workerId: "worker" }))).status).toBe(204);
     expect((await POST(request({}))).status).toBe(400);
   });
-  it("returns persisted plan and exact PR coordinates", async () => {
-    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "saved", modality: "ui", environmentId: "preview", flow: "save", expectedBehavior: "Saved" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head" } as never);
+  it("returns persisted plan, exact PR coordinates, and only a resolved preview", async () => {
+    vi.mocked(claimEvidenceVerificationExecution).mockResolvedValue({ execution: { id: "e", verificationPlanId: "p" }, plan: { criterionId: "saved", modality: "ui", environmentId: "preview", flow: "save", expectedBehavior: "Saved" }, repositoryFullName: "a/b", prNumber: 1, headSha: "head", previewUrl: "http://safe-preview" } as never);
     const response = await POST(request({ workerId: "worker" }));
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ plan: { criterionId: "saved" }, pr: { headSha: "head" } });
+    await expect(response.json()).resolves.toMatchObject({ plan: { criterionId: "saved" }, pr: { headSha: "head" }, previewUrl: "http://safe-preview" });
   });
 });

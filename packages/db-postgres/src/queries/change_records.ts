@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
+import { previewBoots } from "../schema/preview_boots.js";
 import {
   changeRecordEvents,
   changeRecords,
@@ -977,6 +978,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
   repositoryFullName: string;
   prNumber: number;
   headSha: string;
+  previewUrl: string | null;
 } | null> {
   const claimed = Array.from(await db.execute(sql`
     UPDATE evidence_verification_executions
@@ -999,7 +1001,12 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
     .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
     .where(and(eq(evidenceVerificationExecutions.id, id), eq(evidenceVerificationExecutions.workerId, input.workerId), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)).limit(1);
   const row = rows[0];
-  return row ? { execution: row.execution, plan: row.plan, repositoryFullName: row.attachment.repositoryFullName, prNumber: row.attachment.prNumber, headSha: row.revision.headSha } : null;
+  if (!row) return null;
+  const previews = row.plan.environmentId ? await db.select({ url: previewBoots.url })
+    .from(previewBoots)
+    .where(and(eq(previewBoots.id, row.plan.environmentId), eq(previewBoots.workspaceId, row.attachment.workspaceId), eq(previewBoots.repo, row.attachment.repositoryFullName), eq(previewBoots.prNumber, row.attachment.prNumber), eq(previewBoots.headSha, row.revision.headSha), eq(previewBoots.status, "ready")))
+    .limit(1) : [];
+  return { execution: row.execution, plan: row.plan, repositoryFullName: row.attachment.repositoryFullName, prNumber: row.attachment.prNumber, headSha: row.revision.headSha, previewUrl: previews[0]?.url ?? null };
 }
 
 /** Record the immutable reference and digest for a stored UI evidence artifact. */

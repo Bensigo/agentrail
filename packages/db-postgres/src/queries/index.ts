@@ -3306,6 +3306,8 @@ export {
   appendChangeRecordEvent,
   createDraftAcceptanceRecord,
   recordAcceptanceInboundIntake,
+  readAcceptanceIntake,
+  linkAcceptanceIntakeToRecord,
   createDraftAcceptanceContract,
   attachExternalPullRequest,
   createAcceptanceBuilderHandoff,

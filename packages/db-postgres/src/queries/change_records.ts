@@ -548,6 +548,27 @@ export async function recordAcceptanceInboundIntake(
   });
 }
 
+/** Read one canonical intake and its append-only source-channel evidence. */
+export async function readAcceptanceIntake(input: { workspaceId: string; intakeId: string }) {
+  const intake = await db.select().from(acceptanceIntakes).where(and(
+    eq(acceptanceIntakes.id, input.intakeId),
+    eq(acceptanceIntakes.workspaceId, input.workspaceId),
+  )).limit(1);
+  if (!intake[0]) return null;
+  const messages = await db.select().from(acceptanceIntakeMessages)
+    .where(eq(acceptanceIntakeMessages.intakeId, input.intakeId))
+    .orderBy(asc(acceptanceIntakeMessages.createdAt));
+  return { intake: intake[0], messages };
+}
+
+/** Link an Intake once a draft Acceptance Record has been safely created. */
+export async function linkAcceptanceIntakeToRecord(input: { workspaceId: string; intakeId: string; recordId: string }) {
+  const rows = await db.update(acceptanceIntakes).set({ recordId: input.recordId, status: "drafted", updatedAt: new Date() })
+    .where(and(eq(acceptanceIntakes.id, input.intakeId), eq(acceptanceIntakes.workspaceId, input.workspaceId), isNull(acceptanceIntakes.recordId)))
+    .returning();
+  return rows[0] ?? null;
+}
+
 function normalizedWorkKey(value: string | undefined): string {
   const candidate = value?.trim();
   return candidate || randomUUID();

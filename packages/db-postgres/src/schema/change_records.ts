@@ -399,6 +399,34 @@ export const evidenceReviews = pgTable(
   })
 );
 
+/**
+ * One durable request for Jace's blocking-only Acceptance Review of an exact
+ * attached PR revision. A request is admission, never a review verdict.
+ */
+export const acceptanceEvidenceReviewRequests = pgTable(
+  "acceptance_evidence_review_requests",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    prRevisionId: uuid("pr_revision_id").notNull().references(() => changeRecordPrRevisions.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    headSha: text("head_sha").notNull(),
+    status: text("status").notNull().default("queued"),
+    reason: text("reason"),
+    requestedBy: text("requested_by").notNull(),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    revision: uniqueIndex("acceptance_evidence_review_requests_revision_key").on(t.prRevisionId),
+    queued: index("acceptance_evidence_review_requests_queued_idx").on(t.requestedAt).where(sql`${t.status} = 'queued'`),
+    record: index("acceptance_evidence_review_requests_record_idx").on(t.recordId, t.requestedAt),
+    statusCheck: check("acceptance_evidence_review_requests_status_check", sql`${t.status} IN ('queued', 'completed', 'failed', 'superseded')`),
+  })
+);
+
 /** A criterion-specific exact-head verification plan; planning is never proof. */
 export const evidenceVerificationPlans = pgTable(
   "evidence_verification_plans",
@@ -619,6 +647,7 @@ export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$infe
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
+export type AcceptanceEvidenceReviewRequestRow = typeof acceptanceEvidenceReviewRequests.$inferSelect;
 export type EvidenceVerificationPlanRow = typeof evidenceVerificationPlans.$inferSelect;
 export type EvidenceVerificationArtifactRow = typeof evidenceVerificationArtifacts.$inferSelect;
 export type EvidenceVerificationExecutionRow = typeof evidenceVerificationExecutions.$inferSelect;

@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   attachExternalPullRequest: vi.fn(),
+  enqueueAcceptanceEvidenceReviewRequest: vi.fn(),
   findAcceptanceBuilderHandoffForPullRequest: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
   getRepositoryByName: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { POST } from "./route";
 import {
   attachExternalPullRequest,
+  enqueueAcceptanceEvidenceReviewRequest,
   findAcceptanceBuilderHandoffForPullRequest,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
@@ -42,7 +44,7 @@ const CONNECTED_REPO = {
   url: "https://github.com/ada/widgets",
   defaultBranch: "main",
 };
-const HANDOFF = { id: "handoff-1", recordId: "record-1" };
+const HANDOFF = { id: "handoff-1", recordId: "record-1", acceptanceContractId: "contract-1", acceptanceContractVersion: 2 };
 
 /** The brief's own recipe: HMAC-SHA256 of the RAW body, hex-encoded, `sha256=` prefixed. */
 function sign(body: string, secret: string): string {
@@ -135,6 +137,7 @@ beforeEach(() => {
     revision: { id: "revision-1", headSha: "abc123def4567890" },
   } as never);
   vi.mocked(markAcceptanceBuilderHandoffPrAttached).mockResolvedValue(undefined as never);
+  vi.mocked(enqueueAcceptanceEvidenceReviewRequest).mockResolvedValue({ request: { id: "review-request-1", status: "queued" }, inserted: true } as never);
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
   vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
   vi.mocked(recordReviewEvent).mockResolvedValue({ recorded: true, eventId: "review-event-1" } as never);
@@ -382,6 +385,11 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(markAcceptanceBuilderHandoffPrAttached).toHaveBeenCalledWith({
       handoffId: "handoff-1", workspaceId: WORKSPACE_ID,
     });
+    expect(enqueueAcceptanceEvidenceReviewRequest).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID, recordId: "record-1", prRevisionId: "revision-7",
+      headSha: "deadbeef1234", contractId: "contract-1", contractVersion: 2,
+      requestedBy: "github-webhook",
+    });
     expect(recordReviewEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
@@ -394,8 +402,17 @@ describe("POST /api/v1/webhooks/github-app", () => {
     );
     expect(await res.json()).toEqual({
       ok: true, linked: true, recordId: "record-1", prRevisionId: "revision-7",
-      exactHeadSha: "deadbeef1234", reviewWorker: "not_started",
+      exactHeadSha: "deadbeef1234", reviewWorker: "queued",
     });
+  });
+
+  it("9a.i preserves PR attachment but never claims a queued review when request admission fails", async () => {
+    vi.mocked(enqueueAcceptanceEvidenceReviewRequest).mockRejectedValueOnce(new Error("queue unavailable"));
+    const res = await POST(makeRequest(JSON.stringify(prPayload())));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ linked: true, reviewWorker: "not_queued" });
+    expect(attachExternalPullRequest).toHaveBeenCalledTimes(1);
   });
 
   it("9b. no matching handoff is explicit, unlinked, and never queued", async () => {

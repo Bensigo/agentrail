@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   attachExternalPullRequest,
+  enqueueAcceptanceEvidenceReviewRequest,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
@@ -350,7 +351,7 @@ export async function POST(request: NextRequest) {
         ? new Date(prObj.created_at)
         : new Date();
 
-  if (typeof headSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber < 1) {
+  if (typeof headSha !== "string" || typeof prNumber !== "number" || !Number.isSafeInteger(prNumber) || prNumber < 1) {
     return ignored();
   }
 
@@ -461,14 +462,38 @@ export async function POST(request: NextRequest) {
       handoffId: handoff.id,
       workspaceId: workspace.workspaceId,
     });
-    return NextResponse.json({
-      ok: true,
-      linked: true,
-      recordId: handoff.recordId,
-      prRevisionId: attachment.revision.id,
-      exactHeadSha: attachment.revision.headSha,
-      reviewWorker: "not_started",
-    });
+    try {
+      const reviewRequest = await enqueueAcceptanceEvidenceReviewRequest({
+        workspaceId: workspace.workspaceId,
+        recordId: handoff.recordId,
+        prRevisionId: attachment.revision.id,
+        headSha: attachment.revision.headSha,
+        contractId: handoff.acceptanceContractId,
+        contractVersion: handoff.acceptanceContractVersion,
+        requestedBy: "github-webhook",
+      });
+      return NextResponse.json({
+        ok: true,
+        linked: true,
+        recordId: handoff.recordId,
+        prRevisionId: attachment.revision.id,
+        exactHeadSha: attachment.revision.headSha,
+        reviewWorker: reviewRequest.request.status,
+      });
+    } catch (error) {
+      // The PR attachment remains durable, but an unavailable request queue is
+      // never disguised as a queued review. GitHub receives a normal webhook
+      // acknowledgement; the Record remains visibly unreviewed for recovery.
+      console.error("[github-app/webhook] evidence review request admission failed:", error);
+      return NextResponse.json({
+        ok: true,
+        linked: true,
+        recordId: handoff.recordId,
+        prRevisionId: attachment.revision.id,
+        exactHeadSha: attachment.revision.headSha,
+        reviewWorker: "not_queued",
+      });
+    }
   } catch (error) {
     console.error("[github-app/webhook] builder handoff attach failed:", error);
     return ignored("builder handoff attachment failed");

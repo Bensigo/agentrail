@@ -84,6 +84,18 @@ export type AcceptanceEvidenceReview = {
   supersededAt: string | null;
 };
 
+export type AcceptanceEvidenceReviewRequest = {
+  id: string;
+  prRevisionId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  headSha: string;
+  status: string;
+  reason: string | null;
+  requestedAt: string;
+  updatedAt: string;
+};
+
 export type AcceptanceBuilderHandoff = {
   id: string;
   builder: string;
@@ -133,6 +145,7 @@ type ChangeRecordResponse = {
   contextPacks: AcceptanceContextPack[];
   contextPackCompilations: AcceptanceContextPackCompilation[];
   reviews: AcceptanceEvidenceReview[];
+  reviewRequests: AcceptanceEvidenceReviewRequest[];
   handoffs: AcceptanceBuilderHandoff[];
   correctionDeliveries: AcceptanceCorrectionDelivery[];
 };
@@ -540,6 +553,34 @@ function correctionDeliveryMeaning(outcome: string): string {
   return "The correction is queued only. It has not been sent or acknowledged.";
 }
 
+function reviewRequestMeaning(status: string): string {
+  if (status === "completed") return "A validated exact-head Acceptance Review was recorded. Inspect its evidence before deciding the PR.";
+  if (status === "superseded") return "This request belongs to an older PR head and cannot be reviewed for the current change.";
+  if (status === "failed") return "Jace could not complete this review request. No verdict was produced.";
+  return "Jace has an exact-head Acceptance Review request queued. This is not a verdict or evidence of a passing change.";
+}
+
+export function AcceptanceReviewRequestPanel({ requests }: { requests: AcceptanceEvidenceReviewRequest[] }) {
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Acceptance Review</h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">Only an exact-head request can start Jace&apos;s blocking-only evidence review. A queued request is never a pass.</p>
+      </div>
+      {requests.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No exact-head Acceptance Review has been requested for this Acceptance Record.</p> : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {requests.map((request) => <li key={request.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+            <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]"><span><span className="font-mono">{request.status}</span> · Contract v{request.acceptanceContractVersion}</span><time dateTime={request.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(request.updatedAt)}</time></div>
+            <p className="mt-2 text-xs text-[var(--gray-09)]">{reviewRequestMeaning(request.status)}</p>
+            <p className="mt-2 break-all font-mono text-xs text-[var(--gray-11)]">{request.headSha}</p>
+            {request.reason ? <p className="mt-2 break-words text-xs text-[var(--red-11)]">Reason: {request.reason}</p> : null}
+          </li>)}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function CorrectionDeliveryPanel({ deliveries }: { deliveries: AcceptanceCorrectionDelivery[] }) {
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
@@ -680,6 +721,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.contextPacks) ||
           !Array.isArray(body.contextPackCompilations) ||
           !Array.isArray(body.reviews) ||
+          !Array.isArray(body.reviewRequests) ||
           !Array.isArray(body.handoffs) ||
           !Array.isArray(body.correctionDeliveries)
         ) {
@@ -830,6 +872,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       />
       <AcceptanceContextPackPanel contextPacks={data.contextPacks} compilations={data.contextPackCompilations} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
       <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
+      <AcceptanceReviewRequestPanel requests={data.reviewRequests} />
       <CorrectionDeliveryPanel deliveries={data.correctionDeliveries} />
       <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />

@@ -9,6 +9,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   createDraftAcceptanceContract: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   readAcceptanceEvidenceReviewSummaries: vi.fn(),
+  readAcceptanceEvidenceReviewRequests: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readAcceptanceContextPackCompilations: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
@@ -25,6 +26,7 @@ import {
   createDraftAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceEvidenceReviewSummaries,
+  readAcceptanceEvidenceReviewRequests,
   readAcceptanceContracts,
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
@@ -116,6 +118,7 @@ beforeEach(() => {
   vi.mocked(readAcceptanceBuilderHandoffs).mockResolvedValue([] as never);
   vi.mocked(readEvidenceReviewCorrectionDeliveriesForRecord).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceEvidenceReviewRequests).mockResolvedValue([] as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({ inserted: true, event: {
     id: "decision-1", recordId: RECORD, eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: `user:${USER}`,
     payloadRef: { kind: "acceptance_pr_decision", decision: "changes_requested" }, at: UPDATED, createdAt: UPDATED,
@@ -225,11 +228,28 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       contextPacks: [],
       contextPackCompilations: [],
       reviews: [],
+      reviewRequests: [],
       handoffs: [],
       correctionDeliveries: [],
     });
     expect(readAcceptanceContextPackCompilations).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
     expect(readEvidenceReviewCorrectionDeliveriesForRecord).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+    expect(readAcceptanceEvidenceReviewRequests).toHaveBeenCalledWith({ workspaceId: WS, recordId: RECORD });
+  });
+
+  it("makes an exact-head review request visible without treating it as a review", async () => {
+    vi.mocked(readAcceptanceEvidenceReviewRequests).mockResolvedValue([{
+      id: "request-1", workspaceId: WS, recordId: RECORD, prRevisionId: "revision-1", acceptanceContractId: "contract-1",
+      acceptanceContractVersion: 2, headSha: "deadbeef", status: "queued", reason: null, requestedBy: "github-webhook",
+      requestedAt: CREATED, updatedAt: UPDATED,
+    }] as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      reviewRequests: [{ id: "request-1", prRevisionId: "revision-1", acceptanceContractId: "contract-1", acceptanceContractVersion: 2, headSha: "deadbeef", status: "queued" }],
+    });
   });
 
   it("exposes evidence-bound correction delivery state without claiming receipt", async () => {

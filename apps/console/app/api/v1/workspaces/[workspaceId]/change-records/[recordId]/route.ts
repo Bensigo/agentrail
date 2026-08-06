@@ -6,6 +6,7 @@ import {
   createDraftAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceEvidenceReviewSummaries,
+  readAcceptanceEvidenceReviewRequests,
   readAcceptanceContracts,
   readAcceptanceContextPackCompilations,
   readAcceptanceContextPacks,
@@ -85,6 +86,22 @@ function serializeReview(
   };
 }
 
+function serializeReviewRequest(
+  request: Awaited<ReturnType<typeof readAcceptanceEvidenceReviewRequests>>[number]
+) {
+  return {
+    id: request.id,
+    prRevisionId: request.prRevisionId,
+    acceptanceContractId: request.acceptanceContractId,
+    acceptanceContractVersion: request.acceptanceContractVersion,
+    headSha: request.headSha,
+    status: request.status,
+    reason: request.reason,
+    requestedAt: request.requestedAt.toISOString(),
+    updatedAt: request.updatedAt.toISOString(),
+  };
+}
+
 function serializeBuilderHandoff(
   handoff: NonNullable<Awaited<ReturnType<typeof readAcceptanceBuilderHandoffs>>>[number]
 ) {
@@ -156,11 +173,12 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, contextPackCompilations, reviews, handoffs, correctionDeliveries] = await Promise.all([
+    const [contracts, contextPacks, contextPackCompilations, reviews, reviewRequests, handoffs, correctionDeliveries] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
       readAcceptanceContextPackCompilations({ workspaceId, recordId }),
       readAcceptanceEvidenceReviewSummaries({ workspaceId, recordId }),
+      readAcceptanceEvidenceReviewRequests({ workspaceId, recordId }),
       readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
       readEvidenceReviewCorrectionDeliveriesForRecord({ workspaceId, recordId }),
     ]);
@@ -191,6 +209,7 @@ export async function GET(
       contextPacks: (contextPacks ?? []).map(serializeContextPack),
       contextPackCompilations: (contextPackCompilations ?? []).map(serializeContextPackCompilation),
       reviews: (reviews ?? []).map(serializeReview),
+      reviewRequests: reviewRequests.map(serializeReviewRequest),
       handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
       correctionDeliveries: correctionDeliveries.map(serializeCorrectionDelivery),
     });

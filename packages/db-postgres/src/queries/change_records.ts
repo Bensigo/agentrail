@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "crypto";
-import { and, asc, count, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { repositories } from "../schema/repositories.js";
@@ -16,6 +16,7 @@ import {
   acceptanceIntakes,
   acceptanceIntakeMessages,
   evidenceReviews,
+  acceptanceEvidenceReviewRequests,
   evidenceVerificationPlans,
   evidenceVerificationArtifacts,
   evidenceVerificationExecutions,
@@ -36,6 +37,7 @@ import {
   type EvidenceVerificationPlanRow,
   type EvidenceVerificationArtifactRow,
   type EvidenceVerificationExecutionRow,
+  type AcceptanceEvidenceReviewRequestRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -179,6 +181,10 @@ export function acceptanceIntakeMessageId(input: { intakeId: string; sourceKey: 
 
 export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
   return uuid5Url(`evidence-review:${input.recordId}:${input.prRevisionId}`);
+}
+
+export function acceptanceEvidenceReviewRequestId(input: { recordId: string; prRevisionId: string }): string {
+  return uuid5Url(`acceptance-evidence-review-request:${input.recordId}:${input.prRevisionId}`);
 }
 
 export function evidenceVerificationPlanId(input: { prRevisionId: string; criterionId: string }): string {
@@ -980,9 +986,21 @@ export async function attachExternalPullRequest(input: AttachExternalPullRequest
       .where(eq(changeRecordPrRevisions.id, revisionId)).limit(1);
     let revision = existingRevisions[0];
     if (!revision) {
-      await tx.update(changeRecordPrRevisions).set({ supersededAt: new Date() }).where(
+      const supersededAt = new Date();
+      const superseded = await tx.update(changeRecordPrRevisions).set({ supersededAt }).where(
         and(eq(changeRecordPrRevisions.prAttachmentId, attachment.id), sql`${changeRecordPrRevisions.supersededAt} IS NULL`)
-      );
+      ).returning({ id: changeRecordPrRevisions.id });
+      if (superseded.length) {
+        await tx.update(acceptanceEvidenceReviewRequests).set({
+          status: "superseded",
+          reason: `PR head superseded by ${input.headSha}`,
+          updatedAt: supersededAt,
+        }).where(and(
+          inArray(acceptanceEvidenceReviewRequests.prRevisionId, superseded.map((item) => item.id)),
+          eq(acceptanceEvidenceReviewRequests.workspaceId, input.workspaceId),
+          inArray(acceptanceEvidenceReviewRequests.status, ["queued"]),
+        ));
+      }
       const inserted = await tx.insert(changeRecordPrRevisions).values({
         id: revisionId, prAttachmentId: attachment.id, headSha: input.headSha,
         source: input.source ?? "human_declared",
@@ -1582,6 +1600,89 @@ export async function markAcceptanceBuilderHandoffPrAttached(input: {
   ));
 }
 
+export type EnqueueAcceptanceEvidenceReviewRequestInput = {
+  workspaceId: string;
+  recordId: string;
+  prRevisionId: string;
+  headSha: string;
+  contractId: string;
+  contractVersion: number;
+  requestedBy: string;
+};
+
+/**
+ * Admit a blocking-only Acceptance Review for one current, exact PR head.
+ * This is a durable worker request, not a review result or a GitHub comment.
+ */
+export async function enqueueAcceptanceEvidenceReviewRequest(
+  input: EnqueueAcceptanceEvidenceReviewRequestInput
+): Promise<{ request: AcceptanceEvidenceReviewRequestRow; inserted: boolean }> {
+  const id = acceptanceEvidenceReviewRequestId(input);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`acceptance-evidence-review-request:${id}`}))`);
+    const binding = await tx.select({
+      revision: changeRecordPrRevisions,
+      attachment: changeRecordPrs,
+      contract: acceptanceContracts,
+    }).from(changeRecordPrRevisions)
+      .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+      .innerJoin(acceptanceContracts, and(
+        eq(acceptanceContracts.id, input.contractId),
+        eq(acceptanceContracts.recordId, input.recordId),
+        eq(acceptanceContracts.version, input.contractVersion),
+        eq(acceptanceContracts.status, "confirmed"),
+      ))
+      .where(and(
+        eq(changeRecordPrRevisions.id, input.prRevisionId),
+        eq(changeRecordPrRevisions.headSha, input.headSha),
+        isNull(changeRecordPrRevisions.supersededAt),
+        eq(changeRecordPrs.workspaceId, input.workspaceId),
+        eq(changeRecordPrs.recordId, input.recordId),
+      ))
+      .limit(1);
+    if (!binding[0]) throw new Error("Current exact PR revision and confirmed Acceptance Contract are required for review request");
+    const inserted = await tx.insert(acceptanceEvidenceReviewRequests).values({
+      id,
+      workspaceId: input.workspaceId,
+      recordId: input.recordId,
+      prRevisionId: input.prRevisionId,
+      acceptanceContractId: input.contractId,
+      acceptanceContractVersion: input.contractVersion,
+      headSha: input.headSha,
+      requestedBy: input.requestedBy,
+    }).onConflictDoNothing().returning();
+    const request = inserted[0] ?? (await tx.select().from(acceptanceEvidenceReviewRequests)
+      .where(eq(acceptanceEvidenceReviewRequests.id, id)).limit(1))[0];
+    if (!request) throw new Error("Acceptance Review request could not be read after admission");
+    await appendContractEventInTransaction(tx, {
+      recordId: input.recordId,
+      eventKey: `acceptance-evidence-review-request:${id}`,
+      stage: "acceptance_evidence_review_requested",
+      actor: input.requestedBy,
+      payloadRef: {
+        kind: "acceptance_evidence_review_request",
+        requestId: id,
+        prRevisionId: input.prRevisionId,
+        headSha: input.headSha,
+        acceptanceContractId: input.contractId,
+        acceptanceContractVersion: input.contractVersion,
+        status: request.status,
+      },
+    });
+    return { request, inserted: Boolean(inserted[0]) };
+  });
+}
+
+export async function readAcceptanceEvidenceReviewRequests(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceEvidenceReviewRequestRow[]> {
+  return db.select().from(acceptanceEvidenceReviewRequests).where(and(
+    eq(acceptanceEvidenceReviewRequests.workspaceId, input.workspaceId),
+    eq(acceptanceEvidenceReviewRequests.recordId, input.recordId),
+  )).orderBy(desc(acceptanceEvidenceReviewRequests.requestedAt));
+}
+
 export type RecordEvidenceReviewInput = {
   workspaceId: string; recordId: string; prRevisionId: string; headSha: string;
   contractId: string; contractVersion: number; overallStatus: string;
@@ -2174,6 +2275,19 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
         .where(eq(evidenceReviewCorrections.reviewId, id));
       return { id, inserted: false, corrections };
     }
+    await tx.update(acceptanceEvidenceReviewRequests).set({
+      status: "completed",
+      reason: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(acceptanceEvidenceReviewRequests.workspaceId, input.workspaceId),
+      eq(acceptanceEvidenceReviewRequests.recordId, input.recordId),
+      eq(acceptanceEvidenceReviewRequests.prRevisionId, input.prRevisionId),
+      eq(acceptanceEvidenceReviewRequests.acceptanceContractId, input.contractId),
+      eq(acceptanceEvidenceReviewRequests.acceptanceContractVersion, input.contractVersion),
+      eq(acceptanceEvidenceReviewRequests.headSha, input.headSha),
+      eq(acceptanceEvidenceReviewRequests.status, "queued"),
+    ));
     await tx.insert(evidenceReviewCriteria).values(input.criteria.map((criterion) => ({
       id: randomUUID(), reviewId: id, ...criterion,
     })));

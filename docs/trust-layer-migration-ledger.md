@@ -4,8 +4,9 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 
 ## Coordinator checkpoint (2026-08-06, current branch)
 
-The current committed branch head is `14dcc0f3` after the runtime-proof,
-builder-handoff, Console-admission, and Context Pack lifecycle slices. The
+The current committed branch head is `95654173` after the runtime-proof,
+builder-handoff, Console-admission, Context Pack lifecycle, and correction
+delivery visibility slices. The
 only expected untracked paths are local dependency/output directories. The recent commits
 `9c05442d`, `0a615e7f`, `e4864b27`, and `e6f39939` add bounded UI/API
 criterion execution, while `c2e395fd`, `b47a0717`, `cf192b8c`, `4d5edce4`,
@@ -38,6 +39,15 @@ and `acknowledged` are explicitly distinct: only the latter proves the recorded
 builder task received the packet, and none proves a repair or merge. This is
 local source/unit evidence; no carrier, builder, or authenticated Console flow
 has run live.
+
+Webhook PR correlation now also admits one durable Acceptance Review request
+for the recorded handoff's exact PR revision and confirmed Contract. It is
+idempotent per revision, becomes `superseded` when a newer head attaches, and
+becomes `completed` only when the existing validated review-completion seam
+records a review. The Console shows the request separately from the review
+verdict. There is no request-claiming/deployed reviewer worker yet: `queued`
+means Jace has work to do, not that Jace reviewed, proved, blocked, notified,
+or approved anything.
 
 ## Canonical MVP flow
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AcceptanceContractPanel,
   AcceptanceContextPackPanel,
+  AcceptanceReviewRequestPanel,
   CorrectionDeliveryPanel,
   canRequestExecuteContextPack,
   canSelectExternalBuilder,
@@ -16,6 +17,7 @@ import {
   type AcceptanceContextPackCompilation,
   type AcceptanceCorrectionDelivery,
   type AcceptanceEvidenceReview,
+  type AcceptanceEvidenceReviewRequest,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -130,6 +132,12 @@ const correctionDelivery: AcceptanceCorrectionDelivery = {
   },
 };
 
+const reviewRequest: AcceptanceEvidenceReviewRequest = {
+  id: "request-1", prRevisionId: "revision-1", acceptanceContractId: draftContract.id,
+  acceptanceContractVersion: 1, headSha: "deadbeef", status: "queued", reason: null,
+  requestedAt: "2026-08-03T10:00:00.000Z", updatedAt: "2026-08-03T10:00:00.000Z",
+};
+
 const review: AcceptanceEvidenceReview = {
   id: "review-1", prRevisionId: "revision-1", headSha: "a".repeat(40), repositoryFullName: "ada/widgets", prNumber: 98,
   overallStatus: "failed", contractId: "contract-1", contractVersion: 1, createdAt: "2026-08-03T10:03:00.000Z", supersededAt: null,
@@ -239,6 +247,16 @@ describe("Change Record detail view", () => {
     expect(textContent(delivered)).toContain("Persist the draft");
     expect(textContent(delivered)).toContain("deadbeef");
     expect(textContent(acknowledged)).toContain("acknowledged receipt. This does not prove the repair is complete.");
+  });
+
+  it("shows a review request as queued work rather than a verdict", () => {
+    const queued = AcceptanceReviewRequestPanel({ requests: [reviewRequest] });
+    const superseded = AcceptanceReviewRequestPanel({ requests: [{ ...reviewRequest, status: "superseded", reason: "new head" }] });
+
+    expect(textContent(queued)).toContain("This is not a verdict or evidence of a passing change.");
+    expect(textContent(queued)).toContain("deadbeef");
+    expect(textContent(superseded)).toContain("older PR head");
+    expect(textContent(superseded)).toContain("Reason: new head");
   });
 
   it("keeps a non-proven review out of the normal approval path but permits an explicit human exception", () => {

@@ -7,6 +7,7 @@ import {
   acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
   acceptanceContextPacks,
+  acceptanceEvidenceReviewRequests,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -89,6 +90,16 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceContextPackCompilations.status.hasDefault).toBe(true);
     const config = getTableConfig(acceptanceContextPackCompilations);
     expect(config.indexes.find((i) => i.config.name === "acceptance_context_pack_compilations_binding_key")).toBeDefined();
+  });
+
+  it("queues one exact-head Acceptance Review request without treating it as a verdict", () => {
+    expect(acceptanceEvidenceReviewRequests.prRevisionId.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.acceptanceContractVersion.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.headSha.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.status.hasDefault).toBe(true);
+    const config = getTableConfig(acceptanceEvidenceReviewRequests);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_evidence_review_requests_revision_key")).toBeDefined();
   });
 
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
@@ -272,5 +283,23 @@ describe("0097_evidence_verification_ui_steps migration", () => {
     const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
     const entry = journal.entries.find((e: { tag: string }) => e.tag === "0097_evidence_verification_ui_steps");
     expect(entry).toMatchObject({ idx: 102, version: "7", breakpoints: true });
+  });
+});
+
+describe("0098_acceptance_evidence_review_requests migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0098_acceptance_evidence_review_requests.sql");
+
+  it("creates an exact-head review-request queue with explicit non-verdict states", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_evidence_review_requests"');
+    expect(sqlText).toContain('"pr_revision_id" uuid NOT NULL');
+    expect(sqlText).toContain("'queued', 'completed', 'failed', 'superseded'");
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_evidence_review_requests_revision_key"');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0098_acceptance_evidence_review_requests");
+    expect(entry).toMatchObject({ idx: 103, version: "7", breakpoints: true });
   });
 });

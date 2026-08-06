@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from agentrail.context.index import build_index
+from agentrail.context.acceptance_manifest import acceptance_context_manifest
 from agentrail.context.packs import build_context_pack, load_context_pack
 
 
@@ -123,3 +124,25 @@ class AcceptanceRecordPackTests(unittest.TestCase):
             run_id="acceptance-stable",
         )
         self.assertEqual(first["contentHash"], second["contentHash"])
+
+    def test_reduces_the_local_pack_to_bounded_metadata_without_source_content(self) -> None:
+        result = build_context_pack(
+            self.root,
+            "acceptance_record",
+            "record-manifest",
+            "execute",
+            acceptance_contract=self.contract,
+            run_id="acceptance-manifest",
+        )
+        durable = acceptance_context_manifest(
+            load_context_pack(self.root, result["packId"]), self.contract
+        )
+
+        manifest = durable["manifest"]
+        self.assertEqual(manifest["tokenBudget"], 6000)
+        self.assertLessEqual(manifest["tokenCount"], manifest["tokenBudget"])
+        self.assertEqual(manifest["acceptanceCriteria"], [{"id": "AC-1"}])
+        self.assertTrue(manifest["sources"])
+        self.assertTrue(all("content" not in item for item in manifest["sources"]))
+        self.assertFalse(durable["custody"]["fullSourceUploadAllowed"])
+        self.assertTrue(durable["freshness"]["indexRevision"])

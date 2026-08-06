@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  AcceptanceContractPanel,
   ChangeRecordAnchors,
   LifecycleTimeline,
   changeRecordApiPath,
   formatChangeRecordDate,
+  isConfirmableContract,
+  type AcceptanceContract,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -68,6 +71,18 @@ const events: ChangeRecordEvent[] = [
   },
 ];
 
+const draftContract: AcceptanceContract = {
+  id: "00000000-0000-0000-0000-000000000020",
+  recordId: record.id,
+  version: 1,
+  status: "draft",
+  contract: { request: "Add a visible status", acceptanceCriteria: ["Status is visible"] },
+  createdBy: "user:1",
+  confirmedBy: null,
+  confirmedAt: null,
+  createdAt: "2026-08-03T10:00:00.000Z",
+};
+
 describe("Change Record detail view", () => {
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
@@ -99,5 +114,32 @@ describe("Change Record detail view", () => {
 
   it("formats invalid timestamps without throwing", () => {
     expect(formatChangeRecordDate("not-a-date")).toBe("unknown time");
+  });
+
+  it("shows the contract and makes only an unconfirmed draft actionable", () => {
+    const rendered = AcceptanceContractPanel({
+      contracts: [draftContract],
+      onConfirm: () => undefined,
+      confirmingVersion: null,
+      confirmationError: null,
+    });
+
+    expect(textContent(rendered)).toContain("Confirm contract");
+    expect(textContent(rendered)).toContain("Add a visible status");
+    expect(isConfirmableContract(draftContract, [draftContract])).toBe(true);
+
+    const confirmed = { ...draftContract, status: "confirmed" as const };
+    expect(isConfirmableContract(draftContract, [confirmed, draftContract])).toBe(false);
+  });
+
+  it("does not imply a contract exists when the record has none", () => {
+    const rendered = AcceptanceContractPanel({
+      contracts: [],
+      onConfirm: () => undefined,
+      confirmingVersion: null,
+      confirmationError: null,
+    });
+
+    expect(textContent(rendered)).toContain("No Acceptance Contract has been recorded yet");
   });
 });

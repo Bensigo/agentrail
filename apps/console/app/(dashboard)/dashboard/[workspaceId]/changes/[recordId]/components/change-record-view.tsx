@@ -29,9 +29,22 @@ export type ChangeRecordEvent = {
   createdAt: string;
 };
 
+export type AcceptanceContract = {
+  id: string;
+  recordId: string;
+  version: number;
+  status: "draft" | "confirmed";
+  contract: Record<string, unknown>;
+  createdBy: string;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  createdAt: string;
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
+  contracts: AcceptanceContract[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -185,10 +198,110 @@ export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   );
 }
 
+export function isConfirmableContract(
+  contract: AcceptanceContract,
+  contracts: AcceptanceContract[]
+): boolean {
+  return contract.status === "draft" && !contracts.some((item) => item.status === "confirmed");
+}
+
+export function AcceptanceContractPanel({
+  contracts,
+  onConfirm,
+  confirmingVersion,
+  confirmationError,
+}: {
+  contracts: AcceptanceContract[];
+  onConfirm: (version: number) => void;
+  confirmingVersion: number | null;
+  confirmationError: string | null;
+}) {
+  if (contracts.length === 0) {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Acceptance Contract
+        </h2>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">
+          No Acceptance Contract has been recorded yet. Do not treat implementation or review as
+          proof of an unrecorded request.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--gray-05)] px-4 py-3">
+        <div>
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+            Acceptance Contract
+          </h2>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">
+            The agreed request that Jace will use to judge the evidence.
+          </p>
+        </div>
+        {contracts.some((contract) => contract.status === "confirmed") ? (
+          <span className="rounded-sm bg-[var(--green-09)]/20 px-2 py-1 text-xs font-medium text-[var(--green-11)]">
+            Confirmed
+          </span>
+        ) : (
+          <span className="rounded-sm bg-[var(--yellow-09)]/20 px-2 py-1 text-xs font-medium text-[var(--yellow-11)]">
+            Needs confirmation
+          </span>
+        )}
+      </div>
+      <ol className="flex flex-col gap-3 px-4 py-4">
+        {contracts.map((contract) => {
+          const confirmable = isConfirmableContract(contract, contracts);
+          const pending = confirmingVersion === contract.version;
+          return (
+            <li key={contract.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-[var(--gray-11)]">v{contract.version}</span>
+                  <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs capitalize text-[var(--gray-11)]">
+                    {contract.status}
+                  </span>
+                </div>
+                {confirmable ? (
+                  <button
+                    type="button"
+                    onClick={() => onConfirm(contract.version)}
+                    disabled={pending}
+                    className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[var(--blue-10)] disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {pending ? "Confirming…" : "Confirm contract"}
+                  </button>
+                ) : contract.status === "confirmed" ? (
+                  <span className="text-xs text-[var(--gray-09)]">
+                    Confirmed {contract.confirmedAt ? formatChangeRecordDate(contract.confirmedAt) : ""}
+                  </span>
+                ) : null}
+              </div>
+              <details className="mt-3" open={contracts.length === 1}>
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+                  View agreed requirements
+                </summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">
+                  {JSON.stringify(contract.contract, null, 2)}
+                </pre>
+              </details>
+            </li>
+          );
+        })}
+      </ol>
+      {confirmationError ? <p className="px-4 pb-4 text-sm text-[var(--red-11)]">{confirmationError}</p> : null}
+    </section>
+  );
+}
+
 export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: string; recordId: string }) {
   const [data, setData] = useState<ChangeRecordResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingVersion, setConfirmingVersion] = useState<number | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -204,7 +317,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!response.ok) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        if (!body.record || !Array.isArray(body.events)) {
+        if (!body.record || !Array.isArray(body.events) || !Array.isArray(body.contracts)) {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -219,12 +332,44 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     return () => controller.abort();
   }, [workspaceId, recordId]);
 
-  const backHref = `/dashboard/${workspaceId}/work`;
+  async function confirmContract(version: number) {
+    setConfirmingVersion(version);
+    setConfirmationError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "confirm_contract", version }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { contract?: AcceptanceContract; error?: string };
+      if (!response.ok || !body.contract) {
+        throw new Error(body.error ?? `HTTP ${response.status}`);
+      }
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              contracts: current.contracts.map((contract) =>
+                contract.id === body.contract!.id ? body.contract! : contract
+              ),
+            }
+          : current
+      );
+    } catch (caught) {
+      setConfirmationError(
+        caught instanceof Error ? caught.message : "Failed to confirm Acceptance Contract"
+      );
+    } finally {
+      setConfirmingVersion(null);
+    }
+  }
+
+  const backHref = `/dashboard/${workspaceId}/changes`;
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
         <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <p className="animate-pulse py-8 text-sm text-[var(--gray-09)]">Loading change record...</p>
       </div>
@@ -235,7 +380,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     return (
       <div className="mx-auto max-w-[900px]">
         <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <p className="py-8 text-sm text-[var(--red-11)]">{error ?? "Change record not found"}</p>
       </div>
@@ -246,10 +391,10 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     <div className="mx-auto flex max-w-[900px] flex-col gap-6">
       <div>
         <a href={backHref} className="mb-3 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <PageHeader
-          title="Change Record"
+          title="Acceptance Record"
           subtitle={`${data.record.repo} · ${data.record.state}`}
           actions={<CopyId id={data.record.id} label="Record" />}
         />
@@ -257,6 +402,12 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
         </p>
       </div>
+      <AcceptanceContractPanel
+        contracts={data.contracts}
+        onConfirm={confirmContract}
+        confirmingVersion={confirmingVersion}
+        confirmationError={confirmationError}
+      />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />
     </div>

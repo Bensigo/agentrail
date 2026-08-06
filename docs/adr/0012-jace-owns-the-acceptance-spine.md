@@ -138,9 +138,10 @@ human-decision live/migrated-DB proof; dependency workflow; and UI/browser E2E. 
 packet as a GitHub PR issue-comment only when the exact review revision is
 still current; it records `delivered` or `failed`, but does not prove that the
 builder received or resumed. A scoped MCP credential can retrieve the
-evidence-bound packet for its recorded builder task context, but this is a
-durable inbox/readback mechanism—not proof that the external builder was
-notified or resumed; acknowledgement remains required.
+evidence-bound packet for its recorded builder task context only after Jace
+records an idempotent credential- and handoff-bound MCP delivery event. That
+is durable delivery/readback evidence—not proof that the external builder used
+the packet, implemented it, or resumed; acknowledgement remains required.
 
 The hosted-channel path can now confirm a complete draft without moving the
 human to the Console: a trusted inbound provider-message key is bound to the

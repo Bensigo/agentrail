@@ -587,6 +587,13 @@ const MOCK_IDENTITY_ROW = {
   updatedAt: new Date("2026-07-18T00:00:00Z"),
 };
 
+const MOCK_LEGACY_DEPENDENCY_APPROVAL_ROW = {
+  ...MOCK_APPROVAL_ROW,
+  toolName: "dependency_upgrade_contract",
+  toolInput: { contractId: "contract-1" },
+  dependencyContractId: "contract-1",
+};
+
 describe("POST /api/v1/connectors/telegram/webhook — ar: flow (issue #1273)", () => {
   beforeEach(() => {
     process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
@@ -884,6 +891,44 @@ describe("POST /api/v1/connectors/telegram/webhook — ar: flow (issue #1273)", 
     expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
     expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
     expect(mockExtractConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("quarantines legacy dependency callbacks before resolveApproval or message edits", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_LEGACY_DEPENDENCY_APPROVAL_ROW as never);
+    mockGetChatIdentity.mockResolvedValue(MOCK_IDENTITY_ROW as never);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true, result: "retired_quarantined" });
+    expect(mockResolveApproval).not.toHaveBeenCalled();
+    expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockAnswer).toHaveBeenCalledWith(
+      "test-bot-token",
+      "cbq-1",
+      "This approval is retired and quarantined pending the dependency data audit."
+    );
+    expect(mockEdit).not.toHaveBeenCalled();
+  });
+
+  it("quarantines create_issue callbacks carrying a legacy dependency contract marker", async () => {
+    mockParse.mockReturnValue({ decision: "denied", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue({
+      ...MOCK_APPROVAL_ROW,
+      dependencyContractId: "contract-1",
+    } as never);
+    mockGetChatIdentity.mockResolvedValue(MOCK_IDENTITY_ROW as never);
+
+    await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(mockResolveApproval).not.toHaveBeenCalled();
+    expect(mockAnswer).toHaveBeenCalledWith(
+      "test-bot-token",
+      "cbq-1",
+      "This approval is retired and quarantined pending the dependency data audit."
+    );
   });
 });
 

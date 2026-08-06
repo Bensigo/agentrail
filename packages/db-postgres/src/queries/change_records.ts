@@ -804,6 +804,29 @@ export async function findAcceptanceBuilderHandoffForPullRequest(input: {
   return rows.length === 1 ? rows[0]! : null;
 }
 
+/** Resolve only one recorded, PR-attached builder task for this current revision. */
+export async function findAcceptanceBuilderHandoffForPrRevision(input: {
+  workspaceId: string; recordId: string; prRevisionId: string;
+}): Promise<AcceptanceBuilderHandoffRow | null> {
+  const rows = await db.select({ handoff: acceptanceBuilderHandoffs })
+    .from(changeRecordPrRevisions)
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .innerJoin(acceptanceBuilderHandoffs, and(
+      eq(acceptanceBuilderHandoffs.recordId, changeRecordPrs.recordId),
+      eq(acceptanceBuilderHandoffs.repositoryId, changeRecordPrs.repositoryId),
+    ))
+    .where(and(
+      eq(changeRecordPrRevisions.id, input.prRevisionId),
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      eq(changeRecordPrs.recordId, input.recordId),
+      eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderHandoffs.status, "pr_attached"),
+      isNull(changeRecordPrRevisions.supersededAt),
+    ))
+    .limit(2);
+  return rows.length === 1 ? rows[0]!.handoff : null;
+}
+
 export async function markAcceptanceBuilderHandoffPrAttached(input: {
   handoffId: string;
   workspaceId: string;
@@ -1048,19 +1071,23 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
       environmentRung: input.environmentRung, refusalReason: input.refusalReason ?? null,
       verifierName: input.verifierName, verifierVersion: input.verifierVersion, promptVersion: input.promptVersion,
     }).onConflictDoNothing().returning();
-    if (!inserted[0]) return { id, inserted: false };
+    if (!inserted[0]) {
+      const corrections = await tx.select().from(evidenceReviewCorrections)
+        .where(eq(evidenceReviewCorrections.reviewId, id));
+      return { id, inserted: false, corrections };
+    }
     await tx.insert(evidenceReviewCriteria).values(input.criteria.map((criterion) => ({
       id: randomUUID(), reviewId: id, ...criterion,
     })));
-    if (input.corrections.length) await tx.insert(evidenceReviewCorrections).values(input.corrections.map((correction) => ({
+    const corrections = input.corrections.length ? await tx.insert(evidenceReviewCorrections).values(input.corrections.map((correction) => ({
       id: randomUUID(), reviewId: id, criterionId: correction.criterionId ?? null,
       observedBehavior: correction.observedBehavior, expectedBehavior: correction.expectedBehavior,
       evidenceRefs: correction.evidenceRefs, reproductionSteps: correction.reproductionSteps ?? [],
       likelyAffectedUnits: correction.likelyAffectedUnits ?? [], contextRefs: correction.contextRefs ?? [], scopeBoundary: correction.scopeBoundary,
       concreteImpact: correction.concreteImpact, requiredCorrection: correction.requiredCorrection,
       reverification: correction.reverification, repairPath: correction.repairPath ?? null,
-    })));
-    return { id, inserted: true };
+    }))).returning() : [];
+    return { id, inserted: true, corrections };
   });
 }
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAcceptanceContract } from "@agentrail/contracts";
-import { readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
+import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 import { buildCorrectionPacket, validateEvidenceReview } from "../../../../../../lib/evidence-review-validation";
 
@@ -33,6 +33,11 @@ export async function POST(request: NextRequest) {
     return finding ? buildCorrectionPacket({ headSha: body.headSha as string, criterion, finding }) : null;
   }).filter((item): item is NonNullable<typeof item> => item != null);
   try {
+    const handoff = await findAcceptanceBuilderHandoffForPrRevision({
+      workspaceId: body.workspaceId as string,
+      recordId: body.recordId as string,
+      prRevisionId: body.prRevisionId as string,
+    });
     const result = await recordEvidenceReview({
       workspaceId: body.workspaceId, recordId: body.recordId, prRevisionId: body.prRevisionId, headSha: body.headSha,
       contractId: body.contractId, contractVersion: body.contractVersion, overallStatus: validation.overallStatus,
@@ -50,7 +55,18 @@ export async function POST(request: NextRequest) {
         reverification: packet.reverification, repairPath: packet.repairPath ?? null,
       })),
     });
-    return NextResponse.json({ reviewId: result.id, inserted: result.inserted, overallStatus: validation.overallStatus, correctionPackets: corrections }, { status: result.inserted ? 201 : 200 });
+    const correctionDeliveries = handoff ? await Promise.all(result.corrections.map(async (correction) => {
+      const delivery = await queueEvidenceReviewCorrectionDelivery({
+        workspaceId: body.workspaceId as string,
+        recordId: body.recordId as string,
+        correctionId: correction.id,
+        deliveryKey: `mcp:${handoff.id}:${correction.id}`,
+        channel: "mcp_task_context",
+        target: { builder: handoff.builder, taskContextKey: handoff.taskContextKey },
+      });
+      return { id: delivery.id, correctionId: correction.id, outcome: "queued" };
+    })) : [];
+    return NextResponse.json({ reviewId: result.id, inserted: result.inserted, overallStatus: validation.overallStatus, correctionPackets: corrections, correctionDeliveries, deliveryTargetResolved: Boolean(handoff) }, { status: result.inserted ? 201 : 200 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to persist evidence review" }, { status: 409 });
   }

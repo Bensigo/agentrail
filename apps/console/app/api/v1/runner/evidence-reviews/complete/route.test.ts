@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({ readAcceptanceContracts: vi.fn(), recordEvidenceReview: vi.fn() }));
-import { readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
+vi.mock("@agentrail/db-postgres", () => ({ readAcceptanceContracts: vi.fn(), recordEvidenceReview: vi.fn(), findAcceptanceBuilderHandoffForPrRevision: vi.fn(), queueEvidenceReviewCorrectionDelivery: vi.fn() }));
+import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
 import { POST } from "./route";
 
 const secret = "jace-secret";
@@ -24,7 +24,9 @@ function request(payload: unknown = body, authorization = true) {
 beforeEach(() => {
   vi.clearAllMocks(); process.env.JACE_CONSOLE_TOKEN = secret;
   vi.mocked(readAcceptanceContracts).mockResolvedValue([contract] as never);
-  vi.mocked(recordEvidenceReview).mockResolvedValue({ id: "review-1", inserted: true } as never);
+  vi.mocked(recordEvidenceReview).mockResolvedValue({ id: "review-1", inserted: true, corrections: [{ id: "correction-1" }] } as never);
+  vi.mocked(findAcceptanceBuilderHandoffForPrRevision).mockResolvedValue({ id: "handoff-1", builder: "codex", taskContextKey: "task-1" } as never);
+  vi.mocked(queueEvidenceReviewCorrectionDelivery).mockResolvedValue({ id: "delivery-1" } as never);
 });
 
 describe("independent evidence review completion", () => {
@@ -33,6 +35,7 @@ describe("independent evidence review completion", () => {
     expect(response.status).toBe(201);
     expect(recordEvidenceReview).toHaveBeenCalledWith(expect.objectContaining({ headSha: head, overallStatus: "failed", corrections: [expect.objectContaining({ criterionId: "saved" })] }));
     expect((await response.json()).correctionPackets[0]).toMatchObject({ headSha: head, criterionId: "saved" });
+    expect(queueEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith(expect.objectContaining({ correctionId: "correction-1", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task-1" } }));
   });
   it("rejects a generic visible-criterion pass without an exercise artifact", async () => {
     const response = await POST(request({ ...body, criteria: [{ ...body.criteria[0], status: "proven", runtimeEvidence: [] }], findings: [] }));

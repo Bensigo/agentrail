@@ -3307,6 +3307,7 @@ export {
   attachExternalPullRequest,
   createAcceptanceBuilderHandoff,
   findAcceptanceBuilderHandoffForPullRequest,
+  findAcceptanceBuilderHandoffForPrRevision,
   markAcceptanceBuilderHandoffPrAttached,
   recordEvidenceReview,
   recordEvidenceVerificationPlans,

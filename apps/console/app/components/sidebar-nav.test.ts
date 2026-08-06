@@ -56,10 +56,10 @@ describe("NAV_ZONES data structure", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).not.toContain("review-gates");
   });
 
-  it("Settings zone: Gateways (gateways-page T3, ABOVE Connectors), Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
+  it("Settings zone: Channels, GitHub, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
-      ["Gateways", "gateways"],
-      ["Connectors", "connectors"],
+      ["Channels", "gateways"],
+      ["GitHub", "connectors"],
       ["Team", "members"],
       ["Permissions", "permissions"],
       ["Plan & billing", "billing"],
@@ -140,7 +140,7 @@ describe("NAV_ZONES data structure", () => {
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
       "wiki", // repo wiki 6/7: read-only Engine-room Wiki view, sibling of Memory
-      "gateways", // gateways-page T3: Settings-zone page for the 5 chat surfaces, above Connectors
+      "gateways", // Settings-zone page for the supported chat channels
       "billing", // subscription-platform spec, slice-3 plan Task 5: plan card + Starter/Growth checkout + Stripe customer-portal link
       // "api-keys" intentionally excluded: removed from the nav (owner
       // ruling, 2026-07-19) — see the dedicated test below.

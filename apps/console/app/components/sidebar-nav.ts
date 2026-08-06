@@ -100,14 +100,14 @@ export const SETTINGS_ZONE: NavZone = {
   label: "Settings",
   collapsible: false,
   items: [
-    // Gateways (gateways-page T3) sits ABOVE Connectors: a gateway is where a
-    // human talks to Jace (Telegram/Discord/Slack/iMessage/WhatsApp), as
+    // Channels sit above GitHub: a channel is where a human talks to Jace
+    // (Telegram/Discord/Slack/iMessage/WhatsApp), as
     // distinct from a connector (GitHub/Linear/Figma/Context7 — tools wired
     // into the factory). Gateways used to be the connector catalog's
     // `channel` group; the owner ruled them onto their own page instead (see
     // `gateways/components/gateway-helpers.ts`'s module doc-comment).
-    { label: "Gateways", href: "gateways", icon: MessageSquare },
-    { label: "Connectors", href: "connectors", icon: Plug },
+    { label: "Channels", href: "gateways", icon: MessageSquare },
+    { label: "GitHub", href: "connectors", icon: Plug },
     // No separate "Repos & Health" item: Repos & Health folded into the Wiki
     // view (owner ruling) — the wiki is now the per-repo evidence page (repo
     // list with health chips + the compiled wiki, one surface instead of

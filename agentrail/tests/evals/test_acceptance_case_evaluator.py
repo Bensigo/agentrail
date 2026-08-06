@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,20 @@ def test_manifest_bound_entrypoint_rejects_synthetic_promotion(tmp_path: Path) -
     with pytest.raises(AcceptanceCorpusError, match="synthetic labels"):
         run_manifest_bound_offline_evaluation(
             tmp_path, executor=_Executor(), scorer=_Scorer(),
+            provenance=_provenance(), promotion_policy=_policy(),
+        )
+
+
+def test_forged_corpus_object_is_reloaded_from_its_root_before_promotion(tmp_path: Path) -> None:
+    _write_corpus(tmp_path, label_class="synthetic")
+    forged = replace(
+        load_acceptance_case_corpus(tmp_path),
+        label_class="independent",
+    )
+
+    with pytest.raises(AcceptanceCorpusError, match="synthetic labels"):
+        run_manifest_bound_offline_evaluation(
+            forged, executor=_Executor(), scorer=_Scorer(),
             provenance=_provenance(), promotion_policy=_policy(),
         )
 

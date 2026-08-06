@@ -29,21 +29,15 @@ def run_manifest_bound_offline_evaluation(
     held-out Case. Cases and splits always come from the admitted corpus; the
     caller cannot supply an arbitrary in-memory split mapping.
     """
-    if isinstance(corpus_or_root, AcceptanceCorpus):
-        corpus = corpus_or_root
-        if promotion_policy is not None and corpus.label_class != "independent":
-            raise AcceptanceCorpusError(
-                "Acceptance Case corpus: synthetic labels cannot support held-out promotion"
-            )
-        if promotion_policy is not None and not any(case.split == "held-out" for case in corpus.cases):
-            raise AcceptanceCorpusError(
-                "Acceptance Case corpus: independent promotion requires at least one held-out Case"
-            )
-    else:
-        corpus = load_acceptance_case_corpus(
-            Path(corpus_or_root),
-            require_independent_labels=promotion_policy is not None,
-        )
+    # An AcceptanceCorpus is a convenient typed locator, not an authority:
+    # callers can construct or mutate one in memory. Always re-admit its root
+    # so manifest digests, labels, authority, and held-out presence are read
+    # from disk at this production boundary.
+    root = corpus_or_root.root if isinstance(corpus_or_root, AcceptanceCorpus) else Path(corpus_or_root)
+    corpus = load_acceptance_case_corpus(
+        root,
+        require_independent_labels=promotion_policy is not None,
+    )
 
     report = run_offline_four_arm_evaluation(
         corpus.cases,

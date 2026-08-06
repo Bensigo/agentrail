@@ -37,6 +37,24 @@ describe("independent evidence review completion", () => {
     expect((await response.json()).correctionPackets[0]).toMatchObject({ headSha: head, criterionId: "saved" });
     expect(queueEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith(expect.objectContaining({ correctionId: "correction-1", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task-1" } }));
   });
+  it("queues a durable Jace task inbox packet when no builder task context is recorded", async () => {
+    vi.mocked(findAcceptanceBuilderHandoffForPrRevision).mockResolvedValue(null as never);
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(201);
+    expect(queueEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      correctionId: "correction-1",
+      deliveryKey: "jace-inbox:record-1:correction-1",
+      channel: "jace_task_inbox",
+      target: { recordId: "record-1" },
+    }));
+    await expect(response.json()).resolves.toMatchObject({
+      deliveryTargetResolved: false,
+      fallbackInboxQueued: true,
+      correctionDeliveries: [{ channel: "jace_task_inbox", outcome: "queued" }],
+    });
+  });
   it("rejects a generic visible-criterion pass without an exercise artifact", async () => {
     const response = await POST(request({ ...body, criteria: [{ ...body.criteria[0], status: "proven", runtimeEvidence: [] }], findings: [] }));
     expect(response.status).toBe(400);

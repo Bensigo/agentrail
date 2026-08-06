@@ -56,6 +56,19 @@ describe("POST correction delivery queue", () => {
     });
   });
 
+  it("accepts only this Record as a durable Jace task inbox target", async () => {
+    const inboxPayload = {
+      correctionId: "correction-1", deliveryKey: "jace-inbox:record-1:correction-1",
+      channel: "jace_task_inbox", target: { recordId: "record-1" },
+    };
+    const response = await POST(request(inboxPayload), { params });
+    expect(response.status).toBe(201);
+    expect(queueEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith({
+      workspaceId: "ws-1", recordId: "record-1", ...inboxPayload,
+    });
+    expect((await POST(request({ ...inboxPayload, target: { recordId: "record-2" } }), { params })).status).toBe(400);
+  });
+
   it("does not turn an idempotent replay into a claimed notification", async () => {
     vi.mocked(queueEvidenceReviewCorrectionDelivery).mockResolvedValueOnce({ id: "delivery-1", inserted: false, reviewRevisionId: "revision-1" } as never);
     const response = await POST(request(), { params });

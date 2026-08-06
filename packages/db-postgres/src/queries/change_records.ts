@@ -2850,6 +2850,12 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
         .limit(1);
       if (!handoff[0]) throw new Error("Correction delivery target does not match the recorded builder handoff");
     }
+    if (input.channel === "jace_task_inbox") {
+      const targetRecordId = typeof input.target.recordId === "string" ? input.target.recordId : "";
+      if (targetRecordId !== input.recordId || Object.keys(input.target).some((key) => key !== "recordId")) {
+        throw new Error("Jace task inbox target does not match the Acceptance Record");
+      }
+    }
     const scoped = await tx.select({ review: evidenceReviews, record: changeRecords })
       .from(evidenceReviewCorrections)
       .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))

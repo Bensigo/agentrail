@@ -57,18 +57,23 @@ export async function POST(request: NextRequest) {
         reverification: packet.reverification, repairPath: packet.repairPath ?? null,
       })),
     });
-    const correctionDeliveries = handoff ? await Promise.all(result.corrections.map(async (correction) => {
+    const correctionDeliveries = await Promise.all(result.corrections.map(async (correction) => {
+      const channel = handoff ? "mcp_task_context" : "jace_task_inbox";
       const delivery = await queueEvidenceReviewCorrectionDelivery({
         workspaceId: body.workspaceId as string,
         recordId: body.recordId as string,
         correctionId: correction.id,
-        deliveryKey: `mcp:${handoff.id}:${correction.id}`,
-        channel: "mcp_task_context",
-        target: { builder: handoff.builder, taskContextKey: handoff.taskContextKey },
+        deliveryKey: handoff
+          ? `mcp:${handoff.id}:${correction.id}`
+          : `jace-inbox:${body.recordId as string}:${correction.id}`,
+        channel,
+        target: handoff
+          ? { builder: handoff.builder, taskContextKey: handoff.taskContextKey }
+          : { recordId: body.recordId as string },
       });
-      return { id: delivery.id, correctionId: correction.id, outcome: "queued" };
-    })) : [];
-    return NextResponse.json({ reviewId: result.id, inserted: result.inserted, overallStatus: validation.overallStatus, correctionPackets: corrections, correctionDeliveries, deliveryTargetResolved: Boolean(handoff) }, { status: result.inserted ? 201 : 200 });
+      return { id: delivery.id, correctionId: correction.id, channel, outcome: "queued" };
+    }));
+    return NextResponse.json({ reviewId: result.id, inserted: result.inserted, overallStatus: validation.overallStatus, correctionPackets: corrections, correctionDeliveries, deliveryTargetResolved: Boolean(handoff), fallbackInboxQueued: !handoff && correctionDeliveries.length > 0 }, { status: result.inserted ? 201 : 200 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to persist evidence review" }, { status: 409 });
   }

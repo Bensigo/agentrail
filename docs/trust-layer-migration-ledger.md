@@ -99,6 +99,28 @@ acknowledgement only; no dispatcher has proven notification.
    honestly measure lower false-greens/noise/context waste/review-rework and
    better task success/repair with denominators and sample-size limits.
 
+## Dependency approval-lane removal plan (pre-destructive audit)
+
+Audit date: 2026-08-06. This is a repository-source map, not a production-data
+inventory. No deletion is authorized until a migrated database is inspected
+for pending legacy approvals and a forward migration/recovery plan is tested.
+
+| Classification | Current code/data | Required migration action |
+| --- | --- | --- |
+| Keep: canonical acceptance entry | `agentrail/heartbeat/dependency_runtime.py` posts to `/runner/dependency-upgrade-proposals`; that route and `/runner/dependency-upgrade-contracts/[contractId]/acceptance-record` now draft a deterministic Acceptance Record. `dependency-upgrade-acceptance.ts` converts candidate evidence to the confirmed-contract shape. | Keep and test as the dependency-watch intake. It must remain a source only: no builder selection, edit, PR, merge, or runtime claim. |
+| Reuse only as neutral source infrastructure | Dependency watch observations; candidate fingerprint validation; the candidate/proposal portion of `dependency_upgrade_contracts`; `findDependencyCandidate`, create/reuse, refresh, and read functions. These establish candidate, repository, baseline, and evidence provenance before a Record exists. | Split/rename their semantics to a source ledger. Retain candidate/proposal/provenance history and deterministic identity, but replace approval-oriented state with explicit source-evidence freshness. The canonical Acceptance Record remains the only human contract/decision object. |
+| Remove: approval-to-issue execution | `apps/console/lib/approval-decision.ts`'s dependency branch; `dependency-upgrade-publisher.ts`; their tests; the dependency-specific console approval actor branch; and the shared Telegram callback path once historical approvals are retired. This is the only source-scan path from a dependency candidate to GitHub issue publication. | First quarantine or explicitly supersede every pending `jace_approvals` row with `tool_name = dependency_upgrade_contract` or a non-null `dependency_contract_id`; do not silently mark it approved/denied or claim publication. Then remove the special decision/publisher path and its tests. Generic approval behavior must remain covered. |
+| Replace: approval-coupled schema and query API | `dependency_upgrade_contracts.state`, `approval_id`, `issue_url`, `issue_number`, legacy state/event vocabulary; `jace_approvals.dependency_contract_id`; `attach/decide/set/publish` query functions and related foreign key. Migrations `0074`/`0076` are historical evidence and must not be edited. | Add a forward, reversible migration after data audit: retain/copy source provenance, create source-ledger fields/table if needed, write a durable migration report linking any old row to its Acceptance Record or an explicit `not_migrated` reason, then drop approval/issue columns and the approval foreign key only when no caller or pending row remains. Add replacement tests before removal. |
+
+Deletion order: (1) inventory migrated production data and back it up; (2)
+quarantine/supersede historical pending dependency approvals through both
+Console and Telegram paths; (3) migrate source rows and link them to canonical
+Records where valid; (4) migrate callers and run targeted database/route/
+heartbeat coverage; (5) remove publisher and approval-decision code; (6) run
+a forward schema cleanup migration. Existing migration files and historical
+events are retained as audit history. This plan deliberately does not treat a
+source-code search as proof that production has no old approvals.
+
 ## Non-goals
 
 - Building a replacement coding agent, code factory, or automatic merge lane.

@@ -79,7 +79,8 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceBriefBindings.createdBy.notNull).toBe(true);
     const config = getTableConfig(acceptanceBriefBindings);
     expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_record_key")).toBeDefined();
-    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_brief_key")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_workspace_brief_idx")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_brief_key")).toBeUndefined();
   });
 
   it("stores metadata-only Context Pack versions and delivery audit rows", () => {
@@ -287,7 +288,8 @@ describe("0100_acceptance_brief_bindings migration", () => {
     expect(sqlText).toContain('"provenance" jsonb NOT NULL');
     expect(sqlText).toContain('ON DELETE restrict');
     expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_record_key"');
-    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_brief_key"');
+    expect(sqlText).toContain('CREATE INDEX IF NOT EXISTS "acceptance_brief_bindings_workspace_brief_idx"');
+    expect(sqlText).not.toContain('acceptance_brief_bindings_brief_key');
   });
 
   it("is registered in the migration journal", () => {

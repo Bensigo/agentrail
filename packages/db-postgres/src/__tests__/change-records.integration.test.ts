@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
-import { briefs } from "../schema/briefs.js";
+import { briefs, briefItems } from "../schema/briefs.js";
 import { changeRecordEvents } from "../schema/change_records.js";
 import {
   appendChangeRecordEvent,
@@ -310,7 +310,7 @@ describe.skipIf(!DB_AVAILABLE)(
         [3, "confirmed"],
       ]);
     });
-    it("binds a brief to a record with an immutable snapshot and reads current state separately", async () => {
+    it("binds the same brief to two distinct records with separate immutable snapshots", async () => {
       const [brief] = await db
         .insert(briefs)
         .values({
@@ -323,7 +323,32 @@ describe.skipIf(!DB_AVAILABLE)(
           jaceSessionIds: [],
         })
         .returning();
-      const draft = await createDraftAcceptanceRecord({
+      const [firstItem, secondItem] = await db
+        .insert(briefItems)
+        .values([
+          {
+            briefId: brief.id,
+            area: "scope",
+            statement: "The scope is bounded",
+            evidence: "The human limited the task",
+            kind: "required",
+            state: "resolved",
+            resolution: "implemented",
+            authority: "human",
+          },
+          {
+            briefId: brief.id,
+            area: "constraints",
+            statement: "Do not dump the whole repo",
+            evidence: "The brief stays bounded",
+            kind: "required",
+            state: "resolved",
+            resolution: "implemented",
+            authority: "human",
+          },
+        ])
+        .returning();
+      const firstDraft = await createDraftAcceptanceRecord({
         workspaceId: wsId,
         repo: "acme/widgets",
         workKey: `brief-binding-${randomUUID()}`,
@@ -337,65 +362,115 @@ describe.skipIf(!DB_AVAILABLE)(
         createdBy: "user:lead",
       });
 
-      const binding = await linkAcceptanceBriefToRecord({
+      const firstBinding = await linkAcceptanceBriefToRecord({
         workspaceId: wsId,
-        recordId: draft.record.id,
+        recordId: firstDraft.record.id,
         briefId: brief.id,
         linkedBy: "user:lead",
       });
-      expect(binding.recordId).toBe(draft.record.id);
-      expect(binding.briefId).toBe(brief.id);
-      expect(binding.briefSnapshot).toMatchObject({
+      expect(firstBinding.recordId).toBe(firstDraft.record.id);
+      expect(firstBinding.briefId).toBe(brief.id);
+      expect(firstBinding.briefSnapshot).toMatchObject({
         briefId: brief.id,
         title: "Initial brief title",
         slug: brief.slug,
-        status: "draft",
-      });
-      expect(binding.provenance).toMatchObject({
-        boundBy: "user:lead",
-        recordSourceReferences: [{ kind: "slack_thread", id: "thread-1" }],
+        items: [
+          expect.objectContaining({
+            id: firstItem.id,
+            statement: "The scope is bounded",
+          }),
+          expect.objectContaining({
+            id: secondItem.id,
+            statement: "Do not dump the whole repo",
+          }),
+        ],
       });
 
-      await db.update(briefs).set({ title: "Updated brief title" }).where(eq(briefs.id, brief.id));
+      await db
+        .update(briefItems)
+        .set({ statement: "The scope is bounded, but updated later" })
+        .where(eq(briefItems.id, firstItem.id));
 
-      const readback = await readAcceptanceBriefBinding({
+      const secondDraft = await createDraftAcceptanceRecord({
         workspaceId: wsId,
-        recordId: draft.record.id,
+        repo: "acme/widgets",
+        workKey: `brief-binding-${randomUUID()}`,
+        originChannel: "codex_mcp",
+        contract: {
+          originalRequest: "Bind the same brief to a later record",
+          acceptanceCriteria: [{ id: "AC-1", text: "Snapshot the edited brief separately" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
       });
-      expect(readback).not.toBeNull();
-      expect(readback?.binding.id).toBe(binding.id);
-      expect(readback?.binding.briefSnapshot).toMatchObject({
-        title: "Initial brief title",
-        status: "draft",
+      const secondBinding = await linkAcceptanceBriefToRecord({
+        workspaceId: wsId,
+        recordId: secondDraft.record.id,
+        briefId: brief.id,
+        linkedBy: "user:lead",
       });
-      expect(readback?.brief.title).toBe("Updated brief title");
-      expect(readback?.record.id).toBe(draft.record.id);
-      expect(readback?.record.state).toBe("open");
+      expect(secondBinding.id).not.toBe(firstBinding.id);
+      expect(secondBinding.recordId).toBe(secondDraft.record.id);
+      expect(secondBinding.briefSnapshot).toMatchObject({
+        items: [
+          expect.objectContaining({
+            id: firstItem.id,
+            statement: "The scope is bounded, but updated later",
+          }),
+          expect.objectContaining({
+            id: secondItem.id,
+            statement: "Do not dump the whole repo",
+          }),
+        ],
+      });
+
+      const recordReadback = await readAcceptanceBriefBinding({
+        workspaceId: wsId,
+        recordId: firstDraft.record.id,
+      });
+      expect(recordReadback?.binding.id).toBe(firstBinding.id);
+      expect(recordReadback?.binding.briefSnapshot).toMatchObject({
+        items: [
+          expect.objectContaining({
+            id: firstItem.id,
+            statement: "The scope is bounded",
+          }),
+        ],
+      });
 
       const briefReadback = await readAcceptanceBriefBinding({
         workspaceId: wsId,
         briefId: brief.id,
       });
-      expect(briefReadback?.binding.id).toBe(binding.id);
-      expect(briefReadback?.brief.id).toBe(brief.id);
-      expect(briefReadback?.record.id).toBe(draft.record.id);
-
-      const samePair = await linkAcceptanceBriefToRecord({
-        workspaceId: wsId,
-        recordId: draft.record.id,
-        briefId: brief.id,
-        linkedBy: "user:lead",
-      });
-      expect(samePair.id).toBe(binding.id);
+      expect(Array.isArray(briefReadback)).toBe(true);
+      expect(briefReadback).toHaveLength(2);
+      expect(briefReadback.map((row) => row.record.id)).toEqual([
+        firstDraft.record.id,
+        secondDraft.record.id,
+      ]);
+      expect(briefReadback[0]!.binding.id).toBe(firstBinding.id);
+      expect(briefReadback[1]!.binding.id).toBe(secondBinding.id);
     });
 
-    it("rejects foreign-workspace brief links and conflicting rebinds", async () => {
+    it("rejects foreign-workspace brief links and same-record rebinds with a different brief", async () => {
       const [brief] = await db
         .insert(briefs)
         .values({
           workspaceId: wsId,
           slug: `linked-brief-${randomUUID()}`,
           title: "Workspace-bound brief",
+          repositoryId: null,
+          openQuestion: "",
+          grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
+          jaceSessionIds: [],
+        })
+        .returning();
+      const [otherBrief] = await db
+        .insert(briefs)
+        .values({
+          workspaceId: wsId,
+          slug: `other-linked-brief-${randomUUID()}`,
+          title: "Alternate brief",
           repositoryId: null,
           openQuestion: "",
           grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
@@ -427,14 +502,6 @@ describe.skipIf(!DB_AVAILABLE)(
           })
         ).rejects.toThrow("not found in workspace");
 
-        const otherDraft = await createDraftAcceptanceRecord({
-          workspaceId: wsId,
-          repo: "acme/widgets",
-          workKey: `other-record-${randomUUID()}`,
-          originChannel: "slack",
-          contract: { originalRequest: "Different record", acceptanceCriteria: [], unresolvedQuestions: [] },
-          createdBy: "user:lead",
-        });
         await linkAcceptanceBriefToRecord({
           workspaceId: wsId,
           recordId: draft.record.id,
@@ -444,11 +511,11 @@ describe.skipIf(!DB_AVAILABLE)(
         await expect(
           linkAcceptanceBriefToRecord({
             workspaceId: wsId,
-            recordId: otherDraft.record.id,
-            briefId: brief.id,
+            recordId: draft.record.id,
+            briefId: otherBrief.id,
             linkedBy: "user:lead",
           })
-        ).rejects.toThrow("already linked to an Acceptance Record");
+        ).rejects.toThrow("already has a linked Brief");
       } finally {
         await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace[0]!.id));
       }

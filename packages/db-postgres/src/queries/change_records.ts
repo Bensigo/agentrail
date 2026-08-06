@@ -3,7 +3,7 @@ import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { repositories } from "../schema/repositories.js";
-import { briefs } from "../schema/briefs.js";
+import { briefs, briefItems } from "../schema/briefs.js";
 import {
   changeRecordEvents,
   changeRecords,
@@ -42,7 +42,7 @@ import {
   type EvidenceVerificationExecutionRow,
   type AcceptanceEvidenceReviewRequestRow,
 } from "../schema/change_records.js";
-import type { Brief } from "../schema/briefs.js";
+import type { Brief, BriefItem } from "../schema/briefs.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -924,7 +924,23 @@ export async function createDraftAcceptanceRecord(
   });
 }
 
-function briefBindingSnapshot(brief: Brief): Record<string, unknown> {
+function briefItemBindingSnapshot(item: BriefItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    briefId: item.briefId,
+    area: item.area,
+    statement: item.statement,
+    evidence: item.evidence,
+    kind: item.kind,
+    state: item.state,
+    resolution: item.resolution,
+    authority: item.authority,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingSnapshot(brief: Brief, items: BriefItem[]): Record<string, unknown> {
   return {
     briefId: brief.id,
     workspaceId: brief.workspaceId,
@@ -935,6 +951,7 @@ function briefBindingSnapshot(brief: Brief): Record<string, unknown> {
     openQuestion: brief.openQuestion,
     grounding: brief.grounding,
     jaceSessionIds: brief.jaceSessionIds,
+    items: items.map(briefItemBindingSnapshot),
     createdAt: brief.createdAt.toISOString(),
     updatedAt: brief.updatedAt.toISOString(),
   };
@@ -984,23 +1001,6 @@ export async function linkAcceptanceBriefToRecord(
       return existing[0];
     }
 
-    const existingBrief = await tx
-      .select()
-      .from(acceptanceBriefBindings)
-      .where(
-        and(
-          eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
-          eq(acceptanceBriefBindings.briefId, input.briefId)
-        )
-      )
-      .limit(1);
-    if (existingBrief[0]) {
-      if (existingBrief[0].recordId !== input.recordId) {
-        throw new Error("Brief is already linked to an Acceptance Record");
-      }
-      return existingBrief[0];
-    }
-
     const [record] = await tx
       .select()
       .from(changeRecords)
@@ -1029,6 +1029,12 @@ export async function linkAcceptanceBriefToRecord(
       throw new Error("Brief was not found in workspace");
     }
 
+    const items = await tx
+      .select()
+      .from(briefItems)
+      .where(eq(briefItems.briefId, brief.id))
+      .orderBy(asc(briefItems.createdAt), asc(briefItems.id));
+
     const rows = await tx
       .insert(acceptanceBriefBindings)
       .values({
@@ -1038,7 +1044,7 @@ export async function linkAcceptanceBriefToRecord(
         workspaceId: input.workspaceId,
         recordId: input.recordId,
         briefId: input.briefId,
-        briefSnapshot: briefBindingSnapshot(brief),
+        briefSnapshot: briefBindingSnapshot(brief, items),
         provenance: briefBindingProvenance({ linkedBy: input.linkedBy, record, brief }),
         createdBy: input.linkedBy,
       })
@@ -3138,17 +3144,24 @@ export async function readAcceptanceContracts(input: {
     .orderBy(asc(acceptanceContracts.version));
 }
 
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  recordId: string;
+  briefId?: never;
+}): Promise<AcceptanceBriefBindingRead | null>;
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  briefId: string;
+  recordId?: never;
+}): Promise<AcceptanceBriefBindingRead[]>;
 export async function readAcceptanceBriefBinding(
   input: ReadAcceptanceBriefBindingInput
-): Promise<AcceptanceBriefBindingRead | null> {
+): Promise<AcceptanceBriefBindingRead | AcceptanceBriefBindingRead[] | null> {
   const hasRecordId = typeof input.recordId === "string";
   const hasBriefId = typeof input.briefId === "string";
   if (hasRecordId === hasBriefId) {
     throw new Error("readAcceptanceBriefBinding requires exactly one of recordId or briefId");
   }
-  const filter = hasRecordId
-    ? eq(acceptanceBriefBindings.recordId, input.recordId)
-    : eq(acceptanceBriefBindings.briefId, input.briefId);
   const rows = await db
     .select({
       binding: acceptanceBriefBindings,
@@ -3174,17 +3187,29 @@ export async function readAcceptanceBriefBinding(
     .where(
       and(
         eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
-        filter
+        hasRecordId
+          ? eq(acceptanceBriefBindings.recordId, input.recordId)
+          : eq(acceptanceBriefBindings.briefId, input.briefId)
       )
     )
-    .limit(1);
-  const row = rows[0];
-  if (!row) return null;
-  return {
+    .orderBy(
+      hasRecordId ? asc(acceptanceBriefBindings.createdAt) : asc(acceptanceBriefBindings.createdAt),
+      asc(acceptanceBriefBindings.id)
+    );
+  if (hasRecordId) {
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      binding: row.binding,
+      record: row.record,
+      brief: row.brief,
+    };
+  }
+  return rows.map((row) => ({
     binding: row.binding,
     record: row.record,
     brief: row.brief,
-  };
+  }));
 }
 
 function hasSourceContent(value: unknown): boolean {

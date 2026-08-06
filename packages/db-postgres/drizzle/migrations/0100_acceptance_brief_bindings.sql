@@ -12,9 +12,6 @@ CREATE TABLE IF NOT EXISTS "acceptance_brief_bindings" (
 CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_record_key"
   ON "acceptance_brief_bindings" ("record_id");
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_brief_key"
-  ON "acceptance_brief_bindings" ("brief_id");
---> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "acceptance_brief_bindings_workspace_record_idx"
   ON "acceptance_brief_bindings" ("workspace_id", "record_id");
 --> statement-breakpoint

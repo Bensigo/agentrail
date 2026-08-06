@@ -151,7 +151,6 @@ export const acceptanceBriefBindings = pgTable(
       t.briefId
     ),
     recordKey: uniqueIndex("acceptance_brief_bindings_record_key").on(t.recordId),
-    briefKey: uniqueIndex("acceptance_brief_bindings_brief_key").on(t.briefId),
   })
 );
 

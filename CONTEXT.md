@@ -1,26 +1,33 @@
 # AgentRail — context for agents working in this repo
 
-The product is **Jace**: an open-source AI engineer you hire onto your team
-and talk to in chat. He turns rough ideas into concrete issues, **aligns with
-the user before any work starts** (goal, approach, acceptance criteria,
-model, cost), executes through the factory's SDLC, and opens pull requests —
-never merging by default. The hosted product lives at
-[heyjace.com](https://heyjace.com); self-hosting is fully supported.
+The trust-layer MVP is **Jace**: an agent-agnostic acceptance and evidence
+layer you hire onto your team and talk to in chat. Jace owns acceptance
+contracts, bounded Context Packs, exact-head evidence, blocking corrections,
+and the final human decision. External builders such as Codex or Claude Code
+implement the confirmed work. Jace never silently edits code or merges a PR;
+the product is the inspectable contract → context → exact-change proof →
+human-decision path. The hosted product lives at [heyjace.com](https://heyjace.com);
+self-hosting is fully supported.
+
+Product-language precedence during this migration: [ADR 0012](docs/adr/0012-jace-owns-the-acceptance-spine.md)
+and [the trust-layer migration ledger](docs/trust-layer-migration-ledger.md)
+override older factory-oriented framing in this file, generated artifacts, or
+historical plans. The factory remains technically relevant infrastructure and
+historical vocabulary, but it is not the canonical public MVP product model.
 
 Three components, one repo:
 
-- **Jace, the coordinator** (`apps/jace`, built on Eve) — owns all
-  conversation and every chat channel (Telegram live; Discord, Slack,
-  iMessage, WhatsApp being brought up), ideation skills
-  (`grill-me` → PRD → issues), and gated write tools (`create_issue`, with
-  `create_workspace`/`create_repo` in the current arc). His only write path
-  into the factory is the gated create-issue tool.
-- **The factory** (`agentrail/`) — a pure SDLC engine: queue → context pack →
-  failing test first → implement → independent review → objective gate → PR.
-  It does all execution and no conversation.
-- **The console** (`apps/console`, heyjace.com) — the evidence room: work
-  board, runs, review gates, costs, approvals. Secondary door; chat is
-  primary.
+- **Jace, the coordinator** (`apps/jace`, built on Eve) — owns conversation,
+  acceptance alignment, context/evidence provenance, correction packets, and
+  human decision seams across supported channels. He may hand confirmed work
+  to an external builder; he is not the implementation agent.
+- **The factory** (`agentrail/`) — retained execution infrastructure and
+  historical SDLC machinery. Its queue, runner, tests, reviews, and objective
+  gates remain relevant to legacy/internal operation and migration work, but
+  factory execution is not the canonical public trust-layer MVP flow.
+- **The console** (`apps/console`, heyjace.com) — the evidence room for
+  Acceptance Records, Context Packs, exact-head proof, blockers, corrections,
+  and human decisions. It is not a code-generation surface.
 
 Design authority: `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md`
 (the end-to-end arc — message-first door, cloud factory, alignment gate) and
@@ -129,7 +136,9 @@ The platform + platform-user-id pair that IS a user's provisional account. Inbou
 _Avoid_: Requiring console signup before Jace will talk to someone.
 
 **Merge Permission (trust ladder)**:
-Jace opens PRs; he cannot merge. Merge rights are a per-workspace, revocable, audited grant — OFF by default. The probation ladder: review everything → grant alignment auto-confirm → grant merge.
+Jace records and reviews the attached PR; he cannot merge. Merge rights are a
+per-workspace, revocable, audited grant — OFF by default. The probation ladder:
+review everything → grant alignment auto-confirm → grant merge.
 _Avoid_: Any auto-merge without an explicit recorded grant (the AFK dogfood loop's auto-merge never touches hosted-customer repos).
 
 **Issue Queue**:

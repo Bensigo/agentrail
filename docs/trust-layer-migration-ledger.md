@@ -2,6 +2,17 @@
 
 Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jace-owns-the-acceptance-spine.md). Canonical post-MVP proof plan: [Jace trust-layer evaluation](prd/jace-trust-layer-evaluation.md).
 
+## Operating-context correction
+
+The old operating context described Jace as an AI engineer that executes the
+factory SDLC and opens PRs. That contradicted ADR 0012's accepted trust-layer
+decision. Resolved here: Jace owns acceptance, bounded context, exact-head
+evidence, blocking correction, and the human decision; external builders such
+as Codex or Claude Code implement; Jace never silently edits or merges. The
+factory remains legacy/internal infrastructure and historical evidence, not the
+canonical public MVP. ADR 0012 and this ledger take precedence for product
+language during migration.
+
 ## Coordinator checkpoint (2026-08-06, current branch)
 
 The working baseline for this checkpoint was `ecfba3f4` after the runtime-proof,
@@ -88,7 +99,7 @@ adapter and worker startup wiring remain required.
    become an unbounded context source.
 4. A human selects an external builder. Jace records the builder task context,
    repository, planned branch, confirmed contract, and selected pack; the
-   builder implements without Jace silently changing code.
+   external builder implements without Jace silently changing code.
 5. A PR is attached manually or correlated only from that exact recorded
    handoff. Its repository, PR number, exact head, and revisions are durable.
 6. For every criterion, Jace plans the strongest safe proof for the available
@@ -102,7 +113,9 @@ adapter and worker startup wiring remain required.
 8. A correction goes to the builder task context when supported, otherwise a
    durable GitHub/Jace fallback. Delivery attempts and acknowledgement are
    recorded; no claimed notification or resume without acknowledgement.
-9. Human decides the PR outcome. Jace never auto-merges.
+9. Human decides the PR outcome. Jace never silently edits or merges; the
+   exact-head proof and evidence-bound blocking correction are the trust-layer
+   product.
 
 ## Implemented and objectively checked foundations
 

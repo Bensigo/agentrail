@@ -60,6 +60,36 @@ describe("independent evidence review completion", () => {
     expect(response.status).toBe(400);
     expect(recordEvidenceReview).not.toHaveBeenCalled();
   });
+  it("rejects a forged model runtime artifact when the claimed execution was not proven", async () => {
+    vi.mocked(readClaimedAcceptanceEvidenceReviewRequest).mockResolvedValue({
+      request: { workspaceId: "ws-1", recordId: "record-1", prRevisionId: "revision-1", headSha: head },
+      contract,
+      runtimeEvidence: [{ criterionId: "saved", executionStatus: "not_proven", environmentId: "preview-1", flow: "save", expectedBehavior: "Saved message", observedBehavior: "Request failed", artifacts: [{ artifactKey: "review-evidence/real.json" }] }],
+    } as never);
+    const response = await POST(request({
+      ...body,
+      criteria: [{ ...body.criteria[0], status: "proven", observedBehavior: "Saved message", runtimeEvidence: [{ criterionId: "saved", headSha: head, environmentId: "forged", flow: "forged", expected: "Saved", observed: "Saved", artifactRef: "forged.png" }] }],
+      findings: [],
+    }));
+    expect(response.status).toBe(400);
+    expect(recordEvidenceReview).not.toHaveBeenCalled();
+  });
+  it("uses only matching server-resolved proven execution evidence", async () => {
+    vi.mocked(readClaimedAcceptanceEvidenceReviewRequest).mockResolvedValue({
+      request: { workspaceId: "ws-1", recordId: "record-1", prRevisionId: "revision-1", headSha: head },
+      contract,
+      runtimeEvidence: [{ criterionId: "saved", executionStatus: "proven", environmentId: "preview-1", flow: "save then observe", expectedBehavior: "Saved message", observedBehavior: "Saved message appears", artifacts: [{ artifactKey: "review-evidence/real.png" }] }],
+    } as never);
+    const response = await POST(request({
+      ...body,
+      criteria: [{ ...body.criteria[0], status: "proven", observedBehavior: "Saved message appears", runtimeEvidence: [{ criterionId: "saved", headSha: head, environmentId: "forged", flow: "forged", expected: "Saved", observed: "Saved", artifactRef: "forged.png" }] }],
+      findings: [],
+    }));
+    expect(response.status).toBe(201);
+    expect(recordEvidenceReview).toHaveBeenCalledWith(expect.objectContaining({
+      criteria: [expect.objectContaining({ runtimeEvidence: [{ criterionId: "saved", headSha: head, environmentId: "preview-1", flow: "save then observe", expected: "Saved message", observed: "Saved message appears", artifactRef: "review-evidence/real.png" }] })],
+    }));
+  });
   it("refuses completion unless the worker still owns the exact claimed request", async () => {
     vi.mocked(readClaimedAcceptanceEvidenceReviewRequest).mockResolvedValue(null as never);
     const response = await POST(request());

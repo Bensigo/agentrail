@@ -18,9 +18,11 @@ test("preserves only bounded evidence output for completion", async () => {
   const result = await evaluate(item); assert.equal(result.diffIdentity.headSha, head); assert.equal(result.findings.length, 1);
 });
 
-test("tells the model not to fabricate user-visible runtime proof", async () => {
+test("passes only persisted runtime metadata and forbids fabricated user-visible proof", async () => {
   let input;
   const evaluate = createAcceptanceReviewEvaluator({ fetchEvidence: async () => ({ ok: true, evidence }), generate: async (value) => { input = value; return { overallStatus: "not_proven", criteria: [{ criterionId: "saved", status: "not_proven", observedBehavior: "static only", expectedBehavior: "Save persists", reason: "no runtime artifact", evidenceRefs: [] }], findings: [] }; } });
-  await evaluate({ ...item, contract: { contract: { acceptanceCriteria: [{ id: "saved", text: "Save persists", required: true, userVisible: true }] } } });
-  assert.match(input.instruction, /never mark a user-visible criterion proven/);
+  await evaluate({ ...item, runtimeEvidence: [{ criterionId: "saved", executionStatus: "proven", artifacts: [{ artifactKey: "review-evidence/saved.png" }] }], contract: { contract: { acceptanceCriteria: [{ id: "saved", text: "Save persists", required: true, userVisible: true }] } } });
+  assert.match(input.instruction, /executionStatus "proven"/);
+  assert.match(input.instruction, /review-evidence\/saved\.png/);
+  assert.match(input.instruction, /never invent it/);
 });

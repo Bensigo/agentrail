@@ -30,6 +30,7 @@ export async function POST(request: NextRequest) {
     },
     contract: claimed.contract,
     pr: claimed.pr,
+    runtimeEvidence: claimed.runtimeEvidence,
     githubToken,
     note: "Claimed is not a review verdict. Fetch and inspect only this exact PR head; completion remains separately validated and may emit only evidence-bound blockers.",
   });

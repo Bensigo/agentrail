@@ -10,6 +10,7 @@ import { workspaces } from "../schema/workspaces.js";
 import { repositories } from "../schema/repositories.js";
 import {
   acceptanceContracts,
+  acceptanceEvidenceReviewRequests,
   changeRecords,
   changeRecordPrRevisions,
   changeRecordPrs,
@@ -24,9 +25,11 @@ import {
   confirmAcceptanceContract,
   createDraftAcceptanceRecord,
   createRepository,
+  enqueueAcceptanceEvidenceReviewRequest,
   enqueueEvidenceVerificationExecution,
   recordEvidenceVerificationArtifact,
   recordEvidenceVerificationPlans,
+  readClaimedAcceptanceEvidenceReviewRequest,
   reportEvidenceVerificationExecution,
 } from "../queries/index.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -400,6 +403,42 @@ describe.skipIf(!DB_AVAILABLE)(
           observedBehavior: "GET /api/health => 200",
           artifactIds: [artifact.id],
         });
+
+        const requested = await enqueueAcceptanceEvidenceReviewRequest({
+          workspaceId: fixture.workspaceId,
+          recordId: fixture.recordId,
+          prRevisionId: fixture.revisionId,
+          headSha: fixture.headSha,
+          contractId: fixture.contractId,
+          contractVersion: fixture.contractVersion,
+          requestedBy: "user:local-proof",
+        });
+        const reviewWorkerId = `review-worker-${randomUUID()}`;
+        await db.update(acceptanceEvidenceReviewRequests).set({
+          status: "claimed",
+          workerId: reviewWorkerId,
+          claimedAt: new Date(),
+        }).where(eq(acceptanceEvidenceReviewRequests.id, requested.request.id));
+        const reviewClaim = await readClaimedAcceptanceEvidenceReviewRequest({
+          reviewRequestId: requested.request.id,
+          workerId: reviewWorkerId,
+        });
+        expect(reviewClaim?.runtimeEvidence).toEqual([{
+          criterionId: "api-health",
+          executionStatus: "proven",
+          modality: "api",
+          environmentId: fixture.previewBootId,
+          flow: "GET /api/health",
+          expectedBehavior: "GET /api/health returns 200",
+          observedBehavior: "GET /api/health => 200",
+          resultReason: null,
+          artifacts: [{
+            id: artifact.id,
+            artifactKey: artifact.artifactKey,
+            contentType: "application/json",
+            contentSha256: "a".repeat(64),
+          }],
+        }]);
       });
     });
 

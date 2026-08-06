@@ -25,6 +25,7 @@ const claimed = {
   },
   contract: { id: "contract-1", version: 2, contract: { goal: "Save a draft" } },
   pr: { repositoryFullName: "ada/widgets", prNumber: 42, prUrl: "https://github.com/ada/widgets/pull/42", headSha: "a".repeat(40) },
+  runtimeEvidence: [{ criterionId: "saved", executionStatus: "proven", modality: "ui", environmentId: "preview-1", flow: "save then observe", expectedBehavior: "Saved state", observedBehavior: "Saved state appears", resultReason: null, artifacts: [{ id: "artifact-1", artifactKey: "review-evidence/saved.png", contentType: "image/png", contentSha256: "a".repeat(64) }] }],
 };
 
 beforeEach(() => {
@@ -49,7 +50,7 @@ describe("POST Acceptance Review request claim", () => {
     expect(claimAcceptanceEvidenceReviewRequest).toHaveBeenLastCalledWith({ workerId: "reviewer-1" });
   });
 
-  it("returns only the current request, contract, exact PR identity, and ephemeral token", async () => {
+  it("returns only the current request, contract, exact PR identity, bounded runtime evidence, and ephemeral token", async () => {
     vi.mocked(claimAcceptanceEvidenceReviewRequest).mockResolvedValue(claimed as never);
     vi.mocked(getInstallationToken).mockResolvedValue("ghs-ephemeral-token" as never);
     const response = await POST(request({ workerId: "reviewer-1" }));
@@ -61,6 +62,7 @@ describe("POST Acceptance Review request claim", () => {
       },
       contract: { id: "contract-1", version: 2, contract: { goal: "Save a draft" } },
       pr: { repositoryFullName: "ada/widgets", prNumber: 42, prUrl: "https://github.com/ada/widgets/pull/42", headSha: "a".repeat(40) },
+      runtimeEvidence: claimed.runtimeEvidence,
       githubToken: "ghs-ephemeral-token",
       note: "Claimed is not a review verdict. Fetch and inspect only this exact PR head; completion remains separately validated and may emit only evidence-bound blockers.",
     });

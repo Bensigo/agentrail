@@ -7,6 +7,39 @@ import { buildCorrectionPacket, validateEvidenceReview } from "../../../../../..
 function text(value: unknown): value is string { return typeof value === "string" && value.trim().length > 0; }
 function object(value: unknown): value is Record<string, unknown> { return value != null && typeof value === "object" && !Array.isArray(value); }
 
+/**
+ * Runtime proof is Console-owned lineage, never a reviewer assertion. Only a
+ * completed exact-plan execution with its selected stored artifact can become
+ * criterion runtime evidence at review completion.
+ */
+function canonicalRuntimeEvidence(runtime: unknown, criterionId: unknown, headSha: string) {
+  if (!Array.isArray(runtime) || !text(criterionId)) return [];
+  const evidence = [] as Array<{ criterionId: string; headSha: string; environmentId: string; flow: string; expected: string; observed: string; artifactRef: string }>;
+  for (const item of runtime) {
+    if (!object(item)
+      || item.criterionId !== criterionId
+      || item.executionStatus !== "proven"
+      || !text(item.environmentId)
+      || !text(item.flow)
+      || !text(item.expectedBehavior)
+      || !text(item.observedBehavior)
+      || !Array.isArray(item.artifacts)) continue;
+    for (const artifact of item.artifacts) {
+      if (!object(artifact) || !text(artifact.artifactKey)) continue;
+      evidence.push({
+        criterionId,
+        headSha,
+        environmentId: item.environmentId,
+        flow: item.flow,
+        expected: item.expectedBehavior,
+        observed: item.observedBehavior,
+        artifactRef: artifact.artifactKey,
+      });
+    }
+  }
+  return evidence;
+}
+
 /** Independent verifier completion only; it cannot create an advisory review. */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
@@ -23,12 +56,15 @@ export async function POST(request: NextRequest) {
   const contractRow = claim.contract;
   const parsed = parseAcceptanceContract(contractRow.contract);
   if (!parsed.ok) return NextResponse.json({ error: "stored Acceptance Contract is invalid" }, { status: 500 });
+  const criteria = (body.criteria as Parameters<typeof validateEvidenceReview>[0]["criteria"]).map((criterion) => ({
+    ...criterion,
+    runtimeEvidence: canonicalRuntimeEvidence(claim.runtimeEvidence, criterion.criterionId, body.headSha as string),
+  }));
   const validation = validateEvidenceReview({
     contract: parsed.value, headSha: body.headSha,
-    criteria: body.criteria as never, findings: body.findings as never,
+    criteria, findings: body.findings as never,
   });
   if (!validation.ok) return NextResponse.json({ error: "invalid evidence review", errors: validation.errors }, { status: 400 });
-  const criteria = body.criteria as Parameters<typeof validateEvidenceReview>[0]["criteria"];
   const findings = body.findings as Parameters<typeof validateEvidenceReview>[0]["findings"];
   const corrections = criteria.filter((criterion) => criterion.status === "failed").map((criterion) => {
     const finding = findings.find((item) => item.criterionId === criterion.criterionId);

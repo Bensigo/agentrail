@@ -1837,7 +1837,79 @@ export type ClaimedAcceptanceEvidenceReviewRequest = {
   request: AcceptanceEvidenceReviewRequestRow;
   contract: Pick<AcceptanceContractRow, "id" | "version" | "contract">;
   pr: { repositoryFullName: string; prNumber: number; prUrl: string; headSha: string };
+  /**
+   * Bounded, server-resolved criterion execution lineage for this claim. It
+   * deliberately carries metadata only: a reviewer never receives artifact
+   * bytes or a source snapshot through the claim route.
+   */
+  runtimeEvidence: Array<{
+    criterionId: string;
+    executionStatus: string | null;
+    modality: string;
+    environmentId: string | null;
+    flow: string | null;
+    expectedBehavior: string;
+    observedBehavior: string | null;
+    resultReason: string | null;
+    artifacts: Array<{ id: string; artifactKey: string; contentType: string; contentSha256: string }>;
+  }>;
 };
+
+async function readClaimedAcceptanceReviewRuntimeEvidence(input: {
+  workspaceId: string;
+  recordId: string;
+  prRevisionId: string;
+  contractId: string;
+  contractVersion: number;
+  headSha: string;
+}): Promise<ClaimedAcceptanceEvidenceReviewRequest["runtimeEvidence"]> {
+  const rows = await db.select({
+    plan: evidenceVerificationPlans,
+    execution: evidenceVerificationExecutions,
+    artifact: evidenceVerificationArtifacts,
+  }).from(evidenceVerificationPlans)
+    .innerJoin(changeRecordPrRevisions, eq(evidenceVerificationPlans.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .leftJoin(evidenceVerificationExecutions, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationPlans.id))
+    .leftJoin(evidenceVerificationArtifacts, eq(evidenceVerificationArtifacts.verificationPlanId, evidenceVerificationPlans.id))
+    .where(and(
+      eq(evidenceVerificationPlans.recordId, input.recordId),
+      eq(evidenceVerificationPlans.prRevisionId, input.prRevisionId),
+      eq(evidenceVerificationPlans.acceptanceContractId, input.contractId),
+      eq(evidenceVerificationPlans.acceptanceContractVersion, input.contractVersion),
+      eq(changeRecordPrRevisions.headSha, input.headSha),
+      isNull(changeRecordPrRevisions.supersededAt),
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      eq(changeRecordPrs.recordId, input.recordId),
+    ));
+  const evidenceByPlan = new Map<string, ClaimedAcceptanceEvidenceReviewRequest["runtimeEvidence"][number]>();
+  for (const row of rows) {
+    let current = evidenceByPlan.get(row.plan.id);
+    if (!current) {
+      current = {
+        criterionId: row.plan.criterionId,
+        executionStatus: row.execution?.status ?? null,
+        modality: row.plan.modality,
+        environmentId: row.plan.environmentId,
+        flow: row.plan.flow,
+        expectedBehavior: row.plan.expectedBehavior,
+        observedBehavior: row.execution?.observedBehavior ?? null,
+        resultReason: row.execution?.resultReason ?? null,
+        artifacts: [],
+      };
+      evidenceByPlan.set(row.plan.id, current);
+    }
+    if (row.execution && row.artifact && row.execution.artifactIds.includes(row.artifact.id)) {
+      current.artifacts.push({
+        id: row.artifact.id,
+        artifactKey: row.artifact.artifactKey,
+        contentType: row.artifact.contentType,
+        contentSha256: row.artifact.contentSha256,
+      });
+    }
+  }
+  return [...evidenceByPlan.values()];
+}
 
 /** Read a claim only for the worker that currently owns its exact PR head. */
 export async function readClaimedAcceptanceEvidenceReviewRequest(input: {
@@ -1867,7 +1939,16 @@ export async function readClaimedAcceptanceEvidenceReviewRequest(input: {
     ))
     .limit(1);
   const row = rows[0];
-  return row ? {
+  if (!row) return null;
+  const runtimeEvidence = await readClaimedAcceptanceReviewRuntimeEvidence({
+    workspaceId: row.request.workspaceId,
+    recordId: row.request.recordId,
+    prRevisionId: row.request.prRevisionId,
+    contractId: row.request.acceptanceContractId,
+    contractVersion: row.request.acceptanceContractVersion,
+    headSha: row.request.headSha,
+  });
+  return {
     request: row.request,
     contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
     pr: {
@@ -1876,7 +1957,8 @@ export async function readClaimedAcceptanceEvidenceReviewRequest(input: {
       prUrl: row.attachment.prUrl,
       headSha: row.revision.headSha,
     },
-  } : null;
+    runtimeEvidence,
+  };
 }
 
 /**
@@ -1990,6 +2072,14 @@ export async function claimAcceptanceEvidenceReviewRequest(input: { workerId: st
     ));
     return null;
   }
+  const runtimeEvidence = await readClaimedAcceptanceReviewRuntimeEvidence({
+    workspaceId: row.request.workspaceId,
+    recordId: row.request.recordId,
+    prRevisionId: row.request.prRevisionId,
+    contractId: row.request.acceptanceContractId,
+    contractVersion: row.request.acceptanceContractVersion,
+    headSha: row.request.headSha,
+  });
   return {
     request: row.request,
     contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
@@ -1999,6 +2089,7 @@ export async function claimAcceptanceEvidenceReviewRequest(input: { workerId: st
       prUrl: row.attachment.prUrl,
       headSha: row.revision.headSha,
     },
+    runtimeEvidence,
   };
 }
 

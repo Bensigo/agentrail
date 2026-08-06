@@ -41,6 +41,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Metadata-only context-pack record and MCP read surface | `989e3b7c` through `a4f7b8cc` | Python context-pack tests and focused console tests |
 | Dedicated scoped agent-MCP credentials | `2b179526`, `c27b6564` | focused bearer/API/MCP tests and package typecheck |
 | Provenance-bound MCP Intake start; direct MCP contract-write retirement | `6deea890` | focused Console intake/credential/record-read tests, native MCP protocol test, package typecheck, DB typecheck, and static route/tool scan. A credential with the new `acceptance:intake:write` scope can submit only a bounded raw task and task-context key. The server derives the workspace-bound `mcp` origin, credential/task provenance, and idempotency keys; it ignores supplied repository, channel, and contract fields. Direct MCP record creation and draft revision routes/tools are removed, and new credentials cannot mint the retired draft-write scope. Existing database scope values remain migration-compatible but have no MCP contract-write route. This starts intake only; it neither asks questions nor drafts/confirms a contract or authorizes implementation. |
+| Virtual MCP task-context clarification bridge | `cb190b86`, `3488a058` | full Jace suite (1,764 tests), explicit Node 24 Eve build, focused Console task-turn/readback tests, MCP native protocol test, and MCP/DB typechecks. An agent-MCP credential starts or idempotently forwards an explicit task-context message through the internal Jace hosted-inbound door. Jace binds a virtual `mcp` session to the credential/task context, records canonical `mcp:<credential>:<task>` Intake provenance, and writes its completed reply only into the durable Intake message seam. MCP can read bounded Intake evidence and send a further explicit user task-context reply. It cannot write a contract, select a repository, or claim its task-context message is independently authenticated human confirmation. This is unit-tested transport wiring, not a deployed/live Codex or Claude interaction. |
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
 | Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs are never auto-attached or reviewed |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
@@ -243,21 +244,22 @@ perform cleanup. No market-value claim follows from current factory results.
   its runtime must not be represented as an exercised criterion. The native
   MCP server is unit-tested to call the durable correction inbox and receipt
   endpoint, but no live external builder has done so; only its recorded
-  acknowledgement proves receipt. MCP now has a credential-bound raw Intake
-  start, not direct draft creation: it records fixed `mcp` origin and task
-  provenance, but it has no live inbound/outbound clarification or human
-  confirmation round-trip. It therefore cannot yet be called evidence of
-  Codex/Claude channel-neutral missing-question behavior or completed builder
-  handoff.
+  acknowledgement proves receipt. MCP now has an in-code virtual Jace channel:
+  credential-bound start/reply calls create or resume the same canonical Intake
+  and Jace replies into its bounded durable message evidence. Its explicit
+  task-context replies are not independently authenticated human identity, and
+  no deployed/live Codex or Claude clarification, confirmation, Context Pack
+  delivery, or builder-resume round-trip is proven.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; committed product slices include
   `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
   plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
   Acceptance Record), and `f527d095` (compiler job admission/claim). The
   latest committed cleanup is `88c8f153` (removal of the advisory reviewer
-  lane). `6deea890` retires the direct-draft contradiction. Its focused test
-  evidence is recorded above; no live MCP clarification/confirmation behavior
-  is being inferred from it.
+  lane). `6deea890`, `cb190b86`, and `3488a058` retire the direct-draft
+  contradiction and add the virtual MCP transport. Their focused test evidence
+  is recorded above; no live MCP clarification/confirmation behavior is being
+  inferred from it.
   The only expected unrelated untracked paths are generated dependency
   directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
@@ -310,3 +312,11 @@ runtime-proof/delivery work without claiming that loop exists. Separately, a
 bounded dependency-lane map remains required before any destructive cleanup
 and must classify every approval/publisher caller as remove, neutral
 infrastructure, or still-needed compatibility.
+
+The virtual MCP Jace-channel slice was delegated to one bounded implementation
+agent and independently cross-checked before integration. The matching
+Console/MCP glue stayed local only because the available agent slots were full
+and it depended on the just-retired route's exact identity contract. The next
+two implementation slices return to one-owner delegation where capacity is
+available: first an independently scoped runtime-proof modality, then its
+cross-slice integration/verification; neither may edit overlapping paths.

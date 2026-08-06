@@ -66,11 +66,13 @@ reason. A persisted plan is not proof.
 
 MCP can start an Acceptance Intake with only a bounded raw user request and a
 stable task-context key. The service derives the workspace-bound `mcp` origin,
-credential provenance, and durable idempotency keys. MCP cannot submit a
-repository, full contract, origin channel, or direct draft revision; those
-write tools/routes are removed. This prevents a builder from bypassing the
-canonical Intake, but it is not a proven live clarification or human
-confirmation loop.
+credential provenance, and durable idempotency keys. It forwards the turn to a
+virtual Jace MCP session, records Jace's completed reply as durable Intake
+evidence, and permits a bounded task-context reply/readback cycle. MCP cannot
+submit a repository, full contract, origin channel, or direct draft revision;
+those write tools/routes are removed. The cycle is task-context provenance—not
+an independently authenticated human identity—and it is not live proof of a
+Codex/Claude clarification or human-confirmation loop.
 
 The canonical Acceptance Review validator rejects advisory/random findings: a
 blocker needs an allowed basis, exact evidence, impact, required correction,
@@ -126,7 +128,7 @@ an explicit, explained exception. The record never changes Jace's verdict and
 does not merge the PR. The older post-merge rework/revert metric ledger remains
 aggregate outcome evidence, not the final Acceptance Record decision source.
 
-Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
+Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; live originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; a deployed UI exercise and non-UI artifact dispatch; API
 execution/assertion worker; automatic Jace fallback delivery and external-builder receipt;

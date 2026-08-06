@@ -184,6 +184,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "confirm_acceptance_contract.ts", // narrow channel confirmation: requires a post-draft inbound source message; no external execution
   "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
+  "request_acceptance_context_pack.ts", // idempotent admission of the confirmed intake to the bounded compiler; no builder selection
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_acceptance_intake.ts", // read-only compact, session-bound acceptance intake evidence
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
@@ -237,6 +238,7 @@ const UNGATED_ADVISORY_WRITES = [
   "record_verdict.ts",
   "draft_acceptance_contract.ts",
   "confirm_acceptance_contract.ts", // human-gated by a distinct post-draft source-channel turn, verified server-side
+  "request_acceptance_context_pack.ts", // server requires confirmed contract and connected repository
 ];
 
 const DISABLED_TOOL_FILES = ["post_pr_review.ts"];

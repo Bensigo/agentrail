@@ -63,6 +63,14 @@ revision and contract; it rejects generic non-UI plans for user-visible
 criteria and requires a safe environment/flow or an explicit `not_testable`
 reason. A persisted plan is not proof.
 
+The canonical Acceptance Review validator rejects advisory/random findings: a
+blocker needs an allowed basis, exact evidence, impact, required correction,
+and re-verification; a repository-convention blocker additionally needs an
+enforced rule identity. The older GitHub comment writer has been narrowed to
+post only `blocker` severity, never major/minor/nit, but it remains legacy
+summary/comment machinery until it is removed or fully migrated to the
+canonical exact-head correction path.
+
 Context Pack recording now rejects an unbounded or uncited manifest. A pack
 must declare an explicit token budget/count, cited source ranges, the exact
 confirmed criterion IDs, architecture boundaries, tests, decisions,

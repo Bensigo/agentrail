@@ -77,8 +77,8 @@ export default defineTool({
     "here. Call this yourself as soon as the `reviewer` subagent returns " +
     "findings for a PR the owner asked you to review — being handed a PR to " +
     "review IS the go-ahead to comment on it, so do not ask first. Pass " +
-    "EVERY finding with its severity: only `blocker` and `major` are " +
-    "actually posted, and `minor`/`nit` are dropped for you, so you never " +
+    "EVERY finding with its severity: only an evidence-bound `blocker` is " +
+    "actually posted; `major`/`minor`/`nit` are dropped for you, so you never " +
     "have to filter them yourself. The response's `droppedComments` says " +
     "how many were withheld — tell the owner that number rather than " +
     "implying the whole review landed. If GitHub can't attach a comment to " +
@@ -109,7 +109,7 @@ export default defineTool({
             .enum(["blocker", "major", "minor", "nit"])
             .describe(
               "The reviewer finding's own severity, passed through verbatim. " +
-                "Only blocker and major are posted; minor and nit are dropped " +
+                "Only evidence-bound blockers are posted; major, minor, and nit are dropped " +
                 "here, so pass every finding rather than pre-filtering.",
             ),
           body: z.string().min(1).describe("The comment text."),

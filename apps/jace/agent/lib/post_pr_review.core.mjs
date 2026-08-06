@@ -24,8 +24,8 @@
 //      `eveSessionId` through the jace_sessions ledger and requires `repo` to
 //      be one the workspace has actually connected, so a model-chosen repo
 //      cannot reach a repo this conversation doesn't already own.
-// Plus the severity filter below, which is new: with no human reading the
-// exact call, "only blockers and majors get posted" has to be ENFORCED here,
+// Plus the severity filter below: with no human reading the exact call, only
+// evidence-bound merge blockers may be posted, so that rule is ENFORCED here,
 // not asked for in a prompt.
 //
 // Auth + config model: same as the sibling *.core.mjs modules — Jace resolves
@@ -76,13 +76,11 @@ export const PR_CHANGE_RECORD_PATH = "/api/v1/runner/change-record/pr";
 export const SUMMARY_MAX_LEN = 8000;
 export const COMMENT_BODY_MAX_LEN = 2000;
 
-// The ONLY severities that become posted inline comments. The reviewer's own
-// vocabulary is blocker | major | minor | nit (REVIEW_SEVERITIES in
-// agent/subagents/reviewer/lib/reviewer.core.mjs) — a PR review that
-// auto-posts should carry the things worth interrupting someone for and stay
-// quiet about the rest, so minor and nit are dropped here rather than left to
-// the model's discretion.
-export const POSTABLE_SEVERITIES = ["blocker", "major"];
+// The ONLY severity that becomes a posted inline comment. The reviewer's own
+// vocabulary remains broader for local analysis, but the trust layer never
+// turns a major/minor/nit into a PR interruption. Only an evidence-bound code
+// change required before merge belongs in the external correction channel.
+export const POSTABLE_SEVERITIES = ["blocker"];
 
 // Deterministic renderers for the reviewer's acCoverage — one line per AC,
 // the status phrases fixed here (never model-supplied) so the posted text
@@ -529,7 +527,7 @@ export function composeSummary(summary, acCoverage, judgment) {
 const REASON_MESSAGES = {
   config_missing: "the review couldn't be posted — Jace's console connection isn't configured",
   nothing_to_post:
-    "nothing was posted — there were no blocker or major findings, and no summary to post on its own",
+    "nothing was posted — there were no evidence-bound blocker findings, and no summary to post on its own",
   bad_request: "the review couldn't be posted — the request was malformed",
   unauthorized: "the review couldn't be posted — the console rejected the request",
   not_found: "the review couldn't be posted — this PR or repo isn't reachable from this workspace",
@@ -696,7 +694,7 @@ export function failure(reason, message) {
 
 /**
  * Split model-supplied comments into the ones that may be posted (severity
- * blocker or major) and a count of the ones dropped. This is the control that
+ * blocker) and a count of the ones dropped. This is the control that
  * replaced the human approval gate, so it fails CLOSED: a comment whose
  * severity is missing, null, or not one of the reviewer's four known values is
  * DROPPED, never posted. An unlabelled comment is one we cannot prove belongs

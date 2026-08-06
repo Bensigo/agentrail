@@ -6,7 +6,7 @@
 //
 // The severity filter below is the control that REPLACED the human approval
 // gate (see the core module's own doc-comment): with no human reading the
-// exact call before it lands on GitHub, "only blockers and majors get posted"
+// exact call before it lands on GitHub, "only evidence-bound blockers are posted"
 // has to be enforced in code, not asked for in a prompt.
 
 import { test } from "node:test";
@@ -443,11 +443,11 @@ test("a thrown transport error never leaks the bearer token even when the thrown
 // filterPostableComments — the severity gate that replaced the human gate
 // ---------------------------------------------------------------------------
 
-test("POSTABLE_SEVERITIES is exactly blocker + major — minor and nit are never posted", () => {
-  assert.deepEqual([...POSTABLE_SEVERITIES].sort(), ["blocker", "major"]);
+test("POSTABLE_SEVERITIES is exactly blocker — advisory severities are never posted", () => {
+  assert.deepEqual([...POSTABLE_SEVERITIES].sort(), ["blocker"]);
 });
 
-test("filterPostableComments keeps blocker + major and drops minor + nit", () => {
+test("filterPostableComments keeps blockers and drops advisory severities", () => {
   const { postable, dropped } = filterPostableComments([
     { path: "a.ts", line: 1, severity: "blocker", body: "b" },
     { path: "b.ts", line: 2, severity: "minor", body: "m" },
@@ -456,9 +456,9 @@ test("filterPostableComments keeps blocker + major and drops minor + nit", () =>
   ]);
   assert.deepEqual(
     postable.map((c) => c.path),
-    ["a.ts", "c.ts"],
+    ["a.ts"],
   );
-  assert.equal(dropped, 2);
+  assert.equal(dropped, 3);
 });
 
 test("filterPostableComments drops a comment with a missing/unknown severity rather than posting it", () => {
@@ -478,8 +478,8 @@ test("filterPostableComments is case- and whitespace-tolerant on severity", () =
     { path: "a.ts", line: 1, severity: "  BLOCKER ", body: "b" },
     { path: "b.ts", line: 2, severity: "Major", body: "M" },
   ]);
-  assert.equal(postable.length, 2);
-  assert.equal(dropped, 0);
+  assert.equal(postable.length, 1);
+  assert.equal(dropped, 1);
 });
 
 test("filterPostableComments tolerates a non-array without throwing", () => {
@@ -487,7 +487,7 @@ test("filterPostableComments tolerates a non-array without throwing", () => {
   assert.deepEqual(filterPostableComments("nope"), { postable: [], dropped: 0 });
 });
 
-test("runPostPrReview posts ONLY blocker+major comments and reports how many it dropped", async () => {
+test("runPostPrReview posts ONLY blocker comments and reports how many it dropped", async () => {
   const transport = fakeTransport(async () => ({
     status: 201,
     json: async () => successBody({ inlineCommentsPosted: 1 }),
@@ -550,7 +550,7 @@ test("failure(nothing_to_post) when the summary is blank and every comment was f
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "nothing_to_post");
-  assert.match(result.message, /blocker|major/i);
+  assert.match(result.message, /blocker/i);
   assert.equal(transport.calls.length, 0);
 });
 

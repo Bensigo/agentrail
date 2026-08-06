@@ -331,8 +331,8 @@ test("post_pr_review's severity filter is enforced in code, not in a prompt", ()
   );
   assert.match(
     stripComments(core),
-    /POSTABLE_SEVERITIES\s*=\s*\[\s*"blocker"\s*,\s*"major"\s*\]/,
-    "post_pr_review.core.mjs must post exactly blocker + major — minor/nit are dropped",
+    /POSTABLE_SEVERITIES\s*=\s*\[\s*"blocker"\s*\]/,
+    "post_pr_review.core.mjs must post exactly evidence-bound blockers",
   );
   assert.match(
     stripComments(core),

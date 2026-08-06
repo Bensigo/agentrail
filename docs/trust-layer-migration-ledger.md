@@ -51,6 +51,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Task-scoped external-builder Context Pack handoff | `fd297f13` | focused MCP builder-task route test, native MCP protocol test, MCP build/typecheck, and DB typecheck. A scoped builder can retrieve only its recorded handoff's confirmed contract and selected bounded Context Pack metadata/artifact references; it cannot retrieve raw source or treat handoff as proof of implementation. |
 | Canonical hosted intake, session-bound draft, reply evidence, and bounded resume readback | `742eafe9` through `e913c16e` | DB identity/link/readback tests and typecheck; focused Console intake/draft/outbound/readback route tests; Jace hosted-inbound, intake-draft/reply/readback, channel-wiring, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. Jace receives only the Console-returned Intake ID in trusted session attributes. It can draft a parsed immutable Record and, after a compaction, retrieve only a bounded first-inbound plus recent-tail/contract projection. It cannot select a tenant or Intake, confirm, compile/deliver a Pack, select a builder, execute code, or claim success on a degraded response. Final replies are appended only after channel delivery returns. No live channel round-trip is proven. |
 | Console navigation trust-layer pivot | `240ee81a` | focused Sidebar navigation tests. Acceptance Records and Approvals are now primary; the customer navigation exposes only review evidence and repository wiki under Evidence & context. Factory work/runs, autonomous economics, memory/brief/investigation, and failure pages remain URL-reachable but are deliberately not primary product navigation. The connector catalog remains a separate unresolved product-scope slice. |
+| Exact-review final human PR decision | current migration slice | focused Console route/detail and DB decision-validator tests; DB typecheck. Owners/admins can append one immutable `approved`, `changes_requested`, `rejected`, or explicit `approved_with_exception` decision only for a current exact-head Evidence Review. A standard approval is refused unless Jace recorded `proven`; an exception requires a rationale and does not alter Jace's independent verdict. This records no GitHub merge and has no migrated-DB or browser proof yet. The older `review_events` rework/revert ledger remains aggregate outcome infrastructure only; it is not used as the acceptance decision source. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
@@ -71,10 +72,13 @@ acknowledgement only; no dispatcher has proven notification.
    have append-only input/reply evidence and Jace can fetch a bounded resume
    projection, but no deployed channel has exercised that flow or proved that
    only unresolved questions were asked.
-4. Add human PR outcome, dependency-upgrade acceptance flow, finish Console
-   removal of obsolete connector/factory surfaces, and complete the copy-only
-   landing pivot. The sidebar is now trust-first, but routes/catalogs and the
-   homepage still contain legacy product language or surfaces.
+4. Add the dependency-upgrade acceptance flow, finish Console removal of
+   obsolete connector/factory surfaces, and complete the copy-only landing
+   pivot. The final human PR decision is now a current-review append-only
+   seam, but it is not live/migrated-DB/browser verified and does not capture
+   post-merge rework/revert; those remain explicit aggregate outcome evidence.
+   The sidebar is now trust-first, but routes/catalogs and the homepage still
+   contain legacy product language or surfaces.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.

@@ -1261,6 +1261,167 @@ export type RecordEvidenceReviewInput = {
   corrections: Array<{ criterionId?: string | null; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; reproductionSteps?: string[]; likelyAffectedUnits?: string[]; contextRefs?: Record<string, unknown>[]; scopeBoundary: string; concreteImpact: string; requiredCorrection: string; reverification: string; repairPath?: string | null }>;
 };
 
+/** The recorded human decision never changes Jace's independent verdict. */
+export type AcceptancePrDecision =
+  | "approved"
+  | "changes_requested"
+  | "rejected"
+  | "approved_with_exception";
+
+const ACCEPTANCE_PR_DECISIONS = new Set<AcceptancePrDecision>([
+  "approved",
+  "changes_requested",
+  "rejected",
+  "approved_with_exception",
+]);
+
+export function validateAcceptancePrDecision(input: {
+  decision: unknown;
+  rationale?: unknown;
+}): input is { decision: AcceptancePrDecision; rationale?: string } {
+  if (typeof input.decision !== "string" || !ACCEPTANCE_PR_DECISIONS.has(input.decision as AcceptancePrDecision)) {
+    return false;
+  }
+  const rationale = input.rationale;
+  if (rationale !== undefined && (typeof rationale !== "string" || rationale.trim().length > 4_000)) {
+    return false;
+  }
+  return input.decision !== "approved_with_exception" || (typeof rationale === "string" && rationale.trim().length > 0);
+}
+
+export type AcceptanceEvidenceReviewSummary = {
+  id: string;
+  prRevisionId: string;
+  headSha: string;
+  repositoryFullName: string;
+  prNumber: number;
+  overallStatus: string;
+  contractId: string;
+  contractVersion: number;
+  createdAt: Date;
+  supersededAt: Date | null;
+};
+
+/**
+ * The Console needs the immutable review identity before a human can make a
+ * final decision. This is intentionally a summary: criteria and correction
+ * packets remain on their evidence-specific surfaces.
+ */
+export async function readAcceptanceEvidenceReviewSummaries(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceEvidenceReviewSummary[]> {
+  const rows = await db
+    .select({
+      review: evidenceReviews,
+      revision: changeRecordPrRevisions,
+      attachment: changeRecordPrs,
+    })
+    .from(evidenceReviews)
+    .innerJoin(changeRecordPrRevisions, eq(evidenceReviews.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .where(and(
+      eq(evidenceReviews.recordId, input.recordId),
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      eq(changeRecordPrs.recordId, input.recordId),
+    ))
+    .orderBy(desc(evidenceReviews.createdAt));
+  return rows.map((row) => ({
+    id: row.review.id,
+    prRevisionId: row.review.prRevisionId,
+    headSha: row.review.headSha,
+    repositoryFullName: row.attachment.repositoryFullName,
+    prNumber: row.attachment.prNumber,
+    overallStatus: row.review.overallStatus,
+    contractId: row.review.acceptanceContractId,
+    contractVersion: row.review.acceptanceContractVersion,
+    createdAt: row.review.createdAt,
+    supersededAt: row.revision.supersededAt,
+  }));
+}
+
+export type RecordAcceptancePrDecisionInput = {
+  workspaceId: string;
+  recordId: string;
+  reviewId: string;
+  decision: AcceptancePrDecision;
+  rationale?: string;
+  decidedBy: string;
+  decidedAt?: Date;
+};
+
+/**
+ * Append the final human PR decision only for the current exact-head review.
+ * A normal approval is impossible while Jace's review is anything but
+ * `proven`; a human may still make a deliberate, explained exception without
+ * overwriting or relabelling the independent evidence.
+ */
+export async function recordAcceptancePrDecision(
+  input: RecordAcceptancePrDecisionInput
+): Promise<{ event: ChangeRecordEventRow; inserted: boolean }> {
+  if (!validateAcceptancePrDecision(input)) {
+    throw new Error("Invalid Acceptance Record PR decision");
+  }
+  const eventKey = `acceptance-pr-decision:${input.reviewId}`;
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({
+        review: evidenceReviews,
+        revision: changeRecordPrRevisions,
+        attachment: changeRecordPrs,
+      })
+      .from(evidenceReviews)
+      .innerJoin(changeRecordPrRevisions, eq(evidenceReviews.prRevisionId, changeRecordPrRevisions.id))
+      .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+      .where(and(
+        eq(evidenceReviews.id, input.reviewId),
+        eq(evidenceReviews.recordId, input.recordId),
+        eq(changeRecordPrs.workspaceId, input.workspaceId),
+        eq(changeRecordPrs.recordId, input.recordId),
+        isNull(changeRecordPrRevisions.supersededAt),
+      ))
+      .limit(1);
+    const review = rows[0];
+    if (!review) throw new Error("Evidence review is missing, outside this Acceptance Record, or no longer current");
+    if (input.decision === "approved" && review.review.overallStatus !== "proven") {
+      throw new Error("Only a proven exact-head review can be approved without an explicit exception");
+    }
+
+    const at = input.decidedAt ?? new Date();
+    const payloadRef = {
+      kind: "acceptance_pr_decision",
+      decision: input.decision,
+      reviewId: review.review.id,
+      prRevisionId: review.review.prRevisionId,
+      headSha: review.review.headSha,
+      repository: review.attachment.repositoryFullName,
+      prNumber: review.attachment.prNumber,
+      reviewOverallStatus: review.review.overallStatus,
+      ...(input.rationale?.trim() ? { rationale: input.rationale.trim() } : {}),
+    };
+    const inserted = Array.from(await tx.execute(sql`
+      INSERT INTO change_record_events (
+        id, record_id, event_key, stage, at, actor, payload_ref
+      ) VALUES (
+        ${changeRecordEventId({ recordId: input.recordId, eventKey })},
+        ${input.recordId}, ${eventKey}, 'human_pr_decision',
+        ${at.toISOString()}, ${input.decidedBy}, ${JSON.stringify(payloadRef)}::jsonb
+      )
+      ON CONFLICT (record_id, event_key) DO NOTHING
+      RETURNING *
+    `)) as Array<Record<string, unknown>>;
+    const raw = inserted[0] ?? (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, eventKey),
+    )).limit(1))[0];
+    if (!raw) throw new Error("Acceptance Record PR decision was not recorded");
+    return {
+      event: mapChangeRecordEventRow(raw as Record<string, unknown>),
+      inserted: Boolean(inserted[0]),
+    };
+  });
+}
+
 export type RecordEvidenceVerificationPlansInput = {
   workspaceId: string;
   recordId: string;

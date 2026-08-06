@@ -57,11 +57,25 @@ export type AcceptanceContextPack = {
   createdAt: string;
 };
 
+export type AcceptanceEvidenceReview = {
+  id: string;
+  prRevisionId: string;
+  headSha: string;
+  repositoryFullName: string;
+  prNumber: number;
+  overallStatus: string;
+  contractId: string;
+  contractVersion: number;
+  createdAt: string;
+  supersededAt: string | null;
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   contracts: AcceptanceContract[];
   contextPacks: AcceptanceContextPack[];
+  reviews: AcceptanceEvidenceReview[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -379,12 +393,84 @@ export function AcceptanceContextPackPanel({ contextPacks }: { contextPacks: Acc
   );
 }
 
+export function FinalPrDecisionPanel({
+  reviews,
+  onDecide,
+  decidingReviewId,
+  decisionError,
+  exceptionRationale,
+  onExceptionRationaleChange,
+}: {
+  reviews: AcceptanceEvidenceReview[];
+  onDecide: (review: AcceptanceEvidenceReview, decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception", rationale?: string) => void;
+  decidingReviewId: string | null;
+  decisionError: string | null;
+  exceptionRationale: string;
+  onExceptionRationaleChange: (value: string) => void;
+}) {
+  const current = reviews.find((review) => review.supersededAt === null);
+  if (!current) {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">
+          No current exact-head evidence review is available. Jace cannot record a final decision against an unreviewed or superseded PR revision.
+        </p>
+      </section>
+    );
+  }
+  const pending = decidingReviewId === current.id;
+  const hasProvenReview = current.overallStatus === "proven";
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          A human decides this exact reviewed head. Recording a decision never merges code or changes Jace&apos;s evidence verdict.
+        </p>
+      </div>
+      <div className="space-y-3 px-4 py-4">
+        <dl className="grid gap-2 text-xs sm:grid-cols-2">
+          <div><dt className="text-[var(--gray-09)]">Review verdict</dt><dd className="mt-1 font-mono text-[var(--gray-11)]">{current.overallStatus}</dd></div>
+          <div><dt className="text-[var(--gray-09)]">Exact head</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{current.headSha}</dd></div>
+        </dl>
+        <div className="flex flex-wrap gap-2">
+          {hasProvenReview ? (
+            <button type="button" disabled={pending} onClick={() => onDecide(current, "approved")} className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+              {pending ? "Recording…" : "Approve for merge"}
+            </button>
+          ) : null}
+          <button type="button" disabled={pending} onClick={() => onDecide(current, "changes_requested")} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+            Request changes
+          </button>
+          <button type="button" disabled={pending} onClick={() => onDecide(current, "rejected")} className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60">
+            Reject PR
+          </button>
+        </div>
+        {!hasProvenReview ? (
+          <div className="rounded border border-[var(--yellow-06)] bg-[var(--yellow-03)] p-3">
+            <label className="block text-xs font-medium text-[var(--gray-12)]" htmlFor={`exception-${current.id}`}>Explicit exception rationale</label>
+            <textarea id={`exception-${current.id}`} value={exceptionRationale} onChange={(event) => onExceptionRationaleChange(event.target.value)} maxLength={4_000} rows={2} className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]" placeholder="Why this non-proven or blocked review is being accepted" />
+            <button type="button" disabled={pending || !exceptionRationale.trim()} onClick={() => onDecide(current, "approved_with_exception", exceptionRationale)} className="mt-2 rounded border border-[var(--yellow-08)] px-2.5 py-1.5 text-xs font-medium text-[var(--yellow-11)] disabled:opacity-60">
+              Record approval with exception
+            </button>
+          </div>
+        ) : null}
+        {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: string; recordId: string }) {
   const [data, setData] = useState<ChangeRecordResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [confirmingVersion, setConfirmingVersion] = useState<number | null>(null);
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [decidingReviewId, setDecidingReviewId] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [exceptionRationale, setExceptionRationale] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -404,7 +490,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !body.record ||
           !Array.isArray(body.events) ||
           !Array.isArray(body.contracts) ||
-          !Array.isArray(body.contextPacks)
+          !Array.isArray(body.contextPacks) ||
+          !Array.isArray(body.reviews)
         ) {
           throw new Error("Change record response was incomplete");
         }
@@ -449,6 +536,29 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       );
     } finally {
       setConfirmingVersion(null);
+    }
+  }
+
+  async function recordFinalDecision(
+    review: AcceptanceEvidenceReview,
+    decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception",
+    rationale?: string,
+  ) {
+    setDecidingReviewId(review.id);
+    setDecisionError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "record_pr_decision", reviewId: review.id, decision, ...(rationale ? { rationale } : {}) }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { event?: ChangeRecordEvent; error?: string };
+      if (!response.ok || !body.event) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? { ...current, events: [...current.events, body.event!] } : current);
+    } catch (caught) {
+      setDecisionError(caught instanceof Error ? caught.message : "Failed to record final PR decision");
+    } finally {
+      setDecidingReviewId(null);
     }
   }
 
@@ -497,6 +607,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmationError={confirmationError}
       />
       <AcceptanceContextPackPanel contextPacks={data.contextPacks} />
+      <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />
     </div>

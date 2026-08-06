@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AcceptanceContractPanel,
   AcceptanceContextPackPanel,
+  FinalPrDecisionPanel,
   ChangeRecordAnchors,
   LifecycleTimeline,
   changeRecordApiPath,
@@ -9,6 +10,7 @@ import {
   isConfirmableContract,
   type AcceptanceContract,
   type AcceptanceContextPack,
+  type AcceptanceEvidenceReview,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -101,6 +103,11 @@ const contextPack: AcceptanceContextPack = {
   createdAt: "2026-08-03T10:00:00.000Z",
 };
 
+const review: AcceptanceEvidenceReview = {
+  id: "review-1", prRevisionId: "revision-1", headSha: "a".repeat(40), repositoryFullName: "ada/widgets", prNumber: 98,
+  overallStatus: "failed", contractId: "contract-1", contractVersion: 1, createdAt: "2026-08-03T10:03:00.000Z", supersededAt: null,
+};
+
 describe("Change Record detail view", () => {
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
@@ -169,5 +176,15 @@ describe("Change Record detail view", () => {
     expect(content).toContain("not proof that the agent implemented");
     expect(content).toContain("context-compiler-v1");
     expect(content).toContain("src/status.ts");
+  });
+
+  it("keeps a non-proven review out of the normal approval path but permits an explicit human exception", () => {
+    const rendered = FinalPrDecisionPanel({ reviews: [review], onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined });
+    const content = textContent(rendered);
+    expect(content).toContain("Final PR decision");
+    expect(content).toContain("Request changes");
+    expect(content).toContain("Record approval with exception");
+    expect(content).not.toContain("Approve for merge");
+    expect(content).toContain("never merges code");
   });
 });

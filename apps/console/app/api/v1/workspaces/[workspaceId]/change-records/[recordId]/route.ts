@@ -5,9 +5,12 @@ import {
   confirmAcceptanceContract,
   createDraftAcceptanceContract,
   getWorkspaceMembership,
+  readAcceptanceEvidenceReviewSummaries,
   readAcceptanceContracts,
   readAcceptanceContextPacks,
   readChangeRecordTimeline,
+  recordAcceptancePrDecision,
+  validateAcceptancePrDecision,
 } from "@agentrail/db-postgres";
 
 function serializeContract(contract: Awaited<ReturnType<typeof confirmAcceptanceContract>>) {
@@ -44,6 +47,23 @@ function serializeContextPack(
   };
 }
 
+function serializeReview(
+  review: NonNullable<Awaited<ReturnType<typeof readAcceptanceEvidenceReviewSummaries>>>[number]
+) {
+  return {
+    id: review.id,
+    prRevisionId: review.prRevisionId,
+    headSha: review.headSha,
+    repositoryFullName: review.repositoryFullName,
+    prNumber: review.prNumber,
+    overallStatus: review.overallStatus,
+    contractId: review.contractId,
+    contractVersion: review.contractVersion,
+    createdAt: review.createdAt.toISOString(),
+    supersededAt: review.supersededAt?.toISOString() ?? null,
+  };
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -65,9 +85,10 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks] = await Promise.all([
+    const [contracts, contextPacks, reviews] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
+      readAcceptanceEvidenceReviewSummaries({ workspaceId, recordId }),
     ]);
     return NextResponse.json({
       record: {
@@ -94,6 +115,7 @@ export async function GET(
       })),
       contracts: (contracts ?? []).map(serializeContract),
       contextPacks: (contextPacks ?? []).map(serializeContextPack),
+      reviews: (reviews ?? []).map(serializeReview),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);
@@ -116,6 +138,37 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  if (body.action === "record_pr_decision") {
+    if (membership.role !== "owner" && membership.role !== "admin") {
+      return NextResponse.json({ error: "Only workspace owners or admins can record the final PR decision" }, { status: 403 });
+    }
+    const reviewId = typeof body.reviewId === "string" ? body.reviewId.trim() : "";
+    const decisionInput = { decision: body.decision, rationale: body.rationale };
+    if (!reviewId || !validateAcceptancePrDecision(decisionInput)) {
+      return NextResponse.json({ error: "reviewId, a valid final decision, and an exception rationale when required are required" }, { status: 400 });
+    }
+    try {
+      const result = await recordAcceptancePrDecision({
+        workspaceId,
+        recordId,
+        reviewId,
+        decision: decisionInput.decision,
+        ...(typeof decisionInput.rationale === "string" ? { rationale: decisionInput.rationale } : {}),
+        decidedBy: `user:${session.user.id}`,
+      });
+      const event = result.event;
+      return NextResponse.json({
+        inserted: result.inserted,
+        event: {
+          id: event.id, recordId: event.recordId, eventKey: event.eventKey,
+          stage: event.stage, actor: event.actor, payloadRef: event.payloadRef,
+          at: event.at.toISOString(), createdAt: event.createdAt.toISOString(),
+        },
+      }, { status: result.inserted ? 201 : 200 });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : "Failed to record final PR decision" }, { status: 409 });
+    }
+  }
   if (body.action === "create_draft_version") {
     const parsedContract = parseAcceptanceContract(body.contract);
     if (!parsedContract.ok) {

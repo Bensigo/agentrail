@@ -8,9 +8,12 @@ vi.mock("@agentrail/db-postgres", () => ({
   confirmAcceptanceContract: vi.fn(),
   createDraftAcceptanceContract: vi.fn(),
   getWorkspaceMembership: vi.fn(),
+  readAcceptanceEvidenceReviewSummaries: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
+  recordAcceptancePrDecision: vi.fn(),
+  validateAcceptancePrDecision: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
@@ -18,9 +21,12 @@ import {
   confirmAcceptanceContract,
   createDraftAcceptanceContract,
   getWorkspaceMembership,
+  readAcceptanceEvidenceReviewSummaries,
   readAcceptanceContracts,
   readAcceptanceContextPacks,
   readChangeRecordTimeline,
+  recordAcceptancePrDecision,
+  validateAcceptancePrDecision,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
 
@@ -100,6 +106,12 @@ beforeEach(() => {
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
+  vi.mocked(readAcceptanceEvidenceReviewSummaries).mockResolvedValue([] as never);
+  vi.mocked(recordAcceptancePrDecision).mockResolvedValue({ inserted: true, event: {
+    id: "decision-1", recordId: RECORD, eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: `user:${USER}`,
+    payloadRef: { kind: "acceptance_pr_decision", decision: "changes_requested" }, at: UPDATED, createdAt: UPDATED,
+  } } as never);
+  vi.mocked(validateAcceptancePrDecision).mockReturnValue(true);
   vi.mocked(confirmAcceptanceContract).mockResolvedValue({
     id: "contract-1", recordId: RECORD, version: 2, status: "confirmed",
     contract: { originalRequest: "Add a button" }, createdBy: "user:lead",
@@ -202,6 +214,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       ],
       contracts: [],
       contextPacks: [],
+      reviews: [],
     });
   });
 
@@ -259,5 +272,21 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
 
     expect(res.status).toBe(403);
     expect(confirmAcceptanceContract).not.toHaveBeenCalled();
+  });
+
+  it("records an owner/admin final decision only through the current evidence review identity", async () => {
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "admin" } as never);
+    const res = await PATCH(confirmRequest({ action: "record_pr_decision", reviewId: "review-1", decision: "changes_requested" }), { params: params() });
+    expect(res.status).toBe(201);
+    expect(recordAcceptancePrDecision).toHaveBeenCalledWith({
+      workspaceId: WS, recordId: RECORD, reviewId: "review-1", decision: "changes_requested", decidedBy: `user:${USER}`,
+    });
+    await expect(res.json()).resolves.toMatchObject({ inserted: true, event: { stage: "human_pr_decision" } });
+  });
+
+  it("does not let a regular member write a final decision", async () => {
+    const res = await PATCH(confirmRequest({ action: "record_pr_decision", reviewId: "review-1", decision: "rejected" }), { params: params() });
+    expect(res.status).toBe(403);
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
   });
 });

@@ -82,12 +82,18 @@ through the trust endpoint. A `proven` result requires observed behavior and
 artifacts bound to that plan; neither the worker, queueing, nor a screenshot
 alone proves that a browser executed the criterion flow.
 
+An owner/admin can now record one immutable final decision against a current,
+exact-head Evidence Review in the Acceptance Record. `approved` requires
+Jace's recorded `proven` verdict; a non-proven review can only be accepted as
+an explicit, explained exception. The record never changes Jace's verdict and
+does not merge the PR. The older post-merge rework/revert metric ledger remains
+aggregate outcome evidence, not the final Acceptance Record decision source.
+
 Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; a deployed UI exercise and non-UI artifact dispatch; API
 redaction worker; automatic Jace fallback delivery and external-builder receipt;
-human outcomes/dependency
-workflow; and UI/browser E2E. An owner/admin can now dispatch the persisted
+human-decision live/migrated-DB proof; dependency workflow; and UI/browser E2E. An owner/admin can now dispatch the persisted
 packet as a GitHub PR issue-comment only when the exact review revision is
 still current; it records `delivered` or `failed`, but does not prove that the
 builder received or resumed. A scoped MCP credential can retrieve the

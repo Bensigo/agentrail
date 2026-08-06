@@ -4,6 +4,7 @@ from pathlib import Path
 from agentrail.evals.acceptance_case.loader import load_case
 from agentrail.evals.acceptance_case.proof_verifier import CriterionProofClaim, ProofArtifact, verify_criterion_proof
 from agentrail.evals.acceptance_case.runner import acceptance_lineage
+from agentrail.evals.acceptance_case.offline_runner import RunProvenance, run_offline_four_arm_evaluation, BuilderAttempt
 
 
 def _case(tmp_path: Path, *, modality: str = "ui", verdict: str = "proven"):
@@ -75,3 +76,33 @@ def test_missing_or_ambiguous_hidden_truth_stays_unscored(tmp_path: Path) -> Non
     case.labels["proof"] = {"criteria": []}
     result = verify_criterion_proof(case, lineage, CriterionProofClaim("criterion", "ui", "proven", "deadbeef", "preview-1", "Visible", (ProofArtifact("a", "image/png"),)))
     assert result.status == "unscored"
+
+
+def test_independent_scorer_separates_feature_outcome_from_artifact_validity(tmp_path: Path) -> None:
+    from agentrail.evals.acceptance_case.proof_verifier import ProofIndependentScorer
+
+    case, _ = _case(tmp_path)
+    class Executor:
+        def execute(self, builder, workspace):
+            return BuilderAttempt("deadbeef", "preview-1", [CriterionProofClaim(
+                "criterion", "ui", "proven", "deadbeef", "preview-1", "Visible",
+                (ProofArtifact("artifact://generic", "text/plain"),),
+            )])
+    report = run_offline_four_arm_evaluation(
+        [case], executor=Executor(), scorer=ProofIndependentScorer(),
+        provenance=RunProvenance("model", "config", "prompt", "guardrail", "scorer", "hidden"),
+    )
+    outcome = report.scorecards["full-jace-loop:offline:proof:ui"]
+    validity = report.scorecards["full-jace-loop:offline:proof:ui-artifact-validity"]
+    assert outcome["truth_true"] == 1 and outcome["false_green"] == 0
+    assert validity["truth_true"] == 0 and validity["false_green"] == 1
+
+
+def test_independent_scorer_keeps_missing_hidden_proof_truth_unscored(tmp_path: Path) -> None:
+    from agentrail.evals.acceptance_case.proof_verifier import ProofIndependentScorer
+
+    case, lineage = _case(tmp_path); case.labels["proof"] = {"criteria": []}
+    scores = list(ProofIndependentScorer().score(case, lineage, [CriterionProofClaim(
+        "criterion", "ui", "proven", "deadbeef", "preview-1", "Visible", (ProofArtifact("a", "image/png"),),
+    )]))
+    assert [score.independent_truth for score in scores] == [None, None]

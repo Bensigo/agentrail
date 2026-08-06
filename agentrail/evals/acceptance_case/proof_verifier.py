@@ -8,7 +8,7 @@ builder.  Missing or ambiguous labels are explicitly unscored.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional, Tuple
+from typing import Iterable, Literal, Optional, Tuple
 
 from .loader import AcceptanceCase
 from .runner import AcceptanceLineage
@@ -56,6 +56,46 @@ class ProofVerification:
     @property
     def valid(self) -> bool:
         return self.status == "valid"
+
+
+class ProofIndependentScorer:
+    """Evaluator-owned scorer for builder-returned criterion proof claims.
+
+    It emits two independently reportable proof segments per criterion:
+    ``<modality>`` scores the labelled criterion outcome; and
+    ``<modality>-artifact-validity`` scores whether Jace's claimed proof has
+    valid exact-head, criterion-specific evidence. Keeping them separate
+    prevents a working feature from masking fabricated or insufficient proof.
+    """
+
+    def score(
+        self,
+        case: AcceptanceCase,
+        lineage: AcceptanceLineage,
+        attempt: object,
+    ) -> Iterable[object]:
+        # Local import prevents the evaluator protocol from creating an import
+        # cycle with the generic four-arm runner that owns ScoredAttempt.
+        from .offline_runner import ScoredAttempt
+
+        if not isinstance(attempt, (list, tuple)) or not all(isinstance(item, CriterionProofClaim) for item in attempt):
+            raise TypeError("proof scorer requires a list or tuple of CriterionProofClaim values")
+        seen: set[str] = set()
+        for claim in attempt:
+            if claim.criterion_id in seen:
+                raise ValueError("proof scorer requires at most one claim per criterion")
+            seen.add(claim.criterion_id)
+            verified = verify_criterion_proof(case, lineage, claim)
+            artifact_refs = ",".join(verified.artifact_refs) or "none"
+            if verified.expected_verdict is None:
+                outcome_truth = None
+                validity_truth = None
+            else:
+                outcome_truth = verified.expected_verdict == "proven"
+                validity_truth = verified.valid
+            jace_claim = claim.verdict == "proven"
+            yield ScoredAttempt("proof", claim.modality, outcome_truth, jace_claim, artifact_refs)
+            yield ScoredAttempt("proof", f"{claim.modality}-artifact-validity", validity_truth, jace_claim, artifact_refs)
 
 
 def _text(value: object) -> str:

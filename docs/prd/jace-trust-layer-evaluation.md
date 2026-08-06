@@ -72,6 +72,12 @@ labels are `unscored`; they never become a pass. This checks fixture and
 artifact lineage only. It neither executes a preview nor replaces an
 independent human/outcome scorer.
 
+The evaluator-owned proof scorer emits two segments per criterion: the
+modality outcome (for example `ui`) and modality artifact validity (for example
+`ui-artifact-validity`). This keeps a passing feature with invalid evidence
+visible as a proof false green instead of letting behavior success mask the
+trust failure.
+
 ## Evidence classes and promotion
 
 Offline controlled truth, canary evidence, and production human outcomes are
@@ -155,8 +161,8 @@ criterion-specific UI/API/job/data evidence.
    add independent scorecards and tests.
 3. Implement case executor and verifier protocols; retain hidden tests where a
    frozen code outcome is valid, and add modality proof scoring. The pure
-   criterion-proof verifier now exists; it still needs a real evaluator-owned
-   scorer, fixture corpus, and persisted run/report path.
+   criterion-proof verifier and scorer now exist; they still need a real
+   fixture corpus and persisted run/report path.
 4. Migrate spine, CLI, canary, reporter, and regression gate to Acceptance
    Cases. Verify each scorecard carries denominators and sample-size state.
 5. Run targeted replacement coverage and a bounded offline smoke corpus.

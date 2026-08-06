@@ -13,7 +13,7 @@ from .offline_runner import (
 )
 from .runner import AcceptanceLineage, BuilderInput, acceptance_lineage, builder_input
 from .promotion import MetricFloor, PromotionPolicy, PromotionResult, evaluate_promotion
-from .proof_verifier import CriterionProofClaim, ProofArtifact, ProofVerification, verify_criterion_proof
+from .proof_verifier import CriterionProofClaim, ProofArtifact, ProofIndependentScorer, ProofVerification, verify_criterion_proof
 
 __all__ = [
     "ARMS",
@@ -32,6 +32,7 @@ __all__ = [
     "PromotionResult",
     "CriterionProofClaim",
     "ProofArtifact",
+    "ProofIndependentScorer",
     "ProofVerification",
     "RunProvenance",
     "ScoredAttempt",

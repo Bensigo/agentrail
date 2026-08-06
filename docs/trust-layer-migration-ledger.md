@@ -92,10 +92,9 @@ review-bound. The current acknowledgement seam alone is not delivery.
   canonical PR fetch, context compiler attestation, evidence-exercise worker,
   browser proof, live delivery dispatch, or migration smoke exists yet.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`, based at local commit `3c1d251e`
-  before the active uncommitted slice. Preserve the shared dirty checkout at
-  `/Users/macbook/work/bensigo-ai-workflow` and generated ignored dependency
-  directories in this worktree.
+  `codex/trust-layer-acceptance-record`, currently at local commit `5b71194d`.
+  Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
+  and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012
   before each substantial slice; current code and tests outrank a side audit.
 
@@ -120,8 +119,7 @@ parallel work at the smallest number needed.
 
 Before each new slice, the coordinator says why it is local or delegated,
 prunes obsolete context, and confirms it advances the accepted MVP flow. The
-already-started builder-handoff foundation is completed locally as an exception
-because this policy arrived mid-slice. Next, a subagent will own only GitHub
-webhook correlation and its tests. After integration, one subagent may own the
-verification-plan/artifact inventory or an equally isolated implementation
-slice; the coordinator makes all cross-slice decisions.
+builder-handoff foundation was the one local exception because this policy
+arrived mid-slice; the webhook correlation was delegated, then selectively
+integrated against its newer base. Next, one subagent will own a durable
+correction-delivery queue route and tests; the coordinator will integrate it.

@@ -14,6 +14,13 @@ from .offline_runner import (
 from .runner import AcceptanceLineage, BuilderInput, acceptance_lineage, builder_input
 from .promotion import MetricFloor, PromotionPolicy, PromotionResult, evaluate_promotion
 from .proof_verifier import CriterionProofClaim, ProofArtifact, ProofIndependentScorer, ProofVerification, verify_criterion_proof
+from .corpus import (
+    AcceptanceCorpus,
+    AcceptanceCorpusError,
+    CORPUS_FORMAT_VERSION,
+    CORPUS_MANIFEST_FILE,
+    load_acceptance_case_corpus,
+)
 from .report import (
     AcceptanceReportFormatError,
     acceptance_run_report_from_dict,
@@ -29,6 +36,8 @@ __all__ = [
     "ARMS",
     "AcceptanceCase",
     "AcceptanceCaseError",
+    "AcceptanceCorpus",
+    "AcceptanceCorpusError",
     "AcceptanceRunReport",
     "AcceptanceLineage",
     "BuilderAttempt",
@@ -36,6 +45,8 @@ __all__ = [
     "BuilderInput",
     "BuilderWorkspace",
     "ContextPackDescriptor",
+    "CORPUS_FORMAT_VERSION",
+    "CORPUS_MANIFEST_FILE",
     "IndependentScorer",
     "MetricFloor",
     "PromotionPolicy",
@@ -50,6 +61,7 @@ __all__ = [
     "builder_input",
     "evaluate_promotion",
     "load_case",
+    "load_acceptance_case_corpus",
     "load_cases",
     "run_offline_four_arm_evaluation",
     "verify_criterion_proof",

@@ -93,6 +93,17 @@ The CLI surface lives in `agentrail/cli/commands/evals.py`.
 
 ## Acceptance Case report publication
 
+### Corpus admission
+
+`load_acceptance_case_corpus(root, require_independent_labels=True)` accepts
+only a manifest-bound corpus: every `case.json` must match its recorded
+SHA-256, declared corpus version, and manifest inventory. The manifest records
+whether labels are `synthetic` or `independent` plus label-authority identity.
+Synthetic fixtures may exercise parser/unit paths, but are rejected at the
+held-out promotion/market-claim boundary. This guard does not make labels
+independent by itself; the authority must be supplied and audited outside the
+evaluated agent.
+
 `agentrail evals acceptance-report --input PATH --output PATH` is a narrow,
 offline publication command for an already-produced
 `AcceptanceRunReport`. It reads exactly the caller-supplied JSON input,

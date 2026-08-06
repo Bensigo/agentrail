@@ -1714,6 +1714,15 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
   plans: EvidenceVerificationPlanRow[];
   inserted: boolean;
 }> {
+  const unsupportedPlannedPlan = input.plans.find(
+    (plan) => plan.status === "planned" && plan.modality !== "ui" && plan.modality !== "api"
+  );
+  if (unsupportedPlannedPlan) {
+    throw new Error(
+      `Cannot persist planned ${unsupportedPlannedPlan.modality} verification plans; ` +
+      "job/data must be explicitly marked not_testable until supported"
+    );
+  }
   return db.transaction(async (tx) => {
     const revisions = await tx.select({ revision: changeRecordPrRevisions })
       .from(changeRecordPrRevisions)
@@ -1858,6 +1867,12 @@ export async function reportEvidenceVerificationExecution(input: {
   if (input.status === "proven") {
     const selected = rows.filter((row) => input.artifactIds?.includes(row.artifact.id));
     const modality = selected[0]?.plan.modality;
+    if (modality !== "ui" && modality !== "api") {
+      throw new Error(
+        `A proven ${modality ?? "unsupported"} criterion is not supported; ` +
+        "job/data verification must be explicitly marked not_testable until supported"
+      );
+    }
     const validContentType = modality === "api"
       ? (contentType: string) => contentType === "application/json"
       : (contentType: string) => contentType === "image/png" || contentType === "image/jpeg";

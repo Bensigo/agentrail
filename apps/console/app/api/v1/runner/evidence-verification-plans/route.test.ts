@@ -100,6 +100,36 @@ describe("evidence verification plan completion", () => {
     expect((await POST(request({ ...body, plans: [body.plans[0], { ...apiPlan, apiRequest: { method: "GET", path: "https://outside.example", expectedStatus: 200 } }] }))).status).toBe(400);
   });
 
+  it.each(["job", "data"])("rejects a planned %s criterion without a safe executor", async (modality) => {
+    const response = await POST(request({
+      ...body,
+      plans: [body.plans[0], { criterionId: "audit", modality, status: "planned", environmentId: "preview-1", flow: "inspect audit" }],
+    }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: `planned criterion audit with modality ${modality} has no supported safe executor and must be recorded as not_testable with a concrete reason`,
+    });
+    expect(recordEvidenceVerificationPlans).not.toHaveBeenCalled();
+  });
+
+  it.each(["job", "data"])("accepts a not_testable %s criterion with a concrete reason", async (modality) => {
+    const response = await POST(request({
+      ...body,
+      plans: [body.plans[0], { criterionId: "audit", modality, status: "not_testable", notTestableReason: `No safe ${modality} executor is configured` }],
+    }));
+
+    expect(response.status).toBe(201);
+    expect(recordEvidenceVerificationPlans).toHaveBeenCalledWith(expect.objectContaining({
+      plans: expect.arrayContaining([expect.objectContaining({
+        criterionId: "audit",
+        modality,
+        status: "not_testable",
+        notTestableReason: `No safe ${modality} executor is configured`,
+      })]),
+    }));
+  });
+
   it("fails closed without the worker secret", async () => {
     expect((await POST(request(body, false))).status).toBe(401);
     expect(recordEvidenceVerificationPlans).not.toHaveBeenCalled();

@@ -36,6 +36,7 @@ export async function POST(request: NextRequest) {
     if (!criterion || seen.has(criterion.id)) return NextResponse.json({ error: "verification plans must have unique confirmed criterion ids" }, { status: 400 });
     seen.add(criterion.id);
     if (criterion.userVisible && raw.status === "planned" && raw.modality !== "ui") return NextResponse.json({ error: `user-visible criterion ${criterion.id} requires ui proof or explicit not_testable` }, { status: 400 });
+    if (raw.status === "planned" && (raw.modality === "job" || raw.modality === "data")) return NextResponse.json({ error: `planned criterion ${criterion.id} with modality ${raw.modality} has no supported safe executor and must be recorded as not_testable with a concrete reason` }, { status: 400 });
     if (raw.status === "planned" && (!text(raw.environmentId) || !text(raw.flow))) return NextResponse.json({ error: `planned criterion ${criterion.id} needs environmentId and criterion-specific flow` }, { status: 400 });
     const requestDescriptor = raw.modality === "api" && raw.status === "planned" ? apiRequest(raw.apiRequest) : undefined;
     if (raw.modality === "api" && raw.status === "planned" && !requestDescriptor) return NextResponse.json({ error: `planned API criterion ${criterion.id} needs a safe GET path and expected status` }, { status: 400 });

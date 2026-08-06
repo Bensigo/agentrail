@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ rows: [] as unknown[], updated: [] as unknown[] }));
+const state = vi.hoisted(() => ({
+  rows: [] as unknown[],
+  updated: [] as unknown[],
+  transaction: vi.fn(),
+}));
 
 vi.mock("../db.js", () => {
   const select = vi.fn(() => {
@@ -17,10 +21,10 @@ vi.mock("../db.js", () => {
     chain.returning = async () => state.updated;
     return chain;
   });
-  return { db: { select, update } };
+  return { db: { select, update, transaction: state.transaction } };
 });
 
-import { reportEvidenceVerificationExecution } from "./change_records.js";
+import { recordEvidenceVerificationPlans, reportEvidenceVerificationExecution } from "./change_records.js";
 
 const input = {
   executionId: "execution", workerId: "worker", status: "proven" as const,
@@ -52,4 +56,44 @@ describe("reportEvidenceVerificationExecution proof modality", () => {
     state.rows = [row("ui", "application/json")];
     await expect(reportEvidenceVerificationExecution(input)).rejects.toThrow("requires PNG or JPEG evidence");
   });
+
+  it.each(["job", "data"]) (
+    "rejects %s proof instead of treating it as UI evidence",
+    async (modality) => {
+      state.rows = [row(modality, "image/png")];
+      await expect(reportEvidenceVerificationExecution(input)).rejects.toThrow(
+        `A proven ${modality} criterion is not supported`
+      );
+    }
+  );
+});
+
+describe("recordEvidenceVerificationPlans planned modality validation", () => {
+  beforeEach(() => {
+    state.transaction.mockReset();
+  });
+
+  it.each(["job", "data"]) (
+    "rejects planned %s before the query can persist it",
+    async (modality) => {
+      await expect(recordEvidenceVerificationPlans({
+        workspaceId: "workspace",
+        recordId: "record",
+        prRevisionId: "revision",
+        contractId: "contract",
+        contractVersion: 1,
+        plannedBy: "worker",
+        plans: [{
+          criterionId: "criterion",
+          criterionTextSnapshot: "criterion",
+          modality,
+          expectedBehavior: "behavior",
+          status: "planned",
+        }],
+      })).rejects.toThrow(
+        `Cannot persist planned ${modality} verification plans; job/data must be explicitly marked not_testable until supported`
+      );
+      expect(state.transaction).not.toHaveBeenCalled();
+    }
+  );
 });

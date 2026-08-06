@@ -121,6 +121,32 @@ a forward schema cleanup migration. Existing migration files and historical
 events are retained as audit history. This plan deliberately does not treat a
 source-code search as proof that production has no old approvals.
 
+## Legacy execution-eval removal plan (pre-destructive audit)
+
+Audit date: 2026-08-06. The source audit independently confirms the evaluation
+PRD's classification. The current corpus loader requires a factory task prompt,
+agent-visible working tree, and hidden code tests; `RunRecord` treats the
+executor's Objective Gate as the claim to compare with those tests; the scorer
+defines false green as `gate_passed && hidden_tests_failed`. That is useful
+execution-benchmark machinery, but it does not score whether Jace confirmed a
+contract, supplied bounded context, proved a criterion on an exact PR head, or
+reduced human rework.
+
+| Classification | Confirmed direct dependencies | Required action before deletion |
+| --- | --- | --- |
+| Reuse only as neutral infrastructure | `corpus/loader.py` provides frozen commit and held-out controls; `run_record.py` is immutable observation/cost data; `scorer.py` is pure independent hidden-test scoring; `reporter.py`, pricing, and fail-closed canary scheduling provide aggregation/provenance mechanics. | Generalize these around an Acceptance Case and separate scorecards. Hidden tests remain one optional independent code-outcome label, never contract/runtime-proof/human-trust truth. Preserve historical reports as clearly labelled legacy evidence only. |
+| Replace | `runner.py::SandboxAgentExecutor`; `spine.py`; `arms/`; legacy `task.json` and answer-key fixture contract; CLI `evals.py` default `baseline`/`full`; canary's baseline/full execution policy and current factory metrics. | Build the Acceptance-Case schema/loader, four-arm runner, proof-verifier protocol, independent scorecards, and tri-state promotion first. Migrate CLI, reporter, regression gate, and canary to explicit offline/canary/production evidence classes. |
+| Remove after replacement coverage | `packer_tightening.py`, gather/memory/factory A/B reporting, execution-layer ablation fixtures/tests, and factory-only corpus fixtures/docs that have no mapped Acceptance-Case scorecard. | Run new dev and held-out Acceptance Cases with denominator/sample-size reporting; verify all direct imports are gone; then delete in a separately reviewed cleanup. Do not delete migration reports or historical outcomes. |
+
+Confirmed caller constraints: `agentrail/cli/commands/evals.py` imports both
+`SandboxAgentExecutor` and `ProductionHiddenTestRunner`; `spine.py` and
+`canary.py` import the factory arms/runner/hidden-test interfaces; the nightly
+workflow invokes `agentrail evals canary`. Therefore none of those files can be
+removed today. The next implementation phase stays gated on a coherent
+acceptance spine; first build the Acceptance-Case replacement beside the
+legacy benchmark, migrate callers, run targeted replacement coverage, then
+perform cleanup. No market-value claim follows from current factory results.
+
 ## Non-goals
 
 - Building a replacement coding agent, code factory, or automatic merge lane.

@@ -9,6 +9,9 @@ import {
   acceptanceContextPackDeliveries,
   changeRecordPrs,
   changeRecordPrRevisions,
+  evidenceReviews,
+  evidenceReviewCriteria,
+  evidenceReviewCorrections,
   type AcceptanceContractRow,
   type AcceptanceContextPackDeliveryRow,
   type AcceptanceContextPackRow,
@@ -124,6 +127,10 @@ export function changeRecordPrId(input: { recordId: string; repositoryId: string
 
 export function changeRecordPrRevisionId(input: { prAttachmentId: string; headSha: string }): string {
   return uuid5Url(`change-record-pr-revision:${input.prAttachmentId}:${input.headSha}`);
+}
+
+export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
+  return uuid5Url(`evidence-review:${input.recordId}:${input.prRevisionId}`);
 }
 
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
@@ -656,6 +663,51 @@ export async function attachExternalPullRequest(input: AttachExternalPullRequest
       },
     });
     return { record: attached, attachment, revision };
+  });
+}
+
+export type RecordEvidenceReviewInput = {
+  workspaceId: string; recordId: string; prRevisionId: string; headSha: string;
+  contractId: string; contractVersion: number; overallStatus: string;
+  diffIdentity: Record<string, unknown>; staticFindings: Record<string, unknown>[];
+  testResults: Record<string, unknown>[]; independentVerifier: Record<string, unknown>;
+  reviewabilityResult: Record<string, unknown>; environmentRung: string; refusalReason?: string | null;
+  verifierName: string; verifierVersion: string; promptVersion: string;
+  criteria: Array<{ criterionId: string; criterionTextSnapshot: string; required: boolean; status: string; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; runtimeEvidence: Record<string, unknown>[]; reason: string }>;
+  corrections: Array<{ criterionId?: string | null; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; reproductionSteps?: string[]; likelyAffectedUnits?: string[]; contextRefs?: Record<string, unknown>[]; scopeBoundary: string }>;
+};
+
+/** Persist a fully validated review only when its exact revision is current. */
+export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
+  const id = evidenceReviewId(input);
+  return db.transaction(async (tx) => {
+    const revisions = await tx.select({ revision: changeRecordPrRevisions, attachment: changeRecordPrs })
+      .from(changeRecordPrRevisions).innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+      .where(and(eq(changeRecordPrRevisions.id, input.prRevisionId), eq(changeRecordPrs.recordId, input.recordId), eq(changeRecordPrs.workspaceId, input.workspaceId)))
+      .limit(1);
+    const revision = revisions[0];
+    if (!revision || revision.revision.headSha !== input.headSha || revision.revision.supersededAt) throw new Error("PR revision is missing, mismatched, or superseded");
+    const contracts = await tx.select().from(acceptanceContracts).where(and(eq(acceptanceContracts.id, input.contractId), eq(acceptanceContracts.recordId, input.recordId), eq(acceptanceContracts.version, input.contractVersion), eq(acceptanceContracts.status, "confirmed"))).limit(1);
+    if (!contracts[0]) throw new Error("Confirmed Acceptance Contract does not match review");
+    const inserted = await tx.insert(evidenceReviews).values({
+      id, recordId: input.recordId, prRevisionId: input.prRevisionId, acceptanceContractId: input.contractId,
+      acceptanceContractVersion: input.contractVersion, headSha: input.headSha, diffIdentity: input.diffIdentity,
+      overallStatus: input.overallStatus, staticFindings: input.staticFindings, testResults: input.testResults,
+      independentVerifier: input.independentVerifier, reviewabilityResult: input.reviewabilityResult,
+      environmentRung: input.environmentRung, refusalReason: input.refusalReason ?? null,
+      verifierName: input.verifierName, verifierVersion: input.verifierVersion, promptVersion: input.promptVersion,
+    }).onConflictDoNothing().returning();
+    if (!inserted[0]) return { id, inserted: false };
+    await tx.insert(evidenceReviewCriteria).values(input.criteria.map((criterion) => ({
+      id: randomUUID(), reviewId: id, ...criterion,
+    })));
+    if (input.corrections.length) await tx.insert(evidenceReviewCorrections).values(input.corrections.map((correction) => ({
+      id: randomUUID(), reviewId: id, criterionId: correction.criterionId ?? null,
+      observedBehavior: correction.observedBehavior, expectedBehavior: correction.expectedBehavior,
+      evidenceRefs: correction.evidenceRefs, reproductionSteps: correction.reproductionSteps ?? [],
+      likelyAffectedUnits: correction.likelyAffectedUnits ?? [], contextRefs: correction.contextRefs ?? [], scopeBoundary: correction.scopeBoundary,
+    })));
+    return { id, inserted: true };
   });
 }
 

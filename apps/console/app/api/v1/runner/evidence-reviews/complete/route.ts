@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAcceptanceContract } from "@agentrail/contracts";
-import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
+import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readClaimedAcceptanceEvidenceReviewRequest, recordEvidenceReview } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 import { buildCorrectionPacket, validateEvidenceReview } from "../../../../../../lib/evidence-review-validation";
 
@@ -12,13 +12,15 @@ export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
   if (authError) return authError;
   const body: Record<string, unknown> = await request.json().catch(() => ({}));
-  const requiredText = ["workspaceId", "recordId", "prRevisionId", "headSha", "contractId", "verifierName", "verifierVersion", "promptVersion", "environmentRung"];
+  const requiredText = ["workspaceId", "recordId", "prRevisionId", "headSha", "contractId", "reviewRequestId", "workerId", "verifierName", "verifierVersion", "promptVersion", "environmentRung"];
   if (!object(body) || requiredText.some((key) => !text(body[key])) || !Number.isInteger(body.contractVersion) || !Array.isArray(body.criteria) || !Array.isArray(body.findings) || !Array.isArray(body.testResults) || !Array.isArray(body.staticFindings) || !object(body.diffIdentity) || !object(body.independentVerifier) || !object(body.reviewabilityResult)) {
     return NextResponse.json({ error: "invalid evidence review completion payload" }, { status: 400 });
   }
-  const contracts = await readAcceptanceContracts({ workspaceId: body.workspaceId, recordId: body.recordId });
-  const contractRow = contracts?.find((row) => row.id === body.contractId && row.version === body.contractVersion && row.status === "confirmed");
-  if (!contractRow) return NextResponse.json({ error: "confirmed Acceptance Contract not found" }, { status: 409 });
+  const claim = await readClaimedAcceptanceEvidenceReviewRequest({ reviewRequestId: body.reviewRequestId as string, workerId: body.workerId as string });
+  if (!claim || claim.request.workspaceId !== body.workspaceId || claim.request.recordId !== body.recordId || claim.request.prRevisionId !== body.prRevisionId || claim.request.headSha !== body.headSha || claim.contract.id !== body.contractId || claim.contract.version !== body.contractVersion) {
+    return NextResponse.json({ error: "current worker-owned exact-head review request not found" }, { status: 409 });
+  }
+  const contractRow = claim.contract;
   const parsed = parseAcceptanceContract(contractRow.contract);
   if (!parsed.ok) return NextResponse.json({ error: "stored Acceptance Contract is invalid" }, { status: 500 });
   const validation = validateEvidenceReview({
@@ -39,12 +41,12 @@ export async function POST(request: NextRequest) {
       prRevisionId: body.prRevisionId as string,
     });
     const result = await recordEvidenceReview({
-      workspaceId: body.workspaceId, recordId: body.recordId, prRevisionId: body.prRevisionId, headSha: body.headSha,
-      contractId: body.contractId, contractVersion: body.contractVersion, overallStatus: validation.overallStatus,
+      workspaceId: body.workspaceId as string, recordId: body.recordId as string, prRevisionId: body.prRevisionId as string, headSha: body.headSha as string, reviewRequestId: body.reviewRequestId as string, workerId: body.workerId as string,
+      contractId: body.contractId as string, contractVersion: body.contractVersion as number, overallStatus: validation.overallStatus,
       diffIdentity: body.diffIdentity, staticFindings: body.staticFindings as Record<string, unknown>[], testResults: body.testResults as Record<string, unknown>[],
-      independentVerifier: body.independentVerifier, reviewabilityResult: body.reviewabilityResult, environmentRung: body.environmentRung,
-      refusalReason: text(body.refusalReason) ? body.refusalReason : null, verifierName: body.verifierName,
-      verifierVersion: body.verifierVersion, promptVersion: body.promptVersion,
+      independentVerifier: body.independentVerifier, reviewabilityResult: body.reviewabilityResult, environmentRung: body.environmentRung as string,
+      refusalReason: text(body.refusalReason) ? body.refusalReason : null, verifierName: body.verifierName as string,
+      verifierVersion: body.verifierVersion as string, promptVersion: body.promptVersion as string,
       criteria: criteria.map((criterion) => ({ ...criterion, criterionTextSnapshot: parsed.value.acceptanceCriteria.find((item) => item.id === criterion.criterionId)!.text, required: parsed.value.acceptanceCriteria.find((item) => item.id === criterion.criterionId)!.required, runtimeEvidence: criterion.runtimeEvidence ?? [] })),
       corrections: corrections.map((packet) => ({
         criterionId: packet.criterionId, observedBehavior: packet.observedBehavior,

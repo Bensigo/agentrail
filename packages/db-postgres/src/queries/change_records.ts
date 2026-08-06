@@ -1689,6 +1689,46 @@ export type ClaimedAcceptanceEvidenceReviewRequest = {
   pr: { repositoryFullName: string; prNumber: number; prUrl: string; headSha: string };
 };
 
+/** Read a claim only for the worker that currently owns its exact PR head. */
+export async function readClaimedAcceptanceEvidenceReviewRequest(input: {
+  reviewRequestId: string;
+  workerId: string;
+}): Promise<ClaimedAcceptanceEvidenceReviewRequest | null> {
+  const rows = await db.select({
+    request: acceptanceEvidenceReviewRequests,
+    revision: changeRecordPrRevisions,
+    attachment: changeRecordPrs,
+    contract: acceptanceContracts,
+  }).from(acceptanceEvidenceReviewRequests)
+    .innerJoin(changeRecordPrRevisions, eq(acceptanceEvidenceReviewRequests.prRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .innerJoin(acceptanceContracts, eq(acceptanceEvidenceReviewRequests.acceptanceContractId, acceptanceContracts.id))
+    .where(and(
+      eq(acceptanceEvidenceReviewRequests.id, input.reviewRequestId),
+      eq(acceptanceEvidenceReviewRequests.workerId, input.workerId),
+      eq(acceptanceEvidenceReviewRequests.status, "claimed"),
+      eq(changeRecordPrRevisions.headSha, acceptanceEvidenceReviewRequests.headSha),
+      isNull(changeRecordPrRevisions.supersededAt),
+      eq(changeRecordPrs.workspaceId, acceptanceEvidenceReviewRequests.workspaceId),
+      eq(changeRecordPrs.recordId, acceptanceEvidenceReviewRequests.recordId),
+      eq(acceptanceContracts.recordId, acceptanceEvidenceReviewRequests.recordId),
+      eq(acceptanceContracts.version, acceptanceEvidenceReviewRequests.acceptanceContractVersion),
+      eq(acceptanceContracts.status, "confirmed"),
+    ))
+    .limit(1);
+  const row = rows[0];
+  return row ? {
+    request: row.request,
+    contract: { id: row.contract.id, version: row.contract.version, contract: row.contract.contract },
+    pr: {
+      repositoryFullName: row.attachment.repositoryFullName,
+      prNumber: row.attachment.prNumber,
+      prUrl: row.attachment.prUrl,
+      headSha: row.revision.headSha,
+    },
+  } : null;
+}
+
 /**
  * Atomically claim one current, exact-head review request. A lease can be
  * retried twice; source/diff retrieval remains in the disposable reviewer and
@@ -1814,6 +1854,7 @@ export async function claimAcceptanceEvidenceReviewRequest(input: { workerId: st
 
 export type RecordEvidenceReviewInput = {
   workspaceId: string; recordId: string; prRevisionId: string; headSha: string;
+  reviewRequestId: string; workerId: string;
   contractId: string; contractVersion: number; overallStatus: string;
   diffIdentity: Record<string, unknown>; staticFindings: Record<string, unknown>[];
   testResults: Record<string, unknown>[]; independentVerifier: Record<string, unknown>;
@@ -2410,12 +2451,14 @@ export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {
       updatedAt: new Date(),
     }).where(and(
       eq(acceptanceEvidenceReviewRequests.workspaceId, input.workspaceId),
+      eq(acceptanceEvidenceReviewRequests.id, input.reviewRequestId),
+      eq(acceptanceEvidenceReviewRequests.workerId, input.workerId),
       eq(acceptanceEvidenceReviewRequests.recordId, input.recordId),
       eq(acceptanceEvidenceReviewRequests.prRevisionId, input.prRevisionId),
       eq(acceptanceEvidenceReviewRequests.acceptanceContractId, input.contractId),
       eq(acceptanceEvidenceReviewRequests.acceptanceContractVersion, input.contractVersion),
       eq(acceptanceEvidenceReviewRequests.headSha, input.headSha),
-      inArray(acceptanceEvidenceReviewRequests.status, ["queued", "claimed"]),
+      eq(acceptanceEvidenceReviewRequests.status, "claimed"),
     ));
     await tx.insert(evidenceReviewCriteria).values(input.criteria.map((criterion) => ({
       id: randomUUID(), reviewId: id, ...criterion,

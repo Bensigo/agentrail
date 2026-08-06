@@ -3293,6 +3293,7 @@ export {
   markAcceptanceBuilderHandoffPrAttached,
   enqueueAcceptanceEvidenceReviewRequest,
   claimAcceptanceEvidenceReviewRequest,
+  readClaimedAcceptanceEvidenceReviewRequest,
   readAcceptanceEvidenceReviewRequests,
   recordEvidenceReview,
   readAcceptanceEvidenceReviewSummaries,

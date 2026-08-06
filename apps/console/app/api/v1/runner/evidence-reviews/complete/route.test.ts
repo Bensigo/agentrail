@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({ readAcceptanceContracts: vi.fn(), recordEvidenceReview: vi.fn(), findAcceptanceBuilderHandoffForPrRevision: vi.fn(), queueEvidenceReviewCorrectionDelivery: vi.fn() }));
-import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readAcceptanceContracts, recordEvidenceReview } from "@agentrail/db-postgres";
+vi.mock("@agentrail/db-postgres", () => ({ readClaimedAcceptanceEvidenceReviewRequest: vi.fn(), recordEvidenceReview: vi.fn(), findAcceptanceBuilderHandoffForPrRevision: vi.fn(), queueEvidenceReviewCorrectionDelivery: vi.fn() }));
+import { findAcceptanceBuilderHandoffForPrRevision, queueEvidenceReviewCorrectionDelivery, readClaimedAcceptanceEvidenceReviewRequest, recordEvidenceReview } from "@agentrail/db-postgres";
 import { POST } from "./route";
 
 const secret = "jace-secret";
@@ -12,7 +12,7 @@ const contract = {
   contract: { originalUserWording: "Show saved", goal: "Visible saved state", acceptanceCriteria: [{ id: "saved", text: "A saved state is visible", required: true, userVisible: true }] },
 };
 const body = {
-  workspaceId: "ws-1", recordId: "record-1", prRevisionId: "revision-1", headSha: head,
+  workspaceId: "ws-1", recordId: "record-1", prRevisionId: "revision-1", reviewRequestId: "request-1", workerId: "worker-1", headSha: head,
   contractId: "contract-1", contractVersion: 1, verifierName: "independent", verifierVersion: "1", promptVersion: "1", environmentRung: "preview",
   diffIdentity: { baseSha: "b".repeat(40), headSha: head, diffHash: "hash" }, independentVerifier: { identity: "other-model" }, reviewabilityResult: {}, staticFindings: [], testResults: [],
   criteria: [{ criterionId: "saved", status: "failed", observedBehavior: "No message", expectedBehavior: "Saved message", evidenceRefs: [{ path: "app/save.tsx", startLine: 1, endLine: 2, detail: "no render", headSha: head }], runtimeEvidence: [{ criterionId: "saved", headSha: head, environmentId: "preview-1", flow: "save draft", expected: "Saved", observed: "No message", artifactRef: "artifact.png" }], reason: "observed" }],
@@ -23,7 +23,7 @@ function request(payload: unknown = body, authorization = true) {
 }
 beforeEach(() => {
   vi.clearAllMocks(); process.env.JACE_CONSOLE_TOKEN = secret;
-  vi.mocked(readAcceptanceContracts).mockResolvedValue([contract] as never);
+  vi.mocked(readClaimedAcceptanceEvidenceReviewRequest).mockResolvedValue({ request: { workspaceId: "ws-1", recordId: "record-1", prRevisionId: "revision-1", headSha: head }, contract } as never);
   vi.mocked(recordEvidenceReview).mockResolvedValue({ id: "review-1", inserted: true, corrections: [{ id: "correction-1" }] } as never);
   vi.mocked(findAcceptanceBuilderHandoffForPrRevision).mockResolvedValue({ id: "handoff-1", builder: "codex", taskContextKey: "task-1" } as never);
   vi.mocked(queueEvidenceReviewCorrectionDelivery).mockResolvedValue({ id: "delivery-1" } as never);
@@ -33,13 +33,19 @@ describe("independent evidence review completion", () => {
   it("persists exact-head criterion evidence and generates a correction packet", async () => {
     const response = await POST(request());
     expect(response.status).toBe(201);
-    expect(recordEvidenceReview).toHaveBeenCalledWith(expect.objectContaining({ headSha: head, overallStatus: "failed", corrections: [expect.objectContaining({ criterionId: "saved" })] }));
+    expect(recordEvidenceReview).toHaveBeenCalledWith(expect.objectContaining({ headSha: head, reviewRequestId: "request-1", workerId: "worker-1", overallStatus: "failed", corrections: [expect.objectContaining({ criterionId: "saved" })] }));
     expect((await response.json()).correctionPackets[0]).toMatchObject({ headSha: head, criterionId: "saved" });
     expect(queueEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith(expect.objectContaining({ correctionId: "correction-1", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task-1" } }));
   });
   it("rejects a generic visible-criterion pass without an exercise artifact", async () => {
     const response = await POST(request({ ...body, criteria: [{ ...body.criteria[0], status: "proven", runtimeEvidence: [] }], findings: [] }));
     expect(response.status).toBe(400);
+    expect(recordEvidenceReview).not.toHaveBeenCalled();
+  });
+  it("refuses completion unless the worker still owns the exact claimed request", async () => {
+    vi.mocked(readClaimedAcceptanceEvidenceReviewRequest).mockResolvedValue(null as never);
+    const response = await POST(request());
+    expect(response.status).toBe(409);
     expect(recordEvidenceReview).not.toHaveBeenCalled();
   });
   it("fails closed without the independent worker secret", async () => {

@@ -50,6 +50,9 @@ for that exact request and a worker-only contract/PR claim read; it does not
 introduce a reviewer prompt, a verdict, a correction, a notification, or a
 deployed worker. A `queued` or `claimed` request means Jace has work to do,
 not that Jace reviewed, proved, blocked, notified, or approved anything.
+Review completion now additionally requires the same current claim's request
+ID and worker ID, alongside the existing record/contract/revision/head checks.
+That closes stale-worker completion, but is not a reviewer runtime.
 
 ## Canonical MVP flow
 

@@ -3,8 +3,9 @@
 from .loader import ARMS, AcceptanceCase, AcceptanceCaseError, ContextPackDescriptor, load_case, load_cases
 from .offline_runner import (
     AcceptanceRunReport,
+    BuilderAttempt,
     BuilderExecutor,
-    EvaluationTarget,
+    BuilderWorkspace,
     IndependentScorer,
     RunProvenance,
     ScoredAttempt,
@@ -19,10 +20,11 @@ __all__ = [
     "AcceptanceCaseError",
     "AcceptanceRunReport",
     "AcceptanceLineage",
+    "BuilderAttempt",
     "BuilderExecutor",
     "BuilderInput",
+    "BuilderWorkspace",
     "ContextPackDescriptor",
-    "EvaluationTarget",
     "IndependentScorer",
     "MetricFloor",
     "PromotionPolicy",

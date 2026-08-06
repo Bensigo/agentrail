@@ -1,8 +1,9 @@
 """Pure four-arm orchestration for frozen Acceptance Case evaluation.
 
 This is an evaluator boundary, not an agent runner. The builder adapter receives
-only the arm-specific input; the independent scorer receives the frozen case
-and can consult hidden labels. Every PR-head/environment target is explicit.
+only the arm-specific input plus an operational checkout target; it returns the
+PR head/environment it produced. The independent scorer then receives the
+frozen case and can consult hidden labels.
 """
 from __future__ import annotations
 
@@ -16,11 +17,20 @@ from .scorecards import AcceptanceObservation, aggregate
 
 
 @dataclass(frozen=True)
-class EvaluationTarget:
-    """One explicit frozen PR head/environment binding for a case arm."""
+class BuilderWorkspace:
+    """Operational checkout identity, kept separate from the builder prompt."""
+
+    repository: str
+    repository_commit: str
+
+
+@dataclass(frozen=True)
+class BuilderAttempt:
+    """A builder-produced revision/environment, validated against frozen case data."""
 
     pr_head: str
     environment_id: str
+    result: object
 
 
 @dataclass(frozen=True)
@@ -59,7 +69,7 @@ class ScoredAttempt:
 class BuilderExecutor(Protocol):
     """Adapter for a selected external builder; never receives hidden labels."""
 
-    def execute(self, builder: BuilderInput, lineage: AcceptanceLineage) -> object: ...
+    def execute(self, builder: BuilderInput, workspace: BuilderWorkspace) -> BuilderAttempt: ...
 
 
 class IndependentScorer(Protocol):
@@ -85,42 +95,40 @@ class AcceptanceRunReport:
 def run_offline_four_arm_evaluation(
     cases: Sequence[AcceptanceCase],
     *,
-    targets: Mapping[tuple[str, str], EvaluationTarget],
     executor: BuilderExecutor,
     scorer: IndependentScorer,
     provenance: RunProvenance,
     promotion_policy: Optional[PromotionPolicy] = None,
 ) -> AcceptanceRunReport:
-    """Run all canonical arms against explicit frozen revision/environment pairs.
+    """Run all canonical arms and validate the builder-produced exact bindings.
 
-    Missing targets are rejected rather than allowing a random PR head or
-    environment to be scored. Promotion remains offline/held-out only because
-    the existing gate excludes canary and production evidence by design.
+    An adapter must return a PR head and environment for every attempt.  The
+    frozen case rejects an unknown head or environment instead of allowing an
+    arbitrary revision to be scored. Promotion remains offline/held-out only
+    because the existing gate excludes canary and production evidence by design.
     """
     names = [case.name for case in cases]
     if len(names) != len(set(names)):
         raise ValueError("Acceptance Case names must be unique within one evaluation run")
-    required_targets = {(case.name, arm) for case in cases for arm in ARMS}
-    supplied_targets = set(targets)
-    if supplied_targets != required_targets:
-        missing = sorted(required_targets - supplied_targets)
-        unknown = sorted(supplied_targets - required_targets)
-        details = []
-        if missing:
-            details.append(f"missing targets: {missing}")
-        if unknown:
-            details.append(f"unknown targets: {unknown}")
-        raise ValueError("Acceptance Case evaluation targets must exactly cover all arms; " + "; ".join(details))
-
     observations: list[AcceptanceObservation] = []
     for case in cases:
         for arm in ARMS:
-            target = targets[(case.name, arm)]
-            lineage = acceptance_lineage(case, arm, pr_head=target.pr_head, environment_id=target.environment_id)
             # Case conversation, labels, source oracle, and repository metadata
-            # remain evaluator-only; the builder adapter gets no case object.
-            attempt = executor.execute(builder_input(case, arm), lineage)
-            for score in scorer.score(case, lineage, attempt):
+            # remain evaluator-only; the adapter gets a prompt input and a
+            # checkout target, not a case object or pre-selected PR head.
+            attempt = executor.execute(
+                builder_input(case, arm),
+                BuilderWorkspace(repository=case.repo, repository_commit=case.commit),
+            )
+            if not isinstance(attempt, BuilderAttempt):
+                raise TypeError("builder executor must return a BuilderAttempt")
+            lineage = acceptance_lineage(
+                case,
+                arm,
+                pr_head=attempt.pr_head,
+                environment_id=attempt.environment_id,
+            )
+            for score in scorer.score(case, lineage, attempt.result):
                 if not isinstance(score, ScoredAttempt):
                     raise TypeError("independent scorer must return ScoredAttempt values")
                 observations.append(_observation(case, lineage, score, provenance))

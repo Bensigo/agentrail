@@ -1,9 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
+  confirmAcceptanceContract,
   getWorkspaceMembership,
+  readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
+
+function serializeContract(contract: Awaited<ReturnType<typeof confirmAcceptanceContract>>) {
+  return {
+    id: contract.id,
+    recordId: contract.recordId,
+    version: contract.version,
+    status: contract.status,
+    contract: contract.contract,
+    createdBy: contract.createdBy,
+    confirmedBy: contract.confirmedBy,
+    confirmedAt: contract.confirmedAt?.toISOString() ?? null,
+    createdAt: contract.createdAt.toISOString(),
+  };
+}
 
 export async function GET(
   _request: NextRequest,
@@ -26,6 +42,7 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    const contracts = await readAcceptanceContracts({ workspaceId, recordId });
     return NextResponse.json({
       record: {
         id: timeline.record.id,
@@ -49,6 +66,7 @@ export async function GET(
         at: event.at.toISOString(),
         createdAt: event.createdAt.toISOString(),
       })),
+      contracts: (contracts ?? []).map(serializeContract),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);
@@ -56,5 +74,38 @@ export async function GET(
       { error: "Failed to load change record timeline" },
       { status: 500 }
     );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { workspaceId, recordId } = await params;
+  if (!(await getWorkspaceMembership(session.user.id, workspaceId))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const version = body.version;
+  if (body.action !== "confirm_contract" || !Number.isInteger(version) || (version as number) < 1) {
+    return NextResponse.json(
+      { error: "action must be confirm_contract and version must be a positive integer" },
+      { status: 400 }
+    );
+  }
+  try {
+    const contracts = await readAcceptanceContracts({ workspaceId, recordId });
+    if (contracts == null) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const contract = await confirmAcceptanceContract({
+      recordId,
+      version: version as number,
+      confirmedBy: `user:${session.user.id}`,
+    });
+    return NextResponse.json({ contract: serializeContract(contract) });
+  } catch (err) {
+    console.error("[change-records] failed to confirm Acceptance Contract:", err);
+    return NextResponse.json({ error: "Failed to confirm Acceptance Contract" }, { status: 409 });
   }
 }

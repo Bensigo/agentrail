@@ -5,16 +5,20 @@ vi.mock("@agentrail/auth", () => ({
   auth: vi.fn(),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
+  confirmAcceptanceContract: vi.fn(),
   getWorkspaceMembership: vi.fn(),
+  readAcceptanceContracts: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
+  confirmAcceptanceContract,
   getWorkspaceMembership,
+  readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "@agentrail/db-postgres";
-import { GET } from "./route";
+import { GET, PATCH } from "./route";
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const OTHER_WS = "00000000-0000-0000-0000-000000000002";
@@ -33,6 +37,13 @@ function req(workspaceId = WS, recordId = RECORD): NextRequest {
 
 function params(workspaceId = WS, recordId = RECORD) {
   return Promise.resolve({ workspaceId, recordId });
+}
+
+function confirmRequest(body: unknown) {
+  return new NextRequest(
+    `http://localhost/api/v1/workspaces/${WS}/change-records/${RECORD}`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+  );
 }
 
 const timeline = {
@@ -77,6 +88,12 @@ beforeEach(() => {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([] as never);
+  vi.mocked(confirmAcceptanceContract).mockResolvedValue({
+    id: "contract-1", recordId: RECORD, version: 2, status: "confirmed",
+    contract: { originalRequest: "Add a button" }, createdBy: "user:lead",
+    confirmedBy: `user:${USER}`, confirmedAt: UPDATED, createdAt: CREATED,
+  } as never);
 });
 
 describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -166,6 +183,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           createdAt: "2026-08-03T12:04:00.000Z",
         },
       ],
+      contracts: [],
     });
   });
 
@@ -177,6 +195,25 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({
       error: "Failed to load change record timeline",
+    });
+  });
+});
+
+describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
+  it("requires an explicit confirm action and positive contract version", async () => {
+    const res = await PATCH(confirmRequest({ action: "approve", version: 2 }), { params: params() });
+    expect(res.status).toBe(400);
+    expect(confirmAcceptanceContract).not.toHaveBeenCalled();
+  });
+
+  it("confirms a draft only after workspace membership and returns the recorded actor", async () => {
+    const res = await PATCH(confirmRequest({ action: "confirm_contract", version: 2 }), { params: params() });
+    expect(res.status).toBe(200);
+    expect(confirmAcceptanceContract).toHaveBeenCalledWith({
+      recordId: RECORD, version: 2, confirmedBy: `user:${USER}`,
+    });
+    await expect(res.json()).resolves.toMatchObject({
+      contract: { recordId: RECORD, version: 2, status: "confirmed", confirmedBy: `user:${USER}` },
     });
   });
 });

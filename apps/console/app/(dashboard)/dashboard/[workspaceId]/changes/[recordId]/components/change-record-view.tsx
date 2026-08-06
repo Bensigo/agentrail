@@ -341,7 +341,22 @@ export function AcceptanceContractPanel({
   );
 }
 
-export function AcceptanceContextPackPanel({ contextPacks }: { contextPacks: AcceptanceContextPack[] }) {
+export function canRequestExecuteContextPack(contracts: AcceptanceContract[], contextPacks: AcceptanceContextPack[]): boolean {
+  return contracts.some((item) => item.status === "confirmed") && !contextPacks.some((item) => item.phase === "execute");
+}
+
+export function AcceptanceContextPackPanel({
+  contextPacks, contracts, onRequestExecute, requestingExecute, requestError, requestStatus,
+}: {
+  contextPacks: AcceptanceContextPack[];
+  contracts?: AcceptanceContract[];
+  onRequestExecute?: (contract: AcceptanceContract) => void;
+  requestingExecute?: boolean;
+  requestError?: string | null;
+  requestStatus?: string | null;
+}) {
+  const confirmed = contracts?.find((item) => item.status === "confirmed");
+  const canRequest = Boolean(contracts && confirmed && canRequestExecuteContextPack(contracts, contextPacks));
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -352,6 +367,7 @@ export function AcceptanceContextPackPanel({ contextPacks }: { contextPacks: Acc
           Recorded context is observable. Its delivery is not proof that the agent implemented or verified the change.
         </p>
       </div>
+      {canRequest ? <div className="border-b border-[var(--gray-05)] px-4 py-3"><button type="button" disabled={requestingExecute} onClick={() => onRequestExecute?.(confirmed!)} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{requestingExecute ? "Queuing…" : "Prepare execute Context Pack"}</button><p className="mt-2 text-xs text-[var(--gray-09)]">This queues a bounded compiler job. It does not claim a Pack exists until the worker reports it.</p>{requestError ? <p className="mt-2 text-sm text-[var(--red-11)]">{requestError}</p> : null}{requestStatus ? <p className="mt-2 text-sm text-[var(--green-11)]">{requestStatus}</p> : null}</div> : null}
       {contextPacks.length === 0 ? (
         <p className="px-4 py-4 text-sm text-[var(--gray-09)]">
           No Context Pack has been recorded for this Acceptance Record.
@@ -530,6 +546,9 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [exceptionRationale, setExceptionRationale] = useState("");
   const [handoffPending, setHandoffPending] = useState(false);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [requestingExecute, setRequestingExecute] = useState(false);
+  const [contextPackError, setContextPackError] = useState<string | null>(null);
+  const [contextPackStatus, setContextPackStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -614,6 +633,17 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     finally { setHandoffPending(false); }
   }
 
+  async function requestExecuteContextPack(contract: AcceptanceContract) {
+    setRequestingExecute(true); setContextPackError(null); setContextPackStatus(null);
+    try {
+      const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/context-pack-compilations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contractId: contract.id, contractVersion: contract.version, phase: "execute" }) });
+      const body = (await response.json().catch(() => ({}))) as { compilation?: { status?: string }; inserted?: boolean; error?: string };
+      if (!response.ok || !body.compilation) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setContextPackStatus(body.inserted ? "Execute Context Pack compilation is queued. Jace will report the bounded Pack when it is ready." : "Execute Context Pack compilation is already queued or recorded.");
+    } catch (caught) { setContextPackError(caught instanceof Error ? caught.message : "Failed to queue Context Pack compilation"); }
+    finally { setRequestingExecute(false); }
+  }
+
   async function recordFinalDecision(
     review: AcceptanceEvidenceReview,
     decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception",
@@ -681,7 +711,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmingVersion={confirmingVersion}
         confirmationError={confirmationError}
       />
-      <AcceptanceContextPackPanel contextPacks={data.contextPacks} />
+      <AcceptanceContextPackPanel contextPacks={data.contextPacks} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
       <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
       <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />

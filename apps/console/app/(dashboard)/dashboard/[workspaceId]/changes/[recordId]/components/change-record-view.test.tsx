@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AcceptanceContractPanel,
   AcceptanceContextPackPanel,
+  canRequestExecuteContextPack,
   canSelectExternalBuilder,
   FinalPrDecisionPanel,
   ChangeRecordAnchors,
@@ -177,6 +178,13 @@ describe("Change Record detail view", () => {
     expect(content).toContain("not proof that the agent implemented");
     expect(content).toContain("context-compiler-v1");
     expect(content).toContain("src/status.ts");
+  });
+
+  it("permits execute Pack admission only for a confirmed Contract without an execute Pack", () => {
+    const confirmed = { ...draftContract, status: "confirmed" as const };
+    expect(canRequestExecuteContextPack([confirmed], [])).toBe(true);
+    expect(canRequestExecuteContextPack([draftContract], [])).toBe(false);
+    expect(canRequestExecuteContextPack([confirmed], [contextPack])).toBe(false);
   });
 
   it("allows human external-builder selection only after confirmed contract and execute Pack", () => {

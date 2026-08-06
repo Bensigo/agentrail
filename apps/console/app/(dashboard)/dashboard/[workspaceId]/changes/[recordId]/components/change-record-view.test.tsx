@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   AcceptanceContractPanel,
+  AcceptanceContextPackPanel,
   ChangeRecordAnchors,
   LifecycleTimeline,
   changeRecordApiPath,
   formatChangeRecordDate,
   isConfirmableContract,
   type AcceptanceContract,
+  type AcceptanceContextPack,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -83,6 +85,22 @@ const draftContract: AcceptanceContract = {
   createdAt: "2026-08-03T10:00:00.000Z",
 };
 
+const contextPack: AcceptanceContextPack = {
+  id: "00000000-0000-0000-0000-000000000021",
+  recordId: record.id,
+  version: 1,
+  phase: "execute",
+  contentHash: `sha256:${"a".repeat(64)}`,
+  compilerVersion: "context-compiler-v1",
+  manifest: { citations: [{ path: "src/status.ts" }] },
+  custody: { fullSourceUploadAllowed: false },
+  freshness: { staleCount: 0 },
+  jsonArtifactRef: "workspace://context/pack.json",
+  markdownArtifactRef: "workspace://context/pack.md",
+  createdBy: "user:1",
+  createdAt: "2026-08-03T10:00:00.000Z",
+};
+
 describe("Change Record detail view", () => {
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
@@ -141,5 +159,15 @@ describe("Change Record detail view", () => {
     });
 
     expect(textContent(rendered)).toContain("No Acceptance Contract has been recorded yet");
+  });
+
+  it("shows recorded Context Pack identity without implying delivery is proof", () => {
+    const rendered = AcceptanceContextPackPanel({ contextPacks: [contextPack] });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Context Pack delivery");
+    expect(content).toContain("not proof that the agent implemented");
+    expect(content).toContain("context-compiler-v1");
+    expect(content).toContain("src/status.ts");
   });
 });

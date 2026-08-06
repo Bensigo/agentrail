@@ -41,10 +41,27 @@ export type AcceptanceContract = {
   createdAt: string;
 };
 
+export type AcceptanceContextPack = {
+  id: string;
+  recordId: string;
+  version: number;
+  phase: string;
+  contentHash: string;
+  compilerVersion: string;
+  manifest: Record<string, unknown>;
+  custody: Record<string, unknown>;
+  freshness: Record<string, unknown>;
+  jsonArtifactRef: string | null;
+  markdownArtifactRef: string | null;
+  createdBy: string;
+  createdAt: string;
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   contracts: AcceptanceContract[];
+  contextPacks: AcceptanceContextPack[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -296,6 +313,72 @@ export function AcceptanceContractPanel({
   );
 }
 
+export function AcceptanceContextPackPanel({ contextPacks }: { contextPacks: AcceptanceContextPack[] }) {
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Context Pack delivery
+        </h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          Recorded context is observable. Its delivery is not proof that the agent implemented or verified the change.
+        </p>
+      </div>
+      {contextPacks.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-[var(--gray-09)]">
+          No Context Pack has been recorded for this Acceptance Record.
+        </p>
+      ) : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {contextPacks.map((pack) => (
+            <li key={pack.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-[var(--gray-11)]">v{pack.version}</span>
+                  <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs capitalize text-[var(--gray-11)]">
+                    {pack.phase}
+                  </span>
+                </div>
+                <time dateTime={pack.createdAt} className="font-mono text-xs text-[var(--gray-09)]">
+                  {formatChangeRecordDate(pack.createdAt)}
+                </time>
+              </div>
+              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <div>
+                  <dt className="text-[var(--gray-09)]">Content hash</dt>
+                  <dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{pack.contentHash}</dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--gray-09)]">Compiler</dt>
+                  <dd className="mt-1 font-mono text-[var(--gray-11)]">{pack.compilerVersion}</dd>
+                </div>
+              </dl>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+                  View citations, custody, freshness, and artifact references
+                </summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">
+                  {JSON.stringify(
+                    {
+                      manifest: pack.manifest,
+                      custody: pack.custody,
+                      freshness: pack.freshness,
+                      jsonArtifactRef: pack.jsonArtifactRef,
+                      markdownArtifactRef: pack.markdownArtifactRef,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              </details>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: string; recordId: string }) {
   const [data, setData] = useState<ChangeRecordResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -317,7 +400,12 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!response.ok) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        if (!body.record || !Array.isArray(body.events) || !Array.isArray(body.contracts)) {
+        if (
+          !body.record ||
+          !Array.isArray(body.events) ||
+          !Array.isArray(body.contracts) ||
+          !Array.isArray(body.contextPacks)
+        ) {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -408,6 +496,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmingVersion={confirmingVersion}
         confirmationError={confirmationError}
       />
+      <AcceptanceContextPackPanel contextPacks={data.contextPacks} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />
     </div>

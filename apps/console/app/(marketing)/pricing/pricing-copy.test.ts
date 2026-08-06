@@ -318,6 +318,20 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(channelsSource).not.toContain("I post briefs and outcome pings");
   });
 
+  it("lists compatibility channels as Slack, Discord, then Telegram", () => {
+    const panelList = channelsSource.slice(
+      channelsSource.indexOf("const PANELS"),
+      channelsSource.indexOf("function PanelIcon"),
+    );
+    const slack = panelList.indexOf('id: "slack"');
+    const discord = panelList.indexOf('id: "discord"');
+    const telegram = panelList.indexOf('id: "telegram"');
+
+    expect(slack).toBeGreaterThanOrEqual(0);
+    expect(discord).toBeGreaterThan(slack);
+    expect(telegram).toBeGreaterThan(discord);
+  });
+
   it("visible trust stats remain mechanics, not activity or invented outcomes", () => {
     expect(landingSource).toContain("confirmed contract");
     expect(landingSource).toContain("bounded Context Pack");

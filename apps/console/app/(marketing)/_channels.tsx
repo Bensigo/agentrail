@@ -38,12 +38,6 @@ interface ChannelPanel {
 
 const PANELS: ChannelPanel[] = [
   {
-    id: "telegram",
-    name: "Telegram",
-    line: "If Telegram is configured, bring the request here and confirm the work before it starts.",
-    buttonLabel: "Message Jace on Telegram",
-  },
-  {
     id: "slack",
     name: "Slack",
     line: "If Slack is configured and verified, bring the request here and confirm the work before it starts.",
@@ -54,6 +48,12 @@ const PANELS: ChannelPanel[] = [
     name: "Discord",
     line: "If Discord is configured and verified, bring the request here and confirm the work before it starts.",
     buttonLabel: "Add Jace to Discord",
+  },
+  {
+    id: "telegram",
+    name: "Telegram",
+    line: "If Telegram is configured, bring the request here and confirm the work before it starts.",
+    buttonLabel: "Message Jace on Telegram",
   },
 ];
 

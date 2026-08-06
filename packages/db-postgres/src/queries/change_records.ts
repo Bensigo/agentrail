@@ -11,6 +11,7 @@ import {
   changeRecordPrRevisions,
   acceptanceBuilderHandoffs,
   evidenceReviews,
+  evidenceVerificationPlans,
   evidenceReviewCriteria,
   evidenceReviewCorrections,
   evidenceReviewCorrectionDeliveries,
@@ -22,6 +23,7 @@ import {
   type ChangeRecordPrRow,
   type ChangeRecordPrRevisionRow,
   type AcceptanceBuilderHandoffRow,
+  type EvidenceVerificationPlanRow,
 } from "../schema/change_records.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
@@ -138,6 +140,10 @@ export function acceptanceBuilderHandoffId(input: { recordId: string; taskContex
 
 export function evidenceReviewId(input: { recordId: string; prRevisionId: string }): string {
   return uuid5Url(`evidence-review:${input.recordId}:${input.prRevisionId}`);
+}
+
+export function evidenceVerificationPlanId(input: { prRevisionId: string; criterionId: string }): string {
+  return uuid5Url(`evidence-verification-plan:${input.prRevisionId}:${input.criterionId}`);
 }
 
 export function correctionDeliveryId(input: { correctionId: string; deliveryKey: string }): string {
@@ -809,6 +815,67 @@ export type RecordEvidenceReviewInput = {
   criteria: Array<{ criterionId: string; criterionTextSnapshot: string; required: boolean; status: string; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; runtimeEvidence: Record<string, unknown>[]; reason: string }>;
   corrections: Array<{ criterionId?: string | null; observedBehavior: string; expectedBehavior: string; evidenceRefs: Record<string, unknown>[]; reproductionSteps?: string[]; likelyAffectedUnits?: string[]; contextRefs?: Record<string, unknown>[]; scopeBoundary: string; concreteImpact: string; requiredCorrection: string; reverification: string; repairPath?: string | null }>;
 };
+
+export type RecordEvidenceVerificationPlansInput = {
+  workspaceId: string;
+  recordId: string;
+  prRevisionId: string;
+  contractId: string;
+  contractVersion: number;
+  plannedBy: string;
+  plans: Array<{
+    criterionId: string;
+    criterionTextSnapshot: string;
+    modality: string;
+    environmentId?: string | null;
+    flow?: string | null;
+    expectedBehavior: string;
+    status: "planned" | "not_testable";
+    notTestableReason?: string | null;
+  }>;
+};
+
+/** Persist plans only for the current exact PR head and confirmed contract. */
+export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerificationPlansInput): Promise<{
+  plans: EvidenceVerificationPlanRow[];
+  inserted: boolean;
+}> {
+  return db.transaction(async (tx) => {
+    const revisions = await tx.select({ revision: changeRecordPrRevisions })
+      .from(changeRecordPrRevisions)
+      .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+      .where(and(
+        eq(changeRecordPrRevisions.id, input.prRevisionId),
+        eq(changeRecordPrs.recordId, input.recordId),
+        eq(changeRecordPrs.workspaceId, input.workspaceId),
+        sql`${changeRecordPrRevisions.supersededAt} IS NULL`
+      )).limit(1);
+    if (!revisions[0]) throw new Error("PR revision is missing or superseded");
+    const contracts = await tx.select({ id: acceptanceContracts.id })
+      .from(acceptanceContracts)
+      .where(and(
+        eq(acceptanceContracts.id, input.contractId),
+        eq(acceptanceContracts.recordId, input.recordId),
+        eq(acceptanceContracts.version, input.contractVersion),
+        eq(acceptanceContracts.status, "confirmed")
+      )).limit(1);
+    if (!contracts[0]) throw new Error("Confirmed Acceptance Contract does not match verification plan");
+    const ids = input.plans.map((plan) => evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }));
+    const existing = ids.length === 0 ? [] : await tx.select().from(evidenceVerificationPlans)
+      .where(sql`${evidenceVerificationPlans.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+    if (existing.length) return { plans: existing, inserted: false };
+    const rows = await tx.insert(evidenceVerificationPlans).values(input.plans.map((plan) => ({
+      id: evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }),
+      recordId: input.recordId, prRevisionId: input.prRevisionId,
+      acceptanceContractId: input.contractId, acceptanceContractVersion: input.contractVersion,
+      criterionId: plan.criterionId, criterionTextSnapshot: plan.criterionTextSnapshot,
+      modality: plan.modality, environmentId: plan.environmentId ?? null, flow: plan.flow ?? null,
+      expectedBehavior: plan.expectedBehavior, status: plan.status,
+      notTestableReason: plan.notTestableReason ?? null, plannedBy: input.plannedBy,
+    }))).returning();
+    return { plans: rows, inserted: true };
+  });
+}
 
 /** Persist a fully validated review only when its exact revision is current. */
 export async function recordEvidenceReview(input: RecordEvidenceReviewInput) {

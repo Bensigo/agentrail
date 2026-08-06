@@ -45,14 +45,15 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
 | Correction queue, exact record/revision binding | `7d560fcd` | focused queue/ack route tests and DB typecheck; queue is not notification |
+| Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
 
-The next slice must make proof plans and artifacts review-bound. Delivery is
+The next slice must bind artifacts to these persisted plans. Delivery is
 currently queue plus acknowledgement only; no dispatcher has proven notification.
 
 ## Remaining work, in dependency order
 
-1. Add review-bound artifact storage and a verification-plan model. Build a
-   worker that executes criterion-specific modality plans in a safe exact-head
+1. Bind artifact storage to persisted verification plans, then build a worker
+   that executes criterion-specific modality plans in a safe exact-head
    environment; API evidence must redact secrets/sensitive fields.
 2. Add correction-delivery queue/dispatch/readback for supported MCP task
    contexts and durable GitHub/Jace fallback, retaining attempt/outcome and
@@ -90,10 +91,12 @@ currently queue plus acknowledgement only; no dispatcher has proven notification
 ## Unverified assumptions and current boundaries
 
 - No Codex/Claude live pickup, Slack/Discord runtime integration, GitHub
-  canonical PR fetch, context compiler attestation, evidence-exercise worker,
-  browser proof, live delivery dispatch, or migration smoke exists yet.
+  canonical PR fetch, context compiler attestation, review-bound artifact
+  storage, evidence-exercise worker, browser proof, live delivery dispatch, or
+  migration smoke exists yet.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
-  `codex/trust-layer-acceptance-record`, currently at local commit `7d560fcd`.
+  `codex/trust-layer-acceptance-record`, currently includes uncommitted
+  verification-plan work on top of local commit `7d560fcd`.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012

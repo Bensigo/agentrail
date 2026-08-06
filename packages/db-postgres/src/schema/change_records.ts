@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -307,6 +308,45 @@ export const evidenceReviews = pgTable(
   })
 );
 
+/** A criterion-specific exact-head verification plan; planning is never proof. */
+export const evidenceVerificationPlans = pgTable(
+  "evidence_verification_plans",
+  {
+    id: uuid("id").primaryKey(),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    prRevisionId: uuid("pr_revision_id").notNull().references(() => changeRecordPrRevisions.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    criterionId: text("criterion_id").notNull(),
+    criterionTextSnapshot: text("criterion_text_snapshot").notNull(),
+    modality: text("modality").notNull(),
+    environmentId: text("environment_id"),
+    flow: text("flow"),
+    expectedBehavior: text("expected_behavior").notNull(),
+    status: text("status").notNull(),
+    notTestableReason: text("not_testable_reason"),
+    plannedBy: text("planned_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    revisionCriterion: uniqueIndex("evidence_verification_plans_revision_criterion_key").on(t.prRevisionId, t.criterionId),
+    recordRevision: index("evidence_verification_plans_record_revision_idx").on(t.recordId, t.prRevisionId),
+    modalityCheck: check(
+      "evidence_verification_plans_modality_check",
+      sql`${t.modality} IN ('ui', 'api', 'job', 'data')`
+    ),
+    statusCheck: check(
+      "evidence_verification_plans_status_check",
+      sql`${t.status} IN ('planned', 'not_testable')`
+    ),
+    plannedProofCheck: check(
+      "evidence_verification_plans_planned_proof_check",
+      sql`(${t.status} = 'not_testable' AND length(trim(coalesce(${t.notTestableReason}, ''))) > 0)
+        OR (${t.status} = 'planned' AND length(trim(coalesce(${t.environmentId}, ''))) > 0 AND length(trim(coalesce(${t.flow}, ''))) > 0)`
+    ),
+  })
+);
+
 /** One snapshotted status per Acceptance Contract criterion for a review. */
 export const evidenceReviewCriteria = pgTable(
   "evidence_review_criteria",
@@ -411,6 +451,7 @@ export type ChangeRecordPrRow = typeof changeRecordPrs.$inferSelect;
 export type ChangeRecordPrRevisionRow = typeof changeRecordPrRevisions.$inferSelect;
 export type AcceptanceBuilderHandoffRow = typeof acceptanceBuilderHandoffs.$inferSelect;
 export type EvidenceReviewRow = typeof evidenceReviews.$inferSelect;
+export type EvidenceVerificationPlanRow = typeof evidenceVerificationPlans.$inferSelect;
 export type EvidenceReviewCriterionRow = typeof evidenceReviewCriteria.$inferSelect;
 export type EvidenceReviewCorrectionRow = typeof evidenceReviewCorrections.$inferSelect;
 export type EvidenceReviewCorrectionDeliveryRow = typeof evidenceReviewCorrectionDeliveries.$inferSelect;

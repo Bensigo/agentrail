@@ -57,15 +57,18 @@ confirmation, metadata-only Context Packs, manual and fail-closed webhook
 exact-head PR revisions,
 criterion-level evidence validation, durable blocking correction-packet fields,
 human-selected builder handoff bindings, and MCP acknowledgement of a
-correction delivery.
+correction delivery. A worker-only API now persists exactly one safe
+verification plan for every confirmed criterion, bound to its current exact PR
+revision and contract; it rejects generic non-UI plans for user-visible
+criteria and requires a safe environment/flow or an explicit `not_testable`
+reason. A persisted plan is not proof.
 
 Not yet proven: Context-Pack token-budget/citation enforcement and canonical
 compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
-builder task; review-bound artifact
-upload/dispatch; GitHub/Jace fallback delivery; runtime modality-plan/exercise
-worker; API redaction worker; human outcomes/dependency workflow; and UI/browser
-E2E.
+builder task; review-bound artifact upload/dispatch; runtime modality-exercise
+worker; API redaction worker; GitHub/Jace fallback delivery; human
+outcomes/dependency workflow; and UI/browser E2E.
 
 ## Consequences
 

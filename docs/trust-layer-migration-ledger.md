@@ -70,6 +70,24 @@ acknowledgement only; no dispatcher has proven notification.
 
 ## Remaining work, in dependency order
 
+### Context Pack custody and source-resolution ledger
+
+- Durable acceptance intent is the confirmed, versioned Acceptance Contract in
+  the Acceptance Record: it defines what the human approved and remains the
+  authority for the task.
+- The bounded per-task Context Pack is the compiler's metadata-only selection:
+  cited paths/ranges, a reason for each selected source, token budget, stable
+  hashes, exclusions, and freshness including the claimed immutable
+  `repositoryRef`. It contains no raw repository source.
+- Just-in-time source resolution belongs to the local builder checkout: Codex,
+  Claude, or another selected builder rehydrates the cited ranges from its own
+  repository at that ref. The server exposes the bounded pack and exact ref,
+  not a source mirror.
+- This implementation is still not live external-builder proof. Unit/focused
+  tests cover the metadata, compiler cleanup, handoff, and read seams; no live
+  Codex/Claude pickup, source rehydration, acknowledgement, or resumed task is
+  established.
+
 1. Run the new worker against a safe exact-head environment and prove a
    criterion-specific UI flow end to end. Add redacted API/job/data execution
    and artifacts rather than forcing those modalities through screenshots.

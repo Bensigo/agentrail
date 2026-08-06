@@ -49,6 +49,9 @@ def _sources(included: Iterable[Any]) -> Tuple[List[Dict[str, Any]], int]:
             continue
         if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
             continue
+        reason = item.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RuntimeError("compiled Context Pack selected source has no reason")
         key = (path, citation, start, end)
         if key in seen:
             continue
@@ -60,6 +63,7 @@ def _sources(included: Iterable[Any]) -> Tuple[List[Dict[str, Any]], int]:
             "citation": citation,
             "startLine": start,
             "endLine": end,
+            "reason": reason.strip(),
             "tokenEstimate": tokens,
         }
         content_hash = item.get("contentHash") or item.get("textHash")
@@ -87,7 +91,12 @@ def _exclusions(items: Iterable[Any]) -> List[Dict[str, str]]:
     return exclusions
 
 
-def acceptance_context_manifest(pack: Dict[str, Any], contract: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def acceptance_context_manifest(
+    pack: Dict[str, Any],
+    contract: Dict[str, Any],
+    *,
+    repository_ref: str,
+) -> Dict[str, Dict[str, Any]]:
     """Return Console-compatible metadata without any source/snippet content.
 
     ``pack`` is the local output from :func:`build_context_pack`; ``contract``
@@ -95,6 +104,8 @@ def acceptance_context_manifest(pack: Dict[str, Any], contract: Dict[str, Any]) 
     ``content`` field at any depth, so it is safe to persist through
     ``recordAcceptanceContextPack``.
     """
+    if not isinstance(repository_ref, str) or not repository_ref.strip():
+        raise RuntimeError("compiled Context Pack has no claimed repository ref")
     budget = pack.get("retrievalBudget")
     if not isinstance(budget, dict) or not isinstance(budget.get("maxTokens"), int) or budget["maxTokens"] <= 0:
         raise RuntimeError("compiled Context Pack has no explicit token budget")
@@ -123,6 +134,7 @@ def acceptance_context_manifest(pack: Dict[str, Any], contract: Dict[str, Any]) 
     }
     durable_freshness = {
         "indexRevision": freshness["commitSha"],
+        "repositoryRef": repository_ref,
         "compiledAt": generated_at,
         "sourceTreeFingerprint": freshness.get("sourceTreeFingerprint"),
         "staleCount": freshness.get("staleCount", 0),

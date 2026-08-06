@@ -135,7 +135,7 @@ class AcceptanceRecordPackTests(unittest.TestCase):
             run_id="acceptance-manifest",
         )
         durable = acceptance_context_manifest(
-            load_context_pack(self.root, result["packId"]), self.contract
+            load_context_pack(self.root, result["packId"]), self.contract, repository_ref="main"
         )
 
         manifest = durable["manifest"]
@@ -144,5 +144,21 @@ class AcceptanceRecordPackTests(unittest.TestCase):
         self.assertEqual(manifest["acceptanceCriteria"], [{"id": "AC-1"}])
         self.assertTrue(manifest["sources"])
         self.assertTrue(all("content" not in item for item in manifest["sources"]))
+        self.assertTrue(all(item["reason"] for item in manifest["sources"]))
         self.assertFalse(durable["custody"]["fullSourceUploadAllowed"])
         self.assertTrue(durable["freshness"]["indexRevision"])
+        self.assertEqual(durable["freshness"]["repositoryRef"], "main")
+
+    def test_rejects_a_selected_source_without_a_reason(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "selected source has no reason"):
+            acceptance_context_manifest(
+                {
+                    "retrievalBudget": {"maxTokens": 100, "maxItems": 1},
+                    "included": [{"path": "src/save.py", "citation": "src/save.py:1-2", "startLine": 1, "endLine": 2}],
+                    "freshness": {"commitSha": "sha-1"},
+                    "generatedAt": "2026-08-06T00:00:00Z",
+                    "custody": {"fullSourceUploadAllowed": False},
+                },
+                self.contract,
+                repository_ref="main",
+            )

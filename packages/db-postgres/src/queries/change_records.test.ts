@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { acceptanceIntakeId, acceptanceIntakeMessageId, hasOpenAcceptanceQuestions, validateAcceptancePrDecision } from "./change_records.js";
+import { acceptanceContextPackRepositoryRefMatches, acceptanceIntakeId, acceptanceIntakeMessageId, hasOpenAcceptanceQuestions, validateAcceptancePrDecision } from "./change_records.js";
+
+describe("acceptance Context Pack repository binding", () => {
+  it("accepts only the exact non-empty compilation ref", () => {
+    expect(acceptanceContextPackRepositoryRefMatches({ repositoryRef: "main" }, "main")).toBe(true);
+    expect(acceptanceContextPackRepositoryRefMatches({ repositoryRef: "other-ref" }, "main")).toBe(false);
+    expect(acceptanceContextPackRepositoryRefMatches({}, "main")).toBe(false);
+  });
+});
 
 describe("hasOpenAcceptanceQuestions", () => {
   it("permits contracts without questions or with resolved questions", () => {

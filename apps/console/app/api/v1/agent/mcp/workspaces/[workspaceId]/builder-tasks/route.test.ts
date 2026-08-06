@@ -20,7 +20,8 @@ beforeEach(() => {
     handoff: { id: "handoff-1", recordId: "record-1", workspaceId: WS, repositoryId: "repo-1", builder: "codex", taskContextKey: "task-1", branchName: "jace/save", status: "handed_off", createdAt: new Date("2026-08-06T00:00:00.000Z"), prAttachedAt: null },
     record: { id: "record-1", repo: "acme/widgets", originChannel: "slack", sourceReferences: [{ kind: "slack_thread", id: "t-1" }] },
     contract: { id: "contract-1", version: 2, status: "confirmed", contract: { goal: "Save" }, confirmedAt: new Date("2026-08-06T00:01:00.000Z") },
-    contextPack: { id: "pack-1", version: 3, phase: "execute", contentHash: "sha256:abc", compilerVersion: "1", manifest: { tokenBudget: 100 }, custody: { fullSourceUploadAllowed: false }, freshness: { indexRevision: "1" }, jsonArtifactRef: "artifact.json", markdownArtifactRef: "artifact.md" },
+    contextPack: { id: "pack-1", version: 3, phase: "execute", contentHash: "sha256:abc", compilerVersion: "1", manifest: { tokenBudget: 100 }, custody: { fullSourceUploadAllowed: false }, freshness: { indexRevision: "1", repositoryRef: "main" }, jsonArtifactRef: "artifact.json", markdownArtifactRef: "artifact.md" },
+    repositoryRef: "main",
   } as never);
 });
 
@@ -51,6 +52,7 @@ describe("MCP builder task handoff", () => {
       record: { repo: "acme/widgets", originChannel: "slack" },
       confirmedContract: { id: "contract-1", version: 2, status: "confirmed" },
       contextPack: { id: "pack-1", version: 3, jsonArtifactRef: "artifact.json" },
+      repositoryRef: "main",
       note: expect.stringContaining("not proof"),
     });
   });

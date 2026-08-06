@@ -27,9 +27,9 @@ const payload = {
   phase: "execute",
   contentHash: HASH,
   compilerVersion: "context-compiler-v1",
-  manifest: { tokenBudget: 1000, tokenCount: 200, sources: [{ path: "src/cart.ts", citation: "src/cart.ts:10-20", startLine: 10, endLine: 20 }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] },
+  manifest: { tokenBudget: 1000, tokenCount: 200, sources: [{ path: "src/cart.ts", citation: "src/cart.ts:10-20", startLine: 10, endLine: 20, reason: "contains the affected cart flow" }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] },
   custody: { fullSourceUploadAllowed: false },
-  freshness: { indexRevision: "index-1", compiledAt: "2026-08-06T12:00:00.000Z" },
+  freshness: { indexRevision: "index-1", repositoryRef: "main", compiledAt: "2026-08-06T12:00:00.000Z" },
   jsonArtifactRef: "workspace://packs/1.json",
   markdownArtifactRef: "workspace://packs/1.md",
 };

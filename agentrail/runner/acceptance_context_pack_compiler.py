@@ -116,7 +116,7 @@ def compile_claim(
     index_fn: Callable[[Path], Any] = build_index,
     compile_fn: Callable[..., Dict[str, Any]] = build_context_pack,
     load_pack_fn: Callable[[Path, str], Dict[str, Any]] = load_context_pack,
-    manifest_fn: Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Dict[str, Any]]] = acceptance_context_manifest,
+    manifest_fn: Callable[..., Dict[str, Dict[str, Any]]] = acceptance_context_manifest,
     work_dir_factory: Callable[[], str] = lambda: tempfile.mkdtemp(prefix="agentrail-acceptance-pack-"),
 ) -> bool:
     """Compile and report one claim, deleting its checkout on every outcome."""
@@ -137,7 +137,7 @@ def compile_claim(
         pack_id = result.get("packId") if isinstance(result, dict) else None
         if not isinstance(pack_id, str) or not pack_id:
             raise RuntimeError("Context Pack compiler did not return a pack id")
-        durable = manifest_fn(load_pack_fn(repo_dir, pack_id), item.contract)
+        durable = manifest_fn(load_pack_fn(repo_dir, pack_id), item.contract, repository_ref=item.ref)
         manifest, custody, freshness = durable.get("manifest"), durable.get("custody"), durable.get("freshness")
         if not all(isinstance(value, dict) for value in (manifest, custody, freshness)):
             raise RuntimeError("Context Pack compiler did not produce durable metadata")

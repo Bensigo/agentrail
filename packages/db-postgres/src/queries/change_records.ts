@@ -81,6 +81,13 @@ function mergeHeadShasSql(headShas: readonly string[]) {
   `;
 }
 
+export function acceptanceContextPackRepositoryRefMatches(
+  freshness: Record<string, unknown>,
+  repositoryRef: string,
+): boolean {
+  return typeof freshness.repositoryRef === "string" && freshness.repositoryRef.length > 0 && freshness.repositoryRef === repositoryRef;
+}
+
 export type ChangeRecordAnchor = {
   workspaceId: string;
   repo: string;
@@ -1278,7 +1285,7 @@ export async function createAcceptanceBuilderHandoff(
       .limit(1);
     if (!contract[0]) throw new Error("Confirmed Acceptance Contract does not match builder handoff");
     const pack = await tx
-      .select({ id: acceptanceContextPacks.id })
+      .select({ id: acceptanceContextPacks.id, freshness: acceptanceContextPacks.freshness, repositoryRef: acceptanceContextPackCompilations.repositoryRef })
       .from(acceptanceContextPacks)
       .innerJoin(acceptanceContextPackCompilations, eq(acceptanceContextPackCompilations.contextPackId, acceptanceContextPacks.id))
       .where(and(
@@ -1294,6 +1301,9 @@ export async function createAcceptanceBuilderHandoff(
       ))
       .limit(1);
     if (!pack[0]) throw new Error("A compiled execute Context Pack must match the selected confirmed contract and repository");
+    if (!acceptanceContextPackRepositoryRefMatches(pack[0].freshness, pack[0].repositoryRef)) {
+      throw new Error("Compiled execute Context Pack freshness repositoryRef does not match the compilation repositoryRef");
+    }
     const record = await tx
       .select({ id: changeRecords.id, repo: changeRecords.repo })
       .from(changeRecords)
@@ -1395,6 +1405,7 @@ export type AcceptanceBuilderTaskRead = {
     jsonArtifactRef: string | null;
     markdownArtifactRef: string | null;
   };
+  repositoryRef: string;
 };
 
 /**
@@ -1417,6 +1428,7 @@ export async function readAcceptanceBuilderTask(input: {
       record: changeRecords,
       contract: acceptanceContracts,
       contextPack: acceptanceContextPacks,
+      compilation: acceptanceContextPackCompilations,
     })
     .from(acceptanceBuilderHandoffs)
     .innerJoin(changeRecords, and(
@@ -1434,6 +1446,15 @@ export async function readAcceptanceBuilderTask(input: {
       eq(acceptanceContextPacks.id, acceptanceBuilderHandoffs.contextPackId),
       eq(acceptanceContextPacks.recordId, changeRecords.id),
     ))
+    .innerJoin(acceptanceContextPackCompilations, and(
+      eq(acceptanceContextPackCompilations.contextPackId, acceptanceContextPacks.id),
+      eq(acceptanceContextPackCompilations.recordId, changeRecords.id),
+      eq(acceptanceContextPackCompilations.repositoryId, acceptanceBuilderHandoffs.repositoryId),
+      eq(acceptanceContextPackCompilations.acceptanceContractId, acceptanceBuilderHandoffs.acceptanceContractId),
+      eq(acceptanceContextPackCompilations.acceptanceContractVersion, acceptanceBuilderHandoffs.acceptanceContractVersion),
+      eq(acceptanceContextPackCompilations.phase, "execute"),
+      eq(acceptanceContextPackCompilations.status, "compiled"),
+    ))
     .where(and(
       eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
       sql`lower(trim(${acceptanceBuilderHandoffs.builder})) = ${builder}`,
@@ -1443,6 +1464,7 @@ export async function readAcceptanceBuilderTask(input: {
 
   if (rows.length !== 1) return null;
   const row = rows[0]!;
+  if (!acceptanceContextPackRepositoryRefMatches(row.contextPack.freshness, row.compilation.repositoryRef)) return null;
   return {
     handoff: {
       id: row.handoff.id,
@@ -1481,6 +1503,7 @@ export async function readAcceptanceBuilderTask(input: {
       jsonArtifactRef: row.contextPack.jsonArtifactRef,
       markdownArtifactRef: row.contextPack.markdownArtifactRef,
     },
+    repositoryRef: row.compilation.repositoryRef,
   };
 }
 

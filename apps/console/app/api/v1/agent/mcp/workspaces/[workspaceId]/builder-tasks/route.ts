@@ -29,6 +29,7 @@ export async function GET(
       confirmedAt: task.contract.confirmedAt?.toISOString() ?? null,
     },
     contextPack: task.contextPack,
+    repositoryRef: task.repositoryRef,
     note: "This is the bounded, versioned handoff selected for this builder task. It is not proof of implementation or verification.",
   });
 }

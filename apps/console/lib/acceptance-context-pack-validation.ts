@@ -27,7 +27,7 @@ export function validateAcceptanceContextPackMetadata(input: {
   if (!Number.isInteger(manifest.tokenBudget) || (manifest.tokenBudget as number) <= 0 || !Number.isInteger(manifest.tokenCount) || (manifest.tokenCount as number) < 0 || (manifest.tokenCount as number) > (manifest.tokenBudget as number)) {
     return { ok: false, error: "manifest requires tokenBudget and tokenCount within that explicit budget" };
   }
-  if (!array(manifest.sources) || manifest.sources.length === 0 || manifest.sources.some((source) => !object(source) || !text(source.path) || !text(source.citation) || !Number.isInteger(source.startLine) || !Number.isInteger(source.endLine) || (source.startLine as number) < 1 || (source.endLine as number) < (source.startLine as number))) {
+  if (!array(manifest.sources) || manifest.sources.length === 0 || manifest.sources.some((source) => !object(source) || !text(source.path) || !text(source.citation) || !text(source.reason) || !Number.isInteger(source.startLine) || !Number.isInteger(source.endLine) || (source.startLine as number) < 1 || (source.endLine as number) < (source.startLine as number))) {
     return { ok: false, error: "manifest requires cited bounded source ranges" };
   }
   for (const field of ["architectureBoundaries", "tests", "decisions", "exclusions"]) {
@@ -40,8 +40,8 @@ export function validateAcceptanceContextPackMetadata(input: {
     return { ok: false, error: "manifest acceptanceCriteria must exactly match the confirmed contract" };
   }
   if (custody.fullSourceUploadAllowed !== false) return { ok: false, error: "custody must explicitly forbid full source upload" };
-  if (!text(freshness.indexRevision) || !text(freshness.compiledAt) || Number.isNaN(Date.parse(freshness.compiledAt))) {
-    return { ok: false, error: "freshness requires indexRevision and compiledAt" };
+  if (!text(freshness.indexRevision) || !text(freshness.repositoryRef) || !text(freshness.compiledAt) || Number.isNaN(Date.parse(freshness.compiledAt))) {
+    return { ok: false, error: "freshness requires indexRevision, repositoryRef, and compiledAt" };
   }
   return { ok: true };
 }

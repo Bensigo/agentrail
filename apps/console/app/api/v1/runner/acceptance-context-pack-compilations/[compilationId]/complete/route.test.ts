@@ -19,9 +19,9 @@ const params = Promise.resolve({ compilationId: "compilation-1" });
 const HASH = `sha256:${"a".repeat(64)}`;
 const compiled = {
   workerId: "worker-1", status: "compiled", compilerVersion: "compiler-v1", contentHash: HASH,
-  manifest: { tokenBudget: 500, tokenCount: 100, sources: [{ path: "src/save.ts", citation: "src/save.ts:1-10", startLine: 1, endLine: 10 }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] },
+  manifest: { tokenBudget: 500, tokenCount: 100, sources: [{ path: "src/save.ts", citation: "src/save.ts:1-10", startLine: 1, endLine: 10, reason: "contains the save implementation" }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] },
   custody: { fullSourceUploadAllowed: false },
-  freshness: { indexRevision: "sha-1", compiledAt: "2026-08-06T12:00:00.000Z" },
+  freshness: { indexRevision: "sha-1", repositoryRef: "main", compiledAt: "2026-08-06T12:00:00.000Z" },
   jsonArtifactRef: "artifact://pack.json", markdownArtifactRef: "artifact://pack.md",
 };
 function request(body: unknown, authorized = true) {
@@ -32,7 +32,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
   vi.mocked(readClaimedAcceptanceContextPackCompilation).mockResolvedValue({
-    compilation: { id: "compilation-1", workspaceId: "ws-1", recordId: "record-1", phase: "execute", acceptanceContractId: "contract-1", acceptanceContractVersion: 1 },
+    compilation: { id: "compilation-1", workspaceId: "ws-1", recordId: "record-1", phase: "execute", repositoryRef: "main", acceptanceContractId: "contract-1", acceptanceContractVersion: 1 },
     contract: { id: "contract-1", version: 1, contract: { originalUserWording: "save", goal: "save", acceptanceCriteria: [{ id: "saved", text: "saves", required: true, userVisible: true }] } },
   } as never);
   vi.mocked(recordAcceptanceContextPack).mockResolvedValue({ inserted: true, pack: { id: "pack-1", version: 1 } } as never);
@@ -58,6 +58,19 @@ describe("Context Pack compilation completion", () => {
     expect(response.status).toBe(400);
     expect(recordAcceptanceContextPack).not.toHaveBeenCalled();
     expect(reportAcceptanceContextPackCompilation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a compiled report from a foreign or stale repository ref", async () => {
+    const response = await POST(request({ ...compiled, freshness: { ...compiled.freshness, repositoryRef: "other-ref" } }), { params });
+    expect(response.status).toBe(409);
+    expect(recordAcceptanceContextPack).not.toHaveBeenCalled();
+    expect(reportAcceptanceContextPackCompilation).not.toHaveBeenCalled();
+  });
+
+  it("rejects a selected source without a reason", async () => {
+    const response = await POST(request({ ...compiled, manifest: { ...compiled.manifest, sources: [{ ...compiled.manifest.sources[0], reason: " " }] } }), { params });
+    expect(response.status).toBe(400);
+    expect(recordAcceptanceContextPack).not.toHaveBeenCalled();
   });
 
   it("records a bounded failure without accepting a Pack", async () => {

@@ -61,6 +61,9 @@ export async function POST(
   if (!contract.ok) return NextResponse.json({ error: "claimed Acceptance Contract is invalid" }, { status: 409 });
   const validated = validateAcceptanceContextPackMetadata({ manifest, custody, freshness, contract: contract.value });
   if (!validated.ok) return NextResponse.json({ error: validated.error }, { status: 400 });
+  if (!text(claimed.compilation.repositoryRef) || freshness.repositoryRef !== claimed.compilation.repositoryRef) {
+    return NextResponse.json({ error: "compiled Context Pack freshness.repositoryRef does not match the claimed compilation repositoryRef" }, { status: 409 });
+  }
 
   try {
     const pack = await recordAcceptanceContextPack({

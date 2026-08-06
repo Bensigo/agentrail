@@ -58,6 +58,8 @@ class AcceptanceContextPackCompilerTests(unittest.TestCase):
         self.assertTrue(compile_claim(local_item, CONFIG, transport=transport, work_dir_factory=lambda: str(checkout)))
         self.assertEqual(reports[0]["status"], "compiled")
         self.assertTrue(reports[0]["manifest"]["sources"])  # type: ignore[index]
+        self.assertTrue(reports[0]["manifest"]["sources"][0]["reason"])  # type: ignore[index]
+        self.assertEqual(reports[0]["freshness"]["repositoryRef"], "main")  # type: ignore[index]
         self.assertNotIn("content", reports[0]["manifest"]["sources"][0])  # type: ignore[index]
         self.assertFalse(checkout.exists())
 
@@ -81,7 +83,7 @@ class AcceptanceContextPackCompilerTests(unittest.TestCase):
         ok = compile_claim(
             ITEM, CONFIG, transport=transport, clone_fn=clone, index_fn=lambda repo: calls.setdefault("index", repo),
             compile_fn=compile_fn, load_pack_fn=lambda _repo, _id: {"local": "pack"},
-            manifest_fn=lambda _pack, _contract: {"manifest": {"tokenBudget": 1, "tokenCount": 1, "sources": [{"path": "a", "citation": "a:1", "startLine": 1, "endLine": 1}], "acceptanceCriteria": [{"id": "saved"}], "architectureBoundaries": [], "tests": [], "decisions": [], "exclusions": []}, "custody": {"fullSourceUploadAllowed": False}, "freshness": {"indexRevision": "sha", "compiledAt": "2026-08-06T00:00:00Z"}},
+            manifest_fn=lambda _pack, _contract, *, repository_ref: {"manifest": {"tokenBudget": 1, "tokenCount": 1, "sources": [{"path": "a", "citation": "a:1", "startLine": 1, "endLine": 1, "reason": "selected for the claimed task"}], "acceptanceCriteria": [{"id": "saved"}], "architectureBoundaries": [], "tests": [], "decisions": [], "exclusions": []}, "custody": {"fullSourceUploadAllowed": False}, "freshness": {"indexRevision": "sha", "repositoryRef": repository_ref, "compiledAt": "2026-08-06T00:00:00Z"}},
             work_dir_factory=lambda: str(root),
         )
         self.assertTrue(ok)

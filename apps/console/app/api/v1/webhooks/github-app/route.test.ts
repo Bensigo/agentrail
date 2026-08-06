@@ -3,20 +3,26 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
+  attachExternalPullRequest: vi.fn(),
   enqueueReviewJob: vi.fn(),
+  findAcceptanceBuilderHandoffForPullRequest: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
   getRepositoryByName: vi.fn(),
   appendChangeRecordEvent: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
+  markAcceptanceBuilderHandoffPrAttached: vi.fn(),
   recordReviewEvent: vi.fn(),
 }));
 import { POST } from "./route";
 import {
+  attachExternalPullRequest,
   enqueueReviewJob,
+  findAcceptanceBuilderHandoffForPullRequest,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
+  markAcceptanceBuilderHandoffPrAttached,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
 
@@ -38,6 +44,7 @@ const CONNECTED_REPO = {
   url: "https://github.com/ada/widgets",
   defaultBranch: "main",
 };
+const HANDOFF = { id: "handoff-1", recordId: "record-1" };
 
 /** The brief's own recipe: HMAC-SHA256 of the RAW body, hex-encoded, `sha256=` prefixed. */
 function sign(body: string, secret: string): string {
@@ -77,6 +84,8 @@ function prPayload(
     action?: string;
     draft?: boolean;
     headSha?: string;
+    headRef?: string;
+    baseSha?: string;
     prNumber?: number;
     repoFullName?: string;
     installationId?: number;
@@ -90,13 +99,15 @@ function prPayload(
     action = "opened",
     draft = false,
     headSha = "abc123def4567890",
+    headRef = "jace/saved-state",
+    baseSha = "base123def4567890",
     prNumber = 42,
     repoFullName = "ada/widgets",
     installationId = 999,
     omitInstallation = false,
     merged = false,
     mergeCommitSha = "merge-sha-1",
-    htmlUrl = "https://github.com/ada/widgets/pull/42",
+    htmlUrl,
   } = opts;
   return {
     action,
@@ -104,10 +115,11 @@ function prPayload(
     pull_request: {
       number: prNumber,
       draft,
-      head: { sha: headSha },
+      head: { sha: headSha, ref: headRef },
+      base: { sha: baseSha },
       merged,
       merge_commit_sha: mergeCommitSha,
-      html_url: htmlUrl,
+      html_url: htmlUrl ?? `https://github.com/${repoFullName}/pull/${prNumber}`,
     },
     repository: { full_name: repoFullName },
     ...(omitInstallation ? {} : { installation: { id: installationId } }),
@@ -125,6 +137,11 @@ beforeEach(() => {
     deduped: false,
     superseded: 0,
   } as never);
+  vi.mocked(findAcceptanceBuilderHandoffForPullRequest).mockResolvedValue(HANDOFF as never);
+  vi.mocked(attachExternalPullRequest).mockResolvedValue({
+    revision: { id: "revision-1", headSha: "abc123def4567890" },
+  } as never);
+  vi.mocked(markAcceptanceBuilderHandoffPrAttached).mockResolvedValue(undefined as never);
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
   vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
   vi.mocked(recordReviewEvent).mockResolvedValue({ recorded: true, eventId: "review-event-1" } as never);
@@ -258,20 +275,20 @@ describe("POST /api/v1/webhooks/github-app", () => {
     expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
-  it("5b. a draft PR's ready_for_review action is NEVER draft-gated — it proceeds to enqueue", async () => {
+  it("5b. a draft PR's ready_for_review action is NEVER draft-gated — it proceeds to exact handoff correlation", async () => {
     const body = JSON.stringify(prPayload({ action: "ready_for_review", draft: true }));
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);
-    expect(enqueueReviewJob).toHaveBeenCalledTimes(1);
+    expect(attachExternalPullRequest).toHaveBeenCalledTimes(1);
   });
 
   it("5c. a non-draft PR (draft===false) is never skipped by the draft rule", async () => {
     for (const action of ["opened", "reopened", "synchronize"]) {
-      vi.mocked(enqueueReviewJob).mockClear();
+      vi.mocked(attachExternalPullRequest).mockClear();
       const body = JSON.stringify(prPayload({ action, draft: false }));
       const res = await POST(makeRequest(body));
       expect(res.status).toBe(200);
-      expect(enqueueReviewJob).toHaveBeenCalledTimes(1);
+      expect(attachExternalPullRequest).toHaveBeenCalledTimes(1);
     }
   });
 
@@ -336,7 +353,7 @@ describe("POST /api/v1/webhooks/github-app", () => {
     const body = JSON.stringify(prPayload());
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);
-    expect(enqueueReviewJob).toHaveBeenCalledTimes(1);
+    expect(attachExternalPullRequest).toHaveBeenCalledTimes(1);
   });
 
   // ---------------------------------------------------------------------
@@ -354,26 +371,31 @@ describe("POST /api/v1/webhooks/github-app", () => {
   });
 
   // ---------------------------------------------------------------------
-  // 9. happy path — enqueue + dedupe/supersede pass-through
+  // 9. exact builder handoff correlation — no generic advisory queue
   // ---------------------------------------------------------------------
 
-  it("9a. happy path enqueues with headSha = pull_request.head.sha and returns ok/enqueued/deduped/superseded", async () => {
-    vi.mocked(enqueueReviewJob).mockResolvedValue({
-      id: "job-1",
-      deduped: false,
-      superseded: 0,
+  it("9a. exact handoff attaches the canonical PR head and records the handoff attachment", async () => {
+    vi.mocked(attachExternalPullRequest).mockResolvedValueOnce({
+      revision: { id: "revision-7", headSha: "deadbeef1234" },
     } as never);
     const body = JSON.stringify(
       prPayload({ headSha: "deadbeef1234", prNumber: 7, repoFullName: "ada/widgets" })
     );
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);
-    expect(enqueueReviewJob).toHaveBeenCalledWith({
+    expect(findAcceptanceBuilderHandoffForPullRequest).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
-      repo: "ada/widgets",
-      prNumber: 7,
-      headSha: "deadbeef1234",
-      event: "opened",
+      repositoryId: "repo-1",
+      branchName: "jace/saved-state",
+    });
+    expect(attachExternalPullRequest).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID, recordId: "record-1", repo: "ada/widgets",
+      repositoryId: "repo-1", prNumber: 7,
+      prUrl: "https://github.com/ada/widgets/pull/7", baseSha: "base123def4567890",
+      headSha: "deadbeef1234", attachedBy: "github-webhook", source: "github_webhook",
+    });
+    expect(markAcceptanceBuilderHandoffPrAttached).toHaveBeenCalledWith({
+      handoffId: "handoff-1", workspaceId: WORKSPACE_ID,
     });
     expect(recordReviewEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -386,56 +408,40 @@ describe("POST /api/v1/webhooks/github-app", () => {
       })
     );
     expect(await res.json()).toEqual({
-      ok: true,
-      enqueued: true,
-      deduped: false,
-      superseded: 0,
+      ok: true, linked: true, recordId: "record-1", prRevisionId: "revision-7",
+      exactHeadSha: "deadbeef1234", reviewWorker: "not_started",
     });
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
-  it("9b. a replayed delivery comes back deduped:true, still 200", async () => {
-    vi.mocked(enqueueReviewJob).mockResolvedValue({
-      id: "job-1",
-      deduped: true,
-      superseded: 0,
-    } as never);
+  it("9b. no matching handoff is explicit, unlinked, and never queued", async () => {
+    vi.mocked(findAcceptanceBuilderHandoffForPullRequest).mockResolvedValueOnce(null);
     const body = JSON.stringify(prPayload());
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      ok: true,
-      enqueued: true,
-      deduped: true,
-      superseded: 0,
-    });
+    expect(await res.json()).toEqual({ ok: true, ignored: true, reason: "no matching builder handoff" });
+    expect(attachExternalPullRequest).not.toHaveBeenCalled();
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
-  it("9c. a push that supersedes an older queued job surfaces superseded > 0", async () => {
-    vi.mocked(enqueueReviewJob).mockResolvedValue({
-      id: "job-2",
-      deduped: false,
-      superseded: 1,
-    } as never);
-    const body = JSON.stringify(prPayload({ action: "synchronize", headSha: "newsha" }));
+  it("9c. a wrong branch is unlinked even when the repository is connected", async () => {
+    vi.mocked(findAcceptanceBuilderHandoffForPullRequest).mockResolvedValueOnce(null);
+    const body = JSON.stringify(prPayload({ headRef: "jace/wrong-branch" }));
     const res = await POST(makeRequest(body));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      ok: true,
-      enqueued: true,
-      deduped: false,
-      superseded: 1,
-    });
+    expect(await res.json()).toEqual({ ok: true, ignored: true, reason: "no matching builder handoff" });
+    expect(findAcceptanceBuilderHandoffForPullRequest).toHaveBeenCalledWith(expect.objectContaining({ branchName: "jace/wrong-branch" }));
+    expect(attachExternalPullRequest).not.toHaveBeenCalled();
   });
 
-  it("9d. passes the pull_request action through as the job's event field (synchronize)", async () => {
-    const body = JSON.stringify(prPayload({ action: "synchronize" }));
-    await POST(makeRequest(body));
-    expect(enqueueReviewJob).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "synchronize" })
-    );
-    expect(recordReviewEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ eventType: "head_updated", deliveryId: DELIVERY_ID })
-    );
+  it("9d. missing base/head/ref/url identity never looks up or attaches a handoff", async () => {
+    const payload = prPayload();
+    delete (payload.pull_request as Record<string, unknown>).base;
+    const response = await POST(makeRequest(JSON.stringify(payload)));
+    expect(await response.json()).toEqual({ ok: true, ignored: true, reason: "missing canonical PR identity" });
+    expect(findAcceptanceBuilderHandoffForPullRequest).not.toHaveBeenCalled();
+    expect(attachExternalPullRequest).not.toHaveBeenCalled();
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("9e. pull_request_review submitted records the review ledger and stops after acking", async () => {

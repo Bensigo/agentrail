@@ -1,11 +1,13 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
-  enqueueReviewJob,
+  attachExternalPullRequest,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
+  findAcceptanceBuilderHandoffForPullRequest,
   findOrCreateChangeRecord,
+  markAcceptanceBuilderHandoffPrAttached,
   triggerDependencyWatchesForPush,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
@@ -58,12 +60,10 @@ import {
  * workspace — dogfood-only until the allowlist grows) -> `repository.full_name`
  * must be a repo the workspace has actually connected
  * (`getRepositoryByName`; never proxies an unconnected repo's events). Only
- * then does `enqueueReviewJob` run, keyed by `headSha = pull_request.head.sha`
- * and `event = action` (the `review_jobs.event` column drives both the
- * worker prompt and the `synchronize` debounce — see that query's own
- * doc-comment). A replayed delivery for the same (workspace, repo, pr, head)
- * re-derives the SAME deterministic row id and comes back `deduped: true` —
- * still 200, never an error.
+ * then does a pre-recorded builder handoff match on the exact workspace,
+ * connected repository, and head branch. Only that match may attach the PR at
+ * its exact head; no handoff is an explicit unlinked outcome, never an
+ * advisory-review queue admission.
  */
 
 const SIGNATURE_HEADER = "x-hub-signature-256";
@@ -330,6 +330,15 @@ export async function POST(request: NextRequest) {
     head && typeof head === "object"
       ? (head as Record<string, unknown>).sha
       : undefined;
+  const headRef =
+    head && typeof head === "object"
+      ? (head as Record<string, unknown>).ref
+      : undefined;
+  const baseSha =
+    prObj.base && typeof prObj.base === "object"
+      ? (prObj.base as Record<string, unknown>).sha
+      : undefined;
+  const prUrl = prObj.html_url;
   const prNumber = prObj.number;
   const occurredAt =
     githubEvent === "pull_request_review" &&
@@ -343,7 +352,7 @@ export async function POST(request: NextRequest) {
         ? new Date(prObj.created_at)
         : new Date();
 
-  if (typeof headSha !== "string" || typeof prNumber !== "number") {
+  if (typeof headSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber < 1) {
     return ignored();
   }
 
@@ -428,18 +437,42 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, merged: true });
   }
 
-  const result = await enqueueReviewJob({
+  if (typeof headRef !== "string" || !headRef || typeof baseSha !== "string" || !baseSha || typeof prUrl !== "string" || !prUrl) {
+    return ignored("missing canonical PR identity");
+  }
+  const handoff = await findAcceptanceBuilderHandoffForPullRequest({
     workspaceId: workspace.workspaceId,
-    repo: repoFullName,
-    prNumber,
-    headSha,
-    event: action,
+    repositoryId: connectedRepo.id,
+    branchName: headRef,
   });
-
-  return NextResponse.json({
-    ok: true,
-    enqueued: true,
-    deduped: result.deduped,
-    superseded: result.superseded,
-  });
+  if (!handoff) return ignored("no matching builder handoff");
+  try {
+    const attachment = await attachExternalPullRequest({
+      workspaceId: workspace.workspaceId,
+      recordId: handoff.recordId,
+      repo: repoFullName,
+      repositoryId: connectedRepo.id,
+      prNumber,
+      prUrl,
+      baseSha,
+      headSha,
+      attachedBy: "github-webhook",
+      source: "github_webhook",
+    });
+    await markAcceptanceBuilderHandoffPrAttached({
+      handoffId: handoff.id,
+      workspaceId: workspace.workspaceId,
+    });
+    return NextResponse.json({
+      ok: true,
+      linked: true,
+      recordId: handoff.recordId,
+      prRevisionId: attachment.revision.id,
+      exactHeadSha: attachment.revision.headSha,
+      reviewWorker: "not_started",
+    });
+  } catch (error) {
+    console.error("[github-app/webhook] builder handoff attach failed:", error);
+    return ignored("builder handoff attachment failed");
+  }
 }

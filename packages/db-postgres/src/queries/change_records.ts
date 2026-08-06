@@ -2664,7 +2664,7 @@ async function terminalizeUnavailableEvidenceVerificationExecutions(): Promise<v
     FROM evidence_verification_plans AS plan
     INNER JOIN change_record_pr_revisions AS revision ON revision.id = plan.pr_revision_id
     INNER JOIN change_record_prs AS attachment ON attachment.id = revision.pr_attachment_id
-    LEFT JOIN preview_boots AS preview ON preview.id = plan.environment_id
+    LEFT JOIN preview_boots AS preview ON preview.id::text = plan.environment_id
     WHERE execution.verification_plan_id = plan.id
       AND execution.status = 'queued'
       AND (
@@ -2704,7 +2704,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
       INNER JOIN evidence_verification_plans AS plan ON plan.id = execution.verification_plan_id
       INNER JOIN change_record_pr_revisions AS revision ON revision.id = plan.pr_revision_id
       INNER JOIN change_record_prs AS attachment ON attachment.id = revision.pr_attachment_id
-      INNER JOIN preview_boots AS preview ON preview.id = plan.environment_id
+      INNER JOIN preview_boots AS preview ON preview.id::text = plan.environment_id
       WHERE execution.status = 'queued'
         AND plan.status = 'planned'
         AND plan.modality IN ('ui', 'api')

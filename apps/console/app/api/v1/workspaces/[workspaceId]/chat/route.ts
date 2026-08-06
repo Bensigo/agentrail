@@ -7,6 +7,9 @@ import {
   listJaceMessagesSince,
   enqueueChannelMessage,
   pendingApprovalsForWorkspace,
+  acceptanceIntakeId,
+  readAcceptanceIntakeReadback,
+  readAcceptanceBriefBinding,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
@@ -79,16 +82,51 @@ export async function GET(
   }
 
   const conversationKey = consoleConversationKey(session.user.id, n);
+  const intakeId = acceptanceIntakeId({
+    workspaceId,
+    originChannel: "console",
+    conversationKey,
+  });
   const [messages, allPending] = await Promise.all([
     listJaceMessagesSince(workspaceId, conversationKey, afterSeq),
     pendingApprovalsForWorkspace(workspaceId),
   ]);
+
+  // The chat client never supplies an intake, record, or Brief identifier.
+  // Derive the private intake from the authenticated member's validated
+  // conversation, then resolve the optional record/Brief link server-side.
+  const intakeReadback = await readAcceptanceIntakeReadback({ workspaceId, intakeId });
+  const briefBinding = intakeReadback?.intake.recordId
+    ? await readAcceptanceBriefBinding({ workspaceId, recordId: intakeReadback.intake.recordId })
+    : null;
 
   // Scoped to THIS member's own console thread — a chat thread is private,
   // never the whole workspace's pending set (that's the Approvals page's job).
   const approvals = allPending.filter(
     (a) => a.channel === "console" && a.conversationKey === conversationKey
   );
+
+  const acceptance = intakeReadback
+    ? {
+        intake_id: intakeReadback.intake.id,
+        status: intakeReadback.intake.status,
+        ...(intakeReadback.intake.recordId
+          ? {
+              record_id: intakeReadback.intake.recordId,
+              ...(briefBinding
+                ? {
+                    brief: {
+                      slug: briefBinding.brief.slug,
+                      title: briefBinding.brief.title,
+                      status: briefBinding.brief.status,
+                      updated_at: briefBinding.brief.updatedAt.toISOString(),
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      }
+    : null;
 
   return NextResponse.json({
     messages: messages.map((m) => ({
@@ -104,6 +142,7 @@ export async function GET(
       tool_input: a.toolInput,
       created_at: a.createdAt.toISOString(),
     })),
+    acceptance,
   });
 }
 

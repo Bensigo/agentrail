@@ -44,6 +44,15 @@ const DB_AVAILABLE: boolean = await (async () => {
   }
 })();
 
+function compareBriefItemsForSnapshot(
+  left: { createdAt: Date; id: string },
+  right: { createdAt: Date; id: string }
+): number {
+  const timeDelta = left.createdAt.getTime() - right.createdAt.getTime();
+  if (timeDelta !== 0) return timeDelta;
+  return left.id.localeCompare(right.id);
+}
+
 describe.skipIf(!DB_AVAILABLE)(
   "change_records queries — real Postgres integration (Arc D storage)",
   () => {
@@ -348,6 +357,7 @@ describe.skipIf(!DB_AVAILABLE)(
           },
         ])
         .returning();
+      const orderedItems = [firstItem, secondItem].sort(compareBriefItemsForSnapshot);
       const firstDraft = await createDraftAcceptanceRecord({
         workspaceId: wsId,
         repo: "acme/widgets",
@@ -376,12 +386,12 @@ describe.skipIf(!DB_AVAILABLE)(
         slug: brief.slug,
         items: [
           expect.objectContaining({
-            id: firstItem.id,
-            statement: "The scope is bounded",
+            id: orderedItems[0]!.id,
+            statement: orderedItems[0]!.statement,
           }),
           expect.objectContaining({
-            id: secondItem.id,
-            statement: "Do not dump the whole repo",
+            id: orderedItems[1]!.id,
+            statement: orderedItems[1]!.statement,
           }),
         ],
       });
@@ -390,6 +400,13 @@ describe.skipIf(!DB_AVAILABLE)(
         .update(briefItems)
         .set({ statement: "The scope is bounded, but updated later" })
         .where(eq(briefItems.id, firstItem.id));
+      const updatedFirstItem = {
+        ...firstItem,
+        statement: "The scope is bounded, but updated later",
+      };
+      const updatedOrderedItems = [updatedFirstItem, secondItem].sort(
+        compareBriefItemsForSnapshot
+      );
 
       const secondDraft = await createDraftAcceptanceRecord({
         workspaceId: wsId,
@@ -414,12 +431,12 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(secondBinding.briefSnapshot).toMatchObject({
         items: [
           expect.objectContaining({
-            id: firstItem.id,
-            statement: "The scope is bounded, but updated later",
+            id: updatedOrderedItems[0]!.id,
+            statement: updatedOrderedItems[0]!.statement,
           }),
           expect.objectContaining({
-            id: secondItem.id,
-            statement: "Do not dump the whole repo",
+            id: updatedOrderedItems[1]!.id,
+            statement: updatedOrderedItems[1]!.statement,
           }),
         ],
       });
@@ -432,8 +449,12 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(recordReadback?.binding.briefSnapshot).toMatchObject({
         items: [
           expect.objectContaining({
-            id: firstItem.id,
-            statement: "The scope is bounded",
+            id: orderedItems[0]!.id,
+            statement: orderedItems[0]!.statement,
+          }),
+          expect.objectContaining({
+            id: orderedItems[1]!.id,
+            statement: orderedItems[1]!.statement,
           }),
         ],
       });

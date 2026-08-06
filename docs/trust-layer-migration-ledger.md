@@ -53,6 +53,10 @@ not that Jace reviewed, proved, blocked, notified, or approved anything.
 Review completion now additionally requires the same current claim's request
 ID and worker ID, alongside the existing record/contract/revision/head checks.
 That closes stale-worker completion, but is not a reviewer runtime.
+The Jace review-worker protocol core now holds one exact claim at a time and
+pins its completion identity from that claim. It is not started until a
+separate bounded PR-evidence evaluator exists; evaluator errors produce no
+completion or verdict and let the lease recover honestly.
 
 ## Canonical MVP flow
 

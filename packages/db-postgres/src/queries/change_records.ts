@@ -548,6 +548,63 @@ export async function recordAcceptanceInboundIntake(
   });
 }
 
+export type AppendAcceptanceOutboundReplyInput = {
+  workspaceId: string;
+  intakeId: string;
+  sourceKey: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * Appends one Jace reply to an existing, workspace-owned Intake. This is
+ * deliberately separate from inbound recording: it cannot create an Intake,
+ * draft/confirm a Record, or change the Record link. A repeated source key is
+ * idempotent only when it already names the same outbound message.
+ */
+export async function appendAcceptanceOutboundReply(
+  input: AppendAcceptanceOutboundReplyInput,
+): Promise<{ message: AcceptanceIntakeMessageRow; inserted: boolean } | null> {
+  const workspaceId = input.workspaceId.trim();
+  const intakeId = input.intakeId.trim();
+  const sourceKey = input.sourceKey.trim();
+  const text = input.text.trim();
+  if (!workspaceId || !intakeId || !sourceKey || !text) {
+    throw new Error("Acceptance Intake outbound reply requires workspace, intake, source key, and text");
+  }
+
+  return db.transaction(async (tx) => {
+    const intake = await tx
+      .select({ id: acceptanceIntakes.id })
+      .from(acceptanceIntakes)
+      .where(and(eq(acceptanceIntakes.id, intakeId), eq(acceptanceIntakes.workspaceId, workspaceId)))
+      .limit(1);
+    if (!intake[0]) return null;
+
+    const messageId = acceptanceIntakeMessageId({ intakeId, sourceKey });
+    const inserted = await tx
+      .insert(acceptanceIntakeMessages)
+      .values({
+        id: messageId,
+        intakeId,
+        sourceKey,
+        direction: "outbound",
+        text,
+        metadata: input.metadata ?? {},
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted[0]) return { message: inserted[0], inserted: true };
+
+    const existing = await tx
+      .select()
+      .from(acceptanceIntakeMessages)
+      .where(and(eq(acceptanceIntakeMessages.intakeId, intakeId), eq(acceptanceIntakeMessages.sourceKey, sourceKey)))
+      .limit(1);
+    return existing[0] ? { message: existing[0], inserted: false } : null;
+  });
+}
+
 /** Read one canonical intake and its append-only source-channel evidence. */
 export async function readAcceptanceIntake(input: { workspaceId: string; intakeId: string }) {
   const intake = await db.select().from(acceptanceIntakes).where(and(

@@ -160,7 +160,9 @@ its confirmed Contract, validates its metadata, records a Pack, then marks the
 job `compiled`; a failure can only record a bounded `failed` result. A real
 local clone/index/compiler/report smoke passes. Still missing: claim-expiry or
 retry policy, artifact custody beyond metadata-only references, deployed
-claim/clone/report proof, and external-builder retrieval. The Console/MCP Pack
+claim/clone/report proof, and external-builder retrieval. Compiler claims are
+reclaimed only after a 15-minute lease; after three abandoned attempts they
+become an explicit `failed` result rather than cycling indefinitely. The Console/MCP Pack
 routes still also permit separately validated caller-supplied metadata/artifact
 refs; they must not be described as a live compiler attestation. The legacy
 factory's Context Pack file is not a substitute for this worker.

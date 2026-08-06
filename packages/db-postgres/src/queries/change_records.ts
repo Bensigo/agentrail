@@ -1100,16 +1100,27 @@ export async function claimAcceptanceContextPackCompilation(input: { workerId: s
   contract: Pick<AcceptanceContractRow, "id" | "version" | "contract">;
 } | null> {
   const claimed = Array.from(await db.execute(sql`
-    UPDATE acceptance_context_pack_compilations
-    SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(),
-        attempts = attempts + 1, updated_at = now()
-    WHERE id = (
+    WITH expired AS (
+      UPDATE acceptance_context_pack_compilations
+      SET status = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'queued' END,
+          worker_id = NULL,
+          claimed_at = NULL,
+          reason = CASE WHEN attempts >= 3 THEN 'compiler claim lease expired after 3 attempts' ELSE reason END,
+          updated_at = now()
+      WHERE status = 'claimed'
+        AND claimed_at < now() - interval '15 minutes'
+    ),
+    candidate AS (
       SELECT id FROM acceptance_context_pack_compilations
       WHERE status = 'queued'
       ORDER BY created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
+    UPDATE acceptance_context_pack_compilations
+    SET status = 'claimed', worker_id = ${input.workerId}, claimed_at = now(),
+        attempts = attempts + 1, updated_at = now()
+    WHERE id = (SELECT id FROM candidate)
     RETURNING id
   `)) as Array<Record<string, unknown>>;
   const id = claimed[0]?.id as string | undefined;

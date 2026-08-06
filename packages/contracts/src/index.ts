@@ -19,4 +19,4 @@ export interface Workspace {
   createdAt: string;
 }
 
-export * from "./acceptance-contract.js";
+export * from "./acceptance-contract";

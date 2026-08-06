@@ -53,7 +53,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Console navigation trust-layer pivot | `240ee81a` | focused Sidebar navigation tests. Acceptance Records and Approvals are now primary; the customer navigation exposes only review evidence and repository wiki under Evidence & context. Factory work/runs, autonomous economics, memory/brief/investigation, and failure pages remain URL-reachable but are deliberately not primary product navigation. The connector catalog remains a separate unresolved product-scope slice. |
 | Copy-only landing trust-layer pivot | current migration slice | focused marketing craft/pricing-copy suites and local browser evidence. The existing landing structure now describes Jace as the acceptance/evidence layer around Codex, Claude Code, or another selected builder; it no longer presents legacy factory run totals as trust proof or says Jace itself ships a PR. The shared pricing-card capacity and price packaging remain a separate commercial decision; this copy slice does not claim a live external-builder or channel round-trip. |
 | Exact-review final human PR decision | current migration slice | focused Console route/detail and DB decision-validator tests; DB typecheck. Owners/admins can append one immutable `approved`, `changes_requested`, `rejected`, or explicit `approved_with_exception` decision only for a current exact-head Evidence Review. A standard approval is refused unless Jace recorded `proven`; an exception requires a rationale and does not alter Jace's independent verdict. This records no GitHub merge and has no migrated-DB or browser proof yet. The older `review_events` rework/revert ledger remains aggregate outcome infrastructure only; it is not used as the acceptance decision source. |
-| Dependency-proposal Acceptance Record draft | current migration slice | focused converter and runner-route tests. A dependency candidate proposal becomes one deterministic canonical Acceptance Record for its connected repository. Candidate scope, baseline, expected files, verification commands, stop conditions, and every missing evidence item are preserved; missing evidence is an open question that blocks confirmation. The Jace-secret route creates only the draft and source provenance—never an issue, approval, builder handoff, or dependency edit. The legacy dependency-watch approval-to-issue route is still separate and must be retired or redirected in a later migration slice. |
+| Dependency-proposal Acceptance Record draft | current migration slice | focused converter and both dependency runner-route tests. A dependency candidate proposal becomes one deterministic canonical Acceptance Record for its connected repository. Candidate scope, baseline, expected files, verification commands, stop conditions, and every missing evidence item are preserved; missing evidence is an open question that blocks confirmation. Both the dedicated materialization endpoint and the former proposal endpoint now create/reuse only that draft and source provenance—never an issue, approval, builder handoff, dependency edit, PR, or merge. Legacy dependency approval/publisher code still exists as unused cleanup scope; it is not a supported product lane. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
@@ -74,9 +74,10 @@ acknowledgement only; no dispatcher has proven notification.
    have append-only input/reply evidence and Jace can fetch a bounded resume
    projection, but no deployed channel has exercised that flow or proved that
    only unresolved questions were asked.
-4. Add the dependency-upgrade acceptance flow, finish Console removal of
-   obsolete connector/factory surfaces, and complete the copy-only landing
-   pivot. The final human PR decision is now a current-review append-only
+4. Remove the now-obsolete dependency approval/publisher callers only after a
+   dependency scan proves no remaining acceptance-spine caller depends on
+   them; finish Console removal of obsolete connector/factory surfaces, and
+   complete the copy-only landing pivot. The final human PR decision is now a current-review append-only
    seam, but it is not live/migrated-DB/browser verified and does not capture
    post-merge rework/revert; those remain explicit aggregate outcome evidence.
    The sidebar is now trust-first, but routes/catalogs and the homepage still
@@ -120,8 +121,9 @@ acknowledgement only; no dispatcher has proven notification.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slices are
   `3675acea` (exact-review final human decision), `6eee9453` (copy-only
-  landing pivot), and `8848332e` (dependency Acceptance Record draft). The
-  only expected untracked paths are generated dependency directories.
+  landing pivot), `8848332e` (dependency Acceptance Record draft), and the
+  uncommitted former-proposal-route migration (canonical draft only). The only
+  expected untracked paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
 - This ledger is the implementation checkpoint. Re-read it and ADR 0012
@@ -158,7 +160,9 @@ The outbound-reply worker was stopped after it did not return a bounded result;
 its persistence commit appeared on the branch and was independently inspected,
 then the coordinator added and verified the minimal post-delivery channel
 wiring in a separate commit. This does not establish a live channel flow. The
-next implementation slice is a session-bound compact Intake read surface;
-delegate it only if its owner can start from this commit without touching the
-existing draft/reply cores or channel handlers, otherwise retain the smallest
-glue edit locally.
+current former-proposal-route migration remains local because no callable
+bounded worker is available and it overlaps the coordinator-owned dependency
+converter and runner API test fixture. The next slice should be a bounded
+read-only dependency-lane dependency map before any destructive cleanup; it
+must identify every approval/publisher caller and classify it as remove,
+neutral infrastructure, or still-needed compatibility.

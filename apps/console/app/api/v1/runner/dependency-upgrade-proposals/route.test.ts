@@ -2,31 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  attachDependencyUpgradeApproval: vi.fn(),
+  createDraftAcceptanceRecord: vi.fn(),
   createOrGetDependencyUpgradeContract: vi.fn(),
   findDependencyCandidate: vi.fn(),
-  getDependencyUpgradeContract: vi.fn(),
-  latestTelegramSessionForWorkspace: vi.fn(),
-  recordDependencyUpgradeContractEvent: vi.fn(),
+  getRepository: vi.fn(),
   refreshDependencyUpgradeContractProposal: vi.fn(),
-  recordApprovalRequest: vi.fn(),
   validateAcceptanceCriteria: vi.fn(() => ({ ok: true, criteria: ["AC1"] })),
-}));
-vi.mock("../../../../../lib/approval-message", () => ({ renderApprovalMessage: vi.fn(() => "approval") }));
-vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
-  buildApprovalKeyboard: vi.fn(() => ({ inline_keyboard: [] })),
-  sendTelegramMessage: vi.fn(async () => ({ ok: true })),
 }));
 
 import {
-  attachDependencyUpgradeApproval,
+  createDraftAcceptanceRecord,
   createOrGetDependencyUpgradeContract,
   findDependencyCandidate,
-  getDependencyUpgradeContract,
-  latestTelegramSessionForWorkspace,
-  recordDependencyUpgradeContractEvent,
+  getRepository,
   refreshDependencyUpgradeContractProposal,
-  recordApprovalRequest,
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
 import { computeDependencyCandidateFingerprint } from "../../../../../lib/dependency-upgrade-contract";
@@ -44,7 +33,10 @@ const candidate = {
   fingerprint: "",
 };
 candidate.fingerprint = computeDependencyCandidateFingerprint(candidate);
-const contract = { id: "contract-1", state: "needs-human-decision", approvalId: null };
+const contract = {
+  id: "contract-1", repositoryId: "repo", state: "needs-human-decision", approvalId: null,
+  candidateFingerprint: candidate.fingerprint, observationKey: "key", baselineSha: candidate.baseline_sha,
+};
 
 function request(body: unknown, auth = true) {
   return new NextRequest("http://localhost/api/v1/runner/dependency-upgrade-proposals", {
@@ -58,10 +50,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
   vi.mocked(findDependencyCandidate).mockResolvedValue({ observationId: "obs", watchId: "watch", repositoryId: "repo", observationKey: "key", baselineSha: candidate.baseline_sha, candidate } as never);
-  vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract, created: true } as never);
-  vi.mocked(getDependencyUpgradeContract).mockResolvedValue(contract as never);
-  vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null as never);
-  vi.mocked(recordDependencyUpgradeContractEvent).mockResolvedValue({} as never);
+  vi.mocked(createOrGetDependencyUpgradeContract).mockImplementation(async (input: any) => ({ contract: { ...contract, proposal: input.proposal }, created: true }) as never);
+  vi.mocked(getRepository).mockResolvedValue({ id: "repo", name: "ada/widgets" } as never);
+  vi.mocked(createDraftAcceptanceRecord).mockResolvedValue({ record: { id: "record-1", repo: "ada/widgets" }, contract: { id: "acceptance-1", version: 1, status: "draft" } } as never);
 });
 
 describe("dependency candidate proposal boundary", () => {
@@ -78,14 +69,18 @@ describe("dependency candidate proposal boundary", () => {
     expect(createOrGetDependencyUpgradeContract).not.toHaveBeenCalled();
   });
 
-  it("persists an incomplete proposal as needs-human-decision and creates no approval", async () => {
+  it("persists incomplete evidence as a canonical draft with open questions", async () => {
     const response = await POST(request({ workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint }));
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(201);
     expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
       state: "needs-human-decision",
       observationKey: "key",
     }));
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
+    expect(createDraftAcceptanceRecord).toHaveBeenCalledWith(expect.objectContaining({
+      workKey: "dependency-upgrade:contract-1",
+      originChannel: "dependency_watch",
+      contract: expect.objectContaining({ openQuestions: expect.any(Array) }),
+    }));
   });
 
   it("keeps unsupported evidence visible and routes the proposal to needs-human-decision", async () => {
@@ -104,7 +99,7 @@ describe("dependency candidate proposal boundary", () => {
     }));
     const payload = await response.json();
 
-    expect(response.status).toBe(202);
+    expect(response.status).toBe(201);
     expect(createOrGetDependencyUpgradeContract).toHaveBeenCalledWith(expect.objectContaining({
       state: "needs-human-decision",
       observationKey: "key",
@@ -112,26 +107,14 @@ describe("dependency candidate proposal boundary", () => {
     expect(payload.needsHumanDecision).toEqual(expect.arrayContaining([
       expect.stringContaining("releaseEvidence contains unsupported evidence"),
     ]));
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
+    expect(createDraftAcceptanceRecord).toHaveBeenCalledWith(expect.objectContaining({
+      contract: expect.objectContaining({ openQuestions: expect.arrayContaining([
+        expect.objectContaining({ text: expect.stringContaining("releaseEvidence contains unsupported evidence") }),
+      ]) }),
+    }));
   });
 
-  it("creates one candidate-bound approval only after complete evidence is present", async () => {
-    const proposedContract = { id: "contract-1", state: "proposed", approvalId: null };
-    vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract: proposedContract, created: true } as never);
-    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue({
-      id: "session-1", eveSessionId: "eve-1", chatIdentityId: "chat-1", channel: "telegram", conversationKey: "chat",
-    } as never);
-    vi.mocked(recordApprovalRequest).mockResolvedValue({
-      created: true,
-      approval: { id: "approval-1", callbackToken: "callback", status: "pending" },
-    } as never);
-    vi.mocked(attachDependencyUpgradeApproval).mockResolvedValue({
-      ...proposedContract, approvalId: "approval-1",
-    } as never);
-    vi.mocked(getDependencyUpgradeContract).mockResolvedValue({
-      ...proposedContract, approvalId: "approval-1",
-    } as never);
-
+  it("uses complete evidence only to create a deterministic Acceptance Record, never an approval", async () => {
     const response = await POST(request({
       workspaceId: "ws",
       watchId: "watch",
@@ -147,22 +130,18 @@ describe("dependency candidate proposal boundary", () => {
     }));
 
     expect(response.status).toBe(201);
-    expect(recordApprovalRequest).toHaveBeenCalledWith(expect.objectContaining({
-      toolName: "dependency_upgrade_contract",
-      dependencyContractId: "contract-1",
-      requestId: `dependency-upgrade:${candidate.fingerprint}`,
-      toolInput: expect.objectContaining({
-        candidateFingerprint: candidate.fingerprint,
-        observationKey: "key",
-        proposal: expect.objectContaining({ candidateFingerprint: candidate.fingerprint, observationKey: "key" }),
-      }),
+    expect(createDraftAcceptanceRecord).toHaveBeenCalledWith(expect.objectContaining({
+      workKey: "dependency-upgrade:contract-1",
+      sourceReferences: [expect.objectContaining({ candidateFingerprint: candidate.fingerprint, observationKey: "key" })],
     }));
-    expect(refreshDependencyUpgradeContractProposal).not.toHaveBeenCalled();
+    expect(refreshDependencyUpgradeContractProposal).toHaveBeenCalledWith(expect.objectContaining({
+      contractId: "contract-1",
+      workspaceId: "ws",
+    }));
   });
 
-  it("reuses an existing approval on a duplicate proposal request", async () => {
-    const proposedContract = { id: "contract-1", state: "proposed", approvalId: "approval-1" };
-    vi.mocked(createOrGetDependencyUpgradeContract).mockResolvedValue({ contract: proposedContract, created: false } as never);
+  it("fails closed when the candidate cannot be mapped to a connected repository", async () => {
+    vi.mocked(getRepository).mockResolvedValue(null);
     const response = await POST(request({
       workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint,
       evidence: {
@@ -174,8 +153,7 @@ describe("dependency candidate proposal boundary", () => {
         targetTests: ["pnpm test"],
       },
     }));
-    expect(response.status).toBe(200);
-    expect(recordApprovalRequest).not.toHaveBeenCalled();
-    expect(latestTelegramSessionForWorkspace).not.toHaveBeenCalled();
+    expect(response.status).toBe(409);
+    expect(createDraftAcceptanceRecord).not.toHaveBeenCalled();
   });
 });

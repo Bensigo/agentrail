@@ -37,7 +37,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 
 | Slice | Commits | Evidence |
 | --- | --- | --- |
-| Record, immutable contract draft, human confirmation | `8bc3a80c` through `0ec7d2e6` | focused console route/contract tests; contract parser |
+| Record, immutable contract draft, human clarification revision, and confirmation | `8bc3a80c` through `0ec7d2e6`, `53cf907b` | focused Console route/contract tests and DB no-open-question unit test. Any workspace member can append a parsed immutable draft; confirmation remains owner/admin-only and fails closed while any question is open. A real migrated Postgres integration test exists but was skipped locally because no migrated database is available. |
 | Metadata-only context-pack record and MCP read surface | `989e3b7c` through `a4f7b8cc` | Python context-pack tests and focused console tests |
 | Dedicated scoped agent-MCP credentials | `2b179526`, `c27b6564` | focused bearer/API/MCP tests and package typecheck |
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
@@ -63,9 +63,10 @@ dispatcher has proven notification.
    The automatic task-context queue, native MCP read/ack, and GitHub fallback
    dispatch retain attempt/outcome, but no Codex/Claude builder has retrieved a
    packet, acknowledged it, or resumed work in a live integration test.
-3. Implement supported channel intake, missing-question replies, human
-   confirmation, and Context Pack handoff. Slack/Discord are not implemented
-   merely because their names appear in this document.
+3. Implement supported channel intake, originating-channel missing-question
+   replies, and Context Pack handoff. The generic human revision API records a
+   clarified draft and prevents confirmation with open questions, but it does
+   not yet ask or receive questions in Codex, Claude Code, Slack, or Discord.
 4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
    of obsolete factory/advisory surfaces, and copy-only landing pivot.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
@@ -105,7 +106,7 @@ dispatcher has proven notification.
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `f8789d6e` (native MCP correction tools). The only expected untracked
+  `53cf907b` (unresolved-question confirmation gate). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

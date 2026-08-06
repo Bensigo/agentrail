@@ -1,25 +1,17 @@
 import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
-  Play,
-  ListChecks,
   Inbox,
-  AlertTriangle,
   ShieldCheck,
-  DollarSign,
-  Wallet,
   CreditCard,
-  Brain,
   BookOpen,
   Users,
   Plug,
   GitMerge,
-  Cpu,
   MessageCircle,
   MessageSquare,
   Target,
   FileText,
-  SearchCode,
 } from "lucide-react";
 
 export interface NavItem {
@@ -47,11 +39,11 @@ export interface NavZone {
 // room zone below (that zone is explicitly for "existing evidence" pages).
 export const YOUR_ENGINEER_ZONE: NavZone = {
   id: "your-engineer",
-  label: "Your engineer",
+  label: "Trust layer",
   collapsible: false,
   items: [
     { label: "Home", href: "", icon: LayoutDashboard },
-    { label: "Work", href: "work", icon: ListChecks },
+    { label: "Acceptance records", href: "changes", icon: FileText },
     { label: "Approvals", href: "approvals", icon: Inbox },
   ],
 };
@@ -88,43 +80,10 @@ export const GOALS_NAV_ITEM: NavItem = { label: "Goals", href: "goals", icon: Ta
 // this workspace blocked right now" vs "where did the tokens go").
 export const ENGINE_ROOM_ZONE: NavZone = {
   id: "engine-room",
-  label: "Engine room",
+  label: "Evidence & context",
   collapsible: true,
   items: [
-    { label: "Runs", href: "runs", icon: Play },
     { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
-    { label: "Costs", href: "costs", icon: DollarSign },
-    { label: "Budget", href: "budget", icon: Wallet },
-    // "Wallet" (#1415, #1290's deferred PR ③) — the prepaid per-task balance
-    // + ledger, and where an owner/admin tops up via Stripe Checkout.
-    // Deliberately its own item, not folded into Budget: Budget is the
-    // monthly-ceiling spend view (Postgres-backed, per-task/monthly $ this
-    // workspace SPENT), Wallet is the prepaid balance that FUNDS spend in
-    // the first place — same "operational depth" category, different
-    // question ("what did this cost" vs "can this workspace afford the next
-    // task").
-    { label: "Wallet", href: "wallet", icon: CreditCard },
-    // #1338 PR③ observe view: per-task-type "which execute model is
-    // winning on real run data" breakdown — read-only evidence, same
-    // category as Costs/Budget (spend/model economics), so it lands here.
-    { label: "Model selection", href: "model-selection", icon: Cpu },
-    { label: "Memory", href: "memory", icon: Brain },
-    // Briefs (spec PR #1487/#1489) — Jace's durable, editable understanding
-    // of ONE product idea; a third compiled/elicited store alongside Memory
-    // (interaction history) and Wiki (codebase knowledge) below, same
-    // "read+edit here, not via CLI/chat" category. Never flag-gated in the
-    // nav (no rollout flag exists for this feature — it ships with the v1
-    // pinned contract), same posture as Wiki's own "never flag-gated in the
-    // nav itself" comment just below.
-    { label: "Briefs", href: "briefs", icon: FileText },
-    // Investigations (debugging design spec, spec PR #1501) — Jace's
-    // durable, server-side record of ONE production incident; sibling of
-    // Briefs (both are compiled/elicited, human-editable console stores,
-    // not read-only evidence), placed directly next to it for that reason.
-    // This is also where the human confirmation/promotion gate lives
-    // (`confirmVerdictAsHuman`/lesson-candidate promotion, Task 13) — never
-    // flag-gated in the nav, same posture as Briefs/Wiki just above/below.
-    { label: "Investigations", href: "investigations", icon: SearchCode },
     // Repo Wiki console view (wiki 6/7, spec §4.5) — sibling of Memory: both
     // are compiled/advisory knowledge stores read-only from the console, the
     // Wiki about the codebase, Memory about interaction history (CONTEXT.md's
@@ -133,7 +92,6 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     // still gets the page, showing the honest "no wiki compiled yet" empty
     // state rather than disappearing (spec §4.5 empty state).
     { label: "Wiki", href: "wiki", icon: BookOpen },
-    { label: "Failures", href: "failures", icon: AlertTriangle },
   ],
 };
 

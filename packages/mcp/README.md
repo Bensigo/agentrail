@@ -17,9 +17,13 @@ the MCP/tool-enforcement level from
 | `acceptance_record_get` | Jace API | draft/confirmed contract for an existing record |
 | `acceptance_record_create_draft_version` | Jace API | immutable clarification revision; never confirms it |
 | `acceptance_context_pack_record` | Jace API | context-pack metadata and artifact references only |
+| `correction_deliveries_get` | Jace API | evidence-bound corrections for the recorded builder task; not proof of receipt |
+| `correction_delivery_acknowledge` | Jace API | agent receipt acknowledgement only; does not modify code or merge |
 
-Each tool shells out to the existing `agentrail context …` CLI, so retrieval
-behaviour has a single source of truth.
+Context-retrieval tools shell out to the existing `agentrail context …` CLI, so
+retrieval behaviour has a single source of truth. Acceptance Record and
+correction-delivery tools use Jace's scoped API; they never read the database
+directly.
 
 ## Build
 
@@ -65,6 +69,11 @@ clarification is needed, it creates a new draft version and waits for human
 confirmation. When it records a Context Pack, the API accepts only a hash,
 provenance/freshness metadata, and artifact references; raw source content does
 not enter the central record.
+
+To retrieve a correction, the credential needs `acceptance:read`; to confirm
+that the agent has actually received and read it, it also needs
+`acceptance:correction:ack`. Retrieval is not an acknowledgement. Neither tool
+changes code or merges a PR.
 
 ### Claude Code / Claude Desktop / Cursor
 

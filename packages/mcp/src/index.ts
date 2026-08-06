@@ -221,6 +221,42 @@ server.registerTool(
 );
 
 server.registerTool(
+  "correction_deliveries_get",
+  {
+    title: "Read correction deliveries",
+    description:
+      "Return evidence-bound corrections for the recorded builder task. This is not proof of receipt; the agent must acknowledge after it has read the packet.",
+    inputSchema: {
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ builder, taskContextKey }) => {
+    const query = new URLSearchParams({ builder, taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/correction-deliveries?${query}`, "GET");
+  },
+);
+
+server.registerTool(
+  "correction_delivery_acknowledge",
+  {
+    title: "Acknowledge correction delivery",
+    description:
+      "Only call after the agent actually receives and reads the packet. This does not modify code or merge anything.",
+    inputSchema: {
+      deliveryId: z.string().uuid().describe("Correction delivery UUID."),
+      detail: z.string().max(2000).optional().describe("Optional acknowledgement detail, up to 2000 characters."),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ deliveryId, detail }) => {
+    const body = detail === undefined ? undefined : { detail };
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/correction-deliveries/${deliveryId}/ack`, "POST", body);
+  },
+);
+
+server.registerTool(
   "context_get",
   {
     title: "AgentRail context get",

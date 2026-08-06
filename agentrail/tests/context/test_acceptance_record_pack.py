@@ -74,6 +74,7 @@ class AcceptanceRecordPackTests(unittest.TestCase):
         self.assertEqual(result["compilerVersion"], "context-compiler-v1")
         self.assertIn("freshness", result)
         self.assertIn("custody", result)
+        self.assertIn("indexProvenance", load_context_pack(self.root, result["packId"]))
         self.assertTrue((self.root / result["jsonPath"]).exists())
         self.assertTrue((self.root / result["markdownPath"]).exists())
 
@@ -81,6 +82,10 @@ class AcceptanceRecordPackTests(unittest.TestCase):
         self.assertEqual(saved["contentHash"], result["contentHash"])
         self.assertEqual(saved["acceptanceContract"]["citation"], "acceptance-record:record-123#contract")
         self.assertEqual(saved["compiler"]["input"]["targetAcceptanceRecord"], "record-123")
+        self.assertNotEqual(saved["compiler"]["graphExpansion"]["status"], "not_available")
+        self.assertIn("commitSha", saved["indexProvenance"])
+        self.assertIn("sourceTreeFingerprint", saved["indexProvenance"])
+        self.assertIn("retrievalGaps", saved)
         self.assertTrue(
             any(item["citation"].endswith("#open-questions") for item in saved["openQuestions"])
         )
@@ -88,6 +93,17 @@ class AcceptanceRecordPackTests(unittest.TestCase):
     def test_rejects_unconfirmed_or_missing_contract_input(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "confirmed contract"):
             build_context_pack(self.root, "acceptance_record", "record-123", "execute")
+
+    def test_rejects_a_contract_that_would_bypass_the_context_token_budget(self) -> None:
+        oversized = {"goal": "x" * 30000}
+        with self.assertRaisesRegex(RuntimeError, "bounded context allowance"):
+            build_context_pack(
+                self.root,
+                "acceptance_record",
+                "record-large",
+                "execute",
+                acceptance_contract=oversized,
+            )
 
     def test_content_hash_is_stable_for_same_contract_and_retrieval_inputs(self) -> None:
         first = build_context_pack(
@@ -107,4 +123,3 @@ class AcceptanceRecordPackTests(unittest.TestCase):
             run_id="acceptance-stable",
         )
         self.assertEqual(first["contentHash"], second["contentHash"])
-

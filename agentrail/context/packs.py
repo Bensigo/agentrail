@@ -112,7 +112,7 @@ def _query_for(target_kind: str, target_number: int | str, phase: str, acceptanc
         contract_text = redact_text(
             json.dumps(acceptance_contract, sort_keys=True, ensure_ascii=False)
         ).text[:4000]
-    return f"{label} {phase} {contract_text} context pack required context likely files docs memory prior mistakes active state tools skills excluded context open questions"
+    return f"{label} {phase} {contract_text} context pack required context likely files docs tests callers callees impact graph memory prior mistakes active state tools skills excluded context open questions"
 
 
 def _citation_for(item: Dict[str, Any]) -> str:
@@ -660,11 +660,52 @@ def _stable_pack_hash(pack: Dict[str, Any]) -> str:
         "acceptanceContract": pack.get("acceptanceContract"),
         "included": included,
         "excluded": excluded,
-        "index": pack.get("index"),
+        "index": pack.get("indexProvenance") or pack.get("index"),
         "retrievalBudget": pack.get("retrievalBudget"),
         "compilerVersion": (pack.get("compiler") or {}).get("contractVersion"),
     }
     return sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
+def _index_provenance(root: Path, index: Dict[str, Any]) -> Dict[str, Any]:
+    """Return reproducibility metadata without copying indexed source content."""
+    snapshot = index.get("snapshot") if isinstance(index.get("snapshot"), dict) else {}
+    freshness_path = root / ".agentrail" / "context" / "index" / "freshness.json"
+    try:
+        freshness_file = json.loads(freshness_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        freshness_file = {}
+    return {
+        "version": index.get("version"),
+        "builtAt": index.get("builtAt"),
+        "commitSha": snapshot.get("commitSha"),
+        "sourceTreeFingerprint": freshness_file.get("sourceTreeFingerprint"),
+        "sourceHashes": snapshot.get("sourceHashes") or {},
+        "sourceFreshness": snapshot.get("freshness") or {},
+        "ingestionHealth": snapshot.get("ingestionHealth") or {},
+    }
+
+
+def _retrieval_gaps(query: Dict[str, Any], sections: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """Make missing evidence explicit rather than letting an empty pack look complete."""
+    gaps: List[Dict[str, str]] = []
+    compiler = query.get("compiler") if isinstance(query.get("compiler"), dict) else {}
+    graph = compiler.get("graphExpansion") if isinstance(compiler.get("graphExpansion"), dict) else {}
+    if graph.get("status") != "expanded":
+        gaps.append({
+            "kind": "graph_context",
+            "reason": f"Deterministic graph expansion did not produce added context (status={graph.get('status') or 'unknown'}).",
+        })
+    if not sections.get("likelyFiles"):
+        gaps.append({"kind": "affected_code", "reason": "No relevant code source was retrieved."})
+    test_items = [
+        item
+        for item in sections.get("likelyFiles", []) + sections.get("likelyDocs", [])
+        if "test" in str(item.get("path") or "").lower()
+    ]
+    if not test_items:
+        gaps.append({"kind": "tests", "reason": "No relevant test source was retrieved."})
+    return gaps
 
 
 def _render_item(item: Dict[str, Any]) -> str:
@@ -845,6 +886,11 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             # bullets -- render the compiled prose verbatim (provenance
             # blockquote included) rather than through _render_item.
             lines.append(str(values[0].get("content") or "") if values else "None.")
+        elif key == "openQuestions" and values:
+            for item in values:
+                lines.append(_render_item(item))
+                if item.get("sourceType") == "acceptance_record":
+                    lines.extend(["", "```json", str(item.get("content") or "{}"), "```"])
         elif values:
             lines.extend(_render_item(item) for item in values)
         else:
@@ -875,11 +921,19 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             *budget_lines,
             *rerank_lines,
             f"- Index: {pack['index'].get('version')} builtAt={pack['index'].get('builtAt')}",
+            f"- Commit: {(pack.get('indexProvenance') or {}).get('commitSha') or 'unknown'}",
+            f"- Source tree fingerprint: {(pack.get('indexProvenance') or {}).get('sourceTreeFingerprint') or 'unknown'}",
+            f"- Retrieval gaps: {len(pack.get('retrievalGaps') or [])}",
             f"- Provider mode: {pack['provider'].get('mode')}",
             f"- Audit event: {pack['audit'].get('event')} citation={pack['audit'].get('citation')}",
             "",
         ]
     )
+    gaps = pack.get("retrievalGaps") or []
+    if gaps:
+        lines.extend(["## Unresolved Retrieval Gaps"])
+        lines.extend(f"- {gap.get('kind')}: {gap.get('reason')}" for gap in gaps if isinstance(gap, dict))
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -935,6 +989,12 @@ def build_context_pack(
             raise RuntimeError("acceptance_record target requires a non-empty record id")
         if not isinstance(acceptance_contract, dict) or not acceptance_contract:
             raise RuntimeError("acceptance_record context build requires a confirmed contract object")
+        contract_preview = _acceptance_contract_item(str(target_number), acceptance_contract)
+        contract_token_limit = max(1, resolve_retrieval_max_tokens() // 4)
+        if _item_tokens(contract_preview) > contract_token_limit:
+            raise RuntimeError(
+                f"Acceptance Contract exceeds its bounded context allowance of {contract_token_limit} tokens"
+            )
 
     retrieval_budget = {"maxItems": 20, "maxTokens": resolve_retrieval_max_tokens()}
     query_text = _query_for(target_kind, target_number, phase, acceptance_contract)
@@ -1039,6 +1099,7 @@ def build_context_pack(
         ),
         "generatedAt": generated_at,
         "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
+        "indexProvenance": _index_provenance(root, index),
         "retrievalBudget": retrieval_budget,
         "provider": query.get("provider") or index.get("provider") or {"mode": "disabled", "externalCalls": []},
         "audit": audit,
@@ -1060,6 +1121,7 @@ def build_context_pack(
         pack["runId"] = run_id
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    pack["retrievalGaps"] = _retrieval_gaps(query, sections)
     # Symbol-range packing (issue #1044 AC4, default OFF): shrink symbol-bearing
     # code candidates to the symbol's exact line range AFTER selection is final,
     # so the flag never changes which candidates are included (precision/recall
@@ -1126,6 +1188,7 @@ def build_context_pack(
             "skillsMapTo": "compiler.candidates[kind=procedural_guidance]",
         },
         token_pack_strategy="greedy_budget_fill",
+        graph_expansion=(query.get("compiler") or {}).get("graphExpansion"),
         rerank=rerank_meta,
     )
     if symbol_packing_on:
@@ -1148,7 +1211,9 @@ def build_context_pack(
     pack["contentHash"] = _stable_pack_hash(pack)
     pack["custody"] = pack["compiler"]["policy"]["sourceCustody"]
     pack["freshness"] = {
-        "indexBuiltAt": pack["index"].get("builtAt"),
+        "indexBuiltAt": pack["indexProvenance"].get("builtAt"),
+        "commitSha": pack["indexProvenance"].get("commitSha"),
+        "sourceTreeFingerprint": pack["indexProvenance"].get("sourceTreeFingerprint"),
         "staleCount": pack["stale_count"],
         "deniedCount": pack["denied_count"],
     }

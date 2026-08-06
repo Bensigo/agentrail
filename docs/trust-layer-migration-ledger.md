@@ -49,7 +49,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
 | Task-scoped external-builder Context Pack handoff | `fd297f13` | focused MCP builder-task route test, native MCP protocol test, MCP build/typecheck, and DB typecheck. A scoped builder can retrieve only its recorded handoff's confirmed contract and selected bounded Context Pack metadata/artifact references; it cannot retrieve raw source or treat handoff as proof of implementation. |
-| Canonical hosted intake through session-bound Acceptance Contract draft | `742eafe9` through `cc9a4bb0` | DB identity/link tests and typecheck; focused Console intake/draft route tests; Jace hosted-inbound, intake-draft, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. After the Console creates the Intake, Jace receives only its server-returned Intake ID in trusted session attributes. The native `draft_acceptance_contract` tool can use that bound ID and workspace—not model input—to create a parsed immutable draft Record. It cannot confirm, compile/deliver a Pack, select a builder, execute code, or claim success on a degraded response. The actual live channel round-trip and durable outgoing clarification messages are still missing. |
+| Canonical hosted intake through session-bound Acceptance Contract draft and reply evidence | `742eafe9` through `319affd8` | DB identity/link tests and typecheck; focused Console intake/draft/outbound-message route tests; Jace hosted-inbound, intake-draft/reply, channel-wiring, and tool-policy tests; Node 24 Jace build. A bound Console/Telegram/Discord/Slack turn records durable channel/conversation/source provenance before Eve receives it. After the Console creates the Intake, Jace receives only its server-returned Intake ID in trusted session attributes. The native `draft_acceptance_contract` tool can use that bound ID and workspace—not model input—to create a parsed immutable draft Record. After each existing channel's final reply has successfully returned, a best-effort Jace-only append records the exact reply with its source channel and a session-plus-turn idempotency key. It cannot confirm, compile/deliver a Pack, select a builder, execute code, or claim the audit append succeeded when it degraded. No live channel round-trip is proven, and Jace cannot yet re-read a compact Intake on a resumed/compacted session. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next runtime-proof slice must execute a planned safe UI flow and bind its
@@ -65,12 +65,13 @@ acknowledgement only; no dispatcher has proven notification.
    The automatic task-context queue, native MCP read/ack, and GitHub fallback
    dispatch retain attempt/outcome, but no Codex/Claude builder has retrieved a
    packet, acknowledged it, or resumed work in a live integration test.
-3. Persist originating-channel missing-question replies and resume the same
-   Intake safely. Hosted Console, Telegram, Discord, and Slack input now has a
-   canonical Intake and can create a session-bound draft Acceptance Record,
-   but Jace's outbound questions are not yet stored on that Intake, the draft
-   tool has not been exercised in a live channel, and no channel round-trip
-   has been proven.
+3. Add a session-bound compact Intake read surface so Jace can resume after
+   compaction and ask only still-unresolved questions. Hosted Console,
+   Telegram, Discord, and Slack input plus final replies now have canonical
+   append-only evidence, and the same deterministic Intake can create a draft
+   Acceptance Record; no live channel draft/confirmation round-trip has been
+   proven, and stored Intake evidence is not yet injected back into Jace on a
+   resumed session.
 4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
    of obsolete factory/advisory surfaces, and copy-only landing pivot.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
@@ -100,17 +101,18 @@ acknowledgement only; no dispatcher has proven notification.
 
 ## Unverified assumptions and current boundaries
 
-- No Codex/Claude live pickup, live Slack/Discord/Console acceptance-draft
-  round-trip, GitHub canonical PR fetch, context compiler attestation, deployed
-  safe-preview execution, browser proof, non-UI artifact capture, Jace live
-  delivery dispatch, or migration smoke exists yet. The opt-in Eve worker is unit-tested only;
+- No Codex/Claude live pickup, live Slack/Discord/Console acceptance-draft or
+  reply-recording round-trip, session-resume Intake read, GitHub canonical PR
+  fetch, context compiler attestation, deployed safe-preview execution,
+  browser proof, non-UI artifact capture, Jace live delivery dispatch, or
+  migration smoke exists yet. The opt-in Eve worker is unit-tested only;
   its runtime must not be represented as an exercised criterion. The native
   MCP server is unit-tested to call the durable correction inbox and receipt
   endpoint, but no live external builder has done so; only its recorded
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `cc9a4bb0` (session-bound intake to Acceptance Contract draft). The only expected untracked
+  `319affd8` (record final delivered channel replies). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.
@@ -144,7 +146,11 @@ integrated against its newer base. The delivery-queue subagent could not obtain
 this branch and was stopped; its narrow glue was completed locally. The
 session-bound intake-to-draft bridge was also retained locally because it
 crossed the already-owned hosted-inbound and Console shared-secret boundary.
-The next two slices are (1) one bounded owner for durable outbound
-clarification recording and (2) one bounded owner for channel-specific reply
-round-trip coverage, provided each can start from this commit without
-overlapping paths; otherwise the coordinator keeps only the smallest glue edit.
+The outbound-reply worker was stopped after it did not return a bounded result;
+its persistence commit appeared on the branch and was independently inspected,
+then the coordinator added and verified the minimal post-delivery channel
+wiring in a separate commit. This does not establish a live channel flow. The
+next implementation slice is a session-bound compact Intake read surface;
+delegate it only if its owner can start from this commit without touching the
+existing draft/reply cores or channel handlers, otherwise retain the smallest
+glue edit locally.

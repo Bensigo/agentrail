@@ -81,4 +81,10 @@ describe("POST builder handoff", () => {
     expect(response.status).toBe(403);
     expect(createAcceptanceBuilderHandoff).not.toHaveBeenCalled();
   });
+
+  it("does not hand off an unattested or wrong-contract Pack", async () => {
+    vi.mocked(createAcceptanceBuilderHandoff).mockRejectedValue(new Error("A compiled execute Context Pack must match the selected confirmed contract and repository"));
+    const response = await POST(request(), { params });
+    expect(response.status).toBe(409);
+  });
 });

@@ -1269,12 +1269,20 @@ export async function createAcceptanceBuilderHandoff(
     const pack = await tx
       .select({ id: acceptanceContextPacks.id })
       .from(acceptanceContextPacks)
+      .innerJoin(acceptanceContextPackCompilations, eq(acceptanceContextPackCompilations.contextPackId, acceptanceContextPacks.id))
       .where(and(
         eq(acceptanceContextPacks.id, input.contextPackId),
-        eq(acceptanceContextPacks.recordId, input.recordId)
+        eq(acceptanceContextPacks.recordId, input.recordId),
+        eq(acceptanceContextPacks.phase, "execute"),
+        eq(acceptanceContextPackCompilations.recordId, input.recordId),
+        eq(acceptanceContextPackCompilations.repositoryId, input.repositoryId),
+        eq(acceptanceContextPackCompilations.acceptanceContractId, input.contractId),
+        eq(acceptanceContextPackCompilations.acceptanceContractVersion, input.contractVersion),
+        eq(acceptanceContextPackCompilations.phase, "execute"),
+        eq(acceptanceContextPackCompilations.status, "compiled")
       ))
       .limit(1);
-    if (!pack[0]) throw new Error("Acceptance Context Pack does not match builder handoff");
+    if (!pack[0]) throw new Error("A compiled execute Context Pack must match the selected confirmed contract and repository");
     const record = await tx
       .select({ id: changeRecords.id, repo: changeRecords.repo })
       .from(changeRecords)

@@ -73,6 +73,6 @@ export async function POST(
     }, { status: result.inserted ? 201 : 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to create builder handoff";
-    return NextResponse.json({ error: message }, { status: message.includes("already bound") ? 409 : 500 });
+    return NextResponse.json({ error: message }, { status: message.includes("already bound") || message.includes("compiled execute Context Pack") ? 409 : 500 });
   }
 }

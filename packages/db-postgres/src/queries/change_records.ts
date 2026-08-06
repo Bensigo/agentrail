@@ -1016,6 +1016,24 @@ export type CreateAcceptanceBuilderHandoffInput = {
   createdBy: string;
 };
 
+/** Read recorded human-selected builder routes without resolving Pack content. */
+export async function readAcceptanceBuilderHandoffs(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceBuilderHandoffRow[] | null> {
+  const record = await db
+    .select({ id: changeRecords.id })
+    .from(changeRecords)
+    .where(and(eq(changeRecords.id, input.recordId), eq(changeRecords.workspaceId, input.workspaceId)))
+    .limit(1);
+  if (!record[0]) return null;
+  return db
+    .select()
+    .from(acceptanceBuilderHandoffs)
+    .where(and(eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId), eq(acceptanceBuilderHandoffs.recordId, input.recordId)))
+    .orderBy(desc(acceptanceBuilderHandoffs.createdAt));
+}
+
 export type EnqueueAcceptanceContextPackCompilationInput = {
   workspaceId: string;
   recordId: string;

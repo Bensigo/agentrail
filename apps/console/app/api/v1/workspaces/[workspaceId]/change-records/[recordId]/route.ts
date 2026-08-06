@@ -8,6 +8,7 @@ import {
   readAcceptanceEvidenceReviewSummaries,
   readAcceptanceContracts,
   readAcceptanceContextPacks,
+  readAcceptanceBuilderHandoffs,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
   validateAcceptancePrDecision,
@@ -64,6 +65,23 @@ function serializeReview(
   };
 }
 
+function serializeBuilderHandoff(
+  handoff: NonNullable<Awaited<ReturnType<typeof readAcceptanceBuilderHandoffs>>>[number]
+) {
+  return {
+    id: handoff.id,
+    builder: handoff.builder,
+    taskContextKey: handoff.taskContextKey,
+    branchName: handoff.branchName,
+    acceptanceContractId: handoff.acceptanceContractId,
+    acceptanceContractVersion: handoff.acceptanceContractVersion,
+    contextPackId: handoff.contextPackId,
+    status: handoff.status,
+    createdAt: handoff.createdAt.toISOString(),
+    prAttachedAt: handoff.prAttachedAt?.toISOString() ?? null,
+  };
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string; recordId: string }> }
@@ -85,10 +103,11 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [contracts, contextPacks, reviews] = await Promise.all([
+    const [contracts, contextPacks, reviews, handoffs] = await Promise.all([
       readAcceptanceContracts({ workspaceId, recordId }),
       readAcceptanceContextPacks({ workspaceId, recordId }),
       readAcceptanceEvidenceReviewSummaries({ workspaceId, recordId }),
+      readAcceptanceBuilderHandoffs({ workspaceId, recordId }),
     ]);
     return NextResponse.json({
       record: {
@@ -116,6 +135,7 @@ export async function GET(
       contracts: (contracts ?? []).map(serializeContract),
       contextPacks: (contextPacks ?? []).map(serializeContextPack),
       reviews: (reviews ?? []).map(serializeReview),
+      handoffs: (handoffs ?? []).map(serializeBuilderHandoff),
     });
   } catch (err) {
     console.error("[change-records] failed to load timeline:", err);

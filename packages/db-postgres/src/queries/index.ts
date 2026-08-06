@@ -3284,6 +3284,7 @@ export {
   createDraftAcceptanceContract,
   attachExternalPullRequest,
   createAcceptanceBuilderHandoff,
+  readAcceptanceBuilderHandoffs,
   findAcceptanceBuilderHandoffForPullRequest,
   readAcceptanceBuilderTask,
   findAcceptanceBuilderHandoffForPrRevision,

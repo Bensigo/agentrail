@@ -70,12 +70,26 @@ export type AcceptanceEvidenceReview = {
   supersededAt: string | null;
 };
 
+export type AcceptanceBuilderHandoff = {
+  id: string;
+  builder: string;
+  taskContextKey: string;
+  branchName: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  contextPackId: string;
+  status: string;
+  createdAt: string;
+  prAttachedAt: string | null;
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   contracts: AcceptanceContract[];
   contextPacks: AcceptanceContextPack[];
   reviews: AcceptanceEvidenceReview[];
+  handoffs: AcceptanceBuilderHandoff[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -393,6 +407,49 @@ export function AcceptanceContextPackPanel({ contextPacks }: { contextPacks: Acc
   );
 }
 
+export function canSelectExternalBuilder(contracts: AcceptanceContract[], contextPacks: AcceptanceContextPack[]): boolean {
+  return contracts.some((item) => item.status === "confirmed") && contextPacks.some((item) => item.phase === "execute");
+}
+
+export function BuilderHandoffPanel({
+  contracts, contextPacks, handoffs, onCreate, pending, error,
+}: {
+  contracts: AcceptanceContract[];
+  contextPacks: AcceptanceContextPack[];
+  handoffs: AcceptanceBuilderHandoff[];
+  onCreate: (input: { builder: string; taskContextKey: string; branchName: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) => void;
+  pending: boolean;
+  error: string | null;
+}) {
+  const [builder, setBuilder] = useState("codex");
+  const [taskContextKey, setTaskContextKey] = useState("");
+  const [branchName, setBranchName] = useState("");
+  const contract = contracts.find((item) => item.status === "confirmed");
+  const contextPack = contextPacks.find((item) => item.phase === "execute");
+  const ready = canSelectExternalBuilder(contracts, contextPacks) && Boolean(contract && contextPack);
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Selected external builder</h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">Keep your coding agent. Bind its task and branch to this confirmed Contract and bounded Context Pack before it starts work.</p>
+      </div>
+      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Confirm a Contract and record an execute Context Pack before selecting a builder.</p> : (
+        <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); onCreate({ builder, taskContextKey, branchName, contract: contract!, contextPack: contextPack! }); }}>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="text-xs text-[var(--gray-11)]">Builder<input value={builder} onChange={(event) => setBuilder(event.target.value)} maxLength={64} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="codex or claude-code" /></label>
+            <label className="text-xs text-[var(--gray-11)]">Builder task key<input value={taskContextKey} onChange={(event) => setTaskContextKey(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="stable task ID" /></label>
+            <label className="text-xs text-[var(--gray-11)]">Planned branch<input value={branchName} onChange={(event) => setBranchName(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="feature/save-status" /></label>
+          </div>
+          <p className="text-xs text-[var(--gray-09)]">Uses Contract v{contract!.version} and execute Pack v{contextPack!.version}. Jace will not create code, a PR, or a merge.</p>
+          <button type="submit" disabled={pending || !builder.trim() || !taskContextKey.trim() || !branchName.trim()} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{pending ? "Recording…" : "Record builder handoff"}</button>
+          {error ? <p className="text-sm text-[var(--red-11)]">{error}</p> : null}
+        </form>
+      )}
+      {handoffs.length ? <ol className="border-t border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{handoffs.map((handoff) => <li key={handoff.id} className="flex flex-wrap justify-between gap-2 py-1"><span><span className="font-mono">{handoff.builder}</span> · {handoff.taskContextKey} · {handoff.branchName}</span><span>{handoff.prAttachedAt ? "PR attached" : "Waiting for PR"}</span></li>)}</ol> : null}
+    </section>
+  );
+}
+
 export function FinalPrDecisionPanel({
   reviews,
   onDecide,
@@ -471,6 +528,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [decidingReviewId, setDecidingReviewId] = useState<string | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [exceptionRationale, setExceptionRationale] = useState("");
+  const [handoffPending, setHandoffPending] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -491,7 +550,8 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
           !Array.isArray(body.events) ||
           !Array.isArray(body.contracts) ||
           !Array.isArray(body.contextPacks) ||
-          !Array.isArray(body.reviews)
+          !Array.isArray(body.reviews) ||
+          !Array.isArray(body.handoffs)
         ) {
           throw new Error("Change record response was incomplete");
         }
@@ -537,6 +597,21 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     } finally {
       setConfirmingVersion(null);
     }
+  }
+
+  async function createBuilderHandoff(input: { builder: string; taskContextKey: string; branchName: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) {
+    if (!data) return;
+    setHandoffPending(true); setHandoffError(null);
+    try {
+      const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/builder-handoff`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ builder: input.builder, taskContextKey: input.taskContextKey, branchName: input.branchName, repo: data.record.repo, contractId: input.contract.id, contractVersion: input.contract.version, contextPackId: input.contextPack.id }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { handoff?: AcceptanceBuilderHandoff; error?: string };
+      if (!response.ok || !body.handoff) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? { ...current, handoffs: current.handoffs.some((item) => item.id === body.handoff!.id) ? current.handoffs : [body.handoff!, ...current.handoffs] } : current);
+    } catch (caught) { setHandoffError(caught instanceof Error ? caught.message : "Failed to record builder handoff"); }
+    finally { setHandoffPending(false); }
   }
 
   async function recordFinalDecision(
@@ -607,6 +682,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         confirmationError={confirmationError}
       />
       <AcceptanceContextPackPanel contextPacks={data.contextPacks} />
+      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
       <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />

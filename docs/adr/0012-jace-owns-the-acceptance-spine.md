@@ -17,12 +17,23 @@ Jace owns the spine:
 1. Receive the task and ask only unresolved questions in the originating
    channel when that channel supports replies.
 2. Draft an Acceptance Contract, then require explicit human confirmation.
-3. Compile a bounded, cited Context Pack from the connected repository/wiki.
+3. Compile a bounded, versioned, cited Context Pack from the connected
+   repository/wiki. It includes only task-relevant source ranges, boundaries,
+   tests, decisions, exclusions, freshness/provenance, and an explicit token
+   budget; it never substitutes a repository or chat-history dump. Durable
+   intent stays in the Acceptance Record. Side agents may contribute compact,
+   cited findings, but cannot become a second unbounded context source.
 4. Hand the confirmed contract and pack to the selected external builder.
 5. Attach the builder's PR at a canonical repository identity and exact head.
-6. Independently verify each criterion. User-visible criteria require a
-   criterion-specific flow and inspectable artifact on that exact PR head and
-   environment; a homepage/page-load smoke test is never sufficient.
+6. Independently plan and verify each criterion against the strongest safe
+   observable modality for its environment: browser interaction and screenshots
+   for UI, redacted request/response/assertions for APIs, a trigger plus bounded
+   output/log/artifact for jobs, and authorized readback/assertion for data or
+   integrations. User-visible criteria require a criterion-specific flow and
+   inspectable artifact on that exact PR head and environment; a
+   homepage/page-load smoke test is never sufficient. If no safe environment or
+   exercise exists, record `not_testable` or `not_proven`, never a fabricated
+   pass. API evidence must redact credentials, tokens, and sensitive fields.
 7. Emit only evidence-bound blockers. A blocker must name its contract,
    architecture, enforced convention, or concrete risk; cite evidence; state
    impact; require a correction; and specify re-verification.
@@ -42,14 +53,18 @@ Jace owns the spine:
 ## Current evidence and gaps
 
 Implemented and tested foundations: manual/MCP draft records, human contract
-confirmation, metadata-only Context Packs, exact-head PR revisions,
-criterion-level evidence validation, blocking correction packets, and MCP
-acknowledgement of a correction delivery.
+confirmation, metadata-only Context Packs, manual exact-head PR revisions,
+criterion-level evidence validation, durable blocking correction-packet fields,
+human-selected builder handoff bindings, and MCP acknowledgement of a
+correction delivery.
 
-Not yet proven: Codex/Claude task pickup, originating-channel clarification,
-Slack/Discord contract handoff, live context-pack delivery to a builder task,
-review-bound artifact upload/dispatch, GitHub/Jace fallback delivery, runtime
-exercise worker, human outcomes/dependency workflow, and UI/browser E2E.
+Not yet proven: Context-Pack token-budget/citation enforcement and canonical
+compiler attestation; Codex/Claude task pickup; originating-channel
+clarification; Slack/Discord contract handoff; live context-pack delivery to a
+builder task; automatic GitHub correlation; review-bound artifact
+upload/dispatch; GitHub/Jace fallback delivery; runtime modality-plan/exercise
+worker; API redaction worker; human outcomes/dependency workflow; and UI/browser
+E2E.
 
 ## Consequences
 

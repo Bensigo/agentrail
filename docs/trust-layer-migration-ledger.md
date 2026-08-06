@@ -1,6 +1,6 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jace-owns-the-acceptance-spine.md).
+Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jace-owns-the-acceptance-spine.md). Canonical post-MVP proof plan: [Jace trust-layer evaluation](prd/jace-trust-layer-evaluation.md).
 
 ## Canonical MVP flow
 
@@ -66,6 +66,19 @@ committed; do not treat it as delivered.
 6. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.
+7. Build the separate post-MVP trust-layer evaluation program defined in
+   [`docs/prd/jace-trust-layer-evaluation.md`](prd/jace-trust-layer-evaluation.md)
+   after the acceptance spine is coherent. It uses Acceptance Cases, not a
+   relabelled factory benchmark: frozen dev/held-out labels, four Jace-specific
+   arms, independently scored scorecards, complete lineage, segmented tri-state
+   promotion, and strict separation of offline/canary/production evidence.
+   Do not preserve legacy factory/execution evals for history alone: first map
+   dependencies; classify every component as remove, neutral-infrastructure
+   reuse, or replace; build/migrate to the Acceptance-Case spine; run targeted
+   replacement coverage; only then delete obsolete product logic, fixtures,
+   docs, and tests in a bounded cleanup slice. The market-value scorecards must
+   honestly measure lower false-greens/noise/context waste/review-rework and
+   better task success/repair with denominators and sample-size limits.
 
 ## Non-goals
 

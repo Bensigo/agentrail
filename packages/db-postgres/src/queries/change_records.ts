@@ -2146,6 +2146,11 @@ export async function readAcceptanceWorkspaceOutcomeSummary(
   if (fromUtcInclusive.getTime() >= toUtcExclusive.getTime()) {
     throw new Error("workspace outcome summary requires fromUtcInclusive < toUtcExclusive");
   }
+  // The deployed postgres client accepts timestamp strings but not JavaScript
+  // Date objects in this raw SQL path. Keep the public return values as Dates,
+  // while binding explicit UTC values for every SQL comparison and cast.
+  const fromUtcInclusiveSql = fromUtcInclusive.toISOString();
+  const toUtcExclusiveSql = toUtcExclusive.toISOString();
 
   const rows = await db.execute(sql`
     WITH windowed_reviews AS (
@@ -2156,8 +2161,8 @@ export async function readAcceptanceWorkspaceOutcomeSummary(
       INNER JOIN change_records AS record
         ON record.id = review.record_id
       WHERE record.workspace_id = ${input.workspaceId}
-        AND review.created_at >= ${fromUtcInclusive}
-        AND review.created_at < ${toUtcExclusive}
+        AND review.created_at >= ${fromUtcInclusiveSql}
+        AND review.created_at < ${toUtcExclusiveSql}
         AND revision.superseded_at IS NULL
     ),
     windowed_decision_events AS (
@@ -2171,8 +2176,8 @@ export async function readAcceptanceWorkspaceOutcomeSummary(
         ON revision.id = review.pr_revision_id
       WHERE record.workspace_id = ${input.workspaceId}
         AND event.stage = 'human_pr_decision'
-        AND event.at >= ${fromUtcInclusive}
-        AND event.at < ${toUtcExclusive}
+        AND event.at >= ${fromUtcInclusiveSql}
+        AND event.at < ${toUtcExclusiveSql}
         AND revision.superseded_at IS NULL
     ),
     current_pending_requests AS (
@@ -2203,8 +2208,8 @@ export async function readAcceptanceWorkspaceOutcomeSummary(
     )
     SELECT
       ${input.workspaceId} AS workspace_id,
-      ${fromUtcInclusive}::timestamptz AS window_from_utc_inclusive,
-      ${toUtcExclusive}::timestamptz AS window_to_utc_exclusive,
+      ${fromUtcInclusiveSql}::timestamptz AS window_from_utc_inclusive,
+      ${toUtcExclusiveSql}::timestamptz AS window_to_utc_exclusive,
       now() AS counted_at_utc,
       COALESCE((SELECT COUNT(DISTINCT pr_revision_id)::int FROM windowed_reviews), 0) AS reviewed_pr_revision_count,
       COALESCE((SELECT COUNT(*)::int FROM windowed_reviews WHERE overall_status = 'proven'), 0) AS proven_count,

@@ -93,6 +93,12 @@ describe("readAcceptanceWorkspaceOutcomeSummary", () => {
     expect(rendered.sql).toContain("request.status IN ('queued', 'claimed')");
     expect(rendered.sql).not.toContain("review_metrics");
     expect(rendered.sql).not.toContain("review_events");
+    expect(rendered.params).toEqual(expect.arrayContaining([
+      fromUtcInclusive.toISOString(),
+      toUtcExclusive.toISOString(),
+    ]));
+    expect(rendered.params).not.toContain(fromUtcInclusive);
+    expect(rendered.params).not.toContain(toUtcExclusive);
   });
 
   it("rejects an empty or reversed UTC interval before issuing SQL", async () => {

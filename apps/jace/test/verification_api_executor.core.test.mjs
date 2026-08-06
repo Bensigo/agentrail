@@ -35,7 +35,9 @@ async function withLoopbackServer(handler, run) {
 
 function executor({ fetchImpl, uploadArtifact, timeoutMs } = {}) {
   return createVerificationApiExecutor({
-    fetchImpl: fetchImpl ?? globalThis.fetch,
+    fetchImpl: fetchImpl ?? (async () => {
+      throw new Error("fetchImpl must be injected for this test harness");
+    }),
     uploadArtifact: uploadArtifact ?? (async () => ({ artifactId: "artifact" })),
     timeoutMs,
   });
@@ -56,6 +58,7 @@ test("executes the exact same-origin GET against a loopback preview and stores p
     const item = makeItem({ previewUrl: `${origin}/pr/42` });
     let upload;
     const result = await executor({
+      fetchImpl: globalThis.fetch,
       uploadArtifact: async (input) => {
         upload = input;
         return { artifactId: "artifact-1" };
@@ -92,6 +95,7 @@ test("does not upload when the loopback response status does not match the plann
   }, async (origin) => {
     let uploads = 0;
     const result = await executor({
+      fetchImpl: globalThis.fetch,
       uploadArtifact: async () => {
         uploads += 1;
         throw new Error("must not upload");

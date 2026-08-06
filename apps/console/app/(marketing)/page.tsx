@@ -38,11 +38,11 @@ import { TierCards } from "./pricing/tier-cards";
 const HOW_WE_WORK = [
   {
     name: "Intake",
-    line: "Turn a request into the missing questions, risks, non-goals, and acceptance criteria that matter.",
+    line: "Your team keeps its own coding agent and normal environment. Turn a request into clear scope, acceptance criteria, and planned checks.",
   },
   {
     name: "Confirm",
-    line: "A human confirms the Acceptance Contract before it becomes the standard for implementation and review.",
+    line: "Set the bar first: a human confirms the Acceptance Contract before implementation and review.",
   },
   {
     name: "Context",
@@ -50,15 +50,15 @@ const HOW_WE_WORK = [
   },
   {
     name: "Build",
-    line: "Codex, Claude Code, or another selected builder implements the work. Jace does not silently edit it.",
+    line: "Your selected coding agent works in that environment. Jace does not write code or silently edit it.",
   },
   {
     name: "Review",
-    line: "When the builder attaches a pull request, Jace checks the exact revision against the confirmed contract and available evidence.",
+    line: "See what changed and the evidence attached to the exact revision against the confirmed contract.",
   },
   {
     name: "Decide",
-    line: "Your team sees criterion-specific proof, a required correction, or an explicit not-proven result before deciding the PR.",
+    line: "Decide confidently with criterion-specific proof, a correction path, or an explicit not-proven result.",
   },
 ];
 
@@ -148,16 +148,14 @@ export default async function LandingPage() {
             className="ar-rise rounded-full"
           />
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
-            <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
+            <span className="text-heading-1 block">Approve agent work with confidence.</span>
             <span className="text-heading-2 mt-5 block text-balance">
-            Your coding agent writes the code. Jace makes the work
-            reviewable.
+            Jace gives engineering teams the evidence and control they need to trust AI coding agents.
             </span>
           </h1>
           <p className="ar-rise mt-6 max-w-[58ch] text-[var(--gray-11)]" style={{ animationDelay: "110ms" }}>
-            Jace turns ambiguous work into a confirmed Acceptance Contract,
-            a bounded Context Pack, and an exact-head evidence record your
-            team can inspect.
+            Set the bar before work starts, then see what changed and what can
+            be proven.
           </p>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
             <PrimaryCta cta={cta} />
@@ -191,8 +189,8 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
-              Before the code, there is a contract: goal, non-goals, criteria,
-              blast radius, and stop conditions.
+              Before work starts, a request becomes clear scope, acceptance
+              criteria, and planned checks.
             </p>
           </Reveal>
         </div>
@@ -268,13 +266,14 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">
-              Meet Jace where work already gets discussed
+              Jace fits where agent work happens
             </h2>
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Start where the work is discussed. When a builder attaches a
-              pull request, Jace ties the review back to the same record.
+              Jace fits where agent work happens. Bring a request from the
+              channel your team already uses, then see evidence tied to the
+              exact change.
             </p>
           </Reveal>
           <div className="mt-12">
@@ -356,7 +355,7 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Plans are priced by team size — Starter for small teams, Growth
+              Plans are priced by team size. Starter is for small teams, Growth
               for bigger ones. The product is the acceptance and evidence
               layer around the coding agents your team already uses.
             </p>
@@ -364,7 +363,7 @@ export default async function LandingPage() {
           <ol className="mt-10 flex flex-col gap-6">
             {[
               "Pick a plan for your team size.",
-              "Talk to Jace where your team works: Telegram, Slack, or Discord.",
+              "Bring the request from the channel your team already uses when a verified connection is available.",
               "Confirm the Acceptance Contract and give the selected builder a bounded Context Pack.",
             ].map((line, i) => (
               <Reveal key={i} delay={i * 70}>
@@ -418,14 +417,13 @@ export default async function LandingPage() {
             className="-rotate-3 mx-auto mb-6"
           />
           <h2 className="text-heading-2">
-            Start with a confirmed Acceptance Contract
+            Start with an approved change and see evidence attached to the result
             <span aria-hidden className="ar-cursor animate-pulse font-mono">
               _
             </span>
           </h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
-            Connect GitHub, confirm the contract, and review external-agent
-            work against evidence bound to the pull request head.
+            Approve the change, then see evidence bound to the exact result.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />

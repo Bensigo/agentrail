@@ -18,12 +18,12 @@ interface UseCase {
 const USE_CASES: UseCase[] = [
   {
     title: "Make dependency work reviewable",
-    line: "Turn a selected dependency update into an Acceptance Contract, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
+    line: "Turn a selected dependency update into clear criteria, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
     visual: "dependency",
   },
   {
     title: "Start with an acceptance contract",
-    line: "Turn a vague request into a human-confirmed goal, non-goals, acceptance criteria, risks, and stop conditions before implementation begins.",
+    line: "Turn a vague request into clear scope, acceptance criteria, planned checks, risks, and a visible stop path before implementation begins.",
     visual: "contract",
   },
   {
@@ -33,12 +33,12 @@ const USE_CASES: UseCase[] = [
   },
   {
     title: "Review the exact revision",
-    line: "Jace binds its review to the confirmed contract, repository, pull-request head, and available safe environment. A green diff is not proof on its own.",
+    line: "Jace binds evidence to the confirmed contract, repository, exact change, and available safe environment. A green diff is not proof on its own.",
     visual: "regression",
   },
   {
     title: "Show proof or uncertainty",
-    line: "For each criterion, Jace returns inspectable evidence, a required correction, or an explicit not-proven or not-testable result. Your team still decides.",
+    line: "For each criterion, Jace returns evidence bound to the exact change, a visible correction path, or a stop when the work cannot be proven. Your team still decides.",
     visual: "proof",
   },
 ];

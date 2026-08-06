@@ -265,7 +265,7 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   it("the outcome-led use case frames dependency work as an evidence-bound trust flow", () => {
     expect(useCasesSource).toContain("Make dependency work reviewable");
     expect(useCasesSource).toContain(
-      "Turn a selected dependency update into an Acceptance Contract, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
+      "Turn a selected dependency update into clear criteria, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
     );
     expect(useCasesSource).not.toContain("Coming soon");
   });
@@ -276,25 +276,49 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   // that the old wording is gone.
   it("pricing page's new steps name the trust-layer handoff", () => {
     expect(pricingSource).toContain(
-      "Confirm the Acceptance Contract. A selected builder implements it; Jace reviews exact-head evidence.",
+      "Start with an approved change and see evidence attached to the result. A selected builder implements the confirmed contract; Jace reviews the exact change.",
     );
     expect(pricingSource).not.toContain("ships as a pull request");
   });
 
   it("marketing surfaces describe confirmation, external implementation, and exact-head review", () => {
-    expect(channelsSource).toContain(
-      "confirm the Acceptance Contract before implementation",
-    );
-    expect(landingSource).toContain("Start with a confirmed Acceptance Contract");
-    expect(landingSource).not.toContain("Start with an approved change");
-    expect(pricingSource).not.toContain("Approve the work");
+    expect(channelsSource).toContain("bring the request here and confirm the work before it starts");
+    expect(landingSource).toContain("Start with an approved change and see evidence attached to the result");
     expect(pricingSource).toContain(
-      "A selected builder implements the confirmed contract; Jace reviews",
+      "Start with an approved change and see evidence attached to the result. A selected builder implements the confirmed contract; Jace reviews the exact change.",
     );
   });
 
   it("landing §6b hands the confirmed contract and bounded Context Pack to the selected builder", () => {
     expect(landingSource).toContain("Confirm the Acceptance Contract and give the selected builder a bounded Context Pack.");
+  });
+
+  it("trust-layer landing copy keeps the approved direction explicit", () => {
+    expect(landingSource).toContain("Approve agent work with confidence.");
+    expect(landingSource).toContain(
+      "Jace gives engineering teams the evidence and control they need to trust AI coding agents.",
+    );
+    expect(landingSource.replace(/\s+/g, " ")).toContain(
+      "Before work starts, a request becomes clear scope, acceptance criteria, and planned checks.",
+    );
+    expect(landingSource).toContain("Your team keeps its own coding agent and normal environment.");
+    expect(landingSource).toContain("Decide confidently with criterion-specific proof");
+    expect(landingSource).not.toContain("Hey, I&apos;m Jace");
+  });
+
+  it("channels describe compatibility without claiming unverified Slack or Discord availability", () => {
+    expect(landingSource).toContain("Jace fits where agent work happens");
+    expect(channelsSource).toContain("If Slack is configured and verified");
+    expect(channelsSource).toContain("If Discord is configured and verified");
+    expect(channelsSource).not.toContain("Add me to a channel");
+    expect(channelsSource).not.toContain("I post briefs and outcome pings");
+  });
+
+  it("visible trust stats remain mechanics, not activity or invented outcomes", () => {
+    expect(landingSource).toContain("confirmed contract");
+    expect(landingSource).toContain("bounded Context Pack");
+    expect(landingSource).toContain("exact-head review and human decision");
+    expect(landingSource).not.toContain("{stats.shipped}");
   });
 
   // -----------------------------------------------------------------------
@@ -313,7 +337,7 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     // collapsing JSX text at render time, just done for the string compare.
     const normalized = landingSource.replace(/\s+/g, " ");
     expect(normalized).toContain(
-      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. The product is the acceptance and evidence layer around the coding agents your team already uses.",
+      "Plans are priced by team size. Starter is for small teams, Growth for bigger ones. The product is the acceptance and evidence layer around the coding agents your team already uses.",
     );
   });
 

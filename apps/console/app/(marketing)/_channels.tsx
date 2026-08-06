@@ -11,13 +11,12 @@ import type { MessageJaceCta } from "./_cta";
 import type { ChannelCard } from "./_channel-cards";
 
 /**
- * "Meet Jace where work already gets discussed" — the channel scene
+ * "Jace fits where agent work happens" — the compatibility scene
  * (plan: docs/superpowers/plans/2026-07-22-landing-v2.md §Task 7).
  *
  * PRESENTATION vs LINKS (owner ruling 2026-07-22, recorded in TASTE.md by
- * PR 3/3): the owner chose to present Telegram, Slack, and Discord as equal
- * panels — overriding the render-nothing default the #1284/#1285 honesty
- * gate applies to footer cards. The LINKS still respect that gate: each
+ * PR 3/3): the panels show compatibility without claiming every connection
+ * is live. The LINKS still respect the honesty gate: each
  * button uses the channel's real URL only when its resolver provides one
  * (Telegram via `_cta.ts`, Slack/Discord via `_channel-cards.ts`'s
  * env-gated resolvers), and falls back to the GitHub sign-in action
@@ -41,19 +40,19 @@ const PANELS: ChannelPanel[] = [
   {
     id: "telegram",
     name: "Telegram",
-    line: "DM me on Telegram. A message becomes a brief in under a minute.",
+    line: "If Telegram is configured, bring the request here and confirm the work before it starts.",
     buttonLabel: "Message Jace on Telegram",
   },
   {
     id: "slack",
     name: "Slack",
-    line: "Add me to a channel. Mention me with a task and confirm the Acceptance Contract before implementation.",
+    line: "If Slack is configured and verified, bring the request here and confirm the work before it starts.",
     buttonLabel: "Add Jace to Slack",
   },
   {
     id: "discord",
     name: "Discord",
-    line: "Drop me in your server. I post briefs and outcome pings where the team can see them.",
+    line: "If Discord is configured and verified, bring the request here and confirm the work before it starts.",
     buttonLabel: "Add Jace to Discord",
   },
 ];

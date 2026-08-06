@@ -99,6 +99,53 @@ acknowledgement only; no dispatcher has proven notification.
    honestly measure lower false-greens/noise/context waste/review-rework and
    better task success/repair with denominators and sample-size limits.
 
+## Context Pack compiler bridge (implementation plan)
+
+The local compiler is implemented and tested, but is not yet a Jace product
+worker. `agentrail.context.packs.build_context_pack` accepts an
+`acceptance_record` target plus confirmed contract and produces a deterministic,
+bounded, cited, redacted pack with compiler version, content hash, custody,
+freshness, index provenance, JSON, and Markdown output. It does not itself
+resolve a workspace repository, authenticate a clone, record a central Pack,
+or hand a pack to a builder.
+
+The existing hosted `onboard` worker proves a reusable safe checkout pattern:
+the Console claim returns one workspace-scoped installation token and repo/ref;
+the worker shallow-clones into a disposable directory, builds an index, and
+removes the directory while redacting clone failures. Reuse this mechanism, not
+the onboarding's memory/LLM/factory semantics.
+
+Required vertical slices:
+
+1. Add a dedicated acceptance-pack compilation job that can be admitted only
+   for a confirmed Contract and the Record's connected repository. Its
+   deterministic identity binds record, confirmed contract version, repository,
+   and phase; it never selects a builder, edits code, creates a PR, or merges.
+2. Add claim/report routes under the Jace shared-secret boundary. A claim must
+   return only the bound record/contract/repository/ref and a fresh
+   workspace-scoped clone credential. A report must be owned by the claiming
+   worker and must not mark a Pack as compiled without validated bounded
+   metadata.
+3. Add a disposable compiler worker: clone exact claimed ref, rebuild the local
+   index, compile only the confirmed Contract, reduce its output to the
+   metadata-only Pack manifest, and report explicit `failed`/`not_proven`
+   status on clone/index/compile failure. It must not put raw source content in
+   Postgres. The default custody policy may hand the builder cited ranges and
+   local artifact references, not a repository dump.
+4. Bind a successful report to `recordAcceptanceContextPack`, then require a
+   human-selected builder handoff to name that exact Pack. The existing handoff
+   already enforces selected confirmed contract plus Pack; it does not prove
+   the compiler worker ran.
+5. Test admission, claim ownership, exact contract/repository binding,
+   compiler manifest conversion, bounded/redacted failure behavior, and one
+   local worker smoke against a disposable repository. A deployed clone and
+   external-builder retrieval remain separate live proof.
+
+No compiler bridge is implemented yet. In particular, the Console/MCP Pack
+routes currently validate and persist caller-supplied metadata/artifact refs;
+they must not be described as having compiled context. The legacy factory's
+context pack file is not a substitute for this Acceptance Record-bound worker.
+
 ## Dependency approval-lane removal plan (pre-destructive audit)
 
 Audit date: 2026-08-06. This is a repository-source map, not a production-data

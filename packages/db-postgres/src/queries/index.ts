@@ -3316,6 +3316,7 @@ export {
   resolveEvidenceVerificationPlanForArtifact,
   recordEvidenceVerificationArtifact,
   queueEvidenceReviewCorrectionDelivery,
+  readEvidenceReviewCorrectionDeliveriesForTask,
   acknowledgeEvidenceReviewCorrectionDelivery,
   confirmAcceptanceContract,
   readAcceptanceContracts,

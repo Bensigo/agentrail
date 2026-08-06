@@ -1069,6 +1069,20 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
 }) {
   const id = correctionDeliveryId(input);
   return db.transaction(async (tx) => {
+    if (input.channel === "mcp_task_context") {
+      const builder = typeof input.target.builder === "string" ? input.target.builder : "";
+      const taskContextKey = typeof input.target.taskContextKey === "string" ? input.target.taskContextKey : "";
+      const handoff = await tx.select({ id: acceptanceBuilderHandoffs.id })
+        .from(acceptanceBuilderHandoffs)
+        .where(and(
+          eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+          eq(acceptanceBuilderHandoffs.recordId, input.recordId),
+          eq(acceptanceBuilderHandoffs.builder, builder),
+          eq(acceptanceBuilderHandoffs.taskContextKey, taskContextKey),
+        ))
+        .limit(1);
+      if (!handoff[0]) throw new Error("Correction delivery target does not match the recorded builder handoff");
+    }
     const scoped = await tx.select({ review: evidenceReviews, record: changeRecords })
       .from(evidenceReviewCorrections)
       .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
@@ -1087,6 +1101,35 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
     }).onConflictDoNothing().returning();
     return { id, inserted: Boolean(inserted[0]), reviewRevisionId: item.review.prRevisionId };
   });
+}
+
+/**
+ * Durable correction inbox for one recorded external-builder task context.
+ * Reading a packet does not acknowledge it or claim that the builder resumed.
+ */
+export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
+  workspaceId: string; builder: string; taskContextKey: string;
+}) {
+  const rows = await db.select({
+    delivery: evidenceReviewCorrectionDeliveries,
+    correction: evidenceReviewCorrections,
+    review: evidenceReviews,
+    revision: changeRecordPrRevisions,
+    pr: changeRecordPrs,
+  }).from(evidenceReviewCorrectionDeliveries)
+    .innerJoin(evidenceReviewCorrections, eq(evidenceReviewCorrectionDeliveries.correctionId, evidenceReviewCorrections.id))
+    .innerJoin(evidenceReviews, eq(evidenceReviewCorrections.reviewId, evidenceReviews.id))
+    .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
+    .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .where(and(
+      eq(evidenceReviewCorrectionDeliveries.channel, "mcp_task_context"),
+      eq(changeRecordPrs.workspaceId, input.workspaceId),
+      eq(evidenceReviews.recordId, changeRecordPrs.recordId),
+      sql`${evidenceReviewCorrectionDeliveries.target}->>'builder' = ${input.builder}`,
+      sql`${evidenceReviewCorrectionDeliveries.target}->>'taskContextKey' = ${input.taskContextKey}`,
+    ))
+    .orderBy(asc(evidenceReviewCorrectionDeliveries.attemptedAt));
+  return rows;
 }
 
 /** An agent acknowledgement is the only transition that proves it received a packet. */

@@ -6,6 +6,8 @@ import {
   readAcceptanceContextPacks,
   recordAcceptanceContextPack,
 } from "@agentrail/db-postgres";
+import { parseAcceptanceContract } from "@agentrail/contracts";
+import { validateAcceptanceContextPackMetadata } from "../../../../../../../../lib/acceptance-context-pack-validation";
 
 const phases = new Set(["plan", "execute", "verify", "review"]);
 const sha256 = /^sha256:[a-f0-9]{64}$/i;
@@ -92,12 +94,16 @@ export async function POST(
   try {
     const contracts = await readAcceptanceContracts({ workspaceId, recordId });
     if (contracts == null) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    if (!contracts.some((contract) => contract.status === "confirmed")) {
+    const confirmed = contracts.find((contract) => contract.status === "confirmed");
+    if (!confirmed) {
       return NextResponse.json(
         { error: "A confirmed Acceptance Contract is required before building context" },
         { status: 409 }
       );
     }
+    const contract = parseAcceptanceContract(confirmed.contract);
+    const validated = contract.ok && validateAcceptanceContextPackMetadata({ manifest, custody, freshness, contract: contract.value });
+    if (!validated || !validated.ok) return NextResponse.json({ error: validated && !validated.ok ? validated.error : "Confirmed Acceptance Contract is invalid" }, { status: 400 });
     const result = await recordAcceptanceContextPack({
       workspaceId,
       recordId,

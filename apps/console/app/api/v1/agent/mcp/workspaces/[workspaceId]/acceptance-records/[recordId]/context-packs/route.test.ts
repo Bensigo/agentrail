@@ -14,12 +14,12 @@ function params() { return Promise.resolve({ workspaceId: WS, recordId: RECORD }
 function post(body: unknown) {
   return new NextRequest("http://localhost", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
-const payload = { phase: "execute", contentHash: hash, compilerVersion: "1", manifest: {}, custody: {}, freshness: {}, jsonArtifactRef: null, markdownArtifactRef: null };
+const payload = { phase: "execute", contentHash: hash, compilerVersion: "1", manifest: { tokenBudget: 1000, tokenCount: 200, sources: [{ path: "src/save.ts", citation: "src/save.ts:1-2", startLine: 1, endLine: 2 }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] }, custody: { fullSourceUploadAllowed: false }, freshness: { indexRevision: "index-1", compiledAt: "2026-08-06T00:00:00.000Z" }, jsonArtifactRef: null, markdownArtifactRef: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ apiKeyId: "mcp-key", workspaceId: WS } as never);
-  vi.mocked(readAcceptanceContracts).mockResolvedValue([{ status: "confirmed" }] as never);
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{ status: "confirmed", contract: { originalUserWording: "save", goal: "save", acceptanceCriteria: [{ id: "saved", text: "Saves", required: true, userVisible: true }] } }] as never);
   vi.mocked(recordAcceptanceContextPack).mockResolvedValue({ pack: { id: "pack-1" }, inserted: true } as never);
 });
 
@@ -40,7 +40,7 @@ describe("MCP Context Pack recording", () => {
 
   it("rejects source-shaped payloads through database validation", async () => {
     vi.mocked(recordAcceptanceContextPack).mockRejectedValue(new Error("manifest must not contain source content"));
-    const response = await POST(post({ ...payload, manifest: { content: "secret" } }), { params: params() });
+    const response = await POST(post({ ...payload, manifest: { ...payload.manifest, sources: [{ ...payload.manifest.sources[0], content: "secret" }] } }), { params: params() });
     expect(response.status).toBe(422);
   });
 });

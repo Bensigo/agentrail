@@ -27,9 +27,9 @@ const payload = {
   phase: "execute",
   contentHash: HASH,
   compilerVersion: "context-compiler-v1",
-  manifest: { citations: [{ path: "src/cart.ts", citation: "src/cart.ts:10-20" }] },
+  manifest: { tokenBudget: 1000, tokenCount: 200, sources: [{ path: "src/cart.ts", citation: "src/cart.ts:10-20", startLine: 10, endLine: 20 }], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], acceptanceCriteria: [{ id: "saved" }] },
   custody: { fullSourceUploadAllowed: false },
-  freshness: { indexBuiltAt: "2026-08-06T12:00:00.000Z" },
+  freshness: { indexRevision: "index-1", compiledAt: "2026-08-06T12:00:00.000Z" },
   jsonArtifactRef: "workspace://packs/1.json",
   markdownArtifactRef: "workspace://packs/1.md",
 };
@@ -49,7 +49,7 @@ beforeEach(() => {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "member-1" } as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([
-    { id: "c1", recordId: RECORD, version: 1, status: "confirmed" },
+    { id: "c1", recordId: RECORD, version: 1, status: "confirmed", contract: { originalUserWording: "save", goal: "save", acceptanceCriteria: [{ id: "saved", text: "Saves", required: true, userVisible: true }] } },
   ] as never);
   vi.mocked(readAcceptanceContextPacks).mockResolvedValue([] as never);
 });

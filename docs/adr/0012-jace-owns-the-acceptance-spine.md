@@ -63,14 +63,19 @@ revision and contract; it rejects generic non-UI plans for user-visible
 criteria and requires a safe environment/flow or an explicit `not_testable`
 reason. A persisted plan is not proof.
 
+Context Pack recording now rejects an unbounded or uncited manifest. A pack
+must declare an explicit token budget/count, cited source ranges, the exact
+confirmed criterion IDs, architecture boundaries, tests, decisions,
+exclusions, freshness, and a no-full-source custody declaration. This is
+structural handoff enforcement, not yet a live compiler attestation.
+
 The runner can now store an inspectable PNG/JPEG only by resolving a current,
 planned UI criterion against its Acceptance Record and exact PR revision. It
 derives the repository, PR number, head, criterion, and environment from that
 plan and records an artifact key plus SHA-256 digest. This is a narrow UI
 artifact seam, not a browser-exercise worker or proof of the criterion.
 
-Not yet proven: Context-Pack token-budget/citation enforcement and canonical
-compiler attestation; Codex/Claude task pickup; originating-channel
+Not yet proven: Context-Pack canonical compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
 builder task; UI exercise and non-UI artifact dispatch; runtime modality-
 exercise worker; API redaction worker; GitHub/Jace fallback delivery; human

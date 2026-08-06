@@ -40,4 +40,16 @@ describe("connector sheet connection-path contract", () => {
     expect(source).not.toContain("review, push");
     expect(source).not.toContain("open PRs as itself");
   });
+
+  it("does not render heartbeat trigger controls", () => {
+    expect(source).not.toContain("Radio");
+    expect(source).not.toContain("TriggerControls");
+    expect(source).not.toContain("Heartbeat");
+    expect(source).not.toContain("heartbeat");
+    expect(source).not.toContain("Trigger label");
+    expect(source).not.toContain("Poll interval");
+    expect(source).not.toContain("triggerLabel");
+    expect(source).not.toContain("pollIntervalSeconds");
+    expect(source).not.toContain('aria-label="Toggle heartbeat for this connector"');
+  });
 });

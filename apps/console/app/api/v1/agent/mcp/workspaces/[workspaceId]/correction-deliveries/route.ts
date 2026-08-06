@@ -21,7 +21,12 @@ export async function GET(
   if (!nonempty(builder) || !nonempty(taskContextKey)) {
     return NextResponse.json({ error: "builder and taskContextKey are required" }, { status: 400 });
   }
-  const rows = await readEvidenceReviewCorrectionDeliveriesForTask({ workspaceId, builder, taskContextKey });
+  const rows = await readEvidenceReviewCorrectionDeliveriesForTask({
+    workspaceId,
+    apiKeyId: authorization.apiKeyId,
+    builder,
+    taskContextKey,
+  });
   return NextResponse.json({
     deliveries: rows.map(({ delivery, correction, criterion, review, revision, pr }) => ({
       delivery: {

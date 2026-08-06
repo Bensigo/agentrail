@@ -21,7 +21,7 @@ describe("MCP correction acknowledgement", () => {
     const response = await POST(request({ builder: "codex", taskContextKey: "task-1", detail: "I have the packet" }), { params: params() });
     expect(response.status).toBe(200);
     expect(requireAgentMcpWorkspace).toHaveBeenCalledWith(expect.any(NextRequest), WS, "acceptance:correction:ack");
-    expect(acknowledgeEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith({ workspaceId: WS, deliveryId: DELIVERY, builder: "codex", taskContextKey: "task-1", detail: "I have the packet" });
+    expect(acknowledgeEvidenceReviewCorrectionDelivery).toHaveBeenCalledWith({ workspaceId: WS, apiKeyId: "mcp-key", deliveryId: DELIVERY, builder: "codex", taskContextKey: "task-1", detail: "I have the packet" });
   });
   it("does not claim delivery when the scoped MCP guard fails", async () => {
     vi.mocked(requireAgentMcpWorkspace).mockResolvedValue(new NextResponse(null, { status: 403 }) as never);

@@ -15,7 +15,14 @@ export async function POST(
   const taskContextKey = typeof body.taskContextKey === "string" ? body.taskContextKey.trim() : "";
   if (!builder || !taskContextKey) return NextResponse.json({ error: "builder and taskContextKey are required" }, { status: 400 });
   const detail = typeof body.detail === "string" ? body.detail.trim() : null;
-  const delivery = await acknowledgeEvidenceReviewCorrectionDelivery({ workspaceId, deliveryId, builder, taskContextKey, detail });
+  const delivery = await acknowledgeEvidenceReviewCorrectionDelivery({
+    workspaceId,
+    apiKeyId: authorization.apiKeyId,
+    deliveryId,
+    builder,
+    taskContextKey,
+    detail,
+  });
   if (!delivery) return NextResponse.json({ error: "Delivery not found or already acknowledged" }, { status: 404 });
   return NextResponse.json({ delivery: { id: delivery.id, outcome: delivery.outcome, confirmedAt: delivery.confirmedAt?.toISOString() ?? null } });
 }

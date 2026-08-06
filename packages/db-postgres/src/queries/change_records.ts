@@ -3034,7 +3034,7 @@ export async function queueEvidenceReviewCorrectionDelivery(input: {
  * Reading a packet does not acknowledge it or claim that the builder resumed.
  */
 export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
-  workspaceId: string; builder: string; taskContextKey: string;
+  workspaceId: string; apiKeyId: string; builder: string; taskContextKey: string;
 }) {
   const rows = await db.select({
     delivery: evidenceReviewCorrectionDeliveries,
@@ -3052,10 +3052,24 @@ export async function readEvidenceReviewCorrectionDeliveriesForTask(input: {
     ))
     .innerJoin(changeRecordPrRevisions, eq(evidenceReviewCorrectionDeliveries.reviewRevisionId, changeRecordPrRevisions.id))
     .innerJoin(changeRecordPrs, eq(changeRecordPrRevisions.prAttachmentId, changeRecordPrs.id))
+    .innerJoin(acceptanceBuilderHandoffs, and(
+      eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderHandoffs.recordId, changeRecordPrs.recordId),
+      eq(acceptanceBuilderHandoffs.repositoryId, changeRecordPrs.repositoryId),
+      sql`lower(trim(${acceptanceBuilderHandoffs.builder})) = lower(trim(${input.builder}))`,
+      eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey),
+    ))
+    .innerJoin(acceptanceContextPackDeliveries, and(
+      eq(acceptanceContextPackDeliveries.contextPackId, acceptanceBuilderHandoffs.contextPackId),
+      eq(acceptanceContextPackDeliveries.method, "mcp"),
+      sql`${acceptanceContextPackDeliveries.metadata}->>'handoffId' = ${acceptanceBuilderHandoffs.id}::text`,
+      sql`${acceptanceContextPackDeliveries.metadata}->>'agentMcpCredentialId' = ${input.apiKeyId}`,
+    ))
     .where(and(
       eq(evidenceReviewCorrectionDeliveries.channel, "mcp_task_context"),
       eq(changeRecordPrs.workspaceId, input.workspaceId),
       eq(evidenceReviews.recordId, changeRecordPrs.recordId),
+      isNull(changeRecordPrRevisions.supersededAt),
       sql`${evidenceReviewCorrectionDeliveries.target}->>'builder' = ${input.builder}`,
       sql`${evidenceReviewCorrectionDeliveries.target}->>'taskContextKey' = ${input.taskContextKey}`,
     ))
@@ -3162,7 +3176,7 @@ export async function reportEvidenceReviewCorrectionGithubDispatch(input: {
 
 /** An agent acknowledgement is the only transition that proves it received a packet. */
 export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
-  workspaceId: string; deliveryId: string; builder: string; taskContextKey: string; detail?: string | null;
+  workspaceId: string; apiKeyId: string; deliveryId: string; builder: string; taskContextKey: string; detail?: string | null;
 }) {
   const rows = await db.update(evidenceReviewCorrectionDeliveries).set({
     outcome: "acknowledged", outcomeDetail: input.detail ?? null, confirmedAt: new Date(),
@@ -3174,9 +3188,22 @@ export async function acknowledgeEvidenceReviewCorrectionDelivery(input: {
     sql`EXISTS (
       SELECT 1 FROM evidence_review_corrections c
       JOIN evidence_reviews r ON r.id = c.review_id
-      JOIN change_records cr ON cr.id = r.record_id
+      JOIN change_record_pr_revisions revision ON revision.id = ${evidenceReviewCorrectionDeliveries.reviewRevisionId}
+      JOIN change_record_prs pr ON pr.id = revision.pr_attachment_id
+      JOIN change_records cr ON cr.id = r.record_id AND cr.id = pr.record_id
+      JOIN acceptance_builder_handoffs handoff ON handoff.workspace_id = cr.workspace_id
+        AND handoff.record_id = cr.id
+        AND handoff.repository_id = pr.repository_id
+        AND lower(trim(handoff.builder)) = lower(trim(${input.builder}))
+        AND handoff.task_context_key = ${input.taskContextKey}
+      JOIN acceptance_context_pack_deliveries pack_delivery ON pack_delivery.context_pack_id = handoff.context_pack_id
+        AND pack_delivery.method = 'mcp'
+        AND pack_delivery.metadata->>'handoffId' = handoff.id::text
+        AND pack_delivery.metadata->>'agentMcpCredentialId' = ${input.apiKeyId}
       WHERE c.id = ${evidenceReviewCorrectionDeliveries.correctionId}
         AND cr.workspace_id = ${input.workspaceId}
+        AND r.pr_revision_id = revision.id
+        AND revision.superseded_at IS NULL
     )`,
     sql`${evidenceReviewCorrectionDeliveries.confirmedAt} IS NULL`,
   )).returning();

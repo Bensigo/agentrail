@@ -4,9 +4,19 @@ import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { briefs, briefItems } from "../schema/briefs.js";
-import { changeRecordEvents, evidenceReviews } from "../schema/change_records.js";
+import {
+  acceptanceBuilderHandoffs,
+  acceptanceContextPackDeliveries,
+  acceptanceContextPacks,
+  changeRecordEvents,
+  changeRecordPrRevisions,
+  evidenceReviewCorrectionDeliveries,
+  evidenceReviewCorrections,
+  evidenceReviews,
+} from "../schema/change_records.js";
 import {
   appendChangeRecordEvent,
+  acknowledgeEvidenceReviewCorrectionDelivery,
   attachExternalPullRequest,
   changeRecordId,
   confirmAcceptanceContract,
@@ -15,6 +25,7 @@ import {
   findOrCreateChangeRecord,
   linkAcceptanceBriefToRecord,
   recordAcceptancePrDecision,
+  readEvidenceReviewCorrectionDeliveriesForTask,
   readAcceptanceContracts,
   readAcceptanceBriefBinding,
   readChangeRecordTimeline,
@@ -73,6 +84,14 @@ describe.skipIf(!DB_AVAILABLE)(
     });
 
     afterEach(async () => {
+      await db.execute(sql`
+        DELETE FROM evidence_review_correction_deliveries delivery
+        USING evidence_review_corrections correction, evidence_reviews review, change_records record
+        WHERE delivery.correction_id = correction.id
+          AND correction.review_id = review.id
+          AND review.record_id = record.id
+          AND record.workspace_id = ${wsId}
+      `);
       await db.delete(workspaces).where(eq(workspaces.id, wsId));
     });
 
@@ -278,6 +297,158 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       const timeline = await readChangeRecordTimeline({ workspaceId: wsId, recordId: draft.record.id });
       expect(timeline?.events.filter((event) => event.stage === "human_pr_decision")).toHaveLength(1);
+    });
+
+    it("limits correction read and acknowledgement to the delivered builder credential and current exact head", async () => {
+      const repo = "acme/correction-proof";
+      const repository = await createRepository({
+        workspaceId: wsId,
+        name: repo,
+        url: "https://github.com/acme/correction-proof",
+        defaultBranch: "main",
+      });
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo,
+        workKey: `correction-delivery-${randomUUID()}`,
+        originChannel: "claude_code",
+        sourceReferences: [{ kind: "builder_task", id: `task-${randomUUID()}` }],
+        contract: {
+          originalRequest: "Keep the save flow safe",
+          acceptanceCriteria: [{ id: "save", text: "Saving persists the draft" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      const contract = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: draft.contract.version,
+        confirmedBy: "user:lead",
+      });
+      const contextPackId = randomUUID();
+      const handoffId = randomUUID();
+      const builder = "codex";
+      const taskContextKey = `task-${randomUUID()}`;
+      const apiKeyId = `mcp-${randomUUID()}`;
+      await db.insert(acceptanceContextPacks).values({
+        id: contextPackId,
+        recordId: draft.record.id,
+        version: 1,
+        phase: "execute",
+        contentHash: `sha256:${"c".repeat(64)}`,
+        compilerVersion: "test-context-compiler",
+        manifest: { criteria: ["save"], tokenBudget: 800 },
+        custody: { fullSourceUploadAllowed: false },
+        freshness: { repositoryRef: "main" },
+        jsonArtifactRef: "workspace://context/pack.json",
+        markdownArtifactRef: "workspace://context/pack.md",
+        createdBy: "jace:test",
+      });
+      await db.insert(acceptanceBuilderHandoffs).values({
+        id: handoffId,
+        recordId: draft.record.id,
+        workspaceId: wsId,
+        repositoryId: repository.id,
+        builder,
+        taskContextKey,
+        branchName: "jace/save-proof",
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        contextPackId,
+        status: "pr_attached",
+        createdBy: "user:lead",
+      });
+      await db.insert(acceptanceContextPackDeliveries).values({
+        id: randomUUID(),
+        contextPackId,
+        deliveryKey: `mcp:${apiKeyId}:${handoffId}`,
+        method: "mcp",
+        recipient: `${builder}:${taskContextKey}`,
+        metadata: { handoffId, agentMcpCredentialId: apiKeyId },
+        deliveredBy: `agent_mcp:${apiKeyId}`,
+      });
+      const headSha = "c".repeat(40);
+      const attachment = await attachExternalPullRequest({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo,
+        repositoryId: repository.id,
+        prNumber: 308,
+        prUrl: "https://github.com/acme/correction-proof/pull/308",
+        baseSha: "b".repeat(40),
+        headSha,
+        attachedBy: "user:lead",
+      });
+      await db.update(acceptanceBuilderHandoffs).set({ prAttachedAt: new Date() })
+        .where(eq(acceptanceBuilderHandoffs.id, handoffId));
+      const reviewId = randomUUID();
+      await db.insert(evidenceReviews).values({
+        id: reviewId,
+        recordId: draft.record.id,
+        prRevisionId: attachment.revision.id,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        headSha,
+        diffIdentity: { headSha, files: ["src/save.ts"] },
+        overallStatus: "failed",
+        staticFindings: [],
+        testResults: [],
+        independentVerifier: { kind: "local-integration" },
+        reviewabilityResult: { status: "reviewable" },
+        environmentRung: "local",
+        refusalReason: null,
+        verifierName: "jace-test",
+        verifierVersion: "1",
+        promptVersion: "1",
+      });
+      const correctionId = randomUUID();
+      const deliveryId = randomUUID();
+      await db.insert(evidenceReviewCorrections).values({
+        id: correctionId,
+        reviewId,
+        criterionId: "save",
+        observedBehavior: "The draft is lost after Save.",
+        expectedBehavior: "Saving persists the draft.",
+        evidenceRefs: [{ path: "src/save.ts", line: 19 }],
+        scopeBoundary: "Save contract",
+        concreteImpact: "Users lose changes.",
+        requiredCorrection: "Persist the draft before reporting success.",
+        reverification: "Save a draft in this exact head and observe it after reload.",
+      });
+      await db.insert(evidenceReviewCorrectionDeliveries).values({
+        id: deliveryId,
+        correctionId,
+        deliveryKey: "mcp:save",
+        channel: "mcp_task_context",
+        target: { builder, taskContextKey },
+        reviewRevisionId: attachment.revision.id,
+      });
+
+      const visible = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId, builder, taskContextKey,
+      });
+      const wrongCredential = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId: `other-${apiKeyId}`, builder, taskContextKey,
+      });
+      const wrongAck = await acknowledgeEvidenceReviewCorrectionDelivery({
+        workspaceId: wsId, apiKeyId: `other-${apiKeyId}`, deliveryId, builder, taskContextKey,
+      });
+
+      expect(visible.map((row) => row.delivery.id)).toEqual([deliveryId]);
+      expect(wrongCredential).toEqual([]);
+      expect(wrongAck).toBeNull();
+
+      await db.update(changeRecordPrRevisions).set({ supersededAt: new Date() })
+        .where(eq(changeRecordPrRevisions.id, attachment.revision.id));
+      const staleRead = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId, builder, taskContextKey,
+      });
+      const staleAck = await acknowledgeEvidenceReviewCorrectionDelivery({
+        workspaceId: wsId, apiKeyId, deliveryId, builder, taskContextKey,
+      });
+      expect(staleRead).toEqual([]);
+      expect(staleAck).toBeNull();
     });
 
     it("reads timelines scoped by workspace and ordered by event time", async () => {

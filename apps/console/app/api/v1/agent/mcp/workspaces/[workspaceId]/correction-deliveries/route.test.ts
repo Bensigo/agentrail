@@ -16,7 +16,7 @@ describe("MCP correction-delivery inbox", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns only the targeted task's evidence-bound packet and exact review revision", async () => {
-    vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ workspaceId: WS } as never);
+    vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ workspaceId: WS, apiKeyId: "mcp-key" } as never);
     vi.mocked(readEvidenceReviewCorrectionDeliveriesForTask).mockResolvedValue([{
       delivery: { id: "delivery", channel: "mcp_task_context", target: { builder: "codex", taskContextKey: "task" }, attempt: 0, outcome: "queued", outcomeDetail: null, queuedAt: new Date("2026-08-06T00:00:00Z"), attemptedAt: null, confirmedAt: null },
       correction: { id: "correction", criterionId: "saved", expectedBehavior: "saved", observedBehavior: "missing", evidenceRefs: [], reproductionSteps: ["save"], likelyAffectedUnits: ["app.ts:9"], contextRefs: [], scopeBoundary: "contract", concreteImpact: "data loss", requiredCorrection: "persist", reverification: "save", repairPath: null },
@@ -25,14 +25,14 @@ describe("MCP correction-delivery inbox", () => {
 
     const response = await GET(request("?builder=codex&taskContextKey=task"), { params });
     expect(response.status).toBe(200);
-    expect(readEvidenceReviewCorrectionDeliveriesForTask).toHaveBeenCalledWith({ workspaceId: WS, builder: "codex", taskContextKey: "task" });
+    expect(readEvidenceReviewCorrectionDeliveriesForTask).toHaveBeenCalledWith({ workspaceId: WS, apiKeyId: "mcp-key", builder: "codex", taskContextKey: "task" });
     await expect(response.json()).resolves.toMatchObject({
       deliveries: [{ delivery: { id: "delivery", outcome: "queued", confirmedAt: null }, reviewRevision: { id: "revision", repository: "org/repo", prNumber: 3, headSha: "abc" }, packet: { correctionId: "correction", criterionId: "saved", requiredCorrection: "persist", runtimeEvidence: [{ environmentId: "preview", artifactRef: "artifact" }] } }],
     });
   });
 
   it("requires the recorded builder task coordinates", async () => {
-    vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ workspaceId: WS } as never);
+    vi.mocked(requireAgentMcpWorkspace).mockResolvedValue({ workspaceId: WS, apiKeyId: "mcp-key" } as never);
     const response = await GET(request("?builder=codex"), { params });
     expect(response.status).toBe(400);
     expect(readEvidenceReviewCorrectionDeliveriesForTask).not.toHaveBeenCalled();

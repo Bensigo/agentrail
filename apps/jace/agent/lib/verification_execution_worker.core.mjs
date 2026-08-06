@@ -10,7 +10,7 @@ export function createVerificationExecutionWorker({ claim, execute, complete, in
       const item = await claim();
       if (!item) return "idle";
       const plan = item.plan ?? item;
-      if (plan.modality !== "ui" && plan.modality !== "api") {
+      if (plan.modality !== "ui" && plan.modality !== "api" && plan.modality !== "data") {
         await completeSafely({ executionId: item.execution.id, workerId: item.workerId, status: "not_testable", resultReason: "Planned verification modality is missing or unsupported" });
         return "not_testable";
       }

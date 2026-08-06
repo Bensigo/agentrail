@@ -2413,6 +2413,28 @@ const safeUiPath = (value: unknown): value is string =>
   && !value.includes("\\")
   && !/[\u0000-\u001F\u007F]/.test(value);
 
+const DATA_ASSERTION_LIMIT = 12;
+const DATA_PATH_LIMIT = 256;
+const DATA_POINTER_LIMIT = 128;
+const safeDataPath = (value: unknown): value is string =>
+  boundedUiText(value, DATA_PATH_LIMIT)
+  && value === value.trim()
+  && value.startsWith("/")
+  && !value.startsWith("//")
+  && !value.includes("\\")
+  && !value.includes("?")
+  && !value.includes("#")
+  && !/[\u0000-\u001F\u007F]/.test(value);
+const safeDataPointer = (value: unknown): value is string =>
+  boundedUiText(value, DATA_POINTER_LIMIT)
+  && value === value.trim()
+  && value.startsWith("/")
+  && !value.startsWith("//")
+  && !value.includes("\\")
+  && !value.includes("?")
+  && !value.includes("#")
+  && !/[\u0000-\u001F\u007F]/.test(value);
+
 /** Parse the only browser-user action vocabulary that a planned UI proof may persist. */
 export function parseUiVerificationSteps(value: unknown):
   | { ok: true; value: UiVerificationStep[] }
@@ -2447,6 +2469,39 @@ export function parseUiVerificationSteps(value: unknown):
   return { ok: true, value: steps };
 }
 
+export type DataVerificationAssertion = {
+  pointer: string;
+  equals: string | number | boolean | null;
+};
+
+export function parseDataVerificationRequest(value: unknown):
+  | { ok: true; value: { method: "GET"; path: string; expectedStatus: number; expectedJson: DataVerificationAssertion[] } }
+  | { ok: false; error: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "dataRequest must be a bounded read-only object" };
+  }
+  const request = value as Record<string, unknown>;
+  const expectedStatus = request.expectedStatus;
+  if (Object.keys(request).length !== 4 || request.method !== "GET" || !safeDataPath(request.path) || typeof expectedStatus !== "number" || !Number.isInteger(expectedStatus) || expectedStatus < 100 || expectedStatus > 599) {
+    return { ok: false, error: "dataRequest needs GET, a safe relative path, and a 3-digit expected status" };
+  }
+  if (!Array.isArray(request.expectedJson) || request.expectedJson.length === 0 || request.expectedJson.length > DATA_ASSERTION_LIMIT) {
+    return { ok: false, error: `dataRequest.expectedJson must contain 1-${DATA_ASSERTION_LIMIT} assertions` };
+  }
+  const expectedJson: DataVerificationAssertion[] = [];
+  for (const raw of request.expectedJson) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== 2) {
+      return { ok: false, error: "each dataRequest.expectedJson assertion must be a bounded pointer equality" };
+    }
+    const assertion = raw as Record<string, unknown>;
+    if (!safeDataPointer(assertion.pointer) || !["string", "number", "boolean"].includes(typeof assertion.equals) && assertion.equals !== null) {
+      return { ok: false, error: "each dataRequest.expectedJson assertion must use a safe JSON pointer and scalar equality" };
+    }
+    expectedJson.push({ pointer: assertion.pointer, equals: assertion.equals as string | number | boolean | null });
+  }
+  return { ok: true, value: { method: "GET", path: request.path, expectedStatus: expectedStatus as number, expectedJson } };
+}
+
 export type RecordEvidenceVerificationPlansInput = {
   workspaceId: string;
   recordId: string;
@@ -2462,6 +2517,7 @@ export type RecordEvidenceVerificationPlansInput = {
     flow?: string | null;
     uiSteps?: UiVerificationStep[] | null;
     apiRequest?: { method: "GET"; path: string; expectedStatus: number } | null;
+    dataRequest?: { method: "GET"; path: string; expectedStatus: number; expectedJson: DataVerificationAssertion[] } | null;
     expectedBehavior: string;
     status: "planned" | "not_testable";
     notTestableReason?: string | null;
@@ -2474,12 +2530,11 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
   inserted: boolean;
 }> {
   const unsupportedPlannedPlan = input.plans.find(
-    (plan) => plan.status === "planned" && plan.modality !== "ui" && plan.modality !== "api"
+    (plan) => plan.status === "planned" && plan.modality === "job"
   );
   if (unsupportedPlannedPlan) {
     throw new Error(
-      `Cannot persist planned ${unsupportedPlannedPlan.modality} verification plans; ` +
-      "job/data must be explicitly marked not_testable until supported"
+      "Cannot persist planned job verification plans; job must be explicitly marked not_testable until supported"
     );
   }
   const plans = input.plans.map((plan) => {
@@ -2487,6 +2542,12 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
     const uiSteps = parseUiVerificationSteps(plan.uiSteps);
     if (!uiSteps.ok) throw new Error(`Cannot persist planned UI verification plan: ${uiSteps.error}`);
     return { ...plan, uiSteps: uiSteps.value };
+  });
+  const normalizedPlans = plans.map((plan) => {
+    if (plan.status !== "planned" || plan.modality !== "data") return plan;
+    const dataRequest = parseDataVerificationRequest(plan.dataRequest);
+    if (!dataRequest.ok) throw new Error(`Cannot persist planned DATA verification plan: ${dataRequest.error}`);
+    return { ...plan, dataRequest: dataRequest.value };
   });
   return db.transaction(async (tx) => {
     const revisions = await tx.select({ revision: changeRecordPrRevisions })
@@ -2508,11 +2569,11 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
         eq(acceptanceContracts.status, "confirmed")
       )).limit(1);
     if (!contracts[0]) throw new Error("Confirmed Acceptance Contract does not match verification plan");
-    const ids = plans.map((plan) => evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }));
+    const ids = normalizedPlans.map((plan) => evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }));
     const existing = ids.length === 0 ? [] : await tx.select().from(evidenceVerificationPlans)
       .where(sql`${evidenceVerificationPlans.id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
     if (existing.length) return { plans: existing, inserted: false };
-    const rows = await tx.insert(evidenceVerificationPlans).values(plans.map((plan) => ({
+    const rows = await tx.insert(evidenceVerificationPlans).values(normalizedPlans.map((plan) => ({
       id: evidenceVerificationPlanId({ prRevisionId: input.prRevisionId, criterionId: plan.criterionId }),
       recordId: input.recordId, prRevisionId: input.prRevisionId,
       acceptanceContractId: input.contractId, acceptanceContractVersion: input.contractVersion,
@@ -2520,6 +2581,7 @@ export async function recordEvidenceVerificationPlans(input: RecordEvidenceVerif
       modality: plan.modality, environmentId: plan.environmentId ?? null, flow: plan.flow ?? null,
       uiSteps: plan.uiSteps ?? null,
       apiRequest: plan.apiRequest ?? null,
+      dataRequest: plan.dataRequest ?? null,
       expectedBehavior: plan.expectedBehavior, status: plan.status,
       notTestableReason: plan.notTestableReason ?? null, plannedBy: input.plannedBy,
     }))).returning();
@@ -2533,7 +2595,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   recordId: string;
   prRevisionId: string;
   verificationPlanId: string;
-  modality?: "ui" | "api";
+  modality?: "ui" | "api" | "data";
   requireReadyPreview?: boolean;
 }): Promise<{
   plan: EvidenceVerificationPlanRow;
@@ -2554,7 +2616,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
       eq(evidenceVerificationPlans.id, input.verificationPlanId),
       eq(evidenceVerificationPlans.recordId, input.recordId),
       eq(evidenceVerificationPlans.prRevisionId, input.prRevisionId),
-      input.modality ? eq(evidenceVerificationPlans.modality, input.modality) : sql`${evidenceVerificationPlans.modality} IN ('ui', 'api')`,
+      input.modality ? eq(evidenceVerificationPlans.modality, input.modality) : sql`${evidenceVerificationPlans.modality} IN ('ui', 'api', 'data')`,
       eq(evidenceVerificationPlans.status, "planned"),
       eq(changeRecordPrs.workspaceId, input.workspaceId),
       sql`${changeRecordPrRevisions.supersededAt} IS NULL`
@@ -2572,7 +2634,7 @@ export async function resolveEvidenceVerificationPlanForArtifact(input: {
   // plan names. UI artifact recording retains its existing semantics: it
   // resolves the immutable plan/PR tuple but does not require a live preview
   // at upload time.
-  if (input.modality !== "api" && !input.requireReadyPreview) return resolved;
+  if (input.modality !== "api" && input.modality !== "data" && !input.requireReadyPreview) return resolved;
   if (!row.plan.environmentId) return null;
   const previews = await db.select({ url: previewBoots.url })
     .from(previewBoots)
@@ -2597,7 +2659,7 @@ export async function enqueueEvidenceVerificationExecution(input: {
   verificationPlanId: string;
 }): Promise<{ execution: EvidenceVerificationExecutionRow; inserted: boolean }> {
   const plan = await resolveEvidenceVerificationPlanForArtifact(input);
-  if (!plan) throw new Error("Current planned UI or API criterion was not found for this record and PR revision");
+  if (!plan) throw new Error("Current planned UI, API, or data criterion was not found for this record and PR revision");
   const id = evidenceVerificationExecutionId({ verificationPlanId: plan.plan.id });
   const rows = await db.insert(evidenceVerificationExecutions).values({
     id,
@@ -2633,18 +2695,18 @@ export async function reportEvidenceVerificationExecution(input: {
   if (input.status === "proven") {
     const selected = rows.filter((row) => input.artifactIds?.includes(row.artifact.id));
     const modality = selected[0]?.plan.modality;
-    if (modality !== "ui" && modality !== "api") {
+    if (modality !== "ui" && modality !== "api" && modality !== "data") {
       throw new Error(
         `A proven ${modality ?? "unsupported"} criterion is not supported; ` +
-        "job/data verification must be explicitly marked not_testable until supported"
+        "job verification must be explicitly marked not_testable until supported"
       );
     }
-    const validContentType = modality === "api"
+    const validContentType = modality === "api" || modality === "data"
       ? (contentType: string) => contentType === "application/json"
       : (contentType: string) => contentType === "image/png" || contentType === "image/jpeg";
     if (!selected.length || selected.some((row) => !validContentType(row.artifact.contentType))) {
-      throw new Error(modality === "api"
-        ? "A proven API criterion requires JSON API evidence from its verification plan"
+      throw new Error(modality === "api" || modality === "data"
+        ? "A proven API or data criterion requires JSON evidence from its verification plan"
         : "A proven UI criterion requires PNG or JPEG evidence from its verification plan");
     }
   }
@@ -2707,7 +2769,7 @@ export async function claimEvidenceVerificationExecution(input: { workerId: stri
       INNER JOIN preview_boots AS preview ON preview.id::text = plan.environment_id
       WHERE execution.status = 'queued'
         AND plan.status = 'planned'
-        AND plan.modality IN ('ui', 'api')
+        AND plan.modality IN ('ui', 'api', 'data')
         AND revision.superseded_at IS NULL
         AND preview.workspace_id = attachment.workspace_id
         AND preview.repo = attachment.repository_full_name

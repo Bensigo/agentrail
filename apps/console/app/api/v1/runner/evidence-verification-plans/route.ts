@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseAcceptanceContract } from "@agentrail/contracts";
-import { parseUiVerificationSteps, readAcceptanceContracts, recordEvidenceVerificationPlans, type UiVerificationStep } from "@agentrail/db-postgres";
+import { parseDataVerificationRequest, parseUiVerificationSteps, readAcceptanceContracts, recordEvidenceVerificationPlans, type DataVerificationAssertion, type UiVerificationStep } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
 const modalities = new Set(["ui", "api", "job", "data"]);
@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
     flow?: string;
     uiSteps?: UiVerificationStep[];
     apiRequest?: { method: "GET"; path: string; expectedStatus: number };
+    dataRequest?: { method: "GET"; path: string; expectedStatus: number; expectedJson: DataVerificationAssertion[] };
     expectedBehavior: string;
     status: "planned" | "not_testable";
     notTestableReason?: string;
@@ -70,19 +71,21 @@ export async function POST(request: NextRequest) {
     if (!criterion || seen.has(criterion.id)) return NextResponse.json({ error: "verification plans must have unique confirmed criterion ids" }, { status: 400 });
     seen.add(criterion.id);
     if (criterion.userVisible && status === "planned" && modality !== "ui") return NextResponse.json({ error: `user-visible criterion ${criterion.id} requires ui proof or explicit not_testable` }, { status: 400 });
-    if (status === "planned" && (modality === "job" || modality === "data")) return NextResponse.json({ error: `planned criterion ${criterion.id} with modality ${modality} has no supported safe executor and must be recorded as not_testable with a concrete reason` }, { status: 400 });
+    if (status === "planned" && modality === "job") return NextResponse.json({ error: `planned criterion ${criterion.id} with modality job has no supported safe executor and must be recorded as not_testable with a concrete reason` }, { status: 400 });
     if (status === "planned" && (!text(environmentId) || !text(flow))) return NextResponse.json({ error: `planned criterion ${criterion.id} needs environmentId and criterion-specific flow` }, { status: 400 });
     const uiSteps = modality === "ui" && status === "planned" ? parseUiVerificationSteps(raw.uiSteps) : undefined;
     if (modality === "ui" && status === "planned" && (!uiSteps || !uiSteps.ok)) return NextResponse.json({ error: `planned UI criterion ${criterion.id} needs safe uiSteps: ${uiSteps?.error ?? "missing action list"}` }, { status: 400 });
     const requestDescriptor = modality === "api" && status === "planned" ? apiRequest(raw.apiRequest) : undefined;
     if (modality === "api" && status === "planned" && !requestDescriptor) return NextResponse.json({ error: `planned API criterion ${criterion.id} needs a safe GET path and expected status` }, { status: 400 });
+    const dataDescriptor = modality === "data" && status === "planned" ? parseDataVerificationRequest(raw.dataRequest) : undefined;
+    if (modality === "data" && status === "planned" && (!dataDescriptor || !dataDescriptor.ok)) return NextResponse.json({ error: `planned data criterion ${criterion.id} needs a safe GET readback descriptor: ${dataDescriptor?.error ?? "missing dataRequest"}` }, { status: 400 });
     if (status === "not_testable" && !text(notTestableReason)) return NextResponse.json({ error: `not_testable criterion ${criterion.id} needs a reason` }, { status: 400 });
-    plans.push({ criterionId: criterion.id, criterionTextSnapshot: criterion.text, modality, environmentId: text(environmentId) ? environmentId : undefined, flow: text(flow) ? flow : undefined, ...(uiSteps?.ok ? { uiSteps: uiSteps.value } : {}), ...(requestDescriptor ? { apiRequest: requestDescriptor } : {}), expectedBehavior: criterion.text, status, notTestableReason: text(notTestableReason) ? notTestableReason : undefined });
+    plans.push({ criterionId: criterion.id, criterionTextSnapshot: criterion.text, modality, environmentId: text(environmentId) ? environmentId : undefined, flow: text(flow) ? flow : undefined, ...(uiSteps?.ok ? { uiSteps: uiSteps.value } : {}), ...(requestDescriptor ? { apiRequest: requestDescriptor } : {}), ...(dataDescriptor?.ok ? { dataRequest: dataDescriptor.value } : {}), expectedBehavior: criterion.text, status, notTestableReason: text(notTestableReason) ? notTestableReason : undefined });
   }
   if (seen.size !== byId.size) return NextResponse.json({ error: "every confirmed Acceptance Contract criterion needs a verification plan" }, { status: 400 });
   try {
     const result = await recordEvidenceVerificationPlans({ workspaceId, recordId, prRevisionId, contractId, contractVersion, plannedBy, plans });
-    return NextResponse.json({ plans: result.plans.map((plan) => ({ id: plan.id, criterionId: plan.criterionId, modality: plan.modality, environmentId: plan.environmentId, flow: plan.flow, uiSteps: plan.uiSteps, status: plan.status })), inserted: result.inserted }, { status: result.inserted ? 201 : 200 });
+    return NextResponse.json({ plans: result.plans.map((plan) => ({ id: plan.id, criterionId: plan.criterionId, modality: plan.modality, environmentId: plan.environmentId, flow: plan.flow, uiSteps: plan.uiSteps, apiRequest: plan.apiRequest, dataRequest: plan.dataRequest, status: plan.status })), inserted: result.inserted }, { status: result.inserted ? 201 : 200 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to persist verification plan" }, { status: 409 });
   }

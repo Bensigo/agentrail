@@ -26,7 +26,7 @@ function validApiEvidence(value: unknown): value is Record<string, unknown> {
     && assertions.every((assertion) => text(assertion) && assertion.length <= 2_000);
 }
 
-function matchesApiDescriptor(evidence: Record<string, unknown>, descriptor: unknown, previewUrl: string | undefined): boolean {
+function matchesReadOnlyDescriptor(evidence: Record<string, unknown>, descriptor: unknown, previewUrl: string | undefined): boolean {
   if (!object(descriptor) || descriptor.method !== "GET") return false;
   const descriptorPath = descriptor.path;
   const expectedStatus = descriptor.expectedStatus;
@@ -46,7 +46,7 @@ function matchesApiDescriptor(evidence: Record<string, unknown>, descriptor: unk
   } catch { return false; }
 }
 
-/** Store one redacted request/response/assertion card for a planned exact-head API criterion. */
+/** Store one redacted request/response/assertion card for a planned exact-head API or data criterion. */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
   if (authError) return authError;
@@ -82,18 +82,20 @@ export async function POST(request: NextRequest) {
   if (bytes.length === 0 || bytes.length > MAX_EVIDENCE_BYTES) {
     return NextResponse.json({ error: "redacted API evidence must be non-empty and no more than 256KB" }, { status: 413 });
   }
-  const resolved = await resolveEvidenceVerificationPlanForArtifact({
+  let resolved = await resolveEvidenceVerificationPlanForArtifact({
     workspaceId,
     recordId,
     prRevisionId,
     verificationPlanId,
     modality: "api",
   });
+  if (!resolved) resolved = await resolveEvidenceVerificationPlanForArtifact({ workspaceId, recordId, prRevisionId, verificationPlanId, modality: "data" });
   if (!resolved) {
-    return NextResponse.json({ error: "current planned API criterion not found for this record and PR revision" }, { status: 409 });
+    return NextResponse.json({ error: "current planned API or data criterion not found for this record and PR revision" }, { status: 409 });
   }
-  if (!matchesApiDescriptor(evidenceInput, resolved.plan.apiRequest, resolved.previewUrl)) {
-    return NextResponse.json({ error: "API evidence does not match the planned exact-preview GET request and expected status" }, { status: 409 });
+  const descriptor = resolved.plan.modality === "data" ? resolved.plan.dataRequest : resolved.plan.apiRequest;
+  if (!descriptor || !matchesReadOnlyDescriptor(evidenceInput, descriptor, resolved.previewUrl)) {
+    return NextResponse.json({ error: "evidence does not match the planned exact-preview GET request and expected status" }, { status: 409 });
   }
   const digest = createHash("sha256").update(bytes).digest("hex");
   let key: string;

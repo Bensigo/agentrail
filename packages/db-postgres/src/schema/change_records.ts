@@ -489,6 +489,13 @@ export const evidenceVerificationPlans = pgTable(
     uiSteps: jsonb("ui_steps").$type<Array<{ action: string; [key: string]: string }> | null>(),
     /** Immutable, bounded machine-readable API proof request; never a credential container. */
     apiRequest: jsonb("api_request").$type<{ method: "GET"; path: string; expectedStatus: number } | null>(),
+    /** Immutable, bounded machine-readable data readback request; never a credential container. */
+    dataRequest: jsonb("data_request").$type<{
+      method: "GET";
+      path: string;
+      expectedStatus: number;
+      expectedJson: Array<{ pointer: string; equals: string | number | boolean | null }>;
+    } | null>(),
     expectedBehavior: text("expected_behavior").notNull(),
     status: text("status").notNull(),
     notTestableReason: text("not_testable_reason"),
@@ -519,6 +526,17 @@ export const evidenceVerificationPlans = pgTable(
           AND ${t.apiRequest}->>'method' = 'GET'
           AND length(trim(coalesce(${t.apiRequest}->>'path', ''))) > 0
           AND (${t.apiRequest}->>'expectedStatus') ~ '^[0-9]{3}$')`
+    ),
+    dataRequestCheck: check(
+      "evidence_verification_plans_data_request_check",
+      sql`(${t.modality} <> 'data')
+        OR (${t.status} = 'not_testable')
+        OR (${t.dataRequest} IS NOT NULL
+          AND ${t.dataRequest}->>'method' = 'GET'
+          AND length(trim(coalesce(${t.dataRequest}->>'path', ''))) > 0
+          AND (${t.dataRequest}->>'expectedStatus') ~ '^[0-9]{3}$'
+          AND jsonb_typeof(${t.dataRequest}->'expectedJson') = 'array'
+          AND jsonb_array_length(${t.dataRequest}->'expectedJson') BETWEEN 1 AND 12)`
     ),
     uiStepsCheck: check(
       "evidence_verification_plans_ui_steps_check",

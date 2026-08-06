@@ -13,6 +13,10 @@ vi.mock("@agentrail/db-postgres", () => ({
     }
     return { ok: true, value };
   }),
+  parseDataVerificationRequest: vi.fn((value: unknown) => {
+    if (!value || typeof value !== "object") return { ok: false, error: "missing dataRequest" };
+    return { ok: true, value };
+  }),
 }));
 
 import {
@@ -138,7 +142,8 @@ describe("evidence verification plan completion", () => {
     expect((await POST(request({ ...body, plans: [body.plans[0], { ...apiPlan, apiRequest: { method: "GET", path: "https://outside.example", expectedStatus: 200 } }] }))).status).toBe(400);
   });
 
-  it.each(["job", "data"])("rejects a planned %s criterion without a safe executor", async (modality) => {
+  it("rejects a planned job criterion without a safe executor", async () => {
+    const modality = "job";
     const response = await POST(request({
       ...body,
       plans: [body.plans[0], { criterionId: "audit", modality, status: "planned", environmentId: "preview-1", flow: "inspect audit" }],

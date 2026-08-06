@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const pageSource = readFileSync(
   fileURLToPath(new URL("./page.tsx", import.meta.url)),
@@ -10,6 +10,7 @@ const pageSource = readFileSync(
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspace: vi.fn(),
   listChangeRecords: vi.fn(),
+  readAcceptanceWorkspaceOutcomeSummary: vi.fn(),
 }));
 
 vi.mock("../../../../lib/cached", () => ({
@@ -25,13 +26,23 @@ vi.mock("./components/acceptance-evidence-panel", () => ({
   AcceptanceEvidencePanel: () => null,
 }));
 
+vi.mock("./components/acceptance-outcome-summary", () => ({
+  AcceptanceOutcomeSummaryPanel: () => null,
+  workspaceOutcomeSummaryWindow: () => ({
+    from: new Date("2026-08-01T00:00:00.000Z"),
+    to: new Date("2026-08-31T00:00:00.000Z"),
+  }),
+}));
+
 import { getWorkspace } from "@agentrail/db-postgres";
 import { listChangeRecords } from "@agentrail/db-postgres";
+import { readAcceptanceWorkspaceOutcomeSummary } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../lib/cached";
 import WorkspaceDashboardPage from "./page";
 import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { AcceptanceEvidencePanel } from "./components/acceptance-evidence-panel";
+import { AcceptanceOutcomeSummaryPanel } from "./components/acceptance-outcome-summary";
 import { OnboardingBanner } from "./components/onboarding-banner";
 
 // This repo's vitest config runs with `environment: "node"` — there is no
@@ -72,6 +83,22 @@ function mockHappyPath() {
     slug: "agentrail",
   } as Awaited<ReturnType<typeof getWorkspace>>);
   vi.mocked(listChangeRecords).mockResolvedValue([]);
+  vi.mocked(readAcceptanceWorkspaceOutcomeSummary).mockResolvedValue({
+    workspaceId: WORKSPACE_ID,
+    windowFromUtcInclusive: new Date("2026-08-01T00:00:00.000Z"),
+    windowToUtcExclusive: new Date("2026-08-31T00:00:00.000Z"),
+    countedAtUtc: new Date("2026-08-31T00:00:00.000Z"),
+    reviewedPrRevisionCount: 0,
+    jaceVerdicts: { proven: 0, notProven: 0, otherStatuses: {} },
+    humanDecisions: {
+      approved: 0,
+      changesRequested: 0,
+      rejected: 0,
+      approvedWithException: 0,
+    },
+    pendingReviews: { queued: 0, claimed: 0, total: 0 },
+    pendingHumanDecisions: 0,
+  } as Awaited<ReturnType<typeof readAcceptanceWorkspaceOutcomeSummary>>);
 }
 
 async function renderHeader(): Promise<ReactElementLike> {
@@ -86,6 +113,8 @@ async function renderHeader(): Promise<ReactElementLike> {
 
 describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T00:00:00.000Z"));
     vi.clearAllMocks();
     mockHappyPath();
   });
@@ -120,12 +149,22 @@ describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
     expect(typeof header.props.title).toBe("string");
     expect(typeof header.props.subtitle).toBe("string");
   });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 });
 
 describe("WorkspaceDashboardPage acceptance evidence", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-31T00:00:00.000Z"));
     vi.clearAllMocks();
     mockHappyPath();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("loads the five latest Change/Acceptance Record headers for this workspace", async () => {
@@ -137,9 +176,14 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
       workspaceId: WORKSPACE_ID,
       limit: 5,
     });
+    expect(readAcceptanceWorkspaceOutcomeSummary).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: WORKSPACE_ID,
+      fromUtcInclusive: new Date("2026-08-01T00:00:00.000Z"),
+      toUtcExclusive: new Date("2026-08-31T00:00:00.000Z"),
+    });
   });
 
-  it("renders OnboardingBanner before AcceptanceEvidencePanel with all five records", async () => {
+  it("renders OnboardingBanner, then the outcome summary, then AcceptanceEvidencePanel with all five records", async () => {
     const records = [
       { id: "record-1" },
       { id: "record-2" },
@@ -155,10 +199,11 @@ describe("WorkspaceDashboardPage acceptance evidence", () => {
 
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
-    const [onboardingBanner, acceptancePanel] = asElement(wrapper).props
+    const [onboardingBanner, outcomeSummaryPanel, acceptancePanel] = asElement(wrapper).props
       .children as ReactElementLike[];
 
     expect(asElement(onboardingBanner).type).toBe(OnboardingBanner);
+    expect(asElement(outcomeSummaryPanel).type).toBe(AcceptanceOutcomeSummaryPanel);
     expect(asElement(acceptancePanel).type).toBe(AcceptanceEvidencePanel);
     expect(asElement(acceptancePanel).props.workspaceId).toBe(WORKSPACE_ID);
     expect(asElement(acceptancePanel).props.records).toBe(records);
@@ -170,5 +215,6 @@ describe("WorkspaceDashboardPage trust-layer surface", () => {
     expect(pageSource).not.toContain("DigestPanel");
     expect(pageSource).not.toContain("HealthRatesPanel");
     expect(pageSource).not.toContain("loadPlanCardData");
+    expect(pageSource).not.toContain("review-metrics");
   });
 });

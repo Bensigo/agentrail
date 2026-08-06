@@ -1,9 +1,17 @@
-import { getWorkspace, listChangeRecords } from "@agentrail/db-postgres";
+import {
+  getWorkspace,
+  listChangeRecords,
+  readAcceptanceWorkspaceOutcomeSummary,
+} from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
 import { PageHeader } from "../../../components/page-header";
 import { CopyId } from "../../../components/copy-id";
 import { AcceptanceEvidencePanel } from "./components/acceptance-evidence-panel";
+import {
+  AcceptanceOutcomeSummaryPanel,
+  workspaceOutcomeSummaryWindow,
+} from "./components/acceptance-outcome-summary";
 import { OnboardingBanner } from "./components/onboarding-banner";
 
 export default async function WorkspaceDashboardPage({
@@ -22,7 +30,15 @@ export default async function WorkspaceDashboardPage({
 
   if (!workspace || !membership) return notFound();
 
-  const records = await listChangeRecords({ workspaceId, limit: 5 });
+  const outcomeWindow = workspaceOutcomeSummaryWindow();
+  const [records, outcomeSummary] = await Promise.all([
+    listChangeRecords({ workspaceId, limit: 5 }),
+    readAcceptanceWorkspaceOutcomeSummary({
+      workspaceId,
+      fromUtcInclusive: outcomeWindow.from,
+      toUtcExclusive: outcomeWindow.to,
+    }),
+  ]);
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -41,6 +57,7 @@ export default async function WorkspaceDashboardPage({
 
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
+        <AcceptanceOutcomeSummaryPanel summary={outcomeSummary} />
         <AcceptanceEvidencePanel workspaceId={workspaceId} records={records} />
       </div>
     </div>

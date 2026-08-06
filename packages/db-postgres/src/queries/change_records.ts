@@ -3,10 +3,12 @@ import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { repositories } from "../schema/repositories.js";
+import { briefs } from "../schema/briefs.js";
 import {
   changeRecordEvents,
   changeRecords,
   acceptanceContracts,
+  acceptanceBriefBindings,
   acceptanceContextPacks,
   acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
@@ -24,6 +26,7 @@ import {
   evidenceReviewCorrections,
   evidenceReviewCorrectionDeliveries,
   type AcceptanceContractRow,
+  type AcceptanceBriefBindingRow,
   type AcceptanceContextPackDeliveryRow,
   type AcceptanceContextPackRow,
   type AcceptanceContextPackCompilationRow,
@@ -39,6 +42,7 @@ import {
   type EvidenceVerificationExecutionRow,
   type AcceptanceEvidenceReviewRequestRow,
 } from "../schema/change_records.js";
+import type { Brief } from "../schema/briefs.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -533,6 +537,19 @@ export type AcceptanceRecordDraft = {
   contract: AcceptanceContractRow;
 };
 
+export type LinkAcceptanceBriefToRecordInput = {
+  workspaceId: string;
+  recordId: string;
+  briefId: string;
+  linkedBy: string;
+};
+
+export type AcceptanceBriefBindingRead = {
+  binding: AcceptanceBriefBindingRow;
+  record: ChangeRecordRow;
+  brief: Brief;
+};
+
 export type RecordAcceptanceInboundIntakeInput = {
   workspaceId: string;
   originChannel: string;
@@ -900,6 +917,129 @@ export async function createDraftAcceptanceRecord(
       },
     });
     return { record, contract };
+  });
+}
+
+function briefBindingSnapshot(brief: Brief): Record<string, unknown> {
+  return {
+    briefId: brief.id,
+    workspaceId: brief.workspaceId,
+    repositoryId: brief.repositoryId,
+    slug: brief.slug,
+    title: brief.title,
+    status: brief.status,
+    openQuestion: brief.openQuestion,
+    grounding: brief.grounding,
+    jaceSessionIds: brief.jaceSessionIds,
+    createdAt: brief.createdAt.toISOString(),
+    updatedAt: brief.updatedAt.toISOString(),
+  };
+}
+
+function briefBindingProvenance(input: {
+  linkedBy: string;
+  record: ChangeRecordRow;
+  brief: Brief;
+}): Record<string, unknown> {
+  return {
+    boundBy: input.linkedBy,
+    recordSourceReferences: input.record.sourceReferences,
+    recordCreatedAt: input.record.createdAt.toISOString(),
+    recordUpdatedAt: input.record.updatedAt.toISOString(),
+    recordState: input.record.state,
+    briefCreatedAt: input.brief.createdAt.toISOString(),
+    briefUpdatedAt: input.brief.updatedAt.toISOString(),
+  };
+}
+
+export async function linkAcceptanceBriefToRecord(
+  input: LinkAcceptanceBriefToRecordInput
+): Promise<AcceptanceBriefBindingRow> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:record:${input.workspaceId}:${input.recordId}`}))
+    `);
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext(${`acceptance-brief-binding:brief:${input.workspaceId}:${input.briefId}`}))
+    `);
+
+    const existing = await tx
+      .select()
+      .from(acceptanceBriefBindings)
+      .where(
+        and(
+          eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
+          eq(acceptanceBriefBindings.recordId, input.recordId)
+        )
+      )
+      .limit(1);
+    if (existing[0]) {
+      if (existing[0].briefId !== input.briefId) {
+        throw new Error("Acceptance Record already has a linked Brief");
+      }
+      return existing[0];
+    }
+
+    const existingBrief = await tx
+      .select()
+      .from(acceptanceBriefBindings)
+      .where(
+        and(
+          eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
+          eq(acceptanceBriefBindings.briefId, input.briefId)
+        )
+      )
+      .limit(1);
+    if (existingBrief[0]) {
+      if (existingBrief[0].recordId !== input.recordId) {
+        throw new Error("Brief is already linked to an Acceptance Record");
+      }
+      return existingBrief[0];
+    }
+
+    const [record] = await tx
+      .select()
+      .from(changeRecords)
+      .where(
+        and(
+          eq(changeRecords.workspaceId, input.workspaceId),
+          eq(changeRecords.id, input.recordId)
+        )
+      )
+      .limit(1);
+    if (!record) {
+      throw new Error("Acceptance Record was not found in workspace");
+    }
+
+    const [brief] = await tx
+      .select()
+      .from(briefs)
+      .where(
+        and(
+          eq(briefs.workspaceId, input.workspaceId),
+          eq(briefs.id, input.briefId)
+        )
+      )
+      .limit(1);
+    if (!brief) {
+      throw new Error("Brief was not found in workspace");
+    }
+
+    const rows = await tx
+      .insert(acceptanceBriefBindings)
+      .values({
+        id: uuid5Url(
+          `acceptance-brief-binding:${input.workspaceId}:${input.recordId}:${input.briefId}`
+        ),
+        workspaceId: input.workspaceId,
+        recordId: input.recordId,
+        briefId: input.briefId,
+        briefSnapshot: briefBindingSnapshot(brief),
+        provenance: briefBindingProvenance({ linkedBy: input.linkedBy, record, brief }),
+        createdBy: input.linkedBy,
+      })
+      .returning();
+    return rows[0]!;
   });
 }
 
@@ -1943,6 +2083,177 @@ export async function readAcceptanceEvidenceReviewSummaries(input: {
   }));
 }
 
+export type AcceptanceWorkspaceOutcomeSummary = {
+  workspaceId: string;
+  windowFromUtcInclusive: Date;
+  windowToUtcExclusive: Date;
+  countedAtUtc: Date;
+  reviewedPrRevisionCount: number;
+  jaceVerdicts: {
+    proven: number;
+    notProven: number;
+    otherStatuses: Record<string, number>;
+  };
+  humanDecisions: {
+    approved: number;
+    changesRequested: number;
+    rejected: number;
+    approvedWithException: number;
+  };
+  pendingReviews: {
+    queued: number;
+    claimed: number;
+    total: number;
+  };
+  pendingHumanDecisions: number;
+};
+
+export type ReadAcceptanceWorkspaceOutcomeSummaryInput = {
+  workspaceId: string;
+  fromUtcInclusive: Date | string;
+  toUtcExclusive: Date | string;
+};
+
+/**
+ * Workspace-wide outcome summary for the trust layer.
+ *
+ * Windowed counts use the half-open UTC interval `[fromUtcInclusive,
+ * toUtcExclusive)`. Completed evidence reviews are counted by
+ * `evidence_reviews.created_at`. Append-only human decisions are counted by
+ * `change_record_events.at` for `stage = 'human_pr_decision'`. Pending review
+ * requests and pending human-decision rows are current snapshots: they are not
+ * windowed, but they are still filtered to current non-superseded PR
+ * revisions.
+ */
+export async function readAcceptanceWorkspaceOutcomeSummary(
+  input: ReadAcceptanceWorkspaceOutcomeSummaryInput
+): Promise<AcceptanceWorkspaceOutcomeSummary> {
+  const fromUtcInclusive = toDate(input.fromUtcInclusive);
+  const toUtcExclusive = toDate(input.toUtcExclusive);
+  if (Number.isNaN(fromUtcInclusive.getTime()) || Number.isNaN(toUtcExclusive.getTime())) {
+    throw new Error("workspace outcome summary requires valid UTC bounds");
+  }
+  if (fromUtcInclusive.getTime() >= toUtcExclusive.getTime()) {
+    throw new Error("workspace outcome summary requires fromUtcInclusive < toUtcExclusive");
+  }
+
+  const rows = await db.execute(sql`
+    WITH windowed_reviews AS (
+      SELECT review.pr_revision_id, review.overall_status, review.created_at
+      FROM evidence_reviews AS review
+      INNER JOIN change_record_pr_revisions AS revision
+        ON revision.id = review.pr_revision_id
+      INNER JOIN change_records AS record
+        ON record.id = review.record_id
+      WHERE record.workspace_id = ${input.workspaceId}
+        AND review.created_at >= ${fromUtcInclusive}
+        AND review.created_at < ${toUtcExclusive}
+        AND revision.superseded_at IS NULL
+    ),
+    windowed_decision_events AS (
+      SELECT event.payload_ref->>'decision' AS decision
+      FROM change_record_events AS event
+      INNER JOIN change_records AS record
+        ON record.id = event.record_id
+      INNER JOIN evidence_reviews AS review
+        ON event.event_key = CONCAT('acceptance-pr-decision:', review.id)
+      INNER JOIN change_record_pr_revisions AS revision
+        ON revision.id = review.pr_revision_id
+      WHERE record.workspace_id = ${input.workspaceId}
+        AND event.stage = 'human_pr_decision'
+        AND event.at >= ${fromUtcInclusive}
+        AND event.at < ${toUtcExclusive}
+        AND revision.superseded_at IS NULL
+    ),
+    current_pending_requests AS (
+      SELECT request.status
+      FROM acceptance_evidence_review_requests AS request
+      INNER JOIN change_record_pr_revisions AS revision
+        ON revision.id = request.pr_revision_id
+      INNER JOIN change_records AS record
+        ON record.id = request.record_id
+      WHERE record.workspace_id = ${input.workspaceId}
+        AND request.status IN ('queued', 'claimed')
+        AND revision.superseded_at IS NULL
+    ),
+    current_pending_human_reviews AS (
+      SELECT review.id
+      FROM evidence_reviews AS review
+      INNER JOIN change_record_pr_revisions AS revision
+        ON revision.id = review.pr_revision_id
+      INNER JOIN change_records AS record
+        ON record.id = review.record_id
+      LEFT JOIN change_record_events AS event
+        ON event.record_id = review.record_id
+       AND event.stage = 'human_pr_decision'
+       AND event.event_key = CONCAT('acceptance-pr-decision:', review.id)
+      WHERE record.workspace_id = ${input.workspaceId}
+        AND revision.superseded_at IS NULL
+        AND event.id IS NULL
+    )
+    SELECT
+      ${input.workspaceId} AS workspace_id,
+      ${fromUtcInclusive}::timestamptz AS window_from_utc_inclusive,
+      ${toUtcExclusive}::timestamptz AS window_to_utc_exclusive,
+      now() AS counted_at_utc,
+      COALESCE((SELECT COUNT(DISTINCT pr_revision_id)::int FROM windowed_reviews), 0) AS reviewed_pr_revision_count,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_reviews WHERE overall_status = 'proven'), 0) AS proven_count,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_reviews WHERE overall_status = 'not_proven'), 0) AS not_proven_count,
+      COALESCE((
+        SELECT jsonb_object_agg(other_statuses.overall_status, other_statuses.count)
+        FROM (
+          SELECT
+            overall_status,
+            COUNT(*)::int AS count
+          FROM windowed_reviews
+          WHERE overall_status NOT IN ('proven', 'not_proven')
+          GROUP BY overall_status
+          ORDER BY overall_status
+        ) AS other_statuses
+      ), '{}'::jsonb) AS other_jace_status_counts,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_decision_events WHERE decision = 'approved'), 0) AS approved_count,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_decision_events WHERE decision = 'changes_requested'), 0) AS changes_requested_count,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_decision_events WHERE decision = 'rejected'), 0) AS rejected_count,
+      COALESCE((SELECT COUNT(*)::int FROM windowed_decision_events WHERE decision = 'approved_with_exception'), 0) AS approved_with_exception_count,
+      COALESCE((SELECT COUNT(*)::int FROM current_pending_requests WHERE status = 'queued'), 0) AS pending_queued_review_count,
+      COALESCE((SELECT COUNT(*)::int FROM current_pending_requests WHERE status = 'claimed'), 0) AS pending_claimed_review_count,
+      COALESCE((SELECT COUNT(*)::int FROM current_pending_human_reviews), 0) AS pending_human_decision_count
+  `) as Array<Record<string, unknown>>;
+
+  const row = rows[0];
+  if (!row) {
+    throw new Error("workspace outcome summary could not be read");
+  }
+  const otherStatuses = row.other_jace_status_counts;
+  const otherJaceStatuses = typeof otherStatuses === "object" && otherStatuses !== null && !Array.isArray(otherStatuses)
+    ? Object.fromEntries(Object.entries(otherStatuses).filter(([, value]) => typeof value === "number"))
+    : {};
+  return {
+    workspaceId: input.workspaceId,
+    windowFromUtcInclusive: fromUtcInclusive,
+    windowToUtcExclusive: toUtcExclusive,
+    countedAtUtc: toDate(row.counted_at_utc),
+    reviewedPrRevisionCount: Number(row.reviewed_pr_revision_count ?? 0),
+    jaceVerdicts: {
+      proven: Number(row.proven_count ?? 0),
+      notProven: Number(row.not_proven_count ?? 0),
+      otherStatuses: otherJaceStatuses,
+    },
+    humanDecisions: {
+      approved: Number(row.approved_count ?? 0),
+      changesRequested: Number(row.changes_requested_count ?? 0),
+      rejected: Number(row.rejected_count ?? 0),
+      approvedWithException: Number(row.approved_with_exception_count ?? 0),
+    },
+    pendingReviews: {
+      queued: Number(row.pending_queued_review_count ?? 0),
+      claimed: Number(row.pending_claimed_review_count ?? 0),
+      total: Number(row.pending_queued_review_count ?? 0) + Number(row.pending_claimed_review_count ?? 0),
+    },
+    pendingHumanDecisions: Number(row.pending_human_decision_count ?? 0),
+  };
+}
+
 export type RecordAcceptancePrDecisionInput = {
   workspaceId: string;
   recordId: string;
@@ -2821,6 +3132,48 @@ export async function readAcceptanceContracts(input: {
     .from(acceptanceContracts)
     .where(eq(acceptanceContracts.recordId, input.recordId))
     .orderBy(asc(acceptanceContracts.version));
+}
+
+export async function readAcceptanceBriefBinding(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceBriefBindingRead | null> {
+  const rows = await db
+    .select({
+      binding: acceptanceBriefBindings,
+      record: changeRecords,
+      brief: briefs,
+    })
+    .from(acceptanceBriefBindings)
+    .innerJoin(
+      changeRecords,
+      and(
+        eq(acceptanceBriefBindings.recordId, changeRecords.id),
+        eq(acceptanceBriefBindings.workspaceId, changeRecords.workspaceId),
+        eq(changeRecords.workspaceId, input.workspaceId)
+      )
+    )
+    .innerJoin(
+      briefs,
+      and(
+        eq(acceptanceBriefBindings.briefId, briefs.id),
+        eq(acceptanceBriefBindings.workspaceId, briefs.workspaceId)
+      )
+    )
+    .where(
+      and(
+        eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
+        eq(acceptanceBriefBindings.recordId, input.recordId)
+      )
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    binding: row.binding,
+    record: row.record,
+    brief: row.brief,
+  };
 }
 
 function hasSourceContent(value: unknown): boolean {

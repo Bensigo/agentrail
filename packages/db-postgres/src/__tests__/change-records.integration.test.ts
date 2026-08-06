@@ -4,19 +4,22 @@ import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { briefs, briefItems } from "../schema/briefs.js";
-import { changeRecordEvents } from "../schema/change_records.js";
+import { changeRecordEvents, evidenceReviews } from "../schema/change_records.js";
 import {
   appendChangeRecordEvent,
+  attachExternalPullRequest,
   changeRecordId,
   confirmAcceptanceContract,
   createDraftAcceptanceContract,
   createDraftAcceptanceRecord,
   findOrCreateChangeRecord,
   linkAcceptanceBriefToRecord,
+  recordAcceptancePrDecision,
   readAcceptanceContracts,
   readAcceptanceBriefBinding,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
+import { createRepository } from "../queries/index.js";
 
 const DB_AVAILABLE: boolean = await (async () => {
   try {
@@ -177,6 +180,104 @@ describe.skipIf(!DB_AVAILABLE)(
         artifact: "ac_evidence.json",
         runId: "run-1",
       });
+    });
+
+    it("records one final decision only for the current exact-head review and never relabels Jace's verdict", async () => {
+      const repo = "acme/decision-proof";
+      const repository = await createRepository({
+        workspaceId: wsId,
+        name: repo,
+        url: "https://github.com/acme/decision-proof",
+        defaultBranch: "main",
+      });
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo,
+        workKey: `human-decision-${randomUUID()}`,
+        originChannel: "codex_mcp",
+        sourceReferences: [{ kind: "codex_task", id: `task-${randomUUID()}` }],
+        contract: {
+          originalRequest: "Make the save action durable",
+          acceptanceCriteria: [{ id: "save", text: "Saving persists the draft" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      const contract = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: draft.contract.version,
+        confirmedBy: "user:lead",
+      });
+      const headSha = "f".repeat(40);
+      const attachment = await attachExternalPullRequest({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo,
+        repositoryId: repository.id,
+        prNumber: 307,
+        prUrl: "https://github.com/acme/decision-proof/pull/307",
+        baseSha: "e".repeat(40),
+        headSha,
+        attachedBy: "user:lead",
+      });
+      const reviewId = randomUUID();
+      await db.insert(evidenceReviews).values({
+        id: reviewId,
+        recordId: draft.record.id,
+        prRevisionId: attachment.revision.id,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        headSha,
+        diffIdentity: { headSha, files: [] },
+        overallStatus: "failed",
+        staticFindings: [],
+        testResults: [],
+        independentVerifier: { kind: "local-integration" },
+        reviewabilityResult: { status: "reviewable" },
+        environmentRung: "local",
+        refusalReason: null,
+        verifierName: "jace-test",
+        verifierVersion: "1",
+        promptVersion: "1",
+      });
+
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "approved",
+        decidedBy: "user:lead",
+      })).rejects.toThrow("Only a proven exact-head review");
+
+      const first = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "changes_requested",
+        decidedBy: "user:lead",
+      });
+      const replay = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "rejected",
+        decidedBy: "user:other-lead",
+      });
+
+      expect(first.inserted).toBe(true);
+      expect(replay.inserted).toBe(false);
+      expect(replay.event.id).toBe(first.event.id);
+      expect(replay.event.payloadRef).toMatchObject({
+        kind: "acceptance_pr_decision",
+        decision: "changes_requested",
+        reviewId,
+        prRevisionId: attachment.revision.id,
+        headSha,
+        reviewOverallStatus: "failed",
+      });
+      const timeline = await readChangeRecordTimeline({ workspaceId: wsId, recordId: draft.record.id });
+      expect(timeline?.events.filter((event) => event.stage === "human_pr_decision")).toHaveLength(1);
     });
 
     it("reads timelines scoped by workspace and ordered by event time", async () => {

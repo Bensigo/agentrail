@@ -662,15 +662,27 @@ export function CorrectionDeliveryPanel({ deliveries }: { deliveries: Acceptance
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAcceptancePrDecision(value: unknown): value is "approved" | "changes_requested" | "rejected" | "approved_with_exception" {
+  return value === "approved" || value === "changes_requested" || value === "rejected" || value === "approved_with_exception";
+}
+
 export function FinalPrDecisionPanel({
+  recordId,
   reviews,
+  events,
   onDecide,
   decidingReviewId,
   decisionError,
   exceptionRationale,
   onExceptionRationaleChange,
 }: {
+  recordId: string;
   reviews: AcceptanceEvidenceReview[];
+  events: ChangeRecordEvent[];
   onDecide: (review: AcceptanceEvidenceReview, decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception", rationale?: string) => void;
   decidingReviewId: string | null;
   decisionError: string | null;
@@ -688,6 +700,18 @@ export function FinalPrDecisionPanel({
       </section>
     );
   }
+  const recordedDecision = events.find((event) => {
+    if (event.recordId !== recordId || event.stage !== "human_pr_decision" || !isRecord(event.payloadRef)) return false;
+    const { kind, reviewId, decision } = event.payloadRef;
+    return (
+      kind === "acceptance_pr_decision" &&
+      reviewId === current.id &&
+      isAcceptancePrDecision(decision)
+    );
+  });
+  const recordedRationale = recordedDecision && isRecord(recordedDecision.payloadRef) && typeof recordedDecision.payloadRef.rationale === "string"
+    ? recordedDecision.payloadRef.rationale.trim()
+    : "";
   const pending = decidingReviewId === current.id;
   const hasProvenReview = current.overallStatus === "proven";
   return (
@@ -703,20 +727,27 @@ export function FinalPrDecisionPanel({
           <div><dt className="text-[var(--gray-09)]">Review verdict</dt><dd className="mt-1 font-mono text-[var(--gray-11)]">{current.overallStatus}</dd></div>
           <div><dt className="text-[var(--gray-09)]">Exact head</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{current.headSha}</dd></div>
         </dl>
-        <div className="flex flex-wrap gap-2">
-          {hasProvenReview ? (
-            <button type="button" disabled={pending} onClick={() => onDecide(current, "approved")} className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
-              {pending ? "Recording…" : "Approve for merge"}
-            </button>
-          ) : null}
-          <button type="button" disabled={pending} onClick={() => onDecide(current, "changes_requested")} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
-            Request changes
-          </button>
-          <button type="button" disabled={pending} onClick={() => onDecide(current, "rejected")} className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60">
-            Reject PR
-          </button>
-        </div>
-        {!hasProvenReview ? (
+        {recordedDecision ? (
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs">
+            <p className="font-medium text-[var(--gray-12)]">Recorded human decision: <span className="font-mono">{String(recordedDecision.payloadRef.decision)}</span></p>
+            {recordedRationale ? <p className="mt-2 text-[var(--gray-09)]">Rationale: {recordedRationale}</p> : null}
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2">
+              {hasProvenReview ? (
+                <button type="button" disabled={pending} onClick={() => onDecide(current, "approved")} className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+                  {pending ? "Recording…" : "Approve for merge"}
+                </button>
+              ) : null}
+              <button type="button" disabled={pending} onClick={() => onDecide(current, "changes_requested")} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+                Request changes
+              </button>
+              <button type="button" disabled={pending} onClick={() => onDecide(current, "rejected")} className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60">
+                Reject PR
+              </button>
+            </div>
+            {!hasProvenReview ? (
           <div className="rounded border border-[var(--yellow-06)] bg-[var(--yellow-03)] p-3">
             <label className="block text-xs font-medium text-[var(--gray-12)]" htmlFor={`exception-${current.id}`}>Explicit exception rationale</label>
             <textarea id={`exception-${current.id}`} value={exceptionRationale} onChange={(event) => onExceptionRationaleChange(event.target.value)} maxLength={4_000} rows={2} className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]" placeholder="Why this non-proven or blocked review is being accepted" />
@@ -724,7 +755,9 @@ export function FinalPrDecisionPanel({
               Record approval with exception
             </button>
           </div>
-        ) : null}
+            ) : null}
+          </>
+        )}
         {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
       </div>
     </section>
@@ -922,7 +955,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
       <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
       <AcceptanceReviewRequestPanel requests={data.reviewRequests} />
       <CorrectionDeliveryPanel deliveries={data.correctionDeliveries} />
-      <FinalPrDecisionPanel reviews={data.reviews} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
+      <FinalPrDecisionPanel recordId={data.record.id} reviews={data.reviews} events={data.events} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />
     </div>

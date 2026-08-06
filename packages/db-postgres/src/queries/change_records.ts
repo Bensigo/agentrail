@@ -227,13 +227,13 @@ function mapChangeRecordEventRow(
 ): ChangeRecordEventRow {
   return {
     id: row.id as string,
-    recordId: row.record_id as string,
-    eventKey: row.event_key as string,
+    recordId: (row.record_id ?? row.recordId) as string,
+    eventKey: (row.event_key ?? row.eventKey) as string,
     stage: row.stage as string,
     at: toDate(row.at),
     actor: row.actor as string,
-    payloadRef: row.payload_ref as Record<string, unknown>,
-    createdAt: toDate(row.created_at),
+    payloadRef: (row.payload_ref ?? row.payloadRef) as Record<string, unknown>,
+    createdAt: toDate(row.created_at ?? row.createdAt),
   };
 }
 

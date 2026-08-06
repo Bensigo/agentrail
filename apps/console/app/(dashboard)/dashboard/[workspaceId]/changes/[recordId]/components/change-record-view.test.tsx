@@ -292,12 +292,65 @@ describe("Change Record detail view", () => {
   });
 
   it("keeps a non-proven review out of the normal approval path but permits an explicit human exception", () => {
-    const rendered = FinalPrDecisionPanel({ reviews: [review], onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined });
+    const rendered = FinalPrDecisionPanel({ recordId: record.id, reviews: [review], events: [], onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined });
     const content = textContent(rendered);
     expect(content).toContain("Final PR decision");
     expect(content).toContain("Request changes");
     expect(content).toContain("Record approval with exception");
     expect(content).not.toContain("Approve for merge");
     expect(content).toContain("never merges code");
+  });
+
+  it("shows a recorded current-review decision and removes further decision controls", () => {
+    const rendered = FinalPrDecisionPanel({
+      recordId: record.id,
+      reviews: [review],
+      events: [{
+        id: "decision-1", recordId: record.id, eventKey: "acceptance-pr-decision:review-1",
+        stage: "human_pr_decision", actor: "user:1",
+        payloadRef: { kind: "acceptance_pr_decision", reviewId: review.id, decision: "changes_requested", rationale: "The save flow needs an exact-head proof." },
+        at: "2026-08-03T10:04:00.000Z", createdAt: "2026-08-03T10:04:00.000Z",
+      }],
+      onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Recorded human decision: changes_requested");
+    expect(content).toContain("Rationale: The save flow needs an exact-head proof.");
+    expect(content).not.toContain("Request changes");
+    expect(content).not.toContain("Reject PR");
+    expect(content).not.toContain("Record approval with exception");
+  });
+
+  it("ignores malformed or foreign decision events and retains current-review controls", () => {
+    const rendered = FinalPrDecisionPanel({
+      recordId: record.id,
+      reviews: [review],
+      events: [
+        { id: "wrong-record", recordId: "other-record", eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: "user:1", payloadRef: { kind: "acceptance_pr_decision", reviewId: review.id, decision: "changes_requested" }, at: record.createdAt, createdAt: record.createdAt },
+        { id: "wrong-review", recordId: record.id, eventKey: "acceptance-pr-decision:other", stage: "human_pr_decision", actor: "user:1", payloadRef: { kind: "acceptance_pr_decision", reviewId: "other-review", decision: "changes_requested" }, at: record.createdAt, createdAt: record.createdAt },
+        { id: "missing-payload", recordId: record.id, eventKey: "malformed", stage: "human_pr_decision", actor: "user:1", payloadRef: [] as unknown as Record<string, unknown>, at: record.createdAt, createdAt: record.createdAt },
+        { id: "malformed", recordId: record.id, eventKey: "malformed", stage: "human_pr_decision", actor: "user:1", payloadRef: { kind: "acceptance_pr_decision", reviewId: review.id, decision: "unknown" }, at: record.createdAt, createdAt: record.createdAt },
+      ],
+      onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Request changes");
+    expect(content).toContain("Record approval with exception");
+    expect(content).not.toContain("Recorded human decision");
+  });
+
+  it("does not let a decision for a superseded review replace the no-current-review state", () => {
+    const rendered = FinalPrDecisionPanel({
+      recordId: record.id,
+      reviews: [{ ...review, supersededAt: "2026-08-03T10:05:00.000Z" }],
+      events: [{ id: "decision-1", recordId: record.id, eventKey: "acceptance-pr-decision:review-1", stage: "human_pr_decision", actor: "user:1", payloadRef: { kind: "acceptance_pr_decision", reviewId: review.id, decision: "changes_requested" }, at: record.createdAt, createdAt: record.createdAt }],
+      onDecide: () => undefined, decidingReviewId: null, decisionError: null, exceptionRationale: "", onExceptionRationaleChange: () => undefined,
+    });
+    const content = textContent(rendered);
+
+    expect(content).toContain("No current exact-head evidence review is available");
+    expect(content).not.toContain("Recorded human decision");
   });
 });

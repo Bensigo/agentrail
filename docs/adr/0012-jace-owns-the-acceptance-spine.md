@@ -105,8 +105,9 @@ Jace now has a separate exact-head criterion-execution queue, a guarded worker
 result seam, and a default-off Eve worker that claims only those plan-bound
 jobs, asks root Jace to execute one constrained criterion prompt, and completes
 through the trust endpoint. A `proven` result requires observed behavior and
-artifacts bound to that plan; neither the worker, queueing, nor a screenshot
-alone proves that a browser executed the criterion flow.
+artifacts bound to that plan and proof modality: UI requires PNG/JPEG evidence;
+API requires the redacted JSON API card. Neither the worker, queueing, nor a
+screenshot alone proves that a browser executed the criterion flow.
 
 An owner/admin can now record one immutable final decision against a current,
 exact-head Evidence Review in the Acceptance Record. `approved` requires

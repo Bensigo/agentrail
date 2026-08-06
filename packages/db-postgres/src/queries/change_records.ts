@@ -1845,13 +1845,26 @@ export async function reportEvidenceVerificationExecution(input: {
   if (input.status === "proven" && (!input.observedBehavior?.trim() || !input.artifactIds?.length)) {
     throw new Error("A proven criterion requires observed behavior and verification artifacts");
   }
-  const rows = await db.select({ execution: evidenceVerificationExecutions, artifact: evidenceVerificationArtifacts })
+  const rows = await db.select({ execution: evidenceVerificationExecutions, artifact: evidenceVerificationArtifacts, plan: evidenceVerificationPlans })
     .from(evidenceVerificationExecutions)
     .innerJoin(evidenceVerificationArtifacts, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationArtifacts.verificationPlanId))
+    .innerJoin(evidenceVerificationPlans, eq(evidenceVerificationExecutions.verificationPlanId, evidenceVerificationPlans.id))
     .where(and(eq(evidenceVerificationExecutions.id, input.executionId), eq(evidenceVerificationExecutions.workerId, input.workerId)));
   const availableArtifacts = new Set(rows.map((row) => row.artifact.id));
   if (input.status === "proven" && input.artifactIds?.some((id) => !availableArtifacts.has(id))) {
     throw new Error("Every claimed verification artifact must belong to the execution plan");
+  }
+  if (input.status === "proven") {
+    const selected = rows.filter((row) => input.artifactIds?.includes(row.artifact.id));
+    const modality = selected[0]?.plan.modality;
+    const validContentType = modality === "api"
+      ? (contentType: string) => contentType === "application/json"
+      : (contentType: string) => contentType === "image/png" || contentType === "image/jpeg";
+    if (!selected.length || selected.some((row) => !validContentType(row.artifact.contentType))) {
+      throw new Error(modality === "api"
+        ? "A proven API criterion requires JSON API evidence from its verification plan"
+        : "A proven UI criterion requires PNG or JPEG evidence from its verification plan");
+    }
   }
   const updated = await db.update(evidenceVerificationExecutions).set({
     status: input.status, observedBehavior: input.observedBehavior ?? null,

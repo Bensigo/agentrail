@@ -48,6 +48,7 @@
 // than introducing a new one.
 import { defineChannel, POST } from "eve/channels";
 import { normalizeHostedInbound } from "../lib/hosted_inbound.core.mjs";
+import { recordHostedAcceptanceIntake } from "../lib/acceptance_intake.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
@@ -103,6 +104,15 @@ export default defineChannel({
           { error: `hosted-inbound: channel '${normalized.channel}' is not wired.` },
           400,
         );
+      }
+
+      const intake = await recordHostedAcceptanceIntake({
+        inbound: normalized,
+        env: process.env,
+        transport: fetch,
+      });
+      if (!intake.ok) {
+        return json({ error: `hosted-inbound: Acceptance Intake recording failed (${intake.reason}).` }, 502);
       }
 
       // AWAIT, not waitUntil: the dispatcher needs sessionId synchronously to

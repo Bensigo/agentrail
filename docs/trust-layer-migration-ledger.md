@@ -206,7 +206,13 @@ acknowledgement only; no dispatcher has proven notification.
 2. Prove a live supported external-builder delivery path and resume semantics.
    The automatic task-context queue, durable Jace inbox, native MCP read/ack,
    and GitHub fallback dispatch retain attempt/outcome, but no Codex/Claude builder has retrieved a
-   packet, acknowledged it, or resumed work in a live integration test.
+   packet, acknowledged it, or resumed work in a live integration test. The
+   correction inbox now requires the credential that previously received the
+   recorded handoff Pack, but that first `builder-tasks` read is still only
+   workspace-scoped: a future bounded schema/API/UI slice must bind one
+   owner-selected active MCP credential to the handoff before it can receive
+   the Pack. Do not treat a delivery audit created by an arbitrary workspace
+   credential as task authorization.
 3. Prove a live supported Intake → missing-question → draft → human
    confirmation round-trip. Hosted Console, Telegram, Discord, and Slack now
    have append-only input/reply evidence and Jace can fetch a bounded resume

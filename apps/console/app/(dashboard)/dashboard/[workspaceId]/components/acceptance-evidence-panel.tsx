@@ -53,7 +53,7 @@ export function AcceptanceEvidencePanel({
             <div>
               <p className="text-sm text-[var(--gray-12)]">No acceptance records yet.</p>
               <p className="mt-1 text-xs text-[var(--gray-09)]">
-                Work begins through Jace. Once a Change/Acceptance Record exists, its evidence will appear here.
+                Bring a task to Jace. Once a Change/Acceptance Record exists, its evidence will appear here.
               </p>
               <Link
                 href={`/dashboard/${workspaceId}/work`}

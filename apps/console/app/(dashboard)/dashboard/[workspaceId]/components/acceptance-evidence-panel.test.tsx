@@ -79,7 +79,7 @@ describe("AcceptanceEvidencePanel", () => {
     const empty = asElement(AcceptanceEvidencePanel({ workspaceId, records: [] }));
     const emptyText = collectText(empty).join(" ");
     expect(emptyText).toContain("No acceptance records yet.");
-    expect(emptyText).toContain("Work begins through Jace.");
+    expect(emptyText).toContain("Bring a task to Jace.");
     expect(emptyText).not.toContain("live channel run");
     expect(emptyText).toContain("View work");
     expect(emptyText).not.toContain("legacy");

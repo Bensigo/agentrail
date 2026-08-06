@@ -13,6 +13,7 @@ import {
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 import { repositories } from "./repositories.js";
+import { briefs } from "./briefs.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -111,6 +112,46 @@ export const acceptanceContracts = pgTable(
       t.recordId,
       t.createdAt
     ),
+  })
+);
+
+/**
+ * Immutable provenance for one Brief once it is bound to one Acceptance
+ * Record. A brief stays editable while Jace is shaping the task; the bound
+ * snapshot is the durable evidence of what was approved, and it never tracks
+ * later brief edits.
+ */
+export const acceptanceBriefBindings = pgTable(
+  "acceptance_brief_bindings",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "restrict" }),
+    briefId: uuid("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "restrict" }),
+    briefSnapshot: jsonb("brief_snapshot").$type<Record<string, unknown>>().notNull(),
+    provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    workspaceRecord: index("acceptance_brief_bindings_workspace_record_idx").on(
+      t.workspaceId,
+      t.recordId
+    ),
+    workspaceBrief: index("acceptance_brief_bindings_workspace_brief_idx").on(
+      t.workspaceId,
+      t.briefId
+    ),
+    recordKey: uniqueIndex("acceptance_brief_bindings_record_key").on(t.recordId),
+    briefKey: uniqueIndex("acceptance_brief_bindings_brief_key").on(t.briefId),
   })
 );
 
@@ -641,6 +682,7 @@ export const changeRecordEvents = pgTable(
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
+export type AcceptanceBriefBindingRow = typeof acceptanceBriefBindings.$inferSelect;
 export type AcceptanceContextPackRow = typeof acceptanceContextPacks.$inferSelect;
 export type AcceptanceContextPackCompilationRow = typeof acceptanceContextPackCompilations.$inferSelect;
 export type AcceptanceContextPackDeliveryRow =

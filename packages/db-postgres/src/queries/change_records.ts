@@ -544,6 +544,10 @@ export type LinkAcceptanceBriefToRecordInput = {
   linkedBy: string;
 };
 
+export type ReadAcceptanceBriefBindingInput =
+  | { workspaceId: string; recordId: string; briefId?: never }
+  | { workspaceId: string; briefId: string; recordId?: never };
+
 export type AcceptanceBriefBindingRead = {
   binding: AcceptanceBriefBindingRow;
   record: ChangeRecordRow;
@@ -3134,10 +3138,17 @@ export async function readAcceptanceContracts(input: {
     .orderBy(asc(acceptanceContracts.version));
 }
 
-export async function readAcceptanceBriefBinding(input: {
-  workspaceId: string;
-  recordId: string;
-}): Promise<AcceptanceBriefBindingRead | null> {
+export async function readAcceptanceBriefBinding(
+  input: ReadAcceptanceBriefBindingInput
+): Promise<AcceptanceBriefBindingRead | null> {
+  const hasRecordId = typeof input.recordId === "string";
+  const hasBriefId = typeof input.briefId === "string";
+  if (hasRecordId === hasBriefId) {
+    throw new Error("readAcceptanceBriefBinding requires exactly one of recordId or briefId");
+  }
+  const filter = hasRecordId
+    ? eq(acceptanceBriefBindings.recordId, input.recordId)
+    : eq(acceptanceBriefBindings.briefId, input.briefId);
   const rows = await db
     .select({
       binding: acceptanceBriefBindings,
@@ -3163,7 +3174,7 @@ export async function readAcceptanceBriefBinding(input: {
     .where(
       and(
         eq(acceptanceBriefBindings.workspaceId, input.workspaceId),
-        eq(acceptanceBriefBindings.recordId, input.recordId)
+        filter
       )
     )
     .limit(1);

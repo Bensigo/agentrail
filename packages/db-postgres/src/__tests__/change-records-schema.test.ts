@@ -3,6 +3,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  acceptanceBriefBindings,
   acceptanceContracts,
   acceptanceContextPackCompilations,
   acceptanceContextPackDeliveries,
@@ -67,6 +68,18 @@ describe("change_records schema — declarations (Arc D storage)", () => {
     expect(acceptanceContracts.contract.getSQLType()).toBe("jsonb");
     expect(acceptanceContracts.confirmedBy.notNull).toBe(false);
     expect(acceptanceContracts.confirmedAt.notNull).toBe(false);
+  });
+
+  it("stores one immutable Brief-to-Acceptance binding snapshot per record", () => {
+    expect(acceptanceBriefBindings.workspaceId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.recordId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefSnapshot.getSQLType()).toBe("jsonb");
+    expect(acceptanceBriefBindings.provenance.getSQLType()).toBe("jsonb");
+    expect(acceptanceBriefBindings.createdBy.notNull).toBe(true);
+    const config = getTableConfig(acceptanceBriefBindings);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_record_key")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_brief_key")).toBeDefined();
   });
 
   it("stores metadata-only Context Pack versions and delivery audit rows", () => {
@@ -261,6 +274,26 @@ describe("0093_acceptance_context_pack_compilations migration", () => {
     const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
     const entry = journal.entries.find((e: { tag: string }) => e.tag === "0093_acceptance_context_pack_compilations");
     expect(entry).toMatchObject({ idx: 98, version: "7", breakpoints: true });
+  });
+});
+
+describe("0100_acceptance_brief_bindings migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0100_acceptance_brief_bindings.sql");
+
+  it("creates the immutable brief-to-acceptance provenance table", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_brief_bindings"');
+    expect(sqlText).toContain('"brief_snapshot" jsonb NOT NULL');
+    expect(sqlText).toContain('"provenance" jsonb NOT NULL');
+    expect(sqlText).toContain('ON DELETE restrict');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_record_key"');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_brief_key"');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0100_acceptance_brief_bindings");
+    expect(entry).toMatchObject({ idx: 105, version: "7", breakpoints: true });
   });
 });
 

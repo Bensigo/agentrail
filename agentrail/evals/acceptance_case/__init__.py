@@ -14,6 +14,16 @@ from .offline_runner import (
 from .runner import AcceptanceLineage, BuilderInput, acceptance_lineage, builder_input
 from .promotion import MetricFloor, PromotionPolicy, PromotionResult, evaluate_promotion
 from .proof_verifier import CriterionProofClaim, ProofArtifact, ProofIndependentScorer, ProofVerification, verify_criterion_proof
+from .report import (
+    AcceptanceReportFormatError,
+    acceptance_run_report_from_dict,
+    acceptance_run_report_to_dict,
+    parse_acceptance_run_report_json,
+    read_acceptance_run_report,
+    render_acceptance_run_report_markdown,
+    serialize_acceptance_run_report,
+    write_acceptance_run_report_markdown,
+)
 
 __all__ = [
     "ARMS",
@@ -43,4 +53,12 @@ __all__ = [
     "load_cases",
     "run_offline_four_arm_evaluation",
     "verify_criterion_proof",
+    "AcceptanceReportFormatError",
+    "acceptance_run_report_from_dict",
+    "acceptance_run_report_to_dict",
+    "parse_acceptance_run_report_json",
+    "read_acceptance_run_report",
+    "render_acceptance_run_report_markdown",
+    "serialize_acceptance_run_report",
+    "write_acceptance_run_report_markdown",
 ]

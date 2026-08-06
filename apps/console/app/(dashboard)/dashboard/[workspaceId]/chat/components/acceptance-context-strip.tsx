@@ -41,9 +41,15 @@ export function AcceptanceContextStrip({
           This task is still shaping. No Acceptance Record exists yet.
         </p>
       ) : !acceptance.brief ? (
-        <p className="mt-1.5 text-sm text-[var(--gray-10)]">
-          No Brief is linked to this Acceptance Record yet.
-        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="text-[var(--gray-10)]">No Brief is linked to this Acceptance Record yet.</span>
+          <Link
+            href={`/dashboard/${workspaceId}/changes/${acceptance.record_id}`}
+            className="font-medium text-[var(--accent-text)] underline-offset-2 hover:underline"
+          >
+            Open Acceptance Record
+          </Link>
+        </div>
       ) : (
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <span className="text-[var(--gray-10)]">{acceptance.brief.title}</span>

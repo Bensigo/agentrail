@@ -44,6 +44,9 @@ describe("AcceptanceContextStrip", () => {
       acceptance: { intake_id: "intake-1", status: "draft", record_id: "record-1" },
     });
     expect(flatten(rendered)).toContain("No Brief is linked to this Acceptance Record yet.");
+    expect(links(rendered)).toEqual([
+      { href: "/dashboard/workspace-1/changes/record-1", children: "Open Acceptance Record" },
+    ]);
   });
 
   it("renders only the canonical Brief and Acceptance Record links when bound", () => {

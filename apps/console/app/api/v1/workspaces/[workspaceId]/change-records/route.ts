@@ -98,16 +98,18 @@ export async function POST(
     typeof body.originChannel === "string" ? body.originChannel.trim() : "";
   const workKey = typeof body.workKey === "string" ? body.workKey.trim() : undefined;
   const sourceReferences = parseSourceReferences(body.sourceReferences);
-  const parsedContract = parseAcceptanceContract(body.contract);
   const errors: Record<string, string> = {};
   if (!repo) errors.repo = "repo is required";
   if (!originChannel) errors.originChannel = "originChannel is required";
   if (sourceReferences == null) {
     errors.sourceReferences = "sourceReferences must be an array of at most 32 objects";
   }
-  if (!parsedContract.ok) Object.assign(errors, parsedContract.errors);
   if (Object.keys(errors).length > 0) {
     return NextResponse.json({ errors }, { status: 400 });
+  }
+  const parsedContract = parseAcceptanceContract(body.contract);
+  if (!parsedContract.ok) {
+    return NextResponse.json({ errors: parsedContract.errors }, { status: 400 });
   }
 
   try {

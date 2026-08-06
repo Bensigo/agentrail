@@ -11,7 +11,6 @@ vi.mock("@agentrail/db-postgres", () => ({
   getQueueEntryBriefReference: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   listReviewEventsForPr: vi.fn(),
-  listReviewJobsForPr: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
@@ -21,7 +20,6 @@ import {
   getQueueEntryBriefReference,
   getWorkspaceMembership,
   listReviewEventsForPr,
-  listReviewJobsForPr,
 } from "@agentrail/db-postgres";
 import { GET } from "./route";
 import { resolveReviewChainPr } from "./review-chain";
@@ -131,7 +129,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
 
     const res = await GET(makeRequest(), makeParams());
     expect(res.status).toBe(404);
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
     expect(getQueueEntryBriefReference).not.toHaveBeenCalled();
   });
@@ -145,27 +142,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     vi.mocked(getQueueEntryBriefReference).mockResolvedValue({
       alignmentBriefId: "brief-123",
     } as never);
-    vi.mocked(listReviewJobsForPr).mockResolvedValue([
-      {
-        id: "job-1",
-        workspaceId: WORKSPACE_ID,
-        repo: "ada/widgets",
-        prNumber: 42,
-        headSha: "a".repeat(40),
-        event: "opened",
-        state: "queued",
-        attempts: 0,
-        claimedBy: null,
-        claimedAt: null,
-        nextEligibleAt: null,
-        postedReviewUrl: null,
-        verdict: null,
-        skipReason: null,
-        evidenceKeys: null,
-        createdAt: new Date("2026-08-04T10:00:00.000Z"),
-        updatedAt: new Date("2026-08-04T10:01:00.000Z"),
-      },
-    ] as never);
     vi.mocked(listReviewEventsForPr).mockResolvedValue([
       {
         id: "event-1",
@@ -205,27 +181,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
         repo: "ada/widgets",
         number: 42,
       },
-      reviewJobs: [
-        {
-          id: "job-1",
-          workspaceId: WORKSPACE_ID,
-          repo: "ada/widgets",
-          prNumber: 42,
-          headSha: "a".repeat(40),
-          event: "opened",
-          state: "queued",
-          attempts: 0,
-          claimedBy: null,
-          claimedAt: null,
-          nextEligibleAt: null,
-          postedReviewUrl: null,
-          verdict: null,
-          skipReason: null,
-          evidenceKeys: null,
-          createdAt: "2026-08-04T10:00:00.000Z",
-          updatedAt: "2026-08-04T10:01:00.000Z",
-        },
-      ],
+      reviewJobs: [],
       reviewEvents: [
         {
           id: "event-1",
@@ -247,11 +203,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
           createdAt: "2026-08-04T09:56:00.000Z",
         },
       ],
-    });
-    expect(listReviewJobsForPr).toHaveBeenCalledWith({
-      workspaceId: WORKSPACE_ID,
-      repo: "ada/widgets",
-      prNumber: 42,
     });
     expect(listReviewEventsForPr).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
@@ -281,7 +232,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
       number: null,
       reason: "repository_mismatch",
     });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
   });
 
@@ -295,11 +245,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     const res = await GET(makeRequest(), makeParams());
 
     expect(res.status).toBe(200);
-    expect(listReviewJobsForPr).toHaveBeenCalledWith({
-      workspaceId: WORKSPACE_ID,
-      repo: "ada/widgets",
-      prNumber: 42,
-    });
     expect(listReviewEventsForPr).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
       repo: "ada/widgets",
@@ -320,7 +265,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     expect(res.status).toBe(200);
     expect(json.prResolution).toEqual({ state: "no_pr", repo: null, number: null });
     expect(json.alignmentBrief).toEqual({ state: "unknown", id: null });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
     expect(json.reviewJobs).toEqual([]);
     expect(json.reviewEvents).toEqual([]);
@@ -345,7 +289,6 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
       number: null,
       reason: "malformed_pr_url",
     });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
     expect(listReviewEventsForPr).not.toHaveBeenCalled();
   });
 
@@ -382,7 +325,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
 
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Failed to load review chain" });
-    expect(listReviewJobsForPr).not.toHaveBeenCalled();
+    expect(listReviewEventsForPr).not.toHaveBeenCalled();
   });
 
   it("returns 500 with a stable error when the review-history query throws", async () => {
@@ -391,7 +334,7 @@ describe("GET /api/v1/workspaces/:workspaceId/runs/:runId/review-chain", () => {
     vi.mocked(getRunQueueEntryIdentity).mockResolvedValue({
       externalId: "ada/widgets#41",
     } as never);
-    vi.mocked(listReviewJobsForPr).mockRejectedValue(new Error("db down"));
+    vi.mocked(listReviewEventsForPr).mockRejectedValue(new Error("db down"));
 
     const res = await GET(makeRequest(), makeParams());
     expect(res.status).toBe(500);

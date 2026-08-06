@@ -141,7 +141,7 @@ describe("dependency candidate proposal boundary", () => {
   });
 
   it("fails closed when the candidate cannot be mapped to a connected repository", async () => {
-    vi.mocked(getRepository).mockResolvedValue(null);
+    vi.mocked(getRepository).mockResolvedValue(null as never);
     const response = await POST(request({
       workspaceId: "ws", watchId: "watch", candidateFingerprint: candidate.fingerprint,
       evidence: {

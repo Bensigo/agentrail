@@ -53,7 +53,8 @@ Jace owns the spine:
 ## Current evidence and gaps
 
 Implemented and tested foundations: manual/MCP draft records, human contract
-confirmation, metadata-only Context Packs, manual exact-head PR revisions,
+confirmation, metadata-only Context Packs, manual and fail-closed webhook
+exact-head PR revisions,
 criterion-level evidence validation, durable blocking correction-packet fields,
 human-selected builder handoff bindings, and MCP acknowledgement of a
 correction delivery.
@@ -61,7 +62,7 @@ correction delivery.
 Not yet proven: Context-Pack token-budget/citation enforcement and canonical
 compiler attestation; Codex/Claude task pickup; originating-channel
 clarification; Slack/Discord contract handoff; live context-pack delivery to a
-builder task; automatic GitHub correlation; review-bound artifact
+builder task; review-bound artifact
 upload/dispatch; GitHub/Jace fallback delivery; runtime modality-plan/exercise
 worker; API redaction worker; human outcomes/dependency workflow; and UI/browser
 E2E.

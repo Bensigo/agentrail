@@ -41,32 +41,30 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Metadata-only context-pack record and MCP read surface | `989e3b7c` through `a4f7b8cc` | Python context-pack tests and focused console tests |
 | Dedicated scoped agent-MCP credentials | `2b179526`, `c27b6564` | focused bearer/API/MCP tests and package typecheck |
 | Manual connected-repository PR attachment and immutable head revisions | `93efb0a3` | focused attachment route tests |
+| Human-selected builder handoff and fail-closed webhook PR correlation | `1221c3c0`, `52a6c248` | focused builder-handoff and signed-webhook tests; unlinked PRs never enter the advisory queue |
 | Independent criterion review validation and generic-smoke rejection | `78f92fc4` through `1034f42e` | `evidence-review-validation` and runner completion tests |
 | Correction delivery acknowledgement seam | `429eb1a2` | focused MCP acknowledgement tests |
 
-The active uncommitted slice adds durable correction-packet fields and a
-pre-PR builder-handoff table. It has not yet passed verification or been
-committed; do not treat it as delivered.
+The next slice must make correction delivery executable and proof artifacts
+review-bound. The current acknowledgement seam alone is not delivery.
 
 ## Remaining work, in dependency order
 
-1. Complete and test builder handoff; use it in GitHub webhook correlation;
-   remove unlinked advisory review admission.
-2. Add review-bound artifact storage and a verification-plan model. Build a
+1. Add review-bound artifact storage and a verification-plan model. Build a
    worker that executes criterion-specific modality plans in a safe exact-head
    environment; API evidence must redact secrets/sensitive fields.
-3. Add correction-delivery queue/dispatch/readback for supported MCP task
+2. Add correction-delivery queue/dispatch/readback for supported MCP task
    contexts and durable GitHub/Jace fallback, retaining attempt/outcome and
    acknowledgement.
-4. Implement supported channel intake, missing-question replies, human
+3. Implement supported channel intake, missing-question replies, human
    confirmation, and Context Pack handoff. Slack/Discord are not implemented
    merely because their names appear in this document.
-5. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
+4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
    of obsolete factory/advisory surfaces, and copy-only landing pivot.
-6. Migrate a clean database, run full targeted suites, then browser/E2E proof
+5. Migrate a clean database, run full targeted suites, then browser/E2E proof
    against a live safe preview. No migration, delivery channel, or UI is live
    verified yet.
-7. Build the separate post-MVP trust-layer evaluation program defined in
+6. Build the separate post-MVP trust-layer evaluation program defined in
    [`docs/prd/jace-trust-layer-evaluation.md`](prd/jace-trust-layer-evaluation.md)
    after the acceptance spine is coherent. It uses Acceptance Cases, not a
    relabelled factory benchmark: frozen dev/held-out labels, four Jace-specific

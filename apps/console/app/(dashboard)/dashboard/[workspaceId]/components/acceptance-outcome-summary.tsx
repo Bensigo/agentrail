@@ -11,19 +11,12 @@ const OUTCOME_RANGES: Array<{ label: string; value: AcceptanceWorkspaceOutcomeRa
   { label: "1y", value: "1y" },
 ];
 
-const UTC_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatUtcDateTime(value: Date): string {
-  return `${UTC_MONTHS[value.getUTCMonth()]} ${pad2(value.getUTCDate())}, ${value.getUTCFullYear()} ${pad2(value.getUTCHours())}:${pad2(value.getUTCMinutes())} UTC`;
-}
-
-export function formatWorkspaceOutcomeSummaryWindow(from: Date, to: Date): string {
-  return `${formatUtcDateTime(from)} – ${formatUtcDateTime(to)}`;
-}
+const OUTCOME_RANGE_COPY: Record<AcceptanceWorkspaceOutcomeRange, string> = {
+  "24h": "Last 24 hours",
+  "7d": "Last 7 days",
+  "30d": "Last 30 days",
+  "1y": "Last year",
+};
 
 function OutcomeCard({
   label,
@@ -91,12 +84,7 @@ export function AcceptanceOutcomeSummaryPanel({
           <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Trust outcomes
           </h2>
-          <p className="mt-1 text-xs text-[var(--gray-09)]">
-            Exact-head evidence and human decisions. {formatWorkspaceOutcomeSummaryWindow(
-              summary.windowFromUtcInclusive,
-              summary.windowToUtcExclusive
-            )}
-          </p>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">{OUTCOME_RANGE_COPY[activeRange]}</p>
         </div>
         <OutcomeRangeSelector workspaceId={summary.workspaceId} activeRange={activeRange} />
       </div>

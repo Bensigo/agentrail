@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AcceptanceWorkspaceOutcomeSummary } from "@agentrail/db-postgres";
-import {
-  AcceptanceOutcomeSummaryPanel,
-  formatWorkspaceOutcomeSummaryWindow,
-} from "./acceptance-outcome-summary";
+import { AcceptanceOutcomeSummaryPanel } from "./acceptance-outcome-summary";
 
 interface ElementLike {
   type?: unknown;
@@ -47,15 +44,6 @@ function summary(overrides: Partial<AcceptanceWorkspaceOutcomeSummary> = {}): Ac
   };
 }
 
-describe("formatWorkspaceOutcomeSummaryWindow", () => {
-  it("formats the exact UTC range instead of hiding it behind a relative label", () => {
-    expect(formatWorkspaceOutcomeSummaryWindow(
-      new Date("2026-08-01T00:00:00.000Z"),
-      new Date("2026-08-08T00:00:00.000Z")
-    )).toBe("Aug 01, 2026 00:00 UTC – Aug 08, 2026 00:00 UTC");
-  });
-});
-
 describe("AcceptanceOutcomeSummaryPanel", () => {
   it("renders separate trust-outcome cards and keeps Jace verdicts distinct from human decisions", () => {
     const text = normalizedText(AcceptanceOutcomeSummaryPanel({
@@ -64,7 +52,8 @@ describe("AcceptanceOutcomeSummaryPanel", () => {
     }));
 
     expect(text).toContain("Trust outcomes");
-    expect(text).toContain("Exact-head evidence and human decisions. Aug 01, 2026 00:00 UTC – Aug 08, 2026 00:00 UTC");
+    expect(text).toContain("Last 7 days");
+    expect(text).not.toContain("UTC");
     expect(text).toContain("24h 7d 30d 1y");
     expect(text).toContain("Reviewed PR revisions 3");
     expect(text).toContain("Jace proven 2");

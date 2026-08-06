@@ -242,15 +242,21 @@ perform cleanup. No market-value claim follows from current factory results.
   its runtime must not be represented as an exercised criterion. The native
   MCP server is unit-tested to call the durable correction inbox and receipt
   endpoint, but no live external builder has done so; only its recorded
-  acknowledgement proves receipt.
+  acknowledgement proves receipt. Its current direct
+  `acceptance_record_create_draft` / draft-version MCP tools bypass the
+  canonical Intake and accept model-supplied repository, origin, and contract
+  fields. They cannot be called evidence of Codex/Claude channel-neutral
+  Intake or Jace-only missing-question behavior; they need replacement with a
+  credential-bound Intake start and a separately designed clarification and
+  human-confirmation protocol.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; committed product slices include
   `d8dc8601` (metadata-only local Pack manifest), `9e45e856` (compiler bridge
   plan), `93946d66` (eval removal map), and `4b735b27` (dependency source to
   Acceptance Record), and `f527d095` (compiler job admission/claim). The
-  current uncommitted slice hardens the exact-head UI execution queue so it
-  waits for a matching ready preview; it has no production execution or
-  telemetry effect.
+  latest committed cleanup is `88c8f153` (removal of the advisory reviewer
+  lane). The current MCP audit found the direct-draft contradiction above; no
+  uncommitted product behavior is being treated as evidence.
   The only expected unrelated untracked paths are generated dependency
   directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
@@ -293,7 +299,11 @@ former-proposal-route migration remained local because it overlapped the
 coordinator-owned dependency converter and runner API fixture. The attempted
 smaller-model Context Pack job delegation was stopped after it did not return a
 bounded implementation; its persistence glue was completed locally without
-expanding scope. The next slice is the disposable compiler worker and its
-report seam; separately, a bounded dependency-lane map remains required before
-any destructive cleanup and must classify every approval/publisher caller as
-remove, neutral infrastructure, or still-needed compatibility.
+expanding scope. The advisory-review cleanup was completed locally after a
+short read-only audit failed to return a bounded result; historical database
+rows were retained while all application callers were removed. The next
+design/implementation decision is the MCP direct-draft bypass: retire it only
+when a credential-bound Intake start and an honest clarification/confirmation
+path are ready. Separately, a bounded dependency-lane map remains required
+before any destructive cleanup and must classify every approval/publisher
+caller as remove, neutral infrastructure, or still-needed compatibility.

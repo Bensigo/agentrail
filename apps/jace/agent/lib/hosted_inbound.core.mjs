@@ -37,11 +37,13 @@ import { TARGET_KEY as _TARGET_KEY } from "./run_outcome.core.mjs";
  * today, so extending that shared map here would be speculative.
  */
 const CONSOLE_CHANNEL = "console";
+const MCP_CHANNEL = "mcp";
 
 /** Channels this door understands. Unlisted channel ids fall back to "telegram" — see normalizeHostedInbound's `channel` handling below. */
 export const HOSTED_INBOUND_CHANNELS = Object.freeze([
   ...Object.keys(_TARGET_KEY),
   CONSOLE_CHANNEL,
+  MCP_CHANNEL,
 ]);
 
 /**
@@ -62,7 +64,8 @@ export const HOSTED_INBOUND_CHANNELS = Object.freeze([
  *   MINIMAL: only that key plus `conversationId`/`messageThreadId` when
  *   present, and `threadTs` (Slack-only) when present, so no stray/secret
  *   field leaks into the session (same convention as run_outcome.core.mjs's
- *   target normalization).
+ *   target normalization). `console` and `mcp` use their own compound
+ *   targets and are handled below.
  * - `auth` is REQUIRED (unlike run-outcome's optional auth) and must be an
  *   object — the door's whole point is carrying `chatIdentityId`/
  *   `workspaceId` attribution into the session's `auth.initiator`, so a
@@ -92,6 +95,11 @@ export function normalizeHostedInbound(raw) {
     throw new Error("hosted-inbound: `sourceKey` must be non-empty when provided.");
   }
 
+  const auth = raw.auth;
+  if (auth == null || typeof auth !== "object" || Array.isArray(auth)) {
+    throw new Error("hosted-inbound: `auth` is required and must be an object.");
+  }
+
   const target = raw.target;
   if (target == null || typeof target !== "object" || Array.isArray(target)) {
     throw new Error("hosted-inbound: `target` must be an object.");
@@ -112,6 +120,23 @@ export function normalizeHostedInbound(raw) {
       throw new Error("hosted-inbound: `target.conversationKey` is required.");
     }
     normalizedTarget = { workspaceId, conversationKey };
+  } else if (channel === MCP_CHANNEL) {
+    const workspaceId = typeof target.workspaceId === "string" ? target.workspaceId.trim() : "";
+    if (!workspaceId) {
+      throw new Error("hosted-inbound: `target.workspaceId` is required.");
+    }
+    const taskContextKey = typeof target.taskContextKey === "string" ? target.taskContextKey.trim() : "";
+    if (!taskContextKey) {
+      throw new Error("hosted-inbound: `target.taskContextKey` is required.");
+    }
+
+    const mcpCredentialId =
+      typeof auth.attributes?.mcpCredentialId === "string" ? auth.attributes.mcpCredentialId.trim() : "";
+    if (!mcpCredentialId) {
+      throw new Error("hosted-inbound: `auth.attributes.mcpCredentialId` is required.");
+    }
+
+    normalizedTarget = { workspaceId, taskContextKey };
   } else {
     const key = _TARGET_KEY[channel];
     const dest = target[key];
@@ -146,11 +171,6 @@ export function normalizeHostedInbound(raw) {
     if (channel === "slack" && typeof target.threadTs === "string" && target.threadTs.trim()) {
       normalizedTarget.threadTs = target.threadTs;
     }
-  }
-
-  const auth = raw.auth;
-  if (auth == null || typeof auth !== "object" || Array.isArray(auth)) {
-    throw new Error("hosted-inbound: `auth` is required and must be an object.");
   }
 
   return { channel, message, ...(sourceKey ? { sourceKey } : {}), target: normalizedTarget, auth };

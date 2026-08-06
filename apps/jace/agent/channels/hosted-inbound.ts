@@ -53,6 +53,7 @@ import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
 import console_ from "./console.js";
+import mcp from "./mcp.js";
 
 /**
  * Channel id -> Eve channel module — the SAME set `normalizeHostedInbound`
@@ -62,11 +63,12 @@ import console_ from "./console.js";
  * run_outcome.core.mjs's doc-comment) — normalizeHostedInbound would accept
  * `channel: "imessage"` (it shares run_outcome's TARGET_KEY set), but no
  * webhook route ever sends it, so this map staying telegram/discord/slack/
- * console is not a gap. `console` (#1288) is the AgentRail dashboard's own
- * in-house channel — see `./console.ts`'s header comment for why it rides
- * this SAME door rather than forking a second dispatch mechanism.
+ * console/mcp is not a gap. `console` (#1288) is the AgentRail dashboard's
+ * own in-house channel — see `./console.ts`'s header comment for why it
+ * rides this SAME door rather than forking a second dispatch mechanism.
+ * `mcp` is the virtual console-to-Jace task channel.
  */
-const CHANNELS: Record<string, unknown> = { telegram, discord, slack, console: console_ };
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack, console: console_, mcp };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {

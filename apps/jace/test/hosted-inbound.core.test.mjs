@@ -76,6 +76,11 @@ test("HOSTED_INBOUND_CHANNELS includes telegram, discord, and slack", () => {
   assert.ok(HOSTED_INBOUND_CHANNELS.includes("slack"));
 });
 
+test("HOSTED_INBOUND_CHANNELS includes the console and virtual mcp channels", () => {
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("console"));
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("mcp"));
+});
+
 test("normalizeHostedInbound trims the message", () => {
   const out = normalizeHostedInbound({
     message: "  spaced  ",
@@ -326,6 +331,61 @@ test("a telegram payload keyed on workspaceId (console's field name) is rejected
         auth: {},
       }),
     /`target\.chatId` is required/,
+  );
+});
+
+test("accepts an explicit channel: 'mcp' with a {workspaceId, taskContextKey} target and trusted mcpCredentialId auth attribute", () => {
+  const auth = {
+    attributes: {
+      workspaceId: "workspace-1",
+      mcpCredentialId: "cred-1",
+      extra: "keep-me",
+    },
+  };
+  const out = normalizeHostedInbound({
+    channel: "mcp",
+    message: "run the task",
+    target: { workspaceId: "workspace-1", taskContextKey: "task-context-1", draftOnly: true },
+    auth,
+  });
+  assert.deepEqual(out, {
+    channel: "mcp",
+    message: "run the task",
+    target: { workspaceId: "workspace-1", taskContextKey: "task-context-1" },
+    auth,
+  });
+});
+
+test("mcp rejects a missing workspaceId, taskContextKey, or trusted mcpCredentialId", () => {
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "mcp",
+        message: "run the task",
+        target: { taskContextKey: "task-context-1" },
+        auth: { attributes: { mcpCredentialId: "cred-1" } },
+      }),
+    /`target\.workspaceId` is required/,
+  );
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "mcp",
+        message: "run the task",
+        target: { workspaceId: "workspace-1" },
+        auth: { attributes: { mcpCredentialId: "cred-1" } },
+      }),
+    /`target\.taskContextKey` is required/,
+  );
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "mcp",
+        message: "run the task",
+        target: { workspaceId: "workspace-1", taskContextKey: "task-context-1" },
+        auth: { attributes: {} },
+      }),
+    /`auth\.attributes\.mcpCredentialId` is required/,
   );
 });
 

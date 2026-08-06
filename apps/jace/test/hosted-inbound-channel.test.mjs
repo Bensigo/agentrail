@@ -34,6 +34,7 @@ test("imports telegram/discord/slack channel modules (#1284/#1285: multi-channel
   assert.match(code, /import\s+telegram\s+from\s*["']\.\/telegram\.js["']/);
   assert.match(code, /import\s+discord\s+from\s*["']\.\/discord\.js["']/);
   assert.match(code, /import\s+slack\s+from\s*["']\.\/slack\.js["']/);
+  assert.match(code, /import\s+mcp\s+from\s*["']\.\/mcp\.js["']/);
 });
 
 test("declares exactly one POST(\"/eve/v1/hosted-inbound\") route — the LITERAL mount path (Eve mounts defineChannel routes at their literal declared path; /eve/v1/<id> is a built-in-adapter default, not a framework rewrite)", () => {

@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Target,
   FileText,
+  ClipboardList,
 } from "lucide-react";
 
 export interface NavItem {
@@ -42,6 +43,7 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
   collapsible: false,
   items: [
     { label: "Home", href: "", icon: LayoutDashboard },
+    { label: "Briefs", href: "briefs", icon: ClipboardList },
     { label: "Acceptance records", href: "changes", icon: FileText },
     { label: "Approvals", href: "approvals", icon: Inbox },
   ],

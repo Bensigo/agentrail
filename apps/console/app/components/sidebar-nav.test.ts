@@ -28,9 +28,10 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.collapsible).toBe(false);
   });
 
-  it("Trust layer zone: Home, Acceptance records, then Approvals", () => {
+  it("Trust layer zone: Home, Briefs, Acceptance records, then Approvals", () => {
     expect(YOUR_ENGINEER_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Home", ""],
+      ["Briefs", "briefs"],
       ["Acceptance records", "changes"],
       ["Approvals", "approvals"],
     ]);
@@ -69,6 +70,7 @@ describe("NAV_ZONES data structure", () => {
     const legacyHrefs = [
       "", // Overview -> Home
       "changes",
+      "briefs",
       // "queue" intentionally excluded: #1231 renamed its nav item's href to
       // "work" — the /queue route itself still exists, but only as a
       // redirect (see the next test), not a nav destination.
@@ -132,6 +134,7 @@ describe("NAV_ZONES data structure", () => {
     const legacyHrefs = new Set([
       "",
       "changes",
+      "briefs",
       "connectors",
       "approvals", // #1276: pending approvals, parked work, dead letters
       "members",

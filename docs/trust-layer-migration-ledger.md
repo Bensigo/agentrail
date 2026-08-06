@@ -48,6 +48,7 @@ Last reconciled: 2026-08-06. Canonical product decision: [ADR 0012](adr/0012-jac
 | Exact-head criterion verification-plan persistence | current migration slice | focused runner-plan, review-validation, and completion-route tests; DB typecheck. This is plan metadata, not runtime proof. |
 | Review-bound UI artifact storage | current migration slice | focused artifact-plan and plan route tests; DB typecheck. The route derives the criterion/repo/head from a current persisted UI plan and records a digest; it does not exercise a flow or declare a pass. |
 | Bounded Context Pack handoff metadata | current migration slice | focused MCP/user route and validator tests; requires budget, cited ranges, confirmed criterion IDs, explicit boundaries/tests/decisions/exclusions, freshness, and no-full-source custody. |
+| Task-scoped external-builder Context Pack handoff | `fd297f13` | focused MCP builder-task route test, native MCP protocol test, MCP build/typecheck, and DB typecheck. A scoped builder can retrieve only its recorded handoff's confirmed contract and selected bounded Context Pack metadata/artifact references; it cannot retrieve raw source or treat handoff as proof of implementation. |
 | Criterion execution queue, guarded result seam, and opt-in Eve worker | `ee6f36d7` through `ec9bfc08` | focused runner admission/completion, artifact, plan, prompt, worker-core, worker-runtime, console-client, and instrumentation tests. The worker claims only plan-bound exact-head jobs, runs a constrained root-Jace/QA turn, and completes via the trust endpoint; it is default-off and has no live safe-preview/browser proof. |
 
 The next slice must execute a planned safe UI flow and bind its observed result
@@ -63,10 +64,11 @@ dispatcher has proven notification.
    The automatic task-context queue, native MCP read/ack, and GitHub fallback
    dispatch retain attempt/outcome, but no Codex/Claude builder has retrieved a
    packet, acknowledged it, or resumed work in a live integration test.
-3. Implement supported channel intake, originating-channel missing-question
-   replies, and Context Pack handoff. The generic human revision API records a
-   clarified draft and prevents confirmation with open questions, but it does
-   not yet ask or receive questions in Codex, Claude Code, Slack, or Discord.
+3. Implement supported channel intake and originating-channel missing-question
+   replies. The generic human revision API records a clarified draft and
+   prevents confirmation with open questions; the selected builder can retrieve
+   the confirmed contract/pack handoff through MCP. Neither path yet asks or
+   receives questions in Codex, Claude Code, Slack, or Discord.
 4. Add human PR outcome, dependency-upgrade acceptance flow, Console removal
    of obsolete factory/advisory surfaces, and copy-only landing pivot.
 5. Migrate a clean database, run full targeted suites, then browser/E2E proof
@@ -106,7 +108,7 @@ dispatcher has proven notification.
   acknowledgement proves receipt.
 - Worktree: `/Users/macbook/work/bensigo-ai-workflow-trust-record` on
   `codex/trust-layer-acceptance-record`; the most recent product slice is
-  `53cf907b` (unresolved-question confirmation gate). The only expected untracked
+  `fd297f13` (task-scoped builder Context Pack handoff). The only expected untracked
   paths are generated dependency directories.
   Preserve the shared dirty checkout at `/Users/macbook/work/bensigo-ai-workflow`
   and generated ignored dependency directories in this worktree.

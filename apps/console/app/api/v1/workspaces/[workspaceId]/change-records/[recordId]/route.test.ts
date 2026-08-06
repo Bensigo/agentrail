@@ -6,6 +6,7 @@ vi.mock("@agentrail/auth", () => ({
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   confirmAcceptanceContract: vi.fn(),
+  createDraftAcceptanceContract: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readAcceptanceContextPacks: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("@agentrail/db-postgres", () => ({
 import { auth } from "@agentrail/auth";
 import {
   confirmAcceptanceContract,
+  createDraftAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceContracts,
   readAcceptanceContextPacks,
@@ -29,6 +31,12 @@ const USER = "user-1";
 const CREATED = new Date("2026-08-03T12:00:00.000Z");
 const UPDATED = new Date("2026-08-03T12:05:00.000Z");
 const REVIEW_AT = new Date("2026-08-03T12:04:00.000Z");
+const validContract = {
+  originalUserWording: "Add a visible save button",
+  goal: "A signed-in user can save a draft",
+  acceptanceCriteria: [{ id: "AC-1", text: "The save button saves", required: true, userVisible: false }],
+  nonGoals: [], risks: [], environmentExpectations: [], stopConditions: [], affectedCodebaseUnits: [], openQuestions: [],
+};
 
 function req(workspaceId = WS, recordId = RECORD): NextRequest {
   return new NextRequest(
@@ -96,6 +104,10 @@ beforeEach(() => {
     id: "contract-1", recordId: RECORD, version: 2, status: "confirmed",
     contract: { originalRequest: "Add a button" }, createdBy: "user:lead",
     confirmedBy: `user:${USER}`, confirmedAt: UPDATED, createdAt: CREATED,
+  } as never);
+  vi.mocked(createDraftAcceptanceContract).mockResolvedValue({
+    id: "contract-2", recordId: RECORD, version: 2, status: "draft", contract: validContract,
+    createdBy: `user:${USER}`, confirmedBy: null, confirmedAt: null, createdAt: CREATED,
   } as never);
 });
 
@@ -206,6 +218,24 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 });
 
 describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
+  it("validates and appends a human draft version for any workspace member", async () => {
+    const res = await PATCH(confirmRequest({ action: "create_draft_version", contract: validContract }), { params: params() });
+    expect(res.status).toBe(201);
+    expect(createDraftAcceptanceContract).toHaveBeenCalledWith({
+      recordId: RECORD, contract: validContract, createdBy: `user:${USER}`,
+    });
+    await expect(res.json()).resolves.toMatchObject({
+      contract: { recordId: RECORD, version: 2, status: "draft", createdBy: `user:${USER}` },
+    });
+  });
+
+  it("returns parser errors without mutating for an invalid human draft", async () => {
+    const res = await PATCH(confirmRequest({ action: "create_draft_version", contract: { goal: "missing fields" } }), { params: params() });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ errors: { originalUserWording: expect.any(String) } });
+    expect(createDraftAcceptanceContract).not.toHaveBeenCalled();
+  });
+
   it("requires an explicit confirm action and positive contract version", async () => {
     const res = await PATCH(confirmRequest({ action: "approve", version: 2 }), { params: params() });
     expect(res.status).toBe(400);

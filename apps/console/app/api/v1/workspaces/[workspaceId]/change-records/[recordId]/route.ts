@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
+import { parseAcceptanceContract } from "@agentrail/contracts";
 import {
   confirmAcceptanceContract,
+  createDraftAcceptanceContract,
   getWorkspaceMembership,
   readAcceptanceContracts,
   readAcceptanceContextPacks,
@@ -114,6 +116,28 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  if (body.action === "create_draft_version") {
+    const parsedContract = parseAcceptanceContract(body.contract);
+    if (!parsedContract.ok) {
+      return NextResponse.json({ errors: parsedContract.errors }, { status: 400 });
+    }
+    const contracts = await readAcceptanceContracts({ workspaceId, recordId });
+    if (contracts == null) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    try {
+      const draft = await createDraftAcceptanceContract({
+        recordId,
+        contract: parsedContract.value,
+        createdBy: `user:${session.user.id}`,
+      });
+      return NextResponse.json({ contract: serializeContract(draft) }, { status: 201 });
+    } catch (err) {
+      console.error("[change-records] failed to create Acceptance Contract draft:", err);
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Failed to create Acceptance Contract draft" },
+        { status: 409 }
+      );
+    }
+  }
   const version = body.version;
   if (body.action !== "confirm_contract" || !Number.isInteger(version) || (version as number) < 1) {
     return NextResponse.json(

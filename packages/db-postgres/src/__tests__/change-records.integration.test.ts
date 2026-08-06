@@ -257,20 +257,42 @@ describe.skipIf(!DB_AVAILABLE)(
         contract: {
           originalRequest: "Add a red save button",
           acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
-          unresolvedQuestions: [{ id: "Q-1", text: "Which theme token?" }],
+          openQuestions: [{ id: "Q-1", text: "Which theme token?", status: "open" }],
         },
         createdBy: "user:lead",
       });
       expect(secondDraft.version).toBe(2);
-      const confirmed = await confirmAcceptanceContract({
-        workspaceId,
+      await expect(confirmAcceptanceContract({
+        workspaceId: wsId,
         recordId: draft.record.id,
         version: secondDraft.version,
+        confirmedBy: "user:lead",
+      })).rejects.toThrow("open questions remain");
+
+      const resolvedDraft = await createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: {
+          originalUserWording: "Add a red save button",
+          goal: "Save button is red",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          openQuestions: [{ id: "Q-1", text: "Which theme token?", status: "resolved", resolution: "danger" }],
+        },
+        createdBy: "user:lead",
+      });
+      const confirmed = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: resolvedDraft.version,
         confirmedBy: "user:lead",
       });
       expect(confirmed.status).toBe("confirmed");
       expect(confirmed.confirmedBy).toBe("user:lead");
       expect(confirmed.confirmedAt).not.toBeNull();
+      await expect(createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: { originalUserWording: "A later edit", goal: "Must be rejected" },
+        createdBy: "user:lead",
+      })).rejects.toThrow("immutable");
 
       const contracts = await readAcceptanceContracts({
         workspaceId: wsId,
@@ -278,7 +300,8 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       expect(contracts?.map((contract) => [contract.version, contract.status])).toEqual([
         [1, "draft"],
-        [2, "confirmed"],
+        [2, "draft"],
+        [3, "confirmed"],
       ]);
     });
   }

@@ -608,6 +608,19 @@ export type CreateDraftAcceptanceContractInput = {
   createdBy: string;
 };
 
+/** Stored contracts must not be confirmable while any question is unresolved. */
+export function hasOpenAcceptanceQuestions(contract: unknown): boolean {
+  if (contract == null || typeof contract !== "object" || Array.isArray(contract)) return true;
+  const value = contract as Record<string, unknown>;
+  const questions = value.openQuestions ?? value.unresolvedQuestions;
+  if (questions === undefined) return false;
+  if (!Array.isArray(questions)) return true;
+  return questions.some((question) => {
+    if (question == null || typeof question !== "object" || Array.isArray(question)) return true;
+    return (question as Record<string, unknown>).status !== "resolved";
+  });
+}
+
 export type AttachExternalPullRequestInput = {
   workspaceId: string;
   recordId: string;
@@ -1266,6 +1279,9 @@ export async function createDraftAcceptanceContract(
       .where(eq(acceptanceContracts.recordId, input.recordId))
       .orderBy(desc(acceptanceContracts.version))
       .limit(1);
+    if (latest[0]?.status === "confirmed") {
+      throw new Error("A confirmed Acceptance Contract is immutable");
+    }
     const version = (latest[0]?.version ?? 0) + 1;
     const rows = await tx
       .insert(acceptanceContracts)
@@ -1332,6 +1348,24 @@ export async function confirmAcceptanceContract(input: {
       throw new Error("another Acceptance Contract version is already confirmed");
     }
 
+    const draft = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.version, input.version),
+          eq(acceptanceContracts.status, "draft")
+        )
+      )
+      .limit(1);
+    if (!draft[0]) {
+      throw new Error("Acceptance Contract draft was not found");
+    }
+    if (hasOpenAcceptanceQuestions(draft[0].contract)) {
+      throw new Error("Acceptance Contract cannot be confirmed while open questions remain");
+    }
+
     const rows = await tx
       .update(acceptanceContracts)
       .set({
@@ -1348,9 +1382,7 @@ export async function confirmAcceptanceContract(input: {
       )
       .returning();
     const contract = rows[0];
-    if (!contract) {
-      throw new Error("Acceptance Contract draft was not found");
-    }
+    if (!contract) throw new Error("Acceptance Contract draft was not found");
     await appendContractEventInTransaction(tx, {
       recordId: input.recordId,
       eventKey: `acceptance-contract:confirmed:${contract.version}`,

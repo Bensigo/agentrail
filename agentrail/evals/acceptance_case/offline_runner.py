@@ -90,6 +90,7 @@ class AcceptanceRunReport:
     observations: tuple[AcceptanceObservation, ...]
     scorecards: Mapping[str, Mapping[str, int]]
     promotion: Optional[PromotionResult]
+    corpus_provenance: Optional[Mapping[str, object]] = None
 
 
 def run_offline_four_arm_evaluation(

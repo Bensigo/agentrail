@@ -89,6 +89,7 @@ def acceptance_run_report_to_dict(report: AcceptanceRunReport) -> Dict[str, Any]
         # or silently repairs them.
         "scorecards": {key: dict(value) for key, value in report.scorecards.items()},
         "promotion": _promotion_to_dict(report.promotion),
+        "corpusProvenance": dict(report.corpus_provenance) if report.corpus_provenance is not None else None,
     }
 
 
@@ -195,10 +196,14 @@ def acceptance_run_report_from_dict(value: Any) -> AcceptanceRunReport:
         _parse_observation(item, index) for index, item in enumerate(observations_value)
     )
     try:
+        corpus_provenance = data.get("corpusProvenance")
+        if corpus_provenance is not None and not isinstance(corpus_provenance, Mapping):
+            raise AcceptanceReportFormatError("corpusProvenance must be an object or null")
         return AcceptanceRunReport(
             observations=observations,
             scorecards=_parse_scorecards(data.get("scorecards")),
             promotion=_parse_promotion(data.get("promotion")),
+            corpus_provenance=dict(corpus_provenance) if corpus_provenance is not None else None,
         )
     except ValueError as error:
         raise AcceptanceReportFormatError(f"report is invalid: {error}") from error

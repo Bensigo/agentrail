@@ -31,6 +31,7 @@ from .report import (
     serialize_acceptance_run_report,
     write_acceptance_run_report_markdown,
 )
+from .evaluator import run_manifest_bound_offline_evaluation
 
 __all__ = [
     "ARMS",
@@ -64,6 +65,7 @@ __all__ = [
     "load_acceptance_case_corpus",
     "load_cases",
     "run_offline_four_arm_evaluation",
+    "run_manifest_bound_offline_evaluation",
     "verify_criterion_proof",
     "AcceptanceReportFormatError",
     "acceptance_run_report_from_dict",

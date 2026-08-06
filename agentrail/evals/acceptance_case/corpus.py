@@ -31,6 +31,7 @@ class AcceptanceCorpus:
     corpus_version: str
     label_class: LabelClass
     label_authority: Mapping[str, str]
+    case_digests: Mapping[str, str]
     cases: tuple[AcceptanceCase, ...]
 
 
@@ -95,11 +96,13 @@ def load_acceptance_case_corpus(
         raise AcceptanceCorpusError("Acceptance Case corpus: cases must not be empty")
 
     cases: list[AcceptanceCase] = []
+    case_digests: dict[str, str] = {}
     for name in sorted(expected_cases):
         expected_digest = _text(expected_cases[name], f"cases.{name}")
         case_path = root / name / CASE_FILE
         if _case_digest(case_path) != expected_digest:
             raise AcceptanceCorpusError(f"Acceptance Case corpus: case digest mismatch for {name}")
+        case_digests[name] = expected_digest
         try:
             case = load_case(case_path.parent)
         except AcceptanceCaseError as error:
@@ -126,5 +129,6 @@ def load_acceptance_case_corpus(
         corpus_version=corpus_version,
         label_class=label_class,
         label_authority=label_authority,
+        case_digests=case_digests,
         cases=tuple(cases),
     )

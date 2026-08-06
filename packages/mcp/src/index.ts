@@ -221,6 +221,23 @@ server.registerTool(
 );
 
 server.registerTool(
+  "acceptance_builder_task_get",
+  {
+    title: "Read selected Jace builder handoff",
+    description: "Read this builder task's confirmed Acceptance Contract and selected bounded Context Pack. Use it for implementation; it is not proof of implementation or verification.",
+    inputSchema: {
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ builder, taskContextKey }) => {
+    const query = new URLSearchParams({ builder, taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/builder-tasks?${query}`, "GET");
+  },
+);
+
+server.registerTool(
   "correction_deliveries_get",
   {
     title: "Read correction deliveries",

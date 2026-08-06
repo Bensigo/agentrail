@@ -17,6 +17,7 @@ the MCP/tool-enforcement level from
 | `acceptance_record_get` | Jace API | draft/confirmed contract for an existing record |
 | `acceptance_record_create_draft_version` | Jace API | immutable clarification revision; never confirms it |
 | `acceptance_context_pack_record` | Jace API | context-pack metadata and artifact references only |
+| `acceptance_builder_task_get` | Jace API | the recorded builder task's confirmed contract and selected bounded Context Pack |
 | `correction_deliveries_get` | Jace API | evidence-bound corrections for the recorded builder task; not proof of receipt |
 | `correction_delivery_acknowledge` | Jace API | agent receipt acknowledgement only; does not modify code or merge |
 

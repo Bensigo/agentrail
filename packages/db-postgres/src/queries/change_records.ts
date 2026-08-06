@@ -817,6 +817,133 @@ export async function findAcceptanceBuilderHandoffForPullRequest(input: {
   return rows.length === 1 ? rows[0]! : null;
 }
 
+export type AcceptanceBuilderTaskRead = {
+  handoff: {
+    id: string;
+    recordId: string;
+    workspaceId: string;
+    repositoryId: string;
+    builder: string;
+    taskContextKey: string;
+    branchName: string;
+    status: string;
+    createdAt: Date;
+    prAttachedAt: Date | null;
+  };
+  record: {
+    id: string;
+    repo: string;
+    originChannel: string | null;
+    sourceReferences: Record<string, unknown>[];
+  };
+  contract: {
+    id: string;
+    version: number;
+    status: string;
+    contract: Record<string, unknown>;
+    confirmedAt: Date | null;
+  };
+  contextPack: {
+    id: string;
+    version: number;
+    phase: string;
+    contentHash: string;
+    compilerVersion: string;
+    manifest: Record<string, unknown>;
+    custody: Record<string, unknown>;
+    freshness: Record<string, unknown>;
+    jsonArtifactRef: string | null;
+    markdownArtifactRef: string | null;
+  };
+};
+
+/**
+ * Resolve exactly one recorded builder task and its selected trust artifacts.
+ * The joins intentionally revalidate workspace/record ownership, the
+ * handoff-selected contract/version, confirmation, and selected pack. No
+ * artifact content is read here; callers receive durable metadata and refs.
+ */
+export async function readAcceptanceBuilderTask(input: {
+  workspaceId: string;
+  builder: string;
+  taskContextKey: string;
+}): Promise<AcceptanceBuilderTaskRead | null> {
+  const builder = input.builder.trim().toLowerCase();
+  if (!builder || !input.taskContextKey) return null;
+
+  const rows = await db
+    .select({
+      handoff: acceptanceBuilderHandoffs,
+      record: changeRecords,
+      contract: acceptanceContracts,
+      contextPack: acceptanceContextPacks,
+    })
+    .from(acceptanceBuilderHandoffs)
+    .innerJoin(changeRecords, and(
+      eq(acceptanceBuilderHandoffs.recordId, changeRecords.id),
+      eq(acceptanceBuilderHandoffs.workspaceId, changeRecords.workspaceId),
+      eq(changeRecords.workspaceId, input.workspaceId),
+    ))
+    .innerJoin(acceptanceContracts, and(
+      eq(acceptanceContracts.id, acceptanceBuilderHandoffs.acceptanceContractId),
+      eq(acceptanceContracts.recordId, changeRecords.id),
+      eq(acceptanceContracts.version, acceptanceBuilderHandoffs.acceptanceContractVersion),
+      eq(acceptanceContracts.status, "confirmed"),
+    ))
+    .innerJoin(acceptanceContextPacks, and(
+      eq(acceptanceContextPacks.id, acceptanceBuilderHandoffs.contextPackId),
+      eq(acceptanceContextPacks.recordId, changeRecords.id),
+    ))
+    .where(and(
+      eq(acceptanceBuilderHandoffs.workspaceId, input.workspaceId),
+      sql`lower(trim(${acceptanceBuilderHandoffs.builder})) = ${builder}`,
+      eq(acceptanceBuilderHandoffs.taskContextKey, input.taskContextKey),
+    ))
+    .limit(2);
+
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  return {
+    handoff: {
+      id: row.handoff.id,
+      recordId: row.handoff.recordId,
+      workspaceId: row.handoff.workspaceId,
+      repositoryId: row.handoff.repositoryId,
+      builder: row.handoff.builder,
+      taskContextKey: row.handoff.taskContextKey,
+      branchName: row.handoff.branchName,
+      status: row.handoff.status,
+      createdAt: row.handoff.createdAt,
+      prAttachedAt: row.handoff.prAttachedAt,
+    },
+    record: {
+      id: row.record.id,
+      repo: row.record.repo,
+      originChannel: row.record.originChannel,
+      sourceReferences: row.record.sourceReferences,
+    },
+    contract: {
+      id: row.contract.id,
+      version: row.contract.version,
+      status: row.contract.status,
+      contract: row.contract.contract,
+      confirmedAt: row.contract.confirmedAt,
+    },
+    contextPack: {
+      id: row.contextPack.id,
+      version: row.contextPack.version,
+      phase: row.contextPack.phase,
+      contentHash: row.contextPack.contentHash,
+      compilerVersion: row.contextPack.compilerVersion,
+      manifest: row.contextPack.manifest,
+      custody: row.contextPack.custody,
+      freshness: row.contextPack.freshness,
+      jsonArtifactRef: row.contextPack.jsonArtifactRef,
+      markdownArtifactRef: row.contextPack.markdownArtifactRef,
+    },
+  };
+}
+
 /** Resolve only one recorded, PR-attached builder task for this current revision. */
 export async function findAcceptanceBuilderHandoffForPrRevision(input: {
   workspaceId: string; recordId: string; prRevisionId: string;

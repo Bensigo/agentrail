@@ -39,7 +39,7 @@ function waitForRequests(count: number): Promise<void> {
   });
 }
 
-test("correction delivery tools use the recorded task identity and acknowledge endpoint", async () => {
+test("builder handoff and correction delivery tools use their recorded task identity", async () => {
   apiRequests.length = 0;
   const address = api.address();
   assert.ok(address && typeof address !== "string");
@@ -57,17 +57,19 @@ test("correction delivery tools use the recorded task identity and acknowledge e
   try {
     send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "mcp-test", version: "1" } } });
     send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
-    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "correction_deliveries_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
-    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "correction_delivery_acknowledge", arguments: { deliveryId: "22222222-2222-4222-8222-222222222222", detail: "Packet read" } } });
-    await waitForRequests(2);
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "acceptance_builder_task_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "correction_deliveries_get", arguments: { builder: "codex", taskContextKey: "task / a&b" } } });
+    send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "correction_delivery_acknowledge", arguments: { deliveryId: "22222222-2222-4222-8222-222222222222", detail: "Packet read" } } });
+    await waitForRequests(3);
   } finally {
     child.kill();
     await new Promise<void>((resolve) => child.on("exit", () => resolve()));
   }
 
   assert.deepEqual(apiRequests.map(({ method, url }) => ({ method, url })), [
+    { method: "GET", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/builder-tasks?builder=codex&taskContextKey=task+%2F+a%26b" },
     { method: "GET", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/correction-deliveries?builder=codex&taskContextKey=task+%2F+a%26b" },
     { method: "POST", url: "/api/v1/agent/mcp/workspaces/11111111-1111-4111-8111-111111111111/correction-deliveries/22222222-2222-4222-8222-222222222222/ack" },
   ]);
-  assert.equal(apiRequests[1]?.body, JSON.stringify({ detail: "Packet read" }));
+  assert.equal(apiRequests[2]?.body, JSON.stringify({ detail: "Packet read" }));
 });

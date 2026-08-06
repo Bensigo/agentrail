@@ -62,6 +62,7 @@ import {
 } from "./lib/instrumentation.core.mjs";
 import { startDiscordGateway } from "./lib/discord-gateway.mjs";
 import { startVerificationExecutionWorker } from "./lib/verification_execution_worker.mjs";
+import { startAcceptanceReviewWorker } from "./lib/acceptance_review_worker.mjs";
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {
@@ -110,6 +111,9 @@ export default defineInstrumentation({
       void startVerificationExecutionWorker(process.env).catch((err) => {
         console.error("[instrumentation] startVerificationExecutionWorker rejected unexpectedly:", err);
       });
+    }
+    if (process.env.JACE_ACCEPTANCE_REVIEW_WORKER === "1") {
+      void startAcceptanceReviewWorker(process.env).catch((err) => console.error("[instrumentation] startAcceptanceReviewWorker rejected unexpectedly:", err));
     }
   },
   events: {

@@ -64,19 +64,6 @@ and read the state yourself.
 shape, obvious regressions. GET requests only, unless the task explicitly
 directs you to exercise a mutating endpoint.
 
-**Acceptance Record API execution:** when the parent gives an exact-head
-preview origin plus an immutable `GET` path and expected status, that
-descriptor is the entire allowed API scope. Fetch only that same-origin path;
-do not follow redirects to another origin, add headers, credentials, query
-parameters, or make any mutating request. Record the observed final URL and
-status. If the expected status is observed, call
-`upload_verification_api_artifact` with only the execution task's workspace,
-record, PR revision, and verification-plan IDs; provide the request method/URL,
-response status, and bounded assertions. The Console redacts the card before
-storage. Return `not_testable` if the preview is unavailable or the descriptor
-cannot be exercised; return `not_proven` if the response does not meet the
-criterion. An uploaded card is evidence, never a pass by itself.
-
 **Evidence (`upload_evidence_image`):** for each *behavioral* acceptance
 criterion — one whose verdict depends on running-app behavior a screenshot
 can show — take a screenshot with the browser connection's screenshot tool

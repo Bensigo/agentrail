@@ -7,11 +7,11 @@
 //    connection_search is deliberately NOT sentineled (this agent declares
 //    MCP connections; stripping connection_search would blind it to them).
 //  - The subagent's own sources import no process/fs/DB capability beyond
-//    its three explicitly enumerated evidence-upload tools, and its connections carry explicit allowlists
+//    its two explicitly enumerated evidence-upload tools, and its connections carry explicit allowlists
 //    with no approval gate.
 //
-// QA has three narrowly-scoped evidence upload tools: the historical generic
-// image uploader plus exact-plan UI and API uploaders. None can post a review,
+// QA has two narrowly-scoped evidence upload tools: the historical generic
+// image uploader plus an exact-plan UI uploader. None can post a review,
 // change code, create a PR, or merge; their server boundaries derive or
 // validate the exact Record/plan identity. The test keeps the set explicit so
 // a new write tool cannot silently broaden the QA capability surface.
@@ -45,12 +45,11 @@ const QA_SENTINELED_TOOLS = [
 ];
 const KEPT_HARNESS_TOOLS = ["web_fetch"];
 
-// The exact ceiling for QA-authored writes. Adding a fourth requires a
+// The exact ceiling for QA-authored writes. Adding a third requires a
 // deliberate review of its scope and corresponding proof.
 const AUTHORED_TOOLS = [
   "upload_evidence_image.ts",
   "upload_verification_artifact.ts",
-  "upload_verification_api_artifact.ts",
 ];
 
 function sourceFiles(dir) {
@@ -74,7 +73,7 @@ test("every sentinel exists and default-exports disableTool()", () => {
   }
 });
 
-test("tools/ contains the 9 sentinels plus the three enumerated evidence upload tools — web_fetch and connection_search stay live", () => {
+test("tools/ contains the 9 sentinels plus the two enumerated evidence upload tools — web_fetch and connection_search stay live", () => {
   const present = readdirSync(TOOLS_DIR)
     .filter((f) => f.endsWith(".ts"))
     .map((f) => f.replace(/\.ts$/, ""))
@@ -180,10 +179,9 @@ test("upload_evidence_image's inputSchema is EXACTLY the 7 caller-supplied field
   );
 });
 
-test("plan-bound UI and API upload tools are the only additional QA writes and delegate to their guarded cores", () => {
+test("the plan-bound UI upload tool is the only additional QA write and delegates to its guarded core", () => {
   const planBoundTools = [
     ["upload_verification_artifact.ts", "upload_verification_artifact.core.mjs", "runUploadVerificationArtifact"],
-    ["upload_verification_api_artifact.ts", "upload_verification_api_artifact.core.mjs", "runUploadVerificationApiArtifact"],
   ];
   for (const [fileName, coreName, runnerName] of planBoundTools) {
     const src = readFileSync(path.join(TOOLS_DIR, fileName), "utf8");

@@ -104,22 +104,24 @@ the criterion.
 
 Planned API criteria now carry a bounded immutable request descriptor: `GET`,
 a same-preview-origin path, and expected status. The queue can claim such a
-criterion only when its exact PR-head preview is ready; Jace instructs QA to
-fetch only that descriptor and upload a redacted request/response/assertion
-artifact through the plan boundary. Before storing that artifact, the server
+criterion only when its exact PR-head preview is ready; the worker fetches only
+that descriptor with credentials omitted and redirects rejected, then uploads a
+redacted request/status/assertion artifact through the plan boundary. Before
+storing that artifact, the server
 re-resolves the plan against the current exact ready preview and refuses a
 different origin, method, path, query, fragment, or status. No deployed
 execution or independent semantic assertion evaluator is proven. Mutating,
 credential-bearing, and external API requests remain outside this MVP
 execution path.
 
-Jace now has a separate exact-head criterion-execution queue, a guarded worker
-result seam, and a default-off Eve worker that claims only those plan-bound
-jobs, asks root Jace to execute one constrained criterion prompt, and completes
-through the trust endpoint. A `proven` result requires observed behavior and
-artifacts bound to that plan and proof modality: UI requires PNG/JPEG evidence;
-API requires the redacted JSON API card. Neither the worker, queueing, nor a
-screenshot alone proves that a browser executed the criterion flow.
+Jace now has a separate exact-head criterion-execution queue, a guarded result
+seam, and a default-off exact-plan worker that claims only those plan-bound
+jobs. UI uses a fixed browser-MCP action list; API uses only its persisted
+safe `GET` descriptor. Neither path creates a root-Jace/QA turn. A `proven`
+result requires observed behavior and artifacts bound to that plan and proof
+modality: UI requires PNG/JPEG evidence; API requires the redacted JSON API
+card. Neither the worker, queueing, nor a screenshot alone proves a live
+criterion until it runs against a safe exact-head environment.
 
 An owner/admin can now record one immutable final decision against a current,
 exact-head Evidence Review in the Acceptance Record. `approved` requires

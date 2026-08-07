@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import { getApprovalById, getWorkspaceMembership, resolveApproval } from "@agentrail/db-postgres";
-import { applyAlignmentDecision } from "../../../../../../../lib/approval-decision";
+import {
+  applyAlignmentDecision,
+  isRetiredDependencyApproval,
+} from "../../../../../../../lib/approval-decision";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
@@ -68,6 +71,16 @@ export async function POST(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  if (isRetiredDependencyApproval(approval)) {
+    return NextResponse.json(
+      {
+        error: "This approval is retired and quarantined pending the dependency data audit.",
+        code: "approval_retired_quarantined",
+      },
+      { status: 410 }
+    );
+  }
+
   const flipped = await resolveApproval(approvalId, decision);
   if (!flipped) {
     // Matches resolveApproval's own idempotency contract (see its
@@ -82,14 +95,7 @@ export async function POST(
   // Regression-pinned by the Telegram webhook route's own suite (which
   // exercises the shared applyAlignmentDecision end-to-end, including the
   // no-queueEntryId no-op) and by this route's tests alongside this file.
-  if (approval.toolName === "dependency_upgrade_contract") {
-    await applyAlignmentDecision(approval, decision, {
-      actorType: "console_user",
-      actorId: session.user.id,
-    });
-  } else {
-    await applyAlignmentDecision(approval, decision);
-  }
+  await applyAlignmentDecision(approval, decision);
 
   return NextResponse.json({ success: true });
 }

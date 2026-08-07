@@ -61,7 +61,8 @@ import {
   isLangfuseConfigured,
 } from "./lib/instrumentation.core.mjs";
 import { startDiscordGateway } from "./lib/discord-gateway.mjs";
-import { startReviewJobWorker } from "./lib/review_job_worker.mjs";
+import { startVerificationExecutionWorker } from "./lib/verification_execution_worker.mjs";
+import { startAcceptanceReviewWorker } from "./lib/acceptance_review_worker.mjs";
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {
@@ -106,23 +107,13 @@ export default defineInstrumentation({
       console.error("[instrumentation] startDiscordGateway rejected unexpectedly:", err);
     });
 
-    // Arc B (Reviewer of Record) headless review worker — same authored slot
-    // as the Discord Gateway listener directly above (this file's `setup` is
-    // eve's only "runs once at server startup" hook; see that block's own
-    // comment) and the same discipline: a module-scope started-guard lives
-    // inside startReviewJobWorker itself (agent/lib/review_job_worker.mjs),
-    // fire-and-forget, and defensively `.catch`ed so a failure here can
-    // never take down OTel registration or the Discord listener. Unlike
-    // Discord (which gates on DISCORD_BOT_TOKEN's presence INSIDE the
-    // listener itself), this worker is gated HERE, on an explicit opt-in
-    // flag — JACE_REVIEW_WORKER=1 — per the Arc B design spec
-    // (docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md §4):
-    // default off, so deploying the console's review-job intake ahead of
-    // this worker (or this worker ahead of intake) is safe in either order.
-    if ((process.env.JACE_REVIEW_WORKER || "").trim() === "1") {
-      void startReviewJobWorker(process.env).catch((err) => {
-        console.error("[instrumentation] startReviewJobWorker rejected unexpectedly:", err);
+    if (process.env.JACE_VERIFICATION_EXECUTION_WORKER === "1") {
+      void startVerificationExecutionWorker(process.env).catch((err) => {
+        console.error("[instrumentation] startVerificationExecutionWorker rejected unexpectedly:", err);
       });
+    }
+    if (process.env.JACE_ACCEPTANCE_REVIEW_WORKER === "1") {
+      void startAcceptanceReviewWorker(process.env).catch((err) => console.error("[instrumentation] startAcceptanceReviewWorker rejected unexpectedly:", err));
     }
   },
   events: {

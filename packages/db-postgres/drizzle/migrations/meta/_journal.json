@@ -569,5 +569,160 @@
       "tag": "0080_runs_pr_identity",
       "breakpoints": true
     }
+    ,
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1788600000000,
+      "tag": "0081_acceptance_contracts",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1788700000000,
+      "tag": "0082_acceptance_context_packs",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1788800000000,
+      "tag": "0083_agent_mcp_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1788900000000,
+      "tag": "0084_evidence_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1789000000000,
+      "tag": "0085_agent_mcp_correction_ack_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1789100000000,
+      "tag": "0086_acceptance_builder_handoffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1789200000000,
+      "tag": "0087_evidence_verification_plans",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1789300000000,
+      "tag": "0088_evidence_verification_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1789400000000,
+      "tag": "0089_evidence_verification_executions",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1789500000000,
+      "tag": "0090_evidence_verification_execution_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1789600000000,
+      "tag": "0091_correction_delivery_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1789700000000,
+      "tag": "0092_acceptance_intakes",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1789800000000,
+      "tag": "0093_acceptance_context_pack_compilations",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1789900000000,
+      "tag": "0094_evidence_verification_api_artifacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1790000000000,
+      "tag": "0095_evidence_verification_api_request",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1790100000000,
+      "tag": "0096_agent_mcp_acceptance_intake_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1790200000000,
+      "tag": "0097_evidence_verification_ui_steps",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1790300000000,
+      "tag": "0098_acceptance_evidence_review_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1790400000000,
+      "tag": "0099_acceptance_evidence_review_request_claims",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1790500000000,
+      "tag": "0100_acceptance_brief_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1790600000000,
+      "tag": "0102_evidence_verification_data_request_repair",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1790700000000,
+      "tag": "0103_acceptance_builder_handoff_agent_mcp_credential",
+      "breakpoints": true
+    }
   ]
 }

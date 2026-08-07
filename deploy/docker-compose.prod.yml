@@ -1,17 +1,16 @@
 # AgentRail walking-skeleton — single Docker host (Vultr Ubuntu VM), single
-# tenant / dogfood. Five services: postgres, console, jace, caddy, runner.
+# tenant / dogfood. Six long-running services: postgres, console, jace,
+# agent-browser, caddy, runner. `migrate` is a one-shot startup dependency.
 #
-# ClickHouse and MinIO are INTENTIONALLY OMITTED — see deploy/README.md. The
-# app tolerates their absence: every ClickHouse write on the runner's terminal
-# reporting path is try/caught (e.g. apps/console/app/api/v1/runner/result/route.ts),
-# and S3_*/MinIO has no reader anywhere in apps/console or packages/ today (dead
-# config, reserved for a future artifact-storage feature — grepped, zero hits).
-# The root docker-compose.yml's Playwright/agent-browser/browser-use MCP
-# sidecars (Jace's researcher/qa subagent tool sources) are also omitted for the
-# same reason: both subagents fail SOFT when their sidecar is unreachable
-# (degrade to Context7-only / report "could not exercise the app" — see
-# apps/jace/docs/HOSTING.md) rather than failing to boot. Add them back as
-# compose services later if you want those subagents at full strength.
+# ClickHouse and MinIO are intentionally omitted — see deploy/README.md. The
+# app tolerates ClickHouse absence on its runner reporting path. S3-compatible
+# storage is still required when the direct UI verification worker is opted in:
+# it stores plan-bound screenshots through the Console.
+#
+# The private agent-browser sidecar below is the deployment wiring for that
+# worker. It has no host-published port and receives no Console, Jace, GitHub,
+# or model secret. Browser-use and the researcher Playwright sidecar remain
+# omitted from this production topology.
 #
 # Run from the REPO ROOT:
 #   docker compose -f deploy/docker-compose.prod.yml up -d --build
@@ -128,11 +127,12 @@ services:
       # tables and Drizzle's schema.
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
-      # NOT the same thing as the console's EVE_HOST (which points the console
-      # AT jace, http://jace:2000 above): this is Jace's OWN default for its
-      # dev-only round-trip test harness (apps/jace/README.md), self-referential
-      # and irrelevant at runtime — left unset here, its default already
-      # matches this topology.
+      # Private Compose DNS endpoint for the direct UI verification executor.
+      # The worker remains off unless the operator explicitly sets the flag to
+      # 1 and also supplies the Console token plus screenshot storage contract
+      # documented in deploy/README.md.
+      JACE_AGENT_BROWSER_MCP_URL: http://agent-browser:8932/mcp
+      JACE_VERIFICATION_EXECUTION_WORKER: ${JACE_VERIFICATION_EXECUTION_WORKER:-0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,6 +148,39 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # Private Streamable-HTTP browser sidecar for the already-implemented direct
+  # UI verification executor. There is deliberately no `ports:` publication:
+  # only services on this Compose network can resolve agent-browser:8932.
+  #
+  # The executor's source contract requires open/click/fill/press/
+  # wait_for_text/get_url/screenshot. The repository's verified recipe confirms
+  # those names only under the combined core,network,debug launch profile, not
+  # a narrower profile mapping, so keep that known profile here. The executor
+  # still lists and enforces its own seven-tool contract before any flow runs.
+  # No env_file or secret passthrough is intentional.
+  agent-browser:
+    image: mcr.microsoft.com/playwright:latest
+    init: true
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        npm i -g agent-browser@0.31.1 supergateway@3.4.3
+        CHROME_BIN="$$(ls /ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)"; [ -n "$$CHROME_BIN" ] || { echo 'chrome binary not found in image' >&2; exit 1; }; ln -sf "$$CHROME_BIN" /usr/bin/google-chrome
+        exec supergateway --stdio 'agent-browser mcp --tools core,network,debug' --outputTransport streamableHttp --streamableHttpPath /mcp --port 8932 --stateful
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(8932,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
 
   caddy:
     image: caddy:2

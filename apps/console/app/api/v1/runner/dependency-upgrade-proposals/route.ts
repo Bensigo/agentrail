@@ -1,27 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  attachDependencyUpgradeApproval,
+  createDraftAcceptanceRecord,
   createOrGetDependencyUpgradeContract,
   findDependencyCandidate,
-  getDependencyUpgradeContract,
-  latestTelegramSessionForWorkspace,
-  recordDependencyUpgradeContractEvent,
+  getRepository,
   refreshDependencyUpgradeContractProposal,
-  recordApprovalRequest,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import {
-  buildDependencyUpgradeApprovalInput,
   buildDependencyUpgradeProposal,
   candidateFingerprintMatches,
   dependencyUpgradeApprovalReady,
   type DependencyUpgradeEvidenceInput,
 } from "../../../../../lib/dependency-upgrade-contract";
-import { renderApprovalMessage } from "../../../../../lib/approval-message";
 import {
-  buildApprovalKeyboard,
-  sendTelegramMessage,
-} from "../../workspaces/[workspaceId]/connectors/secret/telegram";
+  dependencyProposalFromUnknown,
+  dependencyProposalToAcceptanceContract,
+} from "../../../../../lib/dependency-upgrade-acceptance";
 
 type ProposalRequest = {
   workspaceId: string;
@@ -107,8 +102,9 @@ function parseBody(value: unknown): ParsedProposalRequest | null {
 /**
  * Candidate -> proposal boundary for the heartbeat/Jace coordinator.
  * Observation is read from the tenant-scoped ledger; the request never gets
- * to author package/version/fingerprint fields. A proposal with incomplete
- * evidence is persisted as needs-human-decision and cannot mint an approval.
+ * to author package/version/fingerprint fields. The result is a canonical
+ * draft Acceptance Record. It never creates an approval, issue, dependency
+ * edit, builder handoff, PR, or merge.
  */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
@@ -156,61 +152,40 @@ export async function POST(request: NextRequest) {
     if (refreshed) stored = { contract: refreshed, created: false };
   }
 
-  if (!dependencyUpgradeApprovalReady(proposal) || stored.contract.state !== "proposed") {
-    return NextResponse.json({ contract: stored.contract, approval: null, needsHumanDecision: proposal.needsHumanDecision }, { status: stored.created ? 202 : 200 });
+  const sourceProposal = dependencyProposalFromUnknown(stored.contract.proposal);
+  if (!sourceProposal) {
+    return NextResponse.json({ error: "Dependency upgrade proposal is not a valid Acceptance Contract source" }, { status: 409 });
   }
-  if (stored.contract.approvalId) {
-    return NextResponse.json({ contract: stored.contract, approval: { id: stored.contract.approvalId }, needsHumanDecision: [] }, { status: 200 });
-  }
+  const repository = await getRepository(body.workspaceId, stored.contract.repositoryId);
+  if (!repository) return NextResponse.json({ error: "Connected repository not found" }, { status: 409 });
 
-  const session = await latestTelegramSessionForWorkspace(body.workspaceId);
-  if (!session?.eveSessionId) {
-    return NextResponse.json({ contract: stored.contract, approval: null, needsHumanDecision: ["no active Jace approval session is available"] }, { status: 202 });
-  }
-
-  const toolInput = buildDependencyUpgradeApprovalInput(stored.contract.id, proposal);
-  const requestId = `dependency-upgrade:${observed.candidate.fingerprint}`;
-  const recorded = await recordApprovalRequest({
-    workspaceId: body.workspaceId,
-    chatIdentityId: session.chatIdentityId ?? undefined,
-    sessionId: session.id,
-    eveSessionId: session.eveSessionId,
-    requestId,
-    // This is the same create_issue approval type used by Jace. The reserved
-    // dependencyContractId makes the decision side effect publish this exact
-    // candidate rather than invoking an unbound generic write.
-    toolName: "dependency_upgrade_contract",
-    toolInput,
-    approveOptionId: "approve",
-    denyOptionId: "deny",
-    dependencyContractId: stored.contract.id,
-  });
-  const attached = await attachDependencyUpgradeApproval(body.workspaceId, stored.contract.id, recorded.approval.id);
-  if (!attached || attached.approvalId !== recorded.approval.id) {
-    return NextResponse.json({ error: "Dependency upgrade approval could not be bound to its contract" }, { status: 409 });
-  }
-  if (recorded.created) {
-    await recordDependencyUpgradeContractEvent({
+  try {
+    const draft = await createDraftAcceptanceRecord({
       workspaceId: body.workspaceId,
-      contractId: stored.contract.id,
-      candidateFingerprint: observed.candidate.fingerprint,
-      actor: { actorType: "system", actorId: "jace" },
-      decision: "approval_requested",
-      approvalId: recorded.approval.id,
-      details: { observationKey: observed.observationKey },
+      repo: repository.name,
+      originChannel: "dependency_watch",
+      workKey: `dependency-upgrade:${stored.contract.id}`,
+      sourceReferences: [{
+        kind: "dependency_upgrade_candidate",
+        contractId: stored.contract.id,
+        candidateFingerprint: stored.contract.candidateFingerprint,
+        observationKey: stored.contract.observationKey,
+        baselineSha: stored.contract.baselineSha,
+      }],
+      contract: dependencyProposalToAcceptanceContract(sourceProposal),
+      createdBy: "jace:dependency-watch",
     });
+    return NextResponse.json({
+      record: { id: draft.record.id, repo: draft.record.repo },
+      contract: { id: draft.contract.id, version: draft.contract.version, status: draft.contract.status },
+      source: {
+        dependencyUpgradeContractId: stored.contract.id,
+        candidateFingerprint: stored.contract.candidateFingerprint,
+      },
+      needsHumanDecision: sourceProposal.needsHumanDecision,
+    }, { status: 201 });
+  } catch (error) {
+    console.error("[runner/dependency-upgrade-proposals] failed to create Acceptance Record:", error);
+    return NextResponse.json({ error: "Failed to create dependency Acceptance Record" }, { status: 502 });
   }
-
-  if (recorded.created && session.channel === "telegram" && process.env.TELEGRAM_BOT_TOKEN) {
-    const text = renderApprovalMessage("alignment_brief", (toolInput._brief ?? toolInput) as Record<string, unknown>);
-    await sendTelegramMessage(
-      process.env.TELEGRAM_BOT_TOKEN,
-      session.conversationKey,
-      text,
-      buildApprovalKeyboard(recorded.approval.callbackToken)
-    ).catch((error: unknown) => console.error("[dependency-upgrade-proposals] approval notification failed:", error));
-  }
-
-  const contract = await getDependencyUpgradeContract(body.workspaceId, stored.contract.id);
-  return NextResponse.json({ contract, approval: { id: recorded.approval.id, status: recorded.approval.status }, needsHumanDecision: [] }, { status: stored.created ? 201 : 200 });
 }

@@ -1,23 +1,23 @@
 # AgentRail — single-VM production deploy
 
 Walking-skeleton deploy for **one Docker host**: a Vultr Ubuntu 26.04 x86 VM
-running Docker 29.6 + Compose v5.3, single-tenant / dogfood. Five services in
-one compose file: `postgres`, `console`, `jace`, `caddy`, `runner`.
+running Docker 29.6 + Compose v5.3, single-tenant / dogfood. Six services in
+one compose file: `postgres`, `console`, `jace`, private `agent-browser`,
+`caddy`, `runner`.
 
 **Intentionally omitted:** ClickHouse and MinIO. The app tolerates their
 absence — see `deploy/.env.production.example`'s comments for exactly which
-code paths are try/caught around ClickHouse and why S3/MinIO is genuinely dead
-config today (grepped: zero readers anywhere in `apps/console` or
-`packages/*`). This omission is specific to THIS single-VM compose skeleton —
+code paths are try/caught around ClickHouse. S3/MinIO remains omitted from this
+skeleton, so direct UI verification must stay off unless an external
+S3-compatible store and `REVIEW_EVIDENCE_ENABLED=1` are configured; its
+plan-bound artifact routes are real readers. This omission is specific to THIS single-VM compose skeleton —
 the hosted Railway deployment runs a separate, optional self-hosted
 ClickHouse service (see `deploy/clickhouse/README.md`), migrated
 automatically by the same console image's `preDeployCommand` this doc's
-Postgres `migrate` service mirrors (§4 below). Also omitted: Jace's
-Playwright/agent-browser/browser-use MCP sidecars (the `researcher`/`qa`
-subagents' tool sources) — both subagents degrade gracefully when their
-sidecar is unreachable rather than failing to boot; add the sidecar services
-back later (copy them from the root `docker-compose.yml`, which already has
-working recipes for all three) if you want those subagents at full strength.
+Postgres `migrate` service mirrors (§4 below). The broader Playwright and
+browser-use MCP sidecars remain omitted. The private `agent-browser` service
+is included only for the direct, persisted-step Acceptance Record UI executor;
+it has no host port and does not enable the worker by itself.
 
 **Public hostname:** `65.20.91.127.sslip.io` — [sslip.io](https://sslip.io)
 resolves that hostname to `65.20.91.127` (a wildcard DNS trick), so Caddy can
@@ -150,8 +150,46 @@ workspace-aware routing). Once a workspace exists:
 - Create a console API key for Jace's read-back tools and set
   `deploy/.env`'s `JACE_CONSOLE_TOKEN`, then
   `docker compose -f deploy/docker-compose.prod.yml up -d jace` to pick it up
-  (optional — `fetch_workspace_memory`/`fetch_run_evidence` just report "not
-  configured" without it, nothing else breaks).
+  (optional for read-back, but required before enabling the verification
+  worker below).
+
+### Enable exact-head UI verification only when proof storage is ready
+
+The included `agent-browser` service is private to the Compose network and
+Jace reaches it at `http://agent-browser:8932/mcp`. It does nothing until the
+following are all true in `deploy/.env`:
+
+- `JACE_VERIFICATION_EXECUTION_WORKER=1`
+- `JACE_CONSOLE_BASE_URL=http://console:3000`
+- `JACE_CONSOLE_TOKEN` is a valid Console runner secret
+- `REVIEW_EVIDENCE_ENABLED=1` and every required `S3_*` setting is configured
+- the claimed criterion has a safe preview matching its exact PR head
+
+Then restart the two affected services:
+
+```bash
+docker compose -f deploy/docker-compose.prod.yml up -d --build jace agent-browser
+```
+
+The executor can only run persisted UI actions and retain a same-origin
+screenshot against that exact plan. A missing sidecar, preview, artifact store,
+or criterion action list records `not_testable` or `not_proven`; it is never a
+pass. This document does not claim a live preview run—perform and retain a
+criterion-specific smoke before relying on the worker.
+
+### Enable bounded exact-head Acceptance Review only after its dependencies are live
+
+Set `JACE_ACCEPTANCE_REVIEW_WORKER=1` on Jace only when all of the following
+are configured: `JACE_CONSOLE_BASE_URL`, a valid `JACE_CONSOLE_TOKEN`, the
+GitHub installation token broker, and the configured Jace model provider. The
+worker claims a single current PR revision, reads only its PR metadata plus a
+bounded textual diff, and sends only the confirmed contract and that diff to
+the reviewer. It never checks out source, edits code, posts advisory comments,
+or merges. A missing token, head mismatch, incomplete patch, unsafe model
+result, or unavailable runtime proof must remain `not_proven`/`not_testable`;
+do not treat startup or a queued claim as review evidence. Before enabling it
+for a team, retain one live exact-head review showing the contract, evidence,
+and any correction-delivery outcome.
 
 ## 6. Attach a runner
 

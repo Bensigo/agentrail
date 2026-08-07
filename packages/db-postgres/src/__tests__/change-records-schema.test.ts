@@ -3,6 +3,12 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  acceptanceBriefBindings,
+  acceptanceContracts,
+  acceptanceContextPackCompilations,
+  acceptanceContextPackDeliveries,
+  acceptanceContextPacks,
+  acceptanceEvidenceReviewRequests,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
@@ -51,6 +57,79 @@ describe("change_records schema — declarations (Arc D storage)", () => {
       (c) => (c as { name?: string }).name
     );
     expect(columnNames).toEqual(["record_id", "event_key"]);
+  });
+
+  it("declares versioned Acceptance Contracts with explicit draft/confirmed state", () => {
+    expect(acceptanceContracts.recordId.notNull).toBe(true);
+    expect(acceptanceContracts.version.notNull).toBe(true);
+    expect(acceptanceContracts.status.notNull).toBe(true);
+    expect(acceptanceContracts.status.hasDefault).toBe(true);
+    expect(acceptanceContracts.contract.notNull).toBe(true);
+    expect(acceptanceContracts.contract.getSQLType()).toBe("jsonb");
+    expect(acceptanceContracts.confirmedBy.notNull).toBe(false);
+    expect(acceptanceContracts.confirmedAt.notNull).toBe(false);
+  });
+
+  it("stores one immutable Brief-to-Acceptance binding snapshot per record", () => {
+    expect(acceptanceBriefBindings.workspaceId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.recordId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefId.notNull).toBe(true);
+    expect(acceptanceBriefBindings.briefSnapshot.getSQLType()).toBe("jsonb");
+    expect(acceptanceBriefBindings.provenance.getSQLType()).toBe("jsonb");
+    expect(acceptanceBriefBindings.createdBy.notNull).toBe(true);
+    const config = getTableConfig(acceptanceBriefBindings);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_record_key")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_workspace_brief_idx")).toBeDefined();
+    expect(config.indexes.find((i) => i.config.name === "acceptance_brief_bindings_brief_key")).toBeUndefined();
+  });
+
+  it("stores metadata-only Context Pack versions and delivery audit rows", () => {
+    expect(acceptanceContextPacks.recordId.notNull).toBe(true);
+    expect(acceptanceContextPacks.version.notNull).toBe(true);
+    expect(acceptanceContextPacks.contentHash.notNull).toBe(true);
+    expect(acceptanceContextPacks.manifest.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPacks.custody.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPacks.freshness.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPackDeliveries.contextPackId.notNull).toBe(true);
+    expect(acceptanceContextPackDeliveries.deliveryKey.notNull).toBe(true);
+    expect(acceptanceContextPackDeliveries.metadata.getSQLType()).toBe("jsonb");
+  });
+
+  it("binds a compiler job to one repository ref and confirmed-contract version without source content", () => {
+    expect(acceptanceContextPackCompilations.recordId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.repositoryId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.repositoryRef.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.acceptanceContractVersion.notNull).toBe(true);
+    expect(acceptanceContextPackCompilations.status.hasDefault).toBe(true);
+    const config = getTableConfig(acceptanceContextPackCompilations);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_context_pack_compilations_binding_key")).toBeDefined();
+  });
+
+  it("queues one exact-head Acceptance Review request without treating it as a verdict", () => {
+    expect(acceptanceEvidenceReviewRequests.prRevisionId.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.acceptanceContractVersion.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.headSha.notNull).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.status.hasDefault).toBe(true);
+    expect(acceptanceEvidenceReviewRequests.workerId.notNull).toBe(false);
+    expect(acceptanceEvidenceReviewRequests.claimedAt.notNull).toBe(false);
+    expect(acceptanceEvidenceReviewRequests.attempts.hasDefault).toBe(true);
+    const config = getTableConfig(acceptanceEvidenceReviewRequests);
+    expect(config.indexes.find((i) => i.config.name === "acceptance_evidence_review_requests_revision_key")).toBeDefined();
+  });
+
+  it("migrates review requests to a bounded claimed lease lifecycle", () => {
+    const migration = join(__dirname, "../../drizzle/migrations/0099_acceptance_evidence_review_request_claims.sql");
+    const sqlText = readFileSync(migration, "utf8");
+    expect(sqlText).toContain("worker_id");
+    expect(sqlText).toContain("claimed_at");
+    expect(sqlText).toContain("attempts");
+    expect(sqlText).toContain("'claimed'");
+  });
+
+  it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
+    expect(changeRecords.workKey.notNull).toBe(false);
   });
 });
 
@@ -109,5 +188,187 @@ describe("0070_change_records migration", () => {
     expect(entry.idx).toBe(74);
     expect(entry.version).toBe("7");
     expect(entry.breakpoints).toBe(true);
+  });
+});
+
+describe("0081_acceptance_contracts migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0081_acceptance_contracts.sql"
+  );
+
+  it("adds manual intake identity and creates immutable contract versions", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "work_key"');
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "origin_channel"');
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "source_references"');
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_contracts"');
+    expect(sqlText).toContain('"contract" jsonb NOT NULL');
+  });
+
+  it("prevents duplicate contract versions and multiple confirmed contracts", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_contracts_record_version_key"'
+    );
+    expect(sqlText).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_contracts_one_confirmed_per_record"'
+    );
+  });
+
+  it("is registered in the journal", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0081_acceptance_contracts"
+    );
+    expect(entry).toMatchObject({ idx: 86, version: "7", breakpoints: true });
+  });
+});
+
+describe("0082_acceptance_context_packs migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0082_acceptance_context_packs.sql"
+  );
+
+  it("creates metadata-only pack and delivery tables", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_packs"');
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_pack_deliveries"');
+    expect(sqlText).toContain('"manifest" jsonb NOT NULL');
+    expect(sqlText).toContain('"metadata" jsonb DEFAULT \'{}\'::jsonb NOT NULL');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_packs_record_content_hash_key"');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_deliveries_pack_key"');
+  });
+
+  it("is registered in the journal", () => {
+    const journal = JSON.parse(
+      readFileSync(
+        join(__dirname, "../../drizzle/migrations/meta/_journal.json"),
+        "utf8"
+      )
+    );
+    const entry = journal.entries.find(
+      (e: { tag: string }) => e.tag === "0082_acceptance_context_packs"
+    );
+    expect(entry).toMatchObject({ idx: 87, version: "7", breakpoints: true });
+  });
+});
+
+describe("0093_acceptance_context_pack_compilations migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0093_acceptance_context_pack_compilations.sql");
+
+  it("creates a branch-bound worker queue with an explicit non-source result lifecycle", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_pack_compilations"');
+    expect(sqlText).toContain('"repository_ref" text NOT NULL');
+    expect(sqlText).toContain("'compiled', 'not_proven', 'failed'");
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_context_pack_compilations_binding_key"');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0093_acceptance_context_pack_compilations");
+    expect(entry).toMatchObject({ idx: 98, version: "7", breakpoints: true });
+  });
+});
+
+describe("0100_acceptance_brief_bindings migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0100_acceptance_brief_bindings.sql");
+
+  it("creates the immutable brief-to-acceptance provenance table", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_brief_bindings"');
+    expect(sqlText).toContain('"brief_snapshot" jsonb NOT NULL');
+    expect(sqlText).toContain('"provenance" jsonb NOT NULL');
+    expect(sqlText).toContain('ON DELETE restrict');
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_brief_bindings_record_key"');
+    expect(sqlText).toContain('CREATE INDEX IF NOT EXISTS "acceptance_brief_bindings_workspace_brief_idx"');
+    expect(sqlText).not.toContain('acceptance_brief_bindings_brief_key');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0100_acceptance_brief_bindings");
+    expect(entry).toMatchObject({ idx: 105, version: "7", breakpoints: true });
+  });
+});
+
+describe("0102_evidence_verification_data_request_repair migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0102_evidence_verification_data_request_repair.sql"
+  );
+
+  it("repairs a missing data_request column and reinstalls the bounded data check idempotently", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN IF NOT EXISTS "data_request" jsonb');
+    expect(sqlText).toContain('DROP CONSTRAINT IF EXISTS "evidence_verification_plans_data_request_check"');
+    expect(sqlText).toContain('ADD CONSTRAINT "evidence_verification_plans_data_request_check"');
+    expect(sqlText).toContain("NOT VALID");
+    expect(sqlText).toContain("jsonb_array_length");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0102_evidence_verification_data_request_repair");
+    expect(entry).toMatchObject({ idx: 106, version: "7", breakpoints: true });
+  });
+});
+
+describe("0094_evidence_verification_api_artifacts migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0094_evidence_verification_api_artifacts.sql");
+
+  it("allows inspectable redacted JSON API proof artifacts", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('DROP CONSTRAINT IF EXISTS "evidence_verification_artifacts_content_type_check"');
+    expect(sqlText).toContain("'application/json'");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0094_evidence_verification_api_artifacts");
+    expect(entry).toMatchObject({ idx: 99, version: "7", breakpoints: true });
+  });
+});
+
+describe("0097_evidence_verification_ui_steps migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0097_evidence_verification_ui_steps.sql");
+
+  it("adds a bounded UI-action container without invalidating historical plans", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('ADD COLUMN "ui_steps" jsonb');
+    expect(sqlText).toContain('"evidence_verification_plans_ui_steps_check"');
+    expect(sqlText).toContain("BETWEEN 1 AND 12");
+    expect(sqlText).toContain("NOT VALID");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0097_evidence_verification_ui_steps");
+    expect(entry).toMatchObject({ idx: 102, version: "7", breakpoints: true });
+  });
+});
+
+describe("0098_acceptance_evidence_review_requests migration", () => {
+  const MIGRATION = join(__dirname, "../../drizzle/migrations/0098_acceptance_evidence_review_requests.sql");
+
+  it("creates an exact-head review-request queue with explicit non-verdict states", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_evidence_review_requests"');
+    expect(sqlText).toContain('"pr_revision_id" uuid NOT NULL');
+    expect(sqlText).toContain("'queued', 'completed', 'failed', 'superseded'");
+    expect(sqlText).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "acceptance_evidence_review_requests_revision_key"');
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"));
+    const entry = journal.entries.find((e: { tag: string }) => e.tag === "0098_acceptance_evidence_review_requests");
+    expect(entry).toMatchObject({ idx: 103, version: "7", breakpoints: true });
   });
 });

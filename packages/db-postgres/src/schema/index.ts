@@ -8,7 +8,6 @@ export * from "./team_memberships.js";
 export * from "./team_repositories.js";
 export * from "./api_keys.js";
 export * from "./review_gates.js";
-export * from "./review_jobs.js";
 export * from "./preview_boots.js";
 export * from "./memory_items.js";
 export * from "./failure_resolutions.js";

@@ -29,9 +29,156 @@ export type ChangeRecordEvent = {
   createdAt: string;
 };
 
+export type AcceptanceContract = {
+  id: string;
+  recordId: string;
+  version: number;
+  status: "draft" | "confirmed";
+  contract: Record<string, unknown>;
+  createdBy: string;
+  confirmedBy: string | null;
+  confirmedAt: string | null;
+  createdAt: string;
+};
+
+export type AcceptanceContextPack = {
+  id: string;
+  recordId: string;
+  version: number;
+  phase: string;
+  contentHash: string;
+  compilerVersion: string;
+  manifest: Record<string, unknown>;
+  custody: Record<string, unknown>;
+  freshness: Record<string, unknown>;
+  jsonArtifactRef: string | null;
+  markdownArtifactRef: string | null;
+  createdBy: string;
+  createdAt: string;
+};
+
+export type AcceptanceContextPackCompilation = {
+  id: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repositoryId: string;
+  repositoryRef: string;
+  phase: string;
+  status: string;
+  contextPackId: string | null;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AcceptanceEvidenceReview = {
+  id: string;
+  prRevisionId: string;
+  headSha: string;
+  repositoryFullName: string;
+  prNumber: number;
+  overallStatus: string;
+  contractId: string;
+  contractVersion: number;
+  createdAt: string;
+  supersededAt: string | null;
+};
+
+export type AcceptanceEvidenceReviewRequest = {
+  id: string;
+  prRevisionId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  headSha: string;
+  status: string;
+  reason: string | null;
+  claimedAt: string | null;
+  attempts: number;
+  requestedAt: string;
+  updatedAt: string;
+};
+
+export type AcceptanceBuilderHandoff = {
+  id: string;
+  builder: string;
+  taskContextKey: string;
+  branchName: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  contextPackId: string;
+  agentMcpCredentialId: string | null;
+  status: string;
+  createdAt: string;
+  prAttachedAt: string | null;
+};
+
+export type AgentMcpCredential = {
+  id: string;
+  name: string;
+  scopes: string[];
+};
+
+export type AcceptanceBriefBinding = {
+  binding: {
+    id: string;
+    briefId: string;
+    recordId: string;
+    briefSnapshot: Record<string, unknown>;
+    provenance: Record<string, unknown>;
+    createdBy: string;
+    createdAt: string;
+  };
+  brief: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    openQuestion: string;
+    updatedAt: string;
+  };
+};
+
+export type AcceptanceCorrectionDelivery = {
+  id: string;
+  channel: string;
+  target: Record<string, unknown>;
+  reviewRevisionId: string;
+  headSha: string;
+  prNumber: number;
+  attempt: number;
+  outcome: string;
+  outcomeDetail: string | null;
+  queuedAt: string;
+  attemptedAt: string | null;
+  confirmedAt: string | null;
+  correction: {
+    id: string;
+    criterionId: string | null;
+    observedBehavior: string;
+    expectedBehavior: string;
+    evidenceRefs: Record<string, unknown>[];
+    likelyAffectedUnits: string[];
+    contextRefs: Record<string, unknown>[];
+    scopeBoundary: string;
+    concreteImpact: string;
+    requiredCorrection: string;
+    reverification: string;
+    repairPath: string | null;
+  };
+};
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
+  contracts: AcceptanceContract[];
+  contextPacks: AcceptanceContextPack[];
+  contextPackCompilations: AcceptanceContextPackCompilation[];
+  reviews: AcceptanceEvidenceReview[];
+  reviewRequests: AcceptanceEvidenceReviewRequest[];
+  handoffs: AcceptanceBuilderHandoff[];
+  correctionDeliveries: AcceptanceCorrectionDelivery[];
+  briefBinding: AcceptanceBriefBinding | null;
+  agentMcpCredentials: AgentMcpCredential[];
 };
 
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
@@ -138,6 +285,27 @@ export function ChangeRecordAnchors({ record }: { record: ChangeRecord }) {
   );
 }
 
+export function AcceptanceBriefPanel({ workspaceId, binding }: { workspaceId: string; binding: AcceptanceBriefBinding | null }) {
+  if (!binding) return null;
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Started from Brief</h2>
+      </div>
+      <div className="flex flex-col gap-2 px-4 py-4 text-xs text-[var(--gray-09)]">
+        <p>
+          This Acceptance Record started from the editable working context in{" "}
+          <a href={`/dashboard/${encodeURIComponent(workspaceId)}/briefs/${encodeURIComponent(binding.brief.slug)}`} className="text-[var(--blue-11)] hover:underline">
+            Brief: {binding.brief.title}
+          </a>.
+        </p>
+        <p>The immutable snapshot below records what transitioned into this Acceptance Record.</p>
+        <p>Current Brief edits do not rewrite the Contract, Context Pack, or evidence.</p>
+      </div>
+    </section>
+  );
+}
+
 export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   return (
     <section>
@@ -185,10 +353,453 @@ export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   );
 }
 
+export function isConfirmableContract(
+  contract: AcceptanceContract,
+  contracts: AcceptanceContract[]
+): boolean {
+  return contract.status === "draft" && !contracts.some((item) => item.status === "confirmed");
+}
+
+export function AcceptanceContractPanel({
+  contracts,
+  onConfirm,
+  confirmingVersion,
+  confirmationError,
+}: {
+  contracts: AcceptanceContract[];
+  onConfirm: (version: number) => void;
+  confirmingVersion: number | null;
+  confirmationError: string | null;
+}) {
+  if (contracts.length === 0) {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Acceptance Contract
+        </h2>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">
+          No Acceptance Contract has been recorded yet. Do not treat implementation or review as
+          proof of an unrecorded request.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--gray-05)] px-4 py-3">
+        <div>
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+            Acceptance Contract
+          </h2>
+          <p className="mt-1 text-xs text-[var(--gray-09)]">
+            The agreed request that Jace will use to judge the evidence.
+          </p>
+        </div>
+        {contracts.some((contract) => contract.status === "confirmed") ? (
+          <span className="rounded-sm bg-[var(--green-09)]/20 px-2 py-1 text-xs font-medium text-[var(--green-11)]">
+            Confirmed
+          </span>
+        ) : (
+          <span className="rounded-sm bg-[var(--yellow-09)]/20 px-2 py-1 text-xs font-medium text-[var(--yellow-11)]">
+            Needs confirmation
+          </span>
+        )}
+      </div>
+      <ol className="flex flex-col gap-3 px-4 py-4">
+        {contracts.map((contract) => {
+          const confirmable = isConfirmableContract(contract, contracts);
+          const pending = confirmingVersion === contract.version;
+          return (
+            <li key={contract.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-[var(--gray-11)]">v{contract.version}</span>
+                  <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs capitalize text-[var(--gray-11)]">
+                    {contract.status}
+                  </span>
+                </div>
+                {confirmable ? (
+                  <button
+                    type="button"
+                    onClick={() => onConfirm(contract.version)}
+                    disabled={pending}
+                    className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[var(--blue-10)] disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {pending ? "Confirming…" : "Confirm contract"}
+                  </button>
+                ) : contract.status === "confirmed" ? (
+                  <span className="text-xs text-[var(--gray-09)]">
+                    Confirmed {contract.confirmedAt ? formatChangeRecordDate(contract.confirmedAt) : ""}
+                  </span>
+                ) : null}
+              </div>
+              <details className="mt-3" open={contracts.length === 1}>
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+                  View agreed requirements
+                </summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">
+                  {JSON.stringify(contract.contract, null, 2)}
+                </pre>
+              </details>
+            </li>
+          );
+        })}
+      </ol>
+      {confirmationError ? <p className="px-4 pb-4 text-sm text-[var(--red-11)]">{confirmationError}</p> : null}
+    </section>
+  );
+}
+
+export function canRequestExecuteContextPack(
+  contracts: AcceptanceContract[],
+  contextPacks: AcceptanceContextPack[],
+  compilations: AcceptanceContextPackCompilation[] = [],
+): boolean {
+  return contracts.some((item) => item.status === "confirmed")
+    && !contextPacks.some((item) => item.phase === "execute")
+    && !compilations.some((item) => item.phase === "execute");
+}
+
+export function AcceptanceContextPackPanel({
+  contextPacks, compilations = [], contracts, onRequestExecute, requestingExecute, requestError, requestStatus,
+}: {
+  contextPacks: AcceptanceContextPack[];
+  compilations?: AcceptanceContextPackCompilation[];
+  contracts?: AcceptanceContract[];
+  onRequestExecute?: (contract: AcceptanceContract) => void;
+  requestingExecute?: boolean;
+  requestError?: string | null;
+  requestStatus?: string | null;
+}) {
+  const confirmed = contracts?.find((item) => item.status === "confirmed");
+  const canRequest = Boolean(contracts && confirmed && canRequestExecuteContextPack(contracts, contextPacks, compilations));
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Context Pack delivery
+        </h2>
+      </div>
+      {canRequest ? <div className="border-b border-[var(--gray-05)] px-4 py-3"><button type="button" disabled={requestingExecute} onClick={() => onRequestExecute?.(confirmed!)} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{requestingExecute ? "Preparing…" : "Prepare Context Pack"}</button>{requestError ? <p className="mt-2 text-sm text-[var(--red-11)]">{requestError}</p> : null}{requestStatus ? <p className="mt-2 text-sm text-[var(--green-11)]">{requestStatus}</p> : null}</div> : null}
+      {compilations.length ? <ol className="border-b border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{compilations.map((compilation) => <li key={compilation.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3"><div className="flex flex-wrap justify-between gap-2"><span><span className="font-mono">{compilation.phase}</span> compilation · <span className="font-mono">{compilation.status}</span></span><time dateTime={compilation.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(compilation.updatedAt)}</time></div><p className="mt-2 text-[var(--gray-09)]">{compilation.status === "compiled" ? "The compiler recorded a bounded Pack. Builder handoff still requires the matching confirmed Contract." : compilation.status === "queued" || compilation.status === "claimed" ? "The bounded Pack is not available yet. Builder handoff stays disabled until compilation succeeds." : "No usable Pack was produced. Jace will not expose a builder handoff from this compilation."}</p>{compilation.reason ? <p className="mt-2 break-words text-[var(--red-11)]">Reason: {compilation.reason}</p> : null}</li>)}</ol> : null}
+      {contextPacks.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-[var(--gray-09)]">{compilations.length ? "Preparing Context Pack." : "Not prepared."}</p>
+      ) : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {contextPacks.map((pack) => (
+            <li key={pack.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-[var(--gray-11)]">v{pack.version}</span>
+                  <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs capitalize text-[var(--gray-11)]">
+                    {pack.phase}
+                  </span>
+                </div>
+                <time dateTime={pack.createdAt} className="font-mono text-xs text-[var(--gray-09)]">
+                  {formatChangeRecordDate(pack.createdAt)}
+                </time>
+              </div>
+              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <div>
+                  <dt className="text-[var(--gray-09)]">Content hash</dt>
+                  <dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{pack.contentHash}</dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--gray-09)]">Compiler</dt>
+                  <dd className="mt-1 font-mono text-[var(--gray-11)]">{pack.compilerVersion}</dd>
+                </div>
+              </dl>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">
+                  View citations, custody, freshness, and artifact references
+                </summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">
+                  {JSON.stringify(
+                    {
+                      manifest: pack.manifest,
+                      custody: pack.custody,
+                      freshness: pack.freshness,
+                      jsonArtifactRef: pack.jsonArtifactRef,
+                      markdownArtifactRef: pack.markdownArtifactRef,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              </details>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+export function canSelectExternalBuilder(
+  contracts: AcceptanceContract[],
+  contextPacks: AcceptanceContextPack[],
+  compilations: AcceptanceContextPackCompilation[] = [],
+): boolean {
+  const contract = contracts.find((item) => item.status === "confirmed");
+  if (!contract) return false;
+  return contextPacks.some((pack) => pack.phase === "execute" && compilations.some((compilation) =>
+    compilation.phase === "execute"
+    && compilation.status === "compiled"
+    && compilation.contextPackId === pack.id
+    && compilation.acceptanceContractId === contract.id
+    && compilation.acceptanceContractVersion === contract.version
+  ));
+}
+
+export function canRecordExternalBuilderHandoff(input: {
+  ready: boolean;
+  builder: string;
+  taskContextKey: string;
+  branchName: string;
+  agentMcpCredentialId: string;
+  agentMcpCredentials: AgentMcpCredential[];
+}): boolean {
+  return input.ready
+    && Boolean(input.builder.trim())
+    && Boolean(input.taskContextKey.trim())
+    && Boolean(input.branchName.trim())
+    && input.agentMcpCredentials.some((credential) => credential.id === input.agentMcpCredentialId);
+}
+
+export function BuilderHandoffPanel({
+  contracts, contextPacks, compilations = [], handoffs, agentMcpCredentials, onCreate, pending, error,
+}: {
+  contracts: AcceptanceContract[];
+  contextPacks: AcceptanceContextPack[];
+  compilations?: AcceptanceContextPackCompilation[];
+  handoffs: AcceptanceBuilderHandoff[];
+  agentMcpCredentials: AgentMcpCredential[];
+  onCreate: (input: { builder: string; taskContextKey: string; branchName: string; agentMcpCredentialId: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) => void;
+  pending: boolean;
+  error: string | null;
+}) {
+  const [builder, setBuilder] = useState("codex");
+  const [taskContextKey, setTaskContextKey] = useState("");
+  const [branchName, setBranchName] = useState("");
+  const [agentMcpCredentialId, setAgentMcpCredentialId] = useState("");
+  const contract = contracts.find((item) => item.status === "confirmed");
+  const contextPack = contextPacks.find((item) => item.phase === "execute" && compilations.some((compilation) => compilation.phase === "execute" && compilation.status === "compiled" && compilation.contextPackId === item.id && compilation.acceptanceContractId === contract?.id && compilation.acceptanceContractVersion === contract?.version));
+  const ready = canSelectExternalBuilder(contracts, contextPacks, compilations) && Boolean(contract && contextPack);
+  const canRecord = canRecordExternalBuilderHandoff({
+    ready,
+    builder,
+    taskContextKey,
+    branchName,
+    agentMcpCredentialId,
+    agentMcpCredentials,
+  });
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Selected external builder</h2>
+      </div>
+      {!ready ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Context Pack required.</p> : (
+        <form className="space-y-3 px-4 py-4" onSubmit={(event) => { event.preventDefault(); if (!canRecord) return; onCreate({ builder, taskContextKey, branchName, agentMcpCredentialId, contract: contract!, contextPack: contextPack! }); }}>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <label className="text-xs text-[var(--gray-11)]">Builder<input value={builder} onChange={(event) => setBuilder(event.target.value)} maxLength={64} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="codex or claude-code" /></label>
+            <label className="text-xs text-[var(--gray-11)]">Builder task key<input value={taskContextKey} onChange={(event) => setTaskContextKey(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="stable task ID" /></label>
+            <label className="text-xs text-[var(--gray-11)]">Planned branch<input value={branchName} onChange={(event) => setBranchName(event.target.value)} maxLength={256} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs" placeholder="feature/save-status" /></label>
+            <label className="text-xs text-[var(--gray-11)]">MCP credential<select value={agentMcpCredentialId} onChange={(event) => setAgentMcpCredentialId(event.target.value)} required className="mt-1 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs"><option value="">Select a dedicated credential</option>{agentMcpCredentials.map((credential) => <option key={credential.id} value={credential.id}>{credential.name}</option>)}</select></label>
+          </div>
+          <p className="text-xs text-[var(--gray-09)]">Contract v{contract!.version} · Context Pack v{contextPack!.version}</p>
+          {agentMcpCredentials.length === 0 ? <p className="text-xs text-[var(--yellow-11)]">No active MCP credential is available. An owner or admin must create one with read and correction-acknowledgement access before recording this handoff.</p> : null}
+          <button type="submit" disabled={pending || !canRecord} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:cursor-wait disabled:opacity-60">{pending ? "Recording…" : "Record builder handoff"}</button>
+          {error ? <p className="text-sm text-[var(--red-11)]">{error}</p> : null}
+        </form>
+      )}
+      {handoffs.length ? <ol className="border-t border-[var(--gray-05)] px-4 py-3 text-xs text-[var(--gray-11)]">{handoffs.map((handoff) => <li key={handoff.id} className="flex flex-wrap justify-between gap-2 py-1"><span><span className="font-mono">{handoff.builder}</span> · {handoff.taskContextKey} · {handoff.branchName} · <span className="font-mono">{handoff.agentMcpCredentialId ?? "credential binding required"}</span></span><span>{handoff.prAttachedAt ? "PR attached" : "Waiting for PR"}</span></li>)}</ol> : null}
+    </section>
+  );
+}
+
+function correctionDeliveryMeaning(outcome: string): string {
+  if (outcome === "acknowledged") return "The recorded builder task acknowledged receipt. This does not prove the repair is complete.";
+  if (outcome === "delivered") return "The carrier reported delivery. The builder has not acknowledged receipt.";
+  if (outcome === "failed") return "The carrier failed. Jace must not claim the builder was notified.";
+  if (outcome === "dispatching") return "A carrier attempt is in progress. Receipt is not proven.";
+  return "The correction is queued only. It has not been sent or acknowledged.";
+}
+
+function reviewRequestMeaning(status: string): string {
+  if (status === "completed") return "A validated exact-head Acceptance Review was recorded. Inspect its evidence before deciding the PR.";
+  if (status === "claimed") return "Jace has reserved this exact head for a bounded independent review. It is not a verdict, proof, blocker, or notification.";
+  if (status === "superseded") return "This request belongs to an older PR head and cannot be reviewed for the current change.";
+  if (status === "failed") return "Jace could not complete this review request. No verdict was produced.";
+  return "Jace has an exact-head Acceptance Review request queued. This is not a verdict or evidence of a passing change.";
+}
+
+export function AcceptanceReviewRequestPanel({ requests }: { requests: AcceptanceEvidenceReviewRequest[] }) {
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Acceptance Review</h2>
+      </div>
+      {requests.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">Not requested.</p> : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {requests.map((request) => <li key={request.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+            <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]"><span><span className="font-mono">{request.status}</span> · Contract v{request.acceptanceContractVersion}</span><time dateTime={request.updatedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(request.updatedAt)}</time></div>
+            <p className="mt-2 text-xs text-[var(--gray-09)]">{reviewRequestMeaning(request.status)}</p>
+            <p className="mt-2 break-all font-mono text-xs text-[var(--gray-11)]">{request.headSha}</p>
+            <p className="mt-2 text-xs text-[var(--gray-09)]">Attempts: {request.attempts}{request.claimedAt ? ` · Claimed ${formatChangeRecordDate(request.claimedAt)}` : ""}</p>
+            {request.reason ? <p className="mt-2 break-words text-xs text-[var(--red-11)]">Reason: {request.reason}</p> : null}
+          </li>)}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+export function CorrectionDeliveryPanel({ deliveries }: { deliveries: AcceptanceCorrectionDelivery[] }) {
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Correction delivery</h2>
+      </div>
+      {deliveries.length === 0 ? <p className="px-4 py-4 text-sm text-[var(--gray-09)]">No corrections.</p> : (
+        <ol className="flex flex-col gap-3 px-4 py-4">
+          {deliveries.map((delivery) => (
+            <li key={delivery.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+              <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--gray-11)]">
+                <span><span className="font-mono">{delivery.channel}</span> · <span className="font-mono">{delivery.outcome}</span> · PR #{delivery.prNumber}</span>
+                <time dateTime={delivery.queuedAt} className="font-mono text-[var(--gray-09)]">{formatChangeRecordDate(delivery.queuedAt)}</time>
+              </div>
+              <p className="mt-2 text-xs text-[var(--gray-09)]">{correctionDeliveryMeaning(delivery.outcome)}</p>
+              <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                <div><dt className="text-[var(--gray-09)]">Exact head</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{delivery.headSha}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Attempts</dt><dd className="mt-1 font-mono text-[var(--gray-11)]">{delivery.attempt}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Delivery target</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{JSON.stringify(delivery.target)}</dd></div>
+                <div><dt className="text-[var(--gray-09)]">Receipt</dt><dd className="mt-1 text-[var(--gray-11)]">{delivery.confirmedAt ? formatChangeRecordDate(delivery.confirmedAt) : "Not acknowledged"}</dd></div>
+              </dl>
+              {delivery.outcomeDetail ? <p className="mt-3 break-words text-xs text-[var(--red-11)]">Carrier detail: {delivery.outcomeDetail}</p> : null}
+              <details className="mt-3">
+                <summary className="cursor-pointer text-xs text-[var(--blue-11)] hover:underline">View evidence-bound correction packet</summary>
+                <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 font-mono text-xs text-[var(--gray-11)]">{JSON.stringify(delivery.correction, null, 2)}</pre>
+              </details>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAcceptancePrDecision(value: unknown): value is "approved" | "changes_requested" | "rejected" | "approved_with_exception" {
+  return value === "approved" || value === "changes_requested" || value === "rejected" || value === "approved_with_exception";
+}
+
+export function FinalPrDecisionPanel({
+  recordId,
+  reviews,
+  events,
+  onDecide,
+  decidingReviewId,
+  decisionError,
+  exceptionRationale,
+  onExceptionRationaleChange,
+}: {
+  recordId: string;
+  reviews: AcceptanceEvidenceReview[];
+  events: ChangeRecordEvent[];
+  onDecide: (review: AcceptanceEvidenceReview, decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception", rationale?: string) => void;
+  decidingReviewId: string | null;
+  decisionError: string | null;
+  exceptionRationale: string;
+  onExceptionRationaleChange: (value: string) => void;
+}) {
+  const current = reviews.find((review) => review.supersededAt === null);
+  if (!current) {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">No review yet.</p>
+      </section>
+    );
+  }
+  const recordedDecision = events.find((event) => {
+    if (event.recordId !== recordId || event.stage !== "human_pr_decision" || !isRecord(event.payloadRef)) return false;
+    const { kind, reviewId, decision } = event.payloadRef;
+    return (
+      kind === "acceptance_pr_decision" &&
+      reviewId === current.id &&
+      isAcceptancePrDecision(decision)
+    );
+  });
+  const recordedRationale = recordedDecision && isRecord(recordedDecision.payloadRef) && typeof recordedDecision.payloadRef.rationale === "string"
+    ? recordedDecision.payloadRef.rationale.trim()
+    : "";
+  const pending = decidingReviewId === current.id;
+  const hasProvenReview = current.overallStatus === "proven";
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">Final PR decision</h2>
+      </div>
+      <div className="space-y-3 px-4 py-4">
+        <dl className="grid gap-2 text-xs sm:grid-cols-2">
+          <div><dt className="text-[var(--gray-09)]">Review verdict</dt><dd className="mt-1 font-mono text-[var(--gray-11)]">{current.overallStatus}</dd></div>
+          <div><dt className="text-[var(--gray-09)]">Exact head</dt><dd className="mt-1 break-all font-mono text-[var(--gray-11)]">{current.headSha}</dd></div>
+        </dl>
+        {recordedDecision ? (
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs">
+            <p className="font-medium text-[var(--gray-12)]">Recorded human decision: <span className="font-mono">{String(recordedDecision.payloadRef.decision)}</span></p>
+            {recordedRationale ? <p className="mt-2 text-[var(--gray-09)]">Rationale: {recordedRationale}</p> : null}
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2">
+              {hasProvenReview ? (
+                <button type="button" disabled={pending} onClick={() => onDecide(current, "approved")} className="rounded bg-[var(--green-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+                  {pending ? "Recording…" : "Approve for merge"}
+                </button>
+              ) : null}
+              <button type="button" disabled={pending} onClick={() => onDecide(current, "changes_requested")} className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60">
+                Request changes
+              </button>
+              <button type="button" disabled={pending} onClick={() => onDecide(current, "rejected")} className="rounded border border-[var(--gray-06)] px-2.5 py-1.5 text-xs font-medium text-[var(--gray-12)] disabled:opacity-60">
+                Reject PR
+              </button>
+            </div>
+            {!hasProvenReview ? (
+          <div className="rounded border border-[var(--yellow-06)] bg-[var(--yellow-03)] p-3">
+            <label className="block text-xs font-medium text-[var(--gray-12)]" htmlFor={`exception-${current.id}`}>Explicit exception rationale</label>
+            <textarea id={`exception-${current.id}`} value={exceptionRationale} onChange={(event) => onExceptionRationaleChange(event.target.value)} maxLength={4_000} rows={2} className="mt-2 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-01)] p-2 text-xs text-[var(--gray-12)]" placeholder="Why this non-proven or blocked review is being accepted" />
+            <button type="button" disabled={pending || !exceptionRationale.trim()} onClick={() => onDecide(current, "approved_with_exception", exceptionRationale)} className="mt-2 rounded border border-[var(--yellow-08)] px-2.5 py-1.5 text-xs font-medium text-[var(--yellow-11)] disabled:opacity-60">
+              Record approval with exception
+            </button>
+          </div>
+            ) : null}
+          </>
+        )}
+        {decisionError ? <p className="text-sm text-[var(--red-11)]">{decisionError}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: string; recordId: string }) {
   const [data, setData] = useState<ChangeRecordResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingVersion, setConfirmingVersion] = useState<number | null>(null);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [decidingReviewId, setDecidingReviewId] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [exceptionRationale, setExceptionRationale] = useState("");
+  const [handoffPending, setHandoffPending] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [requestingExecute, setRequestingExecute] = useState(false);
+  const [contextPackError, setContextPackError] = useState<string | null>(null);
+  const [contextPackStatus, setContextPackStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -204,7 +815,19 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!response.ok) {
           throw new Error(body.error ?? `HTTP ${response.status}`);
         }
-        if (!body.record || !Array.isArray(body.events)) {
+        if (
+          !body.record ||
+          !Array.isArray(body.events) ||
+          !Array.isArray(body.contracts) ||
+          !Array.isArray(body.contextPacks) ||
+          !Array.isArray(body.contextPackCompilations) ||
+          !Array.isArray(body.reviews) ||
+          !Array.isArray(body.reviewRequests) ||
+          !Array.isArray(body.handoffs) ||
+          !Array.isArray(body.correctionDeliveries)
+          || !Array.isArray(body.agentMcpCredentials)
+          || !("briefBinding" in body)
+        ) {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -219,12 +842,99 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     return () => controller.abort();
   }, [workspaceId, recordId]);
 
-  const backHref = `/dashboard/${workspaceId}/work`;
+  async function confirmContract(version: number) {
+    setConfirmingVersion(version);
+    setConfirmationError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "confirm_contract", version }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { contract?: AcceptanceContract; error?: string };
+      if (!response.ok || !body.contract) {
+        throw new Error(body.error ?? `HTTP ${response.status}`);
+      }
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              contracts: current.contracts.map((contract) =>
+                contract.id === body.contract!.id ? body.contract! : contract
+              ),
+            }
+          : current
+      );
+    } catch (caught) {
+      setConfirmationError(
+        caught instanceof Error ? caught.message : "Failed to confirm Acceptance Contract"
+      );
+    } finally {
+      setConfirmingVersion(null);
+    }
+  }
+
+  async function createBuilderHandoff(input: { builder: string; taskContextKey: string; branchName: string; agentMcpCredentialId: string; contract: AcceptanceContract; contextPack: AcceptanceContextPack }) {
+    if (!data) return;
+    setHandoffPending(true); setHandoffError(null);
+    try {
+      const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/builder-handoff`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ builder: input.builder, taskContextKey: input.taskContextKey, branchName: input.branchName, repo: data.record.repo, contractId: input.contract.id, contractVersion: input.contract.version, contextPackId: input.contextPack.id, agentMcpCredentialId: input.agentMcpCredentialId }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { handoff?: AcceptanceBuilderHandoff; error?: string };
+      if (!response.ok || !body.handoff) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? { ...current, handoffs: current.handoffs.some((item) => item.id === body.handoff!.id) ? current.handoffs : [body.handoff!, ...current.handoffs] } : current);
+    } catch (caught) { setHandoffError(caught instanceof Error ? caught.message : "Failed to record builder handoff"); }
+    finally { setHandoffPending(false); }
+  }
+
+  async function requestExecuteContextPack(contract: AcceptanceContract) {
+    setRequestingExecute(true); setContextPackError(null); setContextPackStatus(null);
+    try {
+      const response = await fetch(`${changeRecordApiPath(workspaceId, recordId)}/context-pack-compilations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contractId: contract.id, contractVersion: contract.version, phase: "execute" }) });
+      const body = (await response.json().catch(() => ({}))) as { compilation?: AcceptanceContextPackCompilation; inserted?: boolean; error?: string };
+      if (!response.ok || !body.compilation) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? {
+        ...current,
+        contextPackCompilations: current.contextPackCompilations.some((item) => item.id === body.compilation!.id)
+          ? current.contextPackCompilations
+          : [body.compilation!, ...current.contextPackCompilations],
+      } : current);
+      setContextPackStatus(body.inserted ? "Execute Context Pack compilation is queued. Jace will report the bounded Pack when it is ready." : "Execute Context Pack compilation is already queued or recorded.");
+    } catch (caught) { setContextPackError(caught instanceof Error ? caught.message : "Failed to queue Context Pack compilation"); }
+    finally { setRequestingExecute(false); }
+  }
+
+  async function recordFinalDecision(
+    review: AcceptanceEvidenceReview,
+    decision: "approved" | "changes_requested" | "rejected" | "approved_with_exception",
+    rationale?: string,
+  ) {
+    setDecidingReviewId(review.id);
+    setDecisionError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "record_pr_decision", reviewId: review.id, decision, ...(rationale ? { rationale } : {}) }),
+      });
+      const body = (await response.json().catch(() => ({}))) as { event?: ChangeRecordEvent; error?: string };
+      if (!response.ok || !body.event) throw new Error(body.error ?? `HTTP ${response.status}`);
+      setData((current) => current ? { ...current, events: [...current.events, body.event!] } : current);
+    } catch (caught) {
+      setDecisionError(caught instanceof Error ? caught.message : "Failed to record final PR decision");
+    } finally {
+      setDecidingReviewId(null);
+    }
+  }
+
+  const backHref = `/dashboard/${workspaceId}/changes`;
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
         <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <p className="animate-pulse py-8 text-sm text-[var(--gray-09)]">Loading change record...</p>
       </div>
@@ -235,7 +945,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     return (
       <div className="mx-auto max-w-[900px]">
         <a href={backHref} className="mb-4 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <p className="py-8 text-sm text-[var(--red-11)]">{error ?? "Change record not found"}</p>
       </div>
@@ -246,17 +956,26 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     <div className="mx-auto flex max-w-[900px] flex-col gap-6">
       <div>
         <a href={backHref} className="mb-3 inline-flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)]">
-          <ArrowLeft size={14} /> Back to Work
+          <ArrowLeft size={14} /> Back to Changes
         </a>
         <PageHeader
-          title="Change Record"
+          title="Acceptance Record"
           subtitle={`${data.record.repo} · ${data.record.state}`}
           actions={<CopyId id={data.record.id} label="Record" />}
         />
-        <p className="text-xs text-[var(--gray-09)]">
-          Created {formatChangeRecordDate(data.record.createdAt)} · Updated {formatChangeRecordDate(data.record.updatedAt)}
-        </p>
       </div>
+      <AcceptanceBriefPanel workspaceId={workspaceId} binding={data.briefBinding} />
+      <AcceptanceContractPanel
+        contracts={data.contracts}
+        onConfirm={confirmContract}
+        confirmingVersion={confirmingVersion}
+        confirmationError={confirmationError}
+      />
+      <AcceptanceContextPackPanel contextPacks={data.contextPacks} compilations={data.contextPackCompilations} contracts={data.contracts} onRequestExecute={requestExecuteContextPack} requestingExecute={requestingExecute} requestError={contextPackError} requestStatus={contextPackStatus} />
+      <BuilderHandoffPanel contracts={data.contracts} contextPacks={data.contextPacks} compilations={data.contextPackCompilations} handoffs={data.handoffs} agentMcpCredentials={data.agentMcpCredentials} onCreate={createBuilderHandoff} pending={handoffPending} error={handoffError} />
+      <AcceptanceReviewRequestPanel requests={data.reviewRequests} />
+      <CorrectionDeliveryPanel deliveries={data.correctionDeliveries} />
+      <FinalPrDecisionPanel recordId={data.record.id} reviews={data.reviews} events={data.events} onDecide={recordFinalDecision} decidingReviewId={decidingReviewId} decisionError={decisionError} exceptionRationale={exceptionRationale} onExceptionRationaleChange={setExceptionRationale} />
       <ChangeRecordAnchors record={data.record} />
       <LifecycleTimeline events={data.events} />
     </div>

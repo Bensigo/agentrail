@@ -10,7 +10,7 @@
 import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { lookupApiKeyByHash } from "@agentrail/db-postgres";
-import type { ApiKeyKind } from "@agentrail/db-postgres";
+import type { ApiKeyKind, ApiKeyScope } from "@agentrail/db-postgres";
 
 export interface BearerAuthResult {
   apiKeyId: string;
@@ -20,6 +20,7 @@ export interface BearerAuthResult {
    * POST /api/v1/fleet/workspace-tokens/sync, #1267 PR ①). Additive: every
    * pre-#1267 caller that ignores this field is unaffected. */
   kind: ApiKeyKind;
+  scopes: ApiKeyScope[];
 }
 
 /**
@@ -28,7 +29,8 @@ export interface BearerAuthResult {
  * return immediately on failure.
  */
 export async function requireBearer(
-  req: NextRequest
+  req: NextRequest,
+  options: { kinds?: ApiKeyKind[]; scopes?: ApiKeyScope[] } = {}
 ): Promise<BearerAuthResult | NextResponse> {
   const authHeader = req.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
@@ -52,11 +54,31 @@ export async function requireBearer(
   if (!row) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const allowedKinds = options.kinds ?? ["self_hosted", "fleet"];
+  if (!allowedKinds.includes(row.kind)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const scopes = row.scopes ?? [];
+  if (options.scopes?.some((scope) => !scopes.includes(scope))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   return {
     apiKeyId: row.id,
     workspaceId: row.workspaceId,
     teamId: row.teamId ?? null,
     kind: row.kind,
+    scopes,
   };
+}
+
+/**
+ * Authenticate the deliberately separate credential used by Codex, Claude
+ * Code, and other MCP clients. Existing bearer routes remain runner-only.
+ */
+export function requireAgentMcpBearer(
+  req: NextRequest,
+  scope: ApiKeyScope
+): Promise<BearerAuthResult | NextResponse> {
+  return requireBearer(req, { kinds: ["agent_mcp"], scopes: [scope] });
 }

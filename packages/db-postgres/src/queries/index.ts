@@ -1021,12 +1021,23 @@ export async function listApiKeys(workspaceId: string) {
     .orderBy(desc(apiKeys.createdAt));
 }
 
+/** Metadata-only list for the deliberate MCP access surface. */
+export async function listAgentMcpApiKeys(workspaceId: string) {
+  return db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.workspaceId, workspaceId), eq(apiKeys.kind, "agent_mcp")))
+    .orderBy(desc(apiKeys.createdAt));
+}
+
 export async function createApiKey(data: {
   workspaceId: string;
   teamId?: string | null;
   name: string;
   keyPrefix: string;
   keyHash: string;
+  kind?: import("../schema/api_keys.js").ApiKeyKind;
+  scopes?: import("../schema/api_keys.js").ApiKeyScope[];
 }) {
   const rows = await db
     .insert(apiKeys)
@@ -1036,6 +1047,8 @@ export async function createApiKey(data: {
       name: data.name,
       keyPrefix: data.keyPrefix,
       keyHash: data.keyHash,
+      kind: data.kind ?? "self_hosted",
+      scopes: data.scopes ?? [],
     })
     .returning();
   return rows[0]!;
@@ -1049,6 +1062,23 @@ export async function revokeApiKey(workspaceId: string, keyId: string) {
       and(
         eq(apiKeys.id, keyId),
         eq(apiKeys.workspaceId, workspaceId),
+        isNull(apiKeys.revokedAt)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+/** Revoke only an MCP credential in its owning workspace; never delete it. */
+export async function revokeAgentMcpApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(apiKeys.id, keyId),
+        eq(apiKeys.workspaceId, workspaceId),
+        eq(apiKeys.kind, "agent_mcp"),
         isNull(apiKeys.revokedAt)
       )
     )
@@ -3200,37 +3230,6 @@ export {
   type ProductionHumanFalseGreenQuery,
 } from "./human_false_green.js";
 
-// Reviewer of Record queue (Arc B §2-§3, spec
-// docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The
-// enqueue/supersede/claim/complete/bind query layer over `review_jobs` — see
-// `queries/review_jobs.ts` for the full WHY on each (the deterministic-id
-// dedupe, the EvalPlanQual-safe supersede, the SKIP LOCKED claim + per-
-// workspace running-job bound + daily budget, the fixed-backoff complete,
-// and the jace_sessions binding). Naming: "review job", never "review gate"
-// — `review_gates` (above) is a different, unrelated table.
-// releaseReviewJob (Task 4, Arc B §3; caller moved in the Arc B review fix
-// wave from the claim route to the NEW bind route once claim stopped binding
-// a session): the bind route's own escape hatch — flips a claimed job back
-// to `queued` (release, not leak) when its bindReviewJobSession call fails.
-// See `queries/review_jobs.ts`'s own doc-comment on the function for the
-// guard and why it never bumps attempts/backoff (an infra release, not a
-// worker-reported failure).
-// getReviewJobState (Arc B review fix wave): the bind route's own
-// precondition check — see `queries/review_jobs.ts`'s own doc-comment on the
-// function for why bindReviewJobSession itself cannot signal "not running".
-export {
-  reviewJobId,
-  enqueueReviewJob,
-  listReviewJobsForPr,
-  claimReviewJob,
-  completeReviewJob,
-  bindReviewJobSession,
-  releaseReviewJob,
-  getReviewJobState,
-  type EnqueueReviewJobResult,
-  type CompleteReviewJobInput,
-} from "./review_jobs.js";
-
 // The boot plane's dedicated queue (B2b Task 2, plan
 // docs/superpowers/plans/2026-08-02-b2b-sandbox-boot.md; spec
 // docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md §B2b
@@ -3260,12 +3259,104 @@ export {
 export {
   changeRecordId,
   changeRecordEventId,
+  acceptanceContractId,
+  acceptanceContextPackId,
+  acceptanceContextPackCompilationId,
+  acceptanceContextPackDeliveryId,
+  changeRecordPrId,
+  changeRecordPrRevisionId,
+  acceptanceBuilderHandoffId,
+  acceptanceIntakeId,
+  acceptanceIntakeMessageId,
+  evidenceReviewId,
+  acceptanceEvidenceReviewRequestId,
+  evidenceVerificationPlanId,
+  evidenceVerificationExecutionId,
+  correctionDeliveryId,
   findOrCreateChangeRecord,
   appendChangeRecordEvent,
+  createDraftAcceptanceRecord,
+  recordAcceptanceInboundIntake,
+  appendAcceptanceOutboundReply,
+  readAcceptanceIntake,
+  readAcceptanceIntakeReadback,
+  ACCEPTANCE_INTAKE_READBACK_LIMITS,
+  linkAcceptanceIntakeToRecord,
+  linkAcceptanceBriefToRecord,
+  createDraftAcceptanceContract,
+  attachExternalPullRequest,
+  createAcceptanceBuilderHandoff,
+  readAcceptanceBuilderHandoffs,
+  readAcceptanceContextPackCompilations,
+  findAcceptanceBuilderHandoffForPullRequest,
+  readAcceptanceBuilderTask,
+  findAcceptanceBuilderHandoffForPrRevision,
+  markAcceptanceBuilderHandoffPrAttached,
+  enqueueAcceptanceEvidenceReviewRequest,
+  claimAcceptanceEvidenceReviewRequest,
+  readClaimedAcceptanceEvidenceReviewRequest,
+  readAcceptanceEvidenceReviewRequests,
+  recordEvidenceReview,
+  readAcceptanceEvidenceReviewSummaries,
+  readAcceptanceWorkspaceOutcomeSummary,
+  ACCEPTANCE_WORKSPACE_OUTCOME_RANGES,
+  recordAcceptancePrDecision,
+  validateAcceptancePrDecision,
+  recordEvidenceVerificationPlans,
+  parseUiVerificationSteps,
+  parseDataVerificationRequest,
+  enqueueEvidenceVerificationExecution,
+  reportEvidenceVerificationExecution,
+  claimEvidenceVerificationExecution,
+  resolveEvidenceVerificationPlanForArtifact,
+  recordEvidenceVerificationArtifact,
+  queueEvidenceReviewCorrectionDelivery,
+  readEvidenceReviewCorrectionDeliveriesForTask,
+  readEvidenceReviewCorrectionDeliveriesForRecord,
+  claimEvidenceReviewCorrectionDeliveryForGithubDispatch,
+  reportEvidenceReviewCorrectionGithubDispatch,
+  acknowledgeEvidenceReviewCorrectionDelivery,
+  confirmAcceptanceContract,
+  readAcceptanceContracts,
+  recordAcceptanceContextPack,
+  enqueueAcceptanceContextPackCompilation,
+  claimAcceptanceContextPackCompilation,
+  readClaimedAcceptanceContextPackCompilation,
+  reportAcceptanceContextPackCompilation,
+  readAcceptanceContextPacks,
+  listAcceptanceContextPacksForWorkspace,
+  recordAcceptanceContextPackDelivery,
   readChangeRecordTimelineByPr,
   readChangeRecordTimeline,
+  readAcceptanceBriefBinding,
   listChangeRecords,
   type ChangeRecordAnchor,
+  type UiVerificationStep,
+  type DataVerificationAssertion,
+  type AcceptanceContractStatus,
+  type CreateDraftAcceptanceRecordInput,
+  type AcceptanceRecordDraft,
+  type LinkAcceptanceBriefToRecordInput,
+  type ReadAcceptanceBriefBindingInput,
+  type AcceptanceBriefBindingRead,
+  type RecordAcceptanceInboundIntakeInput,
+  type CreateDraftAcceptanceContractInput,
+  type AttachExternalPullRequestInput,
+  type CreateAcceptanceBuilderHandoffInput,
+  type AcceptanceBuilderTaskRead,
+  type EnqueueAcceptanceEvidenceReviewRequestInput,
+  type RecordEvidenceReviewInput,
+  type AcceptancePrDecision,
+  type AcceptanceEvidenceReviewSummary,
+  type AcceptanceWorkspaceOutcomeSummary,
+  type AcceptanceWorkspaceOutcomeRange,
+  type ReadAcceptanceWorkspaceOutcomeSummaryInput,
+  type RecordAcceptancePrDecisionInput,
+  type RecordEvidenceVerificationPlansInput,
+  type RecordAcceptanceContextPackInput,
+  type EnqueueAcceptanceContextPackCompilationInput,
+  type ClaimedAcceptanceContextPackCompilation,
+  type RecordAcceptanceContextPackDeliveryInput,
   type FindOrCreateChangeRecordInput,
   type AppendChangeRecordEventInput,
   type ChangeRecordTimeline,

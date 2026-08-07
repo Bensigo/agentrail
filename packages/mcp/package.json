@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch --preserveWatchOutput",
+    "test": "pnpm build && node --test dist/index.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

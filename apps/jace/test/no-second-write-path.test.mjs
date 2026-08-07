@@ -2,8 +2,7 @@
 //
 // The name of this file overstates the invariant it actually enforces: it is
 // NOT "no second write path" full stop — ungated write paths exist here by
-// design (`send_connect_link`, issue #1263 PR ②; `post_pr_review`, see
-// UNGATED_ADVISORY_WRITES below), and the gated set has grown to EIGHT
+// design (`send_connect_link`, issue #1263 PR ②), and the gated set has grown to EIGHT
 // (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265 PR ②;
 // `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289; and the three
 // backlog-grooming writes `backlog_label` / `backlog_close` / `backlog_dedupe`,
@@ -30,28 +29,6 @@
 //     deliberately editing EXPECTED_MUTATING_TOOLS below — that edit IS the
 //     human review this test exists to force, same as EXPECTED_TOOL_FILES
 //     below it.
-//   - `post_pr_review` is the ONE mutating tool deliberately left UNGATED,
-//     and it is enumerated just as tightly (UNGATED_ADVISORY_WRITES below).
-//     It was gated until 2026-07-28, when prod showed the gate did not merely
-//     add friction — it silently swallowed the action. The console delivers
-//     approval prompts on Telegram ONLY, so on a `discord` session the
-//     approval row was recorded, never shown to the owner, and the tool
-//     polled until its 30-minute TTL expired: two such rows sat `pending` and
-//     the review never landed. Handing Jace a PR to review is itself the
-//     instruction to comment on it, so the gate was removed rather than
-//     patched. Three properties carry the safety line the gate used to share,
-//     and each is ASSERTED below rather than merely claimed here:
-//       (a) advisory-only — the console hardcodes the GitHub review `event`
-//           to "COMMENT" server-side, so this can never approve or request
-//           changes on a PR;
-//       (b) server-scoped target — the console resolves the workspace from
-//           `eveSessionId` and rejects a `repo` that workspace hasn't
-//           connected, so a model-chosen repo cannot escape the tenant;
-//       (c) severity-filtered in code — only `blocker`/`major` are posted and
-//           an unlabelled comment is dropped, so "don't post noise" does not
-//           depend on the model choosing to obey a prompt.
-//     A SECOND ungated mutating tool is a policy violation until it is added
-//     there with its own argument.
 //   - `save_brief` (design: docs/superpowers/specs/2026-07-28-jace-briefs-
 //     durable-idea-understanding-design.md; spec PR #1487) is the SECOND
 //     enumerated ungated mutating tool. Its argument is different from
@@ -107,8 +84,8 @@
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
 //      `create_issue` + `create_workspace` + `create_repo` + `update_issue` +
-//      `create_goal` (gated/mutating), `send_connect_link` + `post_pr_review`
-//      + `save_brief` + `save_investigation` + `record_verdict` (ungated but
+//      `create_goal` (gated/mutating), `send_connect_link` + `save_brief` +
+//      `save_investigation` + `record_verdict` (ungated but
 //      self-scoped/argued), and `standup` / `codebase_query` /
 //      `fetch_workspace_memory` / `fetch_backlog` / `fetch_repo_wiki` /
 //      `fetch_work_status` / `fetch_briefs` / `fetch_investigations` /
@@ -182,7 +159,11 @@ const EXPECTED_TOOL_FILES = [
   "create_issue.ts",
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
+  "confirm_acceptance_contract.ts", // narrow channel confirmation: requires a post-draft inbound source message; no external execution
+  "draft_acceptance_contract.ts", // narrow, session-bound draft in Jace's own acceptance store; no external execution or confirmation
+  "request_acceptance_context_pack.ts", // idempotent admission of the confirmed intake to the bounded compiler; no builder selection
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
+  "fetch_acceptance_intake.ts", // read-only compact, session-bound acceptance intake evidence
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
   "fetch_evidence_capabilities.ts", // read-only (debugging spec PR #1501, T11 review fix round 1): reads the workspace's EVIDENCE CAPABILITY MAP (which verbs have a connected/credentialed provider) — no params, no anchored investigation needed — over the console token API; no approval, no child_process
@@ -191,7 +172,6 @@ const EXPECTED_TOOL_FILES = [
   "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
-  "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
   "record_judgment.ts", // UNGATED by design: records bounded internal chat/grilling learning evidence only; no GitHub/workspace mutation and no child_process
   "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
   "request_preview_boot.ts", // operational + ungated by design (B2b reviewer wiring): requests/polls a console preview boot for the calling root session; no repo/workspace mutation, no approval, no child_process
@@ -212,12 +192,10 @@ const EXPECTED_MUTATING_TOOLS = [
   "create_repo.ts",
   "update_issue.ts",
   "create_goal.ts",
-  // NOTE: post_pr_review.ts is deliberately ABSENT — it is the sanctioned
-  // ungated advisory write. See UNGATED_ADVISORY_WRITES below.
   // issue #1291 — the backlog-grooming write path. Each mutates ONE EXISTING
   // open issue (label / close / dedupe) and applies over HTTP to the console
   // (getInstallationToken server-side), never child_process — same gate class
-  // and shape as post_pr_review. Grooming NEVER files new issues (that stays
+  // and its GitHub scope. Grooming NEVER files new issues (that stays
   // create_issue's job) and NEVER writes without an approved decision.
   "backlog_label.ts",
   "backlog_close.ts",
@@ -228,11 +206,13 @@ const EXPECTED_MUTATING_TOOLS = [
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
 const UNGATED_ADVISORY_WRITES = [
-  "post_pr_review.ts",
   "record_judgment.ts",
   "save_brief.ts",
   "save_investigation.ts",
   "record_verdict.ts",
+  "draft_acceptance_contract.ts",
+  "confirm_acceptance_contract.ts", // human-gated by a distinct post-draft source-channel turn, verified server-side
+  "request_acceptance_context_pack.ts", // server requires confirmed contract and connected repository
 ];
 
 const EXPECTED_CHILD_PROCESS_SITES = [
@@ -319,47 +299,24 @@ test("the enumerated ungated advisory writes wire NO approval gate at all", () =
   }
 });
 
-test("post_pr_review's severity filter is enforced in code, not in a prompt", () => {
-  // Property (c) from this file's header: the control that REPLACED the human
-  // gate. It lives in the pure core so it cannot be talked out of.
-  const core = readFileSync(
-    fileURLToPath(new URL("../agent/lib/post_pr_review.core.mjs", import.meta.url)),
-    "utf8",
-  );
-  assert.match(
-    stripComments(core),
-    /POSTABLE_SEVERITIES\s*=\s*\[\s*"blocker"\s*,\s*"major"\s*\]/,
-    "post_pr_review.core.mjs must post exactly blocker + major — minor/nit are dropped",
-  );
-  assert.match(
-    stripComments(core),
-    /filterPostableComments\(/,
-    "runPostPrReview must route comments through filterPostableComments before posting",
-  );
-});
-
-test("post_pr_review stays advisory + server-scoped: the console hardcodes COMMENT and validates repo ownership", () => {
-  // Properties (a) and (b) from this file's header. These live in the console
-  // route, not in Jace, precisely so an ungated Jace-side tool cannot weaken
-  // them — this asserts they are still there.
-  const routePath = fileURLToPath(
-    new URL(
-      "../../console/app/api/v1/runner/pr-review/route.ts",
-      import.meta.url,
-    ),
-  );
-  if (!existsSync(routePath)) return; // console not present in this checkout
-  const route = stripComments(readFileSync(routePath, "utf8"));
-  assert.match(
-    route,
-    /event:\s*"COMMENT"/,
-    "the console must hardcode the GitHub review event to COMMENT — an ungated tool must never be able to approve or request changes",
-  );
-  assert.match(
-    route,
-    /getRepositoryByName\(/,
-    "the console must verify the repo is connected to the session's own workspace before posting",
-  );
+test("legacy advisory PR-review sources are absent from the Jace runtime", () => {
+  const legacyPaths = [
+    "../agent/tools/post_pr_review.ts",
+    "../agent/lib/post_pr_review.core.mjs",
+    "../agent/lib/review_job_worker.mjs",
+    "../agent/lib/review_job_worker.core.mjs",
+    "../agent/lib/review_job_prompt.mjs",
+    "../agent/lib/review_job_console.mjs",
+    "../legacy/reviewer/agent.ts",
+    "../legacy/reviewer/lib/reviewer.core.mjs",
+  ];
+  for (const relativePath of legacyPaths) {
+    assert.equal(
+      existsSync(fileURLToPath(new URL(relativePath, import.meta.url))),
+      false,
+      `${relativePath} must stay absent: exact-head Acceptance Reviews are the sole Jace review path`,
+    );
+  }
 });
 
 test("Eve's stock always()/once() approval gate is fully retired — no tool file references it (issue #1273 PR ②)", () => {

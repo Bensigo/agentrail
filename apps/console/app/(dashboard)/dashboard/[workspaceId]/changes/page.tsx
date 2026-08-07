@@ -28,7 +28,7 @@ export default async function ChangesPage({
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
         title="Changes"
-        subtitle="One lifecycle record for each change, from requirement through outcome."
+        subtitle="Requirements, evidence, and decisions."
       />
       <form method="get" className="mb-5 flex max-w-xl items-end gap-2">
         <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-[var(--gray-09)]">
@@ -60,7 +60,7 @@ export default async function ChangesPage({
         <EmptyState
           icon={History}
           title={repo ? "No changes for this repository" : "No change records yet"}
-          description="Change records appear when a requirement, issue, or pull request enters the lifecycle."
+          description="Records appear when work enters review."
         />
       ) : (
         <div className="flex flex-col gap-2">

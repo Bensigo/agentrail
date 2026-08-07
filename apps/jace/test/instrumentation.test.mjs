@@ -91,33 +91,28 @@ test("agent/instrumentation.ts default-exports an object with a setup function",
 const instrumentationSourcePath = fileURLToPath(new URL("../agent/instrumentation.ts", import.meta.url));
 const instrumentationCode = readFileSync(instrumentationSourcePath, "utf8");
 
-test("imports startReviewJobWorker from ./lib/review_job_worker.mjs", () => {
+test("does not start the retired advisory review-job worker", () => {
+  assert.doesNotMatch(instrumentationCode, /startReviewJobWorker/);
+  assert.doesNotMatch(instrumentationCode, /JACE_REVIEW_WORKER/);
+  assert.match(instrumentationCode, /startVerificationExecutionWorker/);
+});
+
+test("imports startVerificationExecutionWorker from ./lib/verification_execution_worker.mjs", () => {
   assert.match(
     instrumentationCode,
-    /import\s*{\s*startReviewJobWorker\s*}\s*from\s*["']\.\/lib\/review_job_worker\.mjs["']/,
+    /import\s*{\s*startVerificationExecutionWorker\s*}\s*from\s*["']\.\/lib\/verification_execution_worker\.mjs["']/,
   );
 });
 
-test("gates the review-job worker on JACE_REVIEW_WORKER === \"1\" (trimmed), default off", () => {
-  assert.match(instrumentationCode, /process\.env\.JACE_REVIEW_WORKER/);
-  assert.match(instrumentationCode, /\.trim\(\)\s*===\s*["']1["']/);
+test("gates the verification-execution worker on JACE_VERIFICATION_EXECUTION_WORKER === \"1\", default off", () => {
+  assert.match(instrumentationCode, /process\.env\.JACE_VERIFICATION_EXECUTION_WORKER\s*===\s*["']1["']/);
 });
 
-test("starts the review-job worker fire-and-forget with a .catch, never an escaping rejection (mirrors the Discord gateway block directly above it)", () => {
+test("starts the verification-execution worker fire-and-forget with a .catch, never an escaping rejection", () => {
   const gateMatch = instrumentationCode.match(
-    /if\s*\(\s*\(process\.env\.JACE_REVIEW_WORKER[\s\S]*?\n {4}\}/,
+    /if\s*\(\s*process\.env\.JACE_VERIFICATION_EXECUTION_WORKER\s*===\s*["']1["']\s*\)\s*{\s*[\s\S]*?void startVerificationExecutionWorker\(process\.env\)\.catch\(/,
   );
-  assert.ok(gateMatch, "JACE_REVIEW_WORKER gate block not found");
-  assert.match(gateMatch[0], /void startReviewJobWorker\(process\.env\)\.catch\(/);
-});
-
-test("the review-job worker gate sits inside setup(), after the Discord gateway's own startDiscordGateway call", () => {
-  const discordIndex = instrumentationCode.indexOf("void startDiscordGateway(process.env)");
-  const reviewIndex = instrumentationCode.indexOf("void startReviewJobWorker(process.env)");
-  const setupCloseIndex = instrumentationCode.indexOf("},\n  events:");
-  assert.ok(discordIndex >= 0 && reviewIndex >= 0 && setupCloseIndex >= 0);
-  assert.ok(discordIndex < reviewIndex, "review worker start must come after the Discord gateway start");
-  assert.ok(reviewIndex < setupCloseIndex, "review worker start must still be inside setup()");
+  assert.ok(gateMatch, "JACE_VERIFICATION_EXECUTION_WORKER gate block not found");
 });
 
 // ---------------------------------------------------------------------------

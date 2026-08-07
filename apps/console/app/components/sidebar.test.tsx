@@ -24,17 +24,11 @@ import { filterEngineRoomItems } from "./sidebar";
 import { ENGINE_ROOM_ZONE } from "./sidebar-nav";
 
 describe("filterEngineRoomItems (2026-07-31 owner ruling — Costs/Budget/Wallet leave the customer sidebar unconditionally, the earlier billing-swap flag retired)", () => {
-  it("drops exactly costs/budget/wallet, keeps every other item in its original order", () => {
+  it("keeps the compact evidence-and-context navigation unchanged", () => {
     const result = filterEngineRoomItems(ENGINE_ROOM_ZONE.items);
     expect(result.map((item) => item.href)).toEqual([
-      "runs",
       "review-gates",
-      "model-selection",
-      "memory",
-      "briefs",
-      "investigations",
       "wiki",
-      "failures",
     ]);
   });
 

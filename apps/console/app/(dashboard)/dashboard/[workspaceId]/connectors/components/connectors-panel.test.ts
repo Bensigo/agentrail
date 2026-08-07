@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { ConnectorTile } from "./connectors-panel";
 import { ConnectorStatusBadge } from "./connector-status-badge";
-import { projectConnectors } from "./connector-helpers";
+import { filterPublicConnectors, projectConnectors } from "./connector-helpers";
 
 interface ReactElementLike {
   type: unknown;
@@ -61,5 +62,34 @@ describe("ConnectorTile — one-click surface", () => {
     const rows = asElement(ConnectorTile({ connector, onOpen: NOOP_ON_OPEN })).props.children as ReactElementLike[];
     const bottomRow = asElement(rows[2]);
     expect(asElement(bottomRow.props.children).type).toBe(ConnectorStatusBadge);
+  });
+});
+
+describe("ConnectorsPanel — trust-layer presentation", () => {
+  it("shows the supported GitHub and Linear connectors", () => {
+    const rows = projectConnectors([]);
+    expect(filterPublicConnectors(rows).map((row) => row.kind)).toEqual(["github", "linear"]);
+  });
+
+  it("keeps public catalog copy free of legacy setup claims", () => {
+    const pageSource = readFileSync(
+      new URL("../page.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(pageSource).toContain("Connectors");
+    expect(pageSource).not.toContain("Repository and PR anchor");
+    expect(pageSource).not.toMatch(/factory|autonomous|coming soon|generate code/i);
+  });
+
+  it("does not render the removed Heartbeat/autonomous-loop block", () => {
+    const source = readFileSync(
+      new URL("./connectors-panel.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).not.toContain("HeartbeatStatusHeader");
+    expect(source).not.toContain("activeHeartbeatConnectors");
+    expect(source).not.toContain("autonomous loop");
+    expect(source).not.toContain("Issue Queue");
   });
 });

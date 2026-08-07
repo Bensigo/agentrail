@@ -32,12 +32,12 @@
     "predev": "pnpm --filter @agentrail/db-postgres --filter @agentrail/github-app --filter @agentrail/mcp build",
     "dev": "pnpm --parallel --filter @agentrail/console --filter @agentrail/db-postgres --filter @agentrail/mcp dev",
     "lint": "pnpm --filter @agentrail/console lint",
-    "db:generate": "pnpm --filter @agentrail/db-postgres db:generate",
-    "db:migrate": "pnpm --filter @agentrail/db-postgres db:migrate && pnpm --filter @agentrail/db-clickhouse db:migrate",
-    "db:migrate:pg": "pnpm --filter @agentrail/db-postgres db:migrate",
+    "db:generate": "pnpm --filter @agentrail/db-postgres generate",
+    "db:migrate": "pnpm --filter @agentrail/db-postgres migrate && pnpm --filter @agentrail/db-clickhouse db:migrate",
+    "db:migrate:pg": "pnpm --filter @agentrail/db-postgres migrate",
     "db:migrate:ch": "pnpm --filter @agentrail/db-clickhouse db:migrate",
-    "db:seed": "pnpm --filter @agentrail/db-postgres db:seed && pnpm --filter @agentrail/db-clickhouse db:seed",
-    "db:seed:pg": "pnpm --filter @agentrail/db-postgres db:seed",
+    "db:seed": "pnpm --filter @agentrail/db-postgres seed && pnpm --filter @agentrail/db-clickhouse db:seed",
+    "db:seed:pg": "pnpm --filter @agentrail/db-postgres seed",
     "db:seed:ch": "pnpm --filter @agentrail/db-clickhouse db:seed"
   }
 }

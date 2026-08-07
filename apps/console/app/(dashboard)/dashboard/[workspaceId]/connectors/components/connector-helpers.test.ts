@@ -10,6 +10,7 @@ import {
   extraConfigFieldKeys,
   projectConnectors,
   projectExtraConfigValues,
+  filterPublicConnectors,
   shouldShowOauthSetupHint,
   validateConnectorCredential,
   type ConnectorCatalogEntry,
@@ -18,6 +19,13 @@ import {
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
+  it("has an explicit GitHub and Linear public projection", () => {
+    expect(filterPublicConnectors(projectConnectors([])).map((row) => row.kind)).toEqual([
+      "github",
+      "linear",
+    ]);
+  });
+
   it("returns one row per catalog entry, grouped issue-source → mcp → observability", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([
@@ -399,8 +407,34 @@ describe("validateConnectorCredential — composite secrets (generic secretParts
 
 describe("CONNECTOR_TYPE_META — observability section (Task 7)", () => {
   it("has a label and description for the new observability section", () => {
-    expect(CONNECTOR_TYPE_META.observability.label).toBe("Observability");
+    expect(CONNECTOR_TYPE_META.observability.label).toBe("Optional investigation evidence");
     expect(CONNECTOR_TYPE_META.observability.description.length).toBeGreaterThan(0);
+  });
+});
+
+describe("CONNECTOR_TYPE_META — acceptance/context framing", () => {
+  it("makes MCP and observability optional and keeps exact-head proof explicit", () => {
+    expect(CONNECTOR_TYPE_META.mcp.label).toBe("Optional tools & context");
+    expect(CONNECTOR_TYPE_META.mcp.description).toContain("Optional");
+    expect(CONNECTOR_TYPE_META.observability.label).toBe("Optional investigation evidence");
+    expect(CONNECTOR_TYPE_META.observability.description).toContain("exact-head proof");
+  });
+
+  it("describes GitHub as repository/PR provenance without factory framing", () => {
+    const github = CONNECTOR_CATALOG.find((connector) => connector.kind === "github")!;
+
+    expect(CONNECTOR_TYPE_META["issue-source"].description).toContain("repository and PR anchor");
+    expect(github.description).toContain("Repository and PR anchor");
+    expect(github.description).not.toMatch(/Issue Queue|autonom|factory run/i);
+  });
+
+  it("keeps optional evidence adapters in the visible catalog", () => {
+    const descriptions = CONNECTOR_CATALOG.filter(
+      (connector) => connector.type === "observability",
+    ).map((connector) => connector.description);
+
+    expect(descriptions.length).toBeGreaterThan(1);
+    expect(descriptions.every((description) => description.startsWith("Optional"))).toBe(true);
   });
 });
 

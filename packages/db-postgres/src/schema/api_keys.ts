@@ -14,7 +14,13 @@ import { workspaces } from "./workspaces.js";
 // these). 'fleet' — minted by the hosted fleet's sync endpoint (POST
 // /api/v1/fleet/workspace-tokens/sync) for a `workspaces.hosted_execution =
 // true` workspace with no live fleet key yet.
-export type ApiKeyKind = "self_hosted" | "fleet";
+export type ApiKeyKind = "self_hosted" | "fleet" | "agent_mcp";
+export type ApiKeyScope =
+  | "acceptance:read"
+  | "acceptance:intake:write"
+  | "acceptance:draft:write"
+  | "acceptance:context:write"
+  | "acceptance:correction:ack";
 
 export const apiKeys = pgTable(
   "api_keys",
@@ -30,6 +36,8 @@ export const apiKeys = pgTable(
     // #1267 PR ①. Every row predating this column is a genuine self-hosted
     // runner token, so the DEFAULT backfills them correctly in place.
     kind: text("kind").notNull().default("self_hosted").$type<ApiKeyKind>(),
+    /** Explicit capability list. Empty runner keys have no agent-record access. */
+    scopes: text("scopes").array().notNull().default([]).$type<ApiKeyScope[]>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -39,7 +47,17 @@ export const apiKeys = pgTable(
   (t) => ({
     kindCheck: check(
       "api_keys_kind_check",
-      sql`${t.kind} IN ('self_hosted', 'fleet')`
+      sql`${t.kind} IN ('self_hosted', 'fleet', 'agent_mcp')`
+    ),
+    scopeCheck: check(
+      "api_keys_scope_check",
+      sql`(
+        (${t.kind} = 'agent_mcp'
+          AND cardinality(${t.scopes}) > 0
+          AND ${t.scopes} <@ ARRAY['acceptance:read', 'acceptance:intake:write', 'acceptance:draft:write', 'acceptance:context:write', 'acceptance:correction:ack']::text[])
+        OR
+        (${t.kind} IN ('self_hosted', 'fleet') AND ${t.scopes} = ARRAY[]::text[])
+      )`
     ),
     // One active (non-revoked) fleet key per workspace (#1267 PR ①) — makes
     // the sync endpoint's mint race-safe: a concurrent second sync's mint for

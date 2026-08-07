@@ -10,7 +10,10 @@ import {
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { renderApprovalMessage } from "../../../../../../lib/approval-message";
-import { applyAlignmentDecision } from "../../../../../../lib/approval-decision";
+import {
+  applyAlignmentDecision,
+  isRetiredDependencyApproval,
+} from "../../../../../../lib/approval-decision";
 import {
   parseOutcomeIssueNumber,
   type RunOutcomeReplyContext,
@@ -409,6 +412,15 @@ async function handleApprovalCallback(
   if (!senderOk) {
     await answerCallbackQuery(token, cq.id, "This isn't yours to approve.");
     return NextResponse.json({ ok: true });
+  }
+
+  if (isRetiredDependencyApproval(approval)) {
+    await answerCallbackQuery(
+      token,
+      cq.id,
+      "This approval is retired and quarantined pending the dependency data audit."
+    );
+    return NextResponse.json({ ok: true, result: "retired_quarantined" });
   }
 
   const flipped = await resolveApproval(approval.id, parsed.decision);

@@ -189,26 +189,30 @@ describe("(marketing) craft pins — mono on data moments", () => {
     return /font-mono|text-mono-data/.test(preceding);
   }
 
-  it("the demo's task-type/model line is mono", () => {
+  it("the demo's goal line uses the calm body treatment", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "Task type:")).toBe(true);
+    expect(monoAppliesBefore(source, ">Goal</span>")).toBe(false);
+    expect(source).toContain("text-body-sm mt-1.5");
   });
 
-  it("the demo's scope line is mono (subscription slice 6 Task 5 — was the dollar-estimate line pre-swap)", () => {
+  it("the demo keeps visible chat copy free of implementation-jargon labels", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "{scopeSentence(brief.estimateUsd)}")).toBe(true);
+    expect(source).not.toContain("Boundary:");
+    expect(source).not.toContain("Checkable criteria:");
   });
 
-  it("the demo's outcome ping is mono", () => {
+  it("the demo's confirmation handoff is calm body text", () => {
     const source = readSibling("_conversation-demo.tsx");
-    expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
+    expect(monoAppliesBefore(source, "{getDemoFollowUpMessage()}")).toBe(false);
+    expect(source).toContain("text-body-sm max-w-[84%]");
   });
 
-  it("the live numbers render in font-mono (landing v2: CountUp carries the mono class beside each {stats.*} marker)", () => {
+  it("the acceptance-spine markers render in mono rather than repurposing legacy factory run totals", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{stats.shipped}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.workedOn}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
+    expect(monoAppliesBefore(source, ">1</p>")).toBe(true);
+    expect(monoAppliesBefore(source, ">2</p>")).toBe(true);
+    expect(monoAppliesBefore(source, ">3</p>")).toBe(true);
+    expect(source).not.toContain("{stats.shipped}");
   });
 
   it("the tier price renders in font-mono (subscription-platform slice 10, Task 1 — TierCards is shared verbatim by /pricing and landing §6b, so this pin now anchors the one real render site instead of landing's retired inline copy)", () => {

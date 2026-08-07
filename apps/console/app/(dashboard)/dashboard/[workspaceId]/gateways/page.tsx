@@ -10,11 +10,11 @@ export default async function GatewaysPage({
   return (
     <div className="mx-auto max-w-[1440px]">
       <h1 className="mb-1 text-sm font-semibold text-[var(--gray-12)]">
-        Gateways
+        Channels
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Gateways are where you and your team talk to Jace. Each one is a place
-        to start a conversation.
+        Choose where your team talks to Jace and starts work. Supported
+        channels keep the request connected to its Acceptance Record.
       </p>
       <GatewaysPanel workspaceId={workspaceId} />
     </div>

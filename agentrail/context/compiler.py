@@ -193,7 +193,7 @@ def extract_anchors(
     root: Optional[Path] = None,
     source: str = "input",
     target_kind: Optional[str] = None,
-    target_number: Optional[int] = None,
+    target_number: Optional[int | str] = None,
 ) -> List[Dict[str, str]]:
     anchors: List[Dict[str, str]] = []
     seen: Set[Tuple[str, str]] = set()
@@ -218,6 +218,17 @@ def extract_anchors(
             source="target",
             confidence="exact",
             reason=f"Context target is PR #{target_number}.",
+        )
+    elif target_kind == "acceptance_record" and target_number is not None:
+        _append_anchor(
+            anchors,
+            seen,
+            kind="acceptance_record",
+            value=str(target_number),
+            normalized=f"Acceptance Record {target_number}",
+            source="target",
+            confidence="exact",
+            reason=f"Context target is Acceptance Record {target_number}.",
         )
     for number in _issue_refs(text):
         _append_anchor(
@@ -526,7 +537,7 @@ def compiler_contract(
     root: Optional[Path] = None,
     phase: Optional[str] = None,
     target_kind: Optional[str] = None,
-    target_number: Optional[int] = None,
+    target_number: Optional[int | str] = None,
     token_budget: Optional[Dict[str, Optional[int]]] = None,
     source_items: Optional[Iterable[Dict[str, Any]]] = None,
     procedural_items: Optional[Iterable[Dict[str, Any]]] = None,
@@ -552,6 +563,7 @@ def compiler_contract(
     pr_refs = _pr_refs(text)
     target_issue = target_number if target_kind == "issue" else (issue_refs[0] if issue_refs else None)
     target_pull_request = target_number if target_kind == "pr" else (pr_refs[0] if pr_refs else None)
+    target_acceptance_record = str(target_number) if target_kind == "acceptance_record" and target_number is not None else None
     return {
         "contractVersion": CONTRACT_VERSION,
         "input": {
@@ -560,6 +572,7 @@ def compiler_contract(
             "phase": phase,
             "targetIssue": target_issue,
             "targetPullRequest": target_pull_request,
+            "targetAcceptanceRecord": target_acceptance_record,
         },
         "anchors": extract_anchors(text, root=root, target_kind=target_kind, target_number=target_number),
         "candidates": candidates,

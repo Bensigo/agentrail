@@ -3,30 +3,71 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
-import { changeRecordEvents } from "../schema/change_records.js";
+import { briefs, briefItems } from "../schema/briefs.js";
+import {
+  acceptanceBuilderHandoffs,
+  acceptanceContextPackCompilations,
+  acceptanceContextPackDeliveries,
+  acceptanceContextPacks,
+  changeRecordEvents,
+  changeRecordPrRevisions,
+  evidenceReviewCorrectionDeliveries,
+  evidenceReviewCorrections,
+  evidenceReviews,
+} from "../schema/change_records.js";
 import {
   appendChangeRecordEvent,
+  acknowledgeEvidenceReviewCorrectionDelivery,
+  attachExternalPullRequest,
   changeRecordId,
+  confirmAcceptanceContract,
+  createDraftAcceptanceContract,
+  createDraftAcceptanceRecord,
   findOrCreateChangeRecord,
+  linkAcceptanceBriefToRecord,
+  recordAcceptancePrDecision,
+  readAcceptanceBuilderTask,
+  readEvidenceReviewCorrectionDeliveriesForTask,
+  readAcceptanceContracts,
+  readAcceptanceBriefBinding,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
+import { createApiKey, createRepository } from "../queries/index.js";
 
 const DB_AVAILABLE: boolean = await (async () => {
   try {
     const rows = Array.from(
       await db.execute(sql`
         SELECT to_regclass('public.change_records') AS change_records,
-               to_regclass('public.change_record_events') AS change_record_events
+               to_regclass('public.change_record_events') AS change_record_events,
+               to_regclass('public.acceptance_contracts') AS acceptance_contracts,
+               to_regclass('public.acceptance_brief_bindings') AS acceptance_brief_bindings
       `)
-    ) as Array<{ change_records: string | null; change_record_events: string | null }>;
+    ) as Array<{
+      change_records: string | null;
+      change_record_events: string | null;
+      acceptance_contracts: string | null;
+      acceptance_brief_bindings: string | null;
+    }>;
     return (
       rows[0]?.change_records === "change_records" &&
-      rows[0]?.change_record_events === "change_record_events"
+      rows[0]?.change_record_events === "change_record_events" &&
+      rows[0]?.acceptance_contracts === "acceptance_contracts" &&
+      rows[0]?.acceptance_brief_bindings === "acceptance_brief_bindings"
     );
   } catch {
     return false;
   }
 })();
+
+function compareBriefItemsForSnapshot(
+  left: { createdAt: Date; id: string },
+  right: { createdAt: Date; id: string }
+): number {
+  const timeDelta = left.createdAt.getTime() - right.createdAt.getTime();
+  if (timeDelta !== 0) return timeDelta;
+  return left.id.localeCompare(right.id);
+}
 
 describe.skipIf(!DB_AVAILABLE)(
   "change_records queries — real Postgres integration (Arc D storage)",
@@ -45,6 +86,14 @@ describe.skipIf(!DB_AVAILABLE)(
     });
 
     afterEach(async () => {
+      await db.execute(sql`
+        DELETE FROM evidence_review_correction_deliveries delivery
+        USING evidence_review_corrections correction, evidence_reviews review, change_records record
+        WHERE delivery.correction_id = correction.id
+          AND correction.review_id = review.id
+          AND review.record_id = record.id
+          AND record.workspace_id = ${wsId}
+      `);
       await db.delete(workspaces).where(eq(workspaces.id, wsId));
     });
 
@@ -154,6 +203,288 @@ describe.skipIf(!DB_AVAILABLE)(
       });
     });
 
+    it("records one final decision only for the current exact-head review and never relabels Jace's verdict", async () => {
+      const repo = "acme/decision-proof";
+      const repository = await createRepository({
+        workspaceId: wsId,
+        name: repo,
+        url: "https://github.com/acme/decision-proof",
+        defaultBranch: "main",
+      });
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo,
+        workKey: `human-decision-${randomUUID()}`,
+        originChannel: "codex_mcp",
+        sourceReferences: [{ kind: "codex_task", id: `task-${randomUUID()}` }],
+        contract: {
+          originalRequest: "Make the save action durable",
+          acceptanceCriteria: [{ id: "save", text: "Saving persists the draft" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      const contract = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: draft.contract.version,
+        confirmedBy: "user:lead",
+      });
+      const headSha = "f".repeat(40);
+      const attachment = await attachExternalPullRequest({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo,
+        repositoryId: repository.id,
+        prNumber: 307,
+        prUrl: "https://github.com/acme/decision-proof/pull/307",
+        baseSha: "e".repeat(40),
+        headSha,
+        attachedBy: "user:lead",
+      });
+      const reviewId = randomUUID();
+      await db.insert(evidenceReviews).values({
+        id: reviewId,
+        recordId: draft.record.id,
+        prRevisionId: attachment.revision.id,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        headSha,
+        diffIdentity: { headSha, files: [] },
+        overallStatus: "failed",
+        staticFindings: [],
+        testResults: [],
+        independentVerifier: { kind: "local-integration" },
+        reviewabilityResult: { status: "reviewable" },
+        environmentRung: "local",
+        refusalReason: null,
+        verifierName: "jace-test",
+        verifierVersion: "1",
+        promptVersion: "1",
+      });
+
+      await expect(recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "approved",
+        decidedBy: "user:lead",
+      })).rejects.toThrow("Only a proven exact-head review");
+
+      const first = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "changes_requested",
+        decidedBy: "user:lead",
+      });
+      const replay = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        reviewId,
+        decision: "rejected",
+        decidedBy: "user:other-lead",
+      });
+
+      expect(first.inserted).toBe(true);
+      expect(replay.inserted).toBe(false);
+      expect(replay.event.id).toBe(first.event.id);
+      expect(replay.event.payloadRef).toMatchObject({
+        kind: "acceptance_pr_decision",
+        decision: "changes_requested",
+        reviewId,
+        prRevisionId: attachment.revision.id,
+        headSha,
+        reviewOverallStatus: "failed",
+      });
+      const timeline = await readChangeRecordTimeline({ workspaceId: wsId, recordId: draft.record.id });
+      expect(timeline?.events.filter((event) => event.stage === "human_pr_decision")).toHaveLength(1);
+    });
+
+    it("limits correction read and acknowledgement to the delivered builder credential and current exact head", async () => {
+      const repo = "acme/correction-proof";
+      const repository = await createRepository({
+        workspaceId: wsId,
+        name: repo,
+        url: "https://github.com/acme/correction-proof",
+        defaultBranch: "main",
+      });
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo,
+        workKey: `correction-delivery-${randomUUID()}`,
+        originChannel: "claude_code",
+        sourceReferences: [{ kind: "builder_task", id: `task-${randomUUID()}` }],
+        contract: {
+          originalRequest: "Keep the save flow safe",
+          acceptanceCriteria: [{ id: "save", text: "Saving persists the draft" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      const contract = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: draft.contract.version,
+        confirmedBy: "user:lead",
+      });
+      const contextPackId = randomUUID();
+      const handoffId = randomUUID();
+      const builder = "codex";
+      const taskContextKey = `task-${randomUUID()}`;
+      const agentMcpKey = await createApiKey({
+        workspaceId: wsId,
+        name: "correction-proof builder",
+        keyPrefix: "jace_test",
+        keyHash: `sha256:${randomUUID()}`,
+        kind: "agent_mcp",
+        scopes: ["acceptance:read", "acceptance:correction:ack"],
+      });
+      const apiKeyId = agentMcpKey.id;
+      await db.insert(acceptanceContextPacks).values({
+        id: contextPackId,
+        recordId: draft.record.id,
+        version: 1,
+        phase: "execute",
+        contentHash: `sha256:${"c".repeat(64)}`,
+        compilerVersion: "test-context-compiler",
+        manifest: { criteria: ["save"], tokenBudget: 800 },
+        custody: { fullSourceUploadAllowed: false },
+        freshness: { repositoryRef: "main" },
+        jsonArtifactRef: "workspace://context/pack.json",
+        markdownArtifactRef: "workspace://context/pack.md",
+        createdBy: "jace:test",
+      });
+      await db.insert(acceptanceContextPackCompilations).values({
+        id: randomUUID(),
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repositoryId: repository.id,
+        repositoryRef: "main",
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        phase: "execute",
+        status: "compiled",
+        contextPackId,
+        createdBy: "jace:test",
+      });
+      await db.insert(acceptanceBuilderHandoffs).values({
+        id: handoffId,
+        recordId: draft.record.id,
+        workspaceId: wsId,
+        repositoryId: repository.id,
+        builder,
+        taskContextKey,
+        branchName: "jace/save-proof",
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        contextPackId,
+        agentMcpCredentialId: apiKeyId,
+        status: "pr_attached",
+        createdBy: "user:lead",
+      });
+      await db.insert(acceptanceContextPackDeliveries).values({
+        id: randomUUID(),
+        contextPackId,
+        deliveryKey: `mcp:${apiKeyId}:${handoffId}`,
+        method: "mcp",
+        recipient: `${builder}:${taskContextKey}`,
+        metadata: { handoffId, agentMcpCredentialId: apiKeyId },
+        deliveredBy: `agent_mcp:${apiKeyId}`,
+      });
+      const headSha = "c".repeat(40);
+      const attachment = await attachExternalPullRequest({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo,
+        repositoryId: repository.id,
+        prNumber: 308,
+        prUrl: "https://github.com/acme/correction-proof/pull/308",
+        baseSha: "b".repeat(40),
+        headSha,
+        attachedBy: "user:lead",
+      });
+      await db.update(acceptanceBuilderHandoffs).set({ prAttachedAt: new Date() })
+        .where(eq(acceptanceBuilderHandoffs.id, handoffId));
+      const reviewId = randomUUID();
+      await db.insert(evidenceReviews).values({
+        id: reviewId,
+        recordId: draft.record.id,
+        prRevisionId: attachment.revision.id,
+        acceptanceContractId: contract.id,
+        acceptanceContractVersion: contract.version,
+        headSha,
+        diffIdentity: { headSha, files: ["src/save.ts"] },
+        overallStatus: "failed",
+        staticFindings: [],
+        testResults: [],
+        independentVerifier: { kind: "local-integration" },
+        reviewabilityResult: { status: "reviewable" },
+        environmentRung: "local",
+        refusalReason: null,
+        verifierName: "jace-test",
+        verifierVersion: "1",
+        promptVersion: "1",
+      });
+      const correctionId = randomUUID();
+      const deliveryId = randomUUID();
+      await db.insert(evidenceReviewCorrections).values({
+        id: correctionId,
+        reviewId,
+        criterionId: "save",
+        observedBehavior: "The draft is lost after Save.",
+        expectedBehavior: "Saving persists the draft.",
+        evidenceRefs: [{ path: "src/save.ts", line: 19 }],
+        scopeBoundary: "Save contract",
+        concreteImpact: "Users lose changes.",
+        requiredCorrection: "Persist the draft before reporting success.",
+        reverification: "Save a draft in this exact head and observe it after reload.",
+      });
+      await db.insert(evidenceReviewCorrectionDeliveries).values({
+        id: deliveryId,
+        correctionId,
+        deliveryKey: "mcp:save",
+        channel: "mcp_task_context",
+        target: { builder, taskContextKey },
+        reviewRevisionId: attachment.revision.id,
+      });
+
+      const builderTask = await readAcceptanceBuilderTask({
+        workspaceId: wsId, agentMcpCredentialId: apiKeyId, builder, taskContextKey,
+      });
+      const wrongBuilderTask = await readAcceptanceBuilderTask({
+        workspaceId: wsId, agentMcpCredentialId: randomUUID(), builder, taskContextKey,
+      });
+
+      expect(builderTask?.handoff.agentMcpCredentialId).toBe(apiKeyId);
+      expect(wrongBuilderTask).toBeNull();
+
+      const visible = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId, builder, taskContextKey,
+      });
+      const wrongCredential = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId: `other-${apiKeyId}`, builder, taskContextKey,
+      });
+      const wrongAck = await acknowledgeEvidenceReviewCorrectionDelivery({
+        workspaceId: wsId, apiKeyId: `other-${apiKeyId}`, deliveryId, builder, taskContextKey,
+      });
+
+      expect(visible.map((row) => row.delivery.id)).toEqual([deliveryId]);
+      expect(wrongCredential).toEqual([]);
+      expect(wrongAck).toBeNull();
+
+      await db.update(changeRecordPrRevisions).set({ supersededAt: new Date() })
+        .where(eq(changeRecordPrRevisions.id, attachment.revision.id));
+      const staleRead = await readEvidenceReviewCorrectionDeliveriesForTask({
+        workspaceId: wsId, apiKeyId, builder, taskContextKey,
+      });
+      const staleAck = await acknowledgeEvidenceReviewCorrectionDelivery({
+        workspaceId: wsId, apiKeyId, deliveryId, builder, taskContextKey,
+      });
+      expect(staleRead).toEqual([]);
+      expect(staleAck).toBeNull();
+    });
+
     it("reads timelines scoped by workspace and ordered by event time", async () => {
       const record = await findOrCreateChangeRecord({
         workspaceId: wsId,
@@ -206,6 +537,314 @@ describe.skipIf(!DB_AVAILABLE)(
         await db
           .delete(workspaces)
           .where(eq(workspaces.id, otherWorkspace[0]!.id));
+      }
+    });
+
+    it("creates a retry-safe manual Acceptance Record and confirms one immutable contract version", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
+        contract: {
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      expect(draft.record.issueNumber).toBeNull();
+      expect(draft.record.prNumber).toBeNull();
+      expect(draft.record.workKey).toBe("manual-trust-loop-1");
+      expect(draft.record.originChannel).toBe("codex_mcp");
+      expect(draft.contract.version).toBe(1);
+      expect(draft.contract.status).toBe("draft");
+
+      const retried = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        contract: { originalRequest: "This retry must not replace the draft" },
+        createdBy: "user:lead",
+      });
+      expect(retried.record.id).toBe(draft.record.id);
+      expect(retried.contract.id).toBe(draft.contract.id);
+      expect(retried.contract.contract).toEqual(draft.contract.contract);
+
+      const secondDraft = await createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: {
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          openQuestions: [{ id: "Q-1", text: "Which theme token?", status: "open" }],
+        },
+        createdBy: "user:lead",
+      });
+      expect(secondDraft.version).toBe(2);
+      await expect(confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: secondDraft.version,
+        confirmedBy: "user:lead",
+      })).rejects.toThrow("open questions remain");
+
+      const resolvedDraft = await createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: {
+          originalUserWording: "Add a red save button",
+          goal: "Save button is red",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          openQuestions: [{ id: "Q-1", text: "Which theme token?", status: "resolved", resolution: "danger" }],
+        },
+        createdBy: "user:lead",
+      });
+      const confirmed = await confirmAcceptanceContract({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        version: resolvedDraft.version,
+        confirmedBy: "user:lead",
+      });
+      expect(confirmed.status).toBe("confirmed");
+      expect(confirmed.confirmedBy).toBe("user:lead");
+      expect(confirmed.confirmedAt).not.toBeNull();
+      await expect(createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: { originalUserWording: "A later edit", goal: "Must be rejected" },
+        createdBy: "user:lead",
+      })).rejects.toThrow("immutable");
+
+      const contracts = await readAcceptanceContracts({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      });
+      expect(contracts?.map((contract) => [contract.version, contract.status])).toEqual([
+        [1, "draft"],
+        [2, "draft"],
+        [3, "confirmed"],
+      ]);
+    });
+    it("binds the same brief to two distinct records with separate immutable snapshots", async () => {
+      const [brief] = await db
+        .insert(briefs)
+        .values({
+          workspaceId: wsId,
+          slug: `brief-${randomUUID()}`,
+          title: "Initial brief title",
+          repositoryId: null,
+          openQuestion: "Which exact task is this?",
+          grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
+          jaceSessionIds: [],
+        })
+        .returning();
+      const [firstItem, secondItem] = await db
+        .insert(briefItems)
+        .values([
+          {
+            briefId: brief.id,
+            area: "scope",
+            statement: "The scope is bounded",
+            evidence: "The human limited the task",
+            kind: "required",
+            state: "resolved",
+            resolution: "implemented",
+            authority: "human",
+          },
+          {
+            briefId: brief.id,
+            area: "constraints",
+            statement: "Do not dump the whole repo",
+            evidence: "The brief stays bounded",
+            kind: "required",
+            state: "resolved",
+            resolution: "implemented",
+            authority: "human",
+          },
+        ])
+        .returning();
+      const orderedItems = [firstItem, secondItem].sort(compareBriefItemsForSnapshot);
+      const firstDraft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: `brief-binding-${randomUUID()}`,
+        originChannel: "slack",
+        sourceReferences: [{ kind: "slack_thread", id: "thread-1" }],
+        contract: {
+          originalRequest: "Add a better trust record",
+          acceptanceCriteria: [{ id: "AC-1", text: "Track immutable brief provenance" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+
+      const firstBinding = await linkAcceptanceBriefToRecord({
+        workspaceId: wsId,
+        recordId: firstDraft.record.id,
+        briefId: brief.id,
+        linkedBy: "user:lead",
+      });
+      expect(firstBinding.recordId).toBe(firstDraft.record.id);
+      expect(firstBinding.briefId).toBe(brief.id);
+      expect(firstBinding.briefSnapshot).toMatchObject({
+        briefId: brief.id,
+        title: "Initial brief title",
+        slug: brief.slug,
+        items: [
+          expect.objectContaining({
+            id: orderedItems[0]!.id,
+            statement: orderedItems[0]!.statement,
+          }),
+          expect.objectContaining({
+            id: orderedItems[1]!.id,
+            statement: orderedItems[1]!.statement,
+          }),
+        ],
+      });
+
+      await db
+        .update(briefItems)
+        .set({ statement: "The scope is bounded, but updated later" })
+        .where(eq(briefItems.id, firstItem.id));
+      const updatedFirstItem = {
+        ...firstItem,
+        statement: "The scope is bounded, but updated later",
+      };
+      const updatedOrderedItems = [updatedFirstItem, secondItem].sort(
+        compareBriefItemsForSnapshot
+      );
+
+      const secondDraft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: `brief-binding-${randomUUID()}`,
+        originChannel: "codex_mcp",
+        contract: {
+          originalRequest: "Bind the same brief to a later record",
+          acceptanceCriteria: [{ id: "AC-1", text: "Snapshot the edited brief separately" }],
+          unresolvedQuestions: [],
+        },
+        createdBy: "user:lead",
+      });
+      const secondBinding = await linkAcceptanceBriefToRecord({
+        workspaceId: wsId,
+        recordId: secondDraft.record.id,
+        briefId: brief.id,
+        linkedBy: "user:lead",
+      });
+      expect(secondBinding.id).not.toBe(firstBinding.id);
+      expect(secondBinding.recordId).toBe(secondDraft.record.id);
+      expect(secondBinding.briefSnapshot).toMatchObject({
+        items: [
+          expect.objectContaining({
+            id: updatedOrderedItems[0]!.id,
+            statement: updatedOrderedItems[0]!.statement,
+          }),
+          expect.objectContaining({
+            id: updatedOrderedItems[1]!.id,
+            statement: updatedOrderedItems[1]!.statement,
+          }),
+        ],
+      });
+
+      const recordReadback = await readAcceptanceBriefBinding({
+        workspaceId: wsId,
+        recordId: firstDraft.record.id,
+      });
+      expect(recordReadback?.binding.id).toBe(firstBinding.id);
+      expect(recordReadback?.binding.briefSnapshot).toMatchObject({
+        items: [
+          expect.objectContaining({
+            id: orderedItems[0]!.id,
+            statement: orderedItems[0]!.statement,
+          }),
+          expect.objectContaining({
+            id: orderedItems[1]!.id,
+            statement: orderedItems[1]!.statement,
+          }),
+        ],
+      });
+
+      const briefReadback = await readAcceptanceBriefBinding({
+        workspaceId: wsId,
+        briefId: brief.id,
+      });
+      expect(Array.isArray(briefReadback)).toBe(true);
+      expect(briefReadback).toHaveLength(2);
+      expect(briefReadback.map((row) => row.record.id)).toEqual([
+        firstDraft.record.id,
+        secondDraft.record.id,
+      ]);
+      expect(briefReadback[0]!.binding.id).toBe(firstBinding.id);
+      expect(briefReadback[1]!.binding.id).toBe(secondBinding.id);
+    });
+
+    it("rejects foreign-workspace brief links and same-record rebinds with a different brief", async () => {
+      const [brief] = await db
+        .insert(briefs)
+        .values({
+          workspaceId: wsId,
+          slug: `linked-brief-${randomUUID()}`,
+          title: "Workspace-bound brief",
+          repositoryId: null,
+          openQuestion: "",
+          grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
+          jaceSessionIds: [],
+        })
+        .returning();
+      const [otherBrief] = await db
+        .insert(briefs)
+        .values({
+          workspaceId: wsId,
+          slug: `other-linked-brief-${randomUUID()}`,
+          title: "Alternate brief",
+          repositoryId: null,
+          openQuestion: "",
+          grounding: { wikiPageSlugs: [], memoryItemIds: [], commitSha: null },
+          jaceSessionIds: [],
+        })
+        .returning();
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: `linked-record-${randomUUID()}`,
+        originChannel: "codex_mcp",
+        contract: { originalRequest: "Bind me", acceptanceCriteria: [], unresolvedQuestions: [] },
+        createdBy: "user:lead",
+      });
+      const otherWorkspace = await db
+        .insert(workspaces)
+        .values({
+          name: "foreign workspace",
+          slug: `foreign-${randomUUID()}`,
+        })
+        .returning({ id: workspaces.id });
+      try {
+        await expect(
+          linkAcceptanceBriefToRecord({
+            workspaceId: otherWorkspace[0]!.id,
+            recordId: draft.record.id,
+            briefId: brief.id,
+            linkedBy: "user:lead",
+          })
+        ).rejects.toThrow("not found in workspace");
+
+        await linkAcceptanceBriefToRecord({
+          workspaceId: wsId,
+          recordId: draft.record.id,
+          briefId: brief.id,
+          linkedBy: "user:lead",
+        });
+        await expect(
+          linkAcceptanceBriefToRecord({
+            workspaceId: wsId,
+            recordId: draft.record.id,
+            briefId: otherBrief.id,
+            linkedBy: "user:lead",
+          })
+        ).rejects.toThrow("already has a linked Brief");
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace[0]!.id));
       }
     });
   }

@@ -67,6 +67,7 @@ const tiersSource = readFileSync(resolve(PRICING_DIR, "tiers.ts"), "utf8");
 const tierCardsSource = readFileSync(resolve(PRICING_DIR, "tier-cards.tsx"), "utf8");
 const pricingSource = stripComments(`${pricingPageSource}\n${tiersSource}\n${tierCardsSource}`);
 const landingSource = stripComments(readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8"));
+const channelsSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_channels.tsx"), "utf8"));
 const layoutSource = stripComments(readFileSync(resolve(APP_DIR, "layout.tsx"), "utf8"));
 const useCasesSource = stripComments(readFileSync(resolve(MARKETING_DIR, "_use-cases.tsx"), "utf8"));
 // Slice 7, Task 2: no dedicated `_nav.tsx` test file exists yet (confirmed —
@@ -248,23 +249,18 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   });
 
   it("root metadata no longer renders the stale role wording", () => {
-    expect(layoutSource).toContain("Jace — reviewable pull requests for engineering teams");
+    expect(layoutSource).toContain("Jace — the trust layer for engineering agents");
     expect(layoutSource).toContain(
-      "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
+      "Jace helps engineering teams turn external-agent work into confirmed acceptance criteria, bounded context, and inspectable PR evidence.",
     );
     expect(layoutSource).not.toContain("AI fractional software engineer");
     expect(layoutSource).not.toContain("fractional software engineer");
   });
 
-  it("landing page renders the new bottleneck section without inventing attribution", () => {
-    expect(landingSource).toContain("The bottleneck moved");
-    expect(landingSource).toContain("Attribution unavailable in the current source set.");
-  });
-
-  it("the outcome-led use case presents dependency upgrades as available", () => {
-    expect(useCasesSource).toContain("Keep dependencies moving");
+  it("the outcome-led use case frames dependency work as an evidence-bound trust flow", () => {
+    expect(useCasesSource).toContain("Make dependency work reviewable");
     expect(useCasesSource).toContain(
-      "Jace watches selected dependencies, prepares upgrade work, checks compatibility, and stops when it cannot prove the change is safe.",
+      "Turn a selected dependency update into clear criteria, bounded context, compatibility evidence, and a human decision instead of an opaque bot PR.",
     );
     expect(useCasesSource).not.toContain("Coming soon");
   });
@@ -273,12 +269,74 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   // RETIRED_PHRASES' "Top up" / "charged when the task is done" entries
   // above) — assert the replacement content actually landed, not just
   // that the old wording is gone.
-  it("pricing page's new steps mention shipping as a pull request", () => {
-    expect(pricingSource).toContain("ships as a pull request");
+  it("pricing page's new steps name the trust-layer handoff", () => {
+    expect(pricingSource).toContain(
+      "Start with an approved change and see evidence attached to the result. A selected builder implements the confirmed contract; Jace reviews the exact change.",
+    );
+    expect(pricingSource).not.toContain("ships as a pull request");
   });
 
-  it("landing §6b's new steps mention shipping as a pull request", () => {
-    expect(landingSource).toContain("ships as a pull request");
+  it("marketing surfaces describe confirmation, external implementation, and exact-head review", () => {
+    expect(channelsSource).toContain("bring the request here and confirm the work before it starts");
+    expect(landingSource).toContain("Start with an approved change and see evidence attached to the result");
+    expect(pricingSource).toContain(
+      "Start with an approved change and see evidence attached to the result. A selected builder implements the confirmed contract; Jace reviews the exact change.",
+    );
+  });
+
+  it("landing §6b hands the confirmed contract and bounded Context Pack to the selected builder", () => {
+    expect(landingSource).toContain("Confirm the Acceptance Contract and give the selected builder a bounded Context Pack.");
+  });
+
+  it("trust-layer landing copy keeps the approved direction explicit", () => {
+    expect(landingSource).toContain("Approve agent work with confidence.");
+    expect(landingSource).toContain(
+      "Jace gives engineering teams the evidence and control they need to trust AI coding agents.",
+    );
+    expect(landingSource).not.toContain(
+      "Set the bar before work starts, then see what changed and what can be proven.",
+    );
+    expect(landingSource).toMatch(
+      /<h1 className="ar-rise mt-8"[\s\S]*?>\s*<span className="text-heading-1 block">Approve agent work with confidence\.<\/span>\s*<\/h1>/,
+    );
+    expect(landingSource).toMatch(
+      /<p className="ar-rise mt-6 max-w-\[58ch\] text-\[var\(--gray-11\)\]"[\s\S]*?>\s*Jace gives engineering teams the evidence and control they need to trust AI coding agents\.\s*<\/p>/,
+    );
+    expect(landingSource.replace(/\s+/g, " ")).toContain(
+      "Before work starts, a request becomes clear scope, acceptance criteria, and planned checks.",
+    );
+    expect(landingSource).toContain("Your team keeps its own coding agent and normal environment.");
+    expect(landingSource).toContain("Decide confidently with criterion-specific proof");
+    expect(landingSource).not.toContain("Hey, I&apos;m Jace");
+  });
+
+  it("channels describe compatibility without claiming unverified Slack or Discord availability", () => {
+    expect(landingSource).toContain("Jace fits where agent work happens");
+    expect(channelsSource).toContain("If Slack is configured and verified");
+    expect(channelsSource).toContain("If Discord is configured and verified");
+    expect(channelsSource).not.toContain("Add me to a channel");
+    expect(channelsSource).not.toContain("I post briefs and outcome pings");
+  });
+
+  it("lists compatibility channels as Slack, Discord, then Telegram", () => {
+    const panelList = channelsSource.slice(
+      channelsSource.indexOf("const PANELS"),
+      channelsSource.indexOf("function PanelIcon"),
+    );
+    const slack = panelList.indexOf('id: "slack"');
+    const discord = panelList.indexOf('id: "discord"');
+    const telegram = panelList.indexOf('id: "telegram"');
+
+    expect(slack).toBeGreaterThanOrEqual(0);
+    expect(discord).toBeGreaterThan(slack);
+    expect(telegram).toBeGreaterThan(discord);
+  });
+
+  it("visible trust stats remain mechanics, not activity or invented outcomes", () => {
+    expect(landingSource).toContain("confirmed contract");
+    expect(landingSource).toContain("bounded Context Pack");
+    expect(landingSource).toContain("exact-head review and human decision");
+    expect(landingSource).not.toContain("{stats.shipped}");
   });
 
   // -----------------------------------------------------------------------
@@ -290,14 +348,14 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
   // stay untouched by this task.
   // -----------------------------------------------------------------------
 
-  it("landing §6b's sub speaks capacity vocabulary — priced by team size, measured in tasks (subscription-platform slice 7, Task 2)", () => {
+  it("landing §6b positions the subscription as a trust layer around existing coding agents", () => {
     // Whitespace-normalized locally (not the shared `landingSource` other
     // tests use) so this full-sentence pin survives however the formatter
     // wraps this long JSX text node across lines — same reasoning as
     // collapsing JSX text at render time, just done for the string compare.
     const normalized = landingSource.replace(/\s+/g, " ");
     expect(normalized).toContain(
-      "Plans are priced by team size — Starter for small teams, Growth for bigger ones. Every plan includes monthly engineering capacity, measured in tasks.",
+      "Plans are priced by team size. Starter is for small teams, Growth for bigger ones. The product is the acceptance and evidence layer around the coding agents your team already uses.",
     );
   });
 

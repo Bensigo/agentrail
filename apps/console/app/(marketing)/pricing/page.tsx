@@ -10,15 +10,15 @@ import { isPricingClaimLive } from "../_pricing-gate";
 import { TierCards } from "./tier-cards";
 
 export const metadata = {
-  title: "Pricing — Jace",
+  title: "Pricing | Jace",
   description:
     "Plans priced by team size for reviewable engineering work with proof attached.",
 };
 
 const STEPS = [
   "Pick a plan: Starter, Growth, or Enterprise.",
-  "Talk to Jace on Telegram, Slack, or Discord.",
-  "Approve the work. It ships as a pull request.",
+  "Bring the request from the channel your team already uses when a verified connection is available.",
+  "Start with an approved change and see evidence attached to the result. A selected builder implements the confirmed contract; Jace reviews the exact change.",
 ];
 
 /**
@@ -91,7 +91,7 @@ export default function PricingPage() {
 
         <p className="mt-6 text-[var(--gray-11)]">
           One subscription covers your team. Plans are priced by team size and
-          built around approved, reviewable engineering work.
+          built around approved engineering work with evidence attached to the result.
         </p>
       </div>
 
@@ -101,10 +101,11 @@ export default function PricingPage() {
 
       <div className="mx-auto max-w-[560px] px-6 pb-24">
         <p className="mt-10 text-[var(--gray-11)]">
-          Every plan comes with included monthly engineering capacity —
+          Every plan comes with included monthly engineering capacity,
           measured in tasks, not dollars. Starter includes ≈34 tasks a
-          month; Growth includes ≈74. Jace asks before anything runs, and
-          finished work ships as a pull request with evidence attached.
+          month; Growth includes ≈74. Jace asks before work begins, and
+          A selected builder implements the confirmed contract; Jace reviews
+          evidence attached to the exact change before your team decides.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">

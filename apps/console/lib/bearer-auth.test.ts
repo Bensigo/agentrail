@@ -6,7 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   lookupApiKeyByHash: vi.fn(),
 }));
 
-import { requireBearer } from "./bearer-auth";
+import { requireAgentMcpBearer, requireBearer } from "./bearer-auth";
 import { lookupApiKeyByHash } from "@agentrail/db-postgres";
 
 const mockLookup = vi.mocked(lookupApiKeyByHash);
@@ -76,7 +76,7 @@ describe("requireBearer", () => {
     expect((result as NextResponse).status).toBe(500);
   });
 
-  it("returns {apiKeyId, workspaceId, teamId, kind} for a self_hosted row (pre-#1267 shape, plus kind)", async () => {
+  it("returns an empty scope list for a pre-scope self_hosted row", async () => {
     mockLookup.mockResolvedValue({
       id: "key-1",
       workspaceId: "ws-1",
@@ -91,6 +91,7 @@ describe("requireBearer", () => {
       workspaceId: "ws-1",
       teamId: null,
       kind: "self_hosted",
+      scopes: [],
     });
   });
 
@@ -109,6 +110,83 @@ describe("requireBearer", () => {
       workspaceId: "ws-2",
       teamId: "team-1",
       kind: "fleet",
+      scopes: [],
     });
+  });
+
+  it("forbids a valid key of the wrong kind", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-3",
+      workspaceId: "ws-3",
+      teamId: null,
+      kind: "self_hosted",
+      scopes: [],
+    } as never);
+
+    const result = await requireBearer(req("Bearer ar_runner"), {
+      kinds: ["agent_mcp"],
+    });
+
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("forbids an agent key missing a required scope", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-4",
+      workspaceId: "ws-4",
+      teamId: null,
+      kind: "agent_mcp",
+      scopes: ["acceptance:read"],
+    } as never);
+
+    const result = await requireBearer(req("Bearer ar_agent"), {
+      kinds: ["agent_mcp"],
+      scopes: ["acceptance:context:write"],
+    });
+
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("returns a scoped agent key when kind and scope requirements match", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-5",
+      workspaceId: "ws-5",
+      teamId: null,
+      kind: "agent_mcp",
+      scopes: ["acceptance:read", "acceptance:context:write"],
+    } as never);
+
+    const result = await requireBearer(req("Bearer ar_agent"), {
+      kinds: ["agent_mcp"],
+      scopes: ["acceptance:read"],
+    });
+
+    expect(result).toEqual({
+      apiKeyId: "key-5",
+      workspaceId: "ws-5",
+      teamId: null,
+      kind: "agent_mcp",
+      scopes: ["acceptance:read", "acceptance:context:write"],
+    });
+  });
+
+  it("does not accept an MCP key through the default runner bearer guard", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-6", workspaceId: "ws-6", teamId: null, kind: "agent_mcp", scopes: ["acceptance:read"],
+    } as never);
+
+    const result = await requireBearer(req("Bearer jace_mcp_only"));
+
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("allows an MCP key only through the dedicated scope guard", async () => {
+    mockLookup.mockResolvedValue({
+      id: "key-7", workspaceId: "ws-7", teamId: null, kind: "agent_mcp", scopes: ["acceptance:read"],
+    } as never);
+
+    const result = await requireAgentMcpBearer(req("Bearer jace_mcp_read"), "acceptance:read");
+
+    expect(result).toMatchObject({ apiKeyId: "key-7", workspaceId: "ws-7", kind: "agent_mcp" });
   });
 });

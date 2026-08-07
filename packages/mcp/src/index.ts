@@ -30,6 +30,9 @@ const execFileAsync = promisify(execFile);
 
 const AGENTRAIL_BIN = process.env.AGENTRAIL_BIN || "agentrail";
 const DEFAULT_TARGET = process.env.AGENTRAIL_TARGET || process.cwd();
+const JACE_API_URL = process.env.JACE_API_URL?.replace(/\/$/, "");
+const JACE_MCP_TOKEN = process.env.JACE_MCP_TOKEN;
+const JACE_WORKSPACE_ID = process.env.JACE_WORKSPACE_ID;
 
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -76,6 +79,39 @@ function withTarget(args: string[], target?: string): string[] {
   return [...args, "--target", target || DEFAULT_TARGET, "--json"];
 }
 
+/** Call the hosted Acceptance Record boundary, never the database directly. */
+async function callJace(
+  path: string,
+  method: "GET" | "POST" | "PATCH",
+  body?: Record<string, unknown>,
+): Promise<ToolResult> {
+  if (!JACE_API_URL || !JACE_MCP_TOKEN || !JACE_WORKSPACE_ID) {
+    return {
+      content: [{ type: "text", text: "Jace MCP is not configured. Set JACE_API_URL, JACE_MCP_TOKEN, and JACE_WORKSPACE_ID." }],
+      isError: true,
+    };
+  }
+  try {
+    const response = await fetch(`${JACE_API_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${JACE_MCP_TOKEN}`,
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const payload: unknown = await response.json().catch(() => ({ error: "Jace returned no JSON response" }));
+    const text = JSON.stringify(payload, null, 2);
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined,
+      isError: !response.ok,
+    };
+  } catch (error) {
+    return { content: [{ type: "text", text: `Jace API request failed: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
+  }
+}
+
 const server = new McpServer({ name: "agentrail-context", version: "0.1.0" });
 
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
@@ -100,6 +136,149 @@ server.registerTool(
     const args = ["context", "search", query];
     if (limit) args.push("--limit", String(limit));
     return runAgentrail(withTarget(args, target));
+  },
+);
+
+server.registerTool(
+  "acceptance_intake_start",
+  {
+    title: "Start Jace Acceptance Intake",
+    description:
+      "Record the raw user task in Jace with this MCP task context. Jace must collect only missing information and a human must confirm the Acceptance Contract before any Context Pack handoff or implementation. This tool does not create a contract, choose a repository, or authorize implementation.",
+    inputSchema: {
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+      userTask: z.string().min(1).max(8_000).describe("Raw user request. Do not pre-fill an Acceptance Contract."),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async (input) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes`, "POST", input,
+  ),
+);
+
+server.registerTool(
+  "acceptance_intake_get",
+  {
+    title: "Read Jace Acceptance Intake status",
+    description:
+      "Read bounded messages and compact contract status for this MCP task context. This is not a raw transcript and cannot independently prove a task-context message came from a human.",
+    inputSchema: {
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ taskContextKey }) => {
+    const query = new URLSearchParams({ taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes?${query}`, "GET");
+  },
+);
+
+server.registerTool(
+  "acceptance_intake_reply",
+  {
+    title: "Send explicit user task-context reply to Jace",
+    description:
+      "Forward an explicit user reply from this MCP task context to Jace. Use a stable message key for retries. This creates no contract and is task-context provenance, not independently authenticated human confirmation.",
+    inputSchema: {
+      taskContextKey: z.string().min(1).max(256).describe("Stable ID for this Codex, Claude Code, or other MCP builder task."),
+      userMessage: z.string().min(1).max(8_000).describe("Exact explicit user reply; do not invent or summarize it as user input."),
+      messageKey: z.string().min(1).max(256).describe("Stable source-message ID for idempotent retry."),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async (input) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-intakes/messages`, "POST", input,
+  ),
+);
+
+server.registerTool(
+  "acceptance_record_get",
+  {
+    title: "Read Jace Acceptance Record",
+    description: "Read the Acceptance Record and its draft or confirmed contract. Treat only a confirmed version as authority to implement.",
+    inputSchema: { recordId: z.string().uuid() },
+    annotations: READ_ONLY,
+  },
+  async ({ recordId }) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}`, "GET",
+  ),
+);
+
+server.registerTool(
+  "acceptance_context_pack_record",
+  {
+    title: "Record Jace Context Pack evidence",
+    description: "After building a local bounded context pack for a confirmed contract, record only its hash, provenance, freshness, and artifact references. Do not send raw repository content.",
+    inputSchema: {
+      recordId: z.string().uuid(),
+      phase: z.enum(["plan", "execute", "verify", "review"]),
+      contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/i),
+      compilerVersion: z.string().min(1),
+      manifest: z.record(z.string(), z.unknown()),
+      custody: z.record(z.string(), z.unknown()),
+      freshness: z.record(z.string(), z.unknown()),
+      jsonArtifactRef: z.string().nullable().optional(),
+      markdownArtifactRef: z.string().nullable().optional(),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async ({ recordId, ...pack }) => callJace(
+    `/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/acceptance-records/${recordId}/context-packs`, "POST", pack,
+  ),
+);
+
+server.registerTool(
+  "acceptance_builder_task_get",
+  {
+    title: "Read selected Jace builder handoff",
+    description: "Read this builder task's confirmed Acceptance Contract and selected bounded Context Pack. Use it for implementation; it is not proof of implementation or verification.",
+    inputSchema: {
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ builder, taskContextKey }) => {
+    const query = new URLSearchParams({ builder, taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/builder-tasks?${query}`, "GET");
+  },
+);
+
+server.registerTool(
+  "correction_deliveries_get",
+  {
+    title: "Read correction deliveries",
+    description:
+      "Return evidence-bound corrections for the recorded builder task. This is not proof of receipt; the agent must acknowledge after it has read the packet.",
+    inputSchema: {
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ builder, taskContextKey }) => {
+    const query = new URLSearchParams({ builder, taskContextKey }).toString();
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/correction-deliveries?${query}`, "GET");
+  },
+);
+
+server.registerTool(
+  "correction_delivery_acknowledge",
+  {
+    title: "Acknowledge correction delivery",
+    description:
+      "Only call after the agent actually receives and reads the packet. This does not modify code or merge anything.",
+    inputSchema: {
+      deliveryId: z.string().uuid().describe("Correction delivery UUID."),
+      builder: z.string().min(1).describe("Recorded builder name."),
+      taskContextKey: z.string().min(1).describe("Recorded task context key."),
+      detail: z.string().max(2000).optional().describe("Optional acknowledgement detail, up to 2000 characters."),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ deliveryId, builder, taskContextKey, detail }) => {
+    const body = { builder, taskContextKey, ...(detail === undefined ? {} : { detail }) };
+    return callJace(`/api/v1/agent/mcp/workspaces/${JACE_WORKSPACE_ID}/correction-deliveries/${deliveryId}/ack`, "POST", body);
   },
 );
 

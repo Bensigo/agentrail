@@ -6,7 +6,6 @@ import {
   getQueueEntryBriefReference,
   getWorkspaceMembership,
   listReviewEventsForPr,
-  listReviewJobsForPr,
 } from "@agentrail/db-postgres";
 import { resolveReviewChainPr } from "./review-chain";
 
@@ -104,23 +103,15 @@ export async function GET(
     }
   }
 
-  let reviewJobs: Awaited<ReturnType<typeof listReviewJobsForPr>> = [];
   let reviewEvents: Awaited<ReturnType<typeof listReviewEventsForPr>> = [];
 
   if (prResolution.state === "resolved") {
     try {
-      [reviewJobs, reviewEvents] = await Promise.all([
-        listReviewJobsForPr({
-          workspaceId,
-          repo: prResolution.repo,
-          prNumber: prResolution.number,
-        }),
-        listReviewEventsForPr({
-          workspaceId,
-          repo: prResolution.repo,
-          prNumber: prResolution.number,
-        }),
-      ]);
+      reviewEvents = await listReviewEventsForPr({
+        workspaceId,
+        repo: prResolution.repo,
+        prNumber: prResolution.number,
+      });
     } catch (err) {
       console.error("[review chain] failed to load review history:", err);
       return NextResponse.json(
@@ -139,7 +130,7 @@ export async function GET(
     },
     alignmentBrief,
     prResolution,
-    reviewJobs,
+    reviewJobs: [],
     reviewEvents,
   });
 }

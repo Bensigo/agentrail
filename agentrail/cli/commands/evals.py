@@ -46,6 +46,7 @@ def _usage() -> str:
         "[--reps N]\n"
         "  agentrail evals apply (--report PATH | --date YYYY-MM-DD)\n"
         "                        [--reports-dir DIR] [--target DIR] [--max-report-age-days N] [--apply]\n"
+        "  agentrail evals acceptance-report --input PATH --output PATH\n"
         "\n"
         "Subcommands:\n"
         "  run     Run the eval spine (corpus -> runner -> hidden-test scorer\n"
@@ -68,6 +69,9 @@ def _usage() -> str:
         "          Proposal-by-default: writes NOTHING without --apply; --apply\n"
         "          writes exactly the printed proposal and FAILS CLOSED when\n"
         "          the target has no configured server link (#1048).\n"
+        "  acceptance-report\n"
+        "          Publish caller-supplied Acceptance Case JSON as deterministic\n"
+        "          offline Markdown. This command never runs an evaluation.\n"
         "\n"
         "Options:\n"
         "  --corpus DIR     Override the corpus root (default: bundled v0).\n"
@@ -740,6 +744,46 @@ def _run_apply(args: List[str]) -> int:
     return 0
 
 
+def _run_acceptance_report(args: List[str]) -> int:
+    """Publish supplied Acceptance Case JSON without running an eval."""
+    from agentrail.evals.acceptance_case.report import (
+        AcceptanceReportFormatError,
+        read_acceptance_run_report,
+        write_acceptance_run_report_markdown,
+    )
+
+    input_path: Optional[Path] = None
+    output_path: Optional[Path] = None
+    i = 0
+    while i < len(args):
+        option = args[i]
+        if option in ("-h", "--help"):
+            print("Usage: agentrail evals acceptance-report --input PATH --output PATH")
+            return 0
+        if option == "--input":
+            input_path = Path(_parse_flag_value(args, i, option))
+            i += 2
+            continue
+        if option == "--output":
+            output_path = Path(_parse_flag_value(args, i, option))
+            i += 2
+            continue
+        print(f"error: unknown option: {option}", file=sys.stderr)
+        return 2
+
+    if input_path is None or output_path is None:
+        print("error: --input PATH and --output PATH are required", file=sys.stderr)
+        return 2
+
+    try:
+        report = read_acceptance_run_report(input_path)
+        write_acceptance_run_report_markdown(report, output_path)
+    except (AcceptanceReportFormatError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def run_evals(args: List[str]) -> int:
     """Dispatch ``agentrail evals <subcommand>``."""
     kind = args[0] if args else ""
@@ -762,6 +806,9 @@ def run_evals(args: List[str]) -> int:
 
     if kind == "apply":
         return _run_apply(args[1:])
+
+    if kind == "acceptance-report":
+        return _run_acceptance_report(args[1:])
 
     print(f"Unknown evals command: {kind}", file=sys.stderr)
     return 2

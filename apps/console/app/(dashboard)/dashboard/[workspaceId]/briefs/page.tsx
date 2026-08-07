@@ -45,12 +45,12 @@ export default async function BriefsPage({
       <div className="mx-auto max-w-[1440px]">
         <PageHeader
           title="Briefs"
-          subtitle="Jace's durable understanding of each product idea — and where a human has corrected it."
+          subtitle="Shape work before it becomes an Acceptance Record."
         />
         <EmptyState
           icon={FileText}
           title="No briefs yet"
-          description="A brief starts from a grill-me conversation with Jace — it becomes the durable, editable record of what was understood about one idea."
+          description="Create a Brief from a conversation with Jace."
         />
       </div>
     );
@@ -60,7 +60,7 @@ export default async function BriefsPage({
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
         title="Briefs"
-        subtitle="Jace's durable understanding of each product idea — and where a human has corrected it."
+        subtitle="Shape work before it becomes an Acceptance Record."
       />
       <div className="flex flex-col gap-2">
         {briefs.map((brief, i) => {

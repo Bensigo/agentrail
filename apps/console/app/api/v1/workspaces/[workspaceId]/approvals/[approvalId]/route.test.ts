@@ -14,6 +14,9 @@ vi.mock("@agentrail/db-postgres", () => ({
 
 vi.mock("../../../../../../../lib/approval-decision", () => ({
   applyAlignmentDecision: vi.fn(),
+  isRetiredDependencyApproval: vi.fn((approval) =>
+    approval.toolName === "dependency_upgrade_contract" || approval.dependencyContractId != null
+  ),
 }));
 
 import { auth } from "@agentrail/auth";
@@ -46,6 +49,12 @@ const approvalRow = {
   queueEntryId: null,
 };
 
+const legacyDependencyApprovalRow = {
+  ...approvalRow,
+  toolName: "dependency_upgrade_contract",
+  dependencyContractId: "contract-1",
+};
+
 function mockMember(role: string) {
   vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({
@@ -57,7 +66,7 @@ function mockMember(role: string) {
 
 describe("POST /api/v1/workspaces/:workspaceId/approvals/:approvalId", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -159,5 +168,33 @@ describe("POST /api/v1/workspaces/:workspaceId/approvals/:approvalId", () => {
 
     expect(res.status).toBe(409);
     expect(applyAlignmentDecision).not.toHaveBeenCalled();
+  });
+
+  it("quarantines legacy dependency approvals before resolveApproval", async () => {
+    mockMember("owner");
+    vi.mocked(getApprovalById).mockResolvedValue(legacyDependencyApprovalRow as never);
+
+    const res = await POST(makeRequest({ decision: "approved" }), makeParams());
+
+    expect(res.status).toBe(410);
+    await expect(res.json()).resolves.toEqual({
+      error: "This approval is retired and quarantined pending the dependency data audit.",
+      code: "approval_retired_quarantined",
+    });
+    expect(resolveApproval).not.toHaveBeenCalled();
+    expect(applyAlignmentDecision).not.toHaveBeenCalled();
+  });
+
+  it("quarantines create_issue approvals carrying a legacy dependency contract marker", async () => {
+    mockMember("admin");
+    vi.mocked(getApprovalById).mockResolvedValue({
+      ...approvalRow,
+      dependencyContractId: "contract-1",
+    } as never);
+
+    const res = await POST(makeRequest({ decision: "denied" }), makeParams());
+
+    expect(res.status).toBe(410);
+    expect(resolveApproval).not.toHaveBeenCalled();
   });
 });

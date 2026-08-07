@@ -81,6 +81,13 @@ capture. If `upload_evidence_image` returns `{error}` instead of a url, note
 the failure in that AC's `evidence` and continue: capture is additive, so a
 failed upload never blocks, changes, or aborts verification of that AC.
 
+**Acceptance Record UI execution:** when the parent gives an exact-head preview
+URL and plan IDs, capture the browser's current URL at the decisive screenshot
+and provide it as `observedUrl` to `upload_verification_artifact`. The Console
+accepts the image only while the recorded exact preview remains ready and the
+observed URL has that preview's origin. Never substitute another preview,
+origin, or saved image; if the preview is unavailable, return `not_testable`.
+
 Both browser connections unreachable and no API surface to check →
 `not_verifiable`. Only the API reachable → do API-only QA and say so in
 `summary`.

@@ -14,10 +14,10 @@ import {
 const BASE = "/dashboard/ws1";
 
 describe("NAV_ZONES data structure", () => {
-  it("has exactly three zones, in order: Your engineer, Engine room, Settings", () => {
+  it("has exactly three zones, in order: Trust layer, Evidence & context, Settings", () => {
     expect(NAV_ZONES.map((z) => z.label)).toEqual([
-      "Your engineer",
-      "Engine room",
+      "Trust layer",
+      "Evidence & context",
       "Settings",
     ]);
   });
@@ -28,10 +28,11 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.collapsible).toBe(false);
   });
 
-  it("Your engineer zone: Home (root href), Work (href renamed from queue, #1231), then Approvals (#1276)", () => {
+  it("Trust layer zone: Home, Briefs, Acceptance records, then Approvals", () => {
     expect(YOUR_ENGINEER_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Home", ""],
-      ["Work", "work"],
+      ["Briefs", "briefs"],
+      ["Acceptance records", "changes"],
       ["Approvals", "approvals"],
     ]);
   });
@@ -50,25 +51,14 @@ describe("NAV_ZONES data structure", () => {
     expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272), Wallet (#1415), Model selection (#1338 PR③), Briefs (spec PR #1487/#1489), Investigations (spec PR #1501), and Wiki (repo wiki 6/7, sibling of Memory)", () => {
-    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
-      "runs",
-      "review-gates",
-      "costs",
-      "budget",
-      "wallet",
-      "model-selection",
-      "memory",
-      "briefs",
-      "investigations",
-      "wiki",
-      "failures",
-    ]);
+  it("Evidence & context exposes the repository wiki and Context Packs", () => {
+    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual(["wiki", "context-packs"]);
+    expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).not.toContain("review-gates");
   });
 
-  it("Settings zone: Gateways (gateways-page T3, ABOVE Connectors), Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
+  it("Settings zone: Channels, Connectors, Team, Permissions (#1278; api-keys removed 2026-07-19; Repos & Health folded into Wiki, owner ruling), then Plan & billing (subscription-platform spec, slice-3 plan Task 5)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
-      ["Gateways", "gateways"],
+      ["Channels", "gateways"],
       ["Connectors", "connectors"],
       ["Team", "members"],
       ["Permissions", "permissions"],
@@ -79,15 +69,11 @@ describe("NAV_ZONES data structure", () => {
   it("every pre-existing href except queue (renamed to work, #1231), api-keys (removed 2026-07-19), and repos (folded into wiki) is still present exactly once", () => {
     const legacyHrefs = [
       "", // Overview -> Home
-      "runs",
+      "changes",
+      "briefs",
       // "queue" intentionally excluded: #1231 renamed its nav item's href to
       // "work" — the /queue route itself still exists, but only as a
       // redirect (see the next test), not a nav destination.
-      "connectors",
-      "failures",
-      "review-gates",
-      "costs",
-      "memory",
       // "api-keys" intentionally excluded: the in-console key list/create/
       // revoke UI was removed (owner ruling, 2026-07-19) — see the dedicated
       // "api-keys is gone from the nav" test below.
@@ -102,14 +88,12 @@ describe("NAV_ZONES data structure", () => {
     }
   });
 
-  it("budget is present exactly once (#1272: new workspace $ ceiling + per-task/monthly spend page)", () => {
+  it("factory cost and wallet pages are not primary product navigation", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
-    expect(allHrefs.filter((h) => h === "budget")).toHaveLength(1);
-  });
-
-  it("wallet is present exactly once (#1415: prepaid balance + Stripe top-up)", () => {
-    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
-    expect(allHrefs.filter((h) => h === "wallet")).toHaveLength(1);
+    expect(allHrefs).not.toContain("runs");
+    expect(allHrefs).not.toContain("costs");
+    expect(allHrefs).not.toContain("budget");
+    expect(allHrefs).not.toContain("wallet");
   });
 
   it("approvals is present exactly once (#1276: pending approvals, parked work, dead letters)", () => {
@@ -129,10 +113,11 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.items.map((i) => i.href)).toContain("billing");
   });
 
-  it("queue is gone from the nav; work is present exactly once (#1231 rename)", () => {
+  it("factory queue/work surfaces are gone from the nav; Acceptance records is primary", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs).not.toContain("queue");
-    expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
+    expect(allHrefs).not.toContain("work");
+    expect(allHrefs.filter((h) => h === "changes")).toHaveLength(1);
   });
 
   it("api-keys is gone from the nav (owner ruling, 2026-07-19 — in-console key UI removed; the api_keys table and its /api/v1 routes are untouched)", () => {
@@ -145,26 +130,18 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("repos");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, briefs, investigations, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
+  it("exposes only the trust-layer MVP navigation destinations", () => {
     const legacyHrefs = new Set([
       "",
-      "runs",
-      "work", // #1231: renamed from "queue"
+      "changes",
+      "briefs",
       "connectors",
-      "failures",
-      "review-gates",
-      "costs",
-      "budget", // #1272: new workspace $ ceiling + per-task/monthly spend page
-      "wallet", // #1415: prepaid wallet balance + Stripe top-up (#1290's deferred PR③)
       "approvals", // #1276: pending approvals, parked work, dead letters
-      "memory",
-      "briefs", // spec PR #1487/#1489: Jace's durable, editable per-idea understanding
-      "investigations", // spec PR #1501 (Task 13): the durable production-incident record + human confirm/promote gates
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
-      "model-selection", // #1338 PR③: per-task-type model-outcome observe view
       "wiki", // repo wiki 6/7: read-only Engine-room Wiki view, sibling of Memory
-      "gateways", // gateways-page T3: Settings-zone page for the 5 chat surfaces, above Connectors
+      "context-packs", // metadata-only Pack index for customer-visible agent context
+      "gateways", // Settings-zone page for the supported chat channels
       "billing", // subscription-platform spec, slice-3 plan Task 5: plan card + Starter/Growth checkout + Stripe customer-portal link
       // "api-keys" intentionally excluded: removed from the nav (owner
       // ruling, 2026-07-19) — see the dedicated test below.
@@ -212,10 +189,13 @@ describe("isEngineRoomRoute", () => {
 
   it("is false for Your engineer and Settings routes", () => {
     expect(isEngineRoomRoute(BASE, BASE)).toBe(false);
-    expect(isEngineRoomRoute(`${BASE}/work`, BASE)).toBe(false);
+    expect(isEngineRoomRoute(`${BASE}/changes`, BASE)).toBe(false);
     // /queue still exists as a redirect (#1231) — its pathname is likewise
     // not an engine-room route.
     expect(isEngineRoomRoute(`${BASE}/queue`, BASE)).toBe(false);
+    // /review-gates remains reachable for compatibility/history, but is not
+    // a primary navigation or Engine room auto-expand target.
+    expect(isEngineRoomRoute(`${BASE}/review-gates`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/connectors`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/teams`, BASE)).toBe(false);
   });
@@ -223,9 +203,9 @@ describe("isEngineRoomRoute", () => {
 
 describe("resolveEngineRoomOpen", () => {
   it("a direct deep link into an engine-room route always opens, regardless of persisted state", () => {
-    expect(resolveEngineRoomOpen(`${BASE}/runs`, BASE, "false")).toBe(true);
-    expect(resolveEngineRoomOpen(`${BASE}/runs`, BASE, null)).toBe(true);
-    expect(resolveEngineRoomOpen(`${BASE}/runs/run_123`, BASE, "false")).toBe(
+    expect(resolveEngineRoomOpen(`${BASE}/wiki`, BASE, "false")).toBe(true);
+    expect(resolveEngineRoomOpen(`${BASE}/wiki`, BASE, null)).toBe(true);
+    expect(resolveEngineRoomOpen(`${BASE}/wiki/wiki_123`, BASE, "false")).toBe(
       true
     );
   });

@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Jace — reviewable pull requests for engineering teams",
+  title: "Jace — the trust layer for engineering agents",
   description:
-    "Jace turns approved engineering work into reviewable pull requests with acceptance criteria, verification, and attached evidence.",
+    "Jace helps engineering teams turn external-agent work into confirmed acceptance criteria, bounded context, and inspectable PR evidence.",
 };
 
 export default function RootLayout({
@@ -13,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         {/* Prevent dark/light flash: apply saved preference before first paint.
             Light is the default — only an explicit stored "dark" opts back in;

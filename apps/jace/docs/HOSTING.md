@@ -157,7 +157,14 @@ session persists across a run rather than respawning per request).
   its CLI + supergateway at start and publishes its `/mcp` port. Co-located
   services use `http://agent-browser:8932/mcp` / `http://browser-use:8933/mcp`; a
   Jace process outside the compose network uses the published localhost ports.
-  Because agent-browser's toolset exposes a shell/inspect surface on its port
+  The production `deploy/docker-compose.prod.yml` also ships one private
+  `agent-browser` service for the direct Acceptance Record UI executor. It
+  has no host-published port, and Jace reaches it at
+  `http://agent-browser:8932/mcp`. The worker remains an explicit
+  `JACE_VERIFICATION_EXECUTION_WORKER=1` opt-in and still requires a valid
+  Console bearer, artifact storage, and a safe exact-head preview; this is
+  deployment wiring, not a live criterion proof. Because agent-browser's
+  toolset exposes a shell/inspect surface on its port
   (filtered out of qa's allowlist, but present on the wire), keep both sidecars
   host-local or firewalled — do not expose these ports to untrusted networks.
 

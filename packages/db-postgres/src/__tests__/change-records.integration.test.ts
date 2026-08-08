@@ -8,6 +8,7 @@ import {
   appendChangeRecordEvent,
   changeRecordId,
   findOrCreateChangeRecord,
+  recordAcceptancePostMergeOutcome,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
 
@@ -152,6 +153,224 @@ describe.skipIf(!DB_AVAILABLE)(
         artifact: "ac_evidence.json",
         runId: "run-1",
       });
+    });
+
+    it("records post-merge outcomes append-only, carries merge provenance forward, and stays replay-safe after later state changes", async () => {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        issueNumber: 310,
+        prNumber: 310,
+        headShas: ["a1b2c3d"],
+      });
+
+      const mergedOutcome = {
+        kind: "merged",
+        prNumber: 310,
+        baseSha: "c3d4e5f",
+        headSha: "a1b2c3d",
+        mergeSha: "b2c3d4e",
+        mergeReference: "gh/pr/310#merge",
+      } as const;
+      const merged = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: mergedOutcome,
+        occurredAt: new Date("2026-08-03T14:00:00.000Z"),
+      });
+      expect(merged.inserted).toBe(true);
+      expect(merged.event.eventKey).toBe("acceptance-post-merge:merged:b2c3d4e");
+      expect(merged.event.stage).toBe("post_merge_outcome");
+      expect(merged.event.payloadRef).toEqual({
+        kind: "acceptance_post_merge_outcome",
+        repository: "acme/widgets",
+        outcome: mergedOutcome,
+      });
+
+      const mergedReplayBeforeLaterOutcomes = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: mergedOutcome,
+        occurredAt: new Date("2026-08-03T14:05:00.000Z"),
+      });
+      expect(mergedReplayBeforeLaterOutcomes.inserted).toBe(false);
+      expect(mergedReplayBeforeLaterOutcomes.event.id).toBe(merged.event.id);
+
+      const deployedOutcome = {
+        kind: "deployed",
+        revisionSha: "b2c3d4e",
+        environment: "production",
+        deploymentReference: "railway:deploy:42",
+      } as const;
+      const incidentOutcome = {
+        kind: "incident",
+        revisionSha: "b2c3d4e",
+        incidentReference: "incidents:inc-9",
+      } as const;
+      const revertedOutcome = {
+        kind: "reverted",
+        revertedSha: "b2c3d4e",
+        revertSha: "c3d4e5f",
+        revertReference: "gh/revert/99",
+      } as const;
+
+      const deployed = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: deployedOutcome,
+        occurredAt: new Date("2026-08-03T15:00:00.000Z"),
+      });
+      const incident = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: incidentOutcome,
+        occurredAt: new Date("2026-08-03T16:00:00.000Z"),
+      });
+      const reverted = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: revertedOutcome,
+        occurredAt: new Date("2026-08-03T17:00:00.000Z"),
+      });
+
+      expect(deployed.inserted).toBe(true);
+      expect(incident.inserted).toBe(true);
+      expect(reverted.inserted).toBe(true);
+
+      const timeline = await readChangeRecordTimeline({
+        workspaceId: wsId,
+        recordId: record.id,
+      });
+      expect(timeline?.record.mergedSha).toBe("b2c3d4e");
+      expect(timeline?.record.state).toBe("reverted");
+      expect(timeline?.events.map((event) => event.eventKey)).toEqual([
+        "acceptance-post-merge:merged:b2c3d4e",
+        "acceptance-post-merge:deployed:railway:deploy:42",
+        "acceptance-post-merge:incident:incidents:inc-9",
+        "acceptance-post-merge:reverted:c3d4e5f",
+      ]);
+      expect(timeline?.events[0]?.payloadRef).toEqual({
+        kind: "acceptance_post_merge_outcome",
+        repository: "acme/widgets",
+        outcome: mergedOutcome,
+      });
+      expect(timeline?.events[1]?.payloadRef).toEqual({
+        kind: "acceptance_post_merge_outcome",
+        repository: "acme/widgets",
+        outcome: deployedOutcome,
+      });
+      expect(timeline?.events[2]?.payloadRef).toEqual({
+        kind: "acceptance_post_merge_outcome",
+        repository: "acme/widgets",
+        outcome: incidentOutcome,
+      });
+      expect(timeline?.events[3]?.payloadRef).toEqual({
+        kind: "acceptance_post_merge_outcome",
+        repository: "acme/widgets",
+        outcome: revertedOutcome,
+      });
+
+      // This should stay replay-safe even after later outcomes have changed
+      // the record's summary state; the recorded merge event is the canonical
+      // provenance and must still be returned, not rejected.
+      const mergedReplayAfterLaterOutcomes = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+        outcome: mergedOutcome,
+        occurredAt: new Date("2026-08-03T18:00:00.000Z"),
+      });
+      expect(mergedReplayAfterLaterOutcomes.inserted).toBe(false);
+      expect(mergedReplayAfterLaterOutcomes.event.id).toBe(merged.event.id);
+      expect(mergedReplayAfterLaterOutcomes.event.payloadRef).toEqual(merged.event.payloadRef);
+    });
+
+    it("rejects foreign-workspace, stale-head, and unmatched merge references", async () => {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        issueNumber: 410,
+        prNumber: 410,
+        headShas: ["d4e5f6a"],
+      });
+
+      await expect(
+        recordAcceptancePostMergeOutcome({
+          workspaceId: wsId,
+          recordId: record.id,
+          recordedBy: "user:lead",
+          outcome: {
+            kind: "merged",
+            prNumber: 410,
+            baseSha: "e5f6a7b",
+            headSha: "deadbee",
+            mergeSha: "0410abc",
+            mergeReference: "gh/pr/410#merge",
+          },
+        })
+      ).rejects.toThrow("Merge outcome does not match this Acceptance Record PR and exact head");
+
+      const merged = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: record.id,
+        recordedBy: "user:lead",
+          outcome: {
+            kind: "merged",
+            prNumber: 410,
+            baseSha: "e5f6a7b",
+            headSha: "d4e5f6a",
+            mergeSha: "0410abc",
+            mergeReference: "gh/pr/410#merge",
+          },
+        });
+      expect(merged.inserted).toBe(true);
+
+      const otherWorkspace = await db
+        .insert(workspaces)
+        .values({
+          name: "other workspace",
+          slug: `other-change-records-${randomUUID()}`,
+        })
+        .returning({ id: workspaces.id });
+      try {
+        await expect(
+          recordAcceptancePostMergeOutcome({
+            workspaceId: otherWorkspace[0]!.id,
+            recordId: record.id,
+            recordedBy: "user:lead",
+            outcome: {
+              kind: "deployed",
+              revisionSha: "0410abc",
+              environment: "production",
+              deploymentReference: "railway:deploy:foreign",
+            },
+          })
+        ).rejects.toThrow("Acceptance Record is missing or outside this workspace");
+      } finally {
+        await db
+          .delete(workspaces)
+          .where(eq(workspaces.id, otherWorkspace[0]!.id));
+      }
+
+      await expect(
+        recordAcceptancePostMergeOutcome({
+          workspaceId: wsId,
+          recordId: record.id,
+          recordedBy: "user:lead",
+          outcome: {
+            kind: "incident",
+            revisionSha: "ffffeee",
+            incidentReference: "incidents:foreign-revision",
+          },
+        })
+      ).rejects.toThrow(
+        "Post-merge outcome does not reference this Acceptance Record merge SHA"
+      );
     });
 
     it("reads timelines scoped by workspace and ordered by event time", async () => {

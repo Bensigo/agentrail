@@ -3262,14 +3262,18 @@ export {
   changeRecordEventId,
   findOrCreateChangeRecord,
   appendChangeRecordEvent,
+  recordAcceptancePostMergeOutcome,
   readChangeRecordTimelineByPr,
   readChangeRecordTimeline,
   listChangeRecords,
   type ChangeRecordAnchor,
   type FindOrCreateChangeRecordInput,
   type AppendChangeRecordEventInput,
+  type AcceptancePostMergeOutcome,
+  type RecordAcceptancePostMergeOutcomeInput,
   type ChangeRecordTimeline,
   type ListChangeRecordsInput,
+  validateAcceptancePostMergeOutcome,
 } from "./change_records.js";
 
 // Arc E Judgment Ledger storage slice (spec

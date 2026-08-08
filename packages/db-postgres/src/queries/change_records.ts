@@ -311,6 +311,210 @@ export async function appendChangeRecordEvent(
   };
 }
 
+const GIT_SHA = /^[0-9a-f]{7,64}$/i;
+const OUTCOME_REFERENCE_LIMIT = 1_024;
+const OUTCOME_ENVIRONMENT_LIMIT = 160;
+
+function boundedOutcomeReference(value: unknown, limit = OUTCOME_REFERENCE_LIMIT): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= limit
+    && value === value.trim()
+    && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+function gitSha(value: unknown): value is string {
+  return typeof value === "string" && GIT_SHA.test(value);
+}
+
+export type AcceptancePostMergeOutcome =
+  | {
+      kind: "merged";
+      prNumber: number;
+      baseSha: string;
+      headSha: string;
+      mergeSha: string;
+      mergeReference: string;
+    }
+  | {
+      kind: "deployed";
+      revisionSha: string;
+      environment: string;
+      deploymentReference: string;
+    }
+  | {
+      kind: "incident";
+      revisionSha: string;
+      incidentReference: string;
+    }
+  | {
+      kind: "reverted";
+      revertedSha: string;
+      revertSha: string;
+      revertReference: string;
+    };
+
+export type RecordAcceptancePostMergeOutcomeInput = {
+  workspaceId: string;
+  recordId: string;
+  recordedBy: string;
+  outcome: AcceptancePostMergeOutcome;
+  occurredAt?: Date;
+};
+
+/**
+ * Accept only a bounded post-merge reference. This is deliberately not a
+ * generic timeline write: each variant has a stable idempotency key and can
+ * be checked against the Record's current PR/head/merge lineage.
+ */
+export function validateAcceptancePostMergeOutcome(
+  value: unknown
+): value is AcceptancePostMergeOutcome {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const outcome = value as Record<string, unknown>;
+  if (outcome.kind === "merged") {
+    return Number.isInteger(outcome.prNumber)
+      && (outcome.prNumber as number) > 0
+      && gitSha(outcome.baseSha)
+      && gitSha(outcome.headSha)
+      && gitSha(outcome.mergeSha)
+      && boundedOutcomeReference(outcome.mergeReference);
+  }
+  if (outcome.kind === "deployed") {
+    return gitSha(outcome.revisionSha)
+      && boundedOutcomeReference(outcome.environment, OUTCOME_ENVIRONMENT_LIMIT)
+      && boundedOutcomeReference(outcome.deploymentReference);
+  }
+  if (outcome.kind === "incident") {
+    return gitSha(outcome.revisionSha)
+      && boundedOutcomeReference(outcome.incidentReference);
+  }
+  if (outcome.kind === "reverted") {
+    return gitSha(outcome.revertedSha)
+      && gitSha(outcome.revertSha)
+      && boundedOutcomeReference(outcome.revertReference);
+  }
+  return false;
+}
+
+function outcomeEventKey(outcome: AcceptancePostMergeOutcome): string {
+  switch (outcome.kind) {
+    case "merged":
+      return `acceptance-post-merge:merged:${outcome.mergeSha}`;
+    case "deployed":
+      return `acceptance-post-merge:deployed:${outcome.deploymentReference}`;
+    case "incident":
+      return `acceptance-post-merge:incident:${outcome.incidentReference}`;
+    case "reverted":
+      return `acceptance-post-merge:reverted:${outcome.revertSha}`;
+  }
+}
+
+function outcomePayload(record: ChangeRecordRow, outcome: AcceptancePostMergeOutcome): Record<string, unknown> {
+  return { kind: "acceptance_post_merge_outcome", repository: record.repo, outcome };
+}
+
+/**
+ * Append one human-authorized post-merge outcome to its canonical Acceptance
+ * Record. The Record header is only a current summary; the event is the
+ * immutable provenance of the merge, deployment, incident, or revert.
+ */
+export async function recordAcceptancePostMergeOutcome(
+  input: RecordAcceptancePostMergeOutcomeInput
+): Promise<{ event: ChangeRecordEventRow; inserted: boolean }> {
+  if (!validateAcceptancePostMergeOutcome(input.outcome)) {
+    throw new Error("Invalid Acceptance Record post-merge outcome");
+  }
+  if (!boundedOutcomeReference(input.recordedBy, 256)) {
+    throw new Error("Invalid Acceptance Record outcome actor");
+  }
+  if (input.occurredAt != null && Number.isNaN(input.occurredAt.valueOf())) {
+    throw new Error("Invalid Acceptance Record outcome timestamp");
+  }
+
+  const eventKey = outcomeEventKey(input.outcome);
+  const at = (input.occurredAt ?? new Date()).toISOString();
+  return db.transaction(async (tx) => {
+    const records = Array.from(await tx.execute(sql`
+      SELECT * FROM change_records
+      WHERE id = ${input.recordId}
+        AND workspace_id = ${input.workspaceId}
+      FOR UPDATE
+    `)) as Array<Record<string, unknown>>;
+    const rawRecord = records[0];
+    if (!rawRecord) throw new Error("Acceptance Record is missing or outside this workspace");
+    const record = mapChangeRecordRow(rawRecord);
+    const outcome = input.outcome;
+
+    // A retry must return the immutable original event even if a later outcome
+    // changed the Record summary (for example, a later revert). The event key
+    // is derived from the immutable external reference, not its current state.
+    const existing = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, eventKey),
+    )).limit(1))[0];
+    if (existing) {
+      return { event: existing as ChangeRecordEventRow, inserted: false };
+    }
+
+    if (outcome.kind === "merged") {
+      if (record.prNumber !== outcome.prNumber || !record.headShas.includes(outcome.headSha)) {
+        throw new Error("Merge outcome does not match this Acceptance Record PR and exact head");
+      }
+      if (record.mergedSha != null && record.mergedSha !== outcome.mergeSha) {
+        throw new Error("Acceptance Record already has a different merge SHA");
+      }
+      if (record.state === "reverted") {
+        throw new Error("A reverted Acceptance Record cannot record another merge outcome");
+      }
+    } else if (outcome.kind === "deployed" || outcome.kind === "incident") {
+      if (record.mergedSha == null || record.mergedSha !== outcome.revisionSha) {
+        throw new Error("Post-merge outcome does not reference this Acceptance Record merge SHA");
+      }
+    } else if (record.mergedSha == null || record.mergedSha !== outcome.revertedSha) {
+      throw new Error("Revert outcome does not reference this Acceptance Record merge SHA");
+    }
+
+    const inserted = Array.from(await tx.execute(sql`
+      INSERT INTO change_record_events (
+        id, record_id, event_key, stage, at, actor, payload_ref
+      ) VALUES (
+        ${changeRecordEventId({ recordId: input.recordId, eventKey })},
+        ${input.recordId}, ${eventKey}, 'post_merge_outcome', ${at},
+        ${input.recordedBy}, ${JSON.stringify(outcomePayload(record, outcome))}::jsonb
+      )
+      ON CONFLICT (record_id, event_key) DO NOTHING
+      RETURNING *
+    `)) as Array<Record<string, unknown>>;
+
+    const rawEvent = inserted[0] ?? (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, eventKey),
+    )).limit(1))[0];
+    if (!rawEvent) throw new Error("Acceptance Record post-merge outcome was not recorded");
+
+    if (inserted[0] && outcome.kind === "merged") {
+      await tx.execute(sql`
+        UPDATE change_records
+        SET merged_sha = ${outcome.mergeSha}, state = 'merged', updated_at = now()
+        WHERE id = ${input.recordId}
+      `);
+    }
+    if (inserted[0] && outcome.kind === "reverted") {
+      await tx.execute(sql`
+        UPDATE change_records
+        SET state = 'reverted', updated_at = now()
+        WHERE id = ${input.recordId}
+      `);
+    }
+
+    return {
+      event: mapChangeRecordEventRow(rawEvent as Record<string, unknown>),
+      inserted: Boolean(inserted[0]),
+    };
+  });
+}
+
 export type ChangeRecordTimeline = {
   record: ChangeRecordRow;
   events: ChangeRecordEventRow[];

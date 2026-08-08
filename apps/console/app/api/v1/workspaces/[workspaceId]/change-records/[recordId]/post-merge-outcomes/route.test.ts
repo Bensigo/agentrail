@@ -19,6 +19,7 @@ import { POST } from "./route";
 const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
 const RECORD_ID = "00000000-0000-0000-0000-000000000002";
 const NOW = new Date("2026-08-08T12:00:00.000Z");
+const BASE_SHA = "c".repeat(40);
 const MERGE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
@@ -36,6 +37,7 @@ function request(body: unknown) {
 const outcome = {
   kind: "merged",
   prNumber: 12,
+  baseSha: BASE_SHA,
   headSha: HEAD_SHA,
   mergeSha: MERGE_SHA,
   mergeReference: "https://github.com/acme/widgets/pull/12",

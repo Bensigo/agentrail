@@ -167,6 +167,7 @@ describe.skipIf(!DB_AVAILABLE)(
       const mergedOutcome = {
         kind: "merged",
         prNumber: 310,
+        baseSha: "c3d4e5f",
         headSha: "a1b2c3d",
         mergeSha: "b2c3d4e",
         mergeReference: "gh/pr/310#merge",
@@ -306,6 +307,7 @@ describe.skipIf(!DB_AVAILABLE)(
           outcome: {
             kind: "merged",
             prNumber: 410,
+            baseSha: "e5f6a7b",
             headSha: "deadbee",
             mergeSha: "0410abc",
             mergeReference: "gh/pr/410#merge",
@@ -320,6 +322,7 @@ describe.skipIf(!DB_AVAILABLE)(
           outcome: {
             kind: "merged",
             prNumber: 410,
+            baseSha: "e5f6a7b",
             headSha: "d4e5f6a",
             mergeSha: "0410abc",
             mergeReference: "gh/pr/410#merge",

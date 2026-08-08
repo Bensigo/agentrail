@@ -331,6 +331,7 @@ export type AcceptancePostMergeOutcome =
   | {
       kind: "merged";
       prNumber: number;
+      baseSha: string;
       headSha: string;
       mergeSha: string;
       mergeReference: string;
@@ -374,6 +375,7 @@ export function validateAcceptancePostMergeOutcome(
   if (outcome.kind === "merged") {
     return Number.isInteger(outcome.prNumber)
       && (outcome.prNumber as number) > 0
+      && gitSha(outcome.baseSha)
       && gitSha(outcome.headSha)
       && gitSha(outcome.mergeSha)
       && boundedOutcomeReference(outcome.mergeReference);

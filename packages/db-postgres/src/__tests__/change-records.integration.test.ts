@@ -3,7 +3,11 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
-import { changeRecordEvents } from "../schema/change_records.js";
+import {
+  acceptanceIntakeMessages,
+  acceptanceIntakes,
+  changeRecordEvents,
+} from "../schema/change_records.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
@@ -12,6 +16,7 @@ import {
   createDraftAcceptanceRecord,
   findOrCreateChangeRecord,
   recordAcceptancePostMergeOutcome,
+  recordAcceptanceInboundIntake,
   readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
@@ -26,17 +31,23 @@ const DB_AVAILABLE: boolean = await (async () => {
       await db.execute(sql`
         SELECT to_regclass('public.change_records') AS change_records,
                to_regclass('public.change_record_events') AS change_record_events,
-               to_regclass('public.acceptance_contracts') AS acceptance_contracts
+               to_regclass('public.acceptance_contracts') AS acceptance_contracts,
+               to_regclass('public.acceptance_intakes') AS acceptance_intakes,
+               to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
     ) as Array<{
       change_records: string | null;
       change_record_events: string | null;
       acceptance_contracts: string | null;
+      acceptance_intakes: string | null;
+      acceptance_intake_messages: string | null;
     }>;
     return (
       rows[0]?.change_records === "change_records" &&
       rows[0]?.change_record_events === "change_record_events" &&
-      rows[0]?.acceptance_contracts === "acceptance_contracts"
+      rows[0]?.acceptance_contracts === "acceptance_contracts" &&
+      rows[0]?.acceptance_intakes === "acceptance_intakes" &&
+      rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
   } catch {
     return false;
@@ -103,6 +114,53 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       expect(second.id).toBe(first.id);
       expect(second.headShas).toEqual(["sha-a", "sha-b", "sha-c"]);
+    });
+
+    it("persists one canonical Intake message idempotently and refuses source-key collisions", async () => {
+      const first = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "Slack",
+        conversationKey: "thread-7",
+        sourceKey: "event-1",
+        text: "Add saved filters",
+        sourceReferences: [{ kind: "channel_message", id: "event-1" }],
+      });
+      expect(first.inserted).toBe(true);
+      expect(first.intake.originChannel).toBe("slack");
+
+      const replay = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "slack",
+        conversationKey: "thread-7",
+        sourceKey: "event-1",
+        text: "Add saved filters",
+      });
+      expect(replay.inserted).toBe(false);
+      expect(replay.intake.id).toBe(first.intake.id);
+      expect(replay.message.id).toBe(first.message.id);
+
+      await expect(
+        recordAcceptanceInboundIntake({
+          workspaceId: wsId,
+          originChannel: "slack",
+          conversationKey: "thread-7",
+          sourceKey: "event-1",
+          text: "Different content",
+        })
+      ).rejects.toThrow("source key is already bound to different content");
+
+      expect(
+        await db
+          .select()
+          .from(acceptanceIntakes)
+          .where(eq(acceptanceIntakes.id, first.intake.id))
+      ).toHaveLength(1);
+      expect(
+        await db
+          .select()
+          .from(acceptanceIntakeMessages)
+          .where(eq(acceptanceIntakeMessages.intakeId, first.intake.id))
+      ).toHaveLength(1);
     });
 
     it("unifies issue-only and PR-only records, moving PR events to the issue record", async () => {

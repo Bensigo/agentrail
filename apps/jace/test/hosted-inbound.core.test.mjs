@@ -85,6 +85,26 @@ test("normalizeHostedInbound trims the message", () => {
   assert.equal(out.message, "spaced");
 });
 
+test("normalizeHostedInbound preserves a bounded durable source key", () => {
+  const out = normalizeHostedInbound({
+    message: "hi",
+    sourceKey: " inbox-1 ",
+    target: { chatId: 1 },
+    auth: {},
+  });
+  assert.equal(out.sourceKey, "inbox-1");
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        message: "hi",
+        sourceKey: "   ",
+        target: { chatId: 1 },
+        auth: {},
+      }),
+    /sourceKey.*non-empty/
+  );
+});
+
 test("normalizeHostedInbound rejects a non-object payload", () => {
   assert.throws(() => normalizeHostedInbound(null), /must be a JSON object/);
   assert.throws(() => normalizeHostedInbound("nope"), /must be a JSON object/);

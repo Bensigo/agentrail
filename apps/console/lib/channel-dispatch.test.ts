@@ -941,6 +941,7 @@ describe("dispatchQueuedChannelMessages — 'intro' kind", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: "hello jace",
+          sourceKey: "row-1",
           channel: "telegram",
           target: { chatId: -100123 },
           auth: {

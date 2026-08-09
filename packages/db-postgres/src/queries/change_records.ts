@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "util";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
@@ -653,6 +654,30 @@ export type AcceptanceRecordDraft = {
   contract: AcceptanceContractRow;
 };
 
+export type CreateDraftAcceptanceRecordFromIntakeInput = {
+  workspaceId: string;
+  intakeId: string;
+  repo: string;
+  contract: Record<string, unknown>;
+  createdBy: string;
+};
+
+export type AcceptanceRecordDraftFromIntake = AcceptanceRecordDraft & {
+  intake: AcceptanceIntakeRow;
+  /** True only when this request made the first durable Intake → Record link. */
+  created: boolean;
+};
+
+export class AcceptanceIntakeDraftError extends Error {
+  constructor(
+    readonly code: "not_found" | "conflict",
+    message: string
+  ) {
+    super(message);
+    this.name = "AcceptanceIntakeDraftError";
+  }
+}
+
 export type RecordAcceptanceInboundIntakeInput = {
   workspaceId: string;
   originChannel: string;
@@ -835,6 +860,72 @@ async function appendContractEventInTransaction(
   `);
 }
 
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function createDraftAcceptanceRecordInTransaction(
+  tx: DbTransaction,
+  input: CreateDraftAcceptanceRecordInput,
+  workKey: string,
+  sourceReferences: Record<string, unknown>[]
+): Promise<AcceptanceRecordDraft> {
+  const recordId = changeRecordId({
+    workspaceId: input.workspaceId,
+    repo: input.repo,
+    workKey,
+  });
+  const contractId = acceptanceContractId({ recordId, version: 1 });
+  const records = Array.from(
+    await tx.execute(sql`
+      INSERT INTO change_records (
+        id, workspace_id, repo, work_key, origin_channel, source_references
+      ) VALUES (
+        ${recordId}, ${input.workspaceId}, ${input.repo}, ${workKey},
+        ${input.originChannel}, ${JSON.stringify(sourceReferences)}::jsonb
+      )
+      ON CONFLICT (workspace_id, repo, work_key) WHERE work_key IS NOT NULL
+      DO UPDATE SET updated_at = now()
+      RETURNING *
+    `)
+  ) as Array<Record<string, unknown>>;
+  const record = mapChangeRecordRow(records[0]!);
+
+  const existing = await tx
+    .select()
+    .from(acceptanceContracts)
+    .where(eq(acceptanceContracts.recordId, record.id))
+    .orderBy(desc(acceptanceContracts.version))
+    .limit(1);
+  if (existing[0]) {
+    return { record, contract: existing[0] };
+  }
+
+  const contracts = await tx
+    .insert(acceptanceContracts)
+    .values({
+      id: contractId,
+      recordId: record.id,
+      version: 1,
+      status: "draft",
+      contract: input.contract,
+      createdBy: input.createdBy,
+    })
+    .returning();
+  const contract = contracts[0]!;
+  await appendContractEventInTransaction(tx, {
+    recordId: record.id,
+    eventKey: `acceptance-contract:draft:${contract.version}`,
+    stage: "acceptance_contract",
+    actor: input.createdBy,
+    payloadRef: {
+      kind: "acceptance_contract",
+      contractId: contract.id,
+      version: contract.version,
+      status: contract.status,
+    },
+  });
+  return { record, contract };
+}
+
 /**
  * Starts the trust workflow before an issue or PR exists. A retry with the
  * same workKey returns the original immutable draft instead of creating a
@@ -845,67 +936,155 @@ export async function createDraftAcceptanceRecord(
 ): Promise<AcceptanceRecordDraft> {
   assertValidAcceptanceContract(input.contract);
   const workKey = normalizedWorkKey(input.workKey);
-  const recordId = changeRecordId({
-    workspaceId: input.workspaceId,
-    repo: input.repo,
-    workKey,
-  });
-  const contractId = acceptanceContractId({ recordId, version: 1 });
   const sourceReferences = normalizeSourceReferences(input.sourceReferences);
   const lockKey = `acceptance-record:${input.workspaceId}:${input.repo}:${workKey}`;
 
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
-    const records = Array.from(
-      await tx.execute(sql`
-        INSERT INTO change_records (
-          id, workspace_id, repo, work_key, origin_channel, source_references
-        ) VALUES (
-          ${recordId}, ${input.workspaceId}, ${input.repo}, ${workKey},
-          ${input.originChannel}, ${JSON.stringify(sourceReferences)}::jsonb
-        )
-        ON CONFLICT (workspace_id, repo, work_key) WHERE work_key IS NOT NULL
-        DO UPDATE SET updated_at = now()
-        RETURNING *
-      `)
-    ) as Array<Record<string, unknown>>;
-    const record = mapChangeRecordRow(records[0]!);
+    return createDraftAcceptanceRecordInTransaction(
+      tx,
+      input,
+      workKey,
+      sourceReferences
+    );
+  });
+}
 
-    const existing = await tx
-      .select()
-      .from(acceptanceContracts)
-      .where(eq(acceptanceContracts.recordId, record.id))
-      .orderBy(desc(acceptanceContracts.version))
-      .limit(1);
-    if (existing[0]) {
-      return { record, contract: existing[0] };
+/**
+ * Binds one canonical Intake to its first draft Acceptance Record. The Intake
+ * is locked with its own advisory key and the resulting Record has a
+ * deterministic work key, so an accidental replay cannot create a second
+ * Record or silently replace its immutable Contract or provenance.
+ */
+export async function createDraftAcceptanceRecordFromIntake(
+  input: CreateDraftAcceptanceRecordFromIntakeInput
+): Promise<AcceptanceRecordDraftFromIntake> {
+  assertValidAcceptanceContract(input.contract);
+  const repo = input.repo.trim();
+  if (!repo) throw new Error("Acceptance Record requires a repository");
+  const workKey = `acceptance-intake:${input.intakeId}`;
+  const intakeLockKey = `acceptance-intake:${input.workspaceId}:${input.intakeId}`;
+  const recordLockKey = `acceptance-record:${input.workspaceId}:${repo}:${workKey}`;
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${intakeLockKey}))`);
+    const intake = (
+      await tx
+        .select()
+        .from(acceptanceIntakes)
+        .where(
+          and(
+            eq(acceptanceIntakes.workspaceId, input.workspaceId),
+            eq(acceptanceIntakes.id, input.intakeId)
+          )
+        )
+        .limit(1)
+    )[0];
+    if (!intake) {
+      throw new AcceptanceIntakeDraftError("not_found", "Acceptance Intake not found");
     }
 
-    const contracts = await tx
-      .insert(acceptanceContracts)
-      .values({
-        id: contractId,
-        recordId: record.id,
-        version: 1,
-        status: "draft",
+    const assertExistingDraft = async (
+      recordId: string
+    ): Promise<AcceptanceRecordDraftFromIntake> => {
+      const record = (
+        await tx
+          .select()
+          .from(changeRecords)
+          .where(
+            and(
+              eq(changeRecords.workspaceId, input.workspaceId),
+              eq(changeRecords.id, recordId)
+            )
+          )
+          .limit(1)
+      )[0];
+      const contract = record
+        ? (
+            await tx
+              .select()
+              .from(acceptanceContracts)
+              .where(eq(acceptanceContracts.recordId, record.id))
+              .orderBy(desc(acceptanceContracts.version))
+              .limit(1)
+          )[0]
+        : undefined;
+      if (
+        !record ||
+        !contract ||
+        record.repo !== repo ||
+        record.workKey !== workKey ||
+        record.originChannel !== intake.originChannel ||
+        !isDeepStrictEqual(record.sourceReferences, intake.sourceReferences) ||
+        !isDeepStrictEqual(contract.contract, input.contract)
+      ) {
+        throw new AcceptanceIntakeDraftError(
+          "conflict",
+          "Acceptance Intake is already bound to a different draft"
+        );
+      }
+      return { intake, record, contract, created: false };
+    };
+
+    if (intake.recordId) return assertExistingDraft(intake.recordId);
+
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${recordLockKey}))`);
+    const draft = await createDraftAcceptanceRecordInTransaction(
+      tx,
+      {
+        workspaceId: input.workspaceId,
+        repo,
+        workKey,
+        originChannel: intake.originChannel,
+        sourceReferences: intake.sourceReferences,
         contract: input.contract,
         createdBy: input.createdBy,
-      })
+      },
+      workKey,
+      intake.sourceReferences
+    );
+    if (
+      draft.record.originChannel !== intake.originChannel ||
+      !isDeepStrictEqual(draft.record.sourceReferences, intake.sourceReferences) ||
+      !isDeepStrictEqual(draft.contract.contract, input.contract)
+    ) {
+      throw new AcceptanceIntakeDraftError(
+        "conflict",
+        "Acceptance Intake work key is already bound to a different draft"
+      );
+    }
+    const updated = await tx
+      .update(acceptanceIntakes)
+      .set({ recordId: draft.record.id, status: "drafted", updatedAt: new Date() })
+      .where(
+        and(
+          eq(acceptanceIntakes.workspaceId, input.workspaceId),
+          eq(acceptanceIntakes.id, input.intakeId),
+          isNull(acceptanceIntakes.recordId)
+        )
+      )
       .returning();
-    const contract = contracts[0]!;
+    const linkedIntake = updated[0];
+    if (!linkedIntake) {
+      throw new AcceptanceIntakeDraftError(
+        "conflict",
+        "Acceptance Intake link changed during drafting"
+      );
+    }
     await appendContractEventInTransaction(tx, {
-      recordId: record.id,
-      eventKey: `acceptance-contract:draft:${contract.version}`,
-      stage: "acceptance_contract",
+      recordId: draft.record.id,
+      eventKey: `acceptance-intake:${intake.id}:drafted`,
+      stage: "acceptance_intake",
       actor: input.createdBy,
       payloadRef: {
-        kind: "acceptance_contract",
-        contractId: contract.id,
-        version: contract.version,
-        status: contract.status,
+        kind: "acceptance_intake",
+        intakeId: intake.id,
+        originChannel: intake.originChannel,
+        conversationKey: intake.conversationKey,
+        sourceReferenceCount: intake.sourceReferences.length,
       },
     });
-    return { record, contract };
+    return { intake: linkedIntake, ...draft, created: true };
   });
 }
 

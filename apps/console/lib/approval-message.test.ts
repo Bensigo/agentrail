@@ -448,6 +448,30 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
   });
 });
 
+describe("renderApprovalMessage — acceptance contract confirmation", () => {
+  it("renders a compact server-selected contract view for the human decision", () => {
+    const text = renderApprovalMessage("confirm_acceptance_contract", {
+      title: "Add saved filters",
+      version: 3,
+      acceptanceCriteria: [
+        { id: "AC-1", text: "A user can save a filter" },
+        "Saved filters persist after reload",
+      ],
+      nonGoals: ["Do not change sharing permissions"],
+    });
+
+    expect(text).toContain("Confirm this Acceptance Contract?");
+    expect(text).toContain("Version: 3");
+    expect(text).toContain("A user can save a filter");
+    expect(text).toContain("Saved filters persist after reload");
+    expect(text).toContain("Do not change sharing permissions");
+  });
+
+  it("does not throw on a malformed persisted contract view", () => {
+    expect(() => renderApprovalMessage("confirm_acceptance_contract", {})).not.toThrow();
+  });
+});
+
 describe("renderApprovalMessage — unknown tool (generic fallback)", () => {
   it("renders the tool name and each input field as a compact key:value line", () => {
     const text = renderApprovalMessage("some_future_tool", {

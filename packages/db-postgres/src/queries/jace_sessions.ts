@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
@@ -8,9 +8,15 @@ import {
   type JaceApprovalRow,
 } from "../schema/jace_sessions.js";
 import {
+  acceptanceContracts,
+  changeRecords,
+  type AcceptanceContractRow,
+} from "../schema/change_records.js";
+import {
   listWorkspacesForChatIdentity,
   type ReachableWorkspace,
 } from "./chat_identities.js";
+import { validateAcceptanceContract } from "./change_records.js";
 
 /**
  * Jace session + approval queries (spec §4; see `schema/jace_sessions.ts` for
@@ -954,6 +960,7 @@ export interface RecordApprovalRequestInput {
   toolInput: Record<string, unknown>;
   approveOptionId: string;
   denyOptionId: string;
+  acceptanceContractId?: string;
   // #1274: set ONLY for a system-composed "alignment_brief" approval — the
   // parked `queue_entries` row this brief is gating. Omitted (stays null) for
   // every other tool, byte-identical to today.
@@ -1084,6 +1091,7 @@ export async function recordApprovalRequest(
       toolInput: input.toolInput,
       approveOptionId: input.approveOptionId,
       denyOptionId: input.denyOptionId,
+      acceptanceContractId: input.acceptanceContractId,
       queueEntryId: input.queueEntryId,
       dependencyContractId: input.dependencyContractId,
       requirementDecision: requirement?.requirementDecision,
@@ -1239,6 +1247,278 @@ export async function resolveApproval(
     .returning({ id: jaceApprovals.id });
 
   return result.length > 0;
+}
+
+const CHANGE_RECORD_EVENT_NAMESPACE_URL =
+  "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+
+function uuid5Url(name: string): string {
+  const ns = Buffer.from(
+    CHANGE_RECORD_EVENT_NAMESPACE_URL.replace(/-/g, ""),
+    "hex"
+  );
+  const hash = createHash("sha1")
+    .update(ns)
+    .update(Buffer.from(name, "utf8"))
+    .digest();
+  const b = hash.subarray(0, 16);
+  b[6] = (b[6]! & 0x0f) | 0x50;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = b.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+function acceptanceContractEventId(input: {
+  recordId: string;
+  eventKey: string;
+}): string {
+  return uuid5Url(`change-record-event:${input.recordId}:${input.eventKey}`);
+}
+
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function appendAcceptanceContractConfirmedEventInTransaction(
+  tx: DbTransaction,
+  input: {
+    recordId: string;
+    contractId: string;
+    version: number;
+    actor: string;
+  }
+): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO change_record_events (
+      id, record_id, event_key, stage, actor, payload_ref
+    ) VALUES (
+      ${acceptanceContractEventId({
+        recordId: input.recordId,
+        eventKey: `acceptance-contract:confirmed:${input.version}`,
+      })},
+      ${input.recordId},
+      ${`acceptance-contract:confirmed:${input.version}`},
+      ${"acceptance_contract"},
+      ${input.actor},
+      ${JSON.stringify({
+        kind: "acceptance_contract",
+        contractId: input.contractId,
+        version: input.version,
+        status: "confirmed",
+      })}::jsonb
+    )
+    ON CONFLICT (record_id, event_key) DO NOTHING
+  `);
+}
+
+export type ResolveAcceptanceContractApprovalOutcome =
+  | { resolved: true; contract: AcceptanceContractRow | null }
+  | {
+      resolved: false;
+      reason:
+        | "not_found"
+        | "wrong_workspace"
+        | "not_pending"
+        | "wrong_tool_name"
+        | "missing_contract_binding"
+        | "foreign_contract"
+        | "not_draft"
+        | "incomplete_contract"
+        | "open_questions";
+    };
+
+/**
+ * Resolve the one approval seam for an Acceptance Contract.
+ *
+ * The approval must already exist and belong to the caller's workspace. The
+ * function owns the full DB transaction: it locks the approval row, checks the
+ * persisted approval state, validates the stored binding, confirms the exact
+ * draft contract version, appends the canonical contract-confirmed event, and
+ * only then flips the approval row to its terminal status.
+ */
+export async function resolveAcceptanceContractApproval(input: {
+  workspaceId: string;
+  approvalId: string;
+  decision: "approved" | "denied";
+  confirmedBy: string;
+}): Promise<ResolveAcceptanceContractApprovalOutcome> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT 1
+      FROM jace_approvals
+      WHERE id = ${input.approvalId}
+      FOR UPDATE
+    `);
+
+    const approvals = await tx
+      .select()
+      .from(jaceApprovals)
+      .where(eq(jaceApprovals.id, input.approvalId))
+      .limit(1);
+    const approval = approvals[0];
+    if (!approval) {
+      return { resolved: false, reason: "not_found" };
+    }
+    if (approval.workspaceId !== input.workspaceId) {
+      return { resolved: false, reason: "wrong_workspace" };
+    }
+
+    if (input.decision === "denied") {
+      if (approval.status !== "pending") {
+        return { resolved: false, reason: "not_pending" };
+      }
+      const [denied] = await tx
+        .update(jaceApprovals)
+        .set({ status: "denied", resolvedAt: new Date() })
+        .where(
+          and(
+            eq(jaceApprovals.id, approval.id),
+            eq(jaceApprovals.status, "pending")
+          )
+        )
+        .returning({ id: jaceApprovals.id });
+      if (!denied) return { resolved: false, reason: "not_pending" };
+      return { resolved: true, contract: null };
+    }
+
+    if (approval.status === "approved") {
+      if (!approval.acceptanceContractId) {
+        return { resolved: false, reason: "missing_contract_binding" };
+      }
+
+      const [alreadyConfirmed] = await tx
+        .select({
+          contract: acceptanceContracts,
+          recordWorkspaceId: changeRecords.workspaceId,
+        })
+        .from(acceptanceContracts)
+        .innerJoin(changeRecords, eq(acceptanceContracts.recordId, changeRecords.id))
+        .where(
+          and(
+            eq(acceptanceContracts.id, approval.acceptanceContractId),
+            eq(changeRecords.workspaceId, input.workspaceId),
+            eq(acceptanceContracts.status, "confirmed")
+          )
+        )
+        .limit(1);
+
+      if (alreadyConfirmed) {
+        return { resolved: true, contract: alreadyConfirmed.contract };
+      }
+
+      return { resolved: false, reason: "not_pending" };
+    }
+
+    if (approval.status !== "pending") {
+      return { resolved: false, reason: "not_pending" };
+    }
+    if (approval.toolName !== "confirm_acceptance_contract") {
+      return { resolved: false, reason: "wrong_tool_name" };
+    }
+    if (!approval.acceptanceContractId) {
+      return { resolved: false, reason: "missing_contract_binding" };
+    }
+
+    const [contractRow] = await tx
+      .select({
+        contract: acceptanceContracts,
+        recordWorkspaceId: changeRecords.workspaceId,
+      })
+      .from(acceptanceContracts)
+      .innerJoin(changeRecords, eq(acceptanceContracts.recordId, changeRecords.id))
+      .where(
+        and(
+          eq(acceptanceContracts.id, approval.acceptanceContractId),
+          eq(changeRecords.workspaceId, input.workspaceId)
+        )
+      )
+      .limit(1);
+    if (!contractRow) {
+      return { resolved: false, reason: "foreign_contract" };
+    }
+    if (contractRow.contract.status !== "draft") {
+      return { resolved: false, reason: "not_draft" };
+    }
+
+    const contractValidation = validateAcceptanceContract(contractRow.contract.contract);
+    if (!contractValidation.ok) {
+      return { resolved: false, reason: "incomplete_contract" };
+    }
+    const unresolvedQuestions = contractRow.contract.contract["unresolvedQuestions"];
+    if (Array.isArray(unresolvedQuestions) && unresolvedQuestions.length > 0) {
+      return { resolved: false, reason: "open_questions" };
+    }
+
+    const lockKey = `acceptance-contract:${contractRow.contract.recordId}`;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+
+    const [currentConfirmed] = await tx
+      .select()
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, contractRow.contract.recordId),
+          eq(acceptanceContracts.status, "confirmed")
+        )
+      )
+      .limit(1);
+    if (currentConfirmed) {
+      if (currentConfirmed.version === contractRow.contract.version) {
+        await tx
+          .update(jaceApprovals)
+          .set({ status: "approved", resolvedAt: new Date() })
+          .where(
+            and(
+              eq(jaceApprovals.id, approval.id),
+              eq(jaceApprovals.status, "pending")
+            )
+          );
+        return { resolved: true, contract: currentConfirmed };
+      }
+      throw new Error("another Acceptance Contract version is already confirmed");
+    }
+
+    const updatedContracts = await tx
+      .update(acceptanceContracts)
+      .set({
+        status: "confirmed",
+        confirmedBy: input.confirmedBy,
+        confirmedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, contractRow.contract.recordId),
+          eq(acceptanceContracts.version, contractRow.contract.version),
+          eq(acceptanceContracts.status, "draft")
+        )
+      )
+      .returning();
+    const confirmedContract = updatedContracts[0];
+    if (!confirmedContract) {
+      throw new Error("Acceptance Contract draft was not found");
+    }
+
+    await appendAcceptanceContractConfirmedEventInTransaction(tx, {
+      recordId: confirmedContract.recordId,
+      contractId: confirmedContract.id,
+      version: confirmedContract.version,
+      actor: input.confirmedBy,
+    });
+
+    const [approvalUpdate] = await tx
+      .update(jaceApprovals)
+      .set({ status: "approved", resolvedAt: new Date() })
+      .where(
+        and(
+          eq(jaceApprovals.id, approval.id),
+          eq(jaceApprovals.status, "pending")
+        )
+      )
+      .returning({ id: jaceApprovals.id });
+    if (!approvalUpdate) {
+      throw new Error("Acceptance Contract approval was not pending");
+    }
+
+    return { resolved: true, contract: confirmedContract };
+  });
 }
 
 /**

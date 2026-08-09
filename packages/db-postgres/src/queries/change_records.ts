@@ -632,6 +632,65 @@ export type AcceptanceRecordDraft = {
   contract: AcceptanceContractRow;
 };
 
+export type AcceptanceContractValidation =
+  | { ok: true }
+  | { ok: false; errors: string[] };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasNamedText(item: unknown): boolean {
+  return (
+    isRecord(item) &&
+    isNonBlankString(item["id"]) &&
+    isNonBlankString(item["text"])
+  );
+}
+
+/**
+ * The durable acceptance shape is intentionally compact, but not arbitrary:
+ * a draft must preserve the user's original request, the normalized scope,
+ * machine-reviewable criteria, explicit boundaries, and its question state.
+ * Empty boundary arrays are valid when the intake explicitly established none;
+ * a missing field is not equivalent to an established empty value.
+ */
+export function validateAcceptanceContract(
+  contract: Record<string, unknown>
+): AcceptanceContractValidation {
+  const errors: string[] = [];
+  if (!isNonBlankString(contract["originalRequest"])) errors.push("originalRequest");
+  if (!Array.isArray(contract["normalizedRequirements"])) {
+    errors.push("normalizedRequirements");
+  }
+  const criteria = contract["acceptanceCriteria"];
+  if (!Array.isArray(criteria) || criteria.length === 0 || !criteria.every(hasNamedText)) {
+    errors.push("acceptanceCriteria");
+  }
+  for (const field of ["nonGoals", "risks", "stops", "unresolvedQuestions"] as const) {
+    if (!Array.isArray(contract[field])) errors.push(field);
+  }
+  if (!isRecord(contract["environment"])) errors.push("environment");
+  const questions = contract["unresolvedQuestions"];
+  if (Array.isArray(questions) && !questions.every(hasNamedText)) {
+    errors.push("unresolvedQuestions");
+  }
+  return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+function assertValidAcceptanceContract(contract: Record<string, unknown>): void {
+  const validation = validateAcceptanceContract(contract);
+  if (!validation.ok) {
+    throw new Error(
+      `Acceptance Contract is incomplete: ${validation.errors.join(", ")}`
+    );
+  }
+}
+
 function normalizedWorkKey(value: string | undefined): string {
   const candidate = value?.trim();
   return candidate || randomUUID();
@@ -676,6 +735,7 @@ async function appendContractEventInTransaction(
 export async function createDraftAcceptanceRecord(
   input: CreateDraftAcceptanceRecordInput
 ): Promise<AcceptanceRecordDraft> {
+  assertValidAcceptanceContract(input.contract);
   const workKey = normalizedWorkKey(input.workKey);
   const recordId = changeRecordId({
     workspaceId: input.workspaceId,
@@ -751,6 +811,7 @@ export type CreateDraftAcceptanceContractInput = {
 export async function createDraftAcceptanceContract(
   input: CreateDraftAcceptanceContractInput
 ): Promise<AcceptanceContractRow> {
+  assertValidAcceptanceContract(input.contract);
   const lockKey = `acceptance-contract:${input.recordId}`;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
@@ -778,64 +839,6 @@ export async function createDraftAcceptanceContract(
       eventKey: `acceptance-contract:draft:${contract.version}`,
       stage: "acceptance_contract",
       actor: input.createdBy,
-      payloadRef: {
-        kind: "acceptance_contract",
-        contractId: contract.id,
-        version: contract.version,
-        status: contract.status,
-      },
-    });
-    return contract;
-  });
-}
-
-export async function confirmAcceptanceContract(input: {
-  recordId: string;
-  version: number;
-  confirmedBy: string;
-}): Promise<AcceptanceContractRow> {
-  const lockKey = `acceptance-contract:${input.recordId}`;
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
-    const confirmed = await tx
-      .select()
-      .from(acceptanceContracts)
-      .where(
-        and(
-          eq(acceptanceContracts.recordId, input.recordId),
-          eq(acceptanceContracts.status, "confirmed")
-        )
-      )
-      .limit(1);
-    if (confirmed[0]) {
-      if (confirmed[0].version === input.version) return confirmed[0];
-      throw new Error("another Acceptance Contract version is already confirmed");
-    }
-
-    const rows = await tx
-      .update(acceptanceContracts)
-      .set({
-        status: "confirmed",
-        confirmedBy: input.confirmedBy,
-        confirmedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(acceptanceContracts.recordId, input.recordId),
-          eq(acceptanceContracts.version, input.version),
-          eq(acceptanceContracts.status, "draft")
-        )
-      )
-      .returning();
-    const contract = rows[0];
-    if (!contract) {
-      throw new Error("Acceptance Contract draft was not found");
-    }
-    await appendContractEventInTransaction(tx, {
-      recordId: input.recordId,
-      eventKey: `acceptance-contract:confirmed:${contract.version}`,
-      stage: "acceptance_contract",
-      actor: input.confirmedBy,
       payloadRef: {
         kind: "acceptance_contract",
         contractId: contract.id,

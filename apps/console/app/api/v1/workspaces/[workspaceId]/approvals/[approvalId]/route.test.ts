@@ -9,6 +9,7 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   getApprovalById: vi.fn(),
+  resolveAcceptanceContractApproval: vi.fn(),
   resolveApproval: vi.fn(),
 }));
 
@@ -17,7 +18,12 @@ vi.mock("../../../../../../../lib/approval-decision", () => ({
 }));
 
 import { auth } from "@agentrail/auth";
-import { getApprovalById, getWorkspaceMembership, resolveApproval } from "@agentrail/db-postgres";
+import {
+  getApprovalById,
+  getWorkspaceMembership,
+  resolveAcceptanceContractApproval,
+  resolveApproval,
+} from "@agentrail/db-postgres";
 import { applyAlignmentDecision } from "../../../../../../../lib/approval-decision";
 
 const WORKSPACE_ID = "ws-123";
@@ -158,6 +164,31 @@ describe("POST /api/v1/workspaces/:workspaceId/approvals/:approvalId", () => {
     const res = await POST(makeRequest({ decision: "approved" }), makeParams());
 
     expect(res.status).toBe(409);
+    expect(applyAlignmentDecision).not.toHaveBeenCalled();
+  });
+
+  it("confirms the exact Contract in the same resolution transaction", async () => {
+    mockMember("owner");
+    vi.mocked(getApprovalById).mockResolvedValue({
+      ...approvalRow,
+      toolName: "confirm_acceptance_contract",
+      acceptanceContractId: "contract-1",
+    } as never);
+    vi.mocked(resolveAcceptanceContractApproval).mockResolvedValue({
+      resolved: true,
+      contract: { id: "contract-1", status: "confirmed" },
+    } as never);
+
+    const res = await POST(makeRequest({ decision: "approved" }), makeParams());
+
+    expect(res.status).toBe(200);
+    expect(resolveAcceptanceContractApproval).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      approvalId: APPROVAL_ID,
+      decision: "approved",
+      confirmedBy: "console_user:user-1",
+    });
+    expect(resolveApproval).not.toHaveBeenCalled();
     expect(applyAlignmentDecision).not.toHaveBeenCalled();
   });
 });

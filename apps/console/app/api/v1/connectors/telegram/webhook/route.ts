@@ -6,6 +6,7 @@ import {
   getApprovalByCallbackToken,
   getChatIdentityById,
   getJaceSessionById,
+  resolveAcceptanceContractApproval,
   resolveApproval,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
@@ -411,7 +412,29 @@ async function handleApprovalCallback(
     return NextResponse.json({ ok: true });
   }
 
-  const flipped = await resolveApproval(approval.id, parsed.decision);
+  const isContractConfirmation =
+    approval.toolName === "confirm_acceptance_contract" ||
+    typeof approval.acceptanceContractId === "string";
+  const approvalWorkspaceId = approval.workspaceId;
+  if (isContractConfirmation && !approvalWorkspaceId) {
+    console.error(
+      `[telegram] acceptance contract approval ${approval.id} has no workspace binding`
+    );
+    await answerCallbackQuery(token, cq.id, "This approval cannot be confirmed.");
+    return NextResponse.json({ ok: true });
+  }
+  const flipped = isContractConfirmation
+    ? (
+        await resolveAcceptanceContractApproval({
+          workspaceId: approvalWorkspaceId!,
+          approvalId: approval.id,
+          decision: parsed.decision,
+          confirmedBy: approval.chatIdentityId
+            ? `chat_identity:${approval.chatIdentityId}`
+            : `approval:${approval.id}`,
+        })
+      ).resolved
+    : await resolveApproval(approval.id, parsed.decision);
   if (!flipped) {
     // Duplicate tap (a redelivered callback_query, or two taps racing each
     // other): resolveApproval's atomic pending->resolved guard already
@@ -426,7 +449,9 @@ async function handleApprovalCallback(
   // #1274: only an "alignment_brief" approval carries queueEntryId — every
   // other tool's approval has it null and this is a no-op for them
   // (regression-pinned).
-  await applyAlignmentDecision(approval, parsed.decision);
+  if (!isContractConfirmation) {
+    await applyAlignmentDecision(approval, parsed.decision);
+  }
 
   const label = parsed.decision === "approved" ? "✅ Approved" : "❌ Denied";
   const who = callbackFromName(cq.from);

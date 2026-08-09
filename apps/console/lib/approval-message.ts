@@ -360,6 +360,36 @@ function renderCreateRepo(input: Record<string, unknown>): string {
   );
 }
 
+function contractCriterionText(value: unknown): string {
+  if (typeof value === "string") return sanitizeField(value, 300);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const item = value as Record<string, unknown>;
+    return sanitizeField(item["text"] ?? item["title"] ?? item["id"], 300);
+  }
+  return "";
+}
+
+function renderAcceptanceContractConfirmation(input: Record<string, unknown>): string {
+  const goal = sanitizeField(input["goal"] ?? input["title"], 500) || "(no summary recorded)";
+  const version = sanitizeField(input["version"], 20) || "?";
+  const criteria = Array.isArray(input["acceptanceCriteria"])
+    ? input["acceptanceCriteria"].map(contractCriterionText).filter(Boolean)
+    : [];
+  const nonGoals = Array.isArray(input["nonGoals"])
+    ? input["nonGoals"].map(contractCriterionText).filter(Boolean)
+    : [];
+  const lines = ["Confirm this Acceptance Contract?", "", `Goal: ${goal}`, `Version: ${version}`];
+  if (criteria.length > 0) {
+    lines.push("", "Acceptance criteria:");
+    for (const criterion of criteria) lines.push(`- ${criterion}`);
+  }
+  if (nonGoals.length > 0) {
+    lines.push("", "Not included:");
+    for (const nonGoal of nonGoals) lines.push(`- ${nonGoal}`);
+  }
+  return hardTruncate(lines.join("\n"));
+}
+
 /**
  * Cap on how many `toolInput` keys the generic fallback renders. `hardTruncate`
  * alone isn't enough protection against a wide/adversarial object (hundreds
@@ -408,6 +438,8 @@ export function renderApprovalMessage(
       return renderUpdateIssue(toolInput);
     case "alignment_brief":
       return renderAlignmentBrief(toolInput);
+    case "confirm_acceptance_contract":
+      return renderAcceptanceContractConfirmation(toolInput);
     default:
       return renderGenericFallback(toolName, toolInput);
   }

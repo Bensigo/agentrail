@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
-import { getApprovalById, getWorkspaceMembership, resolveApproval } from "@agentrail/db-postgres";
+import {
+  getApprovalById,
+  getWorkspaceMembership,
+  resolveAcceptanceContractApproval,
+  resolveApproval,
+} from "@agentrail/db-postgres";
 import { applyAlignmentDecision } from "../../../../../../../lib/approval-decision";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
@@ -66,6 +71,22 @@ export async function POST(
   const approval = await getApprovalById(approvalId);
   if (!approval || approval.workspaceId !== workspaceId) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const isContractConfirmation =
+    approval.toolName === "confirm_acceptance_contract" ||
+    typeof approval.acceptanceContractId === "string";
+  if (isContractConfirmation) {
+    const resolved = await resolveAcceptanceContractApproval({
+      workspaceId,
+      approvalId,
+      decision,
+      confirmedBy: `console_user:${session.user.id}`,
+    });
+    if (!resolved.resolved) {
+      return NextResponse.json({ error: "Already resolved" }, { status: 409 });
+    }
+    return NextResponse.json({ success: true });
   }
 
   const flipped = await resolveApproval(approvalId, decision);

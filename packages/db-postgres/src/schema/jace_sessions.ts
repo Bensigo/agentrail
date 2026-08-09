@@ -17,6 +17,7 @@ import { queueEntries } from "./queue_entries.js";
 import { briefs } from "./briefs.js";
 import { investigations } from "./investigations.js";
 import { dependencyUpgradeContracts } from "./dependency_upgrade_contracts.js";
+import { acceptanceContracts } from "./change_records.js";
 
 /**
  * Jace session map + pending approvals (spec §4).
@@ -261,6 +262,14 @@ export const jaceApprovals = pgTable(
     // carry a queue entry until the human decision has created the issue.
     dependencyContractId: uuid("dependency_contract_id").references(
       () => dependencyUpgradeContracts.id,
+      { onDelete: "set null" }
+    ),
+    // Candidate-to-acceptance-contract approvals reuse the one approval seam
+    // but do not trust tool_input to point at the persisted contract. This
+    // nullable FK stores the exact contract row the approval is meant to
+    // resolve; the resolver validates workspace and version server-side.
+    acceptanceContractId: uuid("acceptance_contract_id").references(
+      () => acceptanceContracts.id,
       { onDelete: "set null" }
     ),
     // Requirement-level intake evidence (#1583). These columns denormalize

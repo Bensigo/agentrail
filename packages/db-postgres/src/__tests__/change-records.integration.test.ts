@@ -4,30 +4,58 @@ import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { changeRecordEvents } from "../schema/change_records.js";
+import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
   changeRecordId,
+  createDraftAcceptanceContract,
+  createDraftAcceptanceRecord,
   findOrCreateChangeRecord,
   recordAcceptancePostMergeOutcome,
+  readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
+import {
+  recordApprovalRequest,
+  resolveAcceptanceContractApproval,
+} from "../queries/jace_sessions.js";
 
 const DB_AVAILABLE: boolean = await (async () => {
   try {
     const rows = Array.from(
       await db.execute(sql`
         SELECT to_regclass('public.change_records') AS change_records,
-               to_regclass('public.change_record_events') AS change_record_events
+               to_regclass('public.change_record_events') AS change_record_events,
+               to_regclass('public.acceptance_contracts') AS acceptance_contracts
       `)
-    ) as Array<{ change_records: string | null; change_record_events: string | null }>;
+    ) as Array<{
+      change_records: string | null;
+      change_record_events: string | null;
+      acceptance_contracts: string | null;
+    }>;
     return (
       rows[0]?.change_records === "change_records" &&
-      rows[0]?.change_record_events === "change_record_events"
+      rows[0]?.change_record_events === "change_record_events" &&
+      rows[0]?.acceptance_contracts === "acceptance_contracts"
     );
   } catch {
     return false;
   }
 })();
+
+function completeContract(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    originalRequest: "Add saved filters",
+    normalizedRequirements: ["Users can save and reuse a filter"],
+    acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+    nonGoals: [],
+    risks: [],
+    environment: { kind: "existing_preview" },
+    stops: [],
+    unresolvedQuestions: [],
+    ...overrides,
+  };
+}
 
 describe.skipIf(!DB_AVAILABLE)(
   "change_records queries — real Postgres integration (Arc D storage)",
@@ -426,6 +454,204 @@ describe.skipIf(!DB_AVAILABLE)(
           .delete(workspaces)
           .where(eq(workspaces.id, otherWorkspace[0]!.id));
       }
+    });
+
+    it("creates a retry-safe manual Acceptance Record with immutable draft versions", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
+        contract: completeContract({
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+        }),
+        createdBy: "user:lead",
+      });
+      expect(draft.record.issueNumber).toBeNull();
+      expect(draft.record.prNumber).toBeNull();
+      expect(draft.record.workKey).toBe("manual-trust-loop-1");
+      expect(draft.record.originChannel).toBe("codex_mcp");
+      expect(draft.contract.version).toBe(1);
+      expect(draft.contract.status).toBe("draft");
+
+      const retried = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "manual-trust-loop-1",
+        originChannel: "codex_mcp",
+        contract: completeContract({
+          originalRequest: "This retry must not replace the draft",
+        }),
+        createdBy: "user:lead",
+      });
+      expect(retried.record.id).toBe(draft.record.id);
+      expect(retried.contract.id).toBe(draft.contract.id);
+      expect(retried.contract.contract).toEqual(draft.contract.contract);
+
+      const secondDraft = await createDraftAcceptanceContract({
+        recordId: draft.record.id,
+        contract: completeContract({
+          originalRequest: "Add a red save button",
+          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          unresolvedQuestions: [{ id: "Q-1", text: "Which theme token?" }],
+        }),
+        createdBy: "user:lead",
+      });
+      expect(secondDraft.version).toBe(2);
+      const contracts = await readAcceptanceContracts({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      });
+      expect(contracts?.map((contract) => [contract.version, contract.status])).toEqual([
+        [1, "draft"],
+        [2, "draft"],
+      ]);
+    });
+
+    it("confirms only the approval-bound draft before exposing the approval as approved", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "approval-bound-contract",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      const [session] = await db
+        .insert(jaceSessions)
+        .values({
+          workspaceId: wsId,
+          channel: "codex_mcp",
+          conversationKey: `approval-contract-${randomUUID()}`,
+          eveSessionId: `eve-${randomUUID()}`,
+        })
+        .returning();
+      const request = await recordApprovalRequest({
+        workspaceId: wsId,
+        sessionId: session!.id,
+        eveSessionId: session!.eveSessionId!,
+        requestId: `confirm-${randomUUID()}`,
+        toolName: "confirm_acceptance_contract",
+        toolInput: { acceptanceContractId: "untrusted-payload-value" },
+        approveOptionId: "approve",
+        denyOptionId: "deny",
+        acceptanceContractId: draft.contract.id,
+      });
+
+      await expect(
+        resolveAcceptanceContractApproval({
+          workspaceId: wsId,
+          approvalId: request.approval.id,
+          decision: "approved",
+          confirmedBy: "console_user:user-1",
+        })
+      ).resolves.toMatchObject({
+        resolved: true,
+        contract: { id: draft.contract.id, status: "confirmed" },
+      });
+
+      const [approval] = await db
+        .select()
+        .from(jaceApprovals)
+        .where(eq(jaceApprovals.id, request.approval.id));
+      expect(approval?.status).toBe("approved");
+      const timeline = await readChangeRecordTimeline({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+      });
+      expect(
+        timeline?.events.some(
+          (event) => event.eventKey === "acceptance-contract:confirmed:1"
+        )
+      ).toBe(true);
+    });
+
+    it("leaves unsafe or incomplete Contract confirmations pending", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "rejected-contract-confirmations",
+        originChannel: "codex_mcp",
+        contract: completeContract({
+          unresolvedQuestions: [{ id: "Q-1", text: "Which filters?" }],
+        }),
+        createdBy: "user:lead",
+      });
+      const [session] = await db
+        .insert(jaceSessions)
+        .values({
+          workspaceId: wsId,
+          channel: "codex_mcp",
+          conversationKey: `rejected-contract-${randomUUID()}`,
+          eveSessionId: `eve-${randomUUID()}`,
+        })
+        .returning();
+      const openQuestionApproval = await recordApprovalRequest({
+        workspaceId: wsId,
+        sessionId: session!.id,
+        eveSessionId: session!.eveSessionId!,
+        requestId: `open-question-${randomUUID()}`,
+        toolName: "confirm_acceptance_contract",
+        toolInput: {},
+        approveOptionId: "approve",
+        denyOptionId: "deny",
+        acceptanceContractId: draft.contract.id,
+      });
+      await expect(
+        resolveAcceptanceContractApproval({
+          workspaceId: wsId,
+          approvalId: openQuestionApproval.approval.id,
+          decision: "approved",
+          confirmedBy: "console_user:user-1",
+        })
+      ).resolves.toEqual({ resolved: false, reason: "open_questions" });
+
+      const [approval] = await db
+        .select()
+        .from(jaceApprovals)
+        .where(eq(jaceApprovals.id, openQuestionApproval.approval.id));
+      expect(approval?.status).toBe("pending");
+
+      await expect(
+        createDraftAcceptanceRecord({
+          workspaceId: wsId,
+          repo: "acme/widgets",
+          workKey: "missing-contract-criteria",
+          originChannel: "codex_mcp",
+          contract: { originalRequest: "No criterion", unresolvedQuestions: [] },
+          createdBy: "user:lead",
+        })
+      ).rejects.toThrow(/Acceptance Contract is incomplete/);
+
+      const wrongToolApproval = await recordApprovalRequest({
+        workspaceId: wsId,
+        sessionId: session!.id,
+        eveSessionId: session!.eveSessionId!,
+        requestId: `wrong-tool-${randomUUID()}`,
+        toolName: "create_issue",
+        toolInput: {},
+        approveOptionId: "approve",
+        denyOptionId: "deny",
+        acceptanceContractId: draft.contract.id,
+      });
+      await expect(
+        resolveAcceptanceContractApproval({
+          workspaceId: wsId,
+          approvalId: wrongToolApproval.approval.id,
+          decision: "approved",
+          confirmedBy: "console_user:user-1",
+        })
+      ).resolves.toEqual({ resolved: false, reason: "wrong_tool_name" });
+      await expect(
+        resolveAcceptanceContractApproval({
+          workspaceId: "foreign-workspace",
+          approvalId: wrongToolApproval.approval.id,
+          decision: "approved",
+          confirmedBy: "console_user:user-1",
+        })
+      ).resolves.toEqual({ resolved: false, reason: "wrong_workspace" });
     });
   }
 );

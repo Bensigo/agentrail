@@ -14,6 +14,7 @@ import {
   changeRecordId,
   createDraftAcceptanceContract,
   createDraftAcceptanceRecord,
+  createDraftAcceptanceRecordFromIntake,
   findOrCreateChangeRecord,
   recordAcceptancePostMergeOutcome,
   recordAcceptanceInboundIntake,
@@ -161,6 +162,63 @@ describe.skipIf(!DB_AVAILABLE)(
           .from(acceptanceIntakeMessages)
           .where(eq(acceptanceIntakeMessages.intakeId, first.intake.id))
       ).toHaveLength(1);
+    });
+
+    it("binds an Intake to one provenance-preserving draft and refuses changed re-drafts", async () => {
+      const intake = await recordAcceptanceInboundIntake({
+        workspaceId: wsId,
+        originChannel: "discord",
+        conversationKey: "thread-8",
+        sourceKey: "message-1",
+        text: "Add saved filters",
+        sourceReferences: [{ kind: "channel_message", id: "message-1" }],
+      });
+      const contract = completeContract();
+      const drafted = await createDraftAcceptanceRecordFromIntake({
+        workspaceId: wsId,
+        intakeId: intake.intake.id,
+        repo: "acme/widgets",
+        contract,
+        createdBy: "jace:acceptance-intake",
+      });
+      expect(drafted.created).toBe(true);
+      expect(drafted.intake.status).toBe("drafted");
+      expect(drafted.intake.recordId).toBe(drafted.record.id);
+      expect(drafted.record.workKey).toBe(`acceptance-intake:${intake.intake.id}`);
+      expect(drafted.record.originChannel).toBe("discord");
+      expect(drafted.record.sourceReferences).toEqual(intake.intake.sourceReferences);
+      expect(drafted.contract.contract).toEqual(contract);
+
+      const replay = await createDraftAcceptanceRecordFromIntake({
+        workspaceId: wsId,
+        intakeId: intake.intake.id,
+        repo: "acme/widgets",
+        contract,
+        createdBy: "jace:acceptance-intake",
+      });
+      expect(replay).toMatchObject({
+        created: false,
+        intake: { id: intake.intake.id, recordId: drafted.record.id },
+        record: { id: drafted.record.id },
+        contract: { id: drafted.contract.id },
+      });
+
+      await expect(
+        createDraftAcceptanceRecordFromIntake({
+          workspaceId: wsId,
+          intakeId: intake.intake.id,
+          repo: "acme/widgets",
+          contract: completeContract({ originalRequest: "A different request" }),
+          createdBy: "jace:acceptance-intake",
+        })
+      ).rejects.toMatchObject({ code: "conflict" });
+
+      const timeline = await readChangeRecordTimeline({
+        workspaceId: wsId,
+        recordId: drafted.record.id,
+      });
+      expect(timeline?.events.some((event) => event.eventKey ===
+        `acceptance-intake:${intake.intake.id}:drafted`)).toBe(true);
     });
 
     it("unifies issue-only and PR-only records, moving PR events to the issue record", async () => {

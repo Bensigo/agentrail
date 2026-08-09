@@ -5,7 +5,11 @@ import {
   changeRecordEvents,
   changeRecords,
   acceptanceContracts,
+  acceptanceIntakes,
+  acceptanceIntakeMessages,
   type AcceptanceContractRow,
+  type AcceptanceIntakeMessageRow,
+  type AcceptanceIntakeRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
@@ -92,6 +96,23 @@ export function acceptanceContractId(input: {
   version: number;
 }): string {
   return uuid5Url(`acceptance-contract:${input.recordId}:${input.version}`);
+}
+
+export function acceptanceIntakeId(input: {
+  workspaceId: string;
+  originChannel: string;
+  conversationKey: string;
+}): string {
+  return uuid5Url(
+    `acceptance-intake:${input.workspaceId}:${input.originChannel}:${input.conversationKey}`
+  );
+}
+
+export function acceptanceIntakeMessageId(input: {
+  intakeId: string;
+  sourceKey: string;
+}): string {
+  return uuid5Url(`acceptance-intake-message:${input.intakeId}:${input.sourceKey}`);
 }
 
 function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
@@ -631,6 +652,93 @@ export type AcceptanceRecordDraft = {
   record: ChangeRecordRow;
   contract: AcceptanceContractRow;
 };
+
+export type RecordAcceptanceInboundIntakeInput = {
+  workspaceId: string;
+  originChannel: string;
+  conversationKey: string;
+  sourceReferences?: Record<string, unknown>[];
+  sourceKey: string;
+  text: string;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * Persists one source-channel message before repository selection. It cannot
+ * draft/confirm a Contract or authorize external implementation. A repeated
+ * source key is safe only when it is the exact same message; a collision
+ * fails closed instead of silently changing the Intake history.
+ */
+export async function recordAcceptanceInboundIntake(
+  input: RecordAcceptanceInboundIntakeInput
+): Promise<{
+  intake: AcceptanceIntakeRow;
+  message: AcceptanceIntakeMessageRow;
+  inserted: boolean;
+}> {
+  const originChannel = input.originChannel.trim().toLowerCase();
+  const conversationKey = input.conversationKey.trim();
+  const sourceKey = input.sourceKey.trim();
+  const text = input.text.trim();
+  if (!originChannel || !conversationKey || !sourceKey || !text) {
+    throw new Error(
+      "Acceptance Intake requires channel, conversation, source key, and message"
+    );
+  }
+  const intakeId = acceptanceIntakeId({
+    workspaceId: input.workspaceId,
+    originChannel,
+    conversationKey,
+  });
+  const messageId = acceptanceIntakeMessageId({ intakeId, sourceKey });
+  const sourceReferences = normalizeSourceReferences(input.sourceReferences);
+
+  return db.transaction(async (tx) => {
+    const intakes = await tx
+      .insert(acceptanceIntakes)
+      .values({
+        id: intakeId,
+        workspaceId: input.workspaceId,
+        originChannel,
+        conversationKey,
+        sourceReferences,
+      })
+      .onConflictDoUpdate({
+        target: [
+          acceptanceIntakes.workspaceId,
+          acceptanceIntakes.originChannel,
+          acceptanceIntakes.conversationKey,
+        ],
+        set: { updatedAt: new Date() },
+      })
+      .returning();
+    const intake = intakes[0]!;
+    const insertedRows = await tx
+      .insert(acceptanceIntakeMessages)
+      .values({
+        id: messageId,
+        intakeId,
+        sourceKey,
+        direction: "inbound",
+        text,
+        metadata: input.metadata ?? {},
+      })
+      .onConflictDoNothing()
+      .returning();
+    const inserted = insertedRows.length === 1;
+    const message =
+      insertedRows[0] ??
+      (await tx
+        .select()
+        .from(acceptanceIntakeMessages)
+        .where(eq(acceptanceIntakeMessages.id, messageId))
+        .limit(1))[0]!;
+    if (!inserted && (message.direction !== "inbound" || message.text !== text)) {
+      throw new Error("Acceptance Intake source key is already bound to different content");
+    }
+    return { intake, message, inserted };
+  });
+}
 
 export type AcceptanceContractValidation =
   | { ok: true }

@@ -87,6 +87,10 @@ export function normalizeHostedInbound(raw) {
   if (!message) {
     throw new Error("hosted-inbound: `message` is required (non-empty string).");
   }
+  const sourceKey = raw.sourceKey == null ? undefined : String(raw.sourceKey).trim();
+  if (raw.sourceKey != null && !sourceKey) {
+    throw new Error("hosted-inbound: `sourceKey` must be non-empty when provided.");
+  }
 
   const target = raw.target;
   if (target == null || typeof target !== "object" || Array.isArray(target)) {
@@ -149,5 +153,5 @@ export function normalizeHostedInbound(raw) {
     throw new Error("hosted-inbound: `auth` is required and must be an object.");
   }
 
-  return { channel, message, target: normalizedTarget, auth };
+  return { channel, message, ...(sourceKey ? { sourceKey } : {}), target: normalizedTarget, auth };
 }

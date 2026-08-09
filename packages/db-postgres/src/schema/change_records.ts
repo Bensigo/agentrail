@@ -112,6 +112,74 @@ export const acceptanceContracts = pgTable(
 );
 
 /**
+ * The durable, pre-repository start of the acceptance spine. A request may
+ * not yet identify a repository, so it cannot safely become a Change Record.
+ * This stores only its channel provenance and bounded conversation identity
+ * until a later R2 slice supplies the missing scope and drafts a Contract.
+ */
+export const acceptanceIntakes = pgTable(
+  "acceptance_intakes",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    originChannel: text("origin_channel").notNull(),
+    conversationKey: text("conversation_key").notNull(),
+    sourceReferences: jsonb("source_references")
+      .$type<Record<string, unknown>[]>()
+      .notNull()
+      .default([]),
+    status: text("status").notNull().default("collecting_context"),
+    recordId: uuid("record_id").references(() => changeRecords.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    conversation: uniqueIndex(
+      "acceptance_intakes_workspace_channel_conversation_key"
+    ).on(t.workspaceId, t.originChannel, t.conversationKey),
+    record: uniqueIndex("acceptance_intakes_record_key")
+      .on(t.recordId)
+      .where(sql`${t.recordId} IS NOT NULL`),
+  })
+);
+
+/** Append-only inbound channel evidence for one Acceptance Intake. */
+export const acceptanceIntakeMessages = pgTable(
+  "acceptance_intake_messages",
+  {
+    id: uuid("id").primaryKey(),
+    intakeId: uuid("intake_id")
+      .notNull()
+      .references(() => acceptanceIntakes.id, { onDelete: "cascade" }),
+    sourceKey: text("source_key").notNull(),
+    direction: text("direction").notNull(),
+    text: text("text").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    source: uniqueIndex("acceptance_intake_messages_source_key").on(
+      t.intakeId,
+      t.sourceKey
+    ),
+    timeline: index("acceptance_intake_messages_timeline_idx").on(
+      t.intakeId,
+      t.createdAt
+    ),
+  })
+);
+
+/**
  * Append-only timeline entries attached to a Change Record. The row is
  * immutable by convention and by query helper: append uses
  * `ON CONFLICT (record_id, event_key) DO NOTHING`, never update.
@@ -145,3 +213,5 @@ export const changeRecordEvents = pgTable(
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
+export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
+export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

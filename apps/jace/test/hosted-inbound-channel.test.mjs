@@ -49,6 +49,16 @@ test("validates the body through normalizeHostedInbound before receiving", () =>
   assert.match(code, /normalizeHostedInbound\(/);
 });
 
+test("records a durable Acceptance Intake before Jace receives a bound turn", () => {
+  assert.match(
+    code,
+    /import\s*\{\s*recordHostedAcceptanceIntake\s*\}\s*from\s*["']\.\.\/lib\/acceptance_intake\.core\.mjs["']/,
+  );
+  const intakeAt = code.indexOf("recordHostedAcceptanceIntake(");
+  const receiveAt = code.indexOf("args.receive(channelModule");
+  assert.ok(intakeAt >= 0 && receiveAt > intakeAt, "Intake must be recorded before receive");
+});
+
 test("returns 400 on a JSON parse failure and on a normalize failure", () => {
   // Two distinct catch sites: the req.json() parse, and normalizeHostedInbound.
   const fourHundreds = code.match(/\b400\b/g) ?? [];

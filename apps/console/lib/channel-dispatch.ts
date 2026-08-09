@@ -1185,6 +1185,8 @@ type EveTurnOutcome =
  */
 async function runEveTurn(params: {
   message: string;
+  /** Durable channel-inbox identity used for idempotent Intake recording. */
+  sourceKey?: string;
   /** Which hosted-inbound channel module receives this turn (#1284/#1285 —
    * default "telegram" so every pre-existing call site, which never set
    * this, is byte-unchanged). */
@@ -1254,6 +1256,7 @@ async function runEveTurn(params: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: params.message,
+        ...(params.sourceKey ? { sourceKey: params.sourceKey } : {}),
         channel,
         target,
         auth: params.auth,
@@ -1544,6 +1547,7 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
 
     const turn = await runEveTurn({
       message: guard.text,
+      sourceKey: row.id,
       channel: "console",
       auth,
       target: { workspaceId: row.workspaceId, conversationKey: row.conversationKey },
@@ -2296,6 +2300,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
 
     const turn = await runEveTurn({
       message,
+      sourceKey: row.id,
       channel: row.channel,
       chatId: turnChatId,
       conversationKey: turnConversationKey,

@@ -118,7 +118,7 @@ export default async function LandingPage() {
       {/* 2 — Hero: the centered stage (owner-chosen 2026-07-22, boardy's
           formula) — avatar disc, display headline, role line, ONE button.
           Nothing competes; the phone gets its own act below. */}
-      <section className="px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-20">
+      <section id="landing-hero" className="px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-20">
         <div className="mx-auto flex max-w-[720px] flex-col items-center">
           <Image
             src="/jace-avatar.png"

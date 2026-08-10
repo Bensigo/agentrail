@@ -10,9 +10,11 @@ import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
   acceptanceBuilderRouteCapabilityProfiles,
+  acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatchGithubActivations,
+  acceptanceCorrectionDispatchGithubClaudeAckReceipts,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
@@ -57,6 +59,11 @@ import {
   resolveAcceptanceCompiledContextPack,
   registerAcceptanceBuilderRoute,
   recordAcceptanceBuilderRouteCapabilityProfile,
+  recordAcceptanceBuilderRouteGithubClaudeAckProfile,
+  recordGithubClaudeAgentAcknowledgement,
+  readGithubClaudeAgentAcknowledgement,
+  githubClaudeAcknowledgementAudience,
+  GithubClaudeAgentAcknowledgementConflictError,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -87,12 +94,14 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
                to_regclass('public.acceptance_builder_route_capability_profiles') AS acceptance_builder_route_capability_profiles,
+               to_regclass('public.acceptance_builder_route_github_claude_ack_profiles') AS acceptance_builder_route_github_claude_ack_profiles,
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
                to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
                to_regclass('public.acceptance_correction_dispatches') AS acceptance_correction_dispatches,
                to_regclass('public.acceptance_correction_dispatch_github_preflights') AS acceptance_correction_dispatch_github_preflights,
                to_regclass('public.acceptance_correction_dispatch_github_finding_publications') AS acceptance_correction_dispatch_github_finding_publications,
                to_regclass('public.acceptance_correction_dispatch_github_activations') AS acceptance_correction_dispatch_github_activations,
+               to_regclass('public.acceptance_correction_dispatch_github_claude_ack_receipts') AS acceptance_correction_dispatch_github_claude_ack_receipts,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -133,12 +142,14 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_contracts: string | null;
       acceptance_builder_routes: string | null;
       acceptance_builder_route_capability_profiles: string | null;
+      acceptance_builder_route_github_claude_ack_profiles: string | null;
       acceptance_context_pack_snapshots: string | null;
       acceptance_compiled_context_packs: string | null;
       acceptance_correction_dispatches: string | null;
       acceptance_correction_dispatch_github_preflights: string | null;
       acceptance_correction_dispatch_github_finding_publications: string | null;
       acceptance_correction_dispatch_github_activations: string | null;
+      acceptance_correction_dispatch_github_claude_ack_receipts: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
       change_record_current_pr_head: boolean;
@@ -151,12 +162,14 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
       rows[0]?.acceptance_builder_route_capability_profiles === "acceptance_builder_route_capability_profiles" &&
+      rows[0]?.acceptance_builder_route_github_claude_ack_profiles === "acceptance_builder_route_github_claude_ack_profiles" &&
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_correction_dispatches === "acceptance_correction_dispatches" &&
       rows[0]?.acceptance_correction_dispatch_github_preflights === "acceptance_correction_dispatch_github_preflights" &&
       rows[0]?.acceptance_correction_dispatch_github_finding_publications === "acceptance_correction_dispatch_github_finding_publications" &&
       rows[0]?.acceptance_correction_dispatch_github_activations === "acceptance_correction_dispatch_github_activations" &&
+      rows[0]?.acceptance_correction_dispatch_github_claude_ack_receipts === "acceptance_correction_dispatch_github_claude_ack_receipts" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.change_record_current_pr_head === true &&
@@ -1413,7 +1426,7 @@ describe.skipIf(!DB_AVAILABLE)(
       })
         .where(eq(workspaces.id, wsId));
       const selectedRoute = await registerAcceptanceBuilderRoute({
-        workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_claude",
         configurationVersion: 1, registeredBy: "server:environment",
       });
       const routeSelection = await recordAcceptanceBuilderRouteSelection({
@@ -1535,6 +1548,29 @@ describe.skipIf(!DB_AVAILABLE)(
         workspaceId: wsId,
         routeId: selectedRoute.route.id,
         recordedBy: "server:route-capability-profile",
+      });
+      const acknowledgementProfile = await recordAcceptanceBuilderRouteGithubClaudeAckProfile({
+        workspaceId: wsId,
+        routeId: selectedRoute.route.id,
+        githubRepositoryId: "1001",
+        githubRepositoryOwnerId: "1002",
+        githubAppBotUserId: "1003",
+        githubAppBotLogin: "jace[bot]",
+        callerWorkflowRef:
+          "acme/widgets/.github/workflows/agentrail-claude-correction.yml@refs/heads/main",
+        jobWorkflowRef: `agentrail/jace/.github/workflows/github-claude-correction-ack.yml@${"1".repeat(40)}`,
+        jobWorkflowSha: "1".repeat(40),
+        claudeActionSha: "6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975",
+        recordedBy: "server:github-claude-ack-profile",
+      });
+      expect(acknowledgementProfile).toMatchObject({
+        inserted: true,
+        profile: {
+          routeId: selectedRoute.route.id,
+          capabilityProfileId: capability.profile.id,
+          oidcAudienceContract: "activation_comment_run_attempt_sha256_v1",
+          oidcSubjectContract: "default_repo_ref_legacy_or_immutable_v1",
+        },
       });
       const githubQueued = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
       const githubQueuedReplay = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
@@ -1764,8 +1800,8 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(activationReservations.map((result) => result.kind).sort()).toEqual(["held", "reserved"]);
       const activationReservation = activationReservations.find((result) => result.kind === "reserved");
       if (!activationReservation || activationReservation.kind !== "reserved") throw new Error("expected activation reservation");
-      expect((activationReservation.body.match(/@codex/g) ?? [])).toHaveLength(1);
-      expect(activationReservation.body).not.toContain("@claude");
+      expect((activationReservation.body.match(/@claude/g) ?? [])).toHaveLength(1);
+      expect(activationReservation.body).not.toContain("@codex");
       expect(activationReservation.body.split(activationReservation.packetBundleBase64url)).toHaveLength(2);
       expect(activationReservation.body.split(activationReservation.packetBundleSha256)).toHaveLength(2);
       const decodedBundle = JSON.parse(Buffer.from(
@@ -1773,7 +1809,7 @@ describe.skipIf(!DB_AVAILABLE)(
       ).toString("utf8"));
       expect(decodedBundle).toMatchObject({ packets: [{ packetId }], binding: {
         dispatchId: githubQueued.dispatch.id, headSha, baseSha: "b".repeat(40),
-        readyPreflight: { id: retry.preflight.id }, recipient: "codex",
+        readyPreflight: { id: retry.preflight.id }, recipient: "claude",
       } });
       // Whole-worker restart after activation reservation: the finding phase
       // replays only its terminal summary and activation exposes no second body.
@@ -1881,8 +1917,210 @@ describe.skipIf(!DB_AVAILABLE)(
         deliveryState: "carrier_accepted", agentState: "not_observed",
       });
 
+      const tokenNow = Math.floor(Date.now() / 1_000);
+      const oidcSubject = "repo:acme/widgets:ref:refs/heads/main";
+      const oidc = {
+        issuer: "https://token.actions.githubusercontent.com" as const,
+        audience: githubClaudeAcknowledgementAudience({
+          activationCommentId: "91002", runId: "44001", runAttempt: 1,
+        })!,
+        subject: oidcSubject,
+        subjectSha256: createHash("sha256").update(oidcSubject).digest("hex"),
+        jtiSha256: "2".repeat(64),
+        issuedAt: tokenNow - 5,
+        notBefore: tokenNow - 5,
+        expiresAt: tokenNow + 120,
+        repository: "acme/widgets",
+        repositoryId: "1001",
+        repositoryOwner: "acme",
+        repositoryOwnerId: "1002",
+        actor: "jace[bot]",
+        actorId: "1003",
+        eventName: "issue_comment" as const,
+        ref: "refs/heads/main",
+        workflowRef:
+          "acme/widgets/.github/workflows/agentrail-claude-correction.yml@refs/heads/main",
+        workflowSha: "3".repeat(40),
+        jobWorkflowRef: `agentrail/jace/.github/workflows/github-claude-correction-ack.yml@${"1".repeat(40)}`,
+        jobWorkflowSha: "1".repeat(40),
+        runId: "44001",
+        runAttempt: 1 as const,
+        checkRunId: "55001",
+      };
+      const acknowledgementInput = {
+        activationCommentId: "91002",
+        activationBodySha256: activationReservation.activation.bodySha256!,
+        conclusion: "success" as const,
+        providerSessionId: "claude-session-opaque-1",
+        oidc,
+      };
+
+      // A signed synchronize may win the race after GitHub accepts the
+      // activation but before the provider posts its receipt. The receipt is
+      // retained as historical evidence and must not project acknowledgement
+      // onto either the obsolete cycle or its successor.
+      const historicalHeadSha = "5".repeat(40);
+      const historicalAdvance = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo: "acme/widgets",
+        prNumber: 43,
+        headSha: historicalHeadSha,
+        event: "synchronize",
+        deliveryId: "delivery-ack-historical-successor",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: historicalHeadSha },
+        source: "github_webhook",
+      });
+      if (historicalAdvance.kind !== "advanced") throw new Error("expected acknowledgement successor");
+      const beforeHistoricalAck = (await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]!;
+      expect(beforeHistoricalAck).toMatchObject({
+        invalidationReason: "head_advanced",
+        successorHeadSha: historicalHeadSha,
+        successorHeadCycleId: historicalAdvance.jobId,
+        agentState: "not_observed",
+      });
+      const historicalAcknowledged = await recordGithubClaudeAgentAcknowledgement(acknowledgementInput);
+      expect(historicalAcknowledged).toMatchObject({
+        kind: "recorded",
+        receipt: { dispatchId: githubQueued.dispatch.id, headSha },
+      });
+      const afterHistoricalAck = (await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]!;
+      expect(afterHistoricalAck).toMatchObject({
+        invalidationReason: "head_advanced",
+        successorHeadSha: historicalHeadSha,
+        successorHeadCycleId: historicalAdvance.jobId,
+        agentState: "not_observed",
+      });
+      expect(await db.select().from(acceptanceCorrectionDispatches).where(and(
+        eq(acceptanceCorrectionDispatches.recordId, draft.record.id),
+        eq(acceptanceCorrectionDispatches.headCycleId, historicalAdvance.jobId),
+      ))).toHaveLength(0);
+      await expect(readGithubClaudeAgentAcknowledgement({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ id: historicalAcknowledged.kind === "recorded"
+        ? historicalAcknowledged.receipt.id : "unreachable" });
+      await expect(recordGithubClaudeAgentAcknowledgement(acknowledgementInput))
+        .resolves.toMatchObject({ kind: "replayed" });
+
+      // Test-only rewind preserves the existing current-cycle carrier proof in
+      // this broad fixture so the same API is also exercised on its current
+      // agentState CAS path below.
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId,
+          githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-claude-ack:${job.id}`),
+      ));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:invalidated:${job.id}`),
+      ));
+      await db.update(acceptanceCorrectionDispatches).set({
+        invalidatedAt: null,
+        invalidationReason: null,
+        successorHeadSha: null,
+        successorHeadCycleId: null,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecords).set({
+        currentPrHeadSha: headSha,
+        currentPrHeadCycleId: job.id,
+        currentPrHeadAuthoritative: true,
+        currentPrHeadAuthorityGeneration: 1,
+      }).where(eq(changeRecords.id, draft.record.id));
+
+      const immutableSubject =
+        "repo:acme@1002/widgets@1001:ref:refs/heads/main";
+      const immutableAcknowledgementInput = {
+        ...acknowledgementInput,
+        oidc: {
+          ...oidc,
+          subject: immutableSubject,
+          subjectSha256: createHash("sha256").update(immutableSubject).digest("hex"),
+        },
+      };
+      for (const rejectedSubject of [
+        "repo:acme@9999/widgets@1001:ref:refs/heads/main",
+        "repo:acme@1002/widgets@9999:ref:refs/heads/main",
+        "repo:acme@1002/widgets@1001:ref:refs/heads/other",
+        "repo:acme/widgets:environment:production",
+      ]) {
+        await expect(recordGithubClaudeAgentAcknowledgement({
+          ...immutableAcknowledgementInput,
+          oidc: {
+            ...immutableAcknowledgementInput.oidc,
+            subject: rejectedSubject,
+            subjectSha256: createHash("sha256").update(rejectedSubject).digest("hex"),
+          },
+        })).resolves.toEqual({ kind: "not_admitted" });
+      }
+      const wrongSignedRepositoryId = "9999";
+      const wrongIdSubject =
+        `repo:acme@1002/widgets@${wrongSignedRepositoryId}:ref:refs/heads/main`;
+      await expect(recordGithubClaudeAgentAcknowledgement({
+        ...immutableAcknowledgementInput,
+        oidc: {
+          ...immutableAcknowledgementInput.oidc,
+          repositoryId: wrongSignedRepositoryId,
+          subject: wrongIdSubject,
+          subjectSha256: createHash("sha256").update(wrongIdSubject).digest("hex"),
+        },
+      })).resolves.toEqual({ kind: "not_admitted" });
+
+      await expect(recordGithubClaudeAgentAcknowledgement({
+        ...immutableAcknowledgementInput,
+        activationBodySha256: "4".repeat(64),
+      })).resolves.toEqual({ kind: "not_admitted" });
+      const acknowledged = await recordGithubClaudeAgentAcknowledgement(
+        immutableAcknowledgementInput
+      );
+      expect(acknowledged).toMatchObject({
+        kind: "recorded",
+        receipt: {
+          dispatchId: githubQueued.dispatch.id,
+          activationId: activationReservation.activation.id,
+          activationGithubCommentId: "91002",
+          ackProfileId: acknowledgementProfile.profile.id,
+          provider: "anthropic_claude_code_action",
+          providerConclusion: "success",
+          oidcRunAttempt: 1,
+        },
+      });
+      if (acknowledged.kind !== "recorded") throw new Error("expected Claude acknowledgement");
+      expect(JSON.stringify(acknowledged.receipt)).not.toContain("claude-session-opaque-1");
+      expect(JSON.stringify(acknowledged.receipt)).not.toContain(oidcSubject);
+      expect(JSON.stringify(acknowledged.receipt)).not.toContain(immutableSubject);
+      await expect(recordGithubClaudeAgentAcknowledgement(immutableAcknowledgementInput))
+        .resolves.toMatchObject({ kind: "replayed", receipt: { id: acknowledged.receipt.id } });
+      await expect(recordGithubClaudeAgentAcknowledgement({
+        ...immutableAcknowledgementInput,
+        providerSessionId: "different-session",
+      })).rejects.toBeInstanceOf(GithubClaudeAgentAcknowledgementConflictError);
+      await expect(readGithubClaudeAgentAcknowledgement({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ id: acknowledged.receipt.id });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]).toMatchObject({
+        findingsState: "terminal", activationState: "carrier_accepted",
+        deliveryState: "carrier_accepted", agentState: "acknowledged",
+        successorHeadSha: null, successorHeadCycleId: null,
+      });
+
       // Durable fallback remains queueable, but deliberately has no GitHub
       // vendor capability profile and still performs no carrier action.
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId,
+          githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-claude-ack:${job.id}`),
+      ));
       await db.delete(acceptanceCorrectionDispatchGithubActivations)
         .where(eq(acceptanceCorrectionDispatchGithubActivations.dispatchId, githubQueued.dispatch.id));
       await db.delete(acceptanceCorrectionDispatchGithubFindingPublications)

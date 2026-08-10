@@ -4,9 +4,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceBuilderRouteCapabilityProfiles,
+  acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubActivations,
+  acceptanceCorrectionDispatchGithubClaudeAckReceipts,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCompiledContextPacks,
@@ -15,6 +17,63 @@ import {
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
+
+describe("0094 GitHub Claude acknowledgement migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0094_acceptance_github_claude_acknowledgements.sql"
+  );
+
+  it("pins one immutable workflow profile and one metadata-only receipt per activation", () => {
+    expect(acceptanceBuilderRouteGithubClaudeAckProfiles.capabilityProfileId.notNull).toBe(true);
+    expect(acceptanceBuilderRouteGithubClaudeAckProfiles.oidcAudienceContract.notNull).toBe(true);
+    expect(acceptanceBuilderRouteGithubClaudeAckProfiles.oidcSubjectContract.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeAckReceipts.activationId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeAckReceipts.providerSessionIdSha256.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcJtiSha256.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcSubjectSha256.notNull).toBe(true);
+    const profileConfig = getTableConfig(acceptanceBuilderRouteGithubClaudeAckProfiles);
+    expect(profileConfig.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_builder_claude_ack_profiles_route_config_key",
+      "acceptance_builder_claude_ack_profiles_workspace_repo_idx",
+    ]);
+    const receiptConfig = getTableConfig(acceptanceCorrectionDispatchGithubClaudeAckReceipts);
+    expect(receiptConfig.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_claude_ack_receipts_activation_key",
+      "acceptance_claude_ack_receipts_dispatch_key",
+      "acceptance_claude_ack_receipts_oidc_jti_key",
+      "acceptance_claude_ack_receipts_oidc_run_key",
+    ]);
+  });
+
+  it("pins the trusted action, first attempt, hashed audience, and hash-only opaque locators", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain("activation_comment_run_attempt_sha256_v1");
+    expect(sqlText).toContain("default_repo_ref_legacy_or_immutable_v1");
+    expect(sqlText).toContain("6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975");
+    expect(sqlText).toContain("github_app_bot_login\" = 'jace[bot]'");
+    expect(sqlText).toContain('"oidc_run_attempt" = 1');
+    expect(sqlText).toContain("github-claude/ack/v1/[A-Fa-f0-9]{64}");
+    expect(sqlText).toContain('"provider_session_id_sha256"');
+    expect(sqlText).toContain('"oidc_jti_sha256"');
+    expect(sqlText).toContain('"oidc_subject_sha256"');
+    expect(sqlText).not.toContain('"provider_session_id" text');
+    expect(sqlText).not.toContain('"oidc_jti" text');
+    expect(sqlText).not.toContain('"oidc_subject" text');
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("id_token");
+    expect(sqlText).not.toContain("repair_head");
+  });
+
+  it("is registered directly after the two-stage carrier migration", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0094_acceptance_github_claude_acknowledgements"
+    )).toMatchObject({ idx: 99, version: "7", breakpoints: true });
+  });
+});
 
 describe("change_records schema — declarations (Arc D storage)", () => {
   it("uses caller-supplied deterministic ids for records and events", () => {

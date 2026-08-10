@@ -140,12 +140,15 @@ jobs:
           pnpm exec vitest run
           app/api/v1/connectors/jace/inbound
           app/api/v1/webhooks/github-app/route.test.ts
+          app/api/v1/webhooks/github-actions/claude-ack/route.test.ts
           app/api/v1/runner/pr-review/route.test.ts
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts
           lib/github-advisory-review.test.ts
           lib/github-current-pr.test.ts
+          lib/github-actions-oidc.test.ts
+          lib/github-claude-ack-workflow.test.ts
           lib/github-correction-carrier-preflight.test.ts
           lib/github-correction-carrier-comment.test.ts
           lib/github-correction-carrier.test.ts

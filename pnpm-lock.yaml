@@ -46,6 +46,9 @@ importers:
       fumadocs-ui:
         specifier: 15.7.13
         version: 15.7.13(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(next@15.5.19(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(tailwindcss@4.3.0)
+      jose:
+        specifier: 6.2.3
+        version: 6.2.3
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.7)

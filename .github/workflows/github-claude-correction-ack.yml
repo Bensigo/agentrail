@@ -1,0 +1,129 @@
+name: AgentRail Claude correction acknowledgement
+
+on:
+  workflow_call:
+    inputs:
+      agentrail_ack_url:
+        description: Exact AgentRail Claude acknowledgement callback URL.
+        required: true
+        type: string
+    secrets:
+      anthropic_api_key:
+        required: true
+
+jobs:
+  claude:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.comment.user.login == 'jace[bot]' &&
+      contains(github.event.comment.body, '@claude') &&
+      contains(github.event.comment.body, '- Dispatch ID:')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      conclusion: ${{ steps.claude.outputs.conclusion }}
+      session_id: ${{ steps.claude.outputs.session_id }}
+    steps:
+      - name: Run the selected Claude correction
+        id: claude
+        uses: anthropics/claude-code-action@6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975
+        with:
+          anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_bots: jace[bot]
+
+  acknowledge:
+    needs: claude
+    if: >-
+      needs.claude.result == 'success' &&
+      needs.claude.outputs.conclusion == 'success' &&
+      needs.claude.outputs.session_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Submit the bounded AgentRail acknowledgement receipt
+        shell: bash
+        env:
+          AGENTRAIL_ACK_URL: ${{ inputs.agentrail_ack_url }}
+          ACTIVATION_COMMENT_ID: ${{ github.event.comment.id }}
+          ACTIVATION_COMMENT_BODY: ${{ github.event.comment.body }}
+          CLAUDE_SESSION_ID: ${{ needs.claude.outputs.session_id }}
+          GITHUB_RUN_ID_VALUE: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT_VALUE: ${{ github.run_attempt }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require("node:crypto");
+
+          const required = (name) => {
+            const value = process.env[name];
+            if (!value) throw new Error(`missing ${name}`);
+            return value;
+          };
+          const positive = /^[1-9][0-9]{0,39}$/;
+          const activationCommentId = required("ACTIVATION_COMMENT_ID");
+          const runId = required("GITHUB_RUN_ID_VALUE");
+          const runAttempt = required("GITHUB_RUN_ATTEMPT_VALUE");
+          if (!positive.test(activationCommentId) || !positive.test(runId) || runAttempt !== "1") {
+            throw new Error("acknowledgement requires canonical first-attempt identifiers");
+          }
+
+          const callback = new URL(required("AGENTRAIL_ACK_URL"));
+          if (callback.protocol !== "https:"
+            || !["heyjace.com", "www.heyjace.com"].includes(callback.hostname)
+            || callback.port
+            || callback.pathname !== "/api/v1/webhooks/github-actions/claude-ack"
+            || callback.username || callback.password || callback.search || callback.hash) {
+            throw new Error("invalid AgentRail acknowledgement URL");
+          }
+
+          const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
+          const audienceBinding = [
+            "github_claude_ack", "1", activationCommentId, runId, runAttempt,
+          ].join(":");
+          const audience =
+            `agentrail://correction-dispatch/github-claude/ack/v1/${sha256(audienceBinding)}`;
+          const oidcUrl = new URL(required("ACTIONS_ID_TOKEN_REQUEST_URL"));
+          if (oidcUrl.protocol !== "https:" || oidcUrl.hostname !== "token.actions.githubusercontent.com") {
+            throw new Error("invalid GitHub OIDC request URL");
+          }
+          oidcUrl.searchParams.set("audience", audience);
+
+          const oidcResponse = await fetch(oidcUrl, {
+            headers: { Authorization: `Bearer ${required("ACTIONS_ID_TOKEN_REQUEST_TOKEN")}` },
+            redirect: "error",
+            signal: AbortSignal.timeout(8_000),
+          });
+          if (!oidcResponse.ok) throw new Error("GitHub OIDC token request failed");
+          const oidcPayload = await oidcResponse.json();
+          if (!oidcPayload || typeof oidcPayload.value !== "string" || oidcPayload.value.length > 16_384) {
+            throw new Error("GitHub OIDC token response was invalid");
+          }
+
+          const body = JSON.stringify({
+            version: 1,
+            activationCommentId,
+            activationBodySha256: sha256(required("ACTIVATION_COMMENT_BODY")),
+            conclusion: "success",
+            sessionId: required("CLAUDE_SESSION_ID"),
+            runId,
+            runAttempt: 1,
+          });
+          const callbackResponse = await fetch(callback, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${oidcPayload.value}`,
+              "Content-Type": "application/json",
+            },
+            body,
+            redirect: "error",
+            signal: AbortSignal.timeout(8_000),
+          });
+          if (callbackResponse.status !== 200 && callbackResponse.status !== 201) {
+            throw new Error("AgentRail acknowledgement was not accepted");
+          }
+          NODE

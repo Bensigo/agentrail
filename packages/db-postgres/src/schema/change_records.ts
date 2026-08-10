@@ -272,6 +272,86 @@ export const acceptanceBuilderRouteCapabilityProfiles = pgTable(
 );
 
 /**
+ * Immutable GitHub Actions acknowledgement policy for one `github_claude`
+ * route revision. The generic capability profile above proves only the Jace
+ * GitHub installation; this separate policy pins the numeric repository and
+ * actor identities plus the exact trusted workflow and Anthropic Action SHAs
+ * that may later attest one successful Claude session.
+ */
+export const acceptanceBuilderRouteGithubClaudeAckProfiles = pgTable(
+  "acceptance_builder_route_github_claude_ack_profiles",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    routeId: uuid("route_id")
+      .notNull()
+      .references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    capabilityProfileId: uuid("capability_profile_id")
+      .notNull()
+      .references(() => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }),
+    capabilityProfileSnapshotSha256: text("capability_profile_snapshot_sha256").notNull(),
+    repo: text("repo").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    githubRepositoryId: text("github_repository_id").notNull(),
+    githubRepositoryOwnerId: text("github_repository_owner_id").notNull(),
+    githubAppBotUserId: text("github_app_bot_user_id").notNull(),
+    githubAppBotLogin: text("github_app_bot_login").notNull(),
+    oidcIssuer: text("oidc_issuer").notNull(),
+    oidcAudienceContract: text("oidc_audience_contract").notNull(),
+    oidcSubjectContract: text("oidc_subject_contract").notNull(),
+    callerWorkflowRef: text("caller_workflow_ref").notNull(),
+    jobWorkflowRef: text("job_workflow_ref").notNull(),
+    jobWorkflowSha: text("job_workflow_sha").notNull(),
+    claudeActionSha: text("claude_action_sha").notNull(),
+    workflowContract: text("workflow_contract").notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    snapshotSha256: text("snapshot_sha256").notNull(),
+    recordedBy: text("recorded_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    routeConfiguration: uniqueIndex(
+      "acceptance_builder_claude_ack_profiles_route_config_key"
+    ).on(t.routeId, t.routeConfigurationVersion),
+    workspaceRepo: index("acceptance_builder_claude_ack_profiles_workspace_repo_idx")
+      .on(t.workspaceId, t.repo, t.createdAt),
+    bindingCheck: check(
+      "acceptance_builder_claude_ack_profiles_binding_check",
+      sql`${t.routeConfigurationVersion} > 0
+        AND char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND ${t.capabilityProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubRepositoryId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.githubRepositoryOwnerId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.githubAppBotUserId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.githubAppBotLogin} = 'jace[bot]'
+        AND ${t.oidcIssuer} = 'https://token.actions.githubusercontent.com'
+        AND ${t.oidcAudienceContract} = 'activation_comment_run_attempt_sha256_v1'
+        AND ${t.oidcSubjectContract} = 'default_repo_ref_legacy_or_immutable_v1'
+        AND char_length(${t.callerWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.callerWorkflowRef} LIKE ${t.repo} || '/.github/workflows/%@refs/heads/%'
+        AND ${t.callerWorkflowRef} !~ '[[:cntrl:]]'
+        AND char_length(${t.jobWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.jobWorkflowRef} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\\.github/workflows/[A-Za-z0-9._/-]+\\.ya?ml@[A-Fa-f0-9]{40}$'
+        AND right(lower(${t.jobWorkflowRef}), 40) = lower(${t.jobWorkflowSha})
+        AND ${t.jobWorkflowSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.claudeActionSha} = '6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975'
+        AND ${t.workflowContract} = 'github_claude_action_success_session_v1'
+        AND jsonb_typeof(${t.snapshot}) = 'object'
+        AND ${t.snapshotSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    recordedByCheck: check(
+      "acceptance_builder_claude_ack_profiles_recorded_by_check",
+      sql`char_length(${t.recordedBy}) BETWEEN 8 AND 256
+        AND ${t.recordedBy} ~ '^server:[A-Za-z0-9][A-Za-z0-9._@+-]*$'`
+    ),
+  })
+);
+
+/**
  * Immutable, metadata-only source identity admitted for one exact review head.
  * It is not a compiled or delivered Context Pack. Later compiler/resolver
  * slices may only consume a row whose exact source identity is already bound.
@@ -822,6 +902,127 @@ export const acceptanceCorrectionDispatchGithubActivations = pgTable(
 );
 
 /**
+ * One immutable acknowledgement receipt for a carrier-accepted
+ * `github_claude` activation. GitHub Actions OIDC authenticates the pinned
+ * workflow; only hashes of the resumable Claude session id, OIDC subject, and
+ * token jti are retained. No JWT, provider token, transcript, branch, output,
+ * or repair-head claim belongs in this table.
+ */
+export const acceptanceCorrectionDispatchGithubClaudeAckReceipts = pgTable(
+  "acceptance_correction_dispatch_github_claude_ack_receipts",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    dispatchId: uuid("dispatch_id").notNull()
+      .references(() => acceptanceCorrectionDispatches.id, { onDelete: "restrict" }),
+    activationId: uuid("activation_id").notNull()
+      .references(() => acceptanceCorrectionDispatchGithubActivations.id, { onDelete: "restrict" }),
+    recordId: uuid("record_id").notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    activationIdentitySha256: text("activation_identity_sha256").notNull(),
+    activationGithubCommentId: text("activation_github_comment_id").notNull(),
+    activationBodySha256: text("activation_body_sha256").notNull(),
+    routeId: uuid("route_id").notNull()
+      .references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    capabilityProfileId: uuid("capability_profile_id").notNull()
+      .references(() => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }),
+    ackProfileId: uuid("ack_profile_id").notNull()
+      .references(() => acceptanceBuilderRouteGithubClaudeAckProfiles.id, { onDelete: "restrict" }),
+    ackProfileSnapshotSha256: text("ack_profile_snapshot_sha256").notNull(),
+    acknowledgementProtocolVersion: integer("acknowledgement_protocol_version").notNull().default(1),
+    provider: text("provider").notNull(),
+    providerConclusion: text("provider_conclusion").notNull(),
+    providerSessionIdSha256: text("provider_session_id_sha256").notNull(),
+    oidcIssuer: text("oidc_issuer").notNull(),
+    oidcAudience: text("oidc_audience").notNull(),
+    oidcSubjectSha256: text("oidc_subject_sha256").notNull(),
+    oidcRepository: text("oidc_repository").notNull(),
+    oidcRepositoryId: text("oidc_repository_id").notNull(),
+    oidcRepositoryOwner: text("oidc_repository_owner").notNull(),
+    oidcRepositoryOwnerId: text("oidc_repository_owner_id").notNull(),
+    oidcActorId: text("oidc_actor_id").notNull(),
+    oidcActor: text("oidc_actor").notNull(),
+    oidcEventName: text("oidc_event_name").notNull(),
+    oidcRef: text("oidc_ref").notNull(),
+    oidcWorkflowRef: text("oidc_workflow_ref").notNull(),
+    oidcWorkflowSha: text("oidc_workflow_sha").notNull(),
+    oidcJobWorkflowRef: text("oidc_job_workflow_ref").notNull(),
+    oidcJobWorkflowSha: text("oidc_job_workflow_sha").notNull(),
+    oidcRunId: text("oidc_run_id").notNull(),
+    oidcRunAttempt: integer("oidc_run_attempt").notNull(),
+    oidcCheckRunId: text("oidc_check_run_id").notNull(),
+    oidcTokenIssuedAt: timestamp("oidc_token_issued_at", { withTimezone: true }).notNull(),
+    oidcTokenNotBefore: timestamp("oidc_token_not_before", { withTimezone: true }).notNull(),
+    oidcTokenExpiresAt: timestamp("oidc_token_expires_at", { withTimezone: true }).notNull(),
+    oidcJtiSha256: text("oidc_jti_sha256").notNull(),
+    receiptIdentitySha256: text("receipt_identity_sha256").notNull(),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dispatch: uniqueIndex("acceptance_claude_ack_receipts_dispatch_key").on(t.dispatchId),
+    activation: uniqueIndex("acceptance_claude_ack_receipts_activation_key").on(t.activationId),
+    oidcJti: uniqueIndex("acceptance_claude_ack_receipts_oidc_jti_key").on(t.oidcJtiSha256),
+    oidcRun: uniqueIndex("acceptance_claude_ack_receipts_oidc_run_key")
+      .on(t.oidcRepositoryId, t.oidcRunId),
+    bindingCheck: check(
+      "acceptance_claude_ack_receipts_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.activationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.activationGithubCommentId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.activationBodySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.ackProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.acknowledgementProtocolVersion} = 1
+        AND ${t.provider} = 'anthropic_claude_code_action'
+        AND ${t.providerConclusion} = 'success'
+        AND ${t.providerSessionIdSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.oidcIssuer} = 'https://token.actions.githubusercontent.com'
+        AND ${t.oidcAudience} ~ '^agentrail://correction-dispatch/github-claude/ack/v1/[A-Fa-f0-9]{64}$'
+        AND ${t.oidcSubjectSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.oidcRepository} = ${t.repo}
+        AND ${t.oidcRepositoryId} ~ '^[1-9][0-9]{0,39}$'
+        AND char_length(${t.oidcRepositoryOwner}) BETWEEN 1 AND 100
+        AND ${t.oidcRepositoryOwner} ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,99}$'
+        AND ${t.oidcRepositoryOwnerId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcActorId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcActor} = 'jace[bot]'
+        AND ${t.oidcEventName} = 'issue_comment'
+        AND char_length(${t.oidcRef}) BETWEEN 12 AND 512
+        AND ${t.oidcRef} LIKE 'refs/heads/%'
+        AND ${t.oidcRef} !~ '[[:cntrl:]]'
+        AND char_length(${t.oidcWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.oidcWorkflowRef} !~ '[[:cntrl:]]'
+        AND ${t.oidcWorkflowSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND char_length(${t.oidcJobWorkflowRef}) BETWEEN 1 AND 1024
+        AND ${t.oidcJobWorkflowRef} !~ '[[:cntrl:]]'
+        AND ${t.oidcJobWorkflowSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.oidcRunId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcRunAttempt} = 1
+        AND ${t.oidcCheckRunId} ~ '^[1-9][0-9]{0,39}$'
+        AND ${t.oidcTokenNotBefore} <= ${t.oidcTokenExpiresAt}
+        AND ${t.oidcTokenIssuedAt} <= ${t.oidcTokenExpiresAt}
+        AND ${t.oidcJtiSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.receiptIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -925,11 +1126,13 @@ export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
 export type AcceptanceBuilderRouteCapabilityProfileRow = typeof acceptanceBuilderRouteCapabilityProfiles.$inferSelect;
+export type AcceptanceBuilderRouteGithubClaudeAckProfileRow = typeof acceptanceBuilderRouteGithubClaudeAckProfiles.$inferSelect;
 export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
 export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
 export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatches.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubPreflightRow = typeof acceptanceCorrectionDispatchGithubPreflights.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubFindingPublicationRow = typeof acceptanceCorrectionDispatchGithubFindingPublications.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceCorrectionDispatchGithubActivations.$inferSelect;
+export type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow = typeof acceptanceCorrectionDispatchGithubClaudeAckReceipts.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

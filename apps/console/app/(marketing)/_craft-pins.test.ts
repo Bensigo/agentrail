@@ -204,11 +204,10 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
   });
 
-  it("the live numbers render in font-mono (landing v2: CountUp carries the mono class beside each {stats.*} marker)", () => {
+  it("does not render legacy factory outcome counters as landing-page trust metrics", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{stats.shipped}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.workedOn}")).toBe(true);
-    expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
+    expect(source).not.toContain("getLandingStats");
+    expect(source).not.toContain("{stats.");
   });
 
   it("the tier price renders in font-mono (subscription-platform slice 10, Task 1 — TierCards is shared verbatim by /pricing and landing §6b, so this pin now anchors the one real render site instead of landing's retired inline copy)", () => {
@@ -294,13 +293,10 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
   // examples: "allow the rotation utility, pin the lemon-scene text
   // pairing."
 
-  it("the static tilt uses Tailwind's named rotate scale (rotate-1/2/3, not arbitrary values) on the stat scraps and the closing mascot", () => {
+  it("the closing mascot uses Tailwind's named rotate scale (not an arbitrary rotate value)", () => {
     const source = readSibling("page.tsx");
     const matches = source.match(/-?rotate-\d/g) ?? [];
-    // 2 tilted stat scraps + 1 closing mascot = 3 static tilts. The
-    // didn't-land card is DELIBERATELY untilted — its difference from the
-    // other two is the slop audit's LS-1/LS-2 fix; don't "even it up".
-    expect(matches.length).toBeGreaterThanOrEqual(3);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
   it("the rotation is a static transform, never animated or transitioned", () => {

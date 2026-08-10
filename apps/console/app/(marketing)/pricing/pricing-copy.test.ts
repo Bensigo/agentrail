@@ -256,9 +256,11 @@ describe("pricing page + landing §6b never reintroduce the retired anti-subscri
     expect(layoutSource).not.toContain("fractional software engineer");
   });
 
-  it("landing page renders the new bottleneck section without inventing attribution", () => {
-    expect(landingSource).toContain("The bottleneck moved");
-    expect(landingSource).toContain("Attribution unavailable in the current source set.");
+  it("landing page renders the truthful reviewability copy", () => {
+    expect(landingSource).toContain("What makes agent work reviewable");
+    expect(landingSource).toContain(
+      "Review the agreed criteria, the exact change, and the evidence for each claim before deciding what happens next.",
+    );
   });
 
   it("the outcome-led use case presents dependency upgrades as available", () => {

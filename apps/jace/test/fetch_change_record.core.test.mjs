@@ -84,6 +84,10 @@ test("projects the record and stage evidence while preserving the untrusted-data
         { stage: "review", label: "review posted", url: "https://github.com/ada/widgets/pull/98" },
         { stage: "verification", label: "acceptance evidence", url: null },
       ],
+      acceptanceContract: {
+        version: 2,
+        criteria: [{ id: "AC-1", text: "The saved value is visible." }],
+      },
     }),
   }));
   const result = await fetchChangeRecord({ env: ENV, eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98, transport });
@@ -91,9 +95,33 @@ test("projects the record and stage evidence while preserving the untrusted-data
   assert.equal(result.found, true);
   assert.equal(result.record.id, "record-1");
   assert.equal(result.stageEvidence.length, 2);
+  assert.deepEqual(result.acceptanceContract, {
+    version: 2,
+    criteria: [{ id: "AC-1", text: "The saved value is visible." }],
+  });
   assert.equal(result.contentIsUntrusted, true);
   assert.equal(transport.calls[0].init.method, "POST");
   assert.equal(JSON.parse(transport.calls[0].init.body).eveSessionId, "eve-1");
+});
+
+test("projects only a complete confirmed Contract and marks malformed contract data unavailable", async () => {
+  const result = await fetchChangeRecord({
+    env: ENV,
+    eveSessionId: "eve-1",
+    repo: "ada/widgets",
+    prNumber: 98,
+    transport: fakeTransport(async () => ({
+      status: 200,
+      json: async () => ({
+        found: true,
+        record: { id: "record-1", workspaceId: "ws-1", repo: "ada/widgets", issueNumber: null, prNumber: 98, state: "open" },
+        acceptanceContract: { version: 2, criteria: [{ id: "AC-1", text: "ok" }, { id: "", text: "unsafe" }] },
+      }),
+    })),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.found, true);
+  assert.equal(result.acceptanceContract, null);
 });
 
 test("transport and malformed success bodies degrade honestly", async () => {

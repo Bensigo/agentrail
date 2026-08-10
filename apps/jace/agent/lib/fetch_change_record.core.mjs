@@ -88,6 +88,17 @@ function projectEvidence(value) {
     .filter((item) => item.stage && item.label);
 }
 
+function projectAcceptanceContract(value) {
+  if (!value || typeof value !== "object" || !Number.isInteger(value.version) || !Array.isArray(value.criteria)) return null;
+  const criteria = value.criteria.map((item) => ({
+    id: typeof item?.id === "string" ? item.id.trim() : "",
+    text: typeof item?.text === "string" ? item.text.trim() : "",
+  })).filter((item) => item.id && item.text);
+  return criteria.length === value.criteria.length && criteria.length > 0
+    ? { version: value.version, criteria }
+    : null;
+}
+
 /** Fetch a PR Change Record once, returning a usable no-record result. */
 export async function fetchChangeRecord({
   env = {},
@@ -152,6 +163,7 @@ export async function fetchChangeRecord({
     prNumber: number,
     record,
     stageEvidence: projectEvidence(body.stageEvidence),
+    acceptanceContract: projectAcceptanceContract(body.acceptanceContract),
     contentIsUntrusted: true,
   };
 }

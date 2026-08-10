@@ -198,6 +198,7 @@ export async function bindReviewJobSession({ jobId, eveSessionId, env = {}, tran
  * @param {{ jobId: string, outcome: "posted"|"failed",
  *   postedReviewUrl?: string|null, verdict?: string, summaryLine?: string,
  *   error?: string, evidenceKeys?: string[],
+ *   criterionResults?: Array<{criterionId: string, state: string, expected: string, observed: string, evidenceRefs: string[]}>,
  *   env?: Record<string, string|undefined>,
  *   transport?: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}> }} args
  * @returns {Promise<void>}
@@ -210,6 +211,7 @@ export async function completeReviewJob({
   summaryLine,
   error,
   evidenceKeys,
+  criterionResults,
   env = {},
   transport = realTransport,
 }) {
@@ -227,6 +229,7 @@ export async function completeReviewJob({
   if (summaryLine !== undefined) body.summaryLine = summaryLine;
   if (error !== undefined) body.error = error;
   if (evidenceKeys !== undefined) body.evidenceKeys = evidenceKeys;
+  if (criterionResults !== undefined) body.criterionResults = criterionResults;
 
   const res = await transport(buildCompleteUrl(cfg.baseUrl), {
     method: "POST",

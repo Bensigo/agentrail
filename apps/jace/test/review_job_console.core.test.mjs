@@ -255,6 +255,31 @@ test("completeReviewJob: POSTs to the complete URL with a bearer header and reso
   });
 });
 
+test("completeReviewJob: forwards criterion results without adding any other caller fields", async () => {
+  const transport = fakeTransport(() => jsonResponse(200, { ok: true }));
+  const criterionResults = [{
+    criterionId: "AC-1",
+    state: "not_proven",
+    expected: "The saved value is visible.",
+    observed: "No safe preview was available.",
+    evidenceRefs: ["artifact://review/ac-1"],
+  }];
+
+  await completeReviewJob({
+    jobId: "job-1",
+    outcome: "posted",
+    criterionResults,
+    env: ENV,
+    transport,
+  });
+
+  assert.deepEqual(JSON.parse(transport.calls[0].init.body), {
+    jobId: "job-1",
+    outcome: "posted",
+    criterionResults,
+  });
+});
+
 test("completeReviewJob: a minimal failed report omits every undefined optional field (only jobId+outcome+error sent)", async () => {
   const transport = fakeTransport(() => jsonResponse(200, { ok: true }));
   await completeReviewJob({ jobId: "job-2", outcome: "failed", error: "model blew up", env: ENV, transport });

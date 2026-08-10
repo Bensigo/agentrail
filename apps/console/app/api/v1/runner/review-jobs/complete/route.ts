@@ -3,6 +3,9 @@ import {
   appendChangeRecordEvent,
   completeReviewJob,
   findOrCreateChangeRecord,
+  getReviewJobById,
+  readAcceptanceContracts,
+  readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
 import { sendWorkspaceNotification } from "../../result/notify";
@@ -131,6 +134,7 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
   if (o.evidenceKeys !== undefined && !isStringArray(o.evidenceKeys)) return null;
   const criterionResults = o.criterionResults === undefined ? undefined : parseCriterionResults(o.criterionResults);
   if (o.criterionResults !== undefined && criterionResults === null) return null;
+  if (o.outcome === "posted" && criterionResults === undefined) return null;
   return {
     jobId: o.jobId,
     outcome: o.outcome,
@@ -141,6 +145,53 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
     evidenceKeys: isStringArray(o.evidenceKeys) ? o.evidenceKeys : undefined,
     criterionResults: criterionResults ?? undefined,
   };
+}
+
+function confirmedCriterionIds(
+  contracts: Awaited<ReturnType<typeof readAcceptanceContracts>>
+): Set<string> | null {
+  const contract = contracts?.find((item) => item.status === "confirmed");
+  const criteria = contract?.contract.acceptanceCriteria;
+  if (!contract || !Array.isArray(criteria) || criteria.length === 0) return null;
+
+  const ids = new Set<string>();
+  for (const criterion of criteria) {
+    const id =
+      criterion && typeof criterion === "object" && typeof (criterion as Record<string, unknown>).id === "string"
+        ? (criterion as Record<string, unknown>).id.trim()
+        : "";
+    if (!id || ids.has(id)) return null;
+    ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * A posted review is valid only when it is bound to the same exact PR head as
+ * a Change Record with a confirmed Contract, and it supplies one result for
+ * every Contract criterion. This is deliberately checked before the guarded
+ * completion update so an incomplete or foreign result cannot turn a running
+ * job into a posted job.
+ */
+async function hasExactConfirmedCriterionCoverage(
+  job: NonNullable<Awaited<ReturnType<typeof getReviewJobById>>>,
+  criterionResults: CriterionResult[]
+): Promise<boolean> {
+  const timeline = await readChangeRecordTimelineByPr({
+    workspaceId: job.workspaceId,
+    repo: job.repo,
+    prNumber: job.prNumber,
+  });
+  if (!timeline || !timeline.record.headShas.includes(job.headSha)) return false;
+
+  const expectedIds = confirmedCriterionIds(
+    await readAcceptanceContracts({
+      workspaceId: job.workspaceId,
+      recordId: timeline.record.id,
+    })
+  );
+  if (!expectedIds || expectedIds.size !== criterionResults.length) return false;
+  return criterionResults.every((result) => expectedIds.has(result.criterionId));
 }
 
 /**
@@ -228,6 +279,21 @@ export async function POST(request: NextRequest) {
       { error: "jobId (string) and outcome ('posted'|'failed') are required" },
       { status: 400 }
     );
+  }
+
+  if (body.outcome === "posted") {
+    const job = await getReviewJobById(body.jobId);
+    if (
+      !job ||
+      job.state !== "running" ||
+      !body.criterionResults ||
+      !(await hasExactConfirmedCriterionCoverage(job, body.criterionResults))
+    ) {
+      return NextResponse.json(
+        { error: "review result does not exactly cover the confirmed Contract for this PR head" },
+        { status: 409 }
+      );
+    }
   }
 
   const result = await completeReviewJob({

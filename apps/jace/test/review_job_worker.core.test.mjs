@@ -62,7 +62,7 @@ function makeJob(overrides = {}) {
 }
 
 // The shape review_job_prompt.mjs's REVIEW_JOB_RESULT_SCHEMA describes:
-// {posted, reviewUrl, verdict, blockers, summaryLine}.
+// {posted, reviewUrl, verdict, blockers, summaryLine, criterionResults}.
 function makeResult(overrides = {}) {
   return {
     posted: true,
@@ -70,6 +70,15 @@ function makeResult(overrides = {}) {
     verdict: "approve",
     blockers: [],
     summaryLine: "ada/widgets#7: approve, no blockers",
+    criterionResults: [
+      {
+        criterionId: "AC-1",
+        state: "proven",
+        expected: "The saved value is visible.",
+        observed: "The saved value is visible.",
+        evidenceRefs: ["artifact://review/ac-1"],
+      },
+    ],
     ...overrides,
   };
 }
@@ -190,6 +199,7 @@ test('happy path: claims FIRST (no args), opens a session only for the claimed j
       postedReviewUrl: structured.reviewUrl,
       verdict: structured.verdict,
       summaryLine: structured.summaryLine,
+      criterionResults: structured.criterionResults,
     },
   ]);
 });
@@ -234,8 +244,33 @@ test('happy path WITH evidenceKeys: a structured result carrying evidenceKeys pa
       verdict: structured.verdict,
       summaryLine: structured.summaryLine,
       evidenceKeys: structured.evidenceKeys,
+      criterionResults: structured.criterionResults,
     },
   ]);
+});
+
+test('posted:true without criterionResults is completed as failed rather than claiming a Contract review ran', async () => {
+  const completeArgs = [];
+  const worker = createReviewJobWorker(
+    baseDeps({
+      claim: async () => makeJob(),
+      complete: async (args) => completeArgs.push(args),
+      openSession: async () => ({
+        id: "session-no-criteria",
+        send: async () => {
+          const { criterionResults, ...withoutCriteria } = makeResult();
+          return withoutCriteria;
+        },
+        close: async () => {},
+      }),
+    }),
+  );
+
+  assert.equal(await worker.tick(), "failed");
+  assert.equal(completeArgs.length, 1);
+  assert.equal(completeArgs[0].jobId, "job-1");
+  assert.equal(completeArgs[0].outcome, "failed");
+  assert.match(completeArgs[0].error, /omitted criterionResults required for the confirmed Acceptance Contract/);
 });
 
 // ---------------------------------------------------------------------------

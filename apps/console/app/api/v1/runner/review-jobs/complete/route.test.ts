@@ -5,6 +5,9 @@ vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
   completeReviewJob: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
+  getReviewJobById: vi.fn(),
+  readAcceptanceContracts: vi.fn(),
+  readChangeRecordTimelineByPr: vi.fn(),
 }));
 // The notify module is mocked wholesale, same convention as
 // runner/result/route.test.ts's `vi.mock("./notify", ...)` — this route's
@@ -20,12 +23,18 @@ import {
   appendChangeRecordEvent,
   completeReviewJob,
   findOrCreateChangeRecord,
+  getReviewJobById,
+  readAcceptanceContracts,
+  readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { sendWorkspaceNotification } from "../../result/notify";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
 const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
+const mockGetReviewJobById = vi.mocked(getReviewJobById);
+const mockReadAcceptanceContracts = vi.mocked(readAcceptanceContracts);
+const mockReadChangeRecordTimelineByPr = vi.mocked(readChangeRecordTimelineByPr);
 const mockNotify = vi.mocked(sendWorkspaceNotification);
 
 // Central-secret auth — same idiom as the sibling claim route's tests.
@@ -86,6 +95,28 @@ const FAILED_JOB = {
   skipReason: null,
 };
 
+const RUNNING_JOB = {
+  ...POSTED_JOB,
+  state: "running",
+  postedReviewUrl: null,
+  verdict: null,
+};
+
+const CONTRACT_TIMELINE = {
+  record: CHANGE_RECORD,
+  events: [],
+};
+
+const CONFIRMED_CONTRACT = [{
+  status: "confirmed",
+  version: 2,
+  contract: {
+    acceptanceCriteria: [
+      { id: "AC-1", text: "The saved value is visible." },
+    ],
+  },
+}];
+
 function postReq(body: unknown, withAuth = true): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/review-jobs/complete", {
     method: "POST",
@@ -114,12 +145,22 @@ const VALID_POSTED_BODY = {
   postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
   verdict: "approve",
   summaryLine: "AgentRail review posted for acme/widgets#42 — 3/3 ACs pass, no blockers",
+  criterionResults: [{
+    criterionId: "AC-1",
+    state: "proven",
+    expected: "The saved value is visible.",
+    observed: "The saved value is visible.",
+    evidenceRefs: ["artifact://review/ac-1"],
+  }],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
   process.env[ENV_KEY] = SECRET;
   mockComplete.mockResolvedValue(null as never);
+  mockGetReviewJobById.mockResolvedValue(RUNNING_JOB as never);
+  mockReadChangeRecordTimelineByPr.mockResolvedValue(CONTRACT_TIMELINE as never);
+  mockReadAcceptanceContracts.mockResolvedValue(CONFIRMED_CONTRACT as never);
   mockFindOrCreateChangeRecord.mockResolvedValue(CHANGE_RECORD as never);
   mockAppendChangeRecordEvent.mockResolvedValue({
     event: CHANGE_RECORD_EVENT,
@@ -232,6 +273,45 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       }
       expect(mockComplete).not.toHaveBeenCalled();
     });
+
+    it("400 when a posted result omits criterionResults", async () => {
+      const { criterionResults, ...withoutCriteria } = VALID_POSTED_BODY;
+      const res = await POST(postReq(withoutCriteria));
+      expect(res.status).toBe(400);
+      expect(mockGetReviewJobById).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("confirmed Contract coverage", () => {
+    it("409 before completion when the Contract is missing, the head is foreign, or results do not exactly match the confirmed criterion IDs", async () => {
+      const cases = [
+        () => mockReadAcceptanceContracts.mockResolvedValue([] as never),
+        () => mockReadChangeRecordTimelineByPr.mockResolvedValue({
+          ...CONTRACT_TIMELINE,
+          record: { ...CHANGE_RECORD, headShas: ["b".repeat(40)] },
+        } as never),
+        () => {},
+      ];
+      for (const arrange of cases) {
+        arrange();
+        const body = cases.indexOf(arrange) === 2
+          ? { ...VALID_POSTED_BODY, criterionResults: [{ ...VALID_POSTED_BODY.criterionResults[0], criterionId: "AC-foreign" }] }
+          : VALID_POSTED_BODY;
+        const res = await POST(postReq(body));
+        expect(res.status).toBe(409);
+        expect(mockComplete).not.toHaveBeenCalled();
+        vi.mocked(mockReadAcceptanceContracts).mockResolvedValue(CONFIRMED_CONTRACT as never);
+        vi.mocked(mockReadChangeRecordTimelineByPr).mockResolvedValue(CONTRACT_TIMELINE as never);
+      }
+    });
+
+    it("reads the exact running job and confirmed Contract before completing a valid posted review", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      await POST(postReq(VALID_POSTED_BODY));
+      expect(mockGetReviewJobById).toHaveBeenCalledWith("job-1");
+      expect(mockReadChangeRecordTimelineByPr).toHaveBeenCalledWith({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42 });
+      expect(mockReadAcceptanceContracts).toHaveBeenCalledWith({ workspaceId: "ws-1", recordId: "record-1" });
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -249,8 +329,7 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       mockComplete.mockResolvedValue(POSTED_JOB as never);
       await POST(
         postReq({
-          jobId: "job-1",
-          outcome: "posted",
+          ...VALID_POSTED_BODY,
           postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
           verdict: "approve",
         })
@@ -368,7 +447,7 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
           postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
           verdict: "approve",
           evidenceKeys: null,
-          criterionResults: null,
+          criterionResults: VALID_POSTED_BODY.criterionResults,
         },
         at: NOW,
       });

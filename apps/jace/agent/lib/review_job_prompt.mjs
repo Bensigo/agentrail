@@ -62,11 +62,12 @@ export function reviewJobPrompt(job) {
   return [
     `You are executing review job ${id} headlessly — no human is in this conversation.`,
     `Review PR #${prNumber} in ${repo} at head ${headSha}. Do exactly your normal review choreography:`,
+    `- First call fetch_change_record for this repo and PR. Use ONLY its confirmed acceptanceContract criteria. If it is missing or malformed, do not post a success review; return posted:false with the reason.`,
     `- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.`,
     `- Post the review with post_pr_review. One review, one verdict.`,
     `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting (rung 1). Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, call request_preview_boot with (repo, prNumber, headSha); if it returns a booted URL, dispatch qa against THAT url exactly as rung 1 (rung 2). Regardless of whether the boot becomes ready, if request_preview_boot returns a bootLogKey, include that key in evidenceKeys in the structured result. If there is no preview URL AND no boot becomes ready, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
     `- Do not create issues, send channel messages, or take any action beyond the review itself.`,
-    `Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts), and evidenceKeys when evidence was captured.`,
+    `Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts), criterionResults (exactly one terminal result for every confirmed criterion), and evidenceKeys when evidence was captured.`,
   ].join("\n");
 }
 
@@ -98,7 +99,7 @@ export function reviewJobPrompt(job) {
 export const REVIEW_JOB_RESULT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["posted", "reviewUrl", "verdict", "blockers", "summaryLine"],
+  required: ["posted", "reviewUrl", "verdict", "blockers", "summaryLine", "criterionResults"],
   properties: {
     posted: {
       type: "boolean",
@@ -124,6 +125,21 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
     summaryLine: {
       type: "string",
       description: "One line for the owner: repo, PR, verdict, and the judgment verdicts.",
+    },
+    criterionResults: {
+      type: "array",
+      description: "Exactly one result for every confirmed Acceptance Contract criterion: criterionId, state (proven|failed|not_proven|not_testable), expected, observed, and evidenceRefs. Do not invent a criterion or a pass.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["criterionId", "state", "expected", "observed", "evidenceRefs"],
+        properties: {
+          criterionId: { type: "string" },
+          state: { enum: ["proven", "failed", "not_proven", "not_testable"] },
+          expected: { type: "string" }, observed: { type: "string" },
+          evidenceRefs: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     evidenceKeys: {
       type: "array",

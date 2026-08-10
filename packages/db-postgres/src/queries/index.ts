@@ -3224,6 +3224,7 @@ export {
   reviewJobId,
   enqueueReviewJob,
   listReviewJobsForPr,
+  getReviewJobById,
   claimReviewJob,
   completeReviewJob,
   bindReviewJobSession,

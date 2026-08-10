@@ -434,6 +434,7 @@ describe.skipIf(!DB_AVAILABLE)(
       const headSha = "a".repeat(40);
       await attachConfirmedAcceptanceRecordToExternalPullRequest({
         workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43, headSha,
+        source: "manual",
       });
       const job = await enqueueReviewJob({ workspaceId: wsId, repo: "acme/widgets", prNumber: 43, headSha });
       const packetId = reviewJobCorrectionPacketId({

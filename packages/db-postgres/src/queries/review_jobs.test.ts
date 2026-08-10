@@ -21,6 +21,7 @@ vi.mock("../db.js", () => {
         state.lastOrderBy = args;
         return Promise.resolve(state.selectRows);
       });
+      chain.limit = vi.fn(() => Promise.resolve(state.selectRows));
       return chain;
     },
   };
@@ -28,7 +29,7 @@ vi.mock("../db.js", () => {
 });
 
 import { reviewJobs } from "../schema/review_jobs.js";
-import { listReviewJobsForPr } from "./review_jobs.js";
+import { getReviewJobById, listReviewJobsForPr } from "./review_jobs.js";
 
 const dialect = new PgDialect();
 function renderCondition(condition: unknown) {
@@ -40,6 +41,18 @@ beforeEach(() => {
   state.lastWhere = null;
   state.lastOrderBy = [];
   vi.clearAllMocks();
+});
+
+describe("getReviewJobById", () => {
+  it("reads exactly one immutable job row by id", async () => {
+    const row = { id: "job-1", state: "running" };
+    state.selectRows = [row];
+
+    await expect(getReviewJobById("job-1")).resolves.toEqual(row);
+    expect(renderCondition(state.lastWhere)).toEqual(
+      renderCondition(eq(reviewJobs.id, "job-1"))
+    );
+  });
 });
 
 describe("listReviewJobsForPr", () => {

@@ -86,6 +86,20 @@ export async function listReviewJobsForPr(input: {
     .orderBy(reviewJobs.createdAt);
 }
 
+/**
+ * Read one review job by its immutable id. Completion routes use this only to
+ * validate the job's existing workspace/repository/head binding before their
+ * guarded completion update; it never changes the job state.
+ */
+export async function getReviewJobById(jobId: string): Promise<ReviewJobRow | null> {
+  const rows = await db
+    .select()
+    .from(reviewJobs)
+    .where(eq(reviewJobs.id, jobId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 // --- row mapping (raw db.execute results are snake_case) --------------------
 
 /**

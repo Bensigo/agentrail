@@ -6,6 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
   getRepositoryByName: vi.fn(),
+  readAcceptanceContracts: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
 }));
 
@@ -14,6 +15,7 @@ import {
   getJaceSessionByEveSessionId,
   findOrCreateChangeRecord,
   getRepositoryByName,
+  readAcceptanceContracts,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { POST } from "./route";
@@ -82,6 +84,13 @@ beforeEach(() => {
   vi.mocked(getRepositoryByName).mockResolvedValue({ id: "repo-1" } as never);
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue(timeline().record as never);
   vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue(timeline() as never);
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([
+    {
+      status: "confirmed",
+      version: 3,
+      contract: { acceptanceCriteria: [{ id: "AC-1", text: "The change works." }] },
+    },
+  ] as never);
 });
 
 afterEach(() => {
@@ -176,7 +185,22 @@ describe("POST /api/v1/runner/change-record/pr", () => {
           url: "https://console.example.com/e/5",
         },
       ],
+      acceptanceContract: {
+        version: 3,
+        criteria: [{ id: "AC-1", text: "The change works." }],
+      },
     });
+  });
+
+  it("returns a null contract rather than inventing criteria when no confirmed contract exists", async () => {
+    vi.mocked(readAcceptanceContracts).mockResolvedValue([
+      { status: "draft", version: 4, contract: { acceptanceCriteria: [{ id: "AC-2", text: "Draft only." }] } },
+    ] as never);
+
+    const res = await POST(req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98 }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).acceptanceContract).toBeNull();
   });
 
   it("ensures the PR record before reading when the review tool requests the preflight", async () => {

@@ -218,7 +218,7 @@ export function createReviewJobWorker({
       // posted:false") alone was not enough — a model that dutifully
       // REPORTS posted:false instead of throwing, exactly like the smoke's
       // root turn did, still needs this worker-side backstop.
-      if (result?.posted === true) {
+      if (result?.posted === true && Array.isArray(result?.criterionResults)) {
         try {
           // `result` is the model's structured output, shaped by `resultSchema`
           // (Task 6's REVIEW_JOB_RESULT_SCHEMA: {posted, reviewUrl, verdict,
@@ -251,6 +251,9 @@ export function createReviewJobWorker({
           if (result?.evidenceKeys !== undefined) {
             completeArgs.evidenceKeys = result.evidenceKeys;
           }
+          if (result?.criterionResults !== undefined) {
+            completeArgs.criterionResults = result.criterionResults;
+          }
           await complete(completeArgs);
         } catch (err) {
           safeLog("review-job-worker: complete() failed after a posted result", err);
@@ -260,7 +263,9 @@ export function createReviewJobWorker({
       }
 
       const verdict = result?.verdict;
-      let postedFalseMessage = `review turn reported posted:false (verdict "${verdict}")`;
+      let postedFalseMessage = result?.posted === true
+        ? "review turn omitted criterionResults required for the confirmed Acceptance Contract"
+        : `review turn reported posted:false (verdict "${verdict}")`;
       if (
         typeof result?.summaryLine === "string" &&
         result.summaryLine.length > 0 &&

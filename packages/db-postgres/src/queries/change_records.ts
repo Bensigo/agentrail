@@ -352,6 +352,112 @@ export async function appendChangeRecordEvent(
   };
 }
 
+export type AttachConfirmedAcceptanceRecordToExternalPullRequestResult =
+  | { kind: "attached"; record: ChangeRecordRow; inserted: boolean }
+  | { kind: "not_found" | "not_confirmed" | "already_attached" };
+
+/**
+ * Binds a PR discovered outside Jace to the already-confirmed Acceptance
+ * Record it explicitly names. This never guesses by repository, branch, or
+ * issue number: another Record already owning the PR, or this Record already
+ * owning another PR, stays unmodified for a human to resolve.
+ */
+export async function attachConfirmedAcceptanceRecordToExternalPullRequest(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  source: "github_webhook" | "manual" | "mcp";
+  prUrl?: string | null;
+}): Promise<AttachConfirmedAcceptanceRecordToExternalPullRequestResult> {
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0 || !GIT_SHA.test(input.headSha)) {
+    throw new Error("External pull request attachment requires a positive PR number and git head SHA");
+  }
+  const lockKey = `acceptance-record-pr:${input.workspaceId}:${input.repo}:${input.recordId}`;
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (
+      await tx
+        .select()
+        .from(changeRecords)
+        .where(
+          and(
+            eq(changeRecords.workspaceId, input.workspaceId),
+            eq(changeRecords.repo, input.repo),
+            eq(changeRecords.id, input.recordId)
+          )
+        )
+        .limit(1)
+    )[0];
+    if (!record) return { kind: "not_found" };
+
+    const confirmed = await tx
+      .select({ id: acceptanceContracts.id, version: acceptanceContracts.version })
+      .from(acceptanceContracts)
+      .where(
+        and(
+          eq(acceptanceContracts.recordId, input.recordId),
+          eq(acceptanceContracts.status, "confirmed")
+        )
+      )
+      .limit(1);
+    if (!confirmed[0]) return { kind: "not_confirmed" };
+
+    const existingPr = (
+      await tx
+        .select({ id: changeRecords.id })
+        .from(changeRecords)
+        .where(
+          and(
+            eq(changeRecords.workspaceId, input.workspaceId),
+            eq(changeRecords.repo, input.repo),
+            eq(changeRecords.prNumber, input.prNumber)
+          )
+        )
+        .limit(1)
+    )[0];
+    if ((record.prNumber != null && record.prNumber !== input.prNumber) ||
+        (existingPr && existingPr.id !== input.recordId)) {
+      return { kind: "already_attached" };
+    }
+
+    const rows = await tx
+      .update(changeRecords)
+      .set({
+        prNumber: input.prNumber,
+        headShas: normalizeHeadShas([...record.headShas, input.headSha]),
+        updatedAt: new Date(),
+      })
+      .where(eq(changeRecords.id, input.recordId))
+      .returning();
+    const attached = rows[0]!;
+    const eventKey = `external-pr:attached:${input.prNumber}:${input.headSha}`;
+    const eventId = changeRecordEventId({ recordId: input.recordId, eventKey });
+    const inserted = await tx
+      .insert(changeRecordEvents)
+      .values({
+        id: eventId,
+        recordId: input.recordId,
+        eventKey,
+        stage: "external_pr",
+        actor: input.source,
+        payloadRef: {
+          kind: "external_pr_attachment",
+          repo: input.repo,
+          prNumber: input.prNumber,
+          headSha: input.headSha,
+          prUrl: input.prUrl ?? null,
+          acceptanceContractVersion: confirmed[0].version,
+        },
+      })
+      .onConflictDoNothing()
+      .returning({ id: changeRecordEvents.id });
+    return { kind: "attached", record: attached, inserted: inserted.length === 1 };
+  });
+}
+
 const GIT_SHA = /^[0-9a-f]{7,64}$/i;
 const OUTCOME_REFERENCE_LIMIT = 1_024;
 const OUTCOME_ENVIRONMENT_LIMIT = 160;

@@ -7,6 +7,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceByGithubInstallationId: vi.fn(),
   getRepositoryByName: vi.fn(),
   appendChangeRecordEvent: vi.fn(),
+  attachConfirmedAcceptanceRecordToExternalPullRequest: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
   recordReviewEvent: vi.fn(),
 }));
@@ -16,6 +17,7 @@ import {
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
+  attachConfirmedAcceptanceRecordToExternalPullRequest,
   findOrCreateChangeRecord,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
@@ -84,6 +86,7 @@ function prPayload(
     merged?: boolean;
     mergeCommitSha?: string;
     htmlUrl?: string;
+    acceptanceRecordMarker?: string | null;
   } = {}
 ): Record<string, unknown> {
   const {
@@ -97,6 +100,7 @@ function prPayload(
     merged = false,
     mergeCommitSha = "merge-sha-1",
     htmlUrl = "https://github.com/ada/widgets/pull/42",
+    acceptanceRecordMarker = "11111111-1111-4111-8111-111111111111",
   } = opts;
   return {
     action,
@@ -108,6 +112,7 @@ function prPayload(
       merged,
       merge_commit_sha: mergeCommitSha,
       html_url: htmlUrl,
+      body: acceptanceRecordMarker == null ? null : `<!-- jace-acceptance-record: ${acceptanceRecordMarker} -->`,
     },
     repository: { full_name: repoFullName },
     ...(omitInstallation ? {} : { installation: { id: installationId } }),
@@ -126,6 +131,9 @@ beforeEach(() => {
     superseded: 0,
   } as never);
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
+  vi.mocked(attachConfirmedAcceptanceRecordToExternalPullRequest).mockResolvedValue({
+    kind: "attached", record: { id: "11111111-1111-4111-8111-111111111111" }, inserted: true,
+  } as never);
   vi.mocked(appendChangeRecordEvent).mockResolvedValue({} as never);
   vi.mocked(recordReviewEvent).mockResolvedValue({ recorded: true, eventId: "review-event-1" } as never);
 });
@@ -375,6 +383,15 @@ describe("POST /api/v1/webhooks/github-app", () => {
       headSha: "deadbeef1234",
       event: "opened",
     });
+    expect(attachConfirmedAcceptanceRecordToExternalPullRequest).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      recordId: "11111111-1111-4111-8111-111111111111",
+      repo: "ada/widgets",
+      prNumber: 7,
+      headSha: "deadbeef1234",
+      source: "github_webhook",
+      prUrl: "https://github.com/ada/widgets/pull/42",
+    });
     expect(recordReviewEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
@@ -391,6 +408,26 @@ describe("POST /api/v1/webhooks/github-app", () => {
       deduped: false,
       superseded: 0,
     });
+  });
+
+  it("9f. missing, malformed, or duplicate Record markers fail closed before a review job is enqueued", async () => {
+    for (const acceptanceRecordMarker of [null, "not-a-record", "11111111-1111-4111-8111-111111111111 --><!-- jace-acceptance-record: 22222222-2222-4222-8222-222222222222"]) {
+      vi.mocked(enqueueReviewJob).mockClear();
+      const body = JSON.stringify(prPayload({ acceptanceRecordMarker }));
+      const res = await POST(makeRequest(body));
+      expect(await res.json()).toEqual(expect.objectContaining({ ok: true, ignored: true }));
+      expect(enqueueReviewJob).not.toHaveBeenCalled();
+    }
+  });
+
+  it("9g. a foreign, unconfirmed, or already-attached Record marker never enqueues a review", async () => {
+    for (const kind of ["not_found", "not_confirmed", "already_attached"] as const) {
+      vi.mocked(attachConfirmedAcceptanceRecordToExternalPullRequest).mockResolvedValueOnce({ kind } as never);
+      const body = JSON.stringify(prPayload());
+      const res = await POST(makeRequest(body));
+      expect(await res.json()).toEqual({ ok: true, ignored: true, reason: `acceptance record ${kind}` });
+    }
+    expect(enqueueReviewJob).not.toHaveBeenCalled();
   });
 
   it("9b. a replayed delivery comes back deduped:true, still 200", async () => {

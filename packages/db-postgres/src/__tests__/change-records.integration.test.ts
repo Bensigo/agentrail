@@ -6,11 +6,13 @@ import { workspaces } from "../schema/workspaces.js";
 import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
+  acceptanceContracts,
   changeRecordEvents,
 } from "../schema/change_records.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
+  attachConfirmedAcceptanceRecordToExternalPullRequest,
   changeRecordId,
   createDraftAcceptanceContract,
   createDraftAcceptanceRecord,
@@ -115,6 +117,61 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       expect(second.id).toBe(first.id);
       expect(second.headShas).toEqual(["sha-a", "sha-b", "sha-c"]);
+    });
+
+    it("attaches only a confirmed Acceptance Record to one exact external PR head", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "external-pr-attachment",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      const input = {
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "abc123def4567890",
+        source: "github_webhook" as const,
+        prUrl: "https://github.com/acme/widgets/pull/42",
+      };
+      await expect(attachConfirmedAcceptanceRecordToExternalPullRequest(input)).resolves.toEqual({
+        kind: "not_confirmed",
+      });
+
+      await db
+        .update(acceptanceContracts)
+        .set({ status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date() })
+        .where(eq(acceptanceContracts.id, draft.contract.id));
+
+      const attached = await attachConfirmedAcceptanceRecordToExternalPullRequest(input);
+      expect(attached).toMatchObject({
+        kind: "attached",
+        inserted: true,
+        record: { id: draft.record.id, prNumber: 42, headShas: ["abc123def4567890"] },
+      });
+      await expect(attachConfirmedAcceptanceRecordToExternalPullRequest(input)).resolves.toMatchObject({
+        kind: "attached",
+        inserted: false,
+      });
+
+      const other = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "other-external-pr-attachment",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      await db
+        .update(acceptanceContracts)
+        .set({ status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date() })
+        .where(eq(acceptanceContracts.id, other.contract.id));
+      await expect(
+        attachConfirmedAcceptanceRecordToExternalPullRequest({ ...input, recordId: other.record.id })
+      ).resolves.toEqual({ kind: "already_attached" });
     });
 
     it("persists one canonical Intake message idempotently and refuses source-key collisions", async () => {

@@ -3281,6 +3281,7 @@ export {
   acceptanceContextPackCanonicalJson,
   acceptanceContextPackCanonicalSha256,
   wikiPageBodySha256,
+  projectConfirmedAcceptanceContract,
   reviewJobCorrectionPacketId,
   validateReviewJobCorrectionPacketPayload,
   readChangeRecordByPr,

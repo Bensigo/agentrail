@@ -149,6 +149,7 @@ jobs:
           lib/github-correction-carrier-preflight.test.ts
           lib/github-correction-carrier-comment.test.ts
           lib/github-correction-carrier.test.ts
+          lib/github-correction-dispatch-production.test.ts
           lib/acceptance-context-pack-compiler.test.ts
           lib/acceptance-context-pack-source-custody.test.ts
           lib/correction-dispatch-renderer.test.ts

@@ -51,6 +51,16 @@ export interface DataVerificationRequest {
   expectedJson: DataVerificationAssertion[];
 }
 
+export interface SubmittedJobVerificationRequest {
+  trigger: { method: "POST"; path: string; expectedStatus: number };
+  readback: SubmittedDataVerificationRequest;
+}
+/** The persisted job descriptor has no raw expected scalar values. */
+export interface JobVerificationRequest {
+  trigger: { method: "POST"; path: string; expectedStatus: number };
+  readback: DataVerificationRequest;
+}
+
 export interface ReviewDataDigestBinding {
   workspaceId: string;
   recordId: string;
@@ -95,6 +105,7 @@ export interface StoredCriterionVerificationPlan {
   uiSteps: UiVerificationStep[] | null;
   apiRequest: ApiVerificationRequest | null;
   dataRequest: DataVerificationRequest | null;
+  jobRequest?: JobVerificationRequest | null;
   status: VerificationPlanStatus;
   notTestableReason: string | null;
 }
@@ -335,6 +346,26 @@ export function reviewDataScalarHmac(input: {
     .digest("hex");
 }
 
+/** Job and data use the same purpose-scoped key custody, but different HMAC domains. */
+export function reviewJobScalarHmac(input: {
+  key: Uint8Array;
+  context: string;
+  pointer: string;
+  value: DataScalar;
+}): string {
+  return createHmac("sha256", input.key)
+    .update(
+      JSON.stringify([
+        "agentrail.review-job.scalar.v1",
+        input.context,
+        input.pointer,
+        dataScalarKind(input.value),
+        input.value,
+      ])
+    )
+    .digest("hex");
+}
+
 export function isReviewDataHmacKeyId(value: unknown): value is string {
   return typeof value === "string" && REVIEW_DATA_HMAC_KEY_ID.test(value);
 }
@@ -503,6 +534,66 @@ export function parseSubmittedDataVerificationRequest(
   return { ...base, expectedJson };
 }
 
+function exactReviewJobPath(
+  value: unknown,
+  id: string,
+  suffix: "trigger" | "result"
+): string | null {
+  const path = typeof value === "string" ? value : null;
+  const expected = `/__agentrail/verification/jobs/${id}/${suffix}`;
+  return path === expected ? path : null;
+}
+
+function parseJobEndpoint<M extends "POST" | "GET">(
+  value: unknown,
+  method: M
+): { method: M; path: string; expectedStatus: number } | null {
+  if (
+    !object(value) ||
+    !exactKeys(value, ["method", "path", "expectedStatus"]) ||
+    value.method !== method ||
+    typeof value.path !== "string" ||
+    !Number.isInteger(value.expectedStatus) ||
+    (value.expectedStatus as number) < 200 ||
+    (value.expectedStatus as number) > 299
+  ) return null;
+  return { method, path: value.path, expectedStatus: value.expectedStatus as number };
+}
+
+export function parseSubmittedJobVerificationRequest(
+  value: unknown
+): SubmittedJobVerificationRequest | null {
+  if (!object(value) || !exactKeys(value, ["readback", "trigger"])) return null;
+  const trigger = parseJobEndpoint(value.trigger, "POST");
+  if (!trigger) return null;
+  const prefix = "/__agentrail/verification/jobs/";
+  if (!trigger.path.startsWith(prefix) || !trigger.path.endsWith("/trigger")) return null;
+  const id = trigger.path.slice(prefix.length, -"/trigger".length);
+  if (
+    !/^[A-Za-z0-9._-]{1,64}$/u.test(id) ||
+    !exactReviewJobPath(trigger.path, id, "trigger")
+  ) return null;
+  const rawReadback = value.readback;
+  if (
+    !object(rawReadback) ||
+    !exactKeys(rawReadback, ["method", "path", "expectedStatus", "expectedJson"])
+  ) return null;
+  const endpoint = parseJobEndpoint({
+    method: rawReadback.method,
+    path: rawReadback.path,
+    expectedStatus: rawReadback.expectedStatus,
+  }, "GET");
+  if (!endpoint || !exactReviewJobPath(endpoint.path, id, "result")) return null;
+  const readback = parseSubmittedDataVerificationRequest(rawReadback);
+  if (
+    !readback ||
+    readback.method !== "GET" ||
+    readback.path !== endpoint.path ||
+    readback.expectedStatus !== endpoint.expectedStatus
+  ) return null;
+  return { trigger, readback };
+}
+
 /** Validate raw model input and return the no-raw-value persisted descriptor. */
 export function buildStoredDataVerificationRequest(input: {
   value: unknown;
@@ -539,6 +630,72 @@ export function buildStoredDataVerificationRequest(input: {
         value: equals,
       }),
     })),
+  };
+}
+
+export function reviewJobDigestContext(input: ReviewDataDigestBinding & {
+  triggerPath: string;
+  triggerExpectedStatus: number;
+  readbackPath: string;
+  readbackExpectedStatus: number;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.workspaceId,
+        input.recordId,
+        input.jobId,
+        input.headSha,
+        input.contractId,
+        input.contractVersion,
+        input.criterionId,
+        input.triggerPath,
+        input.triggerExpectedStatus,
+        input.readbackPath,
+        input.readbackExpectedStatus,
+      ])
+    )
+    .digest("hex");
+}
+
+export function buildStoredJobVerificationRequest(input: {
+  value: unknown;
+  binding: ReviewDataDigestBinding;
+  hmacKey: ReviewDataHmacKey;
+}): JobVerificationRequest | null {
+  const submitted = parseSubmittedJobVerificationRequest(input.value);
+  if (
+    !submitted ||
+    !isReviewDataHmacKeyId(input.hmacKey.keyId) ||
+    input.hmacKey.key.length !== 32
+  ) return null;
+  const digestContext = reviewJobDigestContext({
+    ...input.binding,
+    triggerPath: submitted.trigger.path,
+    triggerExpectedStatus: submitted.trigger.expectedStatus,
+    readbackPath: submitted.readback.path,
+    readbackExpectedStatus: submitted.readback.expectedStatus,
+  });
+  return {
+    trigger: submitted.trigger,
+    readback: {
+      method: "GET",
+      path: submitted.readback.path,
+      expectedStatus: submitted.readback.expectedStatus,
+      digestAlgorithm: REVIEW_DATA_DIGEST_ALGORITHM,
+      digestKeyId: input.hmacKey.keyId,
+      digestContext,
+      expectedJson: submitted.readback.expectedJson.map(({ pointer, equals }) => ({
+        pointer,
+        equalsType: dataScalarKind(equals),
+        equalsHmacSha256: reviewJobScalarHmac({
+          key: input.hmacKey.key,
+          context: digestContext,
+          pointer,
+          value: equals,
+        }),
+      })),
+    },
   };
 }
 
@@ -603,6 +760,38 @@ export function parseStoredDataVerificationRequest(
     digestContext: value.digestContext,
     expectedJson,
   };
+}
+
+export function parseStoredJobVerificationRequest(
+  value: unknown
+): JobVerificationRequest | null {
+  if (!object(value) || !exactKeys(value, ["readback", "trigger"])) return null;
+  const trigger = parseJobEndpoint(value.trigger, "POST");
+  if (!trigger) return null;
+  const prefix = "/__agentrail/verification/jobs/";
+  if (!trigger.path.startsWith(prefix) || !trigger.path.endsWith("/trigger")) return null;
+  const id = trigger.path.slice(prefix.length, -"/trigger".length);
+  if (
+    !/^[A-Za-z0-9._-]{1,64}$/u.test(id) ||
+    !exactReviewJobPath(trigger.path, id, "trigger")
+  ) return null;
+  if (!object(value.readback)) return null;
+  const endpoint = parseJobEndpoint({
+    method: value.readback.method,
+    path: value.readback.path,
+    expectedStatus: value.readback.expectedStatus,
+  }, "GET");
+  const readback = parseStoredDataVerificationRequest(value.readback);
+  if (
+    !endpoint ||
+    !readback ||
+    readback.path !== endpoint.path ||
+    readback.expectedStatus !== endpoint.expectedStatus ||
+    !exactReviewJobPath(readback.path, id, "result") ||
+    readback.expectedStatus < 200 ||
+    readback.expectedStatus > 299
+  ) return null;
+  return { trigger, readback };
 }
 
 /** Exactly one confirmed Contract is authoritative for a review job. */
@@ -705,6 +894,9 @@ export function buildReviewJobVerificationPlan(input: {
       if (modality === "data" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "dataRequest"])) {
         return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
       }
+      if (modality === "job" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "jobRequest"])) {
+        return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
+      }
       const flow = boundedPlanText(raw.flow);
       if (!flow) return { ok: false, error: `planned criterion ${criterion.id} needs a bounded flow` };
       if (modality === "ui") {
@@ -763,6 +955,32 @@ export function buildReviewJobVerificationPlan(input: {
           criterionId: criterion.id, criterionTextSnapshot: criterion.text,
           modality: "data", environmentKind: "isolated_preview", flow,
           uiSteps: null, apiRequest: null, dataRequest, status: "planned", notTestableReason: null,
+        });
+        continue;
+      }
+      if (modality === "job") {
+        if (!input.dataHmacKey) {
+          return { ok: false, error: `planned job criterion ${criterion.id} requires configured review-data HMAC custody` };
+        }
+        const jobRequest = buildStoredJobVerificationRequest({
+          value: raw.jobRequest,
+          hmacKey: input.dataHmacKey,
+          binding: {
+            workspaceId: input.job.workspaceId,
+            recordId: input.recordId,
+            jobId: input.job.id,
+            headSha: input.job.headSha,
+            contractId: input.contract.id,
+            contractVersion: input.contract.version,
+            criterionId: criterion.id,
+          },
+        });
+        if (!jobRequest) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded job request` };
+        plans.push({
+          criterionId: criterion.id, criterionTextSnapshot: criterion.text,
+          modality: "job", environmentKind: "isolated_preview", flow,
+          uiSteps: null, apiRequest: null, dataRequest: null, jobRequest,
+          status: "planned", notTestableReason: null,
         });
         continue;
       }
@@ -869,7 +1087,8 @@ export function parseStoredReviewJobVerificationPlan(input: {
       boundedPlanText(raw.flow) &&
       raw.notTestableReason === null &&
       (raw.apiRequest === undefined || raw.apiRequest === null) &&
-      (raw.dataRequest === undefined || raw.dataRequest === null)
+      (raw.dataRequest === undefined || raw.dataRequest === null) &&
+      (raw.jobRequest === undefined || raw.jobRequest === null)
     ) {
       // R7.1 stored flows had no executable steps. They remain readable for
       // audit continuity but are intentionally not executable by later work.
@@ -897,7 +1116,8 @@ export function parseStoredReviewJobVerificationPlan(input: {
       boundedPlanText(raw.flow) &&
       raw.uiSteps === null &&
       raw.notTestableReason === null &&
-      (raw.dataRequest === undefined || raw.dataRequest === null)
+      (raw.dataRequest === undefined || raw.dataRequest === null) &&
+      (raw.jobRequest === undefined || raw.jobRequest === null)
     ) {
       // Plans from before the API descriptor are readable for audit continuity,
       // but `apiRequest: null` keeps them non-executable by later workers.
@@ -912,6 +1132,49 @@ export function parseStoredReviewJobVerificationPlan(input: {
         uiSteps: null,
         apiRequest,
         dataRequest: null,
+        status: "planned",
+        notTestableReason: null,
+      });
+      continue;
+    }
+
+    if (
+      status === "planned" &&
+      modality === "job" &&
+      raw.environmentKind === "isolated_preview" &&
+      boundedPlanText(raw.flow) &&
+      raw.uiSteps === null &&
+      raw.apiRequest === null &&
+      raw.dataRequest === null &&
+      raw.notTestableReason === null
+    ) {
+      const jobRequest = parseStoredJobVerificationRequest(raw.jobRequest);
+      if (
+        !jobRequest ||
+        jobRequest.readback.digestContext !== reviewJobDigestContext({
+          workspaceId: input.job.workspaceId,
+          recordId: input.recordId,
+          jobId: input.job.id,
+          headSha: input.job.headSha,
+          contractId: input.contract.id,
+          contractVersion: input.contract.version,
+          criterionId,
+          triggerPath: jobRequest.trigger.path,
+          triggerExpectedStatus: jobRequest.trigger.expectedStatus,
+          readbackPath: jobRequest.readback.path,
+          readbackExpectedStatus: jobRequest.readback.expectedStatus,
+        })
+      ) return null;
+      byId.set(criterionId, {
+        criterionId,
+        criterionTextSnapshot,
+        modality: "job",
+        environmentKind: "isolated_preview",
+        flow: boundedPlanText(raw.flow),
+        uiSteps: null,
+        apiRequest: null,
+        dataRequest: null,
+        jobRequest,
         status: "planned",
         notTestableReason: null,
       });
@@ -964,6 +1227,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
       (raw.uiSteps === undefined || raw.uiSteps === null) &&
       (raw.apiRequest === undefined || raw.apiRequest === null) &&
       (raw.dataRequest === undefined || raw.dataRequest === null) &&
+      (raw.jobRequest === undefined || raw.jobRequest === null) &&
       boundedPlanText(raw.notTestableReason)
     ) {
       byId.set(criterionId, {

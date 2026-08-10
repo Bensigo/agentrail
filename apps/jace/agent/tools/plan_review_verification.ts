@@ -3,7 +3,7 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { normalizeApiRequest, normalizeDataRequest, normalizeUiSteps, planReviewVerification } from "../lib/plan_review_verification.core.mjs";
+import { normalizeApiRequest, normalizeDataRequest, normalizeJobRequest, normalizeUiSteps, planReviewVerification } from "../lib/plan_review_verification.core.mjs";
 
 const TIMEOUT_MS = 8000;
 
@@ -56,6 +56,21 @@ const dataRequest = z.object({
 }).strict().superRefine((value, ctx) => {
   if (!normalizeDataRequest(value)) ctx.addIssue({ code: "custom", message: "dataRequest must be one strict relative GET with bounded JSON scalar assertions" });
 });
+const jobRequest = z.object({
+  trigger: z.object({
+    method: z.literal("POST"),
+    path: uiText,
+    expectedStatus: z.number().int().min(200).max(299),
+  }).strict(),
+  readback: z.object({
+    method: z.literal("GET"),
+    path: uiText,
+    expectedStatus: z.number().int().min(200).max(299),
+    expectedJson: z.array(z.object({ pointer: z.string().max(512), equals: dataScalar }).strict()).min(1).max(12),
+  }).strict(),
+}).strict().superRefine((value, ctx) => {
+  if (!normalizeJobRequest(value)) ctx.addIssue({ code: "custom", message: "jobRequest must be one fixed preview-local POST and bounded JSON scalar readback" });
+});
 const plan = z.union([
   z.object({
     criterionId: z.string().min(1),
@@ -77,6 +92,13 @@ const plan = z.union([
     status: z.literal("planned"),
     flow: z.string().min(1),
     dataRequest,
+  }).strict(),
+  z.object({
+    criterionId: z.string().min(1),
+    modality: z.literal("job"),
+    status: z.literal("planned"),
+    flow: z.string().min(1),
+    jobRequest,
   }).strict(),
   z.object({
     criterionId: z.string().min(1),

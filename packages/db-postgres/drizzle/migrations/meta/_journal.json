@@ -611,6 +611,13 @@
       "when": 1791700000000,
       "tag": "0086_acceptance_context_pack_custody",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1791800000000,
+      "tag": "0087_acceptance_compiled_context_packs",
+      "breakpoints": true
     }
   ]
 }

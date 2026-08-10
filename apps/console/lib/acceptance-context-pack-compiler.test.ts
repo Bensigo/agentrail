@@ -1,19 +1,30 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+
+const recordCompiledPackMock = vi.hoisted(() => vi.fn());
+vi.mock("@agentrail/db-postgres", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@agentrail/db-postgres")>()),
+  recordAcceptanceCompiledContextPack: recordCompiledPackMock,
+}));
+
 import {
   acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256,
   acceptanceContextPacketSetSha256,
   acceptanceContextPackCustodyBaseIndexRevisionSha256,
   acceptanceContextOverlayManifestSha256,
+  exactGitTreeInclusionProofIdentity,
   reviewJobCorrectionPacketId,
+  validateAcceptanceCompiledContextPackInput,
   wikiPageBodySha256,
   type AcceptanceConfirmedContractProjection,
   type AcceptanceContextPackCustodyResolution,
+  type ExactGitTreeInclusionProof,
 } from "@agentrail/db-postgres";
 import {
   ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET,
   ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER,
+  compileAndRecordAcceptanceContextPack,
   compileAcceptanceContextPack,
   searchAcceptanceContextPackSources,
 } from "./acceptance-context-pack-compiler";
@@ -39,7 +50,6 @@ const REPOSITORY_ID = "00000000-0000-4000-8000-000000000007";
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
 const MERGE_BASE = "c".repeat(40);
-const TREE = "d".repeat(40);
 const WIKI_COMMIT = "1".repeat(40);
 const INPUTS_HASH = "2".repeat(64);
 const PATCH = "@@ -3,2 +3,2 @@\n export function widget(value: string) {\n-  return value;\n+  return helper(value);";
@@ -58,6 +68,31 @@ const HELPER = [
 const WIKI_BODY = "# Widget architecture\n\nThe widget delegates normalization to the helper module.";
 const WIDGET_BLOB = exactHeadGitBlobSha1(WIDGET);
 const HELPER_BLOB = exactHeadGitBlobSha1(HELPER);
+
+function nativeTree(entries: Array<{ mode: "40000" | "100644" | "100755"; name: string; sha: string }>) {
+  const body = Buffer.concat(entries.map((entry) => Buffer.concat([
+    Buffer.from(`${entry.mode} ${entry.name}\0`, "utf8"),
+    Buffer.from(entry.sha, "hex"),
+  ])));
+  return {
+    sha1: createHash("sha1").update(`tree ${body.byteLength}\0`, "utf8").update(body).digest("hex"),
+    bodyBase64: body.toString("base64"),
+  };
+}
+
+const SOURCE_TREE = nativeTree([
+  { mode: "100644", name: "helper.ts", sha: HELPER_BLOB },
+  { mode: "100644", name: "widget.ts", sha: WIDGET_BLOB },
+]);
+const ROOT_TREE = nativeTree([{ mode: "40000", name: "src", sha: SOURCE_TREE.sha1 }]);
+const TREE = ROOT_TREE.sha1;
+const HELPER_TREE_PROOF: ExactGitTreeInclusionProof = {
+  kind: "exact_git_tree_inclusion_batch",
+  version: 1,
+  headTreeSha: TREE,
+  trees: [ROOT_TREE, SOURCE_TREE].sort((left, right) => Buffer.compare(Buffer.from(left.sha1), Buffer.from(right.sha1))),
+  paths: [{ path: "src/helper.ts", blobSha: HELPER_BLOB }],
+};
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -291,12 +326,14 @@ function materialization(exact = snapshot(), overrides: {
   dependency?: ExactHeadContentRecord;
   changedContent?: string;
   read?: (candidate: string) => Promise<ExactHeadContentReadResult>;
+  treeProof?: ExactGitTreeInclusionProof | null;
 } = {}) {
   const changed = contentRecord("src/widget.ts", overrides.changedContent ?? WIDGET, "exact_head_overlay");
   const dependency = overrides.dependency ?? contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+  const treeProof = overrides.treeProof === undefined ? HELPER_TREE_PROOF : overrides.treeProof;
   const readExactPath = vi.fn(overrides.read ?? (async (candidate: string): Promise<ExactHeadContentReadResult> =>
     candidate === dependency.path
-      ? { ok: true, record: dependency }
+      ? { ok: true, record: dependency, ...(treeProof ? { treeInclusionProof: treeProof } : {}) }
       : { ok: false, kind: "not_proven", reason: "path_not_found" }
   ));
   const records = [changed];
@@ -330,6 +367,8 @@ describe("compileAcceptanceContextPack", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result).not.toHaveProperty("exactSourceProofs");
+    expect(validateAcceptanceCompiledContextPackInput(result.compiled)).toBe(true);
     expect(result.compiled.manifest.acceptanceCriterionIds).toEqual(["AC-1", "AC-2"]);
     expect(result.compiled.manifest.unresolvedQuestionIds).toEqual(["Q-1"]);
     expect(result.compiled.manifest.packetIds).toEqual([packetId()]);
@@ -378,6 +417,12 @@ describe("compileAcceptanceContextPack", () => {
       }])
     );
     expect(result.compiled.manifest.sourceCustody.identitySha256).toBe(result.compiled.sourceCustodyReceipt.identitySha256);
+    expect(result.compiled.exactHeadDependencyTreeProofs).toEqual([{
+      path: "src/helper.ts",
+      blobSha: HELPER_BLOB,
+      proofIdentitySha256: exactGitTreeInclusionProofIdentity(HELPER_TREE_PROOF),
+    }]);
+    expect(JSON.stringify(result.compiled)).not.toContain(HELPER_TREE_PROOF.trees[0]!.bodyBase64);
     expect(result.compiled.compiler.byteCounter).toBe(ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER);
     expect(result.compiled.renderedByteCount).toBeLessThanOrEqual(ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET);
     expect(result.compiled.representations).toEqual({
@@ -389,6 +434,57 @@ describe("compileAcceptanceContextPack", () => {
     expect(JSON.stringify(result.compiled.manifest)).not.toContain(WIDGET);
     expect(JSON.stringify(result.compiled.manifest)).not.toContain(HELPER);
     expect(searchAcceptanceContextPackSources({ rendered: result.rendered, query: "helper" })).not.toEqual([]);
+  });
+
+  it("persists only through the trusted compiler path with transient full-file proofs", async () => {
+    recordCompiledPackMock.mockReset();
+    recordCompiledPackMock.mockResolvedValueOnce({ pack: { id: "pack-1" }, inserted: true });
+    const exact = snapshot();
+    const result = await compileAndRecordAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: materialization(exact),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(recordCompiledPackMock).toHaveBeenCalledTimes(1);
+    const call = recordCompiledPackMock.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      workspaceId: WORKSPACE,
+      sourceSnapshotId: SNAPSHOT_ID,
+      exactSourceProofs: [
+        { kind: "exact_head_dependency", path: "src/helper.ts", content: HELPER },
+        { kind: "exact_head_overlay", path: "src/widget.ts", content: WIDGET },
+      ],
+      exactGitTreeInclusionProofs: [HELPER_TREE_PROOF],
+    });
+    expect(JSON.stringify(call?.compiled)).not.toContain(WIDGET);
+    expect(JSON.stringify(call?.compiled)).not.toContain(HELPER);
+    expect(result).not.toHaveProperty("exactSourceProofs");
+    expect(result).not.toHaveProperty("exactGitTreeInclusionProofs");
+  });
+
+  it("holds both public compilation and persistence when selected dependency tree proof is absent or forged", async () => {
+    recordCompiledPackMock.mockReset();
+    const exact = snapshot();
+    for (const treeProof of [
+      null,
+      { ...HELPER_TREE_PROOF, headTreeSha: "f".repeat(40) },
+    ]) {
+      await expect(compileAcceptanceContextPack({
+        custody: custody(exact),
+        snapshot: exact,
+        materialization: materialization(exact, { treeProof }),
+      })).resolves.toEqual({ ok: false, kind: "not_proven", reason: "source_custody_mismatch" });
+    }
+    const persisted = await compileAndRecordAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: materialization(exact, { treeProof: null }),
+    });
+
+    expect(persisted).toEqual({ ok: false, kind: "not_proven", reason: "source_custody_mismatch" });
+    expect(recordCompiledPackMock).not.toHaveBeenCalled();
   });
 
   it("is byte-deterministic when packet object properties are constructed in another order", async () => {

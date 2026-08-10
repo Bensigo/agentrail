@@ -5,12 +5,20 @@ import {
   acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256,
   acceptanceContextPacketSetSha256,
+  acceptanceContextPackCanonicalJson as canonicalJson,
+  acceptanceContextPackCanonicalSha256,
   acceptanceContextPackCustodyBaseIndexRevisionSha256,
+  exactGitTreeInclusionProofIdentity,
+  recordAcceptanceCompiledContextPack,
+  verifyExactGitTreeInclusionProof,
   validateReviewJobCorrectionPacketPayload,
   wikiPageBodySha256,
   type AcceptanceConfirmedContractProjection,
+  type AcceptanceCompiledContextPackDependencyTreeProof,
+  type AcceptanceCompiledContextPackExactSourceProof,
   type AcceptanceContextPackCustodyBaseIndexIdentity,
   type AcceptanceContextPackCustodyResolution,
+  type ExactGitTreeInclusionProof,
 } from "@agentrail/db-postgres";
 import {
   MAX_SELECTED_EXACT_RANGE_BYTES,
@@ -36,7 +44,7 @@ import { scanForSecrets } from "./secret-scan";
  * head. It consumes only server-resolved custody, retains source text only in
  * the returned delivery view, and performs no persistence or network writes.
  */
-export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v3";
+export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v4";
 export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v2";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER = "utf8_byte_upper_bound_v1";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET = 65_536;
@@ -158,6 +166,7 @@ export type CompiledAcceptanceContextPack = {
     byteBudget: typeof ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET;
   };
   manifest: AcceptanceContextPackManifest;
+  exactHeadDependencyTreeProofs: AcceptanceCompiledContextPackDependencyTreeProof[];
   sourceCustodyReceipt: ExactHeadSourceCustodyReceipt;
   representations: { jsonSha256: string; markdownSha256: string };
   renderedByteCount: number;
@@ -191,6 +200,25 @@ export type CompileAcceptanceContextPackResult =
     }
   | { ok: false; kind: "not_proven"; reason: CompileAcceptanceContextPackFailureReason };
 
+export type CompileAndRecordAcceptanceContextPackResult =
+  | Extract<CompileAcceptanceContextPackResult, { ok: false }>
+  | (Extract<CompileAcceptanceContextPackResult, { ok: true }> & {
+      persistence: Awaited<ReturnType<typeof recordAcceptanceCompiledContextPack>>;
+    });
+
+export type CompileAcceptanceContextPackInput = {
+  custody: AcceptanceContextPackCustodyResolution;
+  snapshot: ExactHeadGithubContextSnapshot;
+  materialization: Extract<ExactHeadContentMaterializationResult, { ok: true }>["materialization"];
+};
+
+type InternalCompileAcceptanceContextPackResult =
+  | Extract<CompileAcceptanceContextPackResult, { ok: false }>
+  | (Extract<CompileAcceptanceContextPackResult, { ok: true }> & {
+      exactSourceProofs: AcceptanceCompiledContextPackExactSourceProof[];
+      exactGitTreeInclusionProofs: ExactGitTreeInclusionProof[];
+    });
+
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -217,28 +245,8 @@ function exactArrayEqual(left: readonly string[], right: readonly string[]): boo
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-/** Recursively sorts object keys; arrays retain their persisted semantic order. */
 function canonicalValue(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Context Pack canonical JSON cannot encode non-finite numbers");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (!value || typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) {
-    throw new Error("Context Pack canonical JSON requires plain JSON values");
-  }
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort(compareText)) {
-    const nested = (value as Record<string, unknown>)[key];
-    if (nested === undefined) throw new Error("Context Pack canonical JSON cannot encode undefined");
-    output[key] = canonicalValue(nested);
-  }
-  return output;
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalValue(value));
+  return JSON.parse(canonicalJson(value)) as unknown;
 }
 
 function canonicalPrettyJson(value: unknown): string {
@@ -928,18 +936,47 @@ function memoizedExactReads(input: {
   };
 }
 
+function selectedDependencyTreeProofs(input: {
+  selectedSources: readonly SourceWithText[];
+  directReads: readonly ExactHeadDirectReadReceiptInput[];
+  headTreeSha: string;
+}): {
+  identities: CompiledAcceptanceContextPack["exactHeadDependencyTreeProofs"];
+  transientProofs: ExactGitTreeInclusionProof[];
+} | null {
+  const required = new Map<string, string>();
+  for (const { source } of input.selectedSources) {
+    if (source.kind !== "exact_head_dependency") continue;
+    const existing = required.get(source.path);
+    if (existing !== undefined && existing !== source.blobSha) return null;
+    required.set(source.path, source.blobSha);
+  }
+  const identities: CompiledAcceptanceContextPack["exactHeadDependencyTreeProofs"] = [];
+  const transientProofs: ExactGitTreeInclusionProof[] = [];
+  for (const [sourcePath, blobSha] of [...required].sort(([left], [right]) => compareText(left, right))) {
+    const read = input.directReads.find((candidate) => candidate.requestedPath === sourcePath);
+    if (!read?.result.ok || read.result.record.blobSha !== blobSha || !read.result.treeInclusionProof) return null;
+    const proof = read.result.treeInclusionProof;
+    if (!verifyExactGitTreeInclusionProof(proof)
+      || proof.headTreeSha !== input.headTreeSha
+      || proof.paths.length !== 1
+      || proof.paths[0]?.path !== sourcePath
+      || proof.paths[0]?.blobSha !== blobSha) return null;
+    identities.push({ path: sourcePath, blobSha, proofIdentitySha256: exactGitTreeInclusionProofIdentity(proof) });
+    transientProofs.push(proof);
+  }
+  return { identities, transientProofs };
+}
+
 function packIdentity(input: Omit<CompiledAcceptanceContextPack, "packSha256" | "sourceCustodyReceipt"> & {
   sourceCustodyReceipt: Pick<ExactHeadSourceCustodyReceipt, "kind" | "schemaVersion" | "identitySha256">;
 }): string {
-  return sha256(canonicalJson(input));
+  return acceptanceContextPackCanonicalSha256(input);
 }
 
-/** Compile a bounded exact-head correction Pack without persisting it. */
-export async function compileAcceptanceContextPack(input: {
-  custody: AcceptanceContextPackCustodyResolution;
-  snapshot: ExactHeadGithubContextSnapshot;
-  materialization: Extract<ExactHeadContentMaterializationResult, { ok: true }>["materialization"];
-}): Promise<CompileAcceptanceContextPackResult> {
+async function compileAcceptanceContextPackInternal(
+  input: CompileAcceptanceContextPackInput,
+): Promise<InternalCompileAcceptanceContextPackResult> {
   if (!input || !input.custody || !input.snapshot || !input.materialization) {
     return { ok: false, kind: "not_proven", reason: "invalid_input" };
   }
@@ -1019,14 +1056,42 @@ export async function compileAcceptanceContextPack(input: {
       byteCount: item.byteCount,
     }]
   );
+  const directReadReceipts = reads.receipts();
   const sourceCustody = projectExactHeadSourceCustody({
     snapshot: input.snapshot,
     admittedOverlay: source.overlay,
     materialization: input.materialization,
-    directReadReceipts: reads.receipts(),
+    directReadReceipts,
     selectedExactRanges,
   });
   if (!sourceCustody.ok) {
+    return { ok: false, kind: "not_proven", reason: "source_custody_mismatch" };
+  }
+  const directRecords = new Map(directReadReceipts.flatMap((read) =>
+    read.result.ok ? [[read.requestedPath, read.result.record] as const] : []
+  ));
+  const proofMap = new Map<string, AcceptanceCompiledContextPackExactSourceProof>();
+  for (const { source: selected } of fitted.sources) {
+    if (selected.kind === "base_index_background") continue;
+    const record = selected.kind === "exact_head_overlay"
+      ? input.materialization.content.records.find((candidate) => candidate.path === selected.path)
+      : directRecords.get(selected.path);
+    if (!record) return { ok: false, kind: "not_proven", reason: "source_custody_mismatch" };
+    proofMap.set(`${selected.kind}\u0000${selected.path}`, {
+      kind: selected.kind,
+      path: selected.path,
+      content: record.content,
+    });
+  }
+  const exactSourceProofs = [...proofMap.values()].sort((left, right) =>
+    compareText(`${left.kind}\u0000${left.path}`, `${right.kind}\u0000${right.path}`)
+  );
+  const dependencyTreeProofs = selectedDependencyTreeProofs({
+    selectedSources: fitted.sources,
+    directReads: directReadReceipts,
+    headTreeSha: binding.headTreeSha,
+  });
+  if (!dependencyTreeProofs) {
     return { ok: false, kind: "not_proven", reason: "source_custody_mismatch" };
   }
   const manifest = buildManifest({
@@ -1061,6 +1126,7 @@ export async function compileAcceptanceContextPack(input: {
     binding,
     compiler,
     manifest,
+    exactHeadDependencyTreeProofs: dependencyTreeProofs.identities,
     sourceCustodyReceipt: {
       kind: sourceCustody.receipt.kind,
       schemaVersion: sourceCustody.receipt.schemaVersion,
@@ -1084,7 +1150,45 @@ export async function compileAcceptanceContextPack(input: {
       sources: fitted.sources,
       ...representations,
     },
+    exactSourceProofs,
+    exactGitTreeInclusionProofs: dependencyTreeProofs.transientProofs,
   };
+}
+
+/** Compile a bounded exact-head correction Pack without persisting it. */
+export async function compileAcceptanceContextPack(
+  input: CompileAcceptanceContextPackInput,
+): Promise<CompileAcceptanceContextPackResult> {
+  const result = await compileAcceptanceContextPackInternal(input);
+  if (!result.ok) return result;
+  const {
+    exactSourceProofs,
+    exactGitTreeInclusionProofs,
+    ...publicResult
+  } = result;
+  void exactSourceProofs;
+  void exactGitTreeInclusionProofs;
+  return publicResult;
+}
+
+/**
+ * Trusted write path: compile from verified ephemeral Git bytes, rederive the
+ * same bytes again at the DB boundary, and persist metadata only.
+ */
+export async function compileAndRecordAcceptanceContextPack(
+  input: CompileAcceptanceContextPackInput,
+): Promise<CompileAndRecordAcceptanceContextPackResult> {
+  const result = await compileAcceptanceContextPackInternal(input);
+  if (!result.ok) return result;
+  const { exactSourceProofs, exactGitTreeInclusionProofs, ...publicResult } = result;
+  const persistence = await recordAcceptanceCompiledContextPack({
+    workspaceId: input.custody.sourceSnapshot.workspaceId,
+    sourceSnapshotId: input.custody.sourceSnapshot.id,
+    compiled: publicResult.compiled,
+    exactSourceProofs,
+    exactGitTreeInclusionProofs,
+  });
+  return { ...publicResult, persistence };
 }
 
 /** Bounded exact-head search over the already-authorized ephemeral Pack only. */

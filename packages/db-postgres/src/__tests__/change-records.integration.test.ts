@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { repositories } from "../schema/repositories.js";
@@ -9,6 +9,7 @@ import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
   acceptanceBuilderRoutes,
+  acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
@@ -20,6 +21,8 @@ import {
   acceptanceContextPackCustodyBaseIndexRevisionSha256,
   acceptanceContextPackCustodyOverlayManifestSha256,
   acceptanceContextOverlayHeadRangeCoordinateSha256,
+  acceptanceContextOverlayManifestSha256,
+  acceptanceContextPackCanonicalSha256,
   acceptanceContextPacketSetSha256,
   acceptanceContractSha256,
   acceptanceCorrectionPacketPayloadSetSha256,
@@ -35,12 +38,15 @@ import {
   recordAcceptanceBuilderRouteSelection,
   recordAcceptanceContextPackSnapshot,
   resolveAcceptanceContextPackCustody,
+  recordAcceptanceCompiledContextPack,
+  resolveAcceptanceCompiledContextPack,
   registerAcceptanceBuilderRoute,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
+import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { enqueueReviewJob } from "../queries/review_jobs.js";
 import {
   recordApprovalRequest,
@@ -56,6 +62,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
+               to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -65,6 +72,11 @@ const DB_AVAILABLE: boolean = await (async () => {
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
                    AND column_name = 'correction_packet_payload_set_sha256'
                ) AS acceptance_context_pack_custody,
+               EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'acceptance_compiled_context_packs'
+                   AND column_name = 'exact_head_dependency_tree_proofs'
+               ) AS acceptance_compiled_context_pack_tree_proofs,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
@@ -74,7 +86,9 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_contracts: string | null;
       acceptance_builder_routes: string | null;
       acceptance_context_pack_snapshots: string | null;
+      acceptance_compiled_context_packs: string | null;
       acceptance_context_pack_custody: boolean;
+      acceptance_compiled_context_pack_tree_proofs: boolean;
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
     }>;
@@ -84,7 +98,9 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
+      rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_context_pack_custody === true &&
+      rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
@@ -405,6 +421,138 @@ describe.skipIf(!DB_AVAILABLE)(
       const rows = await db.select().from(acceptanceContextPackSnapshots)
         .where(eq(acceptanceContextPackSnapshots.id, first.snapshot.id));
       expect(rows).toHaveLength(1);
+    });
+
+    it("persists only a revalidated metadata-only compiled Pack and rejects divergent replay", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "compiled-pack-custody", originChannel: "codex_mcp",
+        contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headSha = "a".repeat(40);
+      await attachConfirmedAcceptanceRecordToExternalPullRequest({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43, headSha,
+        source: "manual",
+      });
+      const job = await enqueueReviewJob({
+        workspaceId: wsId, repo: "acme/widgets", prNumber: 43, headSha, event: "opened",
+      });
+      const packetId = reviewJobCorrectionPacketId({
+        jobId: job.id, criterionId: "AC-1", headSha, recordId: draft.record.id,
+        acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+      });
+      const packet = {
+        kind: "review_job_correction_packet", version: 1, packetId, workspaceId: wsId, repo: "acme/widgets", prNumber: 43,
+        headSha, recordId: draft.record.id, jobId: job.id, acceptanceContract: { id: draft.contract.id, version: 1 },
+        criterion: { id: "AC-1", snapshot: "A user can save a filter" }, basis: "acceptance_contract", state: "failed",
+        expected: "A user can save a filter", observed: "Not implemented", affectedContext: {
+          modality: "ui", environmentKind: null, flow: "Save a filter", reproduction: { modality: "ui", steps: [{ action: "open", path: "/filters" }] },
+        }, evidence: { evidenceRef: "review:AC-1", previewBootId: "boot-1" }, scopeBoundary: "Filter save flow", impact: "Users cannot save", requiredCorrection: "Implement save", reverification: "Repeat flow",
+      };
+      await appendChangeRecordEvent({ recordId: draft.record.id, eventKey: `review:correction:${job.id}:AC-1`, stage: "review", actor: "reviewer-of-record", payloadRef: packet });
+      const repo = await db.insert(repositories).values({
+        workspaceId: wsId, name: "acme/widgets", url: "https://github.com/acme/widgets",
+      }).returning();
+      const wiki = await db.insert(wikiPages).values({
+        workspaceId: wsId, repositoryId: repo[0]!.id, slug: "wiki/overview", title: "Widgets",
+        kind: "overview", commitSha: "d".repeat(40), inputsHash: "e".repeat(64),
+        bodyMd: "Background", generatedAt: new Date(),
+      }).returning();
+      const baseIndexCore = { schemaVersion: 2 as const, backgroundOnly: true as const, pages: [{
+        id: wiki[0]!.id, repositoryId: repo[0]!.id, slug: "wiki/overview", commitSha: "d".repeat(40), inputsHashSha256: "e".repeat(64), pageBodySha256: wikiPageBodySha256("Background"), stale: false,
+      }], gaps: [] };
+      const patchSha256 = "4".repeat(64);
+      const dependencyContent = "export const helper = true;";
+      const dependencyBytes = Buffer.from(dependencyContent, "utf8");
+      const dependencyBlobSha = createHash("sha1")
+        .update(`blob ${dependencyBytes.length}\0`, "utf8").update(dependencyBytes).digest("hex");
+      const treeBody = Buffer.concat([Buffer.from("100644 helper.ts\0", "utf8"), Buffer.from(dependencyBlobSha, "hex")]);
+      const headTreeSha = createHash("sha1").update(`tree ${treeBody.length}\0`, "utf8").update(treeBody).digest("hex");
+      const dependencyTreeProof: ExactGitTreeInclusionProof = {
+        kind: "exact_git_tree_inclusion_batch", version: 1, headTreeSha,
+        trees: [{ sha1: headTreeSha, bodyBase64: treeBody.toString("base64") }],
+        paths: [{ path: "helper.ts", blobSha: dependencyBlobSha }],
+      };
+      const exactSourceContent = Array.from({ length: 28 }, (_, index) => `line-${index + 1}`).join("\n");
+      const exactSourceBytes = Buffer.from(exactSourceContent, "utf8");
+      const exactBlobSha = createHash("sha1")
+        .update(`blob ${exactSourceBytes.length}\0`, "utf8").update(exactSourceBytes).digest("hex");
+      const exactFullContentSha256 = createHash("sha256").update(exactSourceBytes).digest("hex");
+      const exactRangeContent = exactSourceContent.split("\n").slice(3, 28).join("\n");
+      const exactRangeSha256 = createHash("sha256").update(exactRangeContent, "utf8").digest("hex");
+      const exactRangeByteCount = Buffer.byteLength(exactRangeContent, "utf8");
+      const range = { startLine: 4, endLine: 28, coordinateSha256: acceptanceContextOverlayHeadRangeCoordinateSha256({ path: "apps/filter.ts", patchSha256, startLine: 4, endLine: 28 }) };
+      const overlayCore = { schemaVersion: 2 as const, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha, files: [{
+        path: "apps/filter.ts", status: "modified" as const, blobSha: exactBlobSha, previousPath: null, patchSha256, patchByteCount: 100, headRanges: [range],
+      }] };
+      const snapshot = await recordAcceptanceContextPackSnapshot({
+        workspaceId: wsId, recordId: draft.record.id, reviewJobId: job.id, acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+        acceptanceContractSha256: acceptanceContractSha256({ acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1, contract: draft.contract.contract }),
+        repo: "acme/widgets", prNumber: 43, expectedHeadSha: headSha, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headTreeSha,
+        packetIds: [packetId], packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: [packetId] }), correctionPacketPayloadSetSha256: acceptanceCorrectionPacketPayloadSetSha256({ packets: [packet] }),
+        compilerVersion: "exact-head-overlay-v1", baseIndex: { ...baseIndexCore, revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore) },
+        overlay: { ...overlayCore, manifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore) },
+        provenance: { schemaVersion: 1, included: [{ path: "wiki/overview", source: "base_index", reason: "Background" }, { path: "apps/filter.ts", source: "overlay", reason: "Changed" }], excluded: [] }, status: "admitted", reason: null,
+      });
+      const source = { kind: "exact_head_overlay" as const, path: "apps/filter.ts", blobSha: exactBlobSha, fullContentSha256: exactFullContentSha256, startLine: 4, endLine: 28, rangeSha256: exactRangeSha256, byteCount: exactRangeByteCount, reason: "exact_patch_head_range", citation: `apps/filter.ts@${exactBlobSha}#L4-L28` };
+      const dependencySource = {
+        kind: "exact_head_dependency" as const, path: "helper.ts", blobSha: dependencyBlobSha,
+        fullContentSha256: createHash("sha256").update(dependencyBytes).digest("hex"), startLine: 1, endLine: 1,
+        rangeSha256: createHash("sha256").update(dependencyBytes).digest("hex"), byteCount: dependencyBytes.length,
+        reason: "static_relative_import", citation: `helper.ts@${dependencyBlobSha}#L1-L1`,
+      };
+      const receiptCore = {
+        kind: "exact_head_source_custody" as const, schemaVersion: 2 as const, repo: "acme/widgets", prNumber: 43, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha, headTreeSha,
+        manifestSha256: acceptanceContextOverlayManifestSha256({ schemaVersion: 1, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha, files: [{ path: "apps/filter.ts", status: "modified" as const, blobSha: exactBlobSha, previousPath: null }] }),
+        changedManifest: [{ path: "apps/filter.ts", status: "modified", blobSha: exactBlobSha, previousPath: null, headRanges: [{ startLine: 4, endLine: 28 }], patchSha256, patchByteCount: 100 }],
+        records: [{ path: "apps/filter.ts", blobSha: exactBlobSha, previousPath: null, contentSha256: exactFullContentSha256, byteCount: exactSourceBytes.length, lineCount: 28, source: "exact_head_overlay", reason: "exact_base_to_head_compare" }],
+        exclusions: [],
+        directReadReceipts: [{
+          requestedPath: dependencySource.path, headSha, headTreeSha, outcome: "record" as const,
+          record: { path: dependencySource.path, blobSha: dependencyBlobSha, previousPath: null, contentSha256: dependencySource.fullContentSha256, byteCount: dependencyBytes.length, lineCount: 1, source: "exact_head_tree_fallback", reason: "exact_head_tree_path" },
+        }],
+        selectedExactRanges: [
+          (({ reason: _reason, citation: _citation, ...rangeIdentity }) => rangeIdentity)(dependencySource),
+          (({ reason: _reason, citation: _citation, ...rangeIdentity }) => rangeIdentity)(source),
+        ],
+      };
+      const receipt = { ...receiptCore, identitySha256: acceptanceContextPackCanonicalSha256(receiptCore) };
+      const binding = {
+        sourceSnapshotId: snapshot.snapshot.id, workspaceId: wsId, recordId: draft.record.id, reviewJobId: job.id, acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+        acceptanceContractSha256: acceptanceContractSha256({ acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1, contract: draft.contract.contract }), repo: "acme/widgets", prNumber: 43,
+        baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha, headTreeSha, packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: [packetId] }),
+        correctionPacketPayloadSetSha256: acceptanceCorrectionPacketPayloadSetSha256({ packets: [packet] }), sourceSnapshotCompilerVersion: "exact-head-overlay-v1",
+        baseIndexRevisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore), overlayManifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore),
+      };
+      const compiler = { version: "exact-head-correction-pack-v4", policyVersion: "bounded-exact-ranges-v2", byteCounter: "utf8_byte_upper_bound_v1", byteBudget: 65536 };
+      const manifest = { version: 1, acceptanceCriterionIds: ["AC-1"], unresolvedQuestionIds: [], packetIds: [packetId], sources: [dependencySource, source], architectureBoundaries: [], tests: [], decisions: [], exclusions: [], sourceCustody: { kind: "exact_head_source_custody", schemaVersion: 2, identitySha256: receipt.identitySha256 }, budget: { counter: "utf8_byte_upper_bound_v1", limitBytes: 65536 }, custody: { fullSourceUploadAllowed: false, rawSourcePersisted: false, snippetsPersisted: false } };
+      const representations = { jsonSha256: "7".repeat(64), markdownSha256: "9".repeat(64) };
+      const core = { kind: "compiled_acceptance_context_pack" as const, version: 1 as const, binding, compiler, manifest, sourceCustodyReceipt: { kind: receipt.kind, schemaVersion: receipt.schemaVersion, identitySha256: receipt.identitySha256 }, exactHeadDependencyTreeProofs: [{ path: dependencySource.path, blobSha: dependencyBlobSha, proofIdentitySha256: exactGitTreeInclusionProofIdentity(dependencyTreeProof) }], representations, renderedByteCount: 100 };
+      const compiled = { ...core, sourceCustodyReceipt: receipt, packSha256: acceptanceContextPackCanonicalSha256(core) };
+      const exactSourceProofs = [{ kind: "exact_head_overlay" as const, path: "apps/filter.ts", content: exactSourceContent }, { kind: "exact_head_dependency" as const, path: dependencySource.path, content: dependencyContent }];
+      const persist = (value: typeof compiled) => recordAcceptanceCompiledContextPack({
+        workspaceId: wsId, sourceSnapshotId: snapshot.snapshot.id, compiled: value, exactSourceProofs, exactGitTreeInclusionProofs: [dependencyTreeProof],
+      });
+      const first = await persist(compiled);
+      const replay = await persist(compiled);
+      expect(first).toMatchObject({ inserted: true, pack: { packSha256: compiled.packSha256 } });
+      expect(replay).toMatchObject({ inserted: false, pack: { id: first.pack.id } });
+      expect(first.pack.exactHeadDependencyTreeProofs).toEqual(core.exactHeadDependencyTreeProofs);
+      expect(JSON.stringify(first.pack)).not.toContain("bodyBase64");
+      await expect(persist({
+        ...compiled, manifest: { ...compiled.manifest, exclusions: [{ source: "exact_head_overlay", path: "apps/filter.ts", reason: "Excluded", content: "raw source" }] },
+      })).rejects.toThrow("Invalid compiled Context Pack");
+      await expect(persist({
+        ...compiled, sourceCustodyReceipt: { ...compiled.sourceCustodyReceipt, directReadReceipts: [{ requestedPath: "lib/unsafe.ts", headSha, headTreeSha: "c".repeat(40), outcome: "not_proven", reason: "secret", exclusion: { arbitrary: "untrusted" } }] },
+      })).rejects.toThrow("Invalid compiled Context Pack");
+      await expect(persist({
+        ...compiled, manifest: { ...compiled.manifest, decisions: ["self-attested decision"] },
+      })).rejects.toThrow("does not match");
+      await expect(persist({ ...compiled, renderedByteCount: 101 })).rejects.toThrow("does not match");
+      await expect(resolveAcceptanceCompiledContextPack({ workspaceId: randomUUID(), sourceSnapshotId: snapshot.snapshot.id, compilerVersion: compiler.version, policyVersion: compiler.policyVersion })).resolves.toBeNull();
+      expect(await db.select().from(acceptanceCompiledContextPacks).where(eq(acceptanceCompiledContextPacks.id, first.pack.id))).toHaveLength(1);
     });
 
     it("rejects unknown, disabled, cross-workspace, cross-repository, and unsupported Builder routes", async () => {

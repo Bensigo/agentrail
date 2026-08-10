@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
+  acceptanceContextPackCanonicalSha256,
   acceptanceContextOverlayManifestSha256,
   type AcceptanceContextPackCustodyOverlayManifestIdentity,
 } from "@agentrail/db-postgres";
@@ -334,22 +335,8 @@ function directReadReceipt(input: ExactHeadDirectReadReceiptInput, snapshot: Exa
   };
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("receipt identity cannot encode a non-finite number");
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (!value || typeof value !== "object") throw new Error("receipt identity contains an unsupported value");
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort(compareText).map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`
-  ).join(",")}}`;
-}
-
 function receiptIdentity(receipt: Omit<ExactHeadSourceCustodyReceipt, "identitySha256">): string {
-  return sha256(canonicalJson(receipt));
+  return acceptanceContextPackCanonicalSha256(receipt);
 }
 
 function selectedRangeIdentity(

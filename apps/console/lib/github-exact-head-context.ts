@@ -2,6 +2,7 @@ import {
   acceptanceContextOverlayManifestSha256,
   type AcceptanceContextOverlayManifestIdentity,
 } from "@agentrail/db-postgres";
+import { createHash } from "node:crypto";
 
 /**
  * The server-only, read-only GitHub seam for R8.2 Context Pack snapshots.
@@ -18,6 +19,11 @@ const GITHUB_FETCH_TIMEOUT_MS = 8000;
 const REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const SHA = /^[0-9a-f]{40}$/i;
 const MAX_COMPARE_FILES_EXCLUSIVE = 300;
+export const MAX_EXACT_HEAD_PR_RESPONSE_BYTES = 256 * 1024;
+export const MAX_EXACT_HEAD_COMMIT_RESPONSE_BYTES = 64 * 1024;
+export const MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES = 2 * 1024 * 1024;
+export const MAX_EXACT_HEAD_PATCH_RANGES = 128;
+export const MAX_EXACT_HEAD_PATCH_LINE = 1_000_000;
 const ALLOWED_FILE_STATUSES = new Set([
   "added",
   "modified",
@@ -41,6 +47,10 @@ export interface ExactHeadChangedFile {
   /** Null is valid only for a removed path. */
   blobSha: string | null;
   previousPath: string | null;
+  /** Normalized HEAD-side unified-diff ranges; null when GitHub supplied no usable patch. */
+  headRanges?: Array<{ startLine: number; endLine: number }> | null;
+  /** SHA-256 of GitHub's raw patch, retained without retaining the raw patch itself. */
+  patchSha256?: string | null;
 }
 
 export interface ExactHeadGithubContextSnapshot {
@@ -108,26 +118,107 @@ function githubHeaders(token: string): HeadersInit {
   };
 }
 
-async function fetchGithub(url: string, token: string): Promise<Response> {
+type GithubJsonRead =
+  | { ok: true; value: unknown }
+  | { ok: false; reason: "github_unavailable" | "github_rejected" | "invalid_response" };
+
+async function fetchGithubJson(url: string, token: string, maxBytes: number): Promise<GithubJsonRead> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       headers: githubHeaders(token),
       redirect: "error",
       signal: controller.signal,
     });
+    if (!response.ok) return { ok: false, reason: "github_rejected" };
+    const value = await cappedJson(response, maxBytes);
+    return value === null ? { ok: false, reason: "invalid_response" } : { ok: true, value };
+  } catch {
+    return { ok: false, reason: "github_unavailable" };
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function readJson(response: Response): Promise<unknown | null> {
+async function cappedJson(response: Response, maxBytes: number): Promise<unknown | null> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)) return null;
+  const body = response.body;
+  if (!body) return null;
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    return await response.json();
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* bounded failure remains invalid */ }
+        return null;
+      }
+      chunks.push(next.value);
+    }
+  } catch {
+    // Transport/body aborts are retryable availability failures, not malformed
+    // immutable Git data. The outer fixed-host reader collapses the error.
+    throw new Error("github response body unavailable");
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
     return null;
   }
+}
+
+function parseHunkCoordinate(start: string, count: string | undefined): { start: number; count: number } | null {
+  if (!/^\d+$/.test(start) || (count !== undefined && !/^\d+$/.test(count))) return null;
+  const parsedStart = Number(start);
+  const parsedCount = count === undefined ? 1 : Number(count);
+  if (!Number.isSafeInteger(parsedStart) || !Number.isSafeInteger(parsedCount)
+    || parsedCount < 0 || parsedCount > MAX_EXACT_HEAD_PATCH_LINE
+    || (parsedCount === 0 ? parsedStart > MAX_EXACT_HEAD_PATCH_LINE : parsedStart < 1 || parsedStart > MAX_EXACT_HEAD_PATCH_LINE)
+    || (parsedCount > 0 && parsedStart + parsedCount - 1 > MAX_EXACT_HEAD_PATCH_LINE)) return null;
+  return { start: parsedStart, count: parsedCount };
+}
+
+function parseHeadRanges(rawPatch: unknown): { headRanges: Array<{ startLine: number; endLine: number }> | null; patchSha256: string | null } | null {
+  if (rawPatch === undefined || rawPatch === null) return { headRanges: null, patchSha256: null };
+  if (typeof rawPatch !== "string") return null;
+  const patchSha256 = createHash("sha256").update(rawPatch, "utf8").digest("hex");
+  if (rawPatch.length === 0) return { headRanges: null, patchSha256 };
+
+  const ranges: Array<{ startLine: number; endLine: number }> = [];
+  let hunkCount = 0;
+  for (const rawLine of rawPatch.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith("@@")) continue;
+    hunkCount += 1;
+    if (hunkCount > MAX_EXACT_HEAD_PATCH_RANGES) return null;
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(line);
+    if (!match) return null;
+    const oldRange = parseHunkCoordinate(match[1]!, match[2]);
+    const headRange = parseHunkCoordinate(match[3]!, match[4]);
+    if (oldRange === null || headRange === null) return null;
+    if (headRange.count > 0) ranges.push({ startLine: headRange.start, endLine: headRange.start + headRange.count - 1 });
+  }
+  ranges.sort((left, right) => left.startLine - right.startLine || left.endLine - right.endLine);
+  const merged: Array<{ startLine: number; endLine: number }> = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.startLine <= previous.endLine + 1) previous.endLine = Math.max(previous.endLine, range.endLine);
+    else merged.push(range);
+  }
+  return { headRanges: merged, patchSha256 };
 }
 
 function parseCompareManifest(
@@ -173,11 +264,14 @@ function parseCompareManifest(
     } else if (rawPreviousPath !== undefined && rawPreviousPath !== null) {
       return null;
     }
+    const patch = status === "removed" ? { headRanges: null, patchSha256: null } : parseHeadRanges(file["patch"]);
+    if (patch === null) return null;
     parsed.push({
       path,
       status,
       blobSha,
       previousPath: status === "renamed" ? (rawPreviousPath as string) : null,
+      ...patch,
     });
   }
   return {
@@ -211,14 +305,13 @@ export async function readExactHeadGithubContext(
   }
   const headSha = input.expectedHeadSha.toLowerCase();
 
-  let prResponse: Response;
-  try {
-    prResponse = await fetchGithub(`${GITHUB_API}/repos/${input.repo}/pulls/${input.prNumber}`, input.token);
-  } catch {
-    return { ok: false, kind: "not_proven", reason: "github_unavailable" };
-  }
-  if (!prResponse.ok) return { ok: false, kind: "not_proven", reason: "github_rejected" };
-  const pr = await readJson(prResponse);
+  const prRead = await fetchGithubJson(
+    `${GITHUB_API}/repos/${input.repo}/pulls/${input.prNumber}`,
+    input.token,
+    MAX_EXACT_HEAD_PR_RESPONSE_BYTES
+  );
+  if (!prRead.ok) return { ok: false, kind: "not_proven", reason: prRead.reason === "invalid_response" ? "invalid_pr_metadata" : prRead.reason };
+  const pr = prRead.value;
   const actualHead = isRecord(pr) && isRecord(pr["head"]) ? pr["head"]["sha"] : null;
   const baseSha = isRecord(pr) && isRecord(pr["base"]) ? pr["base"]["sha"] : null;
   if (!isSha(actualHead) || !isSha(baseSha)) {
@@ -228,14 +321,13 @@ export async function readExactHeadGithubContext(
     return { ok: false, kind: "not_proven", reason: "head_mismatch" };
   }
 
-  let commitResponse: Response;
-  try {
-    commitResponse = await fetchGithub(`${GITHUB_API}/repos/${input.repo}/git/commits/${headSha}`, input.token);
-  } catch {
-    return { ok: false, kind: "not_proven", reason: "github_unavailable" };
-  }
-  if (!commitResponse.ok) return { ok: false, kind: "not_proven", reason: "github_rejected" };
-  const commit = await readJson(commitResponse);
+  const commitRead = await fetchGithubJson(
+    `${GITHUB_API}/repos/${input.repo}/git/commits/${headSha}`,
+    input.token,
+    MAX_EXACT_HEAD_COMMIT_RESPONSE_BYTES
+  );
+  if (!commitRead.ok) return { ok: false, kind: "not_proven", reason: commitRead.reason === "invalid_response" ? "invalid_head_commit" : commitRead.reason };
+  const commit = commitRead.value;
   const commitSha = isRecord(commit) ? commit["sha"] : null;
   const headTreeSha = isRecord(commit) && isRecord(commit["tree"]) ? commit["tree"]["sha"] : null;
   if (!isSha(commitSha) || commitSha.toLowerCase() !== headSha || !isSha(headTreeSha)) {
@@ -243,17 +335,13 @@ export async function readExactHeadGithubContext(
   }
 
   const normalizedBaseSha = baseSha.toLowerCase();
-  let compareResponse: Response;
-  try {
-    compareResponse = await fetchGithub(
-      `${GITHUB_API}/repos/${input.repo}/compare/${normalizedBaseSha}...${headSha}`,
-      input.token
-    );
-  } catch {
-    return { ok: false, kind: "not_proven", reason: "github_unavailable" };
-  }
-  if (!compareResponse.ok) return { ok: false, kind: "not_proven", reason: "github_rejected" };
-  const compareManifest = parseCompareManifest(await readJson(compareResponse), normalizedBaseSha);
+  const compareRead = await fetchGithubJson(
+    `${GITHUB_API}/repos/${input.repo}/compare/${normalizedBaseSha}...${headSha}`,
+    input.token,
+    MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES
+  );
+  if (!compareRead.ok) return { ok: false, kind: "not_proven", reason: compareRead.reason === "invalid_response" ? "invalid_compare_manifest" : compareRead.reason };
+  const compareManifest = parseCompareManifest(compareRead.value, normalizedBaseSha);
   if (compareManifest === null) {
     return { ok: false, kind: "not_proven", reason: "invalid_compare_manifest" };
   }
@@ -274,7 +362,12 @@ export async function readExactHeadGithubContext(
         baseSha: normalizedBaseSha,
         mergeBaseSha: compareManifest.mergeBaseSha,
         headSha,
-        files: compareManifest.changedFiles as AcceptanceContextOverlayManifestIdentity["files"],
+        files: compareManifest.changedFiles.map(({ path, status, blobSha, previousPath }) => ({
+          path,
+          status: status as AcceptanceContextOverlayManifestIdentity["files"][number]["status"],
+          blobSha,
+          previousPath,
+        })),
       }),
       provenance: {
         schemaVersion: 1,

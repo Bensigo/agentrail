@@ -62,6 +62,7 @@ export type ExactHeadContentFailureReason =
   | "tree_limit"
   | "call_limit"
   | "invalid_blob"
+  | "path_not_found"
   | "content_limit"
   | "unsafe_content"
   | "unsafe_path";
@@ -132,9 +133,11 @@ function isSecretPath(path: string): boolean {
   const lower = path.toLocaleLowerCase("en-US");
   const basename = lower.slice(lower.lastIndexOf("/") + 1);
   return basename === ".env" || basename.startsWith(".env.")
+    || new Set([".npmrc", ".yarnrc", ".pypirc", ".netrc", ".git-credentials", "auth.json", "auth.toml"]).has(basename)
     || /\.(?:pem|key|p12|pfx|kdbx)$/i.test(basename)
     || basename === "id_rsa" || basename === "id_ed25519"
-    || lower.includes("credential") || /(?:^|\/)(?:secrets?|private)(?:\/|$)/.test(lower);
+    || lower.includes("credential") || /(?:^|\/)(?:secrets?|private)(?:\/|$)/.test(lower)
+    || /(?:^|\/)(?:\.aws\/(?:credentials|config)|\.docker\/config\.json|\.kube\/config|\.config\/gcloud\/application_default_credentials\.json)$/.test(lower);
 }
 
 function headers(token: string): HeadersInit {
@@ -181,7 +184,9 @@ async function cappedJson(response: Response, maxBytes: number): Promise<unknown
       chunks.push(next.value);
     }
   } catch {
-    return null;
+    // Preserve retryability for a stalled/aborted upstream body. The outer
+    // fixed-host fetch boundary returns only the token-free availability enum.
+    throw new Error("github response body unavailable");
   } finally {
     reader.releaseLock();
   }
@@ -385,7 +390,7 @@ async function readBlob(input: {
   return { ok: true, record: exactRecord({ path: input.entry.path, blobSha: input.entry.sha, previousPath: input.previousPath, bytes, content, source: input.source, reason: input.reason }) };
 }
 
-function materializationIdentity(input: {
+export function exactHeadContentMaterializationIdentity(input: {
   snapshot: ExactHeadGithubContextSnapshot;
   records: ExactHeadContentRecord[];
   exclusions: ExactHeadContentExclusion[];
@@ -512,7 +517,8 @@ export async function materializeExactHeadGithubContent(input: {
     const cached = cachedRecords.get(path);
     if (cached) return { ok: true, record: cached };
     const entry = tree.byPath.get(path);
-    if (!entry || entry.type !== "blob" || !SAFE_MODE.has(entry.mode)) return { ok: false, kind: "not_proven", reason: "invalid_tree" };
+    if (!entry) return { ok: false, kind: "not_proven", reason: "path_not_found" };
+    if (entry.type !== "blob" || !SAFE_MODE.has(entry.mode)) return { ok: false, kind: "not_proven", reason: "invalid_tree" };
     if (state.fallbackReads >= MAX_EXACT_HEAD_DIRECT_PATH_READS) return { ok: false, kind: "not_proven", reason: "call_limit" };
     if (entry.size > MAX_EXACT_HEAD_FILE_BYTES || state.fallbackBytes + entry.size > MAX_EXACT_HEAD_DIRECT_PATH_BYTES) {
       return { ok: false, kind: "not_proven", reason: "content_limit" };
@@ -530,7 +536,7 @@ export async function materializeExactHeadGithubContent(input: {
     ok: true,
     materialization: {
       content: {
-        identitySha256: materializationIdentity({ snapshot, records, exclusions: sortedExclusions }),
+        identitySha256: exactHeadContentMaterializationIdentity({ snapshot, records, exclusions: sortedExclusions }),
         headTreeSha: snapshot.headTreeSha.toLowerCase(),
         records,
         exclusions: sortedExclusions,

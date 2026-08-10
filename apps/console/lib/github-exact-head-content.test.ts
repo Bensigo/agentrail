@@ -220,7 +220,7 @@ describe("materializeExactHeadGithubContent", () => {
     const bodyPending = materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot() });
     await vi.advanceTimersByTimeAsync(8_000);
     const bodyResult = await bodyPending;
-    expect(bodyResult).toEqual({ ok: false, kind: "not_proven", reason: "invalid_tree", exclusions: [] });
+    expect(bodyResult).toEqual({ ok: false, kind: "not_proven", reason: "github_unavailable", exclusions: [] });
     expect(stalledBodyFetch).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(bodyResult)).not.toContain(TOKEN);
   });
@@ -424,6 +424,7 @@ describe("materializeExactHeadGithubContent", () => {
     const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot() });
     if (!result.ok) throw new Error("expected exact-head materialization");
     await expect(result.materialization.readExactPath("../.env")).resolves.toMatchObject({ ok: false, reason: "unsafe_path" });
+    await expect(result.materialization.readExactPath("apps/console/lib/missing.ts")).resolves.toEqual({ ok: false, kind: "not_proven", reason: "path_not_found" });
     await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob } });
     await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob } });
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -469,6 +470,32 @@ describe("materializeExactHeadGithubContent", () => {
     expect(JSON.stringify(held)).not.toContain("REDACTED_SECRET");
     expect(JSON.stringify(held)).not.toContain(TOKEN);
   });
+
+  it.each([".npmrc", ".yarnrc", ".pypirc", ".netrc", ".git-credentials", ".docker/config.json"])(
+    "denies common credential configuration paths without fetching or exposing their content: %s",
+    async (path) => {
+      const authContent = "_authToken=private-npm-token-value\n_auth=private-npm-auth-value\n";
+      const authBlob = gitBlobSha(authContent);
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(json(200, { sha: TREE, truncated: false, tree: [
+          { path: "apps/console/lib/widget.ts", mode: "100644", type: "blob", sha: BLOB, size: SOURCE.length },
+          { path, mode: "100644", type: "blob", sha: authBlob, size: Buffer.byteLength(authContent) },
+        ] }))
+        .mockResolvedValueOnce(blobResponse(SOURCE, BLOB));
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot() });
+      if (!result.ok) throw new Error("expected exact-head materialization");
+
+      const denied = await result.materialization.readExactPath(path);
+      expect(denied).toEqual({
+        ok: false, kind: "not_proven", reason: "unsafe_path",
+        exclusion: { path, source: "exact_head_tree_fallback", blobSha: authBlob, byteCount: null, reason: "secret_path_policy", secretKinds: [], findingCount: 0 },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(denied)).not.toContain("private-npm-token-value");
+      expect(JSON.stringify(denied)).not.toContain("private-npm-auth-value");
+    }
+  );
 
   it("rejects malformed regular-file size while parsing the head tree, before a blob request", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(json(200, {

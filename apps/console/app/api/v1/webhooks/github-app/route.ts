@@ -5,6 +5,7 @@ import {
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
+  attachConfirmedAcceptanceRecordToExternalPullRequest,
   findOrCreateChangeRecord,
   triggerDependencyWatchesForPush,
   recordReviewEvent,
@@ -70,6 +71,8 @@ const SIGNATURE_HEADER = "x-hub-signature-256";
 const DELIVERY_HEADER = "x-github-delivery";
 const EVENT_HEADER = "x-github-event";
 const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
+const ACCEPTANCE_RECORD_MARKER = /<!--\s*jace-acceptance-record\s*:\s*([\s\S]*?)\s*-->/gi;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // The four `pull_request` actions this queue admits (design spec §1). A
 // merged `closed` delivery is handled separately as a Change Record event.
@@ -123,6 +126,16 @@ function ignored(reason?: string): NextResponse {
   return NextResponse.json(
     reason ? { ok: true, ignored: true, reason } : { ok: true, ignored: true }
   );
+}
+
+export function acceptanceRecordMarker(body: unknown):
+  | { kind: "record"; recordId: string }
+  | { kind: "missing" | "invalid" | "ambiguous" } {
+  if (typeof body !== "string") return { kind: "missing" };
+  const values = Array.from(body.matchAll(ACCEPTANCE_RECORD_MARKER), (match) => match[1]?.trim() ?? "");
+  if (values.length === 0) return { kind: "missing" };
+  if (values.length !== 1) return { kind: "ambiguous" };
+  return UUID.test(values[0]!) ? { kind: "record", recordId: values[0]! } : { kind: "invalid" };
 }
 
 type JsonObject = Record<string, unknown>;
@@ -426,6 +439,23 @@ export async function POST(request: NextRequest) {
       console.error("[github-app/webhook] merge change-record attach failed:", error);
     }
     return NextResponse.json({ ok: true, merged: true });
+  }
+
+  const marker = acceptanceRecordMarker(prObj.body);
+  if (marker.kind !== "record") {
+    return ignored(`acceptance record ${marker.kind}`);
+  }
+  const attachment = await attachConfirmedAcceptanceRecordToExternalPullRequest({
+    workspaceId: workspace.workspaceId,
+    recordId: marker.recordId,
+    repo: repoFullName,
+    prNumber,
+    headSha,
+    source: "github_webhook",
+    prUrl: typeof prObj.html_url === "string" ? prObj.html_url : null,
+  });
+  if (attachment.kind !== "attached") {
+    return ignored(`acceptance record ${attachment.kind}`);
   }
 
   const result = await enqueueReviewJob({

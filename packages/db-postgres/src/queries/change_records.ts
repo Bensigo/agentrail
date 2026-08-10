@@ -6,16 +6,19 @@ import {
   changeRecordEvents,
   changeRecords,
   acceptanceBuilderRoutes,
+  acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
   type AcceptanceBuilderRouteRow,
+  type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
+import { reviewJobs } from "../schema/review_jobs.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -1424,6 +1427,10 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);
 }
@@ -1452,6 +1459,592 @@ export function parseAcceptanceBuilderRouteSelection(
   value: unknown
 ): AcceptanceBuilderRouteSelection | null {
   return validateAcceptanceBuilderRouteSelection(value) ? value : null;
+}
+
+export type AcceptanceContextPackSnapshotStatus = "admitted" | "not_proven";
+
+export type AcceptanceContextBaseIndexIdentity = {
+  schemaVersion: 1;
+  revisionSha256: string;
+  backgroundOnly: true;
+  pages: Array<{
+    id: string;
+    slug: string;
+    commitSha: string;
+    inputsHashSha256: string;
+    stale: boolean;
+  }>;
+  gaps: string[];
+};
+
+export type AcceptanceContextOverlayManifestIdentity = {
+  schemaVersion: 1;
+  manifestSha256: string;
+  baseSha: string;
+  mergeBaseSha: string;
+  headSha: string;
+  files: Array<{
+    path: string;
+    status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed";
+    blobSha: string | null;
+    previousPath: string | null;
+  }>;
+};
+
+export type AcceptanceContextInclusionExclusionProvenance = {
+  schemaVersion: 1;
+  included: Array<{ path: string; source: "base_index" | "overlay"; reason: string }>;
+  excluded: Array<{ path: string | null; source: "base_index" | "overlay"; reason: string }>;
+};
+
+export type AcceptanceContextPackSnapshotInput = {
+  workspaceId: string;
+  recordId: string;
+  reviewJobId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  repo: string;
+  prNumber: number;
+  expectedHeadSha: string;
+  baseSha: string | null;
+  mergeBaseSha: string | null;
+  headTreeSha: string | null;
+  packetIds: string[];
+  packetSetSha256: string;
+  compilerVersion: string;
+  baseIndex: AcceptanceContextBaseIndexIdentity | null;
+  overlay: AcceptanceContextOverlayManifestIdentity | null;
+  provenance: AcceptanceContextInclusionExclusionProvenance;
+  status: AcceptanceContextPackSnapshotStatus;
+  reason: string | null;
+};
+
+const EXACT_SHA1 = /^[a-f0-9]{40}$/i;
+const EXACT_SHA256 = /^[a-f0-9]{64}$/i;
+const CORRECTION_PACKET_ID = /^correction-[a-f0-9]{48}$/i;
+const SAFE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
+
+function canonicalSha256(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/** Stable digest of an already-derived, sorted correction packet ID set. */
+export function acceptanceContextPacketSetSha256(input: { packetIds: readonly string[] }): string {
+  return canonicalSha256({ kind: "acceptance_context_packet_set", version: 1, packetIds: input.packetIds });
+}
+
+/** Stable digest of the page-level, background-only Wiki/index identity. */
+export function acceptanceContextBaseIndexRevisionSha256(input: Omit<AcceptanceContextBaseIndexIdentity, "revisionSha256">): string {
+  return canonicalSha256({
+    kind: "acceptance_context_base_index", version: 1,
+    backgroundOnly: input.backgroundOnly, pages: input.pages, gaps: input.gaps,
+  });
+}
+
+/** Stable digest of the server-resolved GitHub compare manifest. */
+export function acceptanceContextOverlayManifestSha256(input: Omit<AcceptanceContextOverlayManifestIdentity, "manifestSha256">): string {
+  return canonicalSha256({
+    kind: "acceptance_context_overlay_manifest", version: 1,
+    baseSha: input.baseSha, mergeBaseSha: input.mergeBaseSha, headSha: input.headSha, files: input.files,
+  });
+}
+
+/** Canonical identity shared by the R8.1 packet builder and R8.2 packet-set custody. */
+export function reviewJobCorrectionPacketId(input: {
+  jobId: string;
+  criterionId: string;
+  headSha: string;
+  recordId: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+}): string {
+  return `correction-${canonicalSha256({
+    jobId: input.jobId,
+    criterionId: input.criterionId,
+    headSha: input.headSha,
+    recordId: input.recordId,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+  }).slice(0, 48)}`;
+}
+
+function safeSnapshotText(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/.test(value) && !SECRET_LIKE.test(value);
+}
+
+function safeRepoPath(value: unknown): value is string {
+  return safeSnapshotText(value, 512)
+    && !value.startsWith("/")
+    && !value.includes("\\")
+    && !value.split("/").some((segment) => !segment || segment === "." || segment === "..");
+}
+
+function safeRepo(value: unknown): value is string {
+  return typeof value === "string" && SAFE_REPO.test(value)
+    && value.split("/").every((segment) => segment !== "." && segment !== "..");
+}
+
+function uniqueStrings(values: unknown, predicate: (value: unknown) => boolean, max: number): values is string[] {
+  return Array.isArray(values) && values.length > 0 && values.length <= max
+    && values.every(predicate) && new Set(values).size === values.length;
+}
+
+function isBaseIndexIdentity(value: unknown): value is AcceptanceContextBaseIndexIdentity {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["schemaVersion", "revisionSha256", "backgroundOnly", "pages", "gaps"])
+    || value["schemaVersion"] !== 1
+    || value["backgroundOnly"] !== true
+    || typeof value["revisionSha256"] !== "string" || !EXACT_SHA256.test(value["revisionSha256"])
+    || !Array.isArray(value["pages"]) || value["pages"].length > 100
+    || !Array.isArray(value["gaps"]) || value["gaps"].length > 100
+    || !value["gaps"].every((gap) => safeSnapshotText(gap, 1_024))
+    || new Set(value["gaps"]).size !== value["gaps"].length
+  ) return false;
+  const pages = value["pages"];
+  if (!pages.every((page) => isRecord(page)
+    && hasExactKeys(page, ["id", "slug", "commitSha", "inputsHashSha256", "stale"])
+    && isUuid(page["id"])
+    && safeRepoPath(page["slug"])
+    && typeof page["commitSha"] === "string" && EXACT_SHA1.test(page["commitSha"])
+    && typeof page["inputsHashSha256"] === "string" && EXACT_SHA256.test(page["inputsHashSha256"])
+    && typeof page["stale"] === "boolean"
+  )) return false;
+  if (pages.length === 0 && value["gaps"].length === 0) return false;
+  if (!pages.every((page, index) => index === 0
+    || `${pages[index - 1]!["slug"]}\u0000${pages[index - 1]!["id"]}`
+      < `${page["slug"]}\u0000${page["id"]}`)) return false;
+  if (!(value["gaps"] as string[]).every((gap, index, gaps) => index === 0 || gaps[index - 1]! < gap)) return false;
+  return value["revisionSha256"] === acceptanceContextBaseIndexRevisionSha256({
+    schemaVersion: 1, backgroundOnly: true, pages: pages as AcceptanceContextBaseIndexIdentity["pages"], gaps: value["gaps"] as string[],
+  });
+}
+
+function isOverlayIdentity(value: unknown): value is AcceptanceContextOverlayManifestIdentity {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["schemaVersion", "manifestSha256", "baseSha", "mergeBaseSha", "headSha", "files"])
+    || value["schemaVersion"] !== 1
+    || typeof value["manifestSha256"] !== "string" || !EXACT_SHA256.test(value["manifestSha256"])
+    || typeof value["baseSha"] !== "string" || !EXACT_SHA1.test(value["baseSha"])
+    || typeof value["mergeBaseSha"] !== "string" || !EXACT_SHA1.test(value["mergeBaseSha"])
+    || typeof value["headSha"] !== "string" || !EXACT_SHA1.test(value["headSha"])
+    || !Array.isArray(value["files"]) || value["files"].length === 0 || value["files"].length > 500
+  ) return false;
+  const files = value["files"];
+  if (!files.every((file) => isRecord(file)
+    && hasExactKeys(file, ["path", "status", "blobSha", "previousPath"])
+    && safeRepoPath(file["path"])
+    && (file["status"] === "added" || file["status"] === "modified" || file["status"] === "removed"
+      || file["status"] === "renamed" || file["status"] === "copied" || file["status"] === "changed")
+    && (file["status"] === "removed"
+      ? (file["blobSha"] === null || (typeof file["blobSha"] === "string" && EXACT_SHA1.test(file["blobSha"])))
+      : typeof file["blobSha"] === "string" && EXACT_SHA1.test(file["blobSha"]))
+    && (file["status"] === "renamed"
+      ? safeRepoPath(file["previousPath"]) && file["previousPath"] !== file["path"]
+      : file["previousPath"] === null)
+  )) return false;
+  if (!files.every((file, index) => index === 0 || files[index - 1]!["path"] < file["path"])) return false;
+  return value["manifestSha256"] === acceptanceContextOverlayManifestSha256({
+    schemaVersion: 1, baseSha: value["baseSha"], mergeBaseSha: value["mergeBaseSha"], headSha: value["headSha"],
+    files: files as AcceptanceContextOverlayManifestIdentity["files"],
+  });
+}
+
+function isProvenance(value: unknown): value is AcceptanceContextInclusionExclusionProvenance {
+  if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "included", "excluded"])
+    || value["schemaVersion"] !== 1 || !Array.isArray(value["included"]) || !Array.isArray(value["excluded"])
+    || value["included"].length > 1_000 || value["excluded"].length > 1_000
+  ) return false;
+  const included = value["included"];
+  const excluded = value["excluded"];
+  return included.every((item) => isRecord(item)
+    && hasExactKeys(item, ["path", "source", "reason"])
+    && safeRepoPath(item["path"])
+    && (item["source"] === "base_index" || item["source"] === "overlay")
+    && safeSnapshotText(item["reason"], 1_024))
+    && excluded.every((item) => isRecord(item)
+      && hasExactKeys(item, ["path", "source", "reason"])
+      && (item["path"] === null || safeRepoPath(item["path"]))
+      && (item["source"] === "base_index" || item["source"] === "overlay")
+      && safeSnapshotText(item["reason"], 1_024));
+}
+
+function hasCompleteAdmittedSourceProvenance(input: {
+  baseIndex: AcceptanceContextBaseIndexIdentity;
+  overlay: AcceptanceContextOverlayManifestIdentity;
+  provenance: AcceptanceContextInclusionExclusionProvenance;
+}): boolean {
+  const expected = new Map<string, number>();
+  for (const page of input.baseIndex.pages) expected.set(`base_index\u0000${page.slug}`, 0);
+  for (const file of input.overlay.files) expected.set(`overlay\u0000${file.path}`, 0);
+  const baseGapReasons: string[] = [];
+  for (const item of [...input.provenance.included, ...input.provenance.excluded]) {
+    if (item.path === null) {
+      if (item.source !== "base_index") return false;
+      baseGapReasons.push(item.reason);
+      continue;
+    }
+    const key = `${item.source}\u0000${item.path}`;
+    const count = expected.get(key);
+    if (count === undefined || count !== 0) return false;
+    expected.set(key, 1);
+  }
+  return [...expected.values()].every((count) => count === 1)
+    && isDeepStrictEqual([...baseGapReasons].sort(), [...input.baseIndex.gaps].sort());
+}
+
+function hasFailClosedUnavailableProvenance(
+  provenance: AcceptanceContextInclusionExclusionProvenance,
+  reason: string
+): boolean {
+  return provenance.included.length === 0
+    && provenance.excluded.length > 0
+    && provenance.excluded.every((item) => item.path === null)
+    && provenance.excluded.some((item) => item.reason === reason);
+}
+
+function isCorrectionApiRequest(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ["method", "path", "expectedStatus"])
+    && value["method"] === "GET"
+    && safeSnapshotText(value["path"], 2_048)
+    && Number.isInteger(value["expectedStatus"])
+    && (value["expectedStatus"] as number) >= 100
+    && (value["expectedStatus"] as number) <= 599;
+}
+
+function isCorrectionDataRequest(value: unknown): boolean {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      "method", "path", "expectedStatus", "digestAlgorithm", "digestKeyId", "digestContext", "expectedJson",
+    ])
+    || value["method"] !== "GET"
+    || !safeSnapshotText(value["path"], 2_048)
+    || !Number.isInteger(value["expectedStatus"])
+    || (value["expectedStatus"] as number) < 100
+    || (value["expectedStatus"] as number) > 599
+    || value["digestAlgorithm"] !== "hmac-sha256-v1"
+    || !safeSnapshotText(value["digestKeyId"], 64)
+    || typeof value["digestContext"] !== "string"
+    || !EXACT_SHA256.test(value["digestContext"])
+    || !Array.isArray(value["expectedJson"])
+    || value["expectedJson"].length === 0
+    || value["expectedJson"].length > 12
+  ) return false;
+  return value["expectedJson"].every((assertion) => isRecord(assertion)
+    && hasExactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])
+    && safeSnapshotText(assertion["pointer"], 1_024)
+    && (assertion["equalsType"] === "null" || assertion["equalsType"] === "boolean"
+      || assertion["equalsType"] === "number" || assertion["equalsType"] === "string")
+    && typeof assertion["equalsHmacSha256"] === "string"
+    && EXACT_SHA256.test(assertion["equalsHmacSha256"]));
+}
+
+function isCorrectionReproduction(value: unknown, modality: string): boolean {
+  if (!isRecord(value) || value["modality"] !== modality) return false;
+  if (modality === "api") {
+    return hasExactKeys(value, ["modality", "request"]) && isCorrectionApiRequest(value["request"]);
+  }
+  if (modality === "data") {
+    return hasExactKeys(value, ["modality", "request"]) && isCorrectionDataRequest(value["request"]);
+  }
+  if (modality === "job") {
+    if (!hasExactKeys(value, ["modality", "request"]) || !isRecord(value["request"])
+      || !hasExactKeys(value["request"], ["trigger", "readback"]) || !isRecord(value["request"]["trigger"])
+      || !hasExactKeys(value["request"]["trigger"], ["method", "path", "expectedStatus"])
+      || value["request"]["trigger"]["method"] !== "POST"
+      || !safeSnapshotText(value["request"]["trigger"]["path"], 2_048)
+      || !Number.isInteger(value["request"]["trigger"]["expectedStatus"])
+      || (value["request"]["trigger"]["expectedStatus"] as number) < 100
+      || (value["request"]["trigger"]["expectedStatus"] as number) > 599
+    ) return false;
+    return isCorrectionDataRequest(value["request"]["readback"]);
+  }
+  if (modality !== "ui" || !hasExactKeys(value, ["modality", "steps"])
+    || !Array.isArray(value["steps"]) || value["steps"].length === 0 || value["steps"].length > 12) return false;
+  return value["steps"].every((step) => {
+    if (!isRecord(step) || typeof step["action"] !== "string") return false;
+    switch (step["action"]) {
+      case "open": return hasExactKeys(step, ["action", "path"]) && safeSnapshotText(step["path"], 2_048);
+      case "click": return hasExactKeys(step, ["action", "selector"]) && safeSnapshotText(step["selector"], 2_048);
+      case "fill": return hasExactKeys(step, ["action", "selector", "value"])
+        && safeSnapshotText(step["selector"], 2_048) && step["value"] === "[REDACTED_FILL]";
+      case "press": return hasExactKeys(step, ["action", "key"]) && safeSnapshotText(step["key"], 128);
+      case "expect_text": return hasExactKeys(step, ["action", "text"]) && safeSnapshotText(step["text"], 2_048);
+      case "screenshot": return hasExactKeys(step, ["action", "label"]) && safeSnapshotText(step["label"], 512);
+      default: return false;
+    }
+  });
+}
+
+/** Closed structural and deterministic-identity check shared by R8.1 and R8.2 custody. */
+export function validateReviewJobCorrectionPacketPayload(payload: unknown): payload is Record<string, unknown> {
+  if (!isRecord(payload)
+    || !hasExactKeys(payload, [
+      "kind", "version", "packetId", "workspaceId", "repo", "prNumber", "headSha", "recordId", "jobId",
+      "acceptanceContract", "criterion", "basis", "state", "expected", "observed", "affectedContext", "evidence",
+      "scopeBoundary", "impact", "requiredCorrection", "reverification",
+    ])
+    || payload["kind"] !== "review_job_correction_packet"
+    || payload["version"] !== 1
+    || !safeSnapshotText(payload["workspaceId"], 512)
+    || !safeRepo(payload["repo"])
+    || !Number.isInteger(payload["prNumber"])
+    || (payload["prNumber"] as number) <= 0
+    || typeof payload["headSha"] !== "string"
+    || !EXACT_SHA1.test(payload["headSha"])
+    || !safeSnapshotText(payload["recordId"], 512)
+    || !safeSnapshotText(payload["jobId"], 512)
+    || !isRecord(payload["acceptanceContract"])
+    || !hasExactKeys(payload["acceptanceContract"], ["id", "version"])
+    || !safeSnapshotText(payload["acceptanceContract"]["id"], 512)
+    || !Number.isInteger(payload["acceptanceContract"]["version"])
+    || (payload["acceptanceContract"]["version"] as number) <= 0
+    || !isRecord(payload["criterion"])
+    || !hasExactKeys(payload["criterion"], ["id", "snapshot"])
+    || !safeSnapshotText(payload["criterion"]["id"], 512)
+    || !safeSnapshotText(payload["criterion"]["snapshot"], 2_000)
+    || payload["basis"] !== "acceptance_contract"
+    || (payload["state"] !== "failed" && payload["state"] !== "not_proven")
+    || payload["expected"] !== payload["criterion"]["snapshot"]
+    || !safeSnapshotText(payload["expected"], 2_000)
+    || !safeSnapshotText(payload["observed"], 2_000)
+    || !isRecord(payload["affectedContext"])
+    || !hasExactKeys(payload["affectedContext"], ["modality", "environmentKind", "flow", "reproduction"])
+    || (payload["affectedContext"]["modality"] !== "ui" && payload["affectedContext"]["modality"] !== "api"
+      && payload["affectedContext"]["modality"] !== "data" && payload["affectedContext"]["modality"] !== "job")
+    || (payload["affectedContext"]["environmentKind"] !== null
+      && payload["affectedContext"]["environmentKind"] !== "isolated_preview")
+    || !safeSnapshotText(payload["affectedContext"]["flow"], 2_000)
+    || !isCorrectionReproduction(
+      payload["affectedContext"]["reproduction"],
+      payload["affectedContext"]["modality"] as string
+    )
+    || !isRecord(payload["evidence"])
+    || !Object.keys(payload["evidence"]).every((key) =>
+      key === "evidenceRef" || key === "artifactKey" || key === "executionId" || key === "previewBootId")
+    || !hasOwn(payload["evidence"], "evidenceRef")
+    || !hasOwn(payload["evidence"], "previewBootId")
+    || !safeSnapshotText(payload["evidence"]["evidenceRef"], 2_000)
+    || !safeSnapshotText(payload["evidence"]["previewBootId"], 512)
+    || (hasOwn(payload["evidence"], "artifactKey") && !safeSnapshotText(payload["evidence"]["artifactKey"], 2_000))
+    || (hasOwn(payload["evidence"], "executionId") && !safeSnapshotText(payload["evidence"]["executionId"], 512))
+    || !safeSnapshotText(payload["scopeBoundary"], 2_000)
+    || !safeSnapshotText(payload["impact"], 2_000)
+    || !safeSnapshotText(payload["requiredCorrection"], 2_000)
+    || !safeSnapshotText(payload["reverification"], 2_000)
+  ) return false;
+  const criterionId = payload["criterion"]["id"] as string;
+  return payload["packetId"] === reviewJobCorrectionPacketId({
+    jobId: payload["jobId"] as string,
+    criterionId,
+    headSha: payload["headSha"] as string,
+    recordId: payload["recordId"] as string,
+    acceptanceContractId: payload["acceptanceContract"]["id"] as string,
+    acceptanceContractVersion: payload["acceptanceContract"]["version"] as number,
+  });
+}
+
+function correctionPacketIdForSnapshotEvent(
+  event: ChangeRecordEventRow,
+  input: AcceptanceContextPackSnapshotInput,
+  confirmedCriteria: ReadonlyMap<string, string>
+): string | null {
+  const payload = event.payloadRef;
+  if (!validateReviewJobCorrectionPacketPayload(payload)
+    || payload["workspaceId"] !== input.workspaceId
+    || payload["repo"] !== input.repo
+    || payload["prNumber"] !== input.prNumber
+    || payload["headSha"] !== input.expectedHeadSha
+    || payload["recordId"] !== input.recordId
+    || payload["jobId"] !== input.reviewJobId
+    || !isRecord(payload["acceptanceContract"])
+    || payload["acceptanceContract"]["id"] !== input.acceptanceContractId
+    || payload["acceptanceContract"]["version"] !== input.acceptanceContractVersion
+    || !isRecord(payload["criterion"])
+  ) return null;
+  const criterionId = payload["criterion"]["id"] as string;
+  if (confirmedCriteria.get(criterionId) !== payload["criterion"]["snapshot"]) return null;
+  const packetId = payload["packetId"] as string;
+  const eventKey = `review:correction:${input.reviewJobId}:${criterionId}`;
+  return event.eventKey === eventKey && event.stage === "review" && event.actor === "reviewer-of-record"
+    ? packetId
+    : null;
+}
+
+/** Closed, metadata-only identity for one exact review-job/head Context Pack snapshot. */
+export function validateAcceptanceContextPackSnapshotInput(
+  value: unknown
+): value is AcceptanceContextPackSnapshotInput {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "workspaceId", "recordId", "reviewJobId", "acceptanceContractId", "acceptanceContractVersion",
+    "repo", "prNumber", "expectedHeadSha", "baseSha", "mergeBaseSha", "headTreeSha", "packetIds", "packetSetSha256",
+    "compilerVersion", "baseIndex", "overlay", "provenance", "status", "reason",
+  ])) return false;
+  if (!isUuid(value["workspaceId"]) || !isUuid(value["recordId"]) || !isUuid(value["reviewJobId"])
+    || !isUuid(value["acceptanceContractId"]) || !Number.isInteger(value["acceptanceContractVersion"])
+    || (value["acceptanceContractVersion"] as number) <= 0 || typeof value["repo"] !== "string"
+    || !safeRepo(value["repo"]) || !Number.isInteger(value["prNumber"]) || (value["prNumber"] as number) <= 0
+    || typeof value["expectedHeadSha"] !== "string" || !EXACT_SHA1.test(value["expectedHeadSha"])
+    || !uniqueStrings(value["packetIds"], (packet) => typeof packet === "string" && CORRECTION_PACKET_ID.test(packet), 100)
+    || !(value["packetIds"] as string[]).every((packet, index, packets) => index === 0 || packets[index - 1]! < packet)
+    || typeof value["packetSetSha256"] !== "string" || !EXACT_SHA256.test(value["packetSetSha256"])
+    || value["packetSetSha256"] !== acceptanceContextPacketSetSha256({ packetIds: value["packetIds"] as string[] })
+    || !safeSnapshotText(value["compilerVersion"], 128)
+    || (value["baseIndex"] !== null && !isBaseIndexIdentity(value["baseIndex"]))
+    || (value["overlay"] !== null && !isOverlayIdentity(value["overlay"]))
+    || !isProvenance(value["provenance"])
+    || (value["status"] !== "admitted" && value["status"] !== "not_proven")
+    || (value["reason"] !== null && !safeSnapshotText(value["reason"], 2_000))
+  ) return false;
+  const sourceResolved = typeof value["baseSha"] === "string" && EXACT_SHA1.test(value["baseSha"])
+    && typeof value["mergeBaseSha"] === "string" && EXACT_SHA1.test(value["mergeBaseSha"])
+    && typeof value["headTreeSha"] === "string" && EXACT_SHA1.test(value["headTreeSha"])
+    && value["baseIndex"] !== null && value["overlay"] !== null
+    && value["overlay"].baseSha === value["baseSha"]
+    && value["overlay"].mergeBaseSha === value["mergeBaseSha"]
+    && value["overlay"].headSha === value["expectedHeadSha"]
+    && hasCompleteAdmittedSourceProvenance({
+      baseIndex: value["baseIndex"],
+      overlay: value["overlay"],
+      provenance: value["provenance"],
+    })
+    && value["reason"] === null;
+  return value["status"] === "admitted"
+    ? sourceResolved
+    : value["baseSha"] === null && value["mergeBaseSha"] === null && value["headTreeSha"] === null
+      && value["baseIndex"] === null && value["overlay"] === null && value["reason"] !== null
+      && hasFailClosedUnavailableProvenance(value["provenance"], value["reason"]);
+}
+
+export function parseAcceptanceContextPackSnapshotInput(
+  value: unknown
+): AcceptanceContextPackSnapshotInput | null {
+  return validateAcceptanceContextPackSnapshotInput(value) ? value : null;
+}
+
+export function acceptanceContextPackSnapshotId(input: {
+  reviewJobId: string;
+  compilerVersion: string;
+  packetSetSha256: string;
+}): string {
+  return uuid5Url(
+    `acceptance-context-pack-snapshot:${input.reviewJobId}:${input.compilerVersion}:${input.packetSetSha256}`
+  );
+}
+
+function snapshotComparable(snapshot: AcceptanceContextPackSnapshotRow | AcceptanceContextPackSnapshotInput) {
+  return {
+    workspaceId: snapshot.workspaceId,
+    recordId: snapshot.recordId,
+    reviewJobId: snapshot.reviewJobId,
+    acceptanceContractId: snapshot.acceptanceContractId,
+    acceptanceContractVersion: snapshot.acceptanceContractVersion,
+    repo: snapshot.repo,
+    prNumber: snapshot.prNumber,
+    expectedHeadSha: snapshot.expectedHeadSha,
+    baseSha: snapshot.baseSha,
+    mergeBaseSha: snapshot.mergeBaseSha,
+    headTreeSha: snapshot.headTreeSha,
+    packetIds: snapshot.packetIds,
+    packetSetSha256: snapshot.packetSetSha256,
+    compilerVersion: snapshot.compilerVersion,
+    baseIndex: snapshot.baseIndex,
+    overlay: snapshot.overlay,
+    provenance: snapshot.provenance,
+    status: snapshot.status,
+    reason: snapshot.reason,
+  };
+}
+
+/**
+ * Records one immutable exact-head Context Pack source snapshot. This is an
+ * admission boundary only: it neither compiles source nor exposes a Pack.
+ * Replays are accepted only when every durable field is identical.
+ */
+export async function recordAcceptanceContextPackSnapshot(
+  input: AcceptanceContextPackSnapshotInput
+): Promise<{ snapshot: AcceptanceContextPackSnapshotRow; inserted: boolean }> {
+  if (!validateAcceptanceContextPackSnapshotInput(input)) {
+    throw new Error("Invalid exact-head Context Pack snapshot");
+  }
+  if (input.packetIds.some((id, index) => index > 0 && input.packetIds[index - 1]! >= id)) {
+    throw new Error("Context Pack snapshot packetIds must be sorted and unique");
+  }
+  const id = acceptanceContextPackSnapshotId(input);
+  const lockKey = `acceptance-context-pack-snapshot:${input.reviewJobId}:${input.compilerVersion}:${input.packetSetSha256}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const records = await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.repo, input.repo),
+      eq(changeRecords.prNumber, input.prNumber),
+    )).limit(1);
+    const record = records[0];
+    if (!record || !record.headShas.includes(input.expectedHeadSha)) {
+      throw new Error("Context Pack snapshot Record is not anchored to the exact head");
+    }
+    const jobs = await tx.select().from(reviewJobs).where(and(
+      eq(reviewJobs.id, input.reviewJobId),
+      eq(reviewJobs.workspaceId, input.workspaceId),
+      eq(reviewJobs.repo, input.repo),
+      eq(reviewJobs.prNumber, input.prNumber),
+      eq(reviewJobs.headSha, input.expectedHeadSha),
+    )).limit(1);
+    if (jobs.length !== 1) {
+      throw new Error("Context Pack snapshot review job is not anchored to the exact Record head");
+    }
+    const confirmed = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, input.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    if (confirmed.length !== 1
+      || confirmed[0]!.id !== input.acceptanceContractId
+      || confirmed[0]!.version !== input.acceptanceContractVersion
+    ) {
+      throw new Error("Context Pack snapshot requires the Record's exact confirmed Contract");
+    }
+    const rawCriteria = confirmed[0]!.contract["acceptanceCriteria"];
+    if (!Array.isArray(rawCriteria)) {
+      throw new Error("Context Pack snapshot requires the confirmed Contract's exact criteria");
+    }
+    const confirmedCriteria = new Map<string, string>();
+    for (const criterion of rawCriteria) {
+      if (!isRecord(criterion) || !safeSnapshotText(criterion["id"], 512)
+        || !safeSnapshotText(criterion["text"], 2_000) || confirmedCriteria.has(criterion["id"])) {
+        throw new Error("Context Pack snapshot requires the confirmed Contract's exact criteria");
+      }
+      confirmedCriteria.set(criterion["id"], criterion["text"]);
+    }
+    const correctionPrefix = `review:correction:${input.reviewJobId}:%`;
+    const correctionEvents = await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      sql`${changeRecordEvents.eventKey} LIKE ${correctionPrefix}`,
+    )).orderBy(asc(changeRecordEvents.eventKey));
+    const persistedPacketIds = correctionEvents
+      .map((event) => correctionPacketIdForSnapshotEvent(event, input, confirmedCriteria))
+      .sort((left, right) => String(left).localeCompare(String(right)));
+    if (persistedPacketIds.some((packetId) => packetId === null)
+      || !isDeepStrictEqual(persistedPacketIds, input.packetIds)
+    ) {
+      throw new Error("Context Pack snapshot packet IDs are not the complete exact R8.1 packet set");
+    }
+    const existing = await tx.select().from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.reviewJobId, input.reviewJobId),
+      eq(acceptanceContextPackSnapshots.compilerVersion, input.compilerVersion),
+      eq(acceptanceContextPackSnapshots.packetSetSha256, input.packetSetSha256),
+    )).limit(1);
+    if (existing[0]) {
+      if (!isDeepStrictEqual(snapshotComparable(existing[0]), snapshotComparable(input))) {
+        throw new Error("Context Pack snapshot replay identity is already bound to different provenance");
+      }
+      return { snapshot: existing[0], inserted: false };
+    }
+    const rows = await tx.insert(acceptanceContextPackSnapshots).values({ id, ...input }).returning();
+    return { snapshot: rows[0]!, inserted: true };
+  });
 }
 
 function mapAcceptanceBuilderRouteRow(row: Record<string, unknown>): AcceptanceBuilderRouteRow {

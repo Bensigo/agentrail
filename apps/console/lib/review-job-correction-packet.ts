@@ -1,5 +1,8 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import {
+  reviewJobCorrectionPacketId,
+  validateReviewJobCorrectionPacketPayload,
+} from "@agentrail/db-postgres";
 import {
   resolveReviewJobApiResult,
   type ReviewJobApiExecutionResult,
@@ -128,10 +131,6 @@ function nonBlank(value: unknown, max = MAX_PACKET_TEXT): string | null {
 
 function safeIdentifier(value: unknown): string | null {
   return nonBlank(value, 512);
-}
-
-function sha256(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 export function reviewJobCorrectionPacketEventKey(input: {
@@ -318,11 +317,11 @@ export function buildReviewJobCorrectionPacket(input: {
   const eventKey = reviewJobCorrectionPacketEventKey({ jobId: proof.job.id, criterionId: plan.criterionId });
   if (!packetReproduction || !packetEvidence || !correction || !eventKey) return null;
 
-  const packetId = `correction-${sha256({
+  const packetId = reviewJobCorrectionPacketId({
     jobId: proof.job.id, criterionId: plan.criterionId, headSha: proof.job.headSha,
     recordId: proof.timeline.record.id, acceptanceContractId: proof.contract.id,
     acceptanceContractVersion: proof.contract.version,
-  }).slice(0, 48)}`;
+  });
   const packet: ReviewJobCorrectionPacket = {
     kind: REVIEW_JOB_CORRECTION_PACKET_KIND,
     version: REVIEW_JOB_CORRECTION_PACKET_VERSION,
@@ -354,6 +353,7 @@ export function buildReviewJobCorrectionPacket(input: {
     reverification: `Rerun the persisted ${plan.modality} plan for criterion ${plan.criterionId} against the next exact head and attach its custodied receipt before review.`,
   };
   return JSON.stringify(packet).length <= MAX_PACKET_JSON && scanForSecrets(JSON.stringify(packet)).clean
+    && validateReviewJobCorrectionPacketPayload(packet)
     ? packet
     : null;
 }

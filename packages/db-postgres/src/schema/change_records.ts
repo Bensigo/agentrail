@@ -11,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
+import { reviewJobs } from "./review_jobs.js";
 
 /**
  * Arc D Change Record storage (spec:
@@ -169,6 +170,121 @@ export const acceptanceBuilderRoutes = pgTable(
 );
 
 /**
+ * Immutable, metadata-only source identity admitted for one exact review head.
+ * It is not a compiled or delivered Context Pack. Later compiler/resolver
+ * slices may only consume a row whose exact source identity is already bound.
+ */
+export const acceptanceContextPackSnapshots = pgTable(
+  "acceptance_context_pack_snapshots",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id")
+      .notNull()
+      .references(() => changeRecords.id, { onDelete: "cascade" }),
+    reviewJobId: uuid("review_job_id")
+      .notNull()
+      .references(() => reviewJobs.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id")
+      .notNull()
+      .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    expectedHeadSha: text("expected_head_sha").notNull(),
+    baseSha: text("base_sha"),
+    mergeBaseSha: text("merge_base_sha"),
+    headTreeSha: text("head_tree_sha"),
+    packetIds: jsonb("packet_ids").$type<string[]>().notNull(),
+    packetSetSha256: text("packet_set_sha256").notNull(),
+    compilerVersion: text("compiler_version").notNull(),
+    baseIndex: jsonb("base_index").$type<Record<string, unknown>>(),
+    overlay: jsonb("overlay").$type<Record<string, unknown>>(),
+    provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull(),
+    status: text("status").notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    replay: uniqueIndex("acceptance_context_pack_snapshots_replay_key").on(
+      t.reviewJobId,
+      t.compilerVersion,
+      t.packetSetSha256
+    ),
+    reviewJob: index("acceptance_context_pack_snapshots_review_job_idx").on(t.reviewJobId),
+    record: index("acceptance_context_pack_snapshots_record_idx").on(t.recordId, t.createdAt),
+    statusCheck: check(
+      "acceptance_context_pack_snapshots_status_check",
+      sql`${t.status} IN ('admitted', 'not_proven')`
+    ),
+    repoCheck: check(
+      "acceptance_context_pack_snapshots_repo_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')`
+    ),
+    exactHeadCheck: check(
+      "acceptance_context_pack_snapshots_expected_head_sha_check",
+      sql`${t.expectedHeadSha} ~ '^[A-Fa-f0-9]{40}$'`
+    ),
+    prNumberCheck: check(
+      "acceptance_context_pack_snapshots_pr_number_check",
+      sql`${t.prNumber} > 0`
+    ),
+    packetSetCheck: check(
+      "acceptance_context_pack_snapshots_packet_set_sha256_check",
+      sql`${t.packetSetSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    compilerVersionCheck: check(
+      "acceptance_context_pack_snapshots_compiler_version_check",
+      sql`char_length(${t.compilerVersion}) BETWEEN 1 AND 128
+        AND btrim(${t.compilerVersion}) = ${t.compilerVersion}
+        AND ${t.compilerVersion} !~ '[[:cntrl:]]'`
+    ),
+    identityJsonCheck: check(
+      "acceptance_context_pack_snapshots_identity_json_check",
+      sql`jsonb_typeof(${t.packetIds}) = 'array'
+        AND (${t.baseIndex} IS NULL OR jsonb_typeof(${t.baseIndex}) = 'object')
+        AND (${t.overlay} IS NULL OR jsonb_typeof(${t.overlay}) = 'object')
+        AND jsonb_typeof(${t.provenance}) = 'object'`
+    ),
+    reasonCheck: check(
+      "acceptance_context_pack_snapshots_reason_check",
+      sql`${t.reason} IS NULL OR (
+        char_length(${t.reason}) BETWEEN 1 AND 2000
+        AND btrim(${t.reason}) = ${t.reason}
+        AND ${t.reason} !~ '[[:cntrl:]]'
+      )`
+    ),
+    sourceStateCheck: check(
+      "acceptance_context_pack_snapshots_source_state_check",
+      sql`(
+        ${t.status} = 'admitted'
+        AND ${t.baseSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.mergeBaseSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.headTreeSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.baseIndex} IS NOT NULL
+        AND ${t.overlay} IS NOT NULL
+        AND ${t.reason} IS NULL
+      ) OR (
+        ${t.status} = 'not_proven'
+        AND ${t.baseSha} IS NULL
+        AND ${t.mergeBaseSha} IS NULL
+        AND ${t.headTreeSha} IS NULL
+        AND ${t.baseIndex} IS NULL
+        AND ${t.overlay} IS NULL
+        AND ${t.reason} IS NOT NULL
+      )`
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -271,5 +387,6 @@ export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
+export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

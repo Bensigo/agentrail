@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceBuilderRoutes,
+  acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
   changeRecords,
@@ -214,5 +215,37 @@ describe("0084_acceptance_builder_routes migration", () => {
     expect(journal.entries.find(
       (entry: { tag: string }) => entry.tag === "0084_acceptance_builder_routes"
     )).toMatchObject({ idx: 89, version: "7", breakpoints: true });
+  });
+});
+
+describe("0085_acceptance_context_pack_snapshots migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0085_acceptance_context_pack_snapshots.sql"
+  );
+
+  it("declares immutable exact-head snapshot anchors and metadata-only provenance", () => {
+    expect(acceptanceContextPackSnapshots.workspaceId.notNull).toBe(true);
+    expect(acceptanceContextPackSnapshots.recordId.notNull).toBe(true);
+    expect(acceptanceContextPackSnapshots.reviewJobId.notNull).toBe(true);
+    expect(acceptanceContextPackSnapshots.acceptanceContractId.notNull).toBe(true);
+    expect(acceptanceContextPackSnapshots.baseSha.notNull).toBe(false);
+    expect(acceptanceContextPackSnapshots.mergeBaseSha.notNull).toBe(false);
+    expect(acceptanceContextPackSnapshots.headTreeSha.notNull).toBe(false);
+    expect(acceptanceContextPackSnapshots.baseIndex.notNull).toBe(false);
+    expect(acceptanceContextPackSnapshots.overlay.notNull).toBe(false);
+    expect(acceptanceContextPackSnapshots.baseIndex.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPackSnapshots.overlay.getSQLType()).toBe("jsonb");
+    expect(acceptanceContextPackSnapshots.provenance.getSQLType()).toBe("jsonb");
+  });
+
+  it("makes replay identity unique and limits status to snapshot custody states", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_context_pack_snapshots"');
+    expect(sqlText).toContain('"status" IN (\'admitted\', \'not_proven\')');
+    expect(sqlText).toContain("acceptance_context_pack_snapshots_reason_check");
+    expect(sqlText).toContain("acceptance_context_pack_snapshots_identity_json_check");
+    expect(sqlText).toContain('"acceptance_context_pack_snapshots_replay_key"');
+    expect(sqlText).toContain('"acceptance_context_pack_snapshots_review_job_idx"');
   });
 });

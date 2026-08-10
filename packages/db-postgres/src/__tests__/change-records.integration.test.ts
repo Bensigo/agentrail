@@ -7,6 +7,7 @@ import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
   acceptanceBuilderRoutes,
+  acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
 } from "../schema/change_records.js";
@@ -14,6 +15,10 @@ import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
   appendChangeRecordEventsAtomically,
+  acceptanceContextBaseIndexRevisionSha256,
+  acceptanceContextOverlayManifestSha256,
+  acceptanceContextPacketSetSha256,
+  reviewJobCorrectionPacketId,
   attachConfirmedAcceptanceRecordToExternalPullRequest,
   changeRecordId,
   createDraftAcceptanceContract,
@@ -22,12 +27,14 @@ import {
   findOrCreateChangeRecord,
   recordAcceptancePostMergeOutcome,
   recordAcceptanceBuilderRouteSelection,
+  recordAcceptanceContextPackSnapshot,
   registerAcceptanceBuilderRoute,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
+import { enqueueReviewJob } from "../queries/review_jobs.js";
 import {
   recordApprovalRequest,
   resolveAcceptanceContractApproval,
@@ -41,6 +48,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.change_record_events') AS change_record_events,
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
+               to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
@@ -49,6 +57,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       change_record_events: string | null;
       acceptance_contracts: string | null;
       acceptance_builder_routes: string | null;
+      acceptance_context_pack_snapshots: string | null;
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
     }>;
@@ -57,6 +66,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.change_record_events === "change_record_events" &&
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
+      rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
@@ -239,6 +249,107 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(readAcceptanceBuilderRouteSelection({
         workspaceId: wsId, recordId: draft.record.id,
       })).resolves.toBeNull();
+    });
+
+    it("records an immutable exact-head Context Pack source snapshot and rejects conflicting replay", async () => {
+      const headSha = "a".repeat(40);
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "exact-head-snapshot",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      await attachConfirmedAcceptanceRecordToExternalPullRequest({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 42,
+        headSha, source: "github_webhook",
+      });
+      const job = await enqueueReviewJob({
+        workspaceId: wsId, repo: "acme/widgets", prNumber: 42, headSha, event: "synchronize",
+      });
+      const packetId = reviewJobCorrectionPacketId({
+        jobId: job.id, criterionId: "AC-1", headSha, recordId: draft.record.id,
+        acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+      });
+      const packetIds = [packetId];
+      await appendChangeRecordEvent({
+        recordId: draft.record.id, eventKey: `review:correction:${job.id}:AC-1`, stage: "review",
+        actor: "reviewer-of-record", payloadRef: {
+          kind: "review_job_correction_packet", version: 1, packetId, workspaceId: wsId,
+          repo: "acme/widgets", prNumber: 42, headSha, recordId: draft.record.id, jobId: job.id,
+          acceptanceContract: { id: draft.contract.id, version: 1 },
+          criterion: { id: "AC-1", snapshot: "A user can save a filter" },
+          basis: "acceptance_contract", state: "failed",
+          expected: "A user can save a filter", observed: "The saved filter was not retained.",
+          affectedContext: {
+            modality: "ui", environmentKind: "isolated_preview", flow: "Save a filter, reload, and inspect it.",
+            reproduction: { modality: "ui", steps: [
+              { action: "open", path: "/filters" },
+              { action: "expect_text", text: "Saved filters" },
+              { action: "screenshot", label: "saved-filter" },
+            ] },
+          },
+          evidence: {
+            evidenceRef: "ui-execution:execution-1", artifactKey: "review/ui/execution-1.png",
+            executionId: "execution-1", previewBootId: "preview-boot-1",
+          },
+          scopeBoundary: `Only AC-1 for acme/widgets#42 at ${headSha}.`,
+          impact: "The server-attested UI receipt shows this confirmed criterion failed on the exact head.",
+          requiredCorrection: "Make the persisted UI flow retain the saved filter.",
+          reverification: "Rerun the persisted UI plan against the next exact head.",
+        },
+      });
+      const baseIndexCore = {
+        schemaVersion: 1 as const, backgroundOnly: true as const,
+        pages: [{ id: "00000000-0000-4000-8000-000000000001", slug: "wiki/overview", commitSha: "1".repeat(40), inputsHashSha256: "2".repeat(64), stale: false }], gaps: [],
+      };
+      const overlayCore = {
+        schemaVersion: 1 as const, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha,
+        files: [{ path: "apps/console/page.tsx", status: "modified" as const, blobSha: "3".repeat(40), previousPath: null }],
+      };
+      const input = {
+        workspaceId: wsId, recordId: draft.record.id, reviewJobId: job.id,
+        acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+        repo: "acme/widgets", prNumber: 42, expectedHeadSha: headSha,
+        baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headTreeSha: "c".repeat(40),
+        packetIds, packetSetSha256: acceptanceContextPacketSetSha256({ packetIds }),
+        compilerVersion: "exact-head-overlay-v1",
+        baseIndex: { ...baseIndexCore, revisionSha256: acceptanceContextBaseIndexRevisionSha256(baseIndexCore) },
+        overlay: { ...overlayCore, manifestSha256: acceptanceContextOverlayManifestSha256(overlayCore) },
+        provenance: { schemaVersion: 1 as const, included: [
+          { path: "wiki/overview", source: "base_index" as const, reason: "Background Wiki page" },
+          { path: "apps/console/page.tsx", source: "overlay" as const, reason: "PR changed file" },
+        ], excluded: [] },
+        status: "admitted" as const, reason: null,
+      };
+      const first = await recordAcceptanceContextPackSnapshot(input);
+      const replay = await recordAcceptanceContextPackSnapshot(input);
+      expect(first).toMatchObject({ inserted: true, snapshot: { expectedHeadSha: headSha, status: "admitted" } });
+      expect(replay).toMatchObject({ inserted: false, snapshot: { id: first.snapshot.id } });
+      await expect(recordAcceptanceContextPackSnapshot({ ...input, baseSha: "9".repeat(40) }))
+        .rejects.toThrow("Invalid exact-head Context Pack snapshot");
+      await expect(recordAcceptanceContextPackSnapshot({
+        ...input, packetIds: ["correction-" + "e".repeat(48)],
+        packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: ["correction-" + "e".repeat(48)] }),
+      })).rejects.toThrow("not the complete exact R8.1 packet set");
+      await appendChangeRecordEvent({
+        recordId: draft.record.id,
+        eventKey: `review:correction:${job.id}:AC-FORGED`,
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: {
+          kind: "review_job_correction_packet",
+          version: 1,
+          packetId: "correction-" + "f".repeat(48),
+          workspaceId: wsId,
+          repo: "acme/widgets",
+        },
+      });
+      await expect(recordAcceptanceContextPackSnapshot(input))
+        .rejects.toThrow("not the complete exact R8.1 packet set");
+      const rows = await db.select().from(acceptanceContextPackSnapshots)
+        .where(eq(acceptanceContextPackSnapshots.id, first.snapshot.id));
+      expect(rows).toHaveLength(1);
     });
 
     it("rejects unknown, disabled, cross-workspace, cross-repository, and unsupported Builder routes", async () => {

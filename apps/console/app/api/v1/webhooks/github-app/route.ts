@@ -128,7 +128,7 @@ function ignored(reason?: string): NextResponse {
   );
 }
 
-export function acceptanceRecordMarker(body: unknown):
+function acceptanceRecordMarker(body: unknown):
   | { kind: "record"; recordId: string }
   | { kind: "missing" | "invalid" | "ambiguous" } {
   if (typeof body !== "string") return { kind: "missing" };

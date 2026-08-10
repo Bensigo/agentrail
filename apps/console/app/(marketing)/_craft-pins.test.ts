@@ -176,6 +176,15 @@ describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () =>
   });
 });
 
+describe("(marketing) nav layout", () => {
+  it("keeps the condensed CTA on one line and out of the hero", () => {
+    const source = readSibling("_nav.tsx");
+    expect(source).toMatch(/shrink-0[\s\S]*whitespace-nowrap/);
+    expect(source).toContain('getElementById("landing-hero")');
+    expect(source).toContain("max-w-[440px]");
+  });
+});
+
 describe("(marketing) craft pins — mono on data moments", () => {
   // Windowed proximity check rather than an exact-line-count regex: JSX
   // formatting (an extra `>` on its own line, etc.) shouldn't make this

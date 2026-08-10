@@ -1,17 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
-  appendChangeRecordEventsAtomically: vi.fn(),
-  getInstallationToken: vi.fn(),
-  getJaceSessionByEveSessionId: vi.fn(),
-  getPreviewBoot: vi.fn(),
-  getRepositoryByName: vi.fn(),
-  getReviewJobById: vi.fn(),
-  readAcceptanceContracts: vi.fn(),
-  readChangeRecordTimelineByPr: vi.fn(),
-}));
+vi.mock("@agentrail/db-postgres", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@agentrail/db-postgres")>();
+  return {
+    appendChangeRecordEvent: vi.fn(),
+    appendChangeRecordEventsAtomically: vi.fn(),
+    getInstallationToken: vi.fn(),
+    getJaceSessionByEveSessionId: vi.fn(),
+    getPreviewBoot: vi.fn(),
+    getRepositoryByName: vi.fn(),
+    getReviewJobById: vi.fn(),
+    readAcceptanceContracts: vi.fn(),
+    readChangeRecordTimelineByPr: vi.fn(),
+    reviewJobCorrectionPacketId: actual.reviewJobCorrectionPacketId,
+    validateReviewJobCorrectionPacketPayload: actual.validateReviewJobCorrectionPacketPayload,
+  };
+});
 vi.mock("../../../../../../../lib/github-advisory-review", () => ({
   postGithubAdvisoryReview: vi.fn(),
 }));
@@ -78,7 +83,7 @@ const secret = "test-secret";
 const jobId = "job-1";
 const workspaceId = "00000000-0000-0000-0000-000000000001";
 const recordId = "00000000-0000-0000-0000-000000000002";
-const headSha = "abcdef1234567890";
+const headSha = "a".repeat(40);
 const bootLogKey = "review-evidence/ws-1/ada__widgets/98/abcdef/boot.log";
 const screenshotKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/exact.png";

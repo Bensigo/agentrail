@@ -1,16 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
-  appendChangeRecordEventsAtomically: vi.fn(),
-  completeReviewJob: vi.fn(),
-  findOrCreateChangeRecord: vi.fn(),
-  getPreviewBoot: vi.fn(),
-  getReviewJobById: vi.fn(),
-  readAcceptanceContracts: vi.fn(),
-  readChangeRecordTimelineByPr: vi.fn(),
-}));
+vi.mock("@agentrail/db-postgres", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@agentrail/db-postgres")>();
+  return {
+    appendChangeRecordEvent: vi.fn(),
+    appendChangeRecordEventsAtomically: vi.fn(),
+    completeReviewJob: vi.fn(),
+    findOrCreateChangeRecord: vi.fn(),
+    getPreviewBoot: vi.fn(),
+    getReviewJobById: vi.fn(),
+    readAcceptanceContracts: vi.fn(),
+    readChangeRecordTimelineByPr: vi.fn(),
+    reviewJobCorrectionPacketId: actual.reviewJobCorrectionPacketId,
+    validateReviewJobCorrectionPacketPayload: actual.validateReviewJobCorrectionPacketPayload,
+  };
+});
 // The notify module is mocked wholesale, same convention as
 // runner/result/route.test.ts's `vi.mock("./notify", ...)` — this route's
 // own tests only need to prove IT calls the existing notify machinery

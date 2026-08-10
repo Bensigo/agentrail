@@ -13,6 +13,13 @@ export type UiVerificationStep =
   | { action: "expect_text"; text: string }
   | { action: "screenshot"; label: string };
 
+/** A bounded, same-preview status-only API assertion. */
+export interface ApiVerificationRequest {
+  method: "GET";
+  path: string;
+  expectedStatus: number;
+}
+
 export interface ConfirmedVerificationCriterion {
   id: string;
   text: string;
@@ -40,6 +47,7 @@ export interface StoredCriterionVerificationPlan {
   environmentKind: "isolated_preview" | null;
   flow: string | null;
   uiSteps: UiVerificationStep[] | null;
+  apiRequest: ApiVerificationRequest | null;
   status: VerificationPlanStatus;
   notTestableReason: string | null;
 }
@@ -170,6 +178,53 @@ export function parseUiVerificationSteps(value: unknown): UiVerificationStep[] |
   return steps;
 }
 
+/**
+ * Parse the one deliberately small status-only API request. The path is
+ * carried separately from a preview origin, so it can never select a different
+ * host or smuggle query/fragment routing into the immutable plan. Requests
+ * needing headers, auth, a body, or mutation remain `not_testable`.
+ */
+export function parseApiVerificationRequest(value: unknown): ApiVerificationRequest | null {
+  if (!object(value) || !exactKeys(value, ["method", "path", "expectedStatus"])) return null;
+  if (value.method !== "GET" || typeof value.path !== "string") return null;
+  const path = boundedUiText(value.path);
+  if (
+    !path ||
+    path !== value.path ||
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.includes("\\") ||
+    path.includes("%") ||
+    path.includes("?") ||
+    path.includes("#") ||
+    typeof value.expectedStatus !== "number" ||
+    !Number.isInteger(value.expectedStatus) ||
+    value.expectedStatus < 100 ||
+    value.expectedStatus > 599
+  ) {
+    return null;
+  }
+
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(path);
+  } catch {
+    return null;
+  }
+  if (
+    /[\x00-\x1f\x7f]/.test(decodedPath) ||
+    decodedPath.startsWith("//") ||
+    decodedPath.includes("\\") ||
+    decodedPath.includes("?") ||
+    decodedPath.includes("#") ||
+    decodedPath.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+
+  return { method: "GET", path, expectedStatus: value.expectedStatus };
+}
+
 /** Exactly one confirmed Contract is authoritative for a review job. */
 export function confirmedVerificationContract(
   contracts: unknown
@@ -219,8 +274,8 @@ export function reviewJobVerificationPlanEventKey(jobId: string): string {
 
 /**
  * Normalize model-supplied planning choices into a server-owned exact-job
- * snapshot. This UI-only R7.2 slice can execute UI criteria; API/job/data
- * remain explicit `not_testable` until their bounded executors land.
+ * snapshot. UI and API criteria have separately bounded descriptors; job/data
+ * remain explicit `not_testable` until their executors land.
  */
 export function buildReviewJobVerificationPlan(input: {
   job: ReviewJobVerificationIdentity;
@@ -260,30 +315,52 @@ export function buildReviewJobVerificationPlan(input: {
     }
 
     if (status === "planned") {
-      if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"])) {
+      if (modality === "ui" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"])) {
+        return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
+      }
+      if (modality === "api" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "apiRequest"])) {
         return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
       }
       const flow = boundedPlanText(raw.flow);
       if (!flow) return { ok: false, error: `planned criterion ${criterion.id} needs a bounded flow` };
-      if (modality !== "ui") {
+      if (modality === "ui") {
+        const uiSteps = parseUiVerificationSteps(raw.uiSteps);
+        if (!uiSteps) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded UI flow` };
+        plans.push({
+          criterionId: criterion.id,
+          criterionTextSnapshot: criterion.text,
+          modality: "ui",
+          environmentKind: "isolated_preview",
+          flow,
+          uiSteps,
+          apiRequest: null,
+          status: "planned",
+          notTestableReason: null,
+        });
+        continue;
+      }
+      if (modality === "api") {
+        const apiRequest = parseApiVerificationRequest(raw.apiRequest);
+        if (!apiRequest) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded API request` };
+        plans.push({
+          criterionId: criterion.id,
+          criterionTextSnapshot: criterion.text,
+          modality: "api",
+          environmentKind: "isolated_preview",
+          flow,
+          uiSteps: null,
+          apiRequest,
+          status: "planned",
+          notTestableReason: null,
+        });
+        continue;
+      }
+      {
         return {
           ok: false,
-          error: `${modality as string} execution is not available in the UI-only R7.2 slice`,
+          error: `${modality as string} execution is not available in this R7.2 slice`,
         };
       }
-      const uiSteps = parseUiVerificationSteps(raw.uiSteps);
-      if (!uiSteps) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded UI flow` };
-      plans.push({
-        criterionId: criterion.id,
-        criterionTextSnapshot: criterion.text,
-        modality: "ui",
-        environmentKind: "isolated_preview",
-        flow,
-        uiSteps,
-        status: "planned",
-        notTestableReason: null,
-      });
-      continue;
     }
 
     if (status === "not_testable") {
@@ -299,6 +376,7 @@ export function buildReviewJobVerificationPlan(input: {
         environmentKind: null,
         flow: null,
         uiSteps: null,
+        apiRequest: null,
         status: "not_testable",
         notTestableReason: reason,
       });
@@ -377,7 +455,8 @@ export function parseStoredReviewJobVerificationPlan(input: {
       modality === "ui" &&
       raw.environmentKind === "isolated_preview" &&
       boundedPlanText(raw.flow) &&
-      raw.notTestableReason === null
+      raw.notTestableReason === null &&
+      (raw.apiRequest === undefined || raw.apiRequest === null)
     ) {
       // R7.1 stored flows had no executable steps. They remain readable for
       // audit continuity but are intentionally not executable by later work.
@@ -390,6 +469,33 @@ export function parseStoredReviewJobVerificationPlan(input: {
         environmentKind: "isolated_preview",
         flow: boundedPlanText(raw.flow),
         uiSteps,
+        apiRequest: null,
+        status: "planned",
+        notTestableReason: null,
+      });
+      continue;
+    }
+
+    if (
+      status === "planned" &&
+      modality === "api" &&
+      raw.environmentKind === "isolated_preview" &&
+      boundedPlanText(raw.flow) &&
+      raw.uiSteps === null &&
+      raw.notTestableReason === null
+    ) {
+      // Plans from before the API descriptor are readable for audit continuity,
+      // but `apiRequest: null` keeps them non-executable by later workers.
+      const apiRequest = raw.apiRequest === undefined ? null : parseApiVerificationRequest(raw.apiRequest);
+      if (raw.apiRequest !== undefined && !apiRequest) return null;
+      byId.set(criterionId, {
+        criterionId,
+        criterionTextSnapshot,
+        modality: "api",
+        environmentKind: "isolated_preview",
+        flow: boundedPlanText(raw.flow),
+        uiSteps: null,
+        apiRequest,
         status: "planned",
         notTestableReason: null,
       });
@@ -401,6 +507,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
       raw.environmentKind === null &&
       raw.flow === null &&
       (raw.uiSteps === undefined || raw.uiSteps === null) &&
+      (raw.apiRequest === undefined || raw.apiRequest === null) &&
       boundedPlanText(raw.notTestableReason)
     ) {
       byId.set(criterionId, {
@@ -410,6 +517,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
         environmentKind: null,
         flow: null,
         uiSteps: null,
+        apiRequest: null,
         status: "not_testable",
         notTestableReason: boundedPlanText(raw.notTestableReason),
       });

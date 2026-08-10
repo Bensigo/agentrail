@@ -119,6 +119,23 @@ export function normalizeUiSteps(value) {
   return steps;
 }
 
+/** Project the only API operation this R7.2 executor can perform. */
+export function normalizeApiRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value, ["method", "path", "expectedStatus"])) return null;
+  const path = uiText(value.path);
+  if (
+    value.method !== "GET" ||
+    !path || path !== value.path || !path.startsWith("/") || path.startsWith("//") || path.includes("\\") || path.includes("%") || /[?#]/.test(path) ||
+    !Number.isInteger(value.expectedStatus) || value.expectedStatus < 100 || value.expectedStatus > 599
+  ) return null;
+  for (const segment of path.split("/")) {
+    let decoded;
+    try { decoded = decodeURIComponent(segment); } catch { return null; }
+    if (decoded === "." || decoded === ".." || /[\u0000-\u001f\u007f?#\\/]/u.test(decoded)) return null;
+  }
+  return { method: "GET", path, expectedStatus: value.expectedStatus };
+}
+
 /**
  * Validate and project the complete plan set. Projection means model-supplied
  * extras can never ride to the console as an undeclared second write shape.
@@ -137,15 +154,18 @@ export function normalizePlans(value) {
     if (!criterionId || ids.has(criterionId) || !["ui", "api", "job", "data"].includes(modality)) return null;
     ids.add(criterionId);
     if (status === "planned") {
-      if (
-        !exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"]) ||
-        !flow ||
-        notTestableReason ||
-        modality !== "ui"
-      ) return null;
-      const uiSteps = normalizeUiSteps(raw.uiSteps);
-      if (!uiSteps) return null;
-      plans.push({ criterionId, modality, status, flow, uiSteps });
+      if (!flow || notTestableReason) return null;
+      if (modality === "ui") {
+        if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"])) return null;
+        const uiSteps = normalizeUiSteps(raw.uiSteps);
+        if (!uiSteps) return null;
+        plans.push({ criterionId, modality, status, flow, uiSteps });
+      } else if (modality === "api") {
+        if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "apiRequest"])) return null;
+        const apiRequest = normalizeApiRequest(raw.apiRequest);
+        if (!apiRequest) return null;
+        plans.push({ criterionId, modality, status, flow, apiRequest });
+      } else return null;
     } else if (status === "not_testable") {
       if (
         !exactKeys(raw, ["criterionId", "modality", "status", "notTestableReason"]) ||

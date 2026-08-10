@@ -14,6 +14,9 @@ import {
 import {
   resolveReviewJobUiResult,
 } from "./review-job-ui-execution";
+import {
+  resolveReviewJobApiResult,
+} from "./review-job-api-execution";
 
 export type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
 
@@ -185,9 +188,9 @@ function boundedCustodiedReason(value: unknown): string | null {
 }
 
 /**
- * Attest each criterion from either R7.2's exact planned-UI receipt or
- * R7.1's fail-closed exact-preview fallback. A model-authored result alone
- * can never become `proven` or `failed`.
+ * Attest each criterion from an exact R7.2 execution receipt or R7.1's
+ * fail-closed exact-preview fallback. A model-authored result alone can never
+ * become `proven` or `failed`.
  */
 async function exactCriterionEvidence(
   proof: ExactReviewJobProof,
@@ -215,25 +218,29 @@ async function exactCriterionEvidence(
       continue;
     }
 
-    const uiResolution = resolveReviewJobUiResult({ proof, plan });
-    if (uiResolution.status === "invalid") return false;
-    const uiReceipt = uiResolution.result;
-    if (uiReceipt) {
+    const receiptResolution = plan.modality === "ui"
+      ? resolveReviewJobUiResult({ proof, plan })
+      : plan.modality === "api"
+        ? resolveReviewJobApiResult({ proof, plan })
+        : null;
+    if (!receiptResolution || receiptResolution.status === "invalid") return false;
+    const receipt = receiptResolution.result;
+    if (receipt) {
       if (
-        result.state !== uiReceipt.state ||
-        result.expected !== uiReceipt.expected ||
-        result.observed !== uiReceipt.observed ||
+        result.state !== receipt.state ||
+        result.expected !== receipt.expected ||
+        result.observed !== receipt.observed ||
         result.evidenceRefs.length !== 1 ||
-        result.evidenceRefs[0] !== uiReceipt.evidenceRef
+        result.evidenceRefs[0] !== receipt.evidenceRef
       ) {
         return false;
       }
-      let boot = boots.get(uiReceipt.previewBootId);
+      let boot = boots.get(receipt.previewBootId);
       if (!boot) {
-        const resolved = await getPreviewBoot(uiReceipt.previewBootId);
+        const resolved = await getPreviewBoot(receipt.previewBootId);
         if (!resolved) return false;
         boot = resolved;
-        boots.set(uiReceipt.previewBootId, boot);
+        boots.set(receipt.previewBootId, boot);
       }
       let exactPreviewUrl: string | null = null;
       try {
@@ -248,12 +255,12 @@ async function exactCriterionEvidence(
         boot.repo !== job.repo ||
         boot.prNumber !== job.prNumber ||
         boot.headSha !== job.headSha ||
-        exactPreviewUrl !== uiReceipt.previewUrl
+        exactPreviewUrl !== receipt.previewUrl
       ) {
         return false;
       }
-      requiredEvidenceKeys.add(uiReceipt.artifactKey);
-      allowedEvidenceKeys.add(uiReceipt.artifactKey);
+      requiredEvidenceKeys.add(receipt.artifactKey);
+      allowedEvidenceKeys.add(receipt.artifactKey);
       const bootLogKey = nonBlank(boot.bootLogKey);
       if (bootLogKey) allowedEvidenceKeys.add(bootLogKey);
       continue;

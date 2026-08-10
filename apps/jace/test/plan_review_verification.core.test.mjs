@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildVerificationPlanUrl,
+  normalizeApiRequest,
   normalizePlans,
   normalizeUiSteps,
   planReviewVerification,
@@ -18,7 +19,7 @@ const plans = [
       { action: "screenshot", label: "saved-settings" },
     ],
   },
-  { criterionId: "ac-api", modality: "api", status: "not_testable", notTestableReason: "The API executor is not available in the UI-only R7.2 slice." },
+  { criterionId: "ac-api", modality: "api", status: "planned", flow: "Health response status is decisive.", apiRequest: { method: "GET", path: "/health", expectedStatus: 200 } },
 ];
 
 test("buildVerificationPlanUrl encodes the server-bound job id", () => {
@@ -32,11 +33,23 @@ test("normalizePlans requires unique criteria and exact planned/not_testable alt
   assert.deepEqual(normalizePlans(plans), plans);
   assert.equal(normalizePlans([]), null);
   assert.equal(normalizePlans([{ ...plans[0], flow: "", notTestableReason: "no" }]), null);
-  assert.equal(normalizePlans([{ ...plans[1], flow: "run it" }]), null);
+  assert.equal(normalizePlans([{ ...plans[1], apiRequest: { method: "POST", path: "/health", expectedStatus: 200 } }]), null);
   assert.equal(normalizePlans([plans[0], { ...plans[0], modality: "data" }]), null);
   assert.equal(normalizePlans([{ criterionId: "a", modality: "browser", status: "planned", flow: "x" }]), null);
   assert.equal(normalizePlans([{ ...plans[0], extra: true }]), null);
   assert.equal(normalizePlans([{ ...plans[1], extra: true }]), null);
+});
+
+test("normalizeApiRequest permits only closed relative GET/status descriptors", () => {
+  assert.deepEqual(normalizeApiRequest(plans[1].apiRequest), plans[1].apiRequest);
+  for (const apiRequest of [
+    { method: "POST", path: "/health", expectedStatus: 200 },
+    { method: "GET", path: "//evil.example.test", expectedStatus: 200 },
+    { method: "GET", path: "/health?verbose=1", expectedStatus: 200 },
+    { method: "GET", path: "/a/%2e%2e/admin", expectedStatus: 200 },
+    { method: "GET", path: "/health%23fragment", expectedStatus: 200 },
+    { method: "GET", path: "/health", expectedStatus: 99 },
+  ]) assert.equal(normalizeApiRequest(apiRequest), null);
 });
 
 test("normalizeUiSteps permits one bounded assertion flow and rejects escape hatches", () => {

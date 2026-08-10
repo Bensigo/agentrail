@@ -1,4 +1,5 @@
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -112,6 +113,62 @@ export const acceptanceContracts = pgTable(
 );
 
 /**
+ * Server-owned builder delivery registrations. Public selection surfaces only
+ * the route UUID. Direct task/MCP locators are intentionally absent until a
+ * later server-owned binding table can prove their authorization.
+ */
+export const acceptanceBuilderRoutes = pgTable(
+  "acceptance_builder_routes",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    adapter: text("adapter").notNull(),
+    status: text("status").notNull().default("active"),
+    configurationVersion: integer("configuration_version").notNull(),
+    registeredBy: text("registered_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    adapterCheck: check(
+      "acceptance_builder_routes_adapter_check",
+      sql`${t.adapter} IN ('github_codex', 'github_claude', 'durable_github_fallback', 'durable_jace_fallback')`
+    ),
+    statusCheck: check(
+      "acceptance_builder_routes_status_check",
+      sql`${t.status} IN ('active', 'disabled')`
+    ),
+    configurationVersionCheck: check(
+      "acceptance_builder_routes_configuration_version_check",
+      sql`${t.configurationVersion} > 0`
+    ),
+    repoCheck: check(
+      "acceptance_builder_routes_repo_check",
+      sql`char_length(${t.repo}) BETWEEN 1 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} !~ '[[:cntrl:]]'`
+    ),
+    registeredByCheck: check(
+      "acceptance_builder_routes_registered_by_check",
+      sql`char_length(${t.registeredBy}) BETWEEN 6 AND 256
+        AND ${t.registeredBy} ~ '^(user|server):[A-Za-z0-9][A-Za-z0-9._@+-]*$'`
+    ),
+    workspaceRepoStatus: index("acceptance_builder_routes_workspace_repo_status_idx").on(
+      t.workspaceId,
+      t.repo,
+      t.status
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -213,5 +270,6 @@ export const changeRecordEvents = pgTable(
 export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
+export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

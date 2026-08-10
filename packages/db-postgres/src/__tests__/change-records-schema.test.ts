@@ -3,6 +3,7 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  acceptanceBuilderRoutes,
   acceptanceContracts,
   changeRecordEvents,
   changeRecords,
@@ -164,5 +165,54 @@ describe("0081_acceptance_contracts migration", () => {
       (e: { tag: string }) => e.tag === "0081_acceptance_contracts"
     );
     expect(entry).toMatchObject({ idx: 86, version: "7", breakpoints: true });
+  });
+});
+
+describe("0084_acceptance_builder_routes migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0084_acceptance_builder_routes.sql"
+  );
+
+  it("declares a workspace/repository-scoped server route registry", () => {
+    expect(acceptanceBuilderRoutes.workspaceId.notNull).toBe(true);
+    expect(acceptanceBuilderRoutes.repo.notNull).toBe(true);
+    expect(acceptanceBuilderRoutes.adapter.notNull).toBe(true);
+    expect(acceptanceBuilderRoutes.configurationVersion.notNull).toBe(true);
+    expect(acceptanceBuilderRoutes.registeredBy.notNull).toBe(true);
+    expect(acceptanceBuilderRoutes.status.hasDefault).toBe(true);
+    const config = getTableConfig(acceptanceBuilderRoutes);
+    expect(config.indexes.find((index) =>
+      index.config.name === "acceptance_builder_routes_workspace_repo_status_idx"
+    )).toBeDefined();
+    expect(config.checks.map((check) => check.name).sort()).toEqual([
+      "acceptance_builder_routes_adapter_check",
+      "acceptance_builder_routes_configuration_version_check",
+      "acceptance_builder_routes_registered_by_check",
+      "acceptance_builder_routes_repo_check",
+      "acceptance_builder_routes_status_check",
+    ]);
+  });
+
+  it("constrains adapters, status, configuration version, actor, and repository", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    for (const adapter of [
+      "github_codex", "github_claude", "durable_github_fallback", "durable_jace_fallback",
+    ]) expect(sqlText).toContain(`'${adapter}'`);
+    expect(sqlText).not.toContain("codex_app_server");
+    expect(sqlText).not.toContain("mcp_correction_inbox");
+    expect(sqlText).toContain("acceptance_builder_routes_status_check");
+    expect(sqlText).toContain("acceptance_builder_routes_configuration_version_check");
+    expect(sqlText).toContain("acceptance_builder_routes_registered_by_check");
+    expect(sqlText).toContain("acceptance_builder_routes_repo_check");
+  });
+
+  it("is registered in the migration journal", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0084_acceptance_builder_routes"
+    )).toMatchObject({ idx: 89, version: "7", breakpoints: true });
   });
 });

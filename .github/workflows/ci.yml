@@ -142,6 +142,7 @@ jobs:
           app/api/v1/runner/pr-review/route.test.ts
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
+          app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts
           lib/github-advisory-review.test.ts
           lib/review-job-correction-packet.test.ts
           lib/review-job-api-execution.test.ts

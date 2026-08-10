@@ -6,6 +6,7 @@ import { workspaces } from "../schema/workspaces.js";
 import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
+  acceptanceBuilderRoutes,
   acceptanceContracts,
   changeRecordEvents,
 } from "../schema/change_records.js";
@@ -20,7 +21,10 @@ import {
   createDraftAcceptanceRecordFromIntake,
   findOrCreateChangeRecord,
   recordAcceptancePostMergeOutcome,
+  recordAcceptanceBuilderRouteSelection,
+  registerAcceptanceBuilderRoute,
   recordAcceptanceInboundIntake,
+  readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
@@ -36,6 +40,7 @@ const DB_AVAILABLE: boolean = await (async () => {
         SELECT to_regclass('public.change_records') AS change_records,
                to_regclass('public.change_record_events') AS change_record_events,
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
+               to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
@@ -43,6 +48,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       change_records: string | null;
       change_record_events: string | null;
       acceptance_contracts: string | null;
+      acceptance_builder_routes: string | null;
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
     }>;
@@ -50,6 +56,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.change_records === "change_records" &&
       rows[0]?.change_record_events === "change_record_events" &&
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
+      rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
@@ -175,6 +182,105 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(
         attachConfirmedAcceptanceRecordToExternalPullRequest({ ...input, recordId: other.record.id })
       ).resolves.toEqual({ kind: "already_attached" });
+    });
+
+    it("records one server-registered Builder route against exactly one confirmed Contract", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "builder-route-selection",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      await expect(recordAcceptanceBuilderRouteSelection({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        selectedBy: "user:lead",
+        routeId: randomUUID(),
+      })).rejects.toThrow("exactly one confirmed Contract");
+
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const registered = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
+        configurationVersion: 2, registeredBy: "server:environment",
+      });
+      const input = {
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        selectedBy: "user:lead",
+        routeId: registered.route.id,
+      };
+      const first = await recordAcceptanceBuilderRouteSelection(input);
+      const replay = await recordAcceptanceBuilderRouteSelection(input);
+      expect(first).toMatchObject({ inserted: true, event: {
+        eventKey: "acceptance-builder-route:selected", stage: "builder_handoff",
+      } });
+      expect(replay).toMatchObject({ inserted: false, event: { id: first.event.id } });
+      const otherRoute = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_claude",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(recordAcceptanceBuilderRouteSelection({
+        ...input, routeId: otherRoute.route.id,
+      })).rejects.toThrow("already bound to different stage, actor, or payloadRef");
+      await expect(readAcceptanceBuilderRouteSelection({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toMatchObject({ selection: { routeId: registered.route.id }, route: {
+        id: registered.route.id, adapter: "github_codex", configurationVersion: 2,
+      }, snapshot: {
+        capability: { availability: "unverified", activation: "github_mention", acknowledgement: "vendor_activity", repairHead: "github_synchronize" }, scopeBoundary: "correction_delivery_only",
+      } });
+
+      await db.update(acceptanceBuilderRoutes).set({ configurationVersion: 3 })
+        .where(eq(acceptanceBuilderRoutes.id, registered.route.id));
+      await expect(readAcceptanceBuilderRouteSelection({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toBeNull();
+    });
+
+    it("rejects unknown, disabled, cross-workspace, cross-repository, and unsupported Builder routes", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "builder-route-boundaries",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const select = (routeId: string) => recordAcceptanceBuilderRouteSelection({
+        workspaceId: wsId, recordId: draft.record.id, selectedBy: "user:lead", routeId,
+      });
+
+      await expect(select(randomUUID())).rejects.toThrow("unavailable for this Record");
+      const disabled = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "durable_jace_fallback",
+        status: "disabled", configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(select(disabled.route.id)).rejects.toThrow("unavailable for this Record");
+      const otherRepo = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/other", adapter: "durable_github_fallback",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(select(otherRepo.route.id)).rejects.toThrow("unavailable for this Record");
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "other builder route workspace", slug: `other-builder-route-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      const foreign = await registerAcceptanceBuilderRoute({
+        workspaceId: otherWorkspace.id, repo: "acme/widgets", adapter: "github_claude",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(select(foreign.route.id)).rejects.toThrow("unavailable for this Record");
+      await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+
+      for (const adapter of ["codex_app_server", "mcp_correction_inbox"] as const) {
+        await expect(registerAcceptanceBuilderRoute({
+          workspaceId: wsId, repo: "acme/widgets", adapter: adapter as never,
+          configurationVersion: 1, registeredBy: "server:environment",
+        })).rejects.toThrow("Invalid Acceptance Builder route registration");
+      }
     });
 
     it("persists one canonical Intake message idempotently and refuses source-key collisions", async () => {

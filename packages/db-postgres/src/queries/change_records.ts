@@ -5,10 +5,12 @@ import { db } from "../db.js";
 import {
   changeRecordEvents,
   changeRecords,
+  acceptanceBuilderRoutes,
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
+  type AcceptanceBuilderRouteRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
   type ChangeRecordEventRow,
@@ -309,6 +311,52 @@ export type AppendChangeRecordEventsAtomicallyResult = {
   events: AppendChangeRecordEventResult[];
 };
 
+async function appendChangeRecordEventsAtomicallyInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  inputs: AppendChangeRecordEventsAtomicallyInput
+): Promise<AppendChangeRecordEventsAtomicallyResult> {
+  const events: AppendChangeRecordEventResult[] = [];
+  for (const input of inputs) {
+    const at = (input.at ?? new Date()).toISOString();
+    const insertedRows = Array.from(await tx.execute(sql`
+      INSERT INTO change_record_events (
+        id, record_id, event_key, stage, at, actor, payload_ref
+      )
+      VALUES (
+        ${changeRecordEventId({ recordId: input.recordId, eventKey: input.eventKey })},
+        ${input.recordId},
+        ${input.eventKey},
+        ${input.stage},
+        ${at},
+        ${input.actor},
+        ${JSON.stringify(input.payloadRef)}::jsonb
+      )
+      ON CONFLICT (record_id, event_key) DO NOTHING
+      RETURNING *
+    `)) as Array<Record<string, unknown>>;
+    const rawEvent = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, input.eventKey),
+    )).limit(1))[0];
+    if (!rawEvent) {
+      throw new Error("appendChangeRecordEventsAtomically: event was not inserted or found");
+    }
+
+    const event = rawEvent as ChangeRecordEventRow;
+    if (
+      event.stage !== input.stage
+      || event.actor !== input.actor
+      || !isDeepStrictEqual(event.payloadRef, input.payloadRef)
+    ) {
+      throw new Error(
+        "appendChangeRecordEventsAtomically: event key is already bound to different stage, actor, or payloadRef"
+      );
+    }
+    events.push({ event, inserted: insertedRows[0] != null });
+  }
+  return { events };
+}
+
 export async function appendChangeRecordEvent(
   input: AppendChangeRecordEventInput
 ): Promise<AppendChangeRecordEventResult> {
@@ -391,46 +439,7 @@ export async function appendChangeRecordEventsAtomically(
   }
 
   return db.transaction(async (tx) => {
-    const events: AppendChangeRecordEventResult[] = [];
-    for (const input of inputs) {
-      const at = (input.at ?? new Date()).toISOString();
-      const insertedRows = Array.from(await tx.execute(sql`
-        INSERT INTO change_record_events (
-          id, record_id, event_key, stage, at, actor, payload_ref
-        )
-        VALUES (
-          ${changeRecordEventId({ recordId: input.recordId, eventKey: input.eventKey })},
-          ${input.recordId},
-          ${input.eventKey},
-          ${input.stage},
-          ${at},
-          ${input.actor},
-          ${JSON.stringify(input.payloadRef)}::jsonb
-        )
-        ON CONFLICT (record_id, event_key) DO NOTHING
-        RETURNING *
-      `)) as Array<Record<string, unknown>>;
-      const rawEvent = (await tx.select().from(changeRecordEvents).where(and(
-        eq(changeRecordEvents.recordId, input.recordId),
-        eq(changeRecordEvents.eventKey, input.eventKey),
-      )).limit(1))[0];
-      if (!rawEvent) {
-        throw new Error("appendChangeRecordEventsAtomically: event was not inserted or found");
-      }
-
-      const event = rawEvent as ChangeRecordEventRow;
-      if (
-        event.stage !== input.stage
-        || event.actor !== input.actor
-        || !isDeepStrictEqual(event.payloadRef, input.payloadRef)
-      ) {
-        throw new Error(
-          "appendChangeRecordEventsAtomically: event key is already bound to different stage, actor, or payloadRef"
-        );
-      }
-      events.push({ event, inserted: insertedRows[0] != null });
-    }
-    return { events };
+    return appendChangeRecordEventsAtomicallyInTransaction(tx, inputs);
   });
 }
 
@@ -1349,4 +1358,328 @@ export async function readAcceptanceContracts(input: {
     .from(acceptanceContracts)
     .where(eq(acceptanceContracts.recordId, input.recordId))
     .orderBy(asc(acceptanceContracts.version));
+}
+
+const ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY = "acceptance-builder-route:selected";
+const ACCEPTANCE_BUILDER_ROUTE_PAYLOAD_VERSION = 1;
+const ACCEPTANCE_BUILDER_ROUTE_SCOPE = "correction_delivery_only";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export type AcceptanceBuilderRouteAdapter =
+  | "github_codex"
+  | "github_claude"
+  | "durable_github_fallback"
+  | "durable_jace_fallback";
+
+export type AcceptanceBuilderRouteStatus = "active" | "disabled";
+
+/**
+ * Public selection contains only the identifier of a server-registered route.
+ * Builder configuration and task identity are never accepted from this input.
+ */
+export type AcceptanceBuilderRouteSelection = { routeId: string };
+
+export type AcceptanceBuilderRouteSnapshot = {
+  builder: {
+    adapter: AcceptanceBuilderRouteAdapter;
+    routeId: string;
+  };
+  protocol: "github_comment" | "durable_notice";
+  capability: {
+    availability: "unverified";
+    activation: "github_mention" | "none";
+    acknowledgement: "vendor_activity" | "human_ack";
+    repairHead: "github_synchronize";
+  };
+  scopeBoundary: typeof ACCEPTANCE_BUILDER_ROUTE_SCOPE;
+};
+
+export type AcceptanceBuilderRouteSelectionResolution = {
+  selection: AcceptanceBuilderRouteSelection;
+  route: AcceptanceBuilderRouteRow;
+  snapshot: AcceptanceBuilderRouteSnapshot;
+  event: ChangeRecordEventRow;
+};
+
+export type RecordAcceptanceBuilderRouteSelectionInput = {
+  workspaceId: string;
+  recordId: string;
+  selectedBy: string;
+  routeId: string;
+};
+
+export type RegisterAcceptanceBuilderRouteInput = {
+  id?: string;
+  workspaceId: string;
+  repo: string;
+  adapter: AcceptanceBuilderRouteAdapter;
+  status?: AcceptanceBuilderRouteStatus;
+  configurationVersion: number;
+  registeredBy: string;
+};
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID.test(value);
+}
+
+function isBuilderRouteActor(value: unknown, humanOnly = false): value is string {
+  const prefix = humanOnly ? "user" : "(?:user|server)";
+  return typeof value === "string"
+    && value.length >= 6
+    && value.length <= 256
+    && new RegExp(`^${prefix}:[A-Za-z0-9][A-Za-z0-9._@+-]*$`).test(value);
+}
+
+function isBuilderRouteAdapter(value: unknown): value is AcceptanceBuilderRouteAdapter {
+  return value === "github_codex" || value === "github_claude"
+    || value === "durable_github_fallback" || value === "durable_jace_fallback";
+}
+
+export function validateAcceptanceBuilderRouteSelection(
+  value: unknown
+): value is AcceptanceBuilderRouteSelection {
+  return isRecord(value) && hasExactKeys(value, ["routeId"]) && isUuid(value["routeId"]);
+}
+
+/** Returns a typed route only when it satisfies the closed variant schema. */
+export function parseAcceptanceBuilderRouteSelection(
+  value: unknown
+): AcceptanceBuilderRouteSelection | null {
+  return validateAcceptanceBuilderRouteSelection(value) ? value : null;
+}
+
+function mapAcceptanceBuilderRouteRow(row: Record<string, unknown>): AcceptanceBuilderRouteRow {
+  return {
+    id: row.id as string,
+    workspaceId: row.workspace_id as string,
+    repo: row.repo as string,
+    adapter: row.adapter as string,
+    status: row.status as string,
+    configurationVersion: row.configuration_version as number,
+    registeredBy: row.registered_by as string,
+    createdAt: toDate(row.created_at),
+    updatedAt: toDate(row.updated_at),
+  };
+}
+
+function builderRouteSnapshot(route: AcceptanceBuilderRouteRow): AcceptanceBuilderRouteSnapshot {
+  const github = route.adapter === "github_codex" || route.adapter === "github_claude";
+  const capability = github
+    ? { activation: "github_mention" as const, acknowledgement: "vendor_activity" as const }
+    : { activation: "none" as const, acknowledgement: "human_ack" as const };
+  return {
+    builder: { adapter: route.adapter as AcceptanceBuilderRouteAdapter, routeId: route.id },
+    protocol: github ? "github_comment" : "durable_notice",
+    capability: {
+      availability: "unverified",
+      ...capability, repairHead: "github_synchronize",
+    },
+    scopeBoundary: ACCEPTANCE_BUILDER_ROUTE_SCOPE,
+  };
+}
+
+function builderRoutePayload(input: {
+  record: ChangeRecordRow;
+  contract: AcceptanceContractRow;
+  route: AcceptanceBuilderRouteRow;
+}): Record<string, unknown> {
+  const selection = { routeId: input.route.id };
+  return {
+    kind: "acceptance_builder_route_selection",
+    version: ACCEPTANCE_BUILDER_ROUTE_PAYLOAD_VERSION,
+    workspaceId: input.record.workspaceId,
+    repository: input.record.repo,
+    recordId: input.record.id,
+    contract: { id: input.contract.id, version: input.contract.version, status: "confirmed" },
+    selection,
+    route: {
+      id: input.route.id,
+      adapter: input.route.adapter,
+      configurationVersion: input.route.configurationVersion,
+      status: "active",
+    },
+    snapshot: builderRouteSnapshot(input.route),
+  };
+}
+
+function parseAcceptanceBuilderRoutePayload(
+  value: unknown
+): { workspaceId: string; repository: string; recordId: string; contractId: string; contractVersion: number; routeId: string; routeAdapter: AcceptanceBuilderRouteAdapter; routeConfigurationVersion: number; selection: AcceptanceBuilderRouteSelection; snapshot: AcceptanceBuilderRouteSnapshot } | null {
+  if (!isRecord(value) || !hasExactKeys(value, ["kind", "version", "workspaceId", "repository", "recordId", "contract", "selection", "route", "snapshot"])
+    || value["kind"] !== "acceptance_builder_route_selection"
+    || value["version"] !== ACCEPTANCE_BUILDER_ROUTE_PAYLOAD_VERSION
+    || !isUuid(value["workspaceId"])
+    || typeof value["repository"] !== "string"
+    || !isUuid(value["recordId"])
+    || !isRecord(value["contract"])
+    || !hasExactKeys(value["contract"], ["id", "version", "status"])
+    || !isUuid(value["contract"]["id"])
+    || !Number.isInteger(value["contract"]["version"])
+    || (value["contract"]["version"] as number) <= 0
+    || value["contract"]["status"] !== "confirmed"
+    || !parseAcceptanceBuilderRouteSelection(value["selection"])
+    || !isRecord(value["route"])
+    || !hasExactKeys(value["route"], ["id", "adapter", "configurationVersion", "status"])
+    || !isUuid(value["route"]["id"])
+    || !isBuilderRouteAdapter(value["route"]["adapter"])
+    || !Number.isInteger(value["route"]["configurationVersion"])
+    || (value["route"]["configurationVersion"] as number) <= 0
+    || value["route"]["status"] !== "active"
+    || !isRecord(value["snapshot"])
+  ) return null;
+  const selection = parseAcceptanceBuilderRouteSelection(value["selection"]);
+  if (!selection) return null;
+  const route: AcceptanceBuilderRouteRow = {
+    id: value["route"]["id"], workspaceId: value["workspaceId"], repo: value["repository"],
+    adapter: value["route"]["adapter"], status: "active",
+    configurationVersion: value["route"]["configurationVersion"] as number,
+    registeredBy: "server:payload-parser", createdAt: new Date(0), updatedAt: new Date(0),
+  };
+  if (selection.routeId !== route.id) return null;
+  const snapshot = builderRouteSnapshot(route);
+  if (!isDeepStrictEqual(value["snapshot"], snapshot)) return null;
+  return {
+    workspaceId: value["workspaceId"], repository: value["repository"], recordId: value["recordId"],
+    contractId: value["contract"]["id"], contractVersion: value["contract"]["version"] as number,
+    routeId: route.id, routeAdapter: route.adapter as AcceptanceBuilderRouteAdapter,
+    routeConfigurationVersion: route.configurationVersion, selection, snapshot,
+  };
+}
+
+/**
+ * Register a route from trusted server configuration. No public route calls
+ * this helper in R8.2a, and no vendor task/thread/credential value is stored.
+ */
+export async function registerAcceptanceBuilderRoute(
+  input: RegisterAcceptanceBuilderRouteInput
+): Promise<{ route: AcceptanceBuilderRouteRow; inserted: boolean }> {
+  const id = input.id ?? randomUUID();
+  const status = input.status ?? "active";
+  if (!isUuid(id) || !isUuid(input.workspaceId) || !isBuilderRouteAdapter(input.adapter)
+    || (status !== "active" && status !== "disabled")
+    || !Number.isInteger(input.configurationVersion) || input.configurationVersion <= 0
+    || !isBuilderRouteActor(input.registeredBy)
+    || !input.repo.trim() || input.repo.trim() !== input.repo
+    || input.repo.length > 512 || /[\u0000-\u001f\u007f]/.test(input.repo)
+  ) throw new Error("Invalid Acceptance Builder route registration");
+
+  const insertedRows = await db.insert(acceptanceBuilderRoutes).values({
+    id, workspaceId: input.workspaceId, repo: input.repo, adapter: input.adapter,
+    status, configurationVersion: input.configurationVersion, registeredBy: input.registeredBy,
+  }).onConflictDoNothing().returning();
+  const route = insertedRows[0] ?? (await db.select().from(acceptanceBuilderRoutes).where(
+    eq(acceptanceBuilderRoutes.id, id)
+  ).limit(1))[0];
+  if (!route) throw new Error("Acceptance Builder route registration was not persisted");
+  const expected = {
+    workspaceId: input.workspaceId, repo: input.repo, adapter: input.adapter, status,
+    configurationVersion: input.configurationVersion, registeredBy: input.registeredBy,
+  };
+  if (!isDeepStrictEqual({
+    workspaceId: route.workspaceId, repo: route.repo, adapter: route.adapter, status: route.status,
+    configurationVersion: route.configurationVersion, registeredBy: route.registeredBy,
+  }, expected)) throw new Error("Acceptance Builder route id is already bound to different configuration");
+  return { route, inserted: insertedRows.length === 1 };
+}
+
+/**
+ * Persist the sole configured route for future correction delivery. No
+ * transport is attempted here. Reusing this deterministic key is permitted
+ * only for byte-equivalent provenance through the generic atomic append.
+ */
+export async function recordAcceptanceBuilderRouteSelection(
+  input: RecordAcceptanceBuilderRouteSelectionInput
+): Promise<{ event: ChangeRecordEventRow; inserted: boolean }> {
+  const selection = { routeId: input.routeId };
+  if (!validateAcceptanceBuilderRouteSelection(selection)) {
+    throw new Error("Invalid Acceptance Builder route selection");
+  }
+  if (!isBuilderRouteActor(input.selectedBy, true)) {
+    throw new Error("Invalid Acceptance Builder route actor");
+  }
+  return db.transaction(async (tx) => {
+    const records = Array.from(await tx.execute(sql`
+      SELECT * FROM change_records
+      WHERE id = ${input.recordId} AND workspace_id = ${input.workspaceId}
+      FOR UPDATE
+    `)) as Array<Record<string, unknown>>;
+    if (records.length !== 1) throw new Error("Acceptance Record is missing or outside this workspace");
+    const record = mapChangeRecordRow(records[0]!);
+    const confirmed = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, input.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).orderBy(asc(acceptanceContracts.version));
+    if (confirmed.length !== 1) {
+      throw new Error("Acceptance Builder route requires exactly one confirmed Contract");
+    }
+    const routeRows = Array.from(await tx.execute(sql`
+      SELECT * FROM acceptance_builder_routes
+      WHERE id = ${input.routeId}
+        AND workspace_id = ${input.workspaceId}
+        AND repo = ${record.repo}
+        AND status = 'active'
+      FOR SHARE
+    `)) as Array<Record<string, unknown>>;
+    if (routeRows.length !== 1) throw new Error("Acceptance Builder route is unavailable for this Record");
+    const route = mapAcceptanceBuilderRouteRow(routeRows[0]!);
+    if (!isBuilderRouteAdapter(route.adapter)) throw new Error("Acceptance Builder route adapter is unsupported");
+    const payloadRef = builderRoutePayload({ record, contract: confirmed[0]!, route });
+    const result = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY,
+      stage: "builder_handoff",
+      actor: input.selectedBy,
+      payloadRef,
+    }]);
+    return result.events[0]!;
+  });
+}
+
+/** Read only a route event whose stored provenance still matches this exact workspace Record and Contract. */
+export async function readAcceptanceBuilderRouteSelection(input: {
+  workspaceId: string;
+  recordId: string;
+}): Promise<AcceptanceBuilderRouteSelectionResolution | null> {
+  const records = await db.select().from(changeRecords).where(and(
+    eq(changeRecords.workspaceId, input.workspaceId), eq(changeRecords.id, input.recordId),
+  )).limit(1);
+  const record = records[0];
+  if (!record) return null;
+  const confirmed = await db.select().from(acceptanceContracts).where(and(
+    eq(acceptanceContracts.recordId, input.recordId), eq(acceptanceContracts.status, "confirmed"),
+  )).orderBy(asc(acceptanceContracts.version));
+  if (confirmed.length !== 1) return null;
+  const events = await db.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, input.recordId),
+    eq(changeRecordEvents.eventKey, ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY),
+  )).limit(1);
+  const event = events[0];
+  if (!event || event.stage !== "builder_handoff" || !isBuilderRouteActor(event.actor, true)) return null;
+  const parsed = parseAcceptanceBuilderRoutePayload(event.payloadRef);
+  if (!parsed
+    || parsed.workspaceId !== record.workspaceId
+    || parsed.repository !== record.repo
+    || parsed.recordId !== record.id
+    || parsed.contractId !== confirmed[0]!.id
+    || parsed.contractVersion !== confirmed[0]!.version
+  ) return null;
+  const routes = await db.select().from(acceptanceBuilderRoutes).where(and(
+    eq(acceptanceBuilderRoutes.id, parsed.routeId),
+    eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+    eq(acceptanceBuilderRoutes.repo, record.repo),
+    eq(acceptanceBuilderRoutes.status, "active"),
+  )).limit(1);
+  const route = routes[0];
+  if (!route || !isBuilderRouteAdapter(route.adapter)
+    || route.adapter !== parsed.routeAdapter
+    || route.configurationVersion !== parsed.routeConfigurationVersion
+    || !isDeepStrictEqual(builderRouteSnapshot(route), parsed.snapshot)
+  ) return null;
+  return { selection: parsed.selection, route, snapshot: parsed.snapshot, event };
 }

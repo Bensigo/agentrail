@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import { isDeepStrictEqual } from "util";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
@@ -19,6 +19,8 @@ import {
   type ChangeRecordRow,
 } from "../schema/change_records.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import { repositories } from "../schema/repositories.js";
+import { wikiPages } from "../schema/wiki_pages.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -1477,6 +1479,23 @@ export type AcceptanceContextBaseIndexIdentity = {
   gaps: string[];
 };
 
+/** v2 DB custody identity; distinct from the merged v1 compiler input. */
+export type AcceptanceContextPackCustodyBaseIndexIdentity = {
+  schemaVersion: 2;
+  revisionSha256: string;
+  backgroundOnly: true;
+  pages: Array<{
+    id: string;
+    repositoryId: string;
+    slug: string;
+    commitSha: string;
+    inputsHashSha256: string;
+    pageBodySha256: string;
+    stale: boolean;
+  }>;
+  gaps: string[];
+};
+
 export type AcceptanceContextOverlayManifestIdentity = {
   schemaVersion: 1;
   manifestSha256: string;
@@ -1488,6 +1507,26 @@ export type AcceptanceContextOverlayManifestIdentity = {
     status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed";
     blobSha: string | null;
     previousPath: string | null;
+  }>;
+};
+
+/** v2 custody identity adds immutable patch and normalized head coordinates. */
+export type AcceptanceContextPackCustodyOverlayManifestIdentity = {
+  schemaVersion: 2;
+  manifestSha256: string;
+  baseSha: string;
+  mergeBaseSha: string;
+  headSha: string;
+  files: Array<{
+    path: string;
+    status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed";
+    blobSha: string | null;
+    previousPath: string | null;
+    /** Null only when the compare service proves no text patch is available. */
+    patchSha256: string | null;
+    patchByteCount: number | null;
+    /** Normalized exact-head line coordinates represented by the admitted patch. */
+    headRanges: Array<{ startLine: number; endLine: number; coordinateSha256: string }>;
   }>;
 };
 
@@ -1503,6 +1542,7 @@ export type AcceptanceContextPackSnapshotInput = {
   reviewJobId: string;
   acceptanceContractId: string;
   acceptanceContractVersion: number;
+  acceptanceContractSha256: string;
   repo: string;
   prNumber: number;
   expectedHeadSha: string;
@@ -1511,9 +1551,10 @@ export type AcceptanceContextPackSnapshotInput = {
   headTreeSha: string | null;
   packetIds: string[];
   packetSetSha256: string;
+  correctionPacketPayloadSetSha256: string;
   compilerVersion: string;
-  baseIndex: AcceptanceContextBaseIndexIdentity | null;
-  overlay: AcceptanceContextOverlayManifestIdentity | null;
+  baseIndex: AcceptanceContextPackCustodyBaseIndexIdentity | null;
+  overlay: AcceptanceContextPackCustodyOverlayManifestIdentity | null;
   provenance: AcceptanceContextInclusionExclusionProvenance;
   status: AcceptanceContextPackSnapshotStatus;
   reason: string | null;
@@ -1524,6 +1565,35 @@ const EXACT_SHA256 = /^[a-f0-9]{64}$/i;
 const CORRECTION_PACKET_ID = /^correction-[a-f0-9]{48}$/i;
 const SAFE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
+const MAX_CONTEXT_CUSTODY_COMPARE_FILES = 299;
+const MAX_CONTEXT_CUSTODY_HEAD_RANGES = 128;
+const MAX_CONTEXT_CUSTODY_HEAD_LINE = 1_000_000;
+const MAX_CONTEXT_CUSTODY_PATCH_BYTES = 2 * 1024 * 1024;
+const MAX_CONTEXT_CUSTODY_WIKI_PAGE_BYTES = 512 * 1024;
+const MAX_CONTEXT_CUSTODY_WIKI_TOTAL_BYTES = 4 * 1024 * 1024;
+
+function canonicalJson(value: unknown): string | null {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : null;
+  if (Array.isArray(value)) {
+    const items = value.map(canonicalJson);
+    return items.some((item) => item === null) ? null : `[${items.join(",")}]`;
+  }
+  if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype) return null;
+  const entries: string[] = [];
+  for (const key of Object.keys(value).sort()) {
+    const nested = canonicalJson(value[key]);
+    if (nested === null) return null;
+    entries.push(`${JSON.stringify(key)}:${nested}`);
+  }
+  return `{${entries.join(",")}}`;
+}
+
+function positiveBoundedInteger(value: unknown, max: number): value is number {
+  return Number.isInteger(value) && (value as number) > 0 && (value as number) <= max;
+}
 
 function canonicalSha256(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -1534,6 +1604,58 @@ export function acceptanceContextPacketSetSha256(input: { packetIds: readonly st
   return canonicalSha256({ kind: "acceptance_context_packet_set", version: 1, packetIds: input.packetIds });
 }
 
+/**
+ * Canonical digest of the complete persisted confirmed Contract. Criterion
+ * IDs alone are insufficient: text, user visibility, scope, and unanswered
+ * questions all affect what the compiler is allowed to claim.
+ */
+export function acceptanceContractSha256(input: {
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  contract: Record<string, unknown>;
+}): string {
+  const canonical = canonicalJson({
+    kind: "acceptance_contract_snapshot",
+    version: 1,
+    acceptanceContractId: input.acceptanceContractId,
+    acceptanceContractVersion: input.acceptanceContractVersion,
+    contract: input.contract,
+  });
+  if (canonical === null) throw new Error("Acceptance Contract snapshot is not canonical JSON");
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * Canonical digest of every full R8.1 correction packet payload. IDs alone
+ * are insufficient because the packet text and exact-head evidence matter.
+ */
+export function acceptanceCorrectionPacketPayloadSetSha256(input: {
+  packets: readonly Record<string, unknown>[];
+}): string {
+  if (input.packets.length === 0 || input.packets.length > 100
+    || !input.packets.every(validateReviewJobCorrectionPacketPayload)) {
+    throw new Error("Correction packet payload set requires validated R8.1 packets");
+  }
+  const packets = [...input.packets].sort((left, right) =>
+    String(left["packetId"]).localeCompare(String(right["packetId"]))
+  );
+  if (new Set(packets.map((packet) => packet["packetId"])).size !== packets.length) {
+    throw new Error("Correction packet payload set requires unique packet IDs");
+  }
+  const canonical = canonicalJson({
+    kind: "acceptance_correction_packet_payload_set",
+    version: 1,
+    packets,
+  });
+  if (canonical === null) throw new Error("Correction packet payload set is not canonical JSON");
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/** SHA-256 of the exact Wiki body stored by the server, never a caller claim. */
+export function wikiPageBodySha256(bodyMd: string): string {
+  return createHash("sha256").update(bodyMd, "utf8").digest("hex");
+}
+
 /** Stable digest of the page-level, background-only Wiki/index identity. */
 export function acceptanceContextBaseIndexRevisionSha256(input: Omit<AcceptanceContextBaseIndexIdentity, "revisionSha256">): string {
   return canonicalSha256({
@@ -1542,12 +1664,51 @@ export function acceptanceContextBaseIndexRevisionSha256(input: Omit<AcceptanceC
   });
 }
 
+/** Stable digest of the v2 Wiki identity resolved from `wiki_pages`. */
+export function acceptanceContextPackCustodyBaseIndexRevisionSha256(
+  input: Omit<AcceptanceContextPackCustodyBaseIndexIdentity, "revisionSha256">
+): string {
+  const canonical = canonicalJson({
+    kind: "acceptance_context_pack_custody_base_index", version: 2,
+    backgroundOnly: input.backgroundOnly, pages: input.pages, gaps: input.gaps,
+  });
+  if (canonical === null) throw new Error("Context Pack custody base index is not canonical JSON");
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
 /** Stable digest of the server-resolved GitHub compare manifest. */
 export function acceptanceContextOverlayManifestSha256(input: Omit<AcceptanceContextOverlayManifestIdentity, "manifestSha256">): string {
   return canonicalSha256({
     kind: "acceptance_context_overlay_manifest", version: 1,
     baseSha: input.baseSha, mergeBaseSha: input.mergeBaseSha, headSha: input.headSha, files: input.files,
   });
+}
+
+/** Stable v2 exact-head patch/range custody digest. */
+export function acceptanceContextPackCustodyOverlayManifestSha256(
+  input: Omit<AcceptanceContextPackCustodyOverlayManifestIdentity, "manifestSha256">
+): string {
+  const canonical = canonicalJson({
+    kind: "acceptance_context_pack_custody_overlay_manifest", version: 2,
+    baseSha: input.baseSha, mergeBaseSha: input.mergeBaseSha, headSha: input.headSha, files: input.files,
+  });
+  if (canonical === null) throw new Error("Context Pack custody overlay manifest is not canonical JSON");
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * Hashes patch-owned coordinates, not selected source bytes. Compiler excerpt
+ * `rangeSha256` remains the byte hash of the actual selected text.
+ */
+export function acceptanceContextOverlayHeadRangeCoordinateSha256(input: {
+  path: string;
+  patchSha256: string;
+  startLine: number;
+  endLine: number;
+}): string {
+  const canonical = canonicalJson({ kind: "acceptance_context_overlay_head_range", version: 1, ...input });
+  if (canonical === null) throw new Error("Context Pack overlay head range is not canonical JSON");
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 /** Canonical identity shared by the R8.1 packet builder and R8.2 packet-set custody. */
@@ -1591,10 +1752,10 @@ function uniqueStrings(values: unknown, predicate: (value: unknown) => boolean, 
     && values.every(predicate) && new Set(values).size === values.length;
 }
 
-function isBaseIndexIdentity(value: unknown): value is AcceptanceContextBaseIndexIdentity {
+function isCustodyBaseIndexIdentity(value: unknown): value is AcceptanceContextPackCustodyBaseIndexIdentity {
   if (!isRecord(value)
     || !hasExactKeys(value, ["schemaVersion", "revisionSha256", "backgroundOnly", "pages", "gaps"])
-    || value["schemaVersion"] !== 1
+    || value["schemaVersion"] !== 2
     || value["backgroundOnly"] !== true
     || typeof value["revisionSha256"] !== "string" || !EXACT_SHA256.test(value["revisionSha256"])
     || !Array.isArray(value["pages"]) || value["pages"].length > 100
@@ -1604,11 +1765,13 @@ function isBaseIndexIdentity(value: unknown): value is AcceptanceContextBaseInde
   ) return false;
   const pages = value["pages"];
   if (!pages.every((page) => isRecord(page)
-    && hasExactKeys(page, ["id", "slug", "commitSha", "inputsHashSha256", "stale"])
+    && hasExactKeys(page, ["id", "repositoryId", "slug", "commitSha", "inputsHashSha256", "pageBodySha256", "stale"])
     && isUuid(page["id"])
+    && isUuid(page["repositoryId"])
     && safeRepoPath(page["slug"])
     && typeof page["commitSha"] === "string" && EXACT_SHA1.test(page["commitSha"])
     && typeof page["inputsHashSha256"] === "string" && EXACT_SHA256.test(page["inputsHashSha256"])
+    && typeof page["pageBodySha256"] === "string" && EXACT_SHA256.test(page["pageBodySha256"])
     && typeof page["stale"] === "boolean"
   )) return false;
   if (pages.length === 0 && value["gaps"].length === 0) return false;
@@ -1616,24 +1779,25 @@ function isBaseIndexIdentity(value: unknown): value is AcceptanceContextBaseInde
     || `${pages[index - 1]!["slug"]}\u0000${pages[index - 1]!["id"]}`
       < `${page["slug"]}\u0000${page["id"]}`)) return false;
   if (!(value["gaps"] as string[]).every((gap, index, gaps) => index === 0 || gaps[index - 1]! < gap)) return false;
-  return value["revisionSha256"] === acceptanceContextBaseIndexRevisionSha256({
-    schemaVersion: 1, backgroundOnly: true, pages: pages as AcceptanceContextBaseIndexIdentity["pages"], gaps: value["gaps"] as string[],
+  return value["revisionSha256"] === acceptanceContextPackCustodyBaseIndexRevisionSha256({
+    schemaVersion: 2, backgroundOnly: true, pages: pages as AcceptanceContextPackCustodyBaseIndexIdentity["pages"], gaps: value["gaps"] as string[],
   });
 }
 
-function isOverlayIdentity(value: unknown): value is AcceptanceContextOverlayManifestIdentity {
+function isCustodyOverlayIdentity(value: unknown): value is AcceptanceContextPackCustodyOverlayManifestIdentity {
   if (!isRecord(value)
     || !hasExactKeys(value, ["schemaVersion", "manifestSha256", "baseSha", "mergeBaseSha", "headSha", "files"])
-    || value["schemaVersion"] !== 1
+    || value["schemaVersion"] !== 2
     || typeof value["manifestSha256"] !== "string" || !EXACT_SHA256.test(value["manifestSha256"])
     || typeof value["baseSha"] !== "string" || !EXACT_SHA1.test(value["baseSha"])
     || typeof value["mergeBaseSha"] !== "string" || !EXACT_SHA1.test(value["mergeBaseSha"])
     || typeof value["headSha"] !== "string" || !EXACT_SHA1.test(value["headSha"])
-    || !Array.isArray(value["files"]) || value["files"].length === 0 || value["files"].length > 500
+    || !Array.isArray(value["files"]) || value["files"].length === 0
+    || value["files"].length > MAX_CONTEXT_CUSTODY_COMPARE_FILES
   ) return false;
   const files = value["files"];
   if (!files.every((file) => isRecord(file)
-    && hasExactKeys(file, ["path", "status", "blobSha", "previousPath"])
+    && hasExactKeys(file, ["path", "status", "blobSha", "previousPath", "patchSha256", "patchByteCount", "headRanges"])
     && safeRepoPath(file["path"])
     && (file["status"] === "added" || file["status"] === "modified" || file["status"] === "removed"
       || file["status"] === "renamed" || file["status"] === "copied" || file["status"] === "changed")
@@ -1643,11 +1807,34 @@ function isOverlayIdentity(value: unknown): value is AcceptanceContextOverlayMan
     && (file["status"] === "renamed"
       ? safeRepoPath(file["previousPath"]) && file["previousPath"] !== file["path"]
       : file["previousPath"] === null)
+    && ((file["patchSha256"] === null && file["patchByteCount"] === null && Array.isArray(file["headRanges"])
+      && file["headRanges"].length === 0)
+      || (typeof file["patchSha256"] === "string" && EXACT_SHA256.test(file["patchSha256"])
+        && positiveBoundedInteger(file["patchByteCount"], MAX_CONTEXT_CUSTODY_PATCH_BYTES)
+        && Array.isArray(file["headRanges"]) && file["headRanges"].length > 0
+        && file["headRanges"].length <= MAX_CONTEXT_CUSTODY_HEAD_RANGES
+        && file["headRanges"].every((range) => isRecord(range)
+          && hasExactKeys(range, ["startLine", "endLine", "coordinateSha256"])
+          && positiveBoundedInteger(range["startLine"], MAX_CONTEXT_CUSTODY_HEAD_LINE)
+          && positiveBoundedInteger(range["endLine"], MAX_CONTEXT_CUSTODY_HEAD_LINE)
+          && (range["startLine"] as number) <= (range["endLine"] as number)
+          && typeof range["coordinateSha256"] === "string" && EXACT_SHA256.test(range["coordinateSha256"])
+          && range["coordinateSha256"] === acceptanceContextOverlayHeadRangeCoordinateSha256({
+            path: file["path"] as string,
+            patchSha256: file["patchSha256"] as string,
+            startLine: range["startLine"] as number,
+            endLine: range["endLine"] as number,
+          }))))
   )) return false;
+  if (!files.every((file) => {
+    const ranges = file["headRanges"] as Array<Record<string, unknown>>;
+    return ranges.every((range, index) => index === 0
+      || (ranges[index - 1]!["endLine"] as number) < (range["startLine"] as number));
+  })) return false;
   if (!files.every((file, index) => index === 0 || files[index - 1]!["path"] < file["path"])) return false;
-  return value["manifestSha256"] === acceptanceContextOverlayManifestSha256({
-    schemaVersion: 1, baseSha: value["baseSha"], mergeBaseSha: value["mergeBaseSha"], headSha: value["headSha"],
-    files: files as AcceptanceContextOverlayManifestIdentity["files"],
+  return value["manifestSha256"] === acceptanceContextPackCustodyOverlayManifestSha256({
+    schemaVersion: 2, baseSha: value["baseSha"], mergeBaseSha: value["mergeBaseSha"], headSha: value["headSha"],
+    files: files as AcceptanceContextPackCustodyOverlayManifestIdentity["files"],
   });
 }
 
@@ -1671,8 +1858,8 @@ function isProvenance(value: unknown): value is AcceptanceContextInclusionExclus
 }
 
 function hasCompleteAdmittedSourceProvenance(input: {
-  baseIndex: AcceptanceContextBaseIndexIdentity;
-  overlay: AcceptanceContextOverlayManifestIdentity;
+  baseIndex: AcceptanceContextPackCustodyBaseIndexIdentity;
+  overlay: AcceptanceContextPackCustodyOverlayManifestIdentity;
   provenance: AcceptanceContextInclusionExclusionProvenance;
 }): boolean {
   const expected = new Map<string, number>();
@@ -1873,27 +2060,317 @@ function correctionPacketIdForSnapshotEvent(
     : null;
 }
 
+function correctionPacketPayloadsForSnapshotEvents(
+  events: readonly ChangeRecordEventRow[],
+  input: AcceptanceContextPackSnapshotInput,
+  confirmedCriteria: ReadonlyMap<string, string>
+): { packetIds: string[]; packets: Record<string, unknown>[] } | null {
+  const pairs = events.map((event) => {
+    const packetId = correctionPacketIdForSnapshotEvent(event, input, confirmedCriteria);
+    return packetId === null || !validateReviewJobCorrectionPacketPayload(event.payloadRef)
+      ? null
+      : { packetId, payload: event.payloadRef };
+  });
+  if (pairs.some((pair) => pair === null)) return null;
+  const ordered = (pairs as Array<{ packetId: string; payload: Record<string, unknown> }>).sort((left, right) =>
+    left.packetId.localeCompare(right.packetId)
+  );
+  if (new Set(ordered.map((pair) => pair.packetId)).size !== ordered.length) return null;
+  return { packetIds: ordered.map((pair) => pair.packetId), packets: ordered.map((pair) => pair.payload) };
+}
+
+async function recheckWikiBaseIndex(
+  tx: DbTransaction,
+  input: Pick<AcceptanceContextPackSnapshotInput, "workspaceId" | "repo" | "baseIndex">
+): Promise<void> {
+  const baseIndex = input.baseIndex;
+  if (!baseIndex || baseIndex.pages.length === 0) return;
+  const repositoryIds = [...new Set(baseIndex.pages.map((page) => page.repositoryId))];
+  if (repositoryIds.length !== 1) throw new Error("Context Pack Wiki pages span multiple repositories");
+  const repository = (await tx.select().from(repositories).where(and(
+    eq(repositories.id, repositoryIds[0]!),
+    eq(repositories.workspaceId, input.workspaceId),
+    eq(repositories.name, input.repo),
+  )).limit(1))[0];
+  if (!repository) throw new Error("Context Pack Wiki repository is missing or outside this workspace");
+  const pageIds = baseIndex.pages.map((page) => page.id);
+  const rows = await tx.select().from(wikiPages).where(and(
+    eq(wikiPages.workspaceId, input.workspaceId),
+    eq(wikiPages.repositoryId, repository.id),
+    inArray(wikiPages.id, pageIds),
+  ));
+  if (rows.length !== pageIds.length) throw new Error("Context Pack Wiki page is missing or outside this repository");
+  const persisted = new Map(rows.map((page) => [page.id, page]));
+  let totalBodyBytes = 0;
+  for (const page of baseIndex.pages) {
+    const actual = persisted.get(page.id);
+    const bodyBytes = actual ? Buffer.byteLength(actual.bodyMd, "utf8") : 0;
+    totalBodyBytes += bodyBytes;
+    if (!actual || bodyBytes === 0 || bodyBytes > MAX_CONTEXT_CUSTODY_WIKI_PAGE_BYTES
+      || totalBodyBytes > MAX_CONTEXT_CUSTODY_WIKI_TOTAL_BYTES
+      || actual.repositoryId !== page.repositoryId || actual.slug !== page.slug
+      || actual.commitSha.toLowerCase() !== page.commitSha.toLowerCase()
+      || actual.inputsHash.toLowerCase() !== page.inputsHashSha256.toLowerCase()
+      || wikiPageBodySha256(actual.bodyMd) !== page.pageBodySha256.toLowerCase()
+      || actual.stale !== page.stale) {
+      throw new Error("Context Pack Wiki page identity no longer matches the database");
+    }
+  }
+}
+
+export type AcceptanceConfirmedContractProjection = {
+  originalRequest: string;
+  normalizedRequirements: string[];
+  acceptanceCriteria: Array<{
+    id: string;
+    text: string;
+    userVisible: boolean;
+    modality?: "ui" | "api" | "data" | "job";
+  }>;
+  nonGoals: string[];
+  risks: string[];
+  stops: string[];
+  environment: Record<string, unknown>;
+  unresolvedQuestions: Array<{ id: string; text: string }>;
+};
+
+function safeContractValue(value: unknown, depth = 0): boolean {
+  if (depth > 4) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return safeSnapshotText(value, 2_000);
+  if (Array.isArray(value)) return value.length <= 64 && value.every((item) => safeContractValue(item, depth + 1));
+  if (!isRecord(value) || Object.keys(value).length > 32) return false;
+  return Object.entries(value).every(([key, nested]) => safeSnapshotText(key, 128)
+    && safeContractValue(nested, depth + 1));
+}
+
+function safeContractStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 100 && value.every((item) => safeSnapshotText(item, 2_000));
+}
+
+/**
+ * The compiler gets this closed projection, never the arbitrary Contract JSON.
+ * The full persisted JSON remains part of the custody hash above.
+ */
+export function projectConfirmedAcceptanceContract(
+  contract: Record<string, unknown>
+): AcceptanceConfirmedContractProjection | null {
+  const criteria = contract["acceptanceCriteria"];
+  const questions = contract["unresolvedQuestions"];
+  const environment = contract["environment"];
+  if (!safeSnapshotText(contract["originalRequest"], 4_000)
+    || !safeContractStringArray(contract["normalizedRequirements"])
+    || !safeContractStringArray(contract["nonGoals"])
+    || !safeContractStringArray(contract["risks"])
+    || !safeContractStringArray(contract["stops"])
+    || !isRecord(environment) || !safeContractValue(environment)
+    || !Array.isArray(criteria) || criteria.length === 0 || criteria.length > 100
+    || !Array.isArray(questions) || questions.length > 100) return null;
+  const projectedCriteria: AcceptanceConfirmedContractProjection["acceptanceCriteria"] = [];
+  for (const criterion of criteria) {
+    if (!isRecord(criterion) || !hasExactKeys(criterion, ["id", "text", "userVisible"])
+      && !(isRecord(criterion) && hasExactKeys(criterion, ["id", "text", "userVisible", "modality"]))) return null;
+    if (!safeSnapshotText(criterion["id"], 512) || !safeSnapshotText(criterion["text"], 2_000)
+      || typeof criterion["userVisible"] !== "boolean"
+      || (hasOwn(criterion, "modality") && criterion["modality"] !== "ui" && criterion["modality"] !== "api"
+        && criterion["modality"] !== "data" && criterion["modality"] !== "job")) return null;
+    projectedCriteria.push({
+      id: criterion["id"], text: criterion["text"], userVisible: criterion["userVisible"],
+      ...(hasOwn(criterion, "modality") ? { modality: criterion["modality"] as "ui" | "api" | "data" | "job" } : {}),
+    });
+  }
+  if (new Set(projectedCriteria.map((criterion) => criterion.id)).size !== projectedCriteria.length) return null;
+  const projectedQuestions: AcceptanceConfirmedContractProjection["unresolvedQuestions"] = [];
+  for (const question of questions) {
+    if (!isRecord(question) || !hasExactKeys(question, ["id", "text"])
+      || !safeSnapshotText(question["id"], 512) || !safeSnapshotText(question["text"], 2_000)) return null;
+    projectedQuestions.push({ id: question["id"], text: question["text"] });
+  }
+  if (new Set(projectedQuestions.map((question) => question.id)).size !== projectedQuestions.length) return null;
+  return {
+    originalRequest: contract["originalRequest"],
+    normalizedRequirements: [...contract["normalizedRequirements"]],
+    acceptanceCriteria: projectedCriteria,
+    nonGoals: [...contract["nonGoals"]],
+    risks: [...contract["risks"]],
+    stops: [...contract["stops"]],
+    environment: structuredClone(environment),
+    unresolvedQuestions: projectedQuestions,
+  };
+}
+
+export type ResolveAcceptanceContextPackCustodyInput = {
+  workspaceId: string;
+  sourceSnapshotId: string;
+};
+
+export type AcceptanceContextPackCustodyResolution = {
+  sourceSnapshot: Pick<AcceptanceContextPackSnapshotInput,
+    "recordId" | "reviewJobId" | "acceptanceContractId" | "acceptanceContractVersion" | "repo" | "prNumber"
+    | "expectedHeadSha" | "baseSha" | "mergeBaseSha" | "headTreeSha" | "packetIds" | "packetSetSha256"
+    | "correctionPacketPayloadSetSha256" | "compilerVersion" | "baseIndex" | "overlay" | "provenance"
+  > & { id: string };
+  contract: AcceptanceConfirmedContractProjection;
+  acceptanceContractSha256: string;
+  correctionPackets: Record<string, unknown>[];
+  correctionPacketPayloadSetSha256: string;
+  wikiPages: Array<{
+    id: string;
+    repositoryId: string;
+    slug: string;
+    commitSha: string;
+    inputsHashSha256: string;
+    pageBodySha256: string;
+    stale: boolean;
+    bodyMd: string;
+  }>;
+};
+
+/**
+ * Server-only post-admission resolver. Its sole authority is one persisted
+ * source snapshot; it never accepts caller page IDs, Contract, or packet sets.
+ */
+export async function resolveAcceptanceContextPackCustody(
+  input: ResolveAcceptanceContextPackCustodyInput
+): Promise<AcceptanceContextPackCustodyResolution> {
+  return db.transaction(async (tx) => {
+    const snapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+      eq(acceptanceContextPackSnapshots.id, input.sourceSnapshotId),
+      eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+    if (!snapshot || snapshot.status !== "admitted"
+      || !isCustodyBaseIndexIdentity(snapshot.baseIndex) || !isCustodyOverlayIdentity(snapshot.overlay)
+      || typeof snapshot.acceptanceContractSha256 !== "string"
+      || typeof snapshot.correctionPacketPayloadSetSha256 !== "string") {
+      throw new Error("Context Pack custody snapshot is missing, legacy, or not admitted");
+    }
+    const baseIndex = snapshot.baseIndex;
+    const overlay = snapshot.overlay;
+    const snapshotInput: AcceptanceContextPackSnapshotInput = {
+      workspaceId: snapshot.workspaceId, recordId: snapshot.recordId, reviewJobId: snapshot.reviewJobId,
+      acceptanceContractId: snapshot.acceptanceContractId, acceptanceContractVersion: snapshot.acceptanceContractVersion,
+      acceptanceContractSha256: snapshot.acceptanceContractSha256, repo: snapshot.repo, prNumber: snapshot.prNumber,
+      expectedHeadSha: snapshot.expectedHeadSha, baseSha: snapshot.baseSha, mergeBaseSha: snapshot.mergeBaseSha,
+      headTreeSha: snapshot.headTreeSha, packetIds: snapshot.packetIds, packetSetSha256: snapshot.packetSetSha256,
+      correctionPacketPayloadSetSha256: snapshot.correctionPacketPayloadSetSha256,
+      compilerVersion: snapshot.compilerVersion, baseIndex, overlay, provenance: snapshot.provenance as AcceptanceContextInclusionExclusionProvenance,
+      status: snapshot.status, reason: snapshot.reason,
+    };
+    const records = await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, snapshot.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.repo, snapshot.repo), eq(changeRecords.prNumber, snapshot.prNumber),
+    )).limit(1);
+    if (!records[0] || !records[0].headShas.includes(snapshot.expectedHeadSha)) {
+      throw new Error("Context Pack custody Record is not anchored to the exact head");
+    }
+    const jobs = await tx.select().from(reviewJobs).where(and(
+      eq(reviewJobs.id, snapshot.reviewJobId), eq(reviewJobs.workspaceId, input.workspaceId),
+      eq(reviewJobs.repo, snapshot.repo), eq(reviewJobs.prNumber, snapshot.prNumber),
+      eq(reviewJobs.headSha, snapshot.expectedHeadSha),
+    )).limit(1);
+    if (jobs.length !== 1) throw new Error("Context Pack custody review job is not anchored to the exact head");
+    const contracts = await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.id, snapshot.acceptanceContractId), eq(acceptanceContracts.recordId, snapshot.recordId),
+      eq(acceptanceContracts.version, snapshot.acceptanceContractVersion), eq(acceptanceContracts.status, "confirmed"),
+    )).limit(1);
+    const confirmed = contracts[0];
+    const contract = confirmed && projectConfirmedAcceptanceContract(confirmed.contract);
+    if (!confirmed || !contract) throw new Error("Context Pack custody Contract is missing, unconfirmed, or unsafe");
+    const confirmedContractSha256 = acceptanceContractSha256({
+      acceptanceContractId: confirmed.id, acceptanceContractVersion: confirmed.version, contract: confirmed.contract,
+    });
+    if (snapshot.acceptanceContractSha256 !== confirmedContractSha256) {
+      throw new Error("Context Pack custody Contract hash no longer matches the admitted snapshot");
+    }
+    const criteria = new Map(contract.acceptanceCriteria.map((criterion) => [criterion.id, criterion.text]));
+    const events = await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, snapshot.recordId),
+      sql`${changeRecordEvents.eventKey} LIKE ${`review:correction:${snapshot.reviewJobId}:%`}`,
+    )).orderBy(asc(changeRecordEvents.eventKey));
+    const packets = correctionPacketPayloadsForSnapshotEvents(events, snapshotInput, criteria);
+    if (!packets) throw new Error("Context Pack custody contains an invalid R8.1 correction packet");
+    const correctionPacketPayloadSetSha256 = acceptanceCorrectionPacketPayloadSetSha256({ packets: packets.packets });
+    if (!isDeepStrictEqual(packets.packetIds, snapshot.packetIds)
+      || snapshot.packetSetSha256 !== acceptanceContextPacketSetSha256({ packetIds: packets.packetIds })
+      || snapshot.correctionPacketPayloadSetSha256 !== correctionPacketPayloadSetSha256) {
+      throw new Error("Context Pack custody packets no longer match the admitted snapshot");
+    }
+    const repositoriesForRepo = await tx.select().from(repositories).where(and(
+      eq(repositories.workspaceId, input.workspaceId), eq(repositories.name, snapshot.repo),
+    ));
+    if (repositoriesForRepo.length !== 1) throw new Error("Context Pack custody repository is missing or ambiguous");
+    const pageIds = baseIndex.pages.map((page) => page.id);
+    if (pageIds.length > 100 || new Set(pageIds).size !== pageIds.length) {
+      throw new Error("Context Pack custody snapshot has an invalid Wiki page set");
+    }
+    const pages = await tx.select().from(wikiPages).where(and(
+      eq(wikiPages.workspaceId, input.workspaceId), eq(wikiPages.repositoryId, repositoriesForRepo[0]!.id),
+      inArray(wikiPages.id, pageIds),
+    )).orderBy(asc(wikiPages.slug), asc(wikiPages.id));
+    if (pages.length !== pageIds.length) throw new Error("Context Pack custody Wiki page is missing or outside this repository");
+    const persisted = new Map(pages.map((page) => [page.id, page]));
+    let totalBodyBytes = 0;
+    for (const page of baseIndex.pages) {
+      const actual = persisted.get(page.id);
+      const bodyBytes = actual ? Buffer.byteLength(actual.bodyMd, "utf8") : 0;
+      totalBodyBytes += bodyBytes;
+      if (!actual || bodyBytes === 0 || bodyBytes > MAX_CONTEXT_CUSTODY_WIKI_PAGE_BYTES
+        || totalBodyBytes > MAX_CONTEXT_CUSTODY_WIKI_TOTAL_BYTES
+        || actual.repositoryId !== page.repositoryId || actual.slug !== page.slug
+        || actual.commitSha.toLowerCase() !== page.commitSha.toLowerCase()
+        || actual.inputsHash.toLowerCase() !== page.inputsHashSha256.toLowerCase()
+        || wikiPageBodySha256(actual.bodyMd) !== page.pageBodySha256.toLowerCase()
+        || actual.stale !== page.stale) {
+        throw new Error("Context Pack custody Wiki page identity or body bounds no longer match the snapshot");
+      }
+    }
+    return {
+      sourceSnapshot: {
+        id: snapshot.id, recordId: snapshot.recordId, reviewJobId: snapshot.reviewJobId,
+        acceptanceContractId: snapshot.acceptanceContractId, acceptanceContractVersion: snapshot.acceptanceContractVersion,
+        repo: snapshot.repo, prNumber: snapshot.prNumber, expectedHeadSha: snapshot.expectedHeadSha,
+        baseSha: snapshot.baseSha, mergeBaseSha: snapshot.mergeBaseSha, headTreeSha: snapshot.headTreeSha,
+        packetIds: snapshot.packetIds, packetSetSha256: snapshot.packetSetSha256,
+        correctionPacketPayloadSetSha256: snapshot.correctionPacketPayloadSetSha256,
+        compilerVersion: snapshot.compilerVersion, baseIndex, overlay, provenance: snapshotInput.provenance,
+      },
+      contract,
+      acceptanceContractSha256: confirmedContractSha256,
+      correctionPackets: packets.packets,
+      correctionPacketPayloadSetSha256,
+      wikiPages: pages.map((page) => ({
+        id: page.id, repositoryId: page.repositoryId, slug: page.slug, commitSha: page.commitSha,
+        inputsHashSha256: page.inputsHash, pageBodySha256: wikiPageBodySha256(page.bodyMd),
+        stale: page.stale, bodyMd: page.bodyMd,
+      })),
+    };
+  });
+}
+
 /** Closed, metadata-only identity for one exact review-job/head Context Pack snapshot. */
 export function validateAcceptanceContextPackSnapshotInput(
   value: unknown
 ): value is AcceptanceContextPackSnapshotInput {
   if (!isRecord(value) || !hasExactKeys(value, [
     "workspaceId", "recordId", "reviewJobId", "acceptanceContractId", "acceptanceContractVersion",
-    "repo", "prNumber", "expectedHeadSha", "baseSha", "mergeBaseSha", "headTreeSha", "packetIds", "packetSetSha256",
+    "acceptanceContractSha256", "repo", "prNumber", "expectedHeadSha", "baseSha", "mergeBaseSha", "headTreeSha", "packetIds", "packetSetSha256", "correctionPacketPayloadSetSha256",
     "compilerVersion", "baseIndex", "overlay", "provenance", "status", "reason",
   ])) return false;
   if (!isUuid(value["workspaceId"]) || !isUuid(value["recordId"]) || !isUuid(value["reviewJobId"])
     || !isUuid(value["acceptanceContractId"]) || !Number.isInteger(value["acceptanceContractVersion"])
     || (value["acceptanceContractVersion"] as number) <= 0 || typeof value["repo"] !== "string"
+    || typeof value["acceptanceContractSha256"] !== "string" || !EXACT_SHA256.test(value["acceptanceContractSha256"])
     || !safeRepo(value["repo"]) || !Number.isInteger(value["prNumber"]) || (value["prNumber"] as number) <= 0
     || typeof value["expectedHeadSha"] !== "string" || !EXACT_SHA1.test(value["expectedHeadSha"])
     || !uniqueStrings(value["packetIds"], (packet) => typeof packet === "string" && CORRECTION_PACKET_ID.test(packet), 100)
     || !(value["packetIds"] as string[]).every((packet, index, packets) => index === 0 || packets[index - 1]! < packet)
     || typeof value["packetSetSha256"] !== "string" || !EXACT_SHA256.test(value["packetSetSha256"])
     || value["packetSetSha256"] !== acceptanceContextPacketSetSha256({ packetIds: value["packetIds"] as string[] })
+    || typeof value["correctionPacketPayloadSetSha256"] !== "string" || !EXACT_SHA256.test(value["correctionPacketPayloadSetSha256"])
     || !safeSnapshotText(value["compilerVersion"], 128)
-    || (value["baseIndex"] !== null && !isBaseIndexIdentity(value["baseIndex"]))
-    || (value["overlay"] !== null && !isOverlayIdentity(value["overlay"]))
+    || (value["baseIndex"] !== null && !isCustodyBaseIndexIdentity(value["baseIndex"]))
+    || (value["overlay"] !== null && !isCustodyOverlayIdentity(value["overlay"]))
     || !isProvenance(value["provenance"])
     || (value["status"] !== "admitted" && value["status"] !== "not_proven")
     || (value["reason"] !== null && !safeSnapshotText(value["reason"], 2_000))
@@ -1941,6 +2418,7 @@ function snapshotComparable(snapshot: AcceptanceContextPackSnapshotRow | Accepta
     reviewJobId: snapshot.reviewJobId,
     acceptanceContractId: snapshot.acceptanceContractId,
     acceptanceContractVersion: snapshot.acceptanceContractVersion,
+    acceptanceContractSha256: snapshot.acceptanceContractSha256,
     repo: snapshot.repo,
     prNumber: snapshot.prNumber,
     expectedHeadSha: snapshot.expectedHeadSha,
@@ -1949,6 +2427,7 @@ function snapshotComparable(snapshot: AcceptanceContextPackSnapshotRow | Accepta
     headTreeSha: snapshot.headTreeSha,
     packetIds: snapshot.packetIds,
     packetSetSha256: snapshot.packetSetSha256,
+    correctionPacketPayloadSetSha256: snapshot.correctionPacketPayloadSetSha256,
     compilerVersion: snapshot.compilerVersion,
     baseIndex: snapshot.baseIndex,
     overlay: snapshot.overlay,
@@ -2006,6 +2485,13 @@ export async function recordAcceptanceContextPackSnapshot(
     ) {
       throw new Error("Context Pack snapshot requires the Record's exact confirmed Contract");
     }
+    if (input.acceptanceContractSha256 !== acceptanceContractSha256({
+      acceptanceContractId: confirmed[0]!.id,
+      acceptanceContractVersion: confirmed[0]!.version,
+      contract: confirmed[0]!.contract,
+    })) {
+      throw new Error("Context Pack snapshot Contract hash is not the exact confirmed Contract");
+    }
     const rawCriteria = confirmed[0]!.contract["acceptanceCriteria"];
     if (!Array.isArray(rawCriteria)) {
       throw new Error("Context Pack snapshot requires the confirmed Contract's exact criteria");
@@ -2023,14 +2509,18 @@ export async function recordAcceptanceContextPackSnapshot(
       eq(changeRecordEvents.recordId, input.recordId),
       sql`${changeRecordEvents.eventKey} LIKE ${correctionPrefix}`,
     )).orderBy(asc(changeRecordEvents.eventKey));
-    const persistedPacketIds = correctionEvents
-      .map((event) => correctionPacketIdForSnapshotEvent(event, input, confirmedCriteria))
-      .sort((left, right) => String(left).localeCompare(String(right)));
-    if (persistedPacketIds.some((packetId) => packetId === null)
-      || !isDeepStrictEqual(persistedPacketIds, input.packetIds)
+    const persistedPackets = correctionPacketPayloadsForSnapshotEvents(
+      correctionEvents, input, confirmedCriteria
+    );
+    if (!persistedPackets
+      || !isDeepStrictEqual(persistedPackets.packetIds, input.packetIds)
+      || input.correctionPacketPayloadSetSha256 !== acceptanceCorrectionPacketPayloadSetSha256({
+        packets: persistedPackets.packets,
+      })
     ) {
-      throw new Error("Context Pack snapshot packet IDs are not the complete exact R8.1 packet set");
+      throw new Error("Context Pack snapshot packets are not the complete exact R8.1 payload set");
     }
+    await recheckWikiBaseIndex(tx, input);
     const existing = await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.reviewJobId, input.reviewJobId),
       eq(acceptanceContextPackSnapshots.compilerVersion, input.compilerVersion),

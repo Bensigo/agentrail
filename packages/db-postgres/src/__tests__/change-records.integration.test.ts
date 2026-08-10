@@ -3,6 +3,8 @@ import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
+import { repositories } from "../schema/repositories.js";
+import { wikiPages } from "../schema/wiki_pages.js";
 import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
@@ -15,10 +17,14 @@ import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
   appendChangeRecordEventsAtomically,
-  acceptanceContextBaseIndexRevisionSha256,
-  acceptanceContextOverlayManifestSha256,
+  acceptanceContextPackCustodyBaseIndexRevisionSha256,
+  acceptanceContextPackCustodyOverlayManifestSha256,
+  acceptanceContextOverlayHeadRangeCoordinateSha256,
   acceptanceContextPacketSetSha256,
+  acceptanceContractSha256,
+  acceptanceCorrectionPacketPayloadSetSha256,
   reviewJobCorrectionPacketId,
+  wikiPageBodySha256,
   attachConfirmedAcceptanceRecordToExternalPullRequest,
   changeRecordId,
   createDraftAcceptanceContract,
@@ -28,6 +34,7 @@ import {
   recordAcceptancePostMergeOutcome,
   recordAcceptanceBuilderRouteSelection,
   recordAcceptanceContextPackSnapshot,
+  resolveAcceptanceContextPackCustody,
   registerAcceptanceBuilderRoute,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
@@ -49,6 +56,15 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
+               EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
+                   AND column_name = 'acceptance_contract_sha256'
+               ) AND EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
+                   AND column_name = 'correction_packet_payload_set_sha256'
+               ) AS acceptance_context_pack_custody,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
@@ -58,6 +74,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_contracts: string | null;
       acceptance_builder_routes: string | null;
       acceptance_context_pack_snapshots: string | null;
+      acceptance_context_pack_custody: boolean;
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
     }>;
@@ -67,6 +84,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
+      rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
@@ -272,50 +290,67 @@ describe.skipIf(!DB_AVAILABLE)(
         acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
       });
       const packetIds = [packetId];
+      const packetPayload = {
+        kind: "review_job_correction_packet", version: 1, packetId, workspaceId: wsId,
+        repo: "acme/widgets", prNumber: 42, headSha, recordId: draft.record.id, jobId: job.id,
+        acceptanceContract: { id: draft.contract.id, version: 1 },
+        criterion: { id: "AC-1", snapshot: "A user can save a filter" },
+        basis: "acceptance_contract" as const, state: "failed" as const,
+        expected: "A user can save a filter", observed: "The saved filter was not retained.",
+        affectedContext: {
+          modality: "ui", environmentKind: "isolated_preview", flow: "Save a filter, reload, and inspect it.",
+          reproduction: { modality: "ui", steps: [
+            { action: "open", path: "/filters" },
+            { action: "expect_text", text: "Saved filters" },
+            { action: "screenshot", label: "saved-filter" },
+          ] },
+        },
+        evidence: {
+          evidenceRef: "ui-execution:execution-1", artifactKey: "review/ui/execution-1.png",
+          executionId: "execution-1", previewBootId: "preview-boot-1",
+        },
+        scopeBoundary: `Only AC-1 for acme/widgets#42 at ${headSha}.`,
+        impact: "The server-attested UI receipt shows this confirmed criterion failed on the exact head.",
+        requiredCorrection: "Make the persisted UI flow retain the saved filter.",
+        reverification: "Rerun the persisted UI plan against the next exact head.",
+      };
       await appendChangeRecordEvent({
         recordId: draft.record.id, eventKey: `review:correction:${job.id}:AC-1`, stage: "review",
-        actor: "reviewer-of-record", payloadRef: {
-          kind: "review_job_correction_packet", version: 1, packetId, workspaceId: wsId,
-          repo: "acme/widgets", prNumber: 42, headSha, recordId: draft.record.id, jobId: job.id,
-          acceptanceContract: { id: draft.contract.id, version: 1 },
-          criterion: { id: "AC-1", snapshot: "A user can save a filter" },
-          basis: "acceptance_contract", state: "failed",
-          expected: "A user can save a filter", observed: "The saved filter was not retained.",
-          affectedContext: {
-            modality: "ui", environmentKind: "isolated_preview", flow: "Save a filter, reload, and inspect it.",
-            reproduction: { modality: "ui", steps: [
-              { action: "open", path: "/filters" },
-              { action: "expect_text", text: "Saved filters" },
-              { action: "screenshot", label: "saved-filter" },
-            ] },
-          },
-          evidence: {
-            evidenceRef: "ui-execution:execution-1", artifactKey: "review/ui/execution-1.png",
-            executionId: "execution-1", previewBootId: "preview-boot-1",
-          },
-          scopeBoundary: `Only AC-1 for acme/widgets#42 at ${headSha}.`,
-          impact: "The server-attested UI receipt shows this confirmed criterion failed on the exact head.",
-          requiredCorrection: "Make the persisted UI flow retain the saved filter.",
-          reverification: "Rerun the persisted UI plan against the next exact head.",
-        },
+        actor: "reviewer-of-record", payloadRef: packetPayload,
+      });
+      const repository = (await db.insert(repositories).values({
+        workspaceId: wsId, name: "acme/widgets", url: "https://github.com/acme/widgets",
+      }).returning())[0]!;
+      const wikiBody = "# Widgets\n\nThe saved-filter boundary.";
+      const wiki = (await db.insert(wikiPages).values({
+        workspaceId: wsId, repositoryId: repository.id, slug: "wiki/overview", title: "Widgets",
+        kind: "overview", bodyMd: wikiBody, commitSha: "1".repeat(40), inputsHash: "2".repeat(64),
+        generatedAt: new Date(),
+      }).returning())[0]!;
+      await db.insert(wikiPages).values({
+        workspaceId: wsId, repositoryId: repository.id, slug: "wiki/not-admitted", title: "Not admitted",
+        kind: "overview", bodyMd: "This page is not part of the source snapshot.",
+        commitSha: "1".repeat(40), inputsHash: "3".repeat(64), generatedAt: new Date(),
       });
       const baseIndexCore = {
-        schemaVersion: 1 as const, backgroundOnly: true as const,
-        pages: [{ id: "00000000-0000-4000-8000-000000000001", slug: "wiki/overview", commitSha: "1".repeat(40), inputsHashSha256: "2".repeat(64), stale: false }], gaps: [],
+        schemaVersion: 2 as const, backgroundOnly: true as const,
+        pages: [{ id: wiki.id, repositoryId: repository.id, slug: "wiki/overview", commitSha: "1".repeat(40), inputsHashSha256: "2".repeat(64), pageBodySha256: wikiPageBodySha256(wikiBody), stale: false }], gaps: [],
       };
       const overlayCore = {
-        schemaVersion: 1 as const, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha,
-        files: [{ path: "apps/console/page.tsx", status: "modified" as const, blobSha: "3".repeat(40), previousPath: null }],
+        schemaVersion: 2 as const, baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headSha,
+        files: [{ path: "apps/console/page.tsx", status: "modified" as const, blobSha: "3".repeat(40), previousPath: null, patchSha256: "4".repeat(64), patchByteCount: 100, headRanges: [{ startLine: 4, endLine: 28, coordinateSha256: acceptanceContextOverlayHeadRangeCoordinateSha256({ path: "apps/console/page.tsx", patchSha256: "4".repeat(64), startLine: 4, endLine: 28 }) }]}],
       };
       const input = {
         workspaceId: wsId, recordId: draft.record.id, reviewJobId: job.id,
         acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+        acceptanceContractSha256: acceptanceContractSha256({ acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1, contract: draft.contract.contract }),
         repo: "acme/widgets", prNumber: 42, expectedHeadSha: headSha,
         baseSha: "b".repeat(40), mergeBaseSha: "8".repeat(40), headTreeSha: "c".repeat(40),
         packetIds, packetSetSha256: acceptanceContextPacketSetSha256({ packetIds }),
+        correctionPacketPayloadSetSha256: acceptanceCorrectionPacketPayloadSetSha256({ packets: [packetPayload] }),
         compilerVersion: "exact-head-overlay-v1",
-        baseIndex: { ...baseIndexCore, revisionSha256: acceptanceContextBaseIndexRevisionSha256(baseIndexCore) },
-        overlay: { ...overlayCore, manifestSha256: acceptanceContextOverlayManifestSha256(overlayCore) },
+        baseIndex: { ...baseIndexCore, revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore) },
+        overlay: { ...overlayCore, manifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore) },
         provenance: { schemaVersion: 1 as const, included: [
           { path: "wiki/overview", source: "base_index" as const, reason: "Background Wiki page" },
           { path: "apps/console/page.tsx", source: "overlay" as const, reason: "PR changed file" },
@@ -326,12 +361,28 @@ describe.skipIf(!DB_AVAILABLE)(
       const replay = await recordAcceptanceContextPackSnapshot(input);
       expect(first).toMatchObject({ inserted: true, snapshot: { expectedHeadSha: headSha, status: "admitted" } });
       expect(replay).toMatchObject({ inserted: false, snapshot: { id: first.snapshot.id } });
+      const custody = await resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: first.snapshot.id,
+      });
+      expect(custody.sourceSnapshot).toMatchObject({ id: first.snapshot.id, repo: "acme/widgets" });
+      expect(custody.wikiPages).toEqual([expect.objectContaining({ id: wiki.id, bodyMd: wikiBody })]);
+      await expect(resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: randomUUID(),
+      })).rejects.toThrow("snapshot is missing, legacy, or not admitted");
+      await db.update(wikiPages).set({ bodyMd: "x".repeat(512 * 1024 + 1) }).where(eq(wikiPages.id, wiki.id));
+      await expect(resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: first.snapshot.id,
+      })).rejects.toThrow("body bounds no longer match");
+      await db.update(wikiPages).set({ bodyMd: wikiBody }).where(eq(wikiPages.id, wiki.id));
       await expect(recordAcceptanceContextPackSnapshot({ ...input, baseSha: "9".repeat(40) }))
         .rejects.toThrow("Invalid exact-head Context Pack snapshot");
       await expect(recordAcceptanceContextPackSnapshot({
         ...input, packetIds: ["correction-" + "e".repeat(48)],
         packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: ["correction-" + "e".repeat(48)] }),
-      })).rejects.toThrow("not the complete exact R8.1 packet set");
+      })).rejects.toThrow("not the complete exact R8.1 payload set");
       await appendChangeRecordEvent({
         recordId: draft.record.id,
         eventKey: `review:correction:${job.id}:AC-FORGED`,
@@ -346,7 +397,7 @@ describe.skipIf(!DB_AVAILABLE)(
         },
       });
       await expect(recordAcceptanceContextPackSnapshot(input))
-        .rejects.toThrow("not the complete exact R8.1 packet set");
+        .rejects.toThrow("not the complete exact R8.1 payload set");
       const rows = await db.select().from(acceptanceContextPackSnapshots)
         .where(eq(acceptanceContextPackSnapshots.id, first.snapshot.id));
       expect(rows).toHaveLength(1);

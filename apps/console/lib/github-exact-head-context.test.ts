@@ -5,8 +5,12 @@ import {
   MAX_EXACT_HEAD_COMMIT_RESPONSE_BYTES,
   MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES,
   MAX_EXACT_HEAD_PR_RESPONSE_BYTES,
+  exactHeadContextCustodyOverlay,
   readExactHeadGithubContext,
 } from "./github-exact-head-context";
+import {
+  acceptanceContextOverlayHeadRangeCoordinateSha256,
+} from "@agentrail/db-postgres";
 
 const TOKEN = "ghs_installation-token-secret";
 const HEAD = "a".repeat(40);
@@ -76,6 +80,7 @@ describe("readExactHeadGithubContext", () => {
             previousPath: null,
             headRanges: null,
             patchSha256: null,
+            patchByteCount: null,
           },
           {
             path: "apps/console/lib/renamed.ts",
@@ -84,6 +89,7 @@ describe("readExactHeadGithubContext", () => {
             previousPath: "apps/console/lib/old-name.ts",
             headRanges: null,
             patchSha256: null,
+            patchByteCount: null,
           },
           {
             path: "apps/console/lib/widget.ts",
@@ -92,6 +98,7 @@ describe("readExactHeadGithubContext", () => {
             previousPath: null,
             headRanges: null,
             patchSha256: null,
+            patchByteCount: null,
           },
         ],
         manifestSha256: acceptanceContextOverlayManifestSha256({
@@ -515,19 +522,47 @@ describe("readExactHeadGithubContext", () => {
       path: "src/widget.ts", status: "modified", blobSha: BLOB, previousPath: null,
       headRanges: [{ startLine: 2, endLine: 4 }, { startLine: 22, endLine: 23 }],
       patchSha256: createHash("sha256").update(patch, "utf8").digest("hex"),
+      patchByteCount: Buffer.byteLength(patch, "utf8"),
     });
     expect(second.snapshot.changedFiles).toEqual(first.snapshot.changedFiles);
+    const custodyOverlay = exactHeadContextCustodyOverlay(first.snapshot);
+    expect(custodyOverlay).toMatchObject({
+      schemaVersion: 2,
+      baseSha: BASE,
+      mergeBaseSha: MERGE_BASE,
+      headSha: HEAD,
+      files: [{
+        path: "src/widget.ts",
+        patchByteCount: Buffer.byteLength(patch, "utf8"),
+        headRanges: [
+          {
+            startLine: 2,
+            endLine: 4,
+            coordinateSha256: acceptanceContextOverlayHeadRangeCoordinateSha256({
+              path: "src/widget.ts",
+              patchSha256: createHash("sha256").update(patch, "utf8").digest("hex"),
+              startLine: 2,
+              endLine: 4,
+            }),
+          },
+          expect.objectContaining({ startLine: 22, endLine: 23 }),
+        ],
+      }],
+    });
     expect(first.snapshot.manifestSha256).toBe(acceptanceContextOverlayManifestSha256({
       schemaVersion: 1, baseSha: BASE, mergeBaseSha: MERGE_BASE, headSha: HEAD,
       files: [{ path: "src/widget.ts", status: "modified", blobSha: BLOB, previousPath: null }],
     }));
   });
 
-  it("keeps a missing patch explicit and rejects malformed hunk syntax", async () => {
+  it("keeps a missing patch explicit and rejects empty or malformed supplied patches", async () => {
     const responses = [
       json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
       json(200, { sha: HEAD, tree: { sha: TREE } }),
       json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/no-patch.ts", status: "modified", sha: BLOB }] }),
+      json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
+      json(200, { sha: HEAD, tree: { sha: TREE } }),
+      json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/empty-patch.ts", status: "modified", sha: BLOB, patch: "" }] }),
       json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
       json(200, { sha: HEAD, tree: { sha: TREE } }),
       json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/bad-patch.ts", status: "modified", sha: BLOB, patch: "@@ -nope +1 @@" }] }),
@@ -535,7 +570,9 @@ describe("readExactHeadGithubContext", () => {
     global.fetch = vi.fn();
     for (const response of responses) vi.mocked(global.fetch).mockResolvedValueOnce(response);
     const missing = await readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
-    expect(missing).toMatchObject({ ok: true, snapshot: { changedFiles: [{ headRanges: null, patchSha256: null }] } });
+    expect(missing).toMatchObject({ ok: true, snapshot: { changedFiles: [{ headRanges: null, patchSha256: null, patchByteCount: null }] } });
+    await expect(readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD }))
+      .resolves.toEqual({ ok: false, kind: "not_proven", reason: "invalid_compare_manifest" });
     await expect(readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD }))
       .resolves.toEqual({ ok: false, kind: "not_proven", reason: "invalid_compare_manifest" });
   });

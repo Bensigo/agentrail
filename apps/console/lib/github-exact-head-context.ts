@@ -1,5 +1,8 @@
 import {
+  acceptanceContextOverlayHeadRangeCoordinateSha256,
+  acceptanceContextPackCustodyOverlayManifestSha256,
   acceptanceContextOverlayManifestSha256,
+  type AcceptanceContextPackCustodyOverlayManifestIdentity,
   type AcceptanceContextOverlayManifestIdentity,
 } from "@agentrail/db-postgres";
 import { createHash } from "node:crypto";
@@ -51,6 +54,8 @@ export interface ExactHeadChangedFile {
   headRanges?: Array<{ startLine: number; endLine: number }> | null;
   /** SHA-256 of GitHub's raw patch, retained without retaining the raw patch itself. */
   patchSha256?: string | null;
+  /** UTF-8 byte length of the discarded raw patch. */
+  patchByteCount?: number | null;
 }
 
 export interface ExactHeadGithubContextSnapshot {
@@ -107,6 +112,70 @@ function isSafeRelativePath(value: unknown): value is string {
     /[\u0000-\u001f\u007f]/.test(value)
   ) return false;
   return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+/**
+ * Projects the exact GitHub comparison into the v2 DB custody identity. The
+ * legacy v1 manifest remains available for #1657 compatibility, while this
+ * digest commits the discarded patch's size, hash, and normalized HEAD lines.
+ */
+export function exactHeadContextCustodyOverlay(
+  snapshot: ExactHeadGithubContextSnapshot
+): AcceptanceContextPackCustodyOverlayManifestIdentity | null {
+  if (!snapshot || !isSha(snapshot.baseSha) || !isSha(snapshot.mergeBaseSha) || !isSha(snapshot.headSha)
+    || !Array.isArray(snapshot.changedFiles) || snapshot.changedFiles.length < 1
+    || snapshot.changedFiles.length >= MAX_COMPARE_FILES_EXCLUSIVE) return null;
+  const files: AcceptanceContextPackCustodyOverlayManifestIdentity["files"] = [];
+  for (const file of snapshot.changedFiles) {
+    if (!isSafeRelativePath(file.path) || !ALLOWED_FILE_STATUSES.has(file.status)
+      || (file.status === "removed" ? file.blobSha !== null : !isSha(file.blobSha))
+      || (file.status === "renamed"
+        ? !isSafeRelativePath(file.previousPath) || file.previousPath === file.path
+        : file.previousPath !== null)) return null;
+    const noPatch = file.patchSha256 === null && file.patchByteCount === null && file.headRanges === null;
+    const hasPatch = typeof file.patchSha256 === "string" && /^[a-f0-9]{64}$/iu.test(file.patchSha256)
+      && Number.isSafeInteger(file.patchByteCount) && (file.patchByteCount as number) > 0
+      && (file.patchByteCount as number) <= MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES
+      && Array.isArray(file.headRanges) && file.headRanges.length > 0
+      && file.headRanges.length <= MAX_EXACT_HEAD_PATCH_RANGES;
+    if (!noPatch && !hasPatch) return null;
+    const ranges = noPatch ? [] : file.headRanges!;
+    if (ranges.some((range, index) => !Number.isSafeInteger(range.startLine)
+      || !Number.isSafeInteger(range.endLine) || range.startLine < 1 || range.endLine < range.startLine
+      || range.endLine > MAX_EXACT_HEAD_PATCH_LINE
+      || (index > 0 && ranges[index - 1]!.endLine >= range.startLine))) return null;
+    files.push({
+      path: file.path,
+      status: file.status as AcceptanceContextPackCustodyOverlayManifestIdentity["files"][number]["status"],
+      blobSha: file.blobSha?.toLowerCase() ?? null,
+      previousPath: file.previousPath,
+      patchSha256: noPatch ? null : file.patchSha256!.toLowerCase(),
+      patchByteCount: noPatch ? null : file.patchByteCount!,
+      headRanges: ranges.map(({ startLine, endLine }) => ({
+        startLine,
+        endLine,
+        coordinateSha256: acceptanceContextOverlayHeadRangeCoordinateSha256({
+          path: file.path,
+          patchSha256: file.patchSha256!,
+          startLine,
+          endLine,
+        }),
+      })),
+    });
+  }
+  files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  if (new Set(files.map(({ path }) => path)).size !== files.length) return null;
+  const core = {
+    schemaVersion: 2 as const,
+    baseSha: snapshot.baseSha.toLowerCase(),
+    mergeBaseSha: snapshot.mergeBaseSha.toLowerCase(),
+    headSha: snapshot.headSha.toLowerCase(),
+    files,
+  };
+  return {
+    ...core,
+    manifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(core),
+  };
 }
 
 function githubHeaders(token: string): HeadersInit {
@@ -191,11 +260,18 @@ function parseHunkCoordinate(start: string, count: string | undefined): { start:
   return { start: parsedStart, count: parsedCount };
 }
 
-function parseHeadRanges(rawPatch: unknown): { headRanges: Array<{ startLine: number; endLine: number }> | null; patchSha256: string | null } | null {
-  if (rawPatch === undefined || rawPatch === null) return { headRanges: null, patchSha256: null };
+function parseHeadRanges(rawPatch: unknown): {
+  headRanges: Array<{ startLine: number; endLine: number }> | null;
+  patchSha256: string | null;
+  patchByteCount: number | null;
+} | null {
+  if (rawPatch === undefined || rawPatch === null) {
+    return { headRanges: null, patchSha256: null, patchByteCount: null };
+  }
   if (typeof rawPatch !== "string") return null;
+  if (rawPatch.length === 0) return null;
   const patchSha256 = createHash("sha256").update(rawPatch, "utf8").digest("hex");
-  if (rawPatch.length === 0) return { headRanges: null, patchSha256 };
+  const patchByteCount = Buffer.byteLength(rawPatch, "utf8");
 
   const ranges: Array<{ startLine: number; endLine: number }> = [];
   let hunkCount = 0;
@@ -218,7 +294,8 @@ function parseHeadRanges(rawPatch: unknown): { headRanges: Array<{ startLine: nu
     if (previous && range.startLine <= previous.endLine + 1) previous.endLine = Math.max(previous.endLine, range.endLine);
     else merged.push(range);
   }
-  return { headRanges: merged, patchSha256 };
+  if (merged.length === 0) return null;
+  return { headRanges: merged, patchSha256, patchByteCount };
 }
 
 function parseCompareManifest(
@@ -264,7 +341,9 @@ function parseCompareManifest(
     } else if (rawPreviousPath !== undefined && rawPreviousPath !== null) {
       return null;
     }
-    const patch = status === "removed" ? { headRanges: null, patchSha256: null } : parseHeadRanges(file["patch"]);
+    const patch = status === "removed"
+      ? { headRanges: null, patchSha256: null, patchByteCount: null }
+      : parseHeadRanges(file["patch"]);
     if (patch === null) return null;
     parsed.push({
       path,

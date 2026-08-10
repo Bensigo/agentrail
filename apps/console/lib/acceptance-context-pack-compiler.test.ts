@@ -358,6 +358,25 @@ describe("compileAcceptanceContextPack", () => {
     expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual([
       expect.objectContaining({ requestedPath: "src/helper.ts", outcome: "record" }),
     ]);
+    expect(result.compiled.sourceCustodyReceipt).toMatchObject({
+      schemaVersion: 2,
+      selectedExactRanges: [
+        expect.objectContaining({ kind: "exact_head_dependency", path: "src/helper.ts" }),
+        expect.objectContaining({ kind: "exact_head_overlay", path: "src/widget.ts", startLine: 3, endLine: 4 }),
+      ],
+    });
+    expect(result.compiled.sourceCustodyReceipt.selectedExactRanges).toEqual(
+      result.compiled.manifest.sources.flatMap((source) => source.kind === "base_index_background" ? [] : [{
+        kind: source.kind,
+        path: source.path,
+        blobSha: source.blobSha,
+        fullContentSha256: source.fullContentSha256,
+        startLine: source.startLine,
+        endLine: source.endLine,
+        rangeSha256: source.rangeSha256,
+        byteCount: source.byteCount,
+      }])
+    );
     expect(result.compiled.manifest.sourceCustody.identitySha256).toBe(result.compiled.sourceCustodyReceipt.identitySha256);
     expect(result.compiled.compiler.byteCounter).toBe(ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER);
     expect(result.compiled.renderedByteCount).toBeLessThanOrEqual(ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET);

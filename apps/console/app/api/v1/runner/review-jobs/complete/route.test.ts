@@ -53,6 +53,19 @@ import {
   reviewJobApiCardReservationEventKey,
   reviewJobApiResultEventKey,
 } from "../../../../../../lib/review-job-api-execution";
+import {
+  buildReviewJobDataAttempt,
+  buildReviewJobDataCardReservation,
+  buildReviewJobDataResult,
+  reviewJobDataAttemptEventKey,
+  reviewJobDataCardReservationEventKey,
+  reviewJobDataResultEventKey,
+} from "../../../../../../lib/review-job-data-execution";
+import {
+  buildStoredDataVerificationRequest,
+  dataScalarKind,
+  reviewDataScalarHmac,
+} from "../../../../../../lib/review-job-verification-plan";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
@@ -76,7 +89,13 @@ const SCREENSHOT_KEY =
   "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/exact.png";
 const API_EVIDENCE_KEY =
   "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/response.json";
+const DATA_EVIDENCE_KEY =
+  "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/data.json";
 const PREVIEW_URL = "http://preview.internal:4173";
+const DATA_HMAC_KEY = {
+  keyId: "route-test-2026-08",
+  key: Buffer.alloc(32, 7),
+};
 
 const POSTED_JOB = {
   id: "job-1",
@@ -146,6 +165,44 @@ const CONFIRMED_CONTRACT = [{
     ],
   },
 }];
+
+function storedDataRequest(path: string, criterionId = "AC-1") {
+  return buildStoredDataVerificationRequest({
+    value: {
+      method: "GET",
+      path,
+      expectedStatus: 200,
+      expectedJson: [{ pointer: "/enabled", equals: true }],
+    },
+    binding: {
+      workspaceId: RUNNING_JOB.workspaceId,
+      recordId: CHANGE_RECORD.id,
+      jobId: RUNNING_JOB.id,
+      headSha: RUNNING_JOB.headSha,
+      contractId: CONFIRMED_CONTRACT[0]!.id,
+      contractVersion: CONFIRMED_CONTRACT[0]!.version,
+      criterionId,
+    },
+    hmacKey: DATA_HMAC_KEY,
+  })!;
+}
+
+function observedDataScalar(
+  dataRequest: ReturnType<typeof storedDataRequest>,
+  value: boolean,
+) {
+  return {
+    pointer: "/enabled",
+    found: true,
+    observedType: dataScalarKind(value),
+    observedHmacSha256: reviewDataScalarHmac({
+      key: DATA_HMAC_KEY.key,
+      context: dataRequest.digestContext,
+      pointer: "/enabled",
+      value,
+    }),
+  };
+}
 
 const PLAN_EVENT = {
   id: "event-plan-1",
@@ -425,6 +482,45 @@ function apiReceiptFixture(observedStatus = 200) {
         observed: result.observed, evidenceRefs: [result.evidenceRef],
       }],
       evidenceKeys: [API_EVIDENCE_KEY],
+    },
+  };
+}
+
+function dataReceiptFixture(observedStatus = 200) {
+  const dataRequest = storedDataRequest("/health");
+  const planEvent = {
+    ...PLAN_EVENT,
+    payloadRef: { ...PLAN_EVENT.payloadRef, plans: [{
+      ...PLAN_EVENT.payloadRef.plans[0], modality: "data", userVisible: false,
+      flow: "Read the bounded JSON response and inspect the planned field.",
+      uiSteps: null, apiRequest: null, dataRequest,
+    }] },
+  };
+  const receiptTimeline: { record: typeof CHANGE_RECORD; events: Array<{ eventKey: string; payloadRef: Record<string, unknown> }> } = { record: CHANGE_RECORD, events: [planEvent] };
+  const proof = {
+    job: RUNNING_JOB, timeline: receiptTimeline,
+    contract: { id: CONFIRMED_CONTRACT[0]!.id, version: CONFIRMED_CONTRACT[0]!.version, criteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria },
+    verificationPlan: planEvent.payloadRef,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = { id: PREVIEW_BOOT_ID, workspaceId: RUNNING_JOB.workspaceId, repo: RUNNING_JOB.repo, prNumber: RUNNING_JOB.prNumber, headSha: RUNNING_JOB.headSha, status: "ready", url: PREVIEW_URL };
+  const attempt = buildReviewJobDataAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobDataResult({ attempt, plan, observedStatus, observations: observedStatus === 200 ? [observedDataScalar(dataRequest, true)] : [], artifactKey: DATA_EVIDENCE_KEY, contentSha256: "f".repeat(64) })!;
+  mockReadAcceptanceContracts.mockResolvedValue([{
+    ...CONFIRMED_CONTRACT[0]!, contract: { acceptanceCriteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria.map((criterion) => ({ ...criterion, userVisible: false })) },
+  }] as never);
+  receiptTimeline.events.push(
+    { eventKey: reviewJobDataAttemptEventKey({ proof, plan }), payloadRef: attempt },
+    { eventKey: reviewJobDataCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobDataCardReservation(result) },
+    { eventKey: reviewJobDataResultEventKey({ proof, plan }), payloadRef: result },
+  );
+  return {
+    attempt, result, plan, timeline: receiptTimeline,
+    body: {
+      ...VALID_POSTED_BODY, verdict: result.state,
+      summaryLine: `AgentRail review posted for acme/widgets#42 — ${result.state}`,
+      criterionResults: [{ criterionId: "AC-1", state: result.state, expected: result.expected, observed: result.observed, evidenceRefs: [result.evidenceRef] }],
+      evidenceKeys: [DATA_EVIDENCE_KEY],
     },
   };
 }
@@ -958,6 +1054,76 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       mockReadChangeRecordTimelineByPr.mockImplementationOnce(
         async () => timelineWithPostedAttestation(invalid.timeline, VALID_POSTED_BODY) as never
       );
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("completes exact data proven and decisive failed receipts with their card key", async () => {
+      for (const status of [200, 503]) {
+        const fixture = dataReceiptFixture(status);
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never);
+        mockComplete.mockResolvedValueOnce({ ...POSTED_JOB, verdict: fixture.result.state } as never);
+        expect((await POST(postReq(fixture.body))).status).toBe(200);
+        expect(mockComplete).toHaveBeenCalledWith(expect.objectContaining({ verdict: fixture.result.state, evidenceKeys: [DATA_EVIDENCE_KEY] }));
+        mockComplete.mockClear();
+      }
+    });
+
+    it("permits absent or one exact pending data receipt only for the R7.1 preview fallback", async () => {
+      const absent = dataReceiptFixture();
+      absent.timeline.events = absent.timeline.events.slice(0, 1);
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(absent.timeline, VALID_POSTED_BODY) as never);
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(200);
+      mockComplete.mockClear();
+
+      const pending = dataReceiptFixture();
+      pending.timeline.events = pending.timeline.events.filter((event) => !event.eventKey.includes(":data-result:"));
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(pending.timeline, VALID_POSTED_BODY) as never);
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(200);
+      mockComplete.mockClear();
+
+      const invalid = dataReceiptFixture();
+      const result = invalid.timeline.events.find((event) => event.eventKey.includes(":data-result:"))!;
+      result.payloadRef = { ...invalid.result, observed: "forged" };
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(invalid.timeline, VALID_POSTED_BODY) as never);
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("holds present-invalid data result, reservation, attempt, plan, boot, artifact, observation, and state before completion", async () => {
+      const cases: Array<[string, (fixture: ReturnType<typeof dataReceiptFixture>) => void, Record<string, unknown> | null]> = [
+        ["result-only", (fixture) => { fixture.timeline.events = fixture.timeline.events.filter((event) => !event.eventKey.includes(":data-attempt:")); }, null],
+        ["missing reservation", (fixture) => { fixture.timeline.events = fixture.timeline.events.filter((event) => !event.eventKey.includes(":data-card:")); }, null],
+        ["attempt plan", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-attempt:"))!; event.payloadRef = { ...fixture.attempt, planDigest: "forged" }; }, null],
+        ["stored plan", (fixture) => { const event = fixture.timeline.events[0]!; event.payloadRef = { ...event.payloadRef, plans: [{ ...(event.payloadRef.plans as Array<Record<string, unknown>>)[0]!, dataRequest: storedDataRequest("/other") }] }; }, null],
+        ["result head", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, headSha: "foreign-head" }; }, null],
+        ["reservation artifact", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-card:"))!; event.payloadRef = buildReviewJobDataCardReservation({ ...fixture.result, artifactKey: "review-evidence/competing.json" }); }, null],
+        ["result assertions", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], passed: false }] }; }, null],
+        ["raw matched scalar result", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observed: true }] }; }, null],
+        ["raw matched scalar card", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-card:"))!; event.payloadRef = { ...event.payloadRef, result: { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observed: true }] } }; }, null],
+        ["result state", (fixture) => { const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, state: "failed" }; }, null],
+        ["boot tuple", () => {}, { headSha: "b".repeat(40) }],
+        ["boot URL", () => {}, { url: "http://preview.internal:4999" }],
+      ];
+      for (const [name, arrange, bootOverride] of cases) {
+        const fixture = dataReceiptFixture(); arrange(fixture);
+        if (bootOverride) mockGetPreviewBoot.mockResolvedValueOnce({ id: PREVIEW_BOOT_ID, workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha: "a".repeat(40), status: "ready", url: PREVIEW_URL, bootLogKey: BOOT_LOG_KEY, ...bootOverride } as never);
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never);
+        expect((await POST(postReq(fixture.body))).status, name).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("requires one exact data card evidence key and does not downgrade a valid data receipt", async () => {
+      for (const evidenceKeys of [[], [BOOT_LOG_KEY], [DATA_EVIDENCE_KEY, DATA_EVIDENCE_KEY], [DATA_EVIDENCE_KEY, "review-evidence/fabricated.json"], ["review-evidence/fabricated.json"]]) {
+        const fixture = dataReceiptFixture();
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never);
+        expect((await POST(postReq({ ...fixture.body, evidenceKeys }))).status, JSON.stringify(evidenceKeys)).toBe(409);
+      }
+      const fixture = dataReceiptFixture();
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(async () => timelineWithPostedAttestation(fixture.timeline, VALID_POSTED_BODY) as never);
       expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(409);
       expect(mockComplete).not.toHaveBeenCalled();
     });

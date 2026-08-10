@@ -26,6 +26,12 @@ const SECRET = "jace-shared-secret-abc123";
 const HEAD_SHA = "a".repeat(40);
 const NOW = new Date("2026-08-10T00:00:00.000Z");
 const ORIGINAL_TOKEN = process.env.JACE_CONSOLE_TOKEN;
+const ORIGINAL_HMAC_ACTIVE = process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID;
+const ORIGINAL_HMAC_KEYS = process.env.REVIEW_DATA_HMAC_KEYS_JSON;
+const HMAC_KEY_ID = "review-data-2026-08";
+const HMAC_KEYS_JSON = JSON.stringify({
+  [HMAC_KEY_ID]: Buffer.alloc(32, 7).toString("base64url"),
+});
 
 const RUNNING_JOB = {
   id: "job-1",
@@ -144,6 +150,7 @@ const STORED_PAYLOAD = {
         { action: "screenshot", label: "saved-filter-visible" },
       ],
       apiRequest: null,
+      dataRequest: null,
       status: "planned",
       notTestableReason: null,
     },
@@ -159,6 +166,7 @@ const STORED_PAYLOAD = {
         path: "/api/filters/saved",
         expectedStatus: 200,
       },
+      dataRequest: null,
       status: "planned",
       notTestableReason: null,
     },
@@ -197,6 +205,8 @@ function params(jobId = "job-1") {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = SECRET;
+  delete process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID;
+  delete process.env.REVIEW_DATA_HMAC_KEYS_JSON;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(BOUND_REVIEW_SESSION as never);
   vi.mocked(getReviewJobById).mockResolvedValue(RUNNING_JOB as never);
   vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue({ record: RECORD, events: [] } as never);
@@ -210,6 +220,10 @@ beforeEach(() => {
 afterEach(() => {
   if (ORIGINAL_TOKEN === undefined) delete process.env.JACE_CONSOLE_TOKEN;
   else process.env.JACE_CONSOLE_TOKEN = ORIGINAL_TOKEN;
+  if (ORIGINAL_HMAC_ACTIVE === undefined) delete process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID;
+  else process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID = ORIGINAL_HMAC_ACTIVE;
+  if (ORIGINAL_HMAC_KEYS === undefined) delete process.env.REVIEW_DATA_HMAC_KEYS_JSON;
+  else process.env.REVIEW_DATA_HMAC_KEYS_JSON = ORIGINAL_HMAC_KEYS;
 });
 
 describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
@@ -367,6 +381,53 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     });
 
     expect(parsed?.plans.find((plan) => plan.criterionId === "AC-API")?.apiRequest).toBeNull();
+  });
+
+  it("requires the purpose-scoped active HMAC key only for planned data and persists no raw equality", async () => {
+    const dataPlans = [
+      REQUEST_PLANS[0],
+      {
+        criterionId: "AC-API",
+        modality: "data",
+        status: "planned",
+        flow: "Read the saved filter data.",
+        dataRequest: {
+          method: "GET",
+          path: "/api/filters/saved",
+          expectedStatus: 200,
+          expectedJson: [{ pointer: "/state", equals: "saved" }],
+        },
+      },
+    ];
+    expect((await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: dataPlans }),
+      params()
+    )).status).toBe(400);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+
+    process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID = HMAC_KEY_ID;
+    process.env.REVIEW_DATA_HMAC_KEYS_JSON = HMAC_KEYS_JSON;
+    vi.mocked(appendChangeRecordEvent).mockImplementationOnce(async (input) => ({
+      event: { payloadRef: input.payloadRef },
+      inserted: true,
+    }) as never);
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: dataPlans }),
+      params()
+    );
+    expect(response.status).toBe(201);
+    const json = await response.json();
+    expect(JSON.stringify(json)).not.toContain('"saved"');
+    expect(json.plans[1].dataRequest).toMatchObject({
+      digestAlgorithm: "hmac-sha256-v1",
+      digestKeyId: HMAC_KEY_ID,
+      digestContext: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      expectedJson: [{
+        pointer: "/state",
+        equalsType: "string",
+        equalsHmacSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }],
+    });
   });
 
   it("persists one immutable exact-job plan event in confirmed criterion order", async () => {

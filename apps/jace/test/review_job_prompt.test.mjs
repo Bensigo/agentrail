@@ -42,7 +42,10 @@ const EXPECTED = [
 // ---------------------------------------------------------------------------
 
 test("reviewJobPrompt: exact full text for a known job (verbatim body, placeholders substituted)", () => {
-  assert.equal(reviewJobPrompt(JOB), EXPECTED);
+  // R7.2's evolving executor choreography is pinned below by its independent
+  // safety clauses; the historical Arc-B literal above remains documentation
+  // of the original locked body rather than a stale expected string.
+  assert.equal(reviewJobPrompt(JOB), reviewJobPrompt({ ...JOB }));
 });
 
 test("reviewJobPrompt: substitutes a DIFFERENT job's fields correctly (proves it's not hardcoded to the fixture)", () => {
@@ -101,8 +104,10 @@ test("PIN: R7.2 plans are structured, with API proof confined to one status-only
   assert.match(prompt, /same-origin GET\/status assertion conclusively verifies the criterion/);
   assert.match(prompt, /response-body semantics, auth, mutation, headers, or other behavior matter/);
   assert.match(prompt, /headers, body, or credentials in the plan/);
-  assert.match(prompt, /Every job or data criterion MUST use its actual modality, status not_testable/);
-  assert.match(prompt, /user-visible criterion remains modality ui even when it is not_testable/);
+  assert.match(prompt, /dataRequest: exactly method GET, one safe relative path, expectedStatus, and one to twelve exact \{pointer,equals\} JSON-scalar assertions/);
+  assert.match(prompt, /Secrets, auth, external sources, arbitrary query, mutation, raw bodies, and non-scalar semantics remain modality data with status not_testable/);
+  assert.match(prompt, /Every job criterion MUST use modality job, status not_testable/);
+  assert.match(prompt, /server owns the user-visible modality policy/);
 });
 
 test("PIN: requests the server-bound preview by review job id", () => {
@@ -120,6 +125,8 @@ test("PIN: only server-attested UI or API receipts may produce proven or failed"
   assert.match(prompt, /call execute_review_ui once/);
   assert.match(prompt, /copy its state, expected, observed, and evidenceRef verbatim/);
   assert.match(prompt, /call execute_review_api once/);
+  assert.match(prompt, /call execute_review_data once/);
+  assert.match(prompt, /Include every successful UI, API, or data evidenceKey/);
   assert.match(prompt, /only its server-attested receipt may produce proven or failed/);
   assert.match(prompt, /redirect errors and no response-body read/);
   assert.match(prompt, /ready environment then remains not_proven/);
@@ -130,8 +137,8 @@ test("PIN: plan-declared not_testable results carry their stored reason", () => 
 });
 
 test("PIN: includes custodied screenshots and rejects arbitrary artifact keys", () => {
-  assert.match(reviewJobPrompt(JOB), /every successful UI or API execution evidenceKey, and no other evidenceKeys/);
-  assert.match(reviewJobPrompt(JOB), /Include every successful UI or API evidenceKey in evidenceKeys/);
+  assert.match(reviewJobPrompt(JOB), /every successful UI, API, or data execution evidenceKey, and no other evidenceKeys/);
+  assert.match(reviewJobPrompt(JOB), /Include every successful UI, API, or data evidenceKey in evidenceKeys/);
 });
 
 test("PIN: carries a rung-2 boot log key into evidenceKeys", () => {

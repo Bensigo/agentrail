@@ -152,6 +152,12 @@ workspace-aware routing). Once a workspace exists:
   `docker compose -f deploy/docker-compose.prod.yml up -d jace` to pick it up
   (optional — `fetch_workspace_memory`/`fetch_run_evidence` just report "not
   configured" without it, nothing else breaks).
+- To enable planned data-readback evidence, set the same
+  `REVIEW_DATA_HMAC_ACTIVE_KEY_ID` and `REVIEW_DATA_HMAC_KEYS_JSON` in the
+  shared environment used by Console and Jace. Add new keys to both services
+  before switching the active id; retain old keys until no queued or running
+  review plan references them. The exact format is documented in
+  `.env.production.example`.
 
 ## 6. Attach a runner
 

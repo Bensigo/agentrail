@@ -11,6 +11,7 @@ import { requireJaceConsoleSecret } from "../../../../../../../lib/jace-console-
 import {
   REVIEW_JOB_VERIFICATION_PLAN_ACTOR,
   REVIEW_JOB_VERIFICATION_PLAN_STAGE,
+  activeReviewDataHmacKey,
   buildReviewJobVerificationPlan,
   confirmedVerificationContract,
   reviewJobVerificationPlanEventKey,
@@ -119,6 +120,7 @@ export async function POST(
     // otherwise identical retry conflict with its predecessor.
     plannedBy: "jace:review-job-worker",
     plans: body.plans,
+    dataHmacKey: activeReviewDataHmacKey(process.env),
   });
   if (!built.ok) {
     return NextResponse.json({ error: built.error }, { status: 400 });

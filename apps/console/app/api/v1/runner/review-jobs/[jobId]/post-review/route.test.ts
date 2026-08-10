@@ -47,6 +47,19 @@ import {
   reviewJobApiCardReservationEventKey,
   reviewJobApiResultEventKey,
 } from "../../../../../../../lib/review-job-api-execution";
+import {
+  buildReviewJobDataAttempt,
+  buildReviewJobDataCardReservation,
+  buildReviewJobDataResult,
+  reviewJobDataAttemptEventKey,
+  reviewJobDataCardReservationEventKey,
+  reviewJobDataResultEventKey,
+} from "../../../../../../../lib/review-job-data-execution";
+import {
+  buildStoredDataVerificationRequest,
+  dataScalarKind,
+  reviewDataScalarHmac,
+} from "../../../../../../../lib/review-job-verification-plan";
 import { POST } from "./route";
 
 const secret = "test-secret";
@@ -59,7 +72,13 @@ const screenshotKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/exact.png";
 const apiEvidenceKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/response.json";
+const dataEvidenceKey =
+  "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/data.json";
 const previewUrl = "http://127.0.0.1:43123";
+const dataHmacKey = {
+  keyId: "route-test-2026-08",
+  key: Buffer.alloc(32, 7),
+};
 
 const session = {
   id: "session-1",
@@ -92,6 +111,44 @@ const contract = {
     ],
   },
 };
+
+function storedDataRequest(path: string, criterionId = "AC-1") {
+  return buildStoredDataVerificationRequest({
+    value: {
+      method: "GET",
+      path,
+      expectedStatus: 200,
+      expectedJson: [{ pointer: "/enabled", equals: true }],
+    },
+    binding: {
+      workspaceId,
+      recordId,
+      jobId,
+      headSha,
+      contractId: contract.id,
+      contractVersion: contract.version,
+      criterionId,
+    },
+    hmacKey: dataHmacKey,
+  })!;
+}
+
+function observedDataScalar(
+  dataRequest: ReturnType<typeof storedDataRequest>,
+  value: boolean,
+) {
+  return {
+    pointer: "/enabled",
+    found: true,
+    observedType: dataScalarKind(value),
+    observedHmacSha256: reviewDataScalarHmac({
+      key: dataHmacKey.key,
+      context: dataRequest.digestContext,
+      pointer: "/enabled",
+      value,
+    }),
+  };
+}
 const planPayload = {
   kind: "review_job_verification_plan",
   jobId,
@@ -298,6 +355,111 @@ function installApiReceipt(observedStatus = 200) {
       summaryLine: `ada/widgets #98 — ${result.state}`,
       evidenceKeys: [apiEvidenceKey],
     },
+  };
+}
+
+function installDataReceipt(observedStatus = 200) {
+  const dataRequest = storedDataRequest("/health");
+  const verificationPlan = {
+    ...planPayload,
+    plans: [{
+      ...planPayload.plans[0], modality: "data", userVisible: false,
+      flow: "Read the bounded JSON response and inspect the planned field.",
+      uiSteps: null, apiRequest: null, dataRequest,
+    }],
+  };
+  const receiptTimeline: typeof timeline = {
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
+  };
+  const proof = {
+    job, timeline: receiptTimeline,
+    contract: { id: contract.id, version: contract.version, criteria: contract.contract.acceptanceCriteria },
+    verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = { id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl };
+  const attempt = buildReviewJobDataAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobDataResult({
+    attempt, plan, observedStatus,
+    observations: observedStatus === 200
+      ? [observedDataScalar(dataRequest, true)]
+      : [],
+    artifactKey: dataEvidenceKey, contentSha256: "d".repeat(64),
+  })!;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    ...contract,
+    contract: { acceptanceCriteria: contract.contract.acceptanceCriteria.map((criterion) => ({ ...criterion, userVisible: false })) },
+  }] as never);
+  receiptTimeline.events.push(
+    { eventKey: reviewJobDataAttemptEventKey({ proof, plan }), payloadRef: attempt },
+    { eventKey: reviewJobDataCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobDataCardReservation(result) },
+    { eventKey: reviewJobDataResultEventKey({ proof, plan }), payloadRef: result },
+  );
+  timeline = receiptTimeline;
+  return {
+    attempt, result, plan,
+    body: {
+      ...validBody,
+      criterionResults: [{ criterionId: "AC-1", state: result.state, expected: result.expected, observed: result.observed, evidenceRefs: [result.evidenceRef] }],
+      verdict: result.state, summaryLine: `ada/widgets #98 — ${result.state}`,
+      evidenceKeys: [dataEvidenceKey],
+    },
+  };
+}
+
+function installDataVerdictPriorityProof() {
+  const criteria = [
+    { id: "AC-1", text: "The first bounded JSON field has its expected value.", userVisible: false },
+    { id: "AC-2", text: "The second bounded JSON field has its expected value.", userVisible: false },
+  ];
+  const verificationPlan = {
+    ...planPayload,
+    plans: criteria.map((criterion, index) => ({
+      criterionId: criterion.id, criterionTextSnapshot: criterion.text,
+      modality: "data", environmentKind: "isolated_preview",
+      flow: "Read the bounded JSON response and inspect the planned field.",
+      uiSteps: null, apiRequest: null,
+      dataRequest: storedDataRequest(index ? "/status" : "/health", criterion.id),
+      status: "planned", notTestableReason: null,
+    })),
+  };
+  const priorityTimeline: typeof timeline = {
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
+  };
+  const proof = {
+    job, timeline: priorityTimeline,
+    contract: { id: contract.id, version: contract.version, criteria }, verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const boot = { id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl };
+  const results = proof.verificationPlan.plans.map((plan, index) => {
+    const attempt = buildReviewJobDataAttempt({ proof, plan, boot })!;
+    const result = buildReviewJobDataResult({
+      attempt, plan, observedStatus: 200,
+      observations: [observedDataScalar(plan.dataRequest!, index ? false : true)],
+      artifactKey: `${dataEvidenceKey}.${index}`, contentSha256: `${index + 1}`.repeat(64),
+    })!;
+    priorityTimeline.events.push(
+      { eventKey: reviewJobDataAttemptEventKey({ proof, plan }), payloadRef: attempt },
+      { eventKey: reviewJobDataCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobDataCardReservation(result) },
+      { eventKey: reviewJobDataResultEventKey({ proof, plan }), payloadRef: result },
+    );
+    return result;
+  });
+  timeline = priorityTimeline;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    ...contract, contract: { acceptanceCriteria: criteria },
+  }] as never);
+  return {
+    ...validBody,
+    criterionResults: results.map((result) => ({
+      criterionId: result.criterionId, state: result.state,
+      expected: result.expected, observed: result.observed,
+      evidenceRefs: [result.evidenceRef],
+    })),
+    verdict: "failed", summaryLine: "ada/widgets #98 — failed",
+    evidenceKeys: results.map((result) => result.artifactKey),
   };
 }
 
@@ -991,6 +1153,86 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(accepted.status).toBe(201);
     expect(vi.mocked(postGithubAdvisoryReview).mock.calls[0]?.[0].summary)
       .toContain("AgentRail exact-head verification: failed");
+  });
+
+  it("posts exact data proven and decisive failed receipts with their card key", async () => {
+    for (const status of [200, 503]) {
+      const fixture = installDataReceipt(status);
+      const response = await POST(request(fixture.body), params);
+      expect(response.status).toBe(201);
+      expect(vi.mocked(postGithubAdvisoryReview).mock.calls[0]?.[0].summary)
+        .toContain(`AgentRail exact-head verification: ${fixture.result.state}`);
+      expect(fixture.body.evidenceKeys).toEqual([dataEvidenceKey]);
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+    }
+  });
+
+  it("gives a failed data receipt priority over a proven data receipt and requires both exact card keys", async () => {
+    const body = installDataVerdictPriorityProof();
+    const rejected = await POST(request({ ...body, verdict: "proven", summaryLine: "ada/widgets #98 — proven" }), params);
+    expect(rejected.status).toBe(409);
+
+    const accepted = await POST(request(body), params);
+    expect(accepted.status).toBe(201);
+    expect(body.evidenceKeys).toEqual([`${dataEvidenceKey}.0`, `${dataEvidenceKey}.1`]);
+    expect(vi.mocked(postGithubAdvisoryReview).mock.calls[0]?.[0].summary)
+      .toContain("AgentRail exact-head verification: failed");
+  });
+
+  it("permits absent or one exact pending data receipt only for the R7.1 preview fallback", async () => {
+    installDataReceipt();
+    timeline.events = timeline.events.slice(0, 1);
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    installDataReceipt();
+    timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":data-result:"));
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    const invalid = installDataReceipt();
+    const result = timeline.events.find((event) => event.eventKey.includes(":data-result:"))!;
+    result.payloadRef = { ...invalid.result, observed: "forged" };
+    expect((await POST(request(validBody), params)).status).toBe(409);
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds present-invalid data result, reservation, attempt, plan, boot, artifact, observation, and state before GitHub", async () => {
+    const cases: Array<[string, (fixture: ReturnType<typeof installDataReceipt>) => void, Record<string, unknown> | null]> = [
+      ["result-only", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":data-attempt:")); }, null],
+      ["missing reservation", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":data-card:")); }, null],
+      ["attempt plan", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-attempt:"))!; event.payloadRef = { ...fixture.attempt, planDigest: "forged" }; }, null],
+      ["stored plan", () => { const event = timeline.events[0]!; event.payloadRef = { ...event.payloadRef, plans: [{ ...(event.payloadRef.plans as Array<Record<string, unknown>>)[0]!, dataRequest: storedDataRequest("/other") }] }; }, null],
+      ["result head", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, headSha: "foreign-head" }; }, null],
+      ["reservation artifact", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-card:"))!; event.payloadRef = buildReviewJobDataCardReservation({ ...fixture.result, artifactKey: "review-evidence/competing.json" }); }, null],
+      ["result assertions", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], passed: false }] }; }, null],
+      ["raw matched scalar result", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observed: true }] }; }, null],
+      ["raw matched scalar card", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-card:"))!; event.payloadRef = { ...event.payloadRef, result: { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observed: true }] } }; }, null],
+      ["result state", (fixture) => { const event = timeline.events.find((candidate) => candidate.eventKey.includes(":data-result:"))!; event.payloadRef = { ...fixture.result, state: "failed" }; }, null],
+      ["boot tuple", () => {}, { headSha: "foreign-head" }],
+      ["boot URL", () => {}, { url: "http://127.0.0.1:49999" }],
+    ];
+    for (const [name, arrange, bootOverride] of cases) {
+      const fixture = installDataReceipt(); arrange(fixture);
+      if (bootOverride) vi.mocked(getPreviewBoot).mockResolvedValueOnce({ id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl, bootLogKey, ...bootOverride } as never);
+      expect((await POST(request(fixture.body), params)).status, name).toBe(409);
+    }
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("requires one exact data card evidence key and does not downgrade a valid data receipt", async () => {
+    for (const evidenceKeys of [[], [bootLogKey], [dataEvidenceKey, dataEvidenceKey], [dataEvidenceKey, "review-evidence/fabricated.json"], ["review-evidence/fabricated.json"]]) {
+      const fixture = installDataReceipt();
+      expect((await POST(request({ ...fixture.body, evidenceKeys }), params)).status, JSON.stringify(evidenceKeys)).toBe(409);
+    }
+    installDataReceipt();
+    expect((await POST(request(validBody), params)).status).toBe(409);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
   });
 
   it("requires the receipt screenshot key exactly once and allows only its current boot log beside it", async () => {

@@ -1,3 +1,6 @@
+import { createHash, createHmac } from "node:crypto";
+import { scanForSecrets } from "./secret-scan";
+
 export const REVIEW_JOB_VERIFICATION_PLAN_KIND = "review_job_verification_plan";
 export const REVIEW_JOB_VERIFICATION_PLAN_STAGE = "verification";
 export const REVIEW_JOB_VERIFICATION_PLAN_ACTOR = "jace:review-verification-planner";
@@ -18,6 +21,49 @@ export interface ApiVerificationRequest {
   method: "GET";
   path: string;
   expectedStatus: number;
+}
+
+export type DataScalar = string | number | boolean | null;
+export type DataScalarKind = "null" | "boolean" | "number" | "string";
+export interface SubmittedDataVerificationAssertion {
+  pointer: string;
+  equals: DataScalar;
+}
+export interface SubmittedDataVerificationRequest {
+  method: "GET";
+  path: string;
+  expectedStatus: number;
+  expectedJson: SubmittedDataVerificationAssertion[];
+}
+export interface DataVerificationAssertion {
+  pointer: string;
+  equalsType: DataScalarKind;
+  equalsHmacSha256: string;
+}
+/** The persisted descriptor contains no raw expected response values. */
+export interface DataVerificationRequest {
+  method: "GET";
+  path: string;
+  expectedStatus: number;
+  digestAlgorithm: "hmac-sha256-v1";
+  digestKeyId: string;
+  digestContext: string;
+  expectedJson: DataVerificationAssertion[];
+}
+
+export interface ReviewDataDigestBinding {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  headSha: string;
+  contractId: string;
+  contractVersion: number;
+  criterionId: string;
+}
+
+export interface ReviewDataHmacKey {
+  keyId: string;
+  key: Buffer;
 }
 
 export interface ConfirmedVerificationCriterion {
@@ -48,6 +94,7 @@ export interface StoredCriterionVerificationPlan {
   flow: string | null;
   uiSteps: UiVerificationStep[] | null;
   apiRequest: ApiVerificationRequest | null;
+  dataRequest: DataVerificationRequest | null;
   status: VerificationPlanStatus;
   notTestableReason: string | null;
 }
@@ -225,6 +272,339 @@ export function parseApiVerificationRequest(value: unknown): ApiVerificationRequ
   return { method: "GET", path, expectedStatus: value.expectedStatus };
 }
 
+const MAX_DATA_ASSERTIONS = 12;
+const MAX_POINTER = 512;
+const MAX_REVIEW_DATA_HMAC_KEYS = 16;
+export const REVIEW_DATA_DIGEST_ALGORITHM = "hmac-sha256-v1" as const;
+const DATA_SCALAR_KINDS = new Set<DataScalarKind>([
+  "null",
+  "boolean",
+  "number",
+  "string",
+]);
+const HEX_SHA256 = /^[a-f0-9]{64}$/u;
+const REVIEW_DATA_HMAC_KEY_ID = /^[A-Za-z0-9._-]{1,64}$/u;
+const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;
+const SSN = /\b\d{3}-?\d{2}-?\d{4}\b/u;
+
+export function dataScalarKind(value: DataScalar): DataScalarKind {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  return "string";
+}
+
+export function reviewDataDigestContext(input: ReviewDataDigestBinding & {
+  path: string;
+  expectedStatus: number;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.workspaceId,
+        input.recordId,
+        input.jobId,
+        input.headSha,
+        input.contractId,
+        input.contractVersion,
+        input.criterionId,
+        input.path,
+        input.expectedStatus,
+      ])
+    )
+    .digest("hex");
+}
+
+/** HMAC for one raw scalar; callers must discard the scalar immediately. */
+export function reviewDataScalarHmac(input: {
+  key: Uint8Array;
+  context: string;
+  pointer: string;
+  value: DataScalar;
+}): string {
+  return createHmac("sha256", input.key)
+    .update(
+      JSON.stringify([
+        "agentrail.review-data.scalar.v1",
+        input.context,
+        input.pointer,
+        dataScalarKind(input.value),
+        input.value,
+      ])
+    )
+    .digest("hex");
+}
+
+export function isReviewDataHmacKeyId(value: unknown): value is string {
+  return typeof value === "string" && REVIEW_DATA_HMAC_KEY_ID.test(value);
+}
+
+export function parseReviewDataHmacKeyIds(value: unknown): string[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MAX_REVIEW_DATA_HMAC_KEYS
+  ) {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const keyId of value) {
+    if (!isReviewDataHmacKeyId(keyId) || ids.has(keyId)) return null;
+    ids.add(keyId);
+  }
+  const parsed = [...ids];
+  const sorted = [...parsed].sort();
+  return parsed.every((keyId, index) => keyId === sorted[index])
+    ? parsed
+    : null;
+}
+
+function reviewDataHmacKeyring(env: Record<string, string | undefined>): {
+  activeKeyId: string;
+  keys: Map<string, Buffer>;
+} | null {
+  const activeKeyId = env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID;
+  const encoded = env.REVIEW_DATA_HMAC_KEYS_JSON;
+  if (!isReviewDataHmacKeyId(activeKeyId) || typeof encoded !== "string") {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    return null;
+  }
+  if (!object(parsed)) return null;
+  const entries = Object.entries(parsed);
+  if (entries.length < 1 || entries.length > MAX_REVIEW_DATA_HMAC_KEYS) {
+    return null;
+  }
+  const keys = new Map<string, Buffer>();
+  for (const [keyId, value] of entries) {
+    if (
+      !isReviewDataHmacKeyId(keyId) ||
+      typeof value !== "string" ||
+      value.includes("=")
+    ) {
+      return null;
+    }
+    const key = Buffer.from(value, "base64url");
+    if (key.length !== 32 || key.toString("base64url") !== value) return null;
+    keys.set(keyId, key);
+  }
+  return keys.has(activeKeyId) ? { activeKeyId, keys } : null;
+}
+
+export function activeReviewDataHmacKey(
+  env: Record<string, string | undefined>,
+): ReviewDataHmacKey | null {
+  const keyring = reviewDataHmacKeyring(env);
+  if (!keyring) return null;
+  return {
+    keyId: keyring.activeKeyId,
+    key: keyring.keys.get(keyring.activeKeyId)!,
+  };
+}
+
+export function reviewDataHmacKeyById(
+  env: Record<string, string | undefined>,
+  keyId: string,
+): ReviewDataHmacKey | null {
+  const keyring = reviewDataHmacKeyring(env);
+  const key = keyring?.keys.get(keyId);
+  return key ? { keyId, key } : null;
+}
+
+function piiShapedString(value: string): boolean {
+  if (EMAIL.test(value) || SSN.test(value)) return true;
+  const digits = value.replace(/\D/gu, "");
+  return digits.length >= 10 && digits.length <= 19 && /^[+()\- .\d]+$/u.test(value);
+}
+
+function submittedDataScalar(value: unknown): value is DataScalar {
+  return (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" &&
+      Number.isFinite(value) &&
+      (!Number.isInteger(value) || Math.abs(value) < 100_000_000)) ||
+    (typeof value === "string" &&
+      value.length <= MAX_PLAN_TEXT &&
+      !/[\x00-\x1f\x7f]/.test(value) &&
+      scanForSecrets(value).clean &&
+      !piiShapedString(value))
+  );
+}
+
+/** RFC6901 pointer with conservative credential and PII field denial. */
+export function parseDataPointer(value: unknown): string | null {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.length > MAX_POINTER ||
+    /[\x00-\x1f\x7f]/.test(value)
+  ) {
+    return null;
+  }
+  const segments = value.slice(1).split("/");
+  for (const segment of segments) {
+    if (/(?:~(?![01]))/.test(segment)) return null;
+    const decoded = segment.replace(/~1/g, "/").replace(/~0/g, "~");
+    const normalized = decoded.toLowerCase().replace(/[\s_-]/gu, "");
+    if (
+      /(?:token|password|passwd|passcode|secret|apikey|authorization|cookie|credential|privatekey|clientsecret|pin|otp|ssn|socialsecurity|taxid|card|credit|cvv|cvc|pan|email|phone|mobile|address|birth|dob)/u.test(
+        normalized
+      )
+    ) {
+      return null;
+    }
+    if (/^(?:0|[1-9][0-9]*)$/.test(decoded) && decoded !== segment) return null;
+  }
+  return value;
+}
+
+export function parseSubmittedDataVerificationRequest(
+  value: unknown
+): SubmittedDataVerificationRequest | null {
+  if (
+    !object(value) ||
+    !exactKeys(value, ["method", "path", "expectedStatus", "expectedJson"])
+  ) {
+    return null;
+  }
+  const base = parseApiVerificationRequest({
+    method: value.method,
+    path: value.path,
+    expectedStatus: value.expectedStatus,
+  });
+  if (
+    !base ||
+    !Array.isArray(value.expectedJson) ||
+    value.expectedJson.length < 1 ||
+    value.expectedJson.length > MAX_DATA_ASSERTIONS
+  ) {
+    return null;
+  }
+  const pointers = new Set<string>();
+  const expectedJson: SubmittedDataVerificationAssertion[] = [];
+  for (const assertion of value.expectedJson) {
+    if (!object(assertion) || !exactKeys(assertion, ["pointer", "equals"])) return null;
+    const pointer = parseDataPointer(assertion.pointer);
+    if (
+      !pointer ||
+      pointers.has(pointer) ||
+      !submittedDataScalar(assertion.equals)
+    ) {
+      return null;
+    }
+    pointers.add(pointer);
+    expectedJson.push({ pointer, equals: assertion.equals });
+  }
+  return { ...base, expectedJson };
+}
+
+/** Validate raw model input and return the no-raw-value persisted descriptor. */
+export function buildStoredDataVerificationRequest(input: {
+  value: unknown;
+  binding: ReviewDataDigestBinding;
+  hmacKey: ReviewDataHmacKey;
+}): DataVerificationRequest | null {
+  const submitted = parseSubmittedDataVerificationRequest(input.value);
+  if (
+    !submitted ||
+    !isReviewDataHmacKeyId(input.hmacKey.keyId) ||
+    input.hmacKey.key.length !== 32
+  ) {
+    return null;
+  }
+  const digestContext = reviewDataDigestContext({
+    ...input.binding,
+    path: submitted.path,
+    expectedStatus: submitted.expectedStatus,
+  });
+  return {
+    method: submitted.method,
+    path: submitted.path,
+    expectedStatus: submitted.expectedStatus,
+    digestAlgorithm: REVIEW_DATA_DIGEST_ALGORITHM,
+    digestKeyId: input.hmacKey.keyId,
+    digestContext,
+    expectedJson: submitted.expectedJson.map(({ pointer, equals }) => ({
+      pointer,
+      equalsType: dataScalarKind(equals),
+      equalsHmacSha256: reviewDataScalarHmac({
+        key: input.hmacKey.key,
+        context: digestContext,
+        pointer,
+        value: equals,
+      }),
+    })),
+  };
+}
+
+export function parseStoredDataVerificationRequest(
+  value: unknown
+): DataVerificationRequest | null {
+  if (
+    !object(value) ||
+    !exactKeys(value, [
+      "method",
+      "path",
+      "expectedStatus",
+      "digestAlgorithm",
+      "digestKeyId",
+      "digestContext",
+      "expectedJson",
+    ])
+  ) {
+    return null;
+  }
+  const base = parseApiVerificationRequest({
+    method: value.method,
+    path: value.path,
+    expectedStatus: value.expectedStatus,
+  });
+  if (
+    !base ||
+    value.digestAlgorithm !== REVIEW_DATA_DIGEST_ALGORITHM ||
+    !isReviewDataHmacKeyId(value.digestKeyId) ||
+    typeof value.digestContext !== "string" ||
+    !HEX_SHA256.test(value.digestContext) ||
+    !Array.isArray(value.expectedJson) ||
+    value.expectedJson.length < 1 ||
+    value.expectedJson.length > MAX_DATA_ASSERTIONS
+  ) {
+    return null;
+  }
+  const pointers = new Set<string>();
+  const expectedJson: DataVerificationAssertion[] = [];
+  for (const assertion of value.expectedJson) {
+    if (!object(assertion) || !exactKeys(assertion, ["pointer", "equalsType", "equalsHmacSha256"])) return null;
+    const pointer = parseDataPointer(assertion.pointer);
+    if (
+      !pointer ||
+      pointers.has(pointer) ||
+      !DATA_SCALAR_KINDS.has(assertion.equalsType as DataScalarKind) ||
+      !HEX_SHA256.test(String(assertion.equalsHmacSha256))
+    ) {
+      return null;
+    }
+    pointers.add(pointer);
+    expectedJson.push({
+      pointer,
+      equalsType: assertion.equalsType as DataScalarKind,
+      equalsHmacSha256: assertion.equalsHmacSha256 as string,
+    });
+  }
+  return {
+    ...base,
+    digestAlgorithm: REVIEW_DATA_DIGEST_ALGORITHM,
+    digestKeyId: value.digestKeyId,
+    digestContext: value.digestContext,
+    expectedJson,
+  };
+}
+
 /** Exactly one confirmed Contract is authoritative for a review job. */
 export function confirmedVerificationContract(
   contracts: unknown
@@ -274,8 +654,8 @@ export function reviewJobVerificationPlanEventKey(jobId: string): string {
 
 /**
  * Normalize model-supplied planning choices into a server-owned exact-job
- * snapshot. UI and API criteria have separately bounded descriptors; job/data
- * remain explicit `not_testable` until their executors land.
+ * snapshot. UI, API, and data criteria have separately bounded descriptors;
+ * job remains explicit `not_testable`.
  */
 export function buildReviewJobVerificationPlan(input: {
   job: ReviewJobVerificationIdentity;
@@ -283,6 +663,7 @@ export function buildReviewJobVerificationPlan(input: {
   contract: ConfirmedVerificationContract;
   plannedBy: string;
   plans: unknown;
+  dataHmacKey?: ReviewDataHmacKey | null;
 }): BuildPlanResult {
   if (!Array.isArray(input.plans) || input.plans.length !== input.contract.criteria.length) {
     return { ok: false, error: "every confirmed criterion needs one verification plan" };
@@ -321,6 +702,9 @@ export function buildReviewJobVerificationPlan(input: {
       if (modality === "api" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "apiRequest"])) {
         return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
       }
+      if (modality === "data" && !exactKeys(raw, ["criterionId", "modality", "status", "flow", "dataRequest"])) {
+        return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
+      }
       const flow = boundedPlanText(raw.flow);
       if (!flow) return { ok: false, error: `planned criterion ${criterion.id} needs a bounded flow` };
       if (modality === "ui") {
@@ -334,6 +718,7 @@ export function buildReviewJobVerificationPlan(input: {
           flow,
           uiSteps,
           apiRequest: null,
+          dataRequest: null,
           status: "planned",
           notTestableReason: null,
         });
@@ -350,8 +735,34 @@ export function buildReviewJobVerificationPlan(input: {
           flow,
           uiSteps: null,
           apiRequest,
+          dataRequest: null,
           status: "planned",
           notTestableReason: null,
+        });
+        continue;
+      }
+      if (modality === "data") {
+        if (!input.dataHmacKey) {
+          return { ok: false, error: `planned data criterion ${criterion.id} requires configured review-data HMAC custody` };
+        }
+        const dataRequest = buildStoredDataVerificationRequest({
+          value: raw.dataRequest,
+          hmacKey: input.dataHmacKey,
+          binding: {
+            workspaceId: input.job.workspaceId,
+            recordId: input.recordId,
+            jobId: input.job.id,
+            headSha: input.job.headSha,
+            contractId: input.contract.id,
+            contractVersion: input.contract.version,
+            criterionId: criterion.id,
+          },
+        });
+        if (!dataRequest) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded data request` };
+        plans.push({
+          criterionId: criterion.id, criterionTextSnapshot: criterion.text,
+          modality: "data", environmentKind: "isolated_preview", flow,
+          uiSteps: null, apiRequest: null, dataRequest, status: "planned", notTestableReason: null,
         });
         continue;
       }
@@ -377,6 +788,7 @@ export function buildReviewJobVerificationPlan(input: {
         flow: null,
         uiSteps: null,
         apiRequest: null,
+        dataRequest: null,
         status: "not_testable",
         notTestableReason: reason,
       });
@@ -456,7 +868,8 @@ export function parseStoredReviewJobVerificationPlan(input: {
       raw.environmentKind === "isolated_preview" &&
       boundedPlanText(raw.flow) &&
       raw.notTestableReason === null &&
-      (raw.apiRequest === undefined || raw.apiRequest === null)
+      (raw.apiRequest === undefined || raw.apiRequest === null) &&
+      (raw.dataRequest === undefined || raw.dataRequest === null)
     ) {
       // R7.1 stored flows had no executable steps. They remain readable for
       // audit continuity but are intentionally not executable by later work.
@@ -470,6 +883,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
         flow: boundedPlanText(raw.flow),
         uiSteps,
         apiRequest: null,
+        dataRequest: null,
         status: "planned",
         notTestableReason: null,
       });
@@ -482,7 +896,8 @@ export function parseStoredReviewJobVerificationPlan(input: {
       raw.environmentKind === "isolated_preview" &&
       boundedPlanText(raw.flow) &&
       raw.uiSteps === null &&
-      raw.notTestableReason === null
+      raw.notTestableReason === null &&
+      (raw.dataRequest === undefined || raw.dataRequest === null)
     ) {
       // Plans from before the API descriptor are readable for audit continuity,
       // but `apiRequest: null` keeps them non-executable by later workers.
@@ -496,6 +911,46 @@ export function parseStoredReviewJobVerificationPlan(input: {
         flow: boundedPlanText(raw.flow),
         uiSteps: null,
         apiRequest,
+        dataRequest: null,
+        status: "planned",
+        notTestableReason: null,
+      });
+      continue;
+    }
+
+    if (
+      status === "planned" &&
+      modality === "data" &&
+      raw.environmentKind === "isolated_preview" &&
+      boundedPlanText(raw.flow) &&
+      raw.uiSteps === null &&
+      raw.apiRequest === null &&
+      raw.notTestableReason === null
+    ) {
+      const dataRequest = parseStoredDataVerificationRequest(raw.dataRequest);
+      if (
+        !dataRequest ||
+        dataRequest.digestContext !== reviewDataDigestContext({
+          workspaceId: input.job.workspaceId,
+          recordId: input.recordId,
+          jobId: input.job.id,
+          headSha: input.job.headSha,
+          contractId: input.contract.id,
+          contractVersion: input.contract.version,
+          criterionId,
+          path: dataRequest.path,
+          expectedStatus: dataRequest.expectedStatus,
+        })
+      ) return null;
+      byId.set(criterionId, {
+        criterionId,
+        criterionTextSnapshot,
+        modality: "data",
+        environmentKind: "isolated_preview",
+        flow: boundedPlanText(raw.flow),
+        uiSteps: null,
+        apiRequest: null,
+        dataRequest,
         status: "planned",
         notTestableReason: null,
       });
@@ -508,6 +963,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
       raw.flow === null &&
       (raw.uiSteps === undefined || raw.uiSteps === null) &&
       (raw.apiRequest === undefined || raw.apiRequest === null) &&
+      (raw.dataRequest === undefined || raw.dataRequest === null) &&
       boundedPlanText(raw.notTestableReason)
     ) {
       byId.set(criterionId, {
@@ -518,6 +974,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
         flow: null,
         uiSteps: null,
         apiRequest: null,
+        dataRequest: null,
         status: "not_testable",
         notTestableReason: boundedPlanText(raw.notTestableReason),
       });

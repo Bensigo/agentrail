@@ -436,7 +436,9 @@ describe.skipIf(!DB_AVAILABLE)(
         workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43, headSha,
         source: "manual",
       });
-      const job = await enqueueReviewJob({ workspaceId: wsId, repo: "acme/widgets", prNumber: 43, headSha });
+      const job = await enqueueReviewJob({
+        workspaceId: wsId, repo: "acme/widgets", prNumber: 43, headSha, event: "opened",
+      });
       const packetId = reviewJobCorrectionPacketId({
         jobId: job.id, criterionId: "AC-1", headSha, recordId: draft.record.id,
         acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
@@ -450,12 +452,16 @@ describe.skipIf(!DB_AVAILABLE)(
         }, evidence: { evidenceRef: "review:AC-1", previewBootId: "boot-1" }, scopeBoundary: "Filter save flow", impact: "Users cannot save", requiredCorrection: "Implement save", reverification: "Repeat flow",
       };
       await appendChangeRecordEvent({ recordId: draft.record.id, eventKey: `review:correction:${job.id}:AC-1`, stage: "review", actor: "reviewer-of-record", payloadRef: packet });
-      const repo = await db.insert(repositories).values({ workspaceId: wsId, name: "acme/widgets" }).returning();
+      const repo = await db.insert(repositories).values({
+        workspaceId: wsId, name: "acme/widgets", url: "https://github.com/acme/widgets",
+      }).returning();
       const wiki = await db.insert(wikiPages).values({
-        workspaceId: wsId, repositoryId: repo[0]!.id, slug: "overview", commitSha: "d".repeat(40), inputsHash: "e".repeat(64), bodyMd: "Background",
+        workspaceId: wsId, repositoryId: repo[0]!.id, slug: "wiki/overview", title: "Widgets",
+        kind: "overview", commitSha: "d".repeat(40), inputsHash: "e".repeat(64),
+        bodyMd: "Background", generatedAt: new Date(),
       }).returning();
       const baseIndexCore = { schemaVersion: 2 as const, backgroundOnly: true as const, pages: [{
-        id: wiki[0]!.id, repositoryId: repo[0]!.id, slug: "overview", commitSha: "d".repeat(40), inputsHashSha256: "e".repeat(64), pageBodySha256: wikiPageBodySha256("Background"), stale: false,
+        id: wiki[0]!.id, repositoryId: repo[0]!.id, slug: "wiki/overview", commitSha: "d".repeat(40), inputsHashSha256: "e".repeat(64), pageBodySha256: wikiPageBodySha256("Background"), stale: false,
       }], gaps: [] };
       const patchSha256 = "4".repeat(64);
       const dependencyContent = "export const helper = true;";
@@ -488,7 +494,7 @@ describe.skipIf(!DB_AVAILABLE)(
         packetIds: [packetId], packetSetSha256: acceptanceContextPacketSetSha256({ packetIds: [packetId] }), correctionPacketPayloadSetSha256: acceptanceCorrectionPacketPayloadSetSha256({ packets: [packet] }),
         compilerVersion: "exact-head-overlay-v1", baseIndex: { ...baseIndexCore, revisionSha256: acceptanceContextPackCustodyBaseIndexRevisionSha256(baseIndexCore) },
         overlay: { ...overlayCore, manifestSha256: acceptanceContextPackCustodyOverlayManifestSha256(overlayCore) },
-        provenance: { schemaVersion: 1, included: [{ path: "overview", source: "base_index", reason: "Background" }, { path: "apps/filter.ts", source: "overlay", reason: "Changed" }], excluded: [] }, status: "admitted", reason: null,
+        provenance: { schemaVersion: 1, included: [{ path: "wiki/overview", source: "base_index", reason: "Background" }, { path: "apps/filter.ts", source: "overlay", reason: "Changed" }], excluded: [] }, status: "admitted", reason: null,
       });
       const source = { kind: "exact_head_overlay" as const, path: "apps/filter.ts", blobSha: exactBlobSha, fullContentSha256: exactFullContentSha256, startLine: 4, endLine: 28, rangeSha256: exactRangeSha256, byteCount: exactRangeByteCount, reason: "exact_patch_head_range", citation: `apps/filter.ts@${exactBlobSha}#L4-L28` };
       const dependencySource = {

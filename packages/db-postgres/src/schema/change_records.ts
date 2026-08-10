@@ -191,6 +191,8 @@ export const acceptanceContextPackSnapshots = pgTable(
       .notNull()
       .references(() => acceptanceContracts.id, { onDelete: "restrict" }),
     acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    /** SHA-256 of the exact confirmed Contract snapshot. */
+    acceptanceContractSha256: text("acceptance_contract_sha256"),
     repo: text("repo").notNull(),
     prNumber: integer("pr_number").notNull(),
     expectedHeadSha: text("expected_head_sha").notNull(),
@@ -199,6 +201,8 @@ export const acceptanceContextPackSnapshots = pgTable(
     headTreeSha: text("head_tree_sha"),
     packetIds: jsonb("packet_ids").$type<string[]>().notNull(),
     packetSetSha256: text("packet_set_sha256").notNull(),
+    /** SHA-256 of every validated immutable R8.1 packet payload, not just IDs. */
+    correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256"),
     compilerVersion: text("compiler_version").notNull(),
     baseIndex: jsonb("base_index").$type<Record<string, unknown>>(),
     overlay: jsonb("overlay").$type<Record<string, unknown>>(),
@@ -239,6 +243,14 @@ export const acceptanceContextPackSnapshots = pgTable(
     packetSetCheck: check(
       "acceptance_context_pack_snapshots_packet_set_sha256_check",
       sql`${t.packetSetSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    acceptanceContractCheck: check(
+      "acceptance_context_pack_snapshots_contract_sha_check",
+      sql`${t.acceptanceContractSha256} IS NULL OR ${t.acceptanceContractSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    correctionPacketPayloadSetCheck: check(
+      "acceptance_context_pack_snapshots_packet_payload_sha_check",
+      sql`${t.correctionPacketPayloadSetSha256} IS NULL OR ${t.correctionPacketPayloadSetSha256} ~ '^[A-Fa-f0-9]{64}$'`
     ),
     compilerVersionCheck: check(
       "acceptance_context_pack_snapshots_compiler_version_check",

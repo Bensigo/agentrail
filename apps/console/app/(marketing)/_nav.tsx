@@ -4,14 +4,14 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { Send } from "lucide-react";
-import type { MessageJaceCta } from "./_cta";
+import type { LandingCta } from "./_cta";
 
 /**
  * The landing nav (owner-directed narrative-flow redo, wave 4 — Parker's
  * nav move, translated). Plain and inline at the very top of the page,
  * exactly like the pre-redo nav. Once the visitor scrolls past the top
  * sentinel, it condenses into a floating pill and swaps the secondary
- * "Sign in" link for the primary Message-Jace CTA — the action worth
+ * "Sign in" link for the primary project-setup CTA — the action worth
  * surfacing once someone has actually committed to reading the story.
  *
  * Scroll state: a passive scroll listener + rAF read with a hysteresis
@@ -27,7 +27,7 @@ export function MarketingNav({
   cta,
   signInAction,
 }: {
-  cta: MessageJaceCta;
+  cta: LandingCta;
   signInAction: () => Promise<void>;
 }) {
   const [condensed, setCondensed] = useState(false);
@@ -80,7 +80,7 @@ export function MarketingNav({
           </a>
 
           {condensed ? (
-            <CondensedCta cta={cta} signInAction={signInAction} />
+            <CondensedCta cta={cta} />
           ) : (
             <div className="flex items-center gap-4">
               {/* Pricing (subscription-platform slice 7, Task 2): ungated —
@@ -111,31 +111,14 @@ export function MarketingNav({
   );
 }
 
-/** The condensed pill's primary action — Message Jace on Telegram when the
- *  hosted bot is configured, the same honest sign-in fallback otherwise
- *  (never a dead link), mirroring `PrimaryCta` in `page.tsx` at nav scale. */
-function CondensedCta({
-  cta,
-  signInAction,
-}: {
-  cta: MessageJaceCta;
-  signInAction: () => Promise<void>;
-}) {
+/** The condensed pill mirrors the primary project-setup CTA in `page.tsx`. */
+function CondensedCta({ cta }: { cta: LandingCta }) {
   const classes =
     "inline-flex items-center gap-1.5 rounded-full bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-colors hover:bg-[var(--accent-fill-hover)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
-  if (cta.kind === "telegram") {
-    return (
-      <a href={cta.href} target="_blank" rel="noreferrer" className={classes}>
-        <Send size={14} aria-hidden />
-        Message Jace
-      </a>
-    );
-  }
   return (
-    <form action={signInAction}>
-      <button type="submit" className={classes}>
-        Sign in
-      </button>
-    </form>
+    <Link href={cta.href} className={classes}>
+      <Send size={14} aria-hidden />
+      {cta.label}
+    </Link>
   );
 }

@@ -27,7 +27,7 @@ describe("resolveDiscordChannelCard", () => {
     });
     expect(card).toEqual({
       id: "discord",
-      label: "Message Jace on Discord",
+      label: "Add Jace to Discord",
       href: "https://discord.com/oauth2/authorize?client_id=123",
     });
   });

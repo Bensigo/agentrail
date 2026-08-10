@@ -2,26 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import { Bot } from "lucide-react";
 import {
   TelegramBrand,
   SlackBrand,
   DiscordBrand,
 } from "../(dashboard)/dashboard/[workspaceId]/connectors/components/brand-icons";
-import type { MessageJaceCta } from "./_cta";
+import type { LandingCta } from "./_cta";
 import type { ChannelCard } from "./_channel-cards";
 
 /**
- * "Meet Jace where work already gets discussed" — the channel scene
+ * "Meet Jace where work already happens" — the integration scene
  * (plan: docs/superpowers/plans/2026-07-22-landing-v2.md §Task 7).
  *
  * PRESENTATION vs LINKS (owner ruling 2026-07-22, recorded in TASTE.md by
- * PR 3/3): the owner chose to present Telegram, Slack, and Discord as equal
- * panels — overriding the render-nothing default the #1284/#1285 honesty
- * gate applies to footer cards. The LINKS still respect that gate: each
- * button uses the channel's real URL only when its resolver provides one
- * (Telegram via `_cta.ts`, Slack/Discord via `_channel-cards.ts`'s
- * env-gated resolvers), and falls back to the GitHub sign-in action
- * otherwise — never a dead link, never a fabricated destination.
+ * Coding agents lead because that is the engineering workflow Jace supports.
+ * Slack, Discord, and Telegram remain secondary channels. Their buttons use
+ * a verified channel URL only when one is available; otherwise they send the
+ * visitor through sign-in rather than fabricating a destination.
  *
  * Scroll mechanics: the pinned variant renders only for motion-ok visitors
  * at ≥sm (CSS hides it below sm); `prefers-reduced-motion` gets the static
@@ -31,13 +29,19 @@ import type { ChannelCard } from "./_channel-cards";
  */
 
 interface ChannelPanel {
-  id: "telegram" | "slack" | "discord";
+  id: "coding-agents" | "telegram" | "slack" | "discord";
   name: string;
   line: string;
   buttonLabel: string;
 }
 
-const PANELS: ChannelPanel[] = [
+export const PANELS: ChannelPanel[] = [
+  {
+    id: "coding-agents",
+    name: "Coding agents",
+    line: "Connect Jace to your MCP-compatible coding agent.",
+    buttonLabel: "Add Jace to your project",
+  },
   {
     id: "slack",
     name: "Slack",
@@ -54,11 +58,12 @@ const PANELS: ChannelPanel[] = [
     id: "telegram",
     name: "Telegram",
     line: "Start a task in chat and move it into a confirmed Acceptance Record.",
-    buttonLabel: "Message Jace on Telegram",
+    buttonLabel: "Set up Telegram",
   },
 ];
 
 function PanelIcon({ id, size }: { id: ChannelPanel["id"]; size: number }) {
+  if (id === "coding-agents") return <Bot size={size} aria-hidden />;
   if (id === "telegram") return <TelegramBrand size={size} />;
   if (id === "slack") return <SlackBrand size={size} />;
   return <DiscordBrand size={size} />;
@@ -70,7 +75,7 @@ export function Channels({
   discord,
   signInAction,
 }: {
-  cta: MessageJaceCta;
+  cta: LandingCta;
   slack: ChannelCard | null;
   discord: ChannelCard | null;
   signInAction: () => Promise<void>;
@@ -111,7 +116,8 @@ export function Channels({
   }, [reducedMotion]);
 
   const hrefFor = (id: ChannelPanel["id"]): string | null => {
-    if (id === "telegram") return cta.kind === "telegram" && cta.href ? cta.href : null;
+    if (id === "coding-agents") return cta.href;
+    if (id === "telegram") return null;
     if (id === "slack") return slack?.href ?? null;
     return discord?.href ?? null;
   };

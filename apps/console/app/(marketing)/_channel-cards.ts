@@ -1,8 +1,7 @@
 /**
- * Landing "also available on" channel cards (#1284 + #1285 PR ②) — SEPARATE
- * from `_cta.ts`'s primary Message-Jace CTA (Telegram, #1279), which stays
- * untouched. Discord (#1284) and Slack (#1285) each contribute their own
- * resolver to this file.
+ * Landing "also available on" channel cards (#1284 + #1285 PR ②). They are
+ * secondary to `_cta.ts`'s project-setup CTA. Discord (#1284) and Slack
+ * (#1285) each contribute their own resolver to this file.
  *
  * HONESTY GATE (the arc's landing-honesty rule, AC2 on both #1284 and
  * #1285): a channel card must never claim a channel is live before a real
@@ -12,9 +11,7 @@
  * Discord/Slack API. So each resolver is gated behind an EXPLICIT "verified"
  * flag (`NEXT_PUBLIC_DISCORD_CHANNEL_LIVE` / `NEXT_PUBLIC_SLACK_CHANNEL_LIVE`),
  * separate from and in ADDITION to "is a bot/app configured" (the invite/
- * install URL alone is not enough to render the card) — unlike `_cta.ts`'s
- * Telegram CTA, which only checks "is a bot configured" because Telegram's
- * channel was ALREADY prod-verified when that CTA shipped (#1262/#1263).
+ * install URL alone is not enough to render the card).
  *
  * Both env vars per channel default unset, so each resolver returns `null`
  * and the landing page renders NOTHING extra today — zero visual diff until
@@ -51,7 +48,7 @@ export function resolveDiscordChannelCard(env: {
   if (!isTrue(env.live)) return null;
   const href = env.inviteUrl?.trim();
   if (!href) return null;
-  return { id: "discord", label: "Message Jace on Discord", href };
+  return { id: "discord", label: "Add Jace to Discord", href };
 }
 
 /**

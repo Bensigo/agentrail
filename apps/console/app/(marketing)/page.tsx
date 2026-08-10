@@ -11,8 +11,8 @@ import { MarketingNav } from "./_nav";
 import { PhoneDemo } from "./_phone-demo";
 import { UseCases } from "./_use-cases";
 import { Channels } from "./_channels";
-import { resolveMessageJaceCta } from "./_cta";
-import type { MessageJaceCta } from "./_cta";
+import { LANDING_CTA } from "./_cta";
+import type { LandingCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
 import { TierCards } from "./pricing/tier-cards";
 // Shared tier card grid (subscription-platform slice 10, Task 1 — owner
@@ -55,9 +55,7 @@ const HOW_WE_WORK = [
 /**
  * The secondary sign-in path (controller ruling, #1279 PR ①: "GitHub sign-in
  * demoted to nav + footer secondary"). Also the honest fallback for the
- * primary CTA itself when no hosted Telegram bot is configured — see
- * {@link PrimaryCta}. One named server action, referenced from every call
- * site, rather than four separate inline closures.
+ * sign-in action, used only for secondary sign-in and channel setup paths.
  */
 async function signInWithGithub() {
   "use server";
@@ -90,13 +88,7 @@ export default async function LandingPage() {
     redirect(workspaces.length > 0 ? `/dashboard/${workspaces[0].id}` : "/setup");
   }
 
-  // Telegram is the only open chat door today (#1262/#1263 shipped). A
-  // multi-channel picker (Discord/Slack/iMessage) arrives with W5 — see
-  // docs/superpowers/plans/2026-07-17-jace-e2e-arc-issues.md. Until then this
-  // resolves one plain path, no picker component: Message Jace on Telegram
-  // when the hosted bot is configured, else the honest sign-in fallback
-  // (never a dead link) — see `./_cta.ts`.
-  const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
+  const cta = LANDING_CTA;
   // #1284 AC2 (landing-honesty rule): resolves to null — rendering nothing
   // extra — until BOTH a Discord invite URL is configured AND the channel is
   // explicitly flagged live post-prod-verification. See `./_channel-cards.ts`.
@@ -119,7 +111,7 @@ export default async function LandingPage() {
       className="relative min-h-screen bg-[var(--paper)] text-[var(--gray-12)]"
     >
       {/* 1 — Nav: plain wordmark + Sign in at the top; condenses into a
-          floating pill with the primary Message-Jace CTA once the visitor
+          floating pill with the primary project-setup CTA once the visitor
           scrolls into the story. See _nav.tsx. */}
       <MarketingNav cta={cta} signInAction={signInWithGithub} />
 
@@ -224,10 +216,8 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 5b — Where you'll find me: the channel scene. Panels present all
-          three channels per the owner's 2026-07-22 ruling; every button
-          resolves through the honesty-gated URL resolvers and falls back to
-          sign-in — never a dead link. See _channels.tsx. */}
+      {/* 5b — Where Jace fits: coding agents lead; the chat channels remain
+          secondary. See _channels.tsx. */}
       {/* The paper sheet rides over the lemon in turn — same sheet-over-
           sheet seam, so the acts hand off instead of hard-cutting. */}
       <section className="relative -mt-14 rounded-t-[2.5rem] border-t-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 pt-20 pb-24 sm:pt-24 sm:pb-28">
@@ -447,10 +437,8 @@ export default async function LandingPage() {
 /* ------------------------------------------------------------------ CTA */
 
 /**
- * The hero + closing primary CTA (controller ruling, #1279 PR ①: "REPLACE").
- * Message Jace on Telegram when the hosted bot is configured; otherwise the
- * honest sign-in fallback — same visual weight either way, never a dead
- * link. See `./_cta.ts` for the resolution logic and its drift-guard tests.
+ * The hero + closing primary CTA takes prospective users to the app's public
+ * sign-in entry. Successful new sign-ins continue to workspace setup.
  */
 /** The cartoon-ink press recipe (owner personality pass 2026-07-22): ink
  *  border + hard offset shadow; hover nudges into the shadow, active lands
@@ -458,25 +446,11 @@ export default async function LandingPage() {
 const INK_BUTTON =
   "inline-flex items-center gap-2.5 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] shadow-[4px_4px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[2px] hover:translate-y-[2px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[4px] active:translate-y-[4px] active:shadow-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
 
-function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
-  if (cta.kind === "telegram") {
-    return (
-      <a href={cta.href} target="_blank" rel="noreferrer" className={INK_BUTTON}>
-        <Send size={17} aria-hidden />
-        Message Jace on Telegram
-      </a>
-    );
-  }
-  // No hosted bot configured: the button still reads as Jace's own ask
-  // (owner directive 2026-07-22 — "this should be a message me button");
-  // sign-in IS the door to messaging him when no public bot exists, and
-  // the action stays the same honest server action either way.
+function PrimaryCta({ cta }: { cta: LandingCta }) {
   return (
-    <form action={signInWithGithub}>
-      <button type="submit" className={INK_BUTTON}>
-        <Send size={17} aria-hidden />
-        Message Jace
-      </button>
-    </form>
+    <Link href={cta.href} className={INK_BUTTON}>
+      <Send size={17} aria-hidden />
+      {cta.label}
+    </Link>
   );
 }

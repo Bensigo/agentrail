@@ -32,6 +32,9 @@ const STATUSES = new Set(["added", "modified", "removed", "renamed", "copied", "
 const MAX_SECRET_KINDS = 16;
 const MAX_SECRET_FINDINGS = 1024;
 const MAX_CHANGED_MANIFEST_FILES = 299;
+const MAX_SELECTED_EXACT_RANGES = 64;
+/** Matches the compiler's bounded excerpt ceiling. */
+export const MAX_SELECTED_EXACT_RANGE_BYTES = 12 * 1024;
 
 export interface ExactHeadDirectReadReceiptInput {
   /** The compiler candidate passed to the path-only exact-head resolver. */
@@ -56,8 +59,19 @@ export interface ExactHeadSourceCustodyInput {
   };
   /** Every dependency/direct resolver result that contributed to this Pack. */
   directReadReceipts: readonly ExactHeadDirectReadReceiptInput[];
-  /** Exact dependency source paths selected into the rendered Pack. */
-  selectedDependencyPaths: readonly string[];
+  /** Exact source ranges selected into a rendered Pack, never their text. */
+  selectedExactRanges: readonly ExactHeadSelectedExactRangeInput[];
+}
+
+export interface ExactHeadSelectedExactRangeInput {
+  kind: "exact_head_overlay" | "exact_head_dependency";
+  path: string;
+  blobSha: string;
+  fullContentSha256: string;
+  startLine: number;
+  endLine: number;
+  rangeSha256: string;
+  byteCount: number;
 }
 
 export interface ExactHeadSourceCustodyRecord {
@@ -98,9 +112,11 @@ export type ExactHeadSourceCustodyDirectReadReceipt =
       exclusion?: ExactHeadSourceCustodyExclusion;
     };
 
+export type ExactHeadSourceCustodySelectedExactRange = ExactHeadSelectedExactRangeInput;
+
 export interface ExactHeadSourceCustodyReceipt {
   kind: "exact_head_source_custody";
-  schemaVersion: 1;
+  schemaVersion: 2;
   repo: string;
   prNumber: number;
   baseSha: string;
@@ -121,6 +137,7 @@ export interface ExactHeadSourceCustodyReceipt {
   records: ExactHeadSourceCustodyRecord[];
   exclusions: ExactHeadSourceCustodyExclusion[];
   directReadReceipts: ExactHeadSourceCustodyDirectReadReceipt[];
+  selectedExactRanges: ExactHeadSourceCustodySelectedExactRange[];
   identitySha256: string;
 }
 
@@ -137,7 +154,8 @@ export type ExactHeadSourceCustodyFailureReason =
   | "materialization_identity_mismatch"
   | "secret_policy_mismatch"
   | "source_limit"
-  | "direct_read_mismatch";
+  | "direct_read_mismatch"
+  | "selected_range_mismatch";
 
 function compareText(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
@@ -334,6 +352,56 @@ function receiptIdentity(receipt: Omit<ExactHeadSourceCustodyReceipt, "identityS
   return sha256(canonicalJson(receipt));
 }
 
+function selectedRangeIdentity(
+  value: ExactHeadSelectedExactRangeInput,
+  snapshot: ExactHeadGithubContextSnapshot,
+  records: readonly ExactHeadContentRecord[],
+  reads: readonly ExactHeadDirectReadReceiptInput[],
+  canonicalReads: readonly ExactHeadSourceCustodyDirectReadReceipt[],
+): ExactHeadSourceCustodySelectedExactRange | null {
+  if (!value || (value.kind !== "exact_head_overlay" && value.kind !== "exact_head_dependency")
+    || !safePath(value.path) || !SHA1.test(value.blobSha) || !SHA256.test(value.fullContentSha256)
+    || !Number.isSafeInteger(value.startLine) || !Number.isSafeInteger(value.endLine)
+    || value.startLine < 1 || value.endLine < value.startLine
+    || !SHA256.test(value.rangeSha256) || !Number.isSafeInteger(value.byteCount)
+    || value.byteCount < 1 || value.byteCount > MAX_SELECTED_EXACT_RANGE_BYTES) return null;
+  const direct = reads.find((read) => read.requestedPath === value.path);
+  const canonicalDirect = canonicalReads.find((read): read is Extract<ExactHeadSourceCustodyDirectReadReceipt, { outcome: "record" }> =>
+    read.outcome === "record" && read.requestedPath === value.path
+  );
+  const candidate = value.kind === "exact_head_overlay"
+    ? records.find((record) => record.path === value.path && record.source === "exact_head_overlay")
+    : direct?.result.ok === true ? direct.result.record : undefined;
+  if (!candidate || candidate.blobSha.toLowerCase() !== value.blobSha.toLowerCase()
+    || candidate.contentSha256.toLowerCase() !== value.fullContentSha256.toLowerCase()
+    || value.endLine > candidate.lineCount) return null;
+  if (value.kind === "exact_head_dependency" && (!canonicalDirect
+    || canonicalDirect.record.blobSha !== candidate.blobSha.toLowerCase()
+    || canonicalDirect.record.contentSha256 !== candidate.contentSha256.toLowerCase()
+    || canonicalDirect.record.byteCount !== candidate.byteCount
+    || canonicalDirect.record.lineCount !== candidate.lineCount)) return null;
+  if (value.kind === "exact_head_overlay") {
+    const changed = snapshot.changedFiles.find((file) => file.path === value.path);
+    const ranges = changed && canonicalRanges(changed);
+    if (!changed || changed.blobSha?.toLowerCase() !== candidate.blobSha || !Array.isArray(ranges)
+      || !ranges.some((range) => value.startLine >= range.startLine && value.endLine <= range.endLine)) return null;
+  }
+  const content = candidate.content.split("\n").slice(value.startLine - 1, value.endLine).join("\n");
+  const byteCount = Buffer.byteLength(content, "utf8");
+  if (byteCount !== value.byteCount || byteCount > MAX_SELECTED_EXACT_RANGE_BYTES
+    || sha256(content) !== value.rangeSha256.toLowerCase()) return null;
+  return {
+    kind: value.kind,
+    path: value.path,
+    blobSha: candidate.blobSha.toLowerCase(),
+    fullContentSha256: candidate.contentSha256.toLowerCase(),
+    startLine: value.startLine,
+    endLine: value.endLine,
+    rangeSha256: value.rangeSha256.toLowerCase(),
+    byteCount,
+  };
+}
+
 /**
  * Revalidates ephemeral bytes before projection. Any ambiguity is
  * `not_proven`; no partial receipt is emitted.
@@ -342,12 +410,12 @@ export function projectExactHeadSourceCustody(input: ExactHeadSourceCustodyInput
   if (!input || !input.snapshot || !input.materialization || !input.materialization.content
     || !input.admittedOverlay
     || !Array.isArray(input.materialization.content.records) || !Array.isArray(input.materialization.content.exclusions)
-    || !Array.isArray(input.directReadReceipts) || !Array.isArray(input.selectedDependencyPaths)
+    || !Array.isArray(input.directReadReceipts) || !Array.isArray(input.selectedExactRanges)
     || input.snapshot.changedFiles.length < 1 || input.snapshot.changedFiles.length > MAX_CHANGED_MANIFEST_FILES
     || input.materialization.content.records.length > MAX_EXACT_HEAD_SOURCE_FILES
     || input.materialization.content.exclusions.length > MAX_CHANGED_MANIFEST_FILES
     || input.directReadReceipts.length > MAX_EXACT_HEAD_DIRECT_PATH_READS
-    || input.selectedDependencyPaths.length > MAX_EXACT_HEAD_DIRECT_PATH_READS
+    || input.selectedExactRanges.length > MAX_SELECTED_EXACT_RANGES
     || !snapshotIsAdmitted(input.snapshot)) {
     return { ok: false, kind: "not_proven", reason: "invalid_input" };
   }
@@ -390,13 +458,22 @@ export function projectExactHeadSourceCustody(input: ExactHeadSourceCustodyInput
     > MAX_EXACT_HEAD_DIRECT_PATH_BYTES) {
     return { ok: false, kind: "not_proven", reason: "source_limit" };
   }
-  if (input.selectedDependencyPaths.some((value) => !safePath(value))
-    || new Set(input.selectedDependencyPaths).size !== input.selectedDependencyPaths.length) {
-    return { ok: false, kind: "not_proven", reason: "direct_read_mismatch" };
+  const selectedRanges = input.selectedExactRanges.map((range) => selectedRangeIdentity(
+    range,
+    input.snapshot,
+    input.materialization.content.records,
+    input.directReadReceipts,
+    canonicalReads,
+  ));
+  if (selectedRanges.some((range) => range === null)) {
+    return { ok: false, kind: "not_proven", reason: "selected_range_mismatch" };
   }
-  const successfulReads = new Set(canonicalReads.flatMap((read) => read.outcome === "record" ? [read.requestedPath] : []));
-  if (input.selectedDependencyPaths.some((selectedPath) => !successfulReads.has(selectedPath))) {
-    return { ok: false, kind: "not_proven", reason: "direct_read_mismatch" };
+  const selectedRangeKey = (range: ExactHeadSourceCustodySelectedExactRange) =>
+    `${range.kind}\u0000${range.path}\u0000${range.blobSha}\u0000${range.fullContentSha256}\u0000${range.startLine}\u0000${range.endLine}`;
+  const canonicalSelectedRanges = [...(selectedRanges as ExactHeadSourceCustodySelectedExactRange[])]
+    .sort((left, right) => compareText(selectedRangeKey(left), selectedRangeKey(right)));
+  if (new Set(canonicalSelectedRanges.map(selectedRangeKey)).size !== canonicalSelectedRanges.length) {
+    return { ok: false, kind: "not_proven", reason: "selected_range_mismatch" };
   }
   const changedManifest = input.snapshot.changedFiles.map((file) => {
     const ranges = canonicalRanges(file);
@@ -413,7 +490,7 @@ export function projectExactHeadSourceCustody(input: ExactHeadSourceCustodyInput
   }).sort((left, right) => compareText(left.path, right.path));
   const core: Omit<ExactHeadSourceCustodyReceipt, "identitySha256"> = {
     kind: "exact_head_source_custody",
-    schemaVersion: 1,
+    schemaVersion: 2,
     repo: input.snapshot.repo,
     prNumber: input.snapshot.prNumber,
     baseSha: input.snapshot.baseSha.toLowerCase(),
@@ -425,6 +502,7 @@ export function projectExactHeadSourceCustody(input: ExactHeadSourceCustodyInput
     records: canonicalRecords,
     exclusions,
     directReadReceipts: canonicalReads,
+    selectedExactRanges: canonicalSelectedRanges,
   };
   return { ok: true, receipt: { ...core, identitySha256: receiptIdentity(core) } };
 }

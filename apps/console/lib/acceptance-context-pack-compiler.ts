@@ -13,8 +13,10 @@ import {
   type AcceptanceContextPackCustodyResolution,
 } from "@agentrail/db-postgres";
 import {
+  MAX_SELECTED_EXACT_RANGE_BYTES,
   projectExactHeadSourceCustody,
   type ExactHeadDirectReadReceiptInput,
+  type ExactHeadSelectedExactRangeInput,
   type ExactHeadSourceCustodyReceipt,
 } from "./acceptance-context-pack-source-custody";
 import {
@@ -34,7 +36,7 @@ import { scanForSecrets } from "./secret-scan";
  * head. It consumes only server-resolved custody, retains source text only in
  * the returned delivery view, and performs no persistence or network writes.
  */
-export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v2";
+export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v3";
 export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v2";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER = "utf8_byte_upper_bound_v1";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET = 65_536;
@@ -47,7 +49,6 @@ const MAX_DEPENDENCY_FILES = 8;
 const MAX_LINES_PER_DEPENDENCY = 80;
 const MAX_WIKI_PAGES = 4;
 const MAX_LINES_PER_WIKI_PAGE = 60;
-const MAX_RANGE_BYTES = 12 * 1024;
 const MAX_WIKI_PAGE_BYTES = 256 * 1024;
 const MAX_WIKI_TOTAL_BYTES = 512 * 1024;
 const MAX_PACK_SOURCES = 64;
@@ -109,7 +110,7 @@ export type AcceptanceContextPackManifest = {
   exclusions: AcceptanceContextPackExclusion[];
   sourceCustody: {
     kind: "exact_head_source_custody";
-    schemaVersion: 1;
+    schemaVersion: 2;
     identitySha256: string;
   };
   budget: {
@@ -394,7 +395,7 @@ function exactSource(input: {
     || input.range.endLine > input.record.lineCount) return null;
   const content = rangeContent(input.record.content, input.range);
   const byteCount = Buffer.byteLength(content, "utf8");
-  if (byteCount === 0 || byteCount > MAX_RANGE_BYTES || !scanForSecrets(content).clean) return null;
+  if (byteCount === 0 || byteCount > MAX_SELECTED_EXACT_RANGE_BYTES || !scanForSecrets(content).clean) return null;
   return {
     source: {
       kind: input.kind,
@@ -690,7 +691,7 @@ function wikiSources(input: {
     for (const range of focusedRanges(page.bodyMd, input.keywords, MAX_LINES_PER_WIKI_PAGE)) {
       const content = rangeContent(page.bodyMd, range);
       const byteCount = Buffer.byteLength(content, "utf8");
-      if (byteCount === 0 || byteCount > MAX_RANGE_BYTES) {
+      if (byteCount === 0 || byteCount > MAX_SELECTED_EXACT_RANGE_BYTES) {
         exclusions.push(exclusion("base_index_background", identity.slug, "range_byte_limit", identity.pageBodySha256));
         continue;
       }
@@ -758,7 +759,7 @@ function buildManifest(input: {
     exclusions: canonicalExclusions(input.exclusions),
     sourceCustody: {
       kind: "exact_head_source_custody",
-      schemaVersion: 1,
+      schemaVersion: 2,
       identitySha256: input.sourceCustodyIdentitySha256,
     },
     budget: {
@@ -956,7 +957,7 @@ export async function compileAcceptanceContextPack(input: {
     admittedOverlay: source.overlay,
     materialization: input.materialization,
     directReadReceipts: [],
-    selectedDependencyPaths: [],
+    selectedExactRanges: [],
   });
   if (!preliminaryCustody.ok) {
     return { ok: false, kind: "not_proven", reason: "materialization_mismatch" };
@@ -1006,15 +1007,24 @@ export async function compileAcceptanceContextPack(input: {
   if (!fitted) {
     return { ok: false, kind: "not_proven", reason: changed.sources.length === 0 ? "no_exact_head_context" : "pack_budget" };
   }
-  const selectedDependencyPaths = sortedUnique(fitted.sources.flatMap(({ source: item }) =>
-    item.kind === "exact_head_dependency" ? [item.path] : []
-  ));
+  const selectedExactRanges: ExactHeadSelectedExactRangeInput[] = fitted.sources.flatMap(({ source: item }) =>
+    item.kind === "base_index_background" ? [] : [{
+      kind: item.kind,
+      path: item.path,
+      blobSha: item.blobSha,
+      fullContentSha256: item.fullContentSha256,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      rangeSha256: item.rangeSha256,
+      byteCount: item.byteCount,
+    }]
+  );
   const sourceCustody = projectExactHeadSourceCustody({
     snapshot: input.snapshot,
     admittedOverlay: source.overlay,
     materialization: input.materialization,
     directReadReceipts: reads.receipts(),
-    selectedDependencyPaths,
+    selectedExactRanges,
   });
   if (!sourceCustody.ok) {
     return { ok: false, kind: "not_proven", reason: "source_custody_mismatch" };

@@ -5,7 +5,9 @@ import {
   exactHeadGitBlobSha1,
   projectExactHeadSourceCustody,
   type ExactHeadDirectReadReceiptInput,
+  type ExactHeadSelectedExactRangeInput,
   type ExactHeadSourceCustodyInput,
+  MAX_SELECTED_EXACT_RANGE_BYTES,
 } from "./acceptance-context-pack-source-custody";
 import {
   exactHeadContentMaterializationIdentity,
@@ -26,9 +28,9 @@ const TREE = "d".repeat(40);
 const WIDGET = "export const widget = () => helper();\n";
 const HELPER = "export const helper = () => true;\n";
 
-type MutableSourceCustodyInput = Omit<ExactHeadSourceCustodyInput, "directReadReceipts" | "selectedDependencyPaths"> & {
+type MutableSourceCustodyInput = Omit<ExactHeadSourceCustodyInput, "directReadReceipts" | "selectedExactRanges"> & {
   directReadReceipts: ExactHeadDirectReadReceiptInput[];
-  selectedDependencyPaths: string[];
+  selectedExactRanges: ExactHeadSelectedExactRangeInput[];
 };
 
 function sha256(value: string): string {
@@ -49,6 +51,25 @@ function record(path: string, content: string, source: ExactHeadContentRecord["s
   };
 }
 
+function selectedRange(
+  kind: ExactHeadSelectedExactRangeInput["kind"],
+  source: ExactHeadContentRecord,
+  startLine = 1,
+  endLine = 1,
+): ExactHeadSelectedExactRangeInput {
+  const content = source.content.split("\n").slice(startLine - 1, endLine).join("\n");
+  return {
+    kind,
+    path: source.path,
+    blobSha: source.blobSha,
+    fullContentSha256: source.contentSha256,
+    startLine,
+    endLine,
+    rangeSha256: sha256(content),
+    byteCount: Buffer.byteLength(content),
+  };
+}
+
 function snapshot(): ExactHeadGithubContextSnapshot {
   const changedFiles = [{
     path: "src/widget.ts", status: "modified", blobSha: exactHeadGitBlobSha1(WIDGET), previousPath: null,
@@ -65,7 +86,9 @@ function snapshot(): ExactHeadGithubContextSnapshot {
 
 function input(overrides: Partial<MutableSourceCustodyInput> = {}): MutableSourceCustodyInput {
   const exact = snapshot();
-  const records = [record("src/widget.ts", WIDGET, "exact_head_overlay")];
+  const changed = record("src/widget.ts", WIDGET, "exact_head_overlay");
+  const dependency = record("src/helper.ts", HELPER, "exact_head_tree_fallback");
+  const records = [changed];
   const exclusions: never[] = [];
   const admittedOverlay = exactHeadContextCustodyOverlay(exact);
   if (!admittedOverlay) throw new Error("expected admitted overlay fixture");
@@ -78,8 +101,11 @@ function input(overrides: Partial<MutableSourceCustodyInput> = {}): MutableSourc
       exclusions,
     } },
     admittedOverlay,
-    directReadReceipts: [{ requestedPath: "src/helper.ts", headSha: HEAD, headTreeSha: TREE, result: { ok: true as const, record: record("src/helper.ts", HELPER, "exact_head_tree_fallback") } }],
-    selectedDependencyPaths: ["src/helper.ts"],
+    directReadReceipts: [{ requestedPath: "src/helper.ts", headSha: HEAD, headTreeSha: TREE, result: { ok: true as const, record: dependency } }],
+    selectedExactRanges: [
+      selectedRange("exact_head_overlay", changed),
+      selectedRange("exact_head_dependency", dependency),
+    ],
     ...overrides,
   };
 }
@@ -131,7 +157,7 @@ function inputWithChangedContents(contents: readonly string[]): ExactHeadSourceC
       },
     },
     directReadReceipts: [],
-    selectedDependencyPaths: [],
+    selectedExactRanges: [],
   };
 }
 
@@ -149,6 +175,7 @@ describe("projectExactHeadSourceCustody", () => {
     const result = projectExactHeadSourceCustody(input());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.receipt.schemaVersion).toBe(2);
     expect(result.receipt.changedManifest[0]).toMatchObject({ path: "src/widget.ts", patchSha256: sha256("@@ -1 +1 @@\n-old\n+new\n") });
     expect(JSON.stringify(result.receipt)).not.toContain(WIDGET);
     expect(JSON.stringify(result.receipt)).not.toContain(HELPER);
@@ -212,10 +239,40 @@ describe("projectExactHeadSourceCustody", () => {
     expect(projectExactHeadSourceCustody(contradictory)).toMatchObject({ ok: false, reason: "direct_read_mismatch" });
   });
 
-  it("requires every selected dependency source to have one successful exact read", () => {
+  it("permits empty selection for preliminary validation but requires a canonical successful read for dependency excerpts", () => {
     expect(projectExactHeadSourceCustody(input({ directReadReceipts: [] })))
-      .toMatchObject({ ok: false, reason: "direct_read_mismatch" });
-    expect(projectExactHeadSourceCustody(input({ directReadReceipts: [], selectedDependencyPaths: [] }))).toMatchObject({ ok: true });
+      .toMatchObject({ ok: false, reason: "selected_range_mismatch" });
+    expect(projectExactHeadSourceCustody(input({ directReadReceipts: [], selectedExactRanges: [] }))).toMatchObject({ ok: true });
+  });
+
+  it("rederives selected range bytes and keeps overlay excerpts inside an admitted hunk", () => {
+    const forgedHash = input();
+    forgedHash.selectedExactRanges[0] = {
+      ...forgedHash.selectedExactRanges[0]!,
+      rangeSha256: "0".repeat(64),
+    };
+    expect(projectExactHeadSourceCustody(forgedHash))
+      .toMatchObject({ ok: false, reason: "selected_range_mismatch" });
+
+    const outsideHunk = input();
+    const changed = outsideHunk.materialization.content.records[0]!;
+    outsideHunk.selectedExactRanges[0] = selectedRange("exact_head_overlay", changed, 1, 2);
+    expect(projectExactHeadSourceCustody(outsideHunk))
+      .toMatchObject({ ok: false, reason: "selected_range_mismatch" });
+  });
+
+  it("enforces the selected range byte boundary", () => {
+    const atBoundary = record("src/helper.ts", "x".repeat(MAX_SELECTED_EXACT_RANGE_BYTES), "exact_head_tree_fallback");
+    expect(projectExactHeadSourceCustody(input({
+      directReadReceipts: [{ requestedPath: atBoundary.path, headSha: HEAD, headTreeSha: TREE, result: { ok: true, record: atBoundary } }],
+      selectedExactRanges: [selectedRange("exact_head_dependency", atBoundary)],
+    }))).toMatchObject({ ok: true });
+
+    const aboveBoundary = record("src/helper.ts", "x".repeat(MAX_SELECTED_EXACT_RANGE_BYTES + 1), "exact_head_tree_fallback");
+    expect(projectExactHeadSourceCustody(input({
+      directReadReceipts: [{ requestedPath: aboveBoundary.path, headSha: HEAD, headTreeSha: TREE, result: { ok: true, record: aboveBoundary } }],
+      selectedExactRanges: [selectedRange("exact_head_dependency", aboveBoundary)],
+    }))).toMatchObject({ ok: false, reason: "selected_range_mismatch" });
   });
 
   it("enforces the exact-path resolver receipt cap", () => {
@@ -225,7 +282,7 @@ describe("projectExactHeadSourceCustody", () => {
       headTreeSha: TREE,
       result: { ok: false as const, kind: "not_proven" as const, reason: "path_not_found" as const },
     }));
-    expect(projectExactHeadSourceCustody(input({ directReadReceipts, selectedDependencyPaths: [] })))
+    expect(projectExactHeadSourceCustody(input({ directReadReceipts, selectedExactRanges: [] })))
       .toMatchObject({ ok: false, reason: "invalid_input" });
   });
 
@@ -243,13 +300,13 @@ describe("projectExactHeadSourceCustody", () => {
     const oversized = "x".repeat(MAX_EXACT_HEAD_FILE_BYTES + 1);
     expect(projectExactHeadSourceCustody(input({
       directReadReceipts: directReads([oversized]),
-      selectedDependencyPaths: ["src/dependency-0.ts"],
+      selectedExactRanges: [],
     }))).toMatchObject({ ok: false, reason: "direct_read_mismatch" });
 
     const aggregate = Array.from({ length: 3 }, () => "x".repeat(Math.floor(MAX_EXACT_HEAD_DIRECT_PATH_BYTES / 2)));
     expect(projectExactHeadSourceCustody(input({
       directReadReceipts: directReads(aggregate),
-      selectedDependencyPaths: aggregate.map((_, index) => `src/dependency-${index}.ts`),
+      selectedExactRanges: [],
     }))).toMatchObject({ ok: false, reason: "source_limit" });
   });
 
@@ -260,7 +317,7 @@ describe("projectExactHeadSourceCustody", () => {
     const dependencies = Array.from({ length: MAX_EXACT_HEAD_DIRECT_PATH_BYTES / MAX_EXACT_HEAD_FILE_BYTES }, () => "x".repeat(MAX_EXACT_HEAD_FILE_BYTES));
     expect(projectExactHeadSourceCustody(input({
       directReadReceipts: directReads(dependencies),
-      selectedDependencyPaths: dependencies.map((_, index) => `src/dependency-${index}.ts`),
+      selectedExactRanges: [],
     }))).toMatchObject({ ok: true });
   });
 
@@ -309,6 +366,15 @@ describe("projectExactHeadSourceCustody", () => {
     const baseline = projectExactHeadSourceCustody(first);
     expect(result.ok && baseline.ok ? result.receipt.identitySha256 : null)
       .toBe(baseline.ok ? baseline.receipt.identitySha256 : null);
+  });
+
+  it("canonicalizes selected exact ranges before receipt identity", () => {
+    const first = input();
+    const reordered = input();
+    reordered.selectedExactRanges.reverse();
+    const left = projectExactHeadSourceCustody(first);
+    const right = projectExactHeadSourceCustody(reordered);
+    expect(left.ok && right.ok ? left.receipt : null).toEqual(right.ok ? right.receipt : null);
   });
 
   it("fails closed when source bytes or exclusions violate secret policy", () => {

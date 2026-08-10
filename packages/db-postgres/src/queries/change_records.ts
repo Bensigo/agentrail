@@ -6,24 +6,28 @@ import {
   changeRecordEvents,
   changeRecords,
   acceptanceBuilderRouteCapabilityProfiles,
+  acceptanceBuilderRouteGithubClaudeAckProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubActivations,
+  acceptanceCorrectionDispatchGithubClaudeAckReceipts,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
   type AcceptanceBuilderRouteCapabilityProfileRow,
+  type AcceptanceBuilderRouteGithubClaudeAckProfileRow,
   type AcceptanceBuilderRouteRow,
   type AcceptanceCompiledContextPackRow,
   type AcceptanceCorrectionDispatchRow,
   type AcceptanceCorrectionDispatchGithubPreflightRow,
   type AcceptanceCorrectionDispatchGithubFindingPublicationRow,
   type AcceptanceCorrectionDispatchGithubActivationRow,
+  type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
@@ -2704,6 +2708,128 @@ export type RecordAcceptanceBuilderRouteCapabilityProfileInput = {
   recordedBy: string;
 };
 
+export const GITHUB_CLAUDE_ACK_OIDC_ISSUER =
+  "https://token.actions.githubusercontent.com" as const;
+export const GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_PREFIX =
+  "agentrail://correction-dispatch/github-claude/ack/v1" as const;
+export const GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_CONTRACT =
+  "activation_comment_run_attempt_sha256_v1" as const;
+export const GITHUB_CLAUDE_ACK_OIDC_SUBJECT_CONTRACT =
+  "default_repo_ref_legacy_or_immutable_v1" as const;
+export const GITHUB_CLAUDE_ACK_WORKFLOW_CONTRACT =
+  "github_claude_action_success_session_v1" as const;
+export const GITHUB_CLAUDE_ACK_APPROVED_ACTION_SHA =
+  "6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975" as const;
+const GITHUB_CLAUDE_ACK_PROTOCOL_VERSION = 1 as const;
+
+export type AcceptanceBuilderRouteGithubClaudeAckProfileSnapshot = {
+  kind: "acceptance_builder_route_github_claude_ack_profile";
+  version: 1;
+  workspaceId: string;
+  repo: string;
+  routeId: string;
+  adapter: "github_claude";
+  routeConfigurationVersion: number;
+  capabilityProfile: { id: string; snapshotSha256: string };
+  provider: "anthropic_claude_code_action";
+  acknowledgement: "action_success_with_session";
+  githubRepository: { id: string; ownerId: string };
+  triggerActor: { id: string; login: string };
+  oidc: {
+    issuer: typeof GITHUB_CLAUDE_ACK_OIDC_ISSUER;
+    audienceContract: typeof GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_CONTRACT;
+    subjectContract: typeof GITHUB_CLAUDE_ACK_OIDC_SUBJECT_CONTRACT;
+    eventName: "issue_comment";
+    callerWorkflowRef: string;
+    jobWorkflowRef: string;
+    jobWorkflowSha: string;
+  };
+  claudeActionSha: string;
+  workflowContract: typeof GITHUB_CLAUDE_ACK_WORKFLOW_CONTRACT;
+  scopeBoundary: "agent_acknowledgement_only";
+};
+
+/** Server-only policy registration; no secret or provider session is accepted. */
+export type RecordAcceptanceBuilderRouteGithubClaudeAckProfileInput = {
+  workspaceId: string;
+  routeId: string;
+  githubRepositoryId: string;
+  githubRepositoryOwnerId: string;
+  githubAppBotUserId: string;
+  githubAppBotLogin: string;
+  callerWorkflowRef: string;
+  jobWorkflowRef: string;
+  jobWorkflowSha: string;
+  claudeActionSha: string;
+  recordedBy: string;
+};
+
+/** Signature/time verification happens at the Console boundary before normalization. */
+export type GithubClaudeAckNormalizedOidcClaims = {
+  issuer: typeof GITHUB_CLAUDE_ACK_OIDC_ISSUER;
+  audience: string;
+  subject: string;
+  subjectSha256: string;
+  jtiSha256: string;
+  issuedAt: number;
+  notBefore: number;
+  expiresAt: number;
+  repository: string;
+  repositoryId: string;
+  repositoryOwner: string;
+  repositoryOwnerId: string;
+  actor: string;
+  actorId: string;
+  eventName: "issue_comment";
+  ref: string;
+  workflowRef: string;
+  workflowSha: string;
+  jobWorkflowRef: string;
+  jobWorkflowSha: string;
+  runId: string;
+  runAttempt: 1;
+  checkRunId: string;
+};
+
+export type RecordGithubClaudeAgentAcknowledgementInput = {
+  activationCommentId: string;
+  activationBodySha256: string;
+  conclusion: "success";
+  providerSessionId: string;
+  oidc: GithubClaudeAckNormalizedOidcClaims;
+};
+
+export type RecordGithubClaudeAgentAcknowledgementResult =
+  | { kind: "recorded"; receipt: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow }
+  | { kind: "replayed"; receipt: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow }
+  | { kind: "not_admitted" };
+
+/** A valid callback identity was already consumed by different receipt data. */
+export class GithubClaudeAgentAcknowledgementConflictError extends Error {
+  readonly code = "GITHUB_CLAUDE_ACK_CONFLICT" as const;
+
+  constructor() {
+    super("GitHub Claude acknowledgement is already bound to different receipt data");
+    this.name = "GithubClaudeAgentAcknowledgementConflictError";
+  }
+}
+
+/** Shared with Console so the verified JWT audience cannot drift from DB admission. */
+export function githubClaudeAcknowledgementAudience(input: {
+  activationCommentId: string;
+  runId: string;
+  runAttempt: number;
+}): string | null {
+  if (!/^[1-9][0-9]{0,39}$/.test(input.activationCommentId)
+    || !/^[1-9][0-9]{0,39}$/.test(input.runId)
+    || input.runAttempt !== 1) return null;
+  const binding = [
+    "github_claude_ack", "1", input.activationCommentId, input.runId, "1",
+  ].join(":");
+  return `${GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_PREFIX}/${createHash("sha256")
+    .update(binding, "utf8").digest("hex")}`;
+}
+
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -4874,6 +5000,293 @@ export async function resolveAcceptanceBuilderRouteCapabilityProfile(input: {
   });
 }
 
+export function acceptanceBuilderRouteGithubClaudeAckProfileId(input: {
+  routeId: string;
+  routeConfigurationVersion: number;
+}): string {
+  return uuid5Url(
+    `acceptance-builder-route-github-claude-ack-profile:${input.routeId}:${input.routeConfigurationVersion}`
+  );
+}
+
+function githubClaudeAckProfileSnapshot(input: {
+  route: AcceptanceBuilderRouteRow;
+  capabilityProfile: AcceptanceBuilderRouteCapabilityProfileRow;
+  githubRepositoryId: string;
+  githubRepositoryOwnerId: string;
+  githubAppBotUserId: string;
+  githubAppBotLogin: string;
+  callerWorkflowRef: string;
+  jobWorkflowRef: string;
+  jobWorkflowSha: string;
+  claudeActionSha: string;
+}): AcceptanceBuilderRouteGithubClaudeAckProfileSnapshot {
+  return {
+    kind: "acceptance_builder_route_github_claude_ack_profile",
+    version: 1,
+    workspaceId: input.route.workspaceId,
+    repo: input.route.repo,
+    routeId: input.route.id,
+    adapter: "github_claude",
+    routeConfigurationVersion: input.route.configurationVersion,
+    capabilityProfile: {
+      id: input.capabilityProfile.id,
+      snapshotSha256: input.capabilityProfile.snapshotSha256,
+    },
+    provider: "anthropic_claude_code_action",
+    acknowledgement: "action_success_with_session",
+    githubRepository: {
+      id: input.githubRepositoryId,
+      ownerId: input.githubRepositoryOwnerId,
+    },
+    triggerActor: { id: input.githubAppBotUserId, login: input.githubAppBotLogin },
+    oidc: {
+      issuer: GITHUB_CLAUDE_ACK_OIDC_ISSUER,
+      audienceContract: GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_CONTRACT,
+      subjectContract: GITHUB_CLAUDE_ACK_OIDC_SUBJECT_CONTRACT,
+      eventName: "issue_comment",
+      callerWorkflowRef: input.callerWorkflowRef,
+      jobWorkflowRef: input.jobWorkflowRef,
+      jobWorkflowSha: input.jobWorkflowSha,
+    },
+    claudeActionSha: input.claudeActionSha,
+    workflowContract: GITHUB_CLAUDE_ACK_WORKFLOW_CONTRACT,
+    scopeBoundary: "agent_acknowledgement_only",
+  };
+}
+
+function githubClaudeAckProfileValues(input: {
+  route: AcceptanceBuilderRouteRow;
+  capabilityProfile: AcceptanceBuilderRouteCapabilityProfileRow;
+  githubRepositoryId: string;
+  githubRepositoryOwnerId: string;
+  githubAppBotUserId: string;
+  githubAppBotLogin: string;
+  callerWorkflowRef: string;
+  jobWorkflowRef: string;
+  jobWorkflowSha: string;
+  claudeActionSha: string;
+  recordedBy: string;
+}) {
+  const snapshot = githubClaudeAckProfileSnapshot(input);
+  return {
+    id: acceptanceBuilderRouteGithubClaudeAckProfileId({
+      routeId: input.route.id,
+      routeConfigurationVersion: input.route.configurationVersion,
+    }),
+    workspaceId: input.route.workspaceId,
+    routeId: input.route.id,
+    capabilityProfileId: input.capabilityProfile.id,
+    capabilityProfileSnapshotSha256: input.capabilityProfile.snapshotSha256,
+    repo: input.route.repo,
+    routeConfigurationVersion: input.route.configurationVersion,
+    githubRepositoryId: input.githubRepositoryId,
+    githubRepositoryOwnerId: input.githubRepositoryOwnerId,
+    githubAppBotUserId: input.githubAppBotUserId,
+    githubAppBotLogin: input.githubAppBotLogin,
+    oidcIssuer: GITHUB_CLAUDE_ACK_OIDC_ISSUER,
+    oidcAudienceContract: GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_CONTRACT,
+    oidcSubjectContract: GITHUB_CLAUDE_ACK_OIDC_SUBJECT_CONTRACT,
+    callerWorkflowRef: input.callerWorkflowRef,
+    jobWorkflowRef: input.jobWorkflowRef,
+    jobWorkflowSha: input.jobWorkflowSha,
+    claudeActionSha: input.claudeActionSha,
+    workflowContract: GITHUB_CLAUDE_ACK_WORKFLOW_CONTRACT,
+    snapshot,
+    snapshotSha256: acceptanceContextPackCanonicalSha256(snapshot),
+    recordedBy: input.recordedBy,
+  };
+}
+
+function githubClaudeAckProfileComparable(row: AcceptanceBuilderRouteGithubClaudeAckProfileRow) {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    routeId: row.routeId,
+    capabilityProfileId: row.capabilityProfileId,
+    capabilityProfileSnapshotSha256: row.capabilityProfileSnapshotSha256,
+    repo: row.repo,
+    routeConfigurationVersion: row.routeConfigurationVersion,
+    githubRepositoryId: row.githubRepositoryId,
+    githubRepositoryOwnerId: row.githubRepositoryOwnerId,
+    githubAppBotUserId: row.githubAppBotUserId,
+    githubAppBotLogin: row.githubAppBotLogin,
+    oidcIssuer: row.oidcIssuer,
+    oidcAudienceContract: row.oidcAudienceContract,
+    oidcSubjectContract: row.oidcSubjectContract,
+    callerWorkflowRef: row.callerWorkflowRef,
+    jobWorkflowRef: row.jobWorkflowRef,
+    jobWorkflowSha: row.jobWorkflowSha,
+    claudeActionSha: row.claudeActionSha,
+    workflowContract: row.workflowContract,
+    snapshot: row.snapshot,
+    snapshotSha256: row.snapshotSha256,
+    recordedBy: row.recordedBy,
+  };
+}
+
+function isGithubClaudeAckProfileInput(
+  input: RecordAcceptanceBuilderRouteGithubClaudeAckProfileInput
+): boolean {
+  const decimal = /^[1-9][0-9]{0,39}$/;
+  const sha = /^[a-f0-9]{40}$/i;
+  return isRecord(input)
+    && hasExactKeys(input, [
+      "workspaceId", "routeId", "githubRepositoryId", "githubRepositoryOwnerId",
+      "githubAppBotUserId", "githubAppBotLogin", "callerWorkflowRef",
+      "jobWorkflowRef", "jobWorkflowSha", "claudeActionSha", "recordedBy",
+    ])
+    && isUuid(input.workspaceId) && isUuid(input.routeId)
+    && decimal.test(input.githubRepositoryId)
+    && decimal.test(input.githubRepositoryOwnerId)
+    && decimal.test(input.githubAppBotUserId)
+    && input.githubAppBotLogin === "jace[bot]"
+    && safeSnapshotText(input.callerWorkflowRef, 1_024)
+    && safeSnapshotText(input.jobWorkflowRef, 1_024)
+    && sha.test(input.jobWorkflowSha)
+    && input.jobWorkflowRef.toLowerCase().endsWith(`@${input.jobWorkflowSha.toLowerCase()}`)
+    && input.claudeActionSha.toLowerCase() === GITHUB_CLAUDE_ACK_APPROVED_ACTION_SHA
+    && isServerBuilderRouteActor(input.recordedBy);
+}
+
+async function resolveAcceptanceBuilderRouteGithubClaudeAckProfileInTransaction(
+  tx: DbTransaction,
+  input: {
+    workspaceId: string;
+    route: AcceptanceBuilderRouteRow;
+    capabilityProfile?: AcceptanceBuilderRouteCapabilityProfileRow;
+  }
+): Promise<AcceptanceBuilderRouteGithubClaudeAckProfileRow | null> {
+  if (input.route.adapter !== "github_claude" || input.route.status !== "active"
+    || input.route.workspaceId !== input.workspaceId) return null;
+  const capabilityProfile = input.capabilityProfile
+    ?? await resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      route: input.route,
+    });
+  if (!capabilityProfile) return null;
+  const repositoryRows = await tx.select({ defaultBranch: repositories.defaultBranch })
+    .from(repositories).where(and(
+      eq(repositories.workspaceId, input.workspaceId),
+      eq(repositories.name, input.route.repo),
+    )).limit(2);
+  if (repositoryRows.length !== 1 || !safeSnapshotText(repositoryRows[0]!.defaultBranch, 255)) {
+    return null;
+  }
+  const profile = (await tx.select().from(acceptanceBuilderRouteGithubClaudeAckProfiles).where(and(
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.workspaceId, input.workspaceId),
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeId, input.route.id),
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeConfigurationVersion,
+      input.route.configurationVersion),
+  )).limit(1))[0];
+  if (!profile || profile.capabilityProfileId !== capabilityProfile.id
+    || profile.capabilityProfileSnapshotSha256 !== capabilityProfile.snapshotSha256) return null;
+  if (!profile.callerWorkflowRef.endsWith(
+    `@refs/heads/${repositoryRows[0]!.defaultBranch}`
+  )) return null;
+  const expected = githubClaudeAckProfileValues({
+    route: input.route,
+    capabilityProfile,
+    githubRepositoryId: profile.githubRepositoryId,
+    githubRepositoryOwnerId: profile.githubRepositoryOwnerId,
+    githubAppBotUserId: profile.githubAppBotUserId,
+    githubAppBotLogin: profile.githubAppBotLogin,
+    callerWorkflowRef: profile.callerWorkflowRef,
+    jobWorkflowRef: profile.jobWorkflowRef,
+    jobWorkflowSha: profile.jobWorkflowSha,
+    claudeActionSha: profile.claudeActionSha,
+    recordedBy: profile.recordedBy,
+  });
+  return isDeepStrictEqual(githubClaudeAckProfileComparable(profile), expected) ? profile : null;
+}
+
+/** Records one immutable trusted-workflow policy for an active github_claude route revision. */
+export async function recordAcceptanceBuilderRouteGithubClaudeAckProfile(
+  input: RecordAcceptanceBuilderRouteGithubClaudeAckProfileInput
+): Promise<{ profile: AcceptanceBuilderRouteGithubClaudeAckProfileRow; inserted: boolean }> {
+  if (!isGithubClaudeAckProfileInput(input)) {
+    throw new Error("GitHub Claude acknowledgement profile input is invalid");
+  }
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`acceptance-builder-route-claude-ack:${input.routeId}`}))`);
+    const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+      eq(acceptanceBuilderRoutes.id, input.routeId),
+      eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderRoutes.status, "active"),
+      eq(acceptanceBuilderRoutes.adapter, "github_claude"),
+    )).limit(1))[0];
+    if (!route) throw new Error("GitHub Claude acknowledgement route is unavailable");
+    const repositoryRows = await tx.select({ defaultBranch: repositories.defaultBranch })
+      .from(repositories).where(and(
+        eq(repositories.workspaceId, input.workspaceId),
+        eq(repositories.name, route.repo),
+      )).limit(2);
+    if (repositoryRows.length !== 1
+      || !safeSnapshotText(repositoryRows[0]!.defaultBranch, 255)) {
+      throw new Error("GitHub Claude acknowledgement requires one workspace repository identity");
+    }
+    if (!input.callerWorkflowRef.startsWith(`${route.repo}/.github/workflows/`)
+      || !input.callerWorkflowRef.endsWith(`@refs/heads/${repositoryRows[0]!.defaultBranch}`)) {
+      throw new Error("GitHub Claude acknowledgement caller workflow does not match the route repository");
+    }
+    const capabilityProfile = await resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      route,
+    });
+    if (!capabilityProfile) {
+      throw new Error("GitHub Claude acknowledgement requires the exact current capability profile");
+    }
+    const values = githubClaudeAckProfileValues({
+      route,
+      capabilityProfile,
+      githubRepositoryId: input.githubRepositoryId,
+      githubRepositoryOwnerId: input.githubRepositoryOwnerId,
+      githubAppBotUserId: input.githubAppBotUserId,
+      githubAppBotLogin: input.githubAppBotLogin,
+      callerWorkflowRef: input.callerWorkflowRef,
+      jobWorkflowRef: input.jobWorkflowRef,
+      jobWorkflowSha: input.jobWorkflowSha.toLowerCase(),
+      claudeActionSha: input.claudeActionSha.toLowerCase(),
+      recordedBy: input.recordedBy,
+    });
+    const existing = (await tx.select().from(acceptanceBuilderRouteGithubClaudeAckProfiles).where(and(
+      eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeId, route.id),
+      eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeConfigurationVersion,
+        route.configurationVersion),
+    )).limit(1))[0];
+    if (existing) {
+      if (!isDeepStrictEqual(githubClaudeAckProfileComparable(existing), values)) {
+        throw new Error("GitHub Claude acknowledgement profile is already bound to different policy");
+      }
+      return { profile: existing, inserted: false };
+    }
+    const rows = await tx.insert(acceptanceBuilderRouteGithubClaudeAckProfiles)
+      .values(values).returning();
+    return { profile: rows[0]!, inserted: true };
+  });
+}
+
+export async function resolveAcceptanceBuilderRouteGithubClaudeAckProfile(input: {
+  workspaceId: string;
+  routeId: string;
+}): Promise<AcceptanceBuilderRouteGithubClaudeAckProfileRow | null> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "routeId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.routeId)) return null;
+  return db.transaction(async (tx) => {
+    const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+      eq(acceptanceBuilderRoutes.id, input.routeId),
+      eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderRoutes.status, "active"),
+      eq(acceptanceBuilderRoutes.adapter, "github_claude"),
+    )).limit(1))[0];
+    return route
+      ? resolveAcceptanceBuilderRouteGithubClaudeAckProfileInTransaction(tx, {
+        workspaceId: input.workspaceId, route,
+      })
+      : null;
+  });
+}
+
 function builderRoutePayload(input: {
   record: ChangeRecordRow;
   contract: AcceptanceContractRow;
@@ -7004,6 +7417,730 @@ export async function reportGithubCorrectionActivation(
       throw new Error("GitHub correction activation report lost its dispatch precondition");
     }
     return { kind: "reported", activation: updated[0]! };
+  });
+}
+
+type GithubClaudeAcknowledgementBinding = {
+  activation: AcceptanceCorrectionDispatchGithubActivationRow;
+  dispatch: AcceptanceCorrectionDispatchRow;
+  route: AcceptanceBuilderRouteRow;
+  capabilityProfile: AcceptanceBuilderRouteCapabilityProfileRow;
+  ackProfile: AcceptanceBuilderRouteGithubClaudeAckProfileRow;
+};
+
+export function acceptanceCorrectionDispatchGithubClaudeAckReceiptId(input: {
+  dispatchId: string;
+}): string {
+  return uuid5Url(`acceptance-correction-dispatch-github-claude-ack:${input.dispatchId}`);
+}
+
+function githubClaudeAckReceiptCore(values: {
+  id: string;
+  workspaceId: string;
+  dispatchId: string;
+  activationId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  dispatchIdentitySha256: string;
+  activationIdentitySha256: string;
+  activationGithubCommentId: string;
+  activationBodySha256: string;
+  routeId: string;
+  routeConfigurationVersion: number;
+  capabilityProfileId: string;
+  ackProfileId: string;
+  ackProfileSnapshotSha256: string;
+  acknowledgementProtocolVersion: number;
+  provider: string;
+  providerConclusion: string;
+  providerSessionIdSha256: string;
+  oidcIssuer: string;
+  oidcAudience: string;
+  oidcSubjectSha256: string;
+  oidcRepository: string;
+  oidcRepositoryId: string;
+  oidcRepositoryOwner: string;
+  oidcRepositoryOwnerId: string;
+  oidcActorId: string;
+  oidcActor: string;
+  oidcEventName: string;
+  oidcRef: string;
+  oidcWorkflowRef: string;
+  oidcWorkflowSha: string;
+  oidcJobWorkflowRef: string;
+  oidcJobWorkflowSha: string;
+  oidcRunId: string;
+  oidcRunAttempt: number;
+  oidcCheckRunId: string;
+}) {
+  return {
+    id: values.id,
+    workspaceId: values.workspaceId,
+    dispatchId: values.dispatchId,
+    activationId: values.activationId,
+    recordId: values.recordId,
+    repo: values.repo,
+    prNumber: values.prNumber,
+    headSha: values.headSha,
+    headCycleId: values.headCycleId,
+    authorityGeneration: values.authorityGeneration,
+    dispatchIdentitySha256: values.dispatchIdentitySha256,
+    activationIdentitySha256: values.activationIdentitySha256,
+    activationGithubCommentId: values.activationGithubCommentId,
+    activationBodySha256: values.activationBodySha256,
+    routeId: values.routeId,
+    routeConfigurationVersion: values.routeConfigurationVersion,
+    capabilityProfileId: values.capabilityProfileId,
+    ackProfileId: values.ackProfileId,
+    ackProfileSnapshotSha256: values.ackProfileSnapshotSha256,
+    acknowledgementProtocolVersion: values.acknowledgementProtocolVersion,
+    provider: values.provider,
+    providerConclusion: values.providerConclusion,
+    providerSessionIdSha256: values.providerSessionIdSha256,
+    oidcIssuer: values.oidcIssuer,
+    oidcAudience: values.oidcAudience,
+    oidcSubjectSha256: values.oidcSubjectSha256,
+    oidcRepository: values.oidcRepository,
+    oidcRepositoryId: values.oidcRepositoryId,
+    oidcRepositoryOwner: values.oidcRepositoryOwner,
+    oidcRepositoryOwnerId: values.oidcRepositoryOwnerId,
+    oidcActorId: values.oidcActorId,
+    oidcActor: values.oidcActor,
+    oidcEventName: values.oidcEventName,
+    oidcRef: values.oidcRef,
+    oidcWorkflowRef: values.oidcWorkflowRef,
+    oidcWorkflowSha: values.oidcWorkflowSha,
+    oidcJobWorkflowRef: values.oidcJobWorkflowRef,
+    oidcJobWorkflowSha: values.oidcJobWorkflowSha,
+    oidcRunId: values.oidcRunId,
+    oidcRunAttempt: values.oidcRunAttempt,
+    oidcCheckRunId: values.oidcCheckRunId,
+  };
+}
+
+function githubClaudeAckReceiptIdentity(
+  values: Parameters<typeof githubClaudeAckReceiptCore>[0]
+): string {
+  const { id: _id, ...identity } = githubClaudeAckReceiptCore(values);
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_correction_dispatch_github_claude_ack_receipt",
+    version: 1,
+    ...identity,
+  });
+}
+
+function githubClaudeAckReceiptComparable(
+  row: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow
+) {
+  return githubClaudeAckReceiptCore(row);
+}
+
+function githubClaudeAckReceiptEventPayload(
+  row: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow
+): Record<string, unknown> {
+  return {
+    kind: "acceptance_correction_dispatch_github_claude_acknowledged",
+    version: 1,
+    receiptId: row.id,
+    receiptIdentitySha256: row.receiptIdentitySha256,
+    dispatch: { id: row.dispatchId, identitySha256: row.dispatchIdentitySha256 },
+    activation: {
+      id: row.activationId,
+      identitySha256: row.activationIdentitySha256,
+      githubCommentId: row.activationGithubCommentId,
+      bodySha256: row.activationBodySha256,
+    },
+    recordId: row.recordId,
+    repository: row.repo,
+    prNumber: row.prNumber,
+    headSha: row.headSha,
+    headCycleId: row.headCycleId,
+    authorityGeneration: row.authorityGeneration,
+    route: {
+      id: row.routeId,
+      adapter: "github_claude",
+      configurationVersion: row.routeConfigurationVersion,
+    },
+    capabilityProfileId: row.capabilityProfileId,
+    acknowledgementProfile: {
+      id: row.ackProfileId,
+      snapshotSha256: row.ackProfileSnapshotSha256,
+    },
+    provider: row.provider,
+    conclusion: row.providerConclusion,
+    providerSessionIdSha256: row.providerSessionIdSha256,
+    oidc: {
+      issuer: row.oidcIssuer,
+      audience: row.oidcAudience,
+      subjectSha256: row.oidcSubjectSha256,
+      repositoryId: row.oidcRepositoryId,
+      repositoryOwnerId: row.oidcRepositoryOwnerId,
+      actorId: row.oidcActorId,
+      workflowRef: row.oidcWorkflowRef,
+      workflowSha: row.oidcWorkflowSha,
+      jobWorkflowRef: row.oidcJobWorkflowRef,
+      jobWorkflowSha: row.oidcJobWorkflowSha,
+      runId: row.oidcRunId,
+      runAttempt: row.oidcRunAttempt,
+      checkRunId: row.oidcCheckRunId,
+      jtiSha256: row.oidcJtiSha256,
+      issuedAt: Math.floor(row.oidcTokenIssuedAt.getTime() / 1_000),
+      notBefore: Math.floor(row.oidcTokenNotBefore.getTime() / 1_000),
+      expiresAt: Math.floor(row.oidcTokenExpiresAt.getTime() / 1_000),
+    },
+    protocolVersion: row.acknowledgementProtocolVersion,
+    scopeBoundary: "agent_acknowledgement_only",
+  };
+}
+
+async function hasVerifiedGithubClaudeAckReceiptEventInTransaction(
+  tx: DbTransaction,
+  row: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow
+): Promise<boolean> {
+  const event = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, row.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:github-claude-ack:${row.headCycleId}`),
+  )).limit(1))[0];
+  return !!event && event.stage === "builder_handoff"
+    && event.actor === "server:github-claude-ack"
+    && isDeepStrictEqual(event.payloadRef, githubClaudeAckReceiptEventPayload(row));
+}
+
+function hasExactFrozenCapabilityProfile(input: {
+  route: AcceptanceBuilderRouteRow;
+  profile: AcceptanceBuilderRouteCapabilityProfileRow;
+  dispatch: AcceptanceCorrectionDispatchRow;
+}): boolean {
+  const expected = builderRouteCapabilityProfileValues({
+    route: input.route,
+    githubInstallationIdentitySha256: input.profile.githubInstallationIdentitySha256,
+    recordedBy: input.profile.recordedBy,
+  });
+  return input.profile.id === input.dispatch.capabilityProfileId
+    && input.profile.snapshotSha256 === input.dispatch.capabilityProfileSnapshotSha256
+    && isDeepStrictEqual(input.profile.snapshot, input.dispatch.capabilityProfileSnapshot)
+    && isDeepStrictEqual(builderRouteCapabilityProfileComparable(input.profile), expected);
+}
+
+async function hasVerifiedCorrectionDispatchInvalidationInTransaction(
+  tx: DbTransaction,
+  dispatch: AcceptanceCorrectionDispatchRow
+): Promise<boolean> {
+  if (!dispatch.invalidatedAt
+    || (dispatch.invalidationReason !== "head_advanced"
+      && dispatch.invalidationReason !== "reconciled")
+    || dispatch.successorHeadSha == null
+    || dispatch.successorHeadCycleId == null) return false;
+  const invalidated = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:invalidated:${dispatch.headCycleId}`),
+  )).limit(1))[0];
+  if (!invalidated || invalidated.stage !== "builder_handoff"
+    || invalidated.actor !== "server:dispatch-preparation"
+    || !isRecord(invalidated.payloadRef)
+    || !hasExactKeys(invalidated.payloadRef, [
+      "kind", "version", "dispatchId", "dispatchIdentitySha256", "reason",
+      "headSha", "headCycleId", "successorHeadSha", "successorHeadCycleId",
+    ])
+    || invalidated.payloadRef["kind"] !== "acceptance_correction_dispatch_invalidated"
+    || invalidated.payloadRef["version"] !== 1
+    || invalidated.payloadRef["dispatchId"] !== dispatch.id
+    || invalidated.payloadRef["dispatchIdentitySha256"] !== dispatch.dispatchIdentitySha256
+    || invalidated.payloadRef["reason"] !== dispatch.invalidationReason
+    || invalidated.payloadRef["headSha"] !== dispatch.headSha
+    || invalidated.payloadRef["headCycleId"] !== dispatch.headCycleId) return false;
+  const eventSuccessorHeadSha = invalidated.payloadRef["successorHeadSha"];
+  const eventSuccessorHeadCycleId = invalidated.payloadRef["successorHeadCycleId"];
+  if (eventSuccessorHeadSha === dispatch.successorHeadSha
+    && eventSuccessorHeadCycleId === dispatch.successorHeadCycleId) return true;
+  if (eventSuccessorHeadSha !== null || eventSuccessorHeadCycleId !== null
+    || dispatch.successorHeadSha == null || dispatch.successorHeadCycleId == null) return false;
+  const successor = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:successor:${dispatch.headCycleId}:${dispatch.successorHeadCycleId}`),
+  )).limit(1))[0];
+  return !!successor && successor.stage === "builder_handoff"
+    && successor.actor === "server:dispatch-preparation"
+    && isDeepStrictEqual(successor.payloadRef, {
+      kind: "acceptance_correction_dispatch_successor_recorded",
+      version: 1,
+      dispatchId: dispatch.id,
+      dispatchIdentitySha256: dispatch.dispatchIdentitySha256,
+      invalidationReason: dispatch.invalidationReason,
+      successorHeadSha: dispatch.successorHeadSha,
+      successorHeadCycleId: dispatch.successorHeadCycleId,
+    });
+}
+
+async function resolveFrozenGithubClaudeAcknowledgementBindingInTransaction(
+  tx: DbTransaction,
+  activation: AcceptanceCorrectionDispatchGithubActivationRow
+): Promise<GithubClaudeAcknowledgementBinding | null> {
+  const dispatch = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.id, activation.dispatchId),
+    eq(acceptanceCorrectionDispatches.workspaceId, activation.workspaceId),
+  )).limit(1))[0];
+  if (!dispatch || dispatch.routeAdapter !== "github_claude"
+    || dispatch.carrier !== "github_comment" || dispatch.capabilityProfileId == null
+    || dispatch.capabilityProfileSnapshot == null
+    || dispatch.capabilityProfileSnapshotSha256 == null
+    || dispatch.deliveryState !== "carrier_accepted"
+    || dispatch.findingsState !== "terminal"
+    || dispatch.activationState !== "carrier_accepted"
+    || (dispatch.agentState !== "not_observed" && dispatch.agentState !== "acknowledged")) return null;
+  const original = correctionDispatchOriginalComparable(dispatch);
+  if (correctionDispatchIdentity(original) !== dispatch.dispatchIdentitySha256) return null;
+  const queued = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:queued:${dispatch.headCycleId}`),
+  )).limit(1))[0];
+  if (!queued || queued.stage !== "builder_handoff"
+    || queued.actor !== "server:dispatch-preparation"
+    || !isDeepStrictEqual(queued.payloadRef, correctionDispatchQueuedEventPayload(original))) return null;
+  const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+    eq(acceptanceBuilderRoutes.id, dispatch.routeId),
+    eq(acceptanceBuilderRoutes.workspaceId, dispatch.workspaceId),
+    eq(acceptanceBuilderRoutes.repo, dispatch.repo),
+    eq(acceptanceBuilderRoutes.adapter, "github_claude"),
+  )).limit(1))[0];
+  const frozenRoute = route && {
+    ...route,
+    configurationVersion: dispatch.routeConfigurationVersion,
+  };
+  const capabilityProfile = route && (await tx.select()
+    .from(acceptanceBuilderRouteCapabilityProfiles).where(and(
+      eq(acceptanceBuilderRouteCapabilityProfiles.id, dispatch.capabilityProfileId),
+      eq(acceptanceBuilderRouteCapabilityProfiles.workspaceId, dispatch.workspaceId),
+      eq(acceptanceBuilderRouteCapabilityProfiles.routeId, dispatch.routeId),
+      eq(acceptanceBuilderRouteCapabilityProfiles.routeConfigurationVersion,
+        dispatch.routeConfigurationVersion),
+    )).limit(1))[0];
+  if (!frozenRoute || !capabilityProfile || !hasExactFrozenCapabilityProfile({
+    route: frozenRoute, profile: capabilityProfile, dispatch,
+  })) return null;
+  const ackProfile = (await tx.select().from(acceptanceBuilderRouteGithubClaudeAckProfiles).where(and(
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.workspaceId, dispatch.workspaceId),
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeId, dispatch.routeId),
+    eq(acceptanceBuilderRouteGithubClaudeAckProfiles.routeConfigurationVersion,
+      dispatch.routeConfigurationVersion),
+  )).limit(1))[0];
+  if (!ackProfile || ackProfile.capabilityProfileId !== capabilityProfile.id
+    || ackProfile.capabilityProfileSnapshotSha256 !== capabilityProfile.snapshotSha256
+    || !isDeepStrictEqual(githubClaudeAckProfileComparable(ackProfile), githubClaudeAckProfileValues({
+      route: frozenRoute,
+      capabilityProfile,
+      githubRepositoryId: ackProfile.githubRepositoryId,
+      githubRepositoryOwnerId: ackProfile.githubRepositoryOwnerId,
+      githubAppBotUserId: ackProfile.githubAppBotUserId,
+      githubAppBotLogin: ackProfile.githubAppBotLogin,
+      callerWorkflowRef: ackProfile.callerWorkflowRef,
+      jobWorkflowRef: ackProfile.jobWorkflowRef,
+      jobWorkflowSha: ackProfile.jobWorkflowSha,
+      claudeActionSha: ackProfile.claudeActionSha,
+      recordedBy: ackProfile.recordedBy,
+    }))) return null;
+  const preflight = (await tx.select().from(acceptanceCorrectionDispatchGithubPreflights).where(and(
+    eq(acceptanceCorrectionDispatchGithubPreflights.id, activation.readyPreflightId),
+    eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, dispatch.workspaceId),
+    eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, dispatch.id),
+  )).limit(1))[0];
+  if (!preflight || preflight.status !== "ready"
+    || preflight.preflightIdentitySha256 !== activation.readyPreflightIdentitySha256
+    || !isGithubCorrectionCarrierPreflightOutcome(preflight.result)
+    || preflight.result.kind !== "ready"
+    || preflight.result.headSha !== dispatch.headSha
+    || preflight.result.baseSha !== activation.baseSha
+    || !preflightMatchesValues(preflight, githubCorrectionCarrierPreflightValues({
+      dispatch, profile: capabilityProfile, baseSha: activation.baseSha,
+      attempt: preflight.attempt,
+    }))
+    || !await hasVerifiedGithubCorrectionCarrierPreflightEventsInTransaction(tx, preflight)) return null;
+  const exactActivation = activation.id === acceptanceCorrectionDispatchGithubActivationId({
+    dispatchId: dispatch.id,
+  })
+    && activation.workspaceId === dispatch.workspaceId
+    && activation.recordId === dispatch.recordId
+    && activation.repo === dispatch.repo
+    && activation.prNumber === dispatch.prNumber
+    && activation.headSha === dispatch.headSha
+    && activation.headCycleId === dispatch.headCycleId
+    && activation.authorityGeneration === dispatch.authorityGeneration
+    && activation.dispatchIdentitySha256 === dispatch.dispatchIdentitySha256
+    && activation.routeId === dispatch.routeId
+    && activation.routeAdapter === "github_claude"
+    && activation.routeConfigurationVersion === dispatch.routeConfigurationVersion
+    && activation.capabilityProfileId === capabilityProfile.id
+    && activation.capabilityProfileSnapshotSha256 === capabilityProfile.snapshotSha256
+    && activation.githubInstallationIdentitySha256 === capabilityProfile.githubInstallationIdentitySha256
+    && activation.carrier === "github_issue_comment"
+    && activation.recipient === "claude"
+    && activation.packetSetSha256 === dispatch.packetSetSha256
+    && activation.correctionPacketPayloadSetSha256 === dispatch.correctionPacketPayloadSetSha256
+    && activation.status === "carrier_accepted"
+    && activation.resultReason == null
+    && activation.body != null
+    && activation.bodySha256 != null
+    && createHash("sha256").update(activation.body, "utf8").digest("hex") === activation.bodySha256
+    && activation.githubCommentId != null
+    && activation.githubCommentUrl === canonicalGithubCorrectionCommentUrl({
+      repo: activation.repo,
+      prNumber: activation.prNumber,
+      githubCommentId: activation.githubCommentId,
+    })
+    && githubCorrectionActivationIdentity(githubCorrectionActivationComparable(activation))
+      === activation.activationIdentitySha256
+    && activationMatchesDispatchAggregate(activation, dispatch)
+    && await hasVerifiedGithubCorrectionActivationEventsInTransaction(tx, activation);
+  return exactActivation
+    ? { activation, dispatch, route: frozenRoute, capabilityProfile, ackProfile }
+    : null;
+}
+
+async function resolveGithubClaudeAcknowledgementBindingInTransaction(
+  tx: DbTransaction,
+  activation: AcceptanceCorrectionDispatchGithubActivationRow
+): Promise<{ binding: GithubClaudeAcknowledgementBinding; historical: boolean } | null> {
+  const frozen = await resolveFrozenGithubClaudeAcknowledgementBindingInTransaction(tx, activation);
+  if (!frozen) return null;
+  if (frozen.dispatch.invalidatedAt) {
+    return await hasVerifiedCorrectionDispatchInvalidationInTransaction(tx, frozen.dispatch)
+      ? { binding: frozen, historical: true }
+      : null;
+  }
+  const current = await resolveCurrentGithubCorrectionCarrierBindingInTransaction(tx, {
+    workspaceId: activation.workspaceId,
+    dispatchId: activation.dispatchId,
+  });
+  const coverage = current
+    && await resolveTerminalGithubCorrectionFindingCoverageInTransaction(tx, current);
+  if (!current || !coverage
+    || current.dispatch.routeAdapter !== "github_claude"
+    || current.dispatch.id !== frozen.dispatch.id
+    || current.profile.id !== frozen.capabilityProfile.id
+    || !activationHasExactCurrentBinding({
+      activation,
+      current,
+      findingCoverageSha256: coverage.findingCoverageSha256,
+      hasUnsafeFinding: coverage.hasUnsafeFinding,
+    })
+    || !activationMatchesDispatchAggregate(activation, current.dispatch)) return null;
+  const activeAckProfile = await resolveAcceptanceBuilderRouteGithubClaudeAckProfileInTransaction(tx, {
+    workspaceId: current.dispatch.workspaceId,
+    route: current.route,
+    capabilityProfile: current.profile,
+  });
+  return activeAckProfile?.id === frozen.ackProfile.id
+    && activeAckProfile.snapshotSha256 === frozen.ackProfile.snapshotSha256
+    ? { binding: frozen, historical: false }
+    : null;
+}
+
+function isGithubClaudeAcknowledgementInput(
+  input: RecordGithubClaudeAgentAcknowledgementInput
+): boolean {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "activationCommentId", "activationBodySha256", "conclusion", "providerSessionId", "oidc",
+  ]) || !isPositiveGithubCommentId(input.activationCommentId)
+    || !EXACT_SHA256.test(input.activationBodySha256)
+    || input.conclusion !== "success"
+    || !safeSnapshotText(input.providerSessionId, 256)
+    || !isRecord(input.oidc)
+    || !hasExactKeys(input.oidc, [
+      "issuer", "audience", "subject", "subjectSha256", "jtiSha256",
+      "issuedAt", "notBefore", "expiresAt", "repository", "repositoryId",
+      "repositoryOwner", "repositoryOwnerId", "actor", "actorId", "eventName", "ref",
+      "workflowRef", "workflowSha", "jobWorkflowRef", "jobWorkflowSha",
+      "runId", "runAttempt", "checkRunId",
+    ])) return false;
+  const claims = input.oidc;
+  const decimal = /^[1-9][0-9]{0,39}$/;
+  const audience = githubClaudeAcknowledgementAudience({
+    activationCommentId: input.activationCommentId,
+    runId: claims.runId,
+    runAttempt: claims.runAttempt,
+  });
+  const now = Math.floor(Date.now() / 1_000);
+  return claims.issuer === GITHUB_CLAUDE_ACK_OIDC_ISSUER
+    && audience !== null && claims.audience === audience
+    && safeSnapshotText(claims.subject, 512)
+    && EXACT_SHA256.test(claims.subjectSha256)
+    && createHash("sha256").update(claims.subject, "utf8").digest("hex")
+      === claims.subjectSha256.toLowerCase()
+    && EXACT_SHA256.test(claims.jtiSha256)
+    && Number.isSafeInteger(claims.issuedAt) && claims.issuedAt > 0
+    && Number.isSafeInteger(claims.notBefore) && claims.notBefore > 0
+    && Number.isSafeInteger(claims.expiresAt) && claims.expiresAt > 0
+    && claims.notBefore <= claims.issuedAt && claims.issuedAt < claims.expiresAt
+    && claims.expiresAt - claims.issuedAt <= 600
+    && claims.issuedAt <= now + 60 && claims.expiresAt >= now - 60
+    && safeRepo(claims.repository)
+    && decimal.test(claims.repositoryId)
+    && safeSnapshotText(claims.repositoryOwner, 100)
+    && /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(claims.repositoryOwner)
+    && decimal.test(claims.repositoryOwnerId)
+    && safeSnapshotText(claims.actor, 106)
+    && /^[A-Za-z0-9][A-Za-z0-9-]*\[bot\]$/.test(claims.actor)
+    && decimal.test(claims.actorId)
+    && claims.eventName === "issue_comment"
+    && safeSnapshotText(claims.ref, 512) && claims.ref.startsWith("refs/heads/")
+    && safeSnapshotText(claims.workflowRef, 1_024)
+    && isSha1(claims.workflowSha)
+    && safeSnapshotText(claims.jobWorkflowRef, 1_024)
+    && isSha1(claims.jobWorkflowSha)
+    && decimal.test(claims.runId)
+    && claims.runAttempt === 1
+    && decimal.test(claims.checkRunId);
+}
+
+function githubClaudeAckReceiptValues(input: {
+  binding: GithubClaudeAcknowledgementBinding;
+  request: RecordGithubClaudeAgentAcknowledgementInput;
+}) {
+  const { activation, dispatch, ackProfile } = input.binding;
+  const claims = input.request.oidc;
+  const core = {
+    id: acceptanceCorrectionDispatchGithubClaudeAckReceiptId({ dispatchId: dispatch.id }),
+    workspaceId: dispatch.workspaceId,
+    dispatchId: dispatch.id,
+    activationId: activation.id,
+    recordId: dispatch.recordId,
+    repo: dispatch.repo,
+    prNumber: dispatch.prNumber,
+    headSha: dispatch.headSha.toLowerCase(),
+    headCycleId: dispatch.headCycleId,
+    authorityGeneration: dispatch.authorityGeneration,
+    dispatchIdentitySha256: dispatch.dispatchIdentitySha256.toLowerCase(),
+    activationIdentitySha256: activation.activationIdentitySha256.toLowerCase(),
+    activationGithubCommentId: activation.githubCommentId!,
+    activationBodySha256: activation.bodySha256!.toLowerCase(),
+    routeId: dispatch.routeId,
+    routeConfigurationVersion: dispatch.routeConfigurationVersion,
+    capabilityProfileId: input.binding.capabilityProfile.id,
+    ackProfileId: ackProfile.id,
+    ackProfileSnapshotSha256: ackProfile.snapshotSha256.toLowerCase(),
+    acknowledgementProtocolVersion: GITHUB_CLAUDE_ACK_PROTOCOL_VERSION,
+    provider: "anthropic_claude_code_action" as const,
+    providerConclusion: "success" as const,
+    providerSessionIdSha256: createHash("sha256")
+      .update(input.request.providerSessionId, "utf8").digest("hex"),
+    oidcIssuer: claims.issuer,
+    oidcAudience: claims.audience,
+    oidcSubjectSha256: claims.subjectSha256.toLowerCase(),
+    oidcRepository: claims.repository,
+    oidcRepositoryId: claims.repositoryId,
+    oidcRepositoryOwner: claims.repositoryOwner,
+    oidcRepositoryOwnerId: claims.repositoryOwnerId,
+    oidcActorId: claims.actorId,
+    oidcActor: claims.actor,
+    oidcEventName: claims.eventName,
+    oidcRef: claims.ref,
+    oidcWorkflowRef: claims.workflowRef,
+    oidcWorkflowSha: claims.workflowSha.toLowerCase(),
+    oidcJobWorkflowRef: claims.jobWorkflowRef,
+    oidcJobWorkflowSha: claims.jobWorkflowSha.toLowerCase(),
+    oidcRunId: claims.runId,
+    oidcRunAttempt: claims.runAttempt,
+    oidcCheckRunId: claims.checkRunId,
+  };
+  return {
+    ...core,
+    oidcTokenIssuedAt: new Date(claims.issuedAt * 1_000),
+    oidcTokenNotBefore: new Date(claims.notBefore * 1_000),
+    oidcTokenExpiresAt: new Date(claims.expiresAt * 1_000),
+    oidcJtiSha256: claims.jtiSha256.toLowerCase(),
+    receiptIdentitySha256: githubClaudeAckReceiptIdentity(core),
+  };
+}
+
+function claimsMatchGithubClaudeAcknowledgementProfile(input: {
+  request: RecordGithubClaudeAgentAcknowledgementInput;
+  binding: GithubClaudeAcknowledgementBinding;
+}): boolean {
+  const { request, binding } = input;
+  const claims = request.oidc;
+  const profile = binding.ackProfile;
+  const workflowRefSuffix = profile.callerWorkflowRef.slice(
+    profile.callerWorkflowRef.lastIndexOf("@") + 1
+  );
+  const [repositoryOwner, repositoryName] = binding.dispatch.repo.split("/");
+  if (!repositoryOwner || !repositoryName) return false;
+  const acceptedSubjects = new Set([
+    `repo:${repositoryOwner}/${repositoryName}:ref:${claims.ref}`,
+    `repo:${repositoryOwner}@${profile.githubRepositoryOwnerId}/${repositoryName}@${profile.githubRepositoryId}:ref:${claims.ref}`,
+  ]);
+  return request.activationCommentId === binding.activation.githubCommentId
+    && request.activationBodySha256.toLowerCase() === binding.activation.bodySha256?.toLowerCase()
+    && claims.repository === binding.dispatch.repo
+    && claims.repositoryOwner === binding.dispatch.repo.split("/")[0]
+    && claims.repositoryId === profile.githubRepositoryId
+    && claims.repositoryOwnerId === profile.githubRepositoryOwnerId
+    && claims.actor === profile.githubAppBotLogin
+    && claims.actorId === profile.githubAppBotUserId
+    && claims.workflowRef === profile.callerWorkflowRef
+    && claims.jobWorkflowRef === profile.jobWorkflowRef
+    && claims.jobWorkflowSha.toLowerCase() === profile.jobWorkflowSha.toLowerCase()
+    && claims.ref === workflowRefSuffix
+    && acceptedSubjects.has(claims.subject);
+}
+
+function receiptMatchesValues(
+  receipt: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow,
+  values: ReturnType<typeof githubClaudeAckReceiptValues>
+): boolean {
+  return isDeepStrictEqual(githubClaudeAckReceiptComparable(receipt), githubClaudeAckReceiptCore(values))
+    && receipt.receiptIdentitySha256 === values.receiptIdentitySha256;
+}
+
+/**
+ * Records one successful Claude Action session after a carrier-accepted final
+ * activation. Carrier acceptance is revalidated, but this writes no repair or
+ * successor projection and changes only the original dispatch's agent state.
+ */
+export async function recordGithubClaudeAgentAcknowledgement(
+  input: RecordGithubClaudeAgentAcknowledgementInput
+): Promise<RecordGithubClaudeAgentAcknowledgementResult> {
+  if (!isGithubClaudeAcknowledgementInput(input)) {
+    throw new Error("GitHub Claude acknowledgement input is invalid");
+  }
+  const candidate = (await db.select().from(acceptanceCorrectionDispatchGithubActivations).where(and(
+    eq(acceptanceCorrectionDispatchGithubActivations.githubCommentId, input.activationCommentId),
+    eq(acceptanceCorrectionDispatchGithubActivations.status, "carrier_accepted"),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_admitted" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`github-claude-ack-jti:${input.oidc.jtiSha256.toLowerCase()}`}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`github-claude-ack-run:${input.oidc.repositoryId}:${input.oidc.runId}`}))`);
+    const activation = (await tx.select().from(acceptanceCorrectionDispatchGithubActivations).where(and(
+      eq(acceptanceCorrectionDispatchGithubActivations.id, candidate.id),
+      eq(acceptanceCorrectionDispatchGithubActivations.githubCommentId, input.activationCommentId),
+      eq(acceptanceCorrectionDispatchGithubActivations.status, "carrier_accepted"),
+    )).limit(1))[0];
+    if (!activation) return { kind: "not_admitted" };
+    const resolved = await resolveGithubClaudeAcknowledgementBindingInTransaction(tx, activation);
+    if (!resolved || !claimsMatchGithubClaudeAcknowledgementProfile({
+      request: input,
+      binding: resolved.binding,
+    })) return { kind: "not_admitted" };
+    const values = githubClaudeAckReceiptValues({ binding: resolved.binding, request: input });
+    const byJti = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcJtiSha256,
+        input.oidc.jtiSha256.toLowerCase())
+    ).limit(1))[0];
+    if (byJti && byJti.dispatchId !== resolved.binding.dispatch.id) {
+      throw new GithubClaudeAgentAcknowledgementConflictError();
+    }
+    const byRun = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(and(
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcRepositoryId,
+        input.oidc.repositoryId),
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcRunId, input.oidc.runId),
+    )).limit(1))[0];
+    if (byRun && byRun.dispatchId !== resolved.binding.dispatch.id) {
+      throw new GithubClaudeAgentAcknowledgementConflictError();
+    }
+    const existing = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId,
+        resolved.binding.dispatch.id)
+    ).limit(1))[0];
+    if (existing) {
+      if (!receiptMatchesValues(existing, values)
+        || (resolved.historical
+          ? resolved.binding.dispatch.agentState !== "not_observed"
+            && resolved.binding.dispatch.agentState !== "acknowledged"
+          : resolved.binding.dispatch.agentState !== "acknowledged")
+        || !await hasVerifiedGithubClaudeAckReceiptEventInTransaction(tx, existing)) {
+        throw new GithubClaudeAgentAcknowledgementConflictError();
+      }
+      return { kind: "replayed", receipt: existing };
+    }
+    if (resolved.binding.dispatch.agentState !== "not_observed") {
+      throw new GithubClaudeAgentAcknowledgementConflictError();
+    }
+    const projected = {
+      ...values,
+      acknowledgedAt: new Date(),
+      createdAt: new Date(),
+    } as AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow;
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: resolved.binding.dispatch.recordId,
+      eventKey: `acceptance-correction-dispatch:github-claude-ack:${resolved.binding.dispatch.headCycleId}`,
+      stage: "builder_handoff",
+      actor: "server:github-claude-ack",
+      payloadRef: githubClaudeAckReceiptEventPayload(projected),
+      at: projected.acknowledgedAt,
+    }]);
+    if (!event.events[0]!.inserted) {
+      throw new GithubClaudeAgentAcknowledgementConflictError();
+    }
+    const inserted = await tx.insert(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
+      .values(projected).returning();
+    if (inserted.length !== 1) throw new Error("GitHub Claude acknowledgement receipt was not inserted");
+    if (!resolved.historical) {
+      const updated = await tx.update(acceptanceCorrectionDispatches).set({
+        agentState: "acknowledged",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(acceptanceCorrectionDispatches.id, resolved.binding.dispatch.id),
+        eq(acceptanceCorrectionDispatches.workspaceId, resolved.binding.dispatch.workspaceId),
+        eq(acceptanceCorrectionDispatches.headCycleId, resolved.binding.dispatch.headCycleId),
+        eq(acceptanceCorrectionDispatches.dispatchIdentitySha256,
+          resolved.binding.dispatch.dispatchIdentitySha256),
+        eq(acceptanceCorrectionDispatches.deliveryState, "carrier_accepted"),
+        eq(acceptanceCorrectionDispatches.findingsState, "terminal"),
+        eq(acceptanceCorrectionDispatches.activationState, "carrier_accepted"),
+        eq(acceptanceCorrectionDispatches.agentState, "not_observed"),
+      )).returning({ id: acceptanceCorrectionDispatches.id });
+      if (updated.length !== 1) {
+        throw new Error("GitHub Claude acknowledgement lost its dispatch agent-state precondition");
+      }
+    }
+    return { kind: "recorded", receipt: inserted[0]! };
+  });
+}
+
+export async function readGithubClaudeAgentAcknowledgement(input: {
+  workspaceId: string;
+  dispatchId: string;
+}): Promise<AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow | null> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "dispatchId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.dispatchId)) return null;
+  return db.transaction(async (tx) => {
+    const receipt = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(and(
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.workspaceId, input.workspaceId),
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId, input.dispatchId),
+    )).limit(1))[0];
+    if (!receipt || githubClaudeAckReceiptIdentity(receipt) !== receipt.receiptIdentitySha256
+      || !await hasVerifiedGithubClaudeAckReceiptEventInTransaction(tx, receipt)) return null;
+    const dispatch = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+      eq(acceptanceCorrectionDispatches.id, receipt.dispatchId),
+      eq(acceptanceCorrectionDispatches.workspaceId, receipt.workspaceId),
+    )).limit(1))[0];
+    const activation = dispatch && (await tx.select()
+      .from(acceptanceCorrectionDispatchGithubActivations).where(and(
+        eq(acceptanceCorrectionDispatchGithubActivations.id, receipt.activationId),
+        eq(acceptanceCorrectionDispatchGithubActivations.dispatchId, dispatch.id),
+      )).limit(1))[0];
+    const resolved = activation
+      && await resolveGithubClaudeAcknowledgementBindingInTransaction(tx, activation);
+    if (!dispatch || !resolved || resolved.binding.dispatch.id !== dispatch.id) return null;
+    return resolved.historical
+      ? dispatch.agentState === "not_observed" || dispatch.agentState === "acknowledged"
+        ? receipt : null
+      : dispatch.agentState === "acknowledged" ? receipt : null;
   });
 }
 

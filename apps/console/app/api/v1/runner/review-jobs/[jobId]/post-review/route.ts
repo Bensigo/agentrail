@@ -210,7 +210,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "review result does not exactly cover the confirmed Contract plan with an attested exact-head R7.1 environment outcome",
+          "review result does not exactly cover the confirmed Contract plan with server-attested exact-head criterion evidence",
       },
       { status: 409 }
     );

@@ -27,9 +27,18 @@ import {
 } from "@agentrail/db-postgres";
 import { postGithubAdvisoryReview } from "../../../../../../../lib/github-advisory-review";
 import {
+  type ExactReviewJobProof,
   R7_READY_NOT_PROVEN_OBSERVATION,
   r7UnavailablePreviewObservation,
 } from "../../../../../../../lib/review-job-proof-attestation";
+import {
+  buildReviewJobUiAttempt,
+  buildReviewJobUiResult,
+  buildReviewJobUiScreenshotReservation,
+  reviewJobUiAttemptEventKey,
+  reviewJobUiResultEventKey,
+  reviewJobUiScreenshotReservationEventKey,
+} from "../../../../../../../lib/review-job-ui-execution";
 import { POST } from "./route";
 
 const secret = "test-secret";
@@ -38,6 +47,9 @@ const workspaceId = "00000000-0000-0000-0000-000000000001";
 const recordId = "00000000-0000-0000-0000-000000000002";
 const headSha = "abcdef1234567890";
 const bootLogKey = "review-evidence/ws-1/ada__widgets/98/abcdef/boot.log";
+const screenshotKey =
+  "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/exact.png";
+const previewUrl = "http://127.0.0.1:43123";
 
 const session = {
   id: "session-1",
@@ -125,6 +137,238 @@ const validBody = {
   summaryLine: "ada/widgets #98 — not_proven",
   evidenceKeys: [bootLogKey],
 };
+
+const uiSteps = [
+  { action: "open", path: "/saved-values" },
+  { action: "expect_text", text: "Saved value" },
+  { action: "screenshot", label: "saved-value" },
+] as const;
+
+function installUiReceipt(assertionPassed = true) {
+  const verificationPlan = {
+    ...planPayload,
+    plans: [{ ...planPayload.plans[0], uiSteps: [...uiSteps] }],
+  };
+  const receiptTimeline: typeof timeline = {
+    record: {
+      id: recordId,
+      workspaceId,
+      repo: job.repo,
+      prNumber: job.prNumber,
+      headShas: [headSha],
+    },
+    events: [{
+      eventKey: `verification:plan:${jobId}`,
+      payloadRef: verificationPlan,
+    }],
+  };
+  const proof = {
+    job,
+    timeline: receiptTimeline,
+    contract: {
+      id: contract.id,
+      version: contract.version,
+      criteria: contract.contract.acceptanceCriteria,
+    },
+    verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = {
+    id: "boot-1",
+    workspaceId,
+    repo: job.repo,
+    prNumber: job.prNumber,
+    headSha,
+    status: "ready",
+    url: previewUrl,
+  };
+  const attempt = buildReviewJobUiAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobUiResult({
+    attempt,
+    plan,
+    assertionPassed,
+    artifactKey: screenshotKey,
+    contentType: "image/png",
+    contentSha256: "c".repeat(64),
+    observedUrl: `${previewUrl}/saved-values`,
+  })!;
+  receiptTimeline.events.push(
+    {
+      eventKey: reviewJobUiAttemptEventKey({ proof, plan }),
+      payloadRef: attempt,
+    },
+    {
+      eventKey: reviewJobUiScreenshotReservationEventKey({ proof, plan }),
+      payloadRef: buildReviewJobUiScreenshotReservation(result),
+    },
+    {
+      eventKey: reviewJobUiResultEventKey({ proof, plan }),
+      payloadRef: result,
+    }
+  );
+  timeline = receiptTimeline;
+  return {
+    attempt,
+    result,
+    plan,
+    body: {
+      ...validBody,
+      criterionResults: [{
+        criterionId: "AC-1",
+        state: result.state,
+        expected: result.expected,
+        observed: result.observed,
+        evidenceRefs: [result.evidenceRef],
+      }],
+      verdict: result.state,
+      summaryLine: `ada/widgets #98 — ${result.state}`,
+      evidenceKeys: [screenshotKey],
+    },
+  };
+}
+
+function installVerdictPriorityProof(
+  states: Array<"proven" | "failed" | "not_proven" | "not_testable">
+) {
+  const criteria = states.map((state, index) => ({
+    id: `AC-${index + 1}`,
+    text: `Criterion ${index + 1}`,
+    userVisible: state !== "not_testable",
+  }));
+  const plans = states.map((state, index) =>
+    state === "not_testable"
+      ? {
+          criterionId: `AC-${index + 1}`,
+          criterionTextSnapshot: `Criterion ${index + 1}`,
+          modality: "api",
+          environmentKind: null,
+          flow: null,
+          uiSteps: null,
+          status: "not_testable",
+          notTestableReason: "No server-custodied API executor is available.",
+        }
+      : {
+          criterionId: `AC-${index + 1}`,
+          criterionTextSnapshot: `Criterion ${index + 1}`,
+          modality: "ui",
+          environmentKind: "isolated_preview",
+          flow: "Open the saved values and inspect the result.",
+          uiSteps: [...uiSteps],
+          status: "planned",
+          notTestableReason: null,
+        }
+  );
+  const verificationPlan = {
+    ...planPayload,
+    plans,
+  };
+  const priorityTimeline: typeof timeline = {
+    record: {
+      id: recordId,
+      workspaceId,
+      repo: job.repo,
+      prNumber: job.prNumber,
+      headShas: [headSha],
+    },
+    events: [{
+      eventKey: `verification:plan:${jobId}`,
+      payloadRef: verificationPlan,
+    }],
+  };
+  const proof = {
+    job,
+    timeline: priorityTimeline,
+    contract: { id: contract.id, version: contract.version, criteria },
+    verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const boots = new Map<string, Record<string, unknown>>();
+  const results: Array<Record<string, unknown>> = [];
+  const evidenceKeys: string[] = [];
+
+  for (const [index, state] of states.entries()) {
+    const plan = proof.verificationPlan.plans[index];
+    if (state === "not_testable") {
+      results.push({
+        criterionId: plan.criterionId,
+        state,
+        expected: plan.criterionTextSnapshot,
+        observed: plan.notTestableReason,
+        evidenceRefs: [],
+      });
+      continue;
+    }
+    const bootId = `boot-${index + 1}`;
+    const boot = {
+      id: bootId,
+      workspaceId,
+      repo: job.repo,
+      prNumber: job.prNumber,
+      headSha,
+      status: "ready",
+      url: previewUrl,
+    };
+    boots.set(bootId, boot);
+    if (state === "not_proven") {
+      results.push({
+        criterionId: plan.criterionId,
+        state,
+        expected: plan.criterionTextSnapshot,
+        observed: R7_READY_NOT_PROVEN_OBSERVATION,
+        evidenceRefs: [`preview-boot:${bootId}`],
+      });
+      continue;
+    }
+    const attempt = buildReviewJobUiAttempt({ proof, plan, boot })!;
+    const artifactKey = `${screenshotKey}.${index + 1}`;
+    const result = buildReviewJobUiResult({
+      attempt,
+      plan,
+      assertionPassed: state === "proven",
+      artifactKey,
+      contentType: "image/png",
+      contentSha256: `${index + 1}`.repeat(64),
+      observedUrl: `${previewUrl}/saved-values`,
+    })!;
+    priorityTimeline.events.push(
+      {
+        eventKey: reviewJobUiAttemptEventKey({ proof, plan }),
+        payloadRef: attempt,
+      },
+      {
+        eventKey: reviewJobUiScreenshotReservationEventKey({ proof, plan }),
+        payloadRef: buildReviewJobUiScreenshotReservation(result),
+      },
+      {
+        eventKey: reviewJobUiResultEventKey({ proof, plan }),
+        payloadRef: result,
+      }
+    );
+    evidenceKeys.push(artifactKey);
+    results.push({
+      criterionId: plan.criterionId,
+      state: result.state,
+      expected: result.expected,
+      observed: result.observed,
+      evidenceRefs: [result.evidenceRef],
+    });
+  }
+
+  timeline = priorityTimeline;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    id: contract.id,
+    version: contract.version,
+    status: "confirmed",
+    contract: { acceptanceCriteria: criteria },
+  }] as never);
+  vi.mocked(getPreviewBoot).mockImplementation(
+    async (bootId) => (boots.get(bootId) ?? null) as never
+  );
+  return {
+    ...validBody,
+    criterionResults: results,
+    evidenceKeys,
+  };
+}
 
 function request(body: unknown = validBody, authorized = true) {
   return new NextRequest(
@@ -339,7 +583,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     );
   });
 
-  it("rejects proof claims and extra artifact references until R7.2 custody exists", async () => {
+  it("rejects proof claims and extra artifact references without an exact stored UI receipt", async () => {
     for (const criterionResult of [
       { ...criterionResults[0], state: "proven", observed: "It passed." },
       { ...criterionResults[0], state: "failed", observed: "It failed." },
@@ -356,6 +600,281 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     }
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("posts proven or failed only from the exact stored UI receipt and its decisive screenshot", async () => {
+    for (const assertionPassed of [true, false]) {
+      const fixture = installUiReceipt(assertionPassed);
+      const body = assertionPassed
+        ? fixture.body
+        : { ...fixture.body, evidenceKeys: [screenshotKey, bootLogKey] };
+
+      const response = await POST(request(body), params);
+
+      expect(response.status).toBe(201);
+      expect(postGithubAdvisoryReview).toHaveBeenCalledTimes(1);
+      expect(
+        vi.mocked(postGithubAdvisoryReview).mock.calls[0][0].summary
+      ).toMatch(
+        new RegExp(`^\\*\\*AgentRail exact-head verification: ${fixture.result.state}\\.\\*\\*`)
+      );
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+    }
+  });
+
+  it("keeps a planned executable UI criterion at preview-only not_proven until a result receipt exists", async () => {
+    installUiReceipt();
+    timeline.events = timeline.events.slice(0, 1);
+
+    const response = await POST(request(validBody), params);
+
+    expect(response.status).toBe(201);
+    expect(postGithubAdvisoryReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a valid screenshot reservation without a final result at preview-only not_proven", async () => {
+    installUiReceipt();
+    timeline.events = timeline.events.filter(
+      (event) => !event.eventKey.includes(":ui-result:")
+    );
+
+    const response = await POST(request(validBody), params);
+
+    expect(response.status).toBe(201);
+    expect(postGithubAdvisoryReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not downgrade an existing UI receipt to the preview-only R7.1 outcome", async () => {
+    installUiReceipt();
+
+    const response = await POST(request(validBody), params);
+
+    expect(response.status).toBe(409);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds forged or mismatched UI execution custody before reserving a GitHub write", async () => {
+    const cases: Array<[string, (fixture: ReturnType<typeof installUiReceipt>) => void]> = [
+      ["attempt", () => {
+        timeline.events = timeline.events.filter(
+          (event) => !event.eventKey.includes(":ui-attempt:")
+        );
+      }],
+      ["attempt plan", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-attempt:")
+        )!;
+        event.payloadRef = { ...fixture.attempt, planDigest: "forged" };
+      }],
+      ["attempt execution", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-attempt:")
+        )!;
+        event.payloadRef = { ...fixture.attempt, executionId: "ui-forged" };
+      }],
+      ["result execution", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-result:")
+        )!;
+        event.payloadRef = { ...fixture.result, executionId: "ui-forged" };
+      }],
+      ["result head", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-result:")
+        )!;
+        event.payloadRef = { ...fixture.result, headSha: "foreign-head" };
+      }],
+      ["missing screenshot reservation", () => {
+        timeline.events = timeline.events.filter(
+          (event) => !event.eventKey.includes(":ui-screenshot:")
+        );
+      }],
+      ["mismatched screenshot reservation", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-screenshot:")
+        )!;
+        event.payloadRef = buildReviewJobUiScreenshotReservation({
+          ...fixture.result,
+          artifactKey: "review-evidence/competing.png",
+        });
+      }],
+      ["stored plan", () => {
+        const event = timeline.events[0]!;
+        const payload = event.payloadRef as typeof planPayload;
+        event.payloadRef = {
+          ...payload,
+          plans: [{
+            ...payload.plans[0],
+            uiSteps: [
+              { action: "open", path: "/saved-values" },
+              { action: "expect_text", text: "Different text" },
+              { action: "screenshot", label: "saved-value" },
+            ],
+          }],
+        };
+      }],
+      ["boot tuple", () => {
+        vi.mocked(getPreviewBoot).mockResolvedValueOnce({
+          id: "boot-1",
+          workspaceId,
+          repo: job.repo,
+          prNumber: job.prNumber,
+          headSha: "foreign-head",
+          status: "ready",
+          url: previewUrl,
+          bootLogKey,
+        } as never);
+      }],
+      ["boot URL", () => {
+        vi.mocked(getPreviewBoot).mockResolvedValueOnce({
+          id: "boot-1",
+          workspaceId,
+          repo: job.repo,
+          prNumber: job.prNumber,
+          headSha,
+          status: "ready",
+          url: "http://127.0.0.1:49999",
+          bootLogKey,
+        } as never);
+      }],
+      ["result observation", (fixture) => {
+        const event = timeline.events.find((candidate) =>
+          candidate.eventKey.includes(":ui-result:")
+        )!;
+        event.payloadRef = { ...fixture.result, observed: "forged" };
+      }],
+    ];
+
+    for (const [name, arrange] of cases) {
+      const fixture = installUiReceipt();
+      arrange(fixture);
+      const response = await POST(request(fixture.body), params);
+      expect(response.status, name).toBe(409);
+    }
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds preview-only fallback when a stored UI result is present but invalid", async () => {
+    for (const mutation of [
+      { executionId: "ui-forged" },
+      { headSha: "foreign-head" },
+      { observed: "forged" },
+    ]) {
+      const fixture = installUiReceipt();
+      const event = timeline.events.find((candidate) =>
+        candidate.eventKey.includes(":ui-result:")
+      )!;
+      event.payloadRef = { ...fixture.result, ...mutation };
+
+      const response = await POST(request(validBody), params);
+
+      expect(response.status).toBe(409);
+    }
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("requires the receipt screenshot key exactly once and allows only its current boot log beside it", async () => {
+    for (const evidenceKeys of [
+      [],
+      [bootLogKey],
+      [screenshotKey, screenshotKey],
+      [screenshotKey, "review-evidence/fabricated.png"],
+      ["review-evidence/fabricated.png"],
+    ]) {
+      const fixture = installUiReceipt();
+      const response = await POST(
+        request({ ...fixture.body, evidenceKeys }),
+        params
+      );
+      expect(response.status, JSON.stringify(evidenceKeys)).toBe(409);
+    }
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds caller changes to the receipt state, expected value, observation, reference, or artifact", async () => {
+    const mutations = [
+      { state: "failed" },
+      { expected: "Different expected behavior." },
+      { observed: "The caller says it passed." },
+      { evidenceRefs: ["review-ui-execution:forged"] },
+    ];
+    for (const mutation of mutations) {
+      const fixture = installUiReceipt();
+      const criterionResult = {
+        ...fixture.body.criterionResults[0],
+        ...mutation,
+      };
+      const response = await POST(
+        request({
+          ...fixture.body,
+          criterionResults: [criterionResult],
+          verdict: criterionResult.state,
+        }),
+        params
+      );
+      expect(response.status).toBe(409);
+    }
+    const fixture = installUiReceipt();
+    const artifactMismatch = await POST(
+      request({
+        ...fixture.body,
+        evidenceKeys: ["review-evidence/other.png"],
+      }),
+      params
+    );
+    expect(artifactMismatch.status).toBe(409);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("derives mixed-criterion verdicts in failed, not_proven, not_testable, proven priority order", async () => {
+    const cases = [
+      {
+        states: ["proven", "not_testable"] as const,
+        rejectedVerdict: "proven",
+        expectedVerdict: "not_testable",
+      },
+      {
+        states: ["proven", "not_testable", "not_proven"] as const,
+        rejectedVerdict: "not_testable",
+        expectedVerdict: "not_proven",
+      },
+      {
+        states: ["proven", "not_testable", "not_proven", "failed"] as const,
+        rejectedVerdict: "not_proven",
+        expectedVerdict: "failed",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const body = installVerdictPriorityProof([...testCase.states]);
+      const rejected = await POST(
+        request({
+          ...body,
+          verdict: testCase.rejectedVerdict,
+          summaryLine: `ada/widgets #98 — ${testCase.rejectedVerdict}`,
+        }),
+        params
+      );
+      expect(rejected.status).toBe(409);
+
+      const accepted = await POST(
+        request({
+          ...body,
+          verdict: testCase.expectedVerdict,
+          summaryLine: `ada/widgets #98 — ${testCase.expectedVerdict}`,
+        }),
+        params
+      );
+      expect(accepted.status).toBe(201);
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+    }
   });
 
   it("accepts a server-custodied before-ready boot failure only as not_testable", async () => {

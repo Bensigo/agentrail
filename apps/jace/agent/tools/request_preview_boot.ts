@@ -39,8 +39,9 @@ export default defineTool({
     "the repository. It returns degraded results instead of throwing when " +
     "the console is unavailable, preview boots are disabled, the workspace " +
     "is not enrolled, or the boot does not become ready. Only results with " +
-    "attestedState and attestedObservation may become R7.1 criterion outcomes; " +
-    "a ready environment remains not_proven until R7.2 execution custody.",
+    "attestedState and attestedObservation may become criterion outcomes; " +
+    "a ready environment remains not_proven unless a separate server-custodied " +
+    "criterion execution receipt exists.",
   inputSchema: z.object({
     jobId: z.string().min(1).describe("The current review job id from the headless review prompt."),
   }),

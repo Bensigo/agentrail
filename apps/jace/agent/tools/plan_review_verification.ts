@@ -3,7 +3,7 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { planReviewVerification } from "../lib/plan_review_verification.core.mjs";
+import { normalizeUiSteps, planReviewVerification } from "../lib/plan_review_verification.core.mjs";
 
 const TIMEOUT_MS = 8000;
 
@@ -21,13 +21,35 @@ async function realTransport(
   }
 }
 
-const plan = z.object({
-  criterionId: z.string().min(1),
-  modality: z.enum(["ui", "api", "job", "data"]),
-  status: z.enum(["planned", "not_testable"]),
-  flow: z.string().min(1).optional(),
-  notTestableReason: z.string().min(1).optional(),
+const uiText = z.string().max(2_000).refine((value) => !/[\x00-\x1f\x7f]/.test(value));
+const uiStep = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("open"), path: uiText }).strict(),
+  z.object({ action: z.literal("click"), selector: uiText }).strict(),
+  z.object({ action: z.literal("fill"), selector: uiText, value: uiText }).strict(),
+  z.object({ action: z.literal("press"), key: z.enum(["Enter", "Tab", "Escape", "Space", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) }).strict(),
+  z.object({ action: z.literal("expect_text"), text: uiText }).strict(),
+  z.object({ action: z.literal("screenshot"), label: uiText }).strict(),
+]);
+const uiSteps = z.array(uiStep).min(3).max(12).superRefine((value, ctx) => {
+  if (!normalizeUiSteps(value)) {
+    ctx.addIssue({ code: "custom", message: "uiSteps must be one bounded browser flow" });
+  }
 });
+const plan = z.union([
+  z.object({
+    criterionId: z.string().min(1),
+    modality: z.literal("ui"),
+    status: z.literal("planned"),
+    flow: z.string().min(1),
+    uiSteps,
+  }).strict(),
+  z.object({
+    criterionId: z.string().min(1),
+    modality: z.enum(["ui", "api", "job", "data"]),
+    status: z.literal("not_testable"),
+    notTestableReason: z.string().min(1),
+  }).strict(),
+]);
 
 export default defineTool({
   description:

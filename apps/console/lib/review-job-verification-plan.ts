@@ -5,6 +5,14 @@ export const REVIEW_JOB_VERIFICATION_PLAN_ACTOR = "jace:review-verification-plan
 export type VerificationModality = "ui" | "api" | "job" | "data";
 export type VerificationPlanStatus = "planned" | "not_testable";
 
+export type UiVerificationStep =
+  | { action: "open"; path: string }
+  | { action: "click"; selector: string }
+  | { action: "fill"; selector: string; value: string }
+  | { action: "press"; key: string }
+  | { action: "expect_text"; text: string }
+  | { action: "screenshot"; label: string };
+
 export interface ConfirmedVerificationCriterion {
   id: string;
   text: string;
@@ -31,6 +39,7 @@ export interface StoredCriterionVerificationPlan {
   modality: VerificationModality;
   environmentKind: "isolated_preview" | null;
   flow: string | null;
+  uiSteps: UiVerificationStep[] | null;
   status: VerificationPlanStatus;
   notTestableReason: string | null;
 }
@@ -55,6 +64,11 @@ type BuildPlanResult =
 
 const MODALITIES = new Set<VerificationModality>(["ui", "api", "job", "data"]);
 const MAX_PLAN_TEXT = 2_000;
+const MAX_UI_STEPS = 12;
+const PRESS_KEYS = new Set([
+  "Enter", "Tab", "Escape", "Space", "Backspace",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+]);
 
 function object(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -68,13 +82,92 @@ function nonBlankText(value: unknown): string | null {
 
 function boundedPlanText(value: unknown): string | null {
   const normalized = nonBlankText(value);
-  return normalized && normalized.length <= MAX_PLAN_TEXT ? normalized : null;
+  return normalized && normalized.length <= MAX_PLAN_TEXT && !/[\x00-\x1f\x7f]/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function boundedUiText(value: unknown, allowEmpty = false): string | null {
+  if (typeof value !== "string" || value.length > MAX_PLAN_TEXT || /[\x00-\x1f\x7f]/.test(value)) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!allowEmpty && !normalized) return null;
+  return normalized;
 }
 
 function exactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+/**
+ * Parse the one bounded browser flow the UI executor can run for a criterion.
+ * The final assertion and screenshot make the decisive proof point explicit.
+ */
+export function parseUiVerificationSteps(value: unknown): UiVerificationStep[] | null {
+  if (!Array.isArray(value) || value.length < 3 || value.length > MAX_UI_STEPS) return null;
+
+  const steps: UiVerificationStep[] = [];
+  for (const raw of value) {
+    if (!object(raw) || typeof raw.action !== "string") return null;
+    switch (raw.action) {
+      case "open": {
+        if (!exactKeys(raw, ["action", "path"]) || typeof raw.path !== "string") return null;
+        const path = boundedUiText(raw.path);
+        if (!path || path !== raw.path || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) return null;
+        steps.push({ action: "open", path });
+        break;
+      }
+      case "click": {
+        if (!exactKeys(raw, ["action", "selector"])) return null;
+        const selector = boundedUiText(raw.selector);
+        if (!selector) return null;
+        steps.push({ action: "click", selector });
+        break;
+      }
+      case "fill": {
+        if (!exactKeys(raw, ["action", "selector", "value"])) return null;
+        const selector = boundedUiText(raw.selector);
+        const fillValue = boundedUiText(raw.value, true);
+        if (!selector || fillValue === null) return null;
+        steps.push({ action: "fill", selector, value: fillValue });
+        break;
+      }
+      case "press": {
+        if (!exactKeys(raw, ["action", "key"]) || !PRESS_KEYS.has(raw.key as string)) return null;
+        steps.push({ action: "press", key: raw.key as string });
+        break;
+      }
+      case "expect_text": {
+        if (!exactKeys(raw, ["action", "text"])) return null;
+        const text = boundedUiText(raw.text);
+        if (!text) return null;
+        steps.push({ action: "expect_text", text });
+        break;
+      }
+      case "screenshot": {
+        if (!exactKeys(raw, ["action", "label"])) return null;
+        const label = boundedUiText(raw.label);
+        if (!label) return null;
+        steps.push({ action: "screenshot", label });
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+
+  if (
+    steps[0].action !== "open" ||
+    steps[steps.length - 2].action !== "expect_text" ||
+    steps[steps.length - 1].action !== "screenshot" ||
+    steps.slice(1, -2).some((step) => !["click", "fill", "press"].includes(step.action))
+  ) {
+    return null;
+  }
+  return steps;
 }
 
 /** Exactly one confirmed Contract is authoritative for a review job. */
@@ -126,8 +219,8 @@ export function reviewJobVerificationPlanEventKey(jobId: string): string {
 
 /**
  * Normalize model-supplied planning choices into a server-owned exact-job
- * snapshot. This R7.1 slice can safely execute UI only; API/job/data remain
- * explicit `not_testable` until their criterion executors land under R7.2.
+ * snapshot. This UI-only R7.2 slice can execute UI criteria; API/job/data
+ * remain explicit `not_testable` until their bounded executors land.
  */
 export function buildReviewJobVerificationPlan(input: {
   job: ReviewJobVerificationIdentity;
@@ -167,20 +260,26 @@ export function buildReviewJobVerificationPlan(input: {
     }
 
     if (status === "planned") {
-      if (!exactKeys(raw, ["criterionId", "modality", "status", "flow"])) {
+      if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"])) {
         return { ok: false, error: `planned criterion ${criterion.id} has an invalid shape` };
       }
       const flow = boundedPlanText(raw.flow);
       if (!flow) return { ok: false, error: `planned criterion ${criterion.id} needs a bounded flow` };
       if (modality !== "ui") {
-        return { ok: false, error: `${modality as string} execution is not available until R7.2` };
+        return {
+          ok: false,
+          error: `${modality as string} execution is not available in the UI-only R7.2 slice`,
+        };
       }
+      const uiSteps = parseUiVerificationSteps(raw.uiSteps);
+      if (!uiSteps) return { ok: false, error: `planned criterion ${criterion.id} needs one bounded UI flow` };
       plans.push({
         criterionId: criterion.id,
         criterionTextSnapshot: criterion.text,
         modality: "ui",
         environmentKind: "isolated_preview",
         flow,
+        uiSteps,
         status: "planned",
         notTestableReason: null,
       });
@@ -199,6 +298,7 @@ export function buildReviewJobVerificationPlan(input: {
         modality: modality as VerificationModality,
         environmentKind: null,
         flow: null,
+        uiSteps: null,
         status: "not_testable",
         notTestableReason: reason,
       });
@@ -279,12 +379,17 @@ export function parseStoredReviewJobVerificationPlan(input: {
       boundedPlanText(raw.flow) &&
       raw.notTestableReason === null
     ) {
+      // R7.1 stored flows had no executable steps. They remain readable for
+      // audit continuity but are intentionally not executable by later work.
+      const uiSteps = raw.uiSteps === undefined ? null : parseUiVerificationSteps(raw.uiSteps);
+      if (raw.uiSteps !== undefined && !uiSteps) return null;
       byId.set(criterionId, {
         criterionId,
         criterionTextSnapshot,
         modality: "ui",
         environmentKind: "isolated_preview",
         flow: boundedPlanText(raw.flow),
+        uiSteps,
         status: "planned",
         notTestableReason: null,
       });
@@ -295,6 +400,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
       status === "not_testable" &&
       raw.environmentKind === null &&
       raw.flow === null &&
+      (raw.uiSteps === undefined || raw.uiSteps === null) &&
       boundedPlanText(raw.notTestableReason)
     ) {
       byId.set(criterionId, {
@@ -303,6 +409,7 @@ export function parseStoredReviewJobVerificationPlan(input: {
         modality: modality as VerificationModality,
         environmentKind: null,
         flow: null,
+        uiSteps: null,
         status: "not_testable",
         notTestableReason: boundedPlanText(raw.notTestableReason),
       });

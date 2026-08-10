@@ -29,10 +29,10 @@ const EXPECTED = [
   "You are executing review job job-1 headlessly — no human is in this conversation.",
   "Review PR #7 in ada/widgets at head abc123. Do exactly your normal review choreography:",
   "- First call fetch_change_record for this repo and PR. Use ONLY its confirmed acceptanceContract criteria. If it is missing or malformed, do not post a success review; return posted:false with the reason.",
-  "- After fetching the confirmed Contract and before collecting proof, call plan_review_verification once with jobId job-1 and every confirmed criterion exactly once. For this R7.1 slice, only a ui criterion may be planned: give it modality ui, status planned, and a bounded criterion-specific flow. The console binds that plan to the isolated exact-head preview; do not put an environment, repository, PR, or head in the plan. Every api, job, or data criterion MUST use its actual modality, status not_testable, and the concrete reason that its executor is not available until R7.2. A user-visible criterion remains modality ui even when it is not_testable; never relabel it to avoid the UI path. A planned criterion needs flow and no notTestableReason; a not_testable criterion needs notTestableReason and no flow. If the plan cannot be recorded, do not report a successful review.",
-  "- If any ui criterion was planned, call request_preview_boot with jobId job-1. The console derives the workspace, repo, PR, and exact head from the bound running job; never supply or substitute those fields yourself. R7.1 attests only the environment, not criterion execution: for every planned ui criterion use the tool's attestedState and attestedObservation verbatim and exactly one evidenceRef, preview-boot:<returned boot id>. A ready exact-head preview is therefore not_proven until R7.2 adds server-custodied criterion execution artifacts; never turn it into proven or failed from model-authored QA. A before-ready failed/torn-down boot is not_testable only when the tool returns an attestedState and attestedObservation. If the tool returns no attestedState, do not post or report success; let the turn fail. If it returns a bootLogKey, that exact key may be the only evidenceKeys entry; do not add screenshot or other artifact keys in R7.1. A PR-comment preview URL is not exact-head evidence unless the server attests it; no such existing-preview rung is currently wired. For a plan-declared not_testable criterion, use its stored concrete notTestableReason with no evidenceRefs.",
+  "- After fetching the confirmed Contract and before collecting proof, call plan_review_verification once with jobId job-1 and every confirmed criterion exactly once. A planned ui criterion needs modality ui, status planned, a bounded criterion-specific flow, and uiSteps: first one safe relative-path open, then only bounded click/fill/press actions, then exactly one expect_text assertion and one final screenshot. The console persists and binds those steps to the isolated exact-head preview; do not put an environment, repository, PR, head, absolute URL, script, or discovered page instruction in the plan. Every api, job, or data criterion MUST use its actual modality, status not_testable, and the concrete reason that its executor is not available in this UI-only R7.2 slice. A user-visible criterion remains modality ui even when it is not_testable; never relabel it to avoid the UI path. A planned criterion needs flow and uiSteps but no notTestableReason; a not_testable criterion needs notTestableReason and neither flow nor uiSteps. If the plan cannot be recorded, do not report a successful review.",
+  "- If any ui criterion was planned, call request_preview_boot with jobId job-1. The console derives the workspace, repo, PR, and exact head from the bound running job; never supply or substitute those fields yourself. For every planned ui criterion, call execute_review_ui once with jobId job-1, that criterionId, and previewBootId set to the exact id returned by request_preview_boot. The executor replays only the persisted steps. When it returns ok:true, copy its state, expected, observed, and evidenceRef verbatim into that criterionResult and include its evidenceKey in evidenceKeys; only this server-attested screenshot receipt may produce proven or failed. If execution degrades, use request_preview_boot's attestedState and attestedObservation verbatim with exactly one evidenceRef preview-boot:<returned boot id>; a ready environment then remains not_proven, and a before-ready failed/torn-down boot is not_testable only when the preview tool attests it. If neither tool returns an attested outcome, do not post or report success; let the turn fail. Include the exact bootLogKey when returned, plus every successful UI execution evidenceKey, and no other evidenceKeys. A PR-comment preview URL is not exact-head evidence unless the server attests it. For a plan-declared not_testable criterion, use its stored concrete notTestableReason with no evidenceRefs.",
   "- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.",
-  "- Only after every criterionResult is terminal, set verdict to not_proven when any criterion is not_proven, otherwise not_testable. Post once with post_pr_review and include reviewJob: { jobId: job-1, criterionResults, verdict, summaryLine, evidenceKeys when present }. The console derives the target from the bound job, validates the exact Contract plan and preview evidence before GitHub, and reserves the one external write. Return the same verdict, summaryLine, criterionResults, and evidenceKeys verbatim after the tool succeeds. One review, one verdict.",
+  "- Only after every criterionResult is terminal, set verdict by this priority: failed if any criterion failed; otherwise not_proven if any is not_proven; otherwise not_testable if any is not_testable; otherwise proven. Post once with post_pr_review and include reviewJob: { jobId: job-1, criterionResults, verdict, summaryLine, evidenceKeys when present }. The console derives the target from the bound job, validates the exact Contract plan, execution receipts, screenshot custody, and preview evidence before GitHub, and reserves the one external write. Return the same verdict, summaryLine, criterionResults, and evidenceKeys verbatim after the tool succeeds. One review, one verdict.",
   "- Do not create issues, send channel messages, or take any action beyond the review itself.",
   "Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts), criterionResults (exactly one terminal result for every confirmed criterion), and evidenceKeys when evidence was captured.",
 ].join("\n");
@@ -70,7 +70,7 @@ test("PIN: attests the terminal result before the external review write", () => 
   const prompt = reviewJobPrompt(JOB);
   assert.match(prompt, /Only after every criterionResult is terminal/);
   assert.match(prompt, /reviewJob: \{ jobId: job-1, criterionResults, verdict, summaryLine/);
-  assert.match(prompt, /validates the exact Contract plan and preview evidence before GitHub/);
+  assert.match(prompt, /validates the exact Contract plan, execution receipts, screenshot custody, and preview evidence before GitHub/);
   assert.match(prompt, /Return the same verdict, summaryLine, criterionResults, and evidenceKeys verbatim/);
 });
 
@@ -79,7 +79,7 @@ test("PIN: contains 'cannot_judge never softened'", () => {
 });
 
 test("PIN: uses only a server-attested before-ready not_testable transition", () => {
-  assert.match(reviewJobPrompt(JOB), /before-ready failed\/torn-down boot is not_testable only when the tool returns an attestedState/);
+  assert.match(reviewJobPrompt(JOB), /before-ready failed\/torn-down boot is not_testable only when the preview tool attests it/);
 });
 
 test("PIN: contains 'request_preview_boot'", () => {
@@ -93,13 +93,14 @@ test("PIN: records a complete server-bound verification plan before proof", () =
   assert.match(prompt, /before collecting proof/);
 });
 
-test("PIN: R7.1 permits only UI preview plans and holds other executor modalities", () => {
+test("PIN: the UI-only R7.2 plan is structured and holds other executor modalities", () => {
   const prompt = reviewJobPrompt(JOB);
-  assert.match(prompt, /only a ui criterion may be planned/);
-  assert.match(prompt, /console binds that plan to the isolated exact-head preview/);
-  assert.match(prompt, /do not put an environment, repository, PR, or head in the plan/);
+  assert.match(prompt, /uiSteps: first one safe relative-path open/);
+  assert.match(prompt, /exactly one expect_text assertion and one final screenshot/);
+  assert.match(prompt, /console persists and binds those steps to the isolated exact-head preview/);
+  assert.match(prompt, /do not put an environment, repository, PR, head, absolute URL, script, or discovered page instruction in the plan/);
   assert.match(prompt, /api, job, or data criterion MUST use its actual modality, status not_testable/);
-  assert.match(prompt, /executor is not available until R7.2/);
+  assert.match(prompt, /executor is not available in this UI-only R7.2 slice/);
   assert.match(prompt, /user-visible criterion remains modality ui even when it is not_testable/);
 });
 
@@ -113,19 +114,20 @@ test("PIN: binds boot-backed criterion evidence to the returned boot id", () => 
   assert.match(reviewJobPrompt(JOB), /exactly one evidenceRef/);
 });
 
-test("PIN: a ready boot remains not_proven until R7.2 criterion custody", () => {
+test("PIN: only the server-attested UI receipt may produce proven or failed", () => {
   const prompt = reviewJobPrompt(JOB);
-  assert.match(prompt, /ready exact-head preview is therefore not_proven/);
-  assert.match(prompt, /never turn it into proven or failed/);
-  assert.match(prompt, /server-custodied criterion execution artifacts/);
+  assert.match(prompt, /call execute_review_ui once/);
+  assert.match(prompt, /copy its state, expected, observed, and evidenceRef verbatim/);
+  assert.match(prompt, /only this server-attested screenshot receipt may produce proven or failed/);
+  assert.match(prompt, /ready environment then remains not_proven/);
 });
 
 test("PIN: plan-declared not_testable results carry their stored reason", () => {
   assert.match(reviewJobPrompt(JOB), /plan-declared not_testable criterion, use its stored concrete notTestableReason/);
 });
 
-test("PIN: R7.1 rejects screenshot and arbitrary artifact keys", () => {
-  assert.match(reviewJobPrompt(JOB), /do not add screenshot or other artifact keys in R7.1/);
+test("PIN: includes custodied screenshots and rejects arbitrary artifact keys", () => {
+  assert.match(reviewJobPrompt(JOB), /every successful UI execution evidenceKey, and no other evidenceKeys/);
 });
 
 test("PIN: carries a rung-2 boot log key into evidenceKeys", () => {
@@ -165,8 +167,8 @@ test("REVIEW_JOB_RESULT_SCHEMA: reviewUrl is an inspectable string", () => {
   assert.equal(REVIEW_JOB_RESULT_SCHEMA.properties.reviewUrl.type, "string");
 });
 
-test("REVIEW_JOB_RESULT_SCHEMA: verdict is the fail-closed R7.1 enum", () => {
-  assert.deepEqual(REVIEW_JOB_RESULT_SCHEMA.properties.verdict.enum, ["not_proven", "not_testable"]);
+test("REVIEW_JOB_RESULT_SCHEMA: verdict includes every server-attested terminal aggregate", () => {
+  assert.deepEqual(REVIEW_JOB_RESULT_SCHEMA.properties.verdict.enum, ["proven", "failed", "not_proven", "not_testable"]);
 });
 
 test("REVIEW_JOB_RESULT_SCHEMA: blockers is an array of strings", () => {
@@ -182,8 +184,8 @@ test("REVIEW_JOB_RESULT_SCHEMA: criterion results are explicit terminal, evidenc
   const results = REVIEW_JOB_RESULT_SCHEMA.properties.criterionResults;
   assert.equal(results.type, "array");
   assert.deepEqual(results.items.required, ["criterionId", "state", "expected", "observed", "evidenceRefs"]);
-  assert.deepEqual(results.items.properties.state.enum, ["not_proven", "not_testable"]);
-  assert.match(results.description, /proven and failed require R7\.2 custody/);
+  assert.deepEqual(results.items.properties.state.enum, ["proven", "failed", "not_proven", "not_testable"]);
+  assert.match(results.description, /server-attested proven\/failed state/);
 });
 
 test("REVIEW_JOB_RESULT_SCHEMA: posted's description instructs failing loudly rather than reporting posted:false (the honesty coupling review_job_worker.core.mjs depends on)", () => {

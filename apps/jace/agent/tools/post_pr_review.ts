@@ -191,7 +191,7 @@ export default defineTool({
       .object({
         jobId: z.string().min(1),
         criterionResults: z.array(REVIEW_JOB_CRITERION_RESULT).min(1),
-        verdict: z.enum(["not_proven", "not_testable"]),
+        verdict: z.enum(["proven", "failed", "not_proven", "not_testable"]),
         summaryLine: z.string().min(1),
         evidenceKeys: z.array(z.string().min(1)).optional(),
       })

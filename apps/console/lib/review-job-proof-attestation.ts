@@ -11,6 +11,9 @@ import {
   confirmedVerificationContract,
   findStoredReviewJobVerificationPlan,
 } from "./review-job-verification-plan";
+import {
+  resolveReviewJobUiResult,
+} from "./review-job-ui-execution";
 
 export type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
 
@@ -56,7 +59,7 @@ const PREVIEW_BOOT_EVIDENCE_PREFIX = "preview-boot:";
 const MAX_SERVER_CUSTODIED_REASON = 2_000;
 
 export const R7_READY_NOT_PROVEN_OBSERVATION =
-  "The isolated exact-head preview became ready, but R7.1 does not yet provide server-custodied criterion execution evidence; this criterion remains not proven until R7.2.";
+  "The isolated exact-head preview became ready, but no server-custodied criterion execution receipt was recorded for this run; this criterion remains not proven.";
 
 export function r7UnavailablePreviewObservation(input: {
   status: "failed" | "torn_down";
@@ -182,21 +185,22 @@ function boundedCustodiedReason(value: unknown): string | null {
 }
 
 /**
- * R7.1 attests only the exact-head environment decision. It deliberately
- * cannot turn a ready boot into behavioral proof: `proven`/`failed` remain
- * unavailable until R7.2 adds server-custodied criterion execution artifacts.
+ * Attest each criterion from either R7.2's exact planned-UI receipt or
+ * R7.1's fail-closed exact-preview fallback. A model-authored result alone
+ * can never become `proven` or `failed`.
  */
-async function exactPreviewEvidence(
-  job: ReviewJob,
+async function exactCriterionEvidence(
+  proof: ExactReviewJobProof,
   criterionResults: CriterionResult[],
-  verificationPlan: StoredReviewJobVerificationPlan,
   evidenceKeys?: string[]
 ): Promise<boolean> {
+  const { job, verificationPlan } = proof;
   const plansByCriterion = new Map(
     verificationPlan.plans.map((plan) => [plan.criterionId, plan])
   );
   const boots = new Map<string, NonNullable<Awaited<ReturnType<typeof getPreviewBoot>>>>();
   const allowedEvidenceKeys = new Set<string>();
+  const requiredEvidenceKeys = new Set<string>();
   for (const result of criterionResults) {
     const plan = plansByCriterion.get(result.criterionId);
     if (!plan) return false;
@@ -208,6 +212,50 @@ async function exactPreviewEvidence(
       ) {
         return false;
       }
+      continue;
+    }
+
+    const uiResolution = resolveReviewJobUiResult({ proof, plan });
+    if (uiResolution.status === "invalid") return false;
+    const uiReceipt = uiResolution.result;
+    if (uiReceipt) {
+      if (
+        result.state !== uiReceipt.state ||
+        result.expected !== uiReceipt.expected ||
+        result.observed !== uiReceipt.observed ||
+        result.evidenceRefs.length !== 1 ||
+        result.evidenceRefs[0] !== uiReceipt.evidenceRef
+      ) {
+        return false;
+      }
+      let boot = boots.get(uiReceipt.previewBootId);
+      if (!boot) {
+        const resolved = await getPreviewBoot(uiReceipt.previewBootId);
+        if (!resolved) return false;
+        boot = resolved;
+        boots.set(uiReceipt.previewBootId, boot);
+      }
+      let exactPreviewUrl: string | null = null;
+      try {
+        exactPreviewUrl = nonBlank(boot.url)
+          ? new URL(boot.url as string).toString()
+          : null;
+      } catch {
+        exactPreviewUrl = null;
+      }
+      if (
+        boot.workspaceId !== job.workspaceId ||
+        boot.repo !== job.repo ||
+        boot.prNumber !== job.prNumber ||
+        boot.headSha !== job.headSha ||
+        exactPreviewUrl !== uiReceipt.previewUrl
+      ) {
+        return false;
+      }
+      requiredEvidenceKeys.add(uiReceipt.artifactKey);
+      allowedEvidenceKeys.add(uiReceipt.artifactKey);
+      const bootLogKey = nonBlank(boot.bootLogKey);
+      if (bootLogKey) allowedEvidenceKeys.add(bootLogKey);
       continue;
     }
 
@@ -264,19 +312,20 @@ async function exactPreviewEvidence(
   }
 
   const submittedKeys = evidenceKeys ?? [];
-  if (new Set(submittedKeys).size !== submittedKeys.length) return false;
+  const submittedKeySet = new Set(submittedKeys);
+  if (submittedKeySet.size !== submittedKeys.length) return false;
+  if ([...requiredEvidenceKeys].some((key) => !submittedKeySet.has(key))) {
+    return false;
+  }
   if (submittedKeys.some((key) => !allowedEvidenceKeys.has(key))) return false;
   return true;
 }
 
-/** Resolve and attest the current running job, exact Record head, Contract, plan, and boots. */
-export async function resolveExactReviewJobProof(input: {
-  jobId: string;
-  criterionResults: CriterionResult[];
-  verdict?: string;
-  evidenceKeys?: string[];
-}): Promise<ExactReviewJobProof | null> {
-  const job = await getReviewJobById(input.jobId);
+/** Resolve the server-owned current job/Record/Contract/plan identity. */
+export async function resolveCurrentReviewJobPlan(
+  jobId: string
+): Promise<ExactReviewJobProof | null> {
+  const job = await getReviewJobById(jobId);
   if (!job || job.state !== "running") return null;
 
   const timeline = await readChangeRecordTimelineByPr({
@@ -308,9 +357,26 @@ export async function resolveExactReviewJobProof(input: {
     recordId: timeline.record.id,
     contract,
   });
-  if (!verificationPlan || verificationPlan.plans.length !== input.criterionResults.length) {
+  if (!verificationPlan) return null;
+
+  return { job, timeline, contract, verificationPlan };
+}
+
+/** Resolve and attest the current plan plus every submitted criterion outcome. */
+export async function resolveExactReviewJobProof(input: {
+  jobId: string;
+  criterionResults: CriterionResult[];
+  verdict?: string;
+  evidenceKeys?: string[];
+}): Promise<ExactReviewJobProof | null> {
+  const proof = await resolveCurrentReviewJobPlan(input.jobId);
+  if (
+    !proof ||
+    proof.verificationPlan.plans.length !== input.criterionResults.length
+  ) {
     return null;
   }
+  const { verificationPlan } = proof;
 
   const plansByCriterion = new Map(
     verificationPlan.plans.map((plan) => [plan.criterionId, plan])
@@ -320,23 +386,22 @@ export async function resolveExactReviewJobProof(input: {
     if (!plan || result.expected !== plan.criterionTextSnapshot) return null;
   }
   const expectedVerdict = input.criterionResults.some(
-    (result) => result.state === "not_proven"
+    (result) => result.state === "failed"
   )
-    ? "not_proven"
-    : "not_testable";
+    ? "failed"
+    : input.criterionResults.some((result) => result.state === "not_proven")
+      ? "not_proven"
+      : input.criterionResults.some((result) => result.state === "not_testable")
+        ? "not_testable"
+        : "proven";
   if (input.verdict !== expectedVerdict) return null;
   if (
-    !(await exactPreviewEvidence(
-      job,
-      input.criterionResults,
-      verificationPlan,
-      input.evidenceKeys
-    ))
+    !(await exactCriterionEvidence(proof, input.criterionResults, input.evidenceKeys))
   ) {
     return null;
   }
 
-  return { job, timeline, contract, verificationPlan };
+  return proof;
 }
 
 export function reviewPostAttemptEventKey(jobId: string): string {

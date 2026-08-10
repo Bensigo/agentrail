@@ -40,6 +40,85 @@ function nonblank(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+const MAX_UI_STEP_TEXT = 2000;
+const PRESS_KEYS = new Set([
+  "Enter", "Tab", "Escape", "Space", "Backspace",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+]);
+
+function exactKeys(value, expected) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function uiText(value, allowEmpty = false) {
+  if (typeof value !== "string" || value.length > MAX_UI_STEP_TEXT || /[\x00-\x1f\x7f]/.test(value)) return null;
+  const normalized = value.trim();
+  return allowEmpty || normalized ? normalized : null;
+}
+
+/** Project only the closed browser-step protocol accepted by the console. */
+export function normalizeUiSteps(value) {
+  if (!Array.isArray(value) || value.length < 3 || value.length > 12) return null;
+  const steps = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || typeof raw.action !== "string") return null;
+    switch (raw.action) {
+      case "open": {
+        if (!exactKeys(raw, ["action", "path"]) || typeof raw.path !== "string") return null;
+        const path = uiText(raw.path);
+        if (!path || path !== raw.path || !path.startsWith("/") || path.startsWith("//") || path.includes("\\")) return null;
+        steps.push({ action: "open", path });
+        break;
+      }
+      case "click": {
+        if (!exactKeys(raw, ["action", "selector"])) return null;
+        const selector = uiText(raw.selector);
+        if (!selector) return null;
+        steps.push({ action: "click", selector });
+        break;
+      }
+      case "fill": {
+        if (!exactKeys(raw, ["action", "selector", "value"])) return null;
+        const selector = uiText(raw.selector);
+        const fillValue = uiText(raw.value, true);
+        if (!selector || fillValue === null) return null;
+        steps.push({ action: "fill", selector, value: fillValue });
+        break;
+      }
+      case "press": {
+        if (!exactKeys(raw, ["action", "key"]) || !PRESS_KEYS.has(raw.key)) return null;
+        steps.push({ action: "press", key: raw.key });
+        break;
+      }
+      case "expect_text": {
+        if (!exactKeys(raw, ["action", "text"])) return null;
+        const text = uiText(raw.text);
+        if (!text) return null;
+        steps.push({ action: "expect_text", text });
+        break;
+      }
+      case "screenshot": {
+        if (!exactKeys(raw, ["action", "label"])) return null;
+        const label = uiText(raw.label);
+        if (!label) return null;
+        steps.push({ action: "screenshot", label });
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  if (
+    steps[0].action !== "open" ||
+    steps.at(-2).action !== "expect_text" ||
+    steps.at(-1).action !== "screenshot" ||
+    steps.slice(1, -2).some((step) => !["click", "fill", "press"].includes(step.action))
+  ) return null;
+  return steps;
+}
+
 /**
  * Validate and project the complete plan set. Projection means model-supplied
  * extras can never ride to the console as an undeclared second write shape.
@@ -53,15 +132,26 @@ export function normalizePlans(value) {
     const criterionId = typeof raw.criterionId === "string" ? raw.criterionId.trim() : "";
     const modality = raw.modality;
     const status = raw.status;
-    const flow = typeof raw.flow === "string" ? raw.flow.trim() : "";
-    const notTestableReason = typeof raw.notTestableReason === "string" ? raw.notTestableReason.trim() : "";
+    const flow = uiText(raw.flow) ?? "";
+    const notTestableReason = uiText(raw.notTestableReason) ?? "";
     if (!criterionId || ids.has(criterionId) || !["ui", "api", "job", "data"].includes(modality)) return null;
     ids.add(criterionId);
     if (status === "planned") {
-      if (!flow || notTestableReason) return null;
-      plans.push({ criterionId, modality, status, flow });
+      if (
+        !exactKeys(raw, ["criterionId", "modality", "status", "flow", "uiSteps"]) ||
+        !flow ||
+        notTestableReason ||
+        modality !== "ui"
+      ) return null;
+      const uiSteps = normalizeUiSteps(raw.uiSteps);
+      if (!uiSteps) return null;
+      plans.push({ criterionId, modality, status, flow, uiSteps });
     } else if (status === "not_testable") {
-      if (!notTestableReason || flow) return null;
+      if (
+        !exactKeys(raw, ["criterionId", "modality", "status", "notTestableReason"]) ||
+        !notTestableReason ||
+        flow
+      ) return null;
       plans.push({ criterionId, modality, status, notTestableReason });
     } else {
       return null;

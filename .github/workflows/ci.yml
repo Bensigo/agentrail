@@ -97,6 +97,9 @@ jobs:
       - name: apps/jace — unit tests
         working-directory: apps/jace
         run: npm test
+      - name: apps/jace — production build
+        working-directory: apps/jace
+        run: npm run build
 
       # The rest of the monorepo is a pnpm workspace (lockfile v9). Install it,
       # then run the TypeScript vitest suites that pytest cannot see.
@@ -126,9 +129,9 @@ jobs:
       # Prove the kill-switch gate plus the exact-head review/preview boundary
       # at the real Console routes. The latter asserts that a review-job session
       # can persist only a full server-bound criterion plan, enqueue only that
-      # job's PR head, attest only the R7.1 environment outcome before an
-      # exact-commit GitHub write, and reject the generic posting route as a
-      # headless-session bypass. Criterion execution stays held for R7.2.
+      # job's PR head, attest the R7.1 environment fallback plus R7.2's
+      # deterministic planned-UI screenshot receipt before an exact-commit
+      # GitHub write, and reject the generic posting route as a bypass.
       - name: console — Jace inbound and exact-head review routes
         working-directory: apps/console
         run: >-
@@ -138,3 +141,4 @@ jobs:
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           lib/github-advisory-review.test.ts
+          lib/review-job-ui-execution.test.ts

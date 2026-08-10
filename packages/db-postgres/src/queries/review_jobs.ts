@@ -11,7 +11,9 @@ import { jaceSessions } from "../schema/jace_sessions.js";
  * exported function here operates on the `review_jobs` table (schema:
  * `../schema/review_jobs.ts`) landed by the prior task on this branch — see
  * that file's doc-comment for the full state-lifecycle picture
- * (queued -> running -> posted|failed, plus superseded/skipped).
+ * (queued -> running -> posted|failed, plus superseded/skipped). R8.2c also
+ * permits a current-head advance to supersede an already-running old-head
+ * job; completion/release remain state-guarded and cannot revive it.
  *
  * Naming: "review job", never "review gate" — `review_gates` is a
  * DIFFERENT, unrelated table (per-run CI+advisory telemetry).
@@ -368,6 +370,15 @@ async function claimEligibleReviewJob(input: {
         SELECT id FROM review_jobs rj
         WHERE state = 'queued'
           AND (next_eligible_at IS NULL OR next_eligible_at <= now())
+          AND EXISTS (
+            SELECT 1 FROM change_records cr
+            WHERE cr.workspace_id = rj.workspace_id
+              AND cr.repo = rj.repo
+              AND cr.pr_number = rj.pr_number
+              AND cr.current_pr_head_authoritative = true
+              AND cr.current_pr_head_sha = rj.head_sha
+              AND cr.current_pr_head_cycle_id = rj.id
+          )
           AND NOT EXISTS (
             SELECT 1 FROM review_jobs r2
             WHERE r2.workspace_id = rj.workspace_id AND r2.state = 'running'

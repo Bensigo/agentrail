@@ -21,6 +21,8 @@ import {
   type ChangeRecordRow,
 } from "../schema/change_records.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import { previewBoots } from "../schema/preview_boots.js";
+import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
 import { repositories } from "../schema/repositories.js";
 import { wikiPages } from "../schema/wiki_pages.js";
 import {
@@ -141,6 +143,10 @@ function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
       (row.source_references as Record<string, unknown>[] | null) ?? [],
     issueNumber: (row.issue_number as number | null) ?? null,
     prNumber: (row.pr_number as number | null) ?? null,
+    currentPrHeadSha: (row.current_pr_head_sha as string | null) ?? null,
+    currentPrHeadCycleId: (row.current_pr_head_cycle_id as string | null) ?? null,
+    currentPrHeadAuthoritative:
+      (row.current_pr_head_authoritative as boolean | null) ?? false,
     headShas: (row.head_shas as string[] | null) ?? [],
     mergedSha: (row.merged_sha as string | null) ?? null,
     state: row.state as string,
@@ -169,6 +175,25 @@ export type FindOrCreateChangeRecordInput = ChangeRecordAnchor & {
   mergedSha?: string | null;
   state?: string;
 };
+
+/**
+ * Resolve the unique Change Record already bound to one workspace PR. This is
+ * a header-only webhook bootstrap read: no timeline, Contract, or event rows
+ * are exposed, and the atomic head transition rechecks ownership under lock.
+ */
+export async function readChangeRecordByPr(input: {
+  workspaceId: string;
+  repo: string;
+  prNumber: number;
+}): Promise<ChangeRecordRow | null> {
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0) return null;
+  const rows = await db.select().from(changeRecords).where(and(
+    eq(changeRecords.workspaceId, input.workspaceId),
+    eq(changeRecords.repo, input.repo),
+    eq(changeRecords.prNumber, input.prNumber),
+  )).limit(1);
+  return rows[0] ?? null;
+}
 
 /**
  * Deterministically find or create a Change Record by issue and/or PR.
@@ -247,6 +272,18 @@ export async function findOrCreateChangeRecord(
       await tx.execute(sql`
         UPDATE change_records
         SET pr_number = COALESCE(pr_number, ${input.prNumber ?? null}),
+            current_pr_head_sha = COALESCE(
+              current_pr_head_sha,
+              ${(prRecord.current_pr_head_sha as string | null | undefined) ?? null}
+            ),
+            current_pr_head_cycle_id = COALESCE(
+              current_pr_head_cycle_id,
+              ${(prRecord.current_pr_head_cycle_id as string | null | undefined) ?? null}
+            ),
+            current_pr_head_authoritative = CASE
+              WHEN current_pr_head_sha IS NOT NULL THEN current_pr_head_authoritative
+              ELSE ${(prRecord.current_pr_head_authoritative as boolean | null | undefined) ?? false}
+            END,
             head_shas = ${mergeHeadShasSql(mergedHeadShas)},
             merged_sha = COALESCE(${input.mergedSha ?? null}, merged_sha),
             state = COALESCE(${input.state ?? null}, state),
@@ -457,7 +494,51 @@ export async function appendChangeRecordEventsAtomically(
 
 export type AttachConfirmedAcceptanceRecordToExternalPullRequestResult =
   | { kind: "attached"; record: ChangeRecordRow; inserted: boolean }
-  | { kind: "not_found" | "not_confirmed" | "already_attached" };
+  | {
+      kind:
+        | "not_found"
+        | "not_confirmed"
+        | "already_attached"
+        | "head_advance_required";
+    };
+
+export type AcceptanceRecordPullRequestSource =
+  | "github_webhook"
+  | "manual"
+  | "mcp";
+
+function acceptanceRecordPullRequestLockKey(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+}): string {
+  return `acceptance-record-pr:${input.workspaceId}:${input.repo}:${input.prNumber}:${input.recordId}`;
+}
+
+/** One signed occurrence of a PR head; revisiting the same SHA creates a new cycle. */
+export function acceptanceRecordPullRequestHeadCycleId(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  event: string;
+  deliveryId: string;
+  headTransition: { beforeHeadSha: string; afterHeadSha: string } | null;
+}): string {
+  return uuid5Url(`acceptance-record-pr-head-cycle:${JSON.stringify([
+    input.workspaceId,
+    input.recordId,
+    input.repo,
+    input.prNumber,
+    input.headSha,
+    input.event,
+    input.deliveryId,
+    input.headTransition?.beforeHeadSha ?? null,
+    input.headTransition?.afterHeadSha ?? null,
+  ])}`);
+}
 
 /**
  * Binds a PR discovered outside Jace to the already-confirmed Acceptance
@@ -471,13 +552,13 @@ export async function attachConfirmedAcceptanceRecordToExternalPullRequest(input
   repo: string;
   prNumber: number;
   headSha: string;
-  source: "github_webhook" | "manual" | "mcp";
+  source: AcceptanceRecordPullRequestSource;
   prUrl?: string | null;
 }): Promise<AttachConfirmedAcceptanceRecordToExternalPullRequestResult> {
   if (!Number.isInteger(input.prNumber) || input.prNumber <= 0 || !GIT_SHA.test(input.headSha)) {
     throw new Error("External pull request attachment requires a positive PR number and git head SHA");
   }
-  const lockKey = `acceptance-record-pr:${input.workspaceId}:${input.repo}:${input.recordId}`;
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
 
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
@@ -525,17 +606,27 @@ export async function attachConfirmedAcceptanceRecordToExternalPullRequest(input
         (existingPr && existingPr.id !== input.recordId)) {
       return { kind: "already_attached" };
     }
+    if (record.currentPrHeadSha != null
+      && (!record.currentPrHeadAuthoritative || record.currentPrHeadSha !== input.headSha)) {
+      return { kind: "head_advance_required" };
+    }
+    if (record.prNumber != null && !record.headShas.includes(input.headSha)) {
+      return { kind: "head_advance_required" };
+    }
 
-    const rows = await tx
-      .update(changeRecords)
-      .set({
-        prNumber: input.prNumber,
-        headShas: normalizeHeadShas([...record.headShas, input.headSha]),
-        updatedAt: new Date(),
-      })
-      .where(eq(changeRecords.id, input.recordId))
-      .returning();
-    const attached = rows[0]!;
+    let attached = record;
+    if (record.prNumber == null) {
+      const rows = await tx
+        .update(changeRecords)
+        .set({
+          prNumber: input.prNumber,
+          headShas: normalizeHeadShas([...record.headShas, input.headSha]),
+          updatedAt: new Date(),
+        })
+        .where(eq(changeRecords.id, input.recordId))
+        .returning();
+      attached = rows[0]!;
+    }
     const eventKey = `external-pr:attached:${input.prNumber}:${input.headSha}`;
     const eventId = changeRecordEventId({ recordId: input.recordId, eventKey });
     const inserted = await tx
@@ -562,6 +653,566 @@ export async function attachConfirmedAcceptanceRecordToExternalPullRequest(input
 }
 
 const GIT_SHA = /^[0-9a-f]{7,64}$/i;
+const EXACT_GITHUB_HEAD_SHA = /^[0-9a-f]{40}$/i;
+const ACCEPTANCE_RECORD_HEAD_EVENTS = new Set([
+  "opened",
+  "ready_for_review",
+  "reopened",
+  "synchronize",
+]);
+const ACCEPTANCE_RECORD_TERMINAL_HEAD_EVENTS = new Set([
+  "closed",
+  "merged",
+]);
+
+function boundedPullRequestProvenanceText(
+  value: unknown,
+  limit: number
+): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= limit
+    && value === value.trim()
+    && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+export type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  event: "opened" | "ready_for_review" | "reopened" | "synchronize";
+  deliveryId: string;
+  admitReviewJob: boolean;
+  headTransition: {
+    beforeHeadSha: string;
+    afterHeadSha: string;
+  } | null;
+  source: "github_webhook";
+  prUrl?: string | null;
+};
+
+export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
+  | {
+      kind: "advanced";
+      record: ChangeRecordRow;
+      jobId: string;
+      jobAdmitted: boolean;
+      deduped: boolean;
+      superseded: number;
+      previewBootsTornDown: number;
+      previousHeadSha: string | null;
+      headChanged: boolean;
+    }
+  | { kind: "not_found" | "not_confirmed" | "already_attached" }
+  | { kind: "stale_delivery"; superseded: number; previewBootsTornDown: number };
+
+/**
+ * Establish or advance the mutable exact PR tip for one confirmed Acceptance
+ * Record. The historical `headShas` union is append-only, while this pointer,
+ * its immutable provenance event, deterministic review job admission, and
+ * old-head invalidation commit in one advisory-locked transaction.
+ */
+export async function advanceConfirmedAcceptanceRecordPullRequestHead(
+  input: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput
+): Promise<AdvanceConfirmedAcceptanceRecordPullRequestHeadResult> {
+  const expectedPrUrl = `https://github.com/${input.repo}/pull/${input.prNumber}`;
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0 || !EXACT_GITHUB_HEAD_SHA.test(input.headSha)
+    || !ACCEPTANCE_RECORD_HEAD_EVENTS.has(input.event)
+    || !boundedPullRequestProvenanceText(input.deliveryId, 256)
+    || typeof input.admitReviewJob !== "boolean"
+    || input.source !== "github_webhook"
+    || (input.prUrl != null && input.prUrl !== expectedPrUrl)
+    || (input.event === "synchronize"
+      ? input.headTransition === null
+        || !EXACT_GITHUB_HEAD_SHA.test(input.headTransition.beforeHeadSha)
+        || !EXACT_GITHUB_HEAD_SHA.test(input.headTransition.afterHeadSha)
+        || input.headTransition.afterHeadSha !== input.headSha
+      : input.headTransition !== null)) {
+    throw new Error("PR head advance requires bounded exact PR provenance");
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.repo, input.repo),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" };
+
+    const confirmed = await tx.select({
+      id: acceptanceContracts.id,
+      version: acceptanceContracts.version,
+    }).from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, input.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).limit(1);
+    if (!confirmed[0]) return { kind: "not_confirmed" };
+
+    const existingPr = (await tx.select({ id: changeRecords.id }).from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.repo, input.repo),
+      eq(changeRecords.prNumber, input.prNumber),
+    )).limit(1))[0];
+    if ((record.prNumber != null && record.prNumber !== input.prNumber)
+      || (existingPr && existingPr.id !== input.recordId)) {
+      return { kind: "already_attached" };
+    }
+
+    const previousHeadSha = record.currentPrHeadSha;
+    const observedCycleId = acceptanceRecordPullRequestHeadCycleId(input);
+    if (previousHeadSha != null && (
+      !record.currentPrHeadAuthoritative
+      || (previousHeadSha === input.headSha
+        ? input.event !== "ready_for_review" && observedCycleId !== record.currentPrHeadCycleId
+        : input.event !== "synchronize"
+          || input.headTransition === null
+          || input.headTransition.beforeHeadSha !== previousHeadSha)
+    )) {
+      await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: input.recordId,
+        eventKey: `external-pr:head-transition-held:${input.prNumber}:${input.deliveryId}`,
+        stage: "external_pr",
+        actor: "github_webhook",
+        payloadRef: {
+          kind: "external_pr_head_transition_held",
+          currentHeadSha: previousHeadSha,
+          currentHeadCycleId: record.currentPrHeadCycleId,
+          observedHeadSha: input.headSha,
+          event: input.event,
+          deliveryId: input.deliveryId,
+          headTransition: input.headTransition,
+          acceptanceContractVersion: confirmed[0].version,
+        },
+      }]);
+      await tx.update(changeRecords).set({
+        currentPrHeadAuthoritative: false,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+      ));
+      const blocked = Array.from(await tx.execute(sql`
+        UPDATE review_jobs
+        SET state = 'superseded', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND repo = ${input.repo}
+          AND pr_number = ${input.prNumber}
+          AND state IN ('queued', 'running')
+        RETURNING id
+      `));
+      const tornDownBoots = Array.from(await tx.execute(sql`
+        UPDATE preview_boots
+        SET status = 'torn_down', reason = 'acceptance record head transition held', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND repo = ${input.repo}
+          AND pr_number = ${input.prNumber}
+          AND status IN ('pending', 'claimed', 'booting', 'ready')
+        RETURNING id
+      `));
+      return {
+        kind: "stale_delivery",
+        superseded: blocked.length,
+        previewBootsTornDown: tornDownBoots.length,
+      };
+    }
+    const headChanged = previousHeadSha !== input.headSha;
+    const wasAttached = record.prNumber != null;
+    const cycleId = headChanged
+      ? observedCycleId
+      : record.currentPrHeadCycleId;
+    if (!cycleId) {
+      throw new Error("Authoritative PR head is missing its current cycle");
+    }
+    let advanced = record;
+    if (headChanged || !wasAttached) {
+      const rows = await tx.update(changeRecords).set({
+        prNumber: input.prNumber,
+        currentPrHeadSha: input.headSha,
+        currentPrHeadCycleId: cycleId,
+        currentPrHeadAuthoritative: true,
+        headShas: normalizeHeadShas([...record.headShas, input.headSha]),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+      )).returning();
+      advanced = rows[0]!;
+    }
+
+    if (headChanged || !wasAttached) {
+      const eventKey = wasAttached
+        ? `external-pr:head-advanced:${input.prNumber}:${cycleId}`
+        : `external-pr:attached:${input.prNumber}:${cycleId}`;
+      await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: input.recordId,
+        eventKey,
+        stage: "external_pr",
+        actor: input.source,
+        payloadRef: {
+          kind: wasAttached ? "external_pr_head_advanced" : "external_pr_attachment",
+          repo: input.repo,
+          prNumber: input.prNumber,
+          previousHeadSha,
+          headSha: input.headSha,
+          headCycleId: cycleId,
+          event: input.event,
+          deliveryId: input.deliveryId,
+          headTransition: input.headTransition,
+          prUrl: input.prUrl ?? null,
+          acceptanceContractVersion: confirmed[0].version,
+        },
+      }]);
+    }
+
+    const jobId = cycleId;
+    let jobInserted = false;
+    let jobDeduped = false;
+    if (input.admitReviewJob) {
+      const inserted = Array.from(await tx.execute(sql`
+        INSERT INTO review_jobs (
+          id, workspace_id, repo, pr_number, head_sha, event, next_eligible_at
+        )
+        VALUES (
+          ${jobId}, ${input.workspaceId}, ${input.repo}, ${input.prNumber}, ${input.headSha}, ${input.event},
+          CASE WHEN ${input.event} = 'synchronize' THEN now() + interval '60 seconds' ELSE NULL END
+        )
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `));
+      jobInserted = inserted.length === 1;
+      jobDeduped = !jobInserted;
+    }
+
+    let superseded = 0;
+    if (headChanged || jobInserted) {
+      const supersededRows = Array.from(await tx.execute(sql`
+        UPDATE review_jobs
+        SET state = 'superseded', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND repo = ${input.repo}
+          AND pr_number = ${input.prNumber}
+          AND id <> ${jobId}
+          AND state IN ('queued', 'running')
+        RETURNING id
+      `));
+      superseded = supersededRows.length;
+    }
+
+    let previewBootsTornDown = 0;
+    if (headChanged) {
+      const tornDownBoots = Array.from(await tx.execute(sql`
+        UPDATE preview_boots
+        SET status = 'torn_down', reason = 'acceptance record head advanced', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId}
+          AND repo = ${input.repo}
+          AND pr_number = ${input.prNumber}
+          AND status IN ('pending', 'claimed', 'booting', 'ready')
+        RETURNING id
+      `));
+      previewBootsTornDown = tornDownBoots.length;
+    }
+
+    return {
+      kind: "advanced",
+      record: advanced,
+      jobId,
+      jobAdmitted: input.admitReviewJob,
+      deduped: !(headChanged || !wasAttached || jobInserted)
+        && (!input.admitReviewJob || jobDeduped),
+      superseded,
+      previewBootsTornDown,
+      previousHeadSha,
+      headChanged,
+    };
+  });
+}
+
+export type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  /** Exact head observed in the signed terminal GitHub delivery. */
+  headSha: string;
+  event: "closed" | "merged";
+  deliveryId: string;
+  source: "github_webhook";
+};
+
+export type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventResult =
+  | {
+      kind: "invalidated";
+      inserted: boolean;
+      provenanceEventId: string;
+      superseded: number;
+      previewBootsTornDown: number;
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+    }
+  | { kind: "not_found" | "not_confirmed" | "not_attached" };
+
+/**
+ * Fail closed when a signed terminal PR delivery arrives. A merge may report
+ * a head that cannot be chained to the last synchronize delivery, so this
+ * operation deliberately does not promote the observed head or rewrite
+ * immutable history. It only revokes operational authority, terminalizes
+ * active review/preview work, and records why under the same PR lock.
+ */
+export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent(
+  input: InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput
+): Promise<InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventResult> {
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0
+    || !EXACT_GITHUB_HEAD_SHA.test(input.headSha)
+    || !ACCEPTANCE_RECORD_TERMINAL_HEAD_EVENTS.has(input.event)
+    || !boundedPullRequestProvenanceText(input.deliveryId, 256)
+    || input.source !== "github_webhook") {
+    throw new Error("Terminal PR head invalidation requires bounded exact GitHub provenance");
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.repo, input.repo),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" };
+
+    const confirmed = await tx.select({
+      id: acceptanceContracts.id,
+      version: acceptanceContracts.version,
+    }).from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, input.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).limit(1);
+    if (!confirmed[0]) return { kind: "not_confirmed" };
+    if (record.prNumber !== input.prNumber) return { kind: "not_attached" };
+
+    const provenance = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: `external-pr:head-invalidated:${input.prNumber}:${input.deliveryId}`,
+      stage: "external_pr",
+      actor: "github_webhook",
+      payloadRef: {
+        kind: "external_pr_head_invalidated_terminal",
+        repo: input.repo,
+        prNumber: input.prNumber,
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        observedHeadSha: input.headSha,
+        event: input.event,
+        deliveryId: input.deliveryId,
+        acceptanceContractVersion: confirmed[0].version,
+      },
+    }]);
+
+    if (record.currentPrHeadAuthoritative) {
+      await tx.update(changeRecords).set({
+        currentPrHeadAuthoritative: false,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+      ));
+    }
+    const blocked = Array.from(await tx.execute(sql`
+      UPDATE review_jobs
+      SET state = 'superseded', updated_at = now()
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND pr_number = ${input.prNumber}
+        AND state IN ('queued', 'running')
+      RETURNING id
+    `));
+    const tornDownBoots = Array.from(await tx.execute(sql`
+      UPDATE preview_boots
+      SET status = 'torn_down', reason = 'acceptance record PR closed or merged', updated_at = now()
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND pr_number = ${input.prNumber}
+        AND status IN ('pending', 'claimed', 'booting', 'ready')
+      RETURNING id
+    `));
+
+    return {
+      kind: "invalidated",
+      inserted: provenance.events[0]!.inserted,
+      provenanceEventId: provenance.events[0]!.event.id,
+      superseded: blocked.length,
+      previewBootsTornDown: tornDownBoots.length,
+      currentHeadSha: record.currentPrHeadSha,
+      currentHeadCycleId: record.currentPrHeadCycleId,
+    };
+  });
+}
+
+export type CurrentReviewJobNotCurrentReason =
+  | "record_not_current"
+  | "job_not_running";
+
+/** Stable trust-boundary rejection; storage/transport failures use other errors. */
+export class CurrentReviewJobNotCurrentError extends Error {
+  readonly code = "CURRENT_REVIEW_JOB_NOT_CURRENT" as const;
+
+  constructor(readonly reason: CurrentReviewJobNotCurrentReason) {
+    super(reason === "record_not_current"
+      ? "Acceptance Record tuple is not the current PR head"
+      : "Acceptance Record tuple does not own a running review job");
+    this.name = "CurrentReviewJobNotCurrentError";
+  }
+}
+
+export type AppendCurrentReviewJobEventsAtomicallyInput = {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  events: ReadonlyArray<Omit<AppendChangeRecordEventInput, "recordId">>;
+};
+
+/**
+ * Append a post-review reservation/correction batch only while its exact job
+ * still owns the Record's current PR head. A push and an append use the same
+ * advisory lock, so no obsolete-head event can commit after head advancement.
+ */
+export async function appendCurrentReviewJobEventsAtomically(
+  input: AppendCurrentReviewJobEventsAtomicallyInput
+): Promise<AppendChangeRecordEventsAtomicallyResult> {
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0
+    || !EXACT_GITHUB_HEAD_SHA.test(input.headSha) || input.events.length === 0) {
+    throw new Error("Current review job append requires one exact-head event batch");
+  }
+  const events = input.events.map((event) => ({ ...event, recordId: input.recordId }));
+  const eventKeys = new Set<string>();
+  for (const event of events) {
+    if (eventKeys.has(event.eventKey)) {
+      throw new Error("Current review job append does not allow duplicate eventKeys");
+    }
+    eventKeys.add(event.eventKey);
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select({ id: changeRecords.id }).from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.repo, input.repo),
+      eq(changeRecords.prNumber, input.prNumber),
+      eq(changeRecords.currentPrHeadAuthoritative, true),
+      eq(changeRecords.currentPrHeadSha, input.headSha),
+      eq(changeRecords.currentPrHeadCycleId, input.jobId),
+    )).limit(1))[0];
+    if (!record) throw new CurrentReviewJobNotCurrentError("record_not_current");
+
+    const job = (await tx.select({ id: reviewJobs.id }).from(reviewJobs).where(and(
+      eq(reviewJobs.id, input.jobId),
+      eq(reviewJobs.workspaceId, input.workspaceId),
+      eq(reviewJobs.repo, input.repo),
+      eq(reviewJobs.prNumber, input.prNumber),
+      eq(reviewJobs.headSha, input.headSha),
+      eq(reviewJobs.state, "running"),
+    )).limit(1))[0];
+    if (!job) throw new CurrentReviewJobNotCurrentError("job_not_running");
+
+    return appendChangeRecordEventsAtomicallyInTransaction(tx, events);
+  });
+}
+
+export type EnqueueCurrentReviewJobPreviewBootInput = {
+  workspaceId: string;
+  recordId: string;
+  jobId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  ref: string;
+};
+
+/**
+ * Admit one cycle-bound preview boot only while the exact running review job
+ * still owns the authoritative current head. Head advance uses the same lock,
+ * closing the route-check/enqueue race and tearing down prior-cycle boots.
+ */
+export async function enqueueCurrentReviewJobPreviewBoot(
+  input: EnqueueCurrentReviewJobPreviewBootInput
+): Promise<EnqueuePreviewBootResult> {
+  const pullRef = `refs/pull/${input.prNumber}/head`;
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0
+    || !isUuid(input.workspaceId) || !isUuid(input.recordId) || !isUuid(input.jobId)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.headSha)
+    || (input.ref !== input.headSha && input.ref !== pullRef)) {
+    throw new Error("Current review preview boot requires one exact PR ref");
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select({ id: changeRecords.id }).from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.repo, input.repo),
+      eq(changeRecords.prNumber, input.prNumber),
+      eq(changeRecords.currentPrHeadAuthoritative, true),
+      eq(changeRecords.currentPrHeadSha, input.headSha),
+      eq(changeRecords.currentPrHeadCycleId, input.jobId),
+    )).limit(1))[0];
+    if (!record) throw new CurrentReviewJobNotCurrentError("record_not_current");
+
+    const job = (await tx.select({ id: reviewJobs.id }).from(reviewJobs).where(and(
+      eq(reviewJobs.id, input.jobId),
+      eq(reviewJobs.workspaceId, input.workspaceId),
+      eq(reviewJobs.repo, input.repo),
+      eq(reviewJobs.prNumber, input.prNumber),
+      eq(reviewJobs.headSha, input.headSha),
+      eq(reviewJobs.state, "running"),
+    )).limit(1))[0];
+    if (!job) throw new CurrentReviewJobNotCurrentError("job_not_running");
+
+    const id = previewBootId({
+      workspaceId: input.workspaceId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      headSha: input.headSha,
+      cycleId: input.jobId,
+    });
+    const inserted = Array.from(await tx.execute(sql`
+      INSERT INTO preview_boots (id, workspace_id, repo, pr_number, head_sha, ref)
+      VALUES (${id}, ${input.workspaceId}, ${input.repo}, ${input.prNumber}, ${input.headSha}, ${input.ref})
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
+    `));
+    const existing = (await tx.select().from(previewBoots).where(
+      eq(previewBoots.id, id)
+    ).limit(1))[0];
+    if (!existing
+      || existing.workspaceId !== input.workspaceId
+      || existing.repo !== input.repo
+      || existing.prNumber !== input.prNumber
+      || existing.headSha !== input.headSha
+      || existing.ref !== input.ref) {
+      throw new Error("Current review preview boot id is bound to different provenance");
+    }
+
+    const superseded = Array.from(await tx.execute(sql`
+      UPDATE preview_boots
+      SET status = 'torn_down', reason = 'superseded by current Acceptance Record cycle', updated_at = now()
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND pr_number = ${input.prNumber}
+        AND id <> ${id}
+        AND status IN ('pending', 'claimed', 'booting', 'ready')
+      RETURNING id
+    `));
+    return { id, deduped: inserted.length === 0, superseded: superseded.length };
+  });
+}
+
 const OUTCOME_REFERENCE_LIMIT = 1_024;
 const OUTCOME_ENVIRONMENT_LIMIT = 160;
 
@@ -2310,8 +2961,12 @@ async function resolveAcceptanceContextPackCustodyInTransaction(
       eq(changeRecords.id, snapshot.recordId), eq(changeRecords.workspaceId, input.workspaceId),
       eq(changeRecords.repo, snapshot.repo), eq(changeRecords.prNumber, snapshot.prNumber),
     )).limit(1);
-    if (!records[0] || !records[0].headShas.includes(snapshot.expectedHeadSha)) {
-      throw new Error("Context Pack custody Record is not anchored to the exact head");
+    if (!records[0]
+      || !records[0].currentPrHeadAuthoritative
+      || records[0].currentPrHeadSha !== snapshot.expectedHeadSha
+      || records[0].currentPrHeadCycleId !== snapshot.reviewJobId
+      || !records[0].headShas.includes(snapshot.expectedHeadSha)) {
+      throw new Error("Context Pack custody Record head is no longer current");
     }
     const jobs = await tx.select().from(reviewJobs).where(and(
       eq(reviewJobs.id, snapshot.reviewJobId), eq(reviewJobs.workspaceId, input.workspaceId),
@@ -3121,13 +3776,28 @@ export async function resolveAcceptanceCompiledContextPack(
 ): Promise<AcceptanceCompiledContextPackRow | null> {
   if (!isUuid(input?.workspaceId) || !isUuid(input?.sourceSnapshotId)
     || !isPackText(input?.compilerVersion, 128) || !isPackText(input?.policyVersion, 128)) return null;
-  const rows = await db.select().from(acceptanceCompiledContextPacks).where(and(
-    eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
-    eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
-    eq(acceptanceCompiledContextPacks.compilerVersion, input.compilerVersion),
-    eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
-  )).limit(1);
-  return rows[0] ?? null;
+  const rows = await db.select({ pack: acceptanceCompiledContextPacks })
+    .from(acceptanceCompiledContextPacks)
+    .innerJoin(
+      acceptanceContextPackSnapshots,
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, acceptanceContextPackSnapshots.id)
+    )
+    .innerJoin(changeRecords, and(
+      eq(changeRecords.id, acceptanceContextPackSnapshots.recordId),
+      eq(changeRecords.workspaceId, acceptanceCompiledContextPacks.workspaceId),
+      eq(changeRecords.repo, acceptanceContextPackSnapshots.repo),
+      eq(changeRecords.prNumber, acceptanceContextPackSnapshots.prNumber),
+      eq(changeRecords.currentPrHeadAuthoritative, true),
+      eq(changeRecords.currentPrHeadSha, acceptanceContextPackSnapshots.expectedHeadSha),
+      eq(changeRecords.currentPrHeadCycleId, acceptanceContextPackSnapshots.reviewJobId),
+    ))
+    .where(and(
+      eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
+      eq(acceptanceCompiledContextPacks.compilerVersion, input.compilerVersion),
+      eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
+    )).limit(1);
+  return rows[0]?.pack ?? null;
 }
 
 /** Closed, metadata-only identity for one exact review-job/head Context Pack snapshot. */
@@ -3244,8 +3914,12 @@ export async function recordAcceptanceContextPackSnapshot(
       eq(changeRecords.prNumber, input.prNumber),
     )).limit(1);
     const record = records[0];
-    if (!record || !record.headShas.includes(input.expectedHeadSha)) {
-      throw new Error("Context Pack snapshot Record is not anchored to the exact head");
+    if (!record
+      || !record.currentPrHeadAuthoritative
+      || record.currentPrHeadSha !== input.expectedHeadSha
+      || record.currentPrHeadCycleId !== input.reviewJobId
+      || !record.headShas.includes(input.expectedHeadSha)) {
+      throw new Error("Context Pack snapshot Record head is not current");
     }
     const jobs = await tx.select().from(reviewJobs).where(and(
       eq(reviewJobs.id, input.reviewJobId),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import {
   buildReviewJobUiAttempt,
@@ -13,6 +14,7 @@ import {
 } from "./review-job-ui-execution";
 
 const HEAD_SHA = "a".repeat(40);
+const BOOT_ID = previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD_SHA, cycleId: "job-1" });
 function proof(): ExactReviewJobProof {
   const plan = {
     criterionId: "AC-UI",
@@ -38,7 +40,7 @@ function proof(): ExactReviewJobProof {
 
 function boot() {
   return {
-    id: "boot-1", workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42,
+    id: BOOT_ID, workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42,
     headSha: HEAD_SHA, status: "ready", url: "https://preview.example.test/filters",
   };
 }
@@ -66,7 +68,7 @@ describe("review-job UI execution custody helpers", () => {
 
     expect(buildReviewJobUiAttempt({ proof: current, plan, boot: boot() })).toMatchObject({
       kind: "review_job_ui_execution_attempt", jobId: "job-1", criterionId: "AC-UI",
-      previewBootId: "boot-1", previewUrl: "https://preview.example.test/filters", uiSteps: plan.uiSteps,
+      previewBootId: BOOT_ID, previewUrl: "https://preview.example.test/filters", uiSteps: plan.uiSteps,
     });
 
     for (const change of [
@@ -80,6 +82,7 @@ describe("review-job UI execution custody helpers", () => {
     for (const alteredBoot of [
       { ...boot(), status: "building" },
       { ...boot(), headSha: "b".repeat(40) },
+      { ...boot(), id: previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD_SHA, cycleId: "job-old-cycle" }) },
       { ...boot(), url: null },
     ]) {
       expect(buildReviewJobUiAttempt({ proof: current, plan, boot: alteredBoot })).toBeNull();

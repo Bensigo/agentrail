@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -130,13 +131,23 @@ export async function POST(
       { status: 409 },
     );
   try {
-    const recorded = await appendChangeRecordEvent({
+    const result = await appendCurrentReviewJobEventsAtomically({
+      workspaceId: proof.job.workspaceId,
       recordId: proof.timeline.record.id,
-      eventKey,
-      stage: REVIEW_JOB_DATA_STAGE,
-      actor: REVIEW_JOB_DATA_ACTOR,
-      payloadRef: attempt,
+      jobId: proof.job.id,
+      repo: proof.job.repo,
+      prNumber: proof.job.prNumber,
+      headSha: proof.job.headSha,
+      events: [
+        {
+          eventKey,
+          stage: REVIEW_JOB_DATA_STAGE,
+          actor: REVIEW_JOB_DATA_ACTOR,
+          payloadRef: attempt,
+        },
+      ],
     });
+    const recorded = result.events[0]!;
     if (
       !recorded.inserted ||
       !isDeepStrictEqual(recorded.event.payloadRef, attempt)
@@ -145,7 +156,12 @@ export async function POST(
         { error: "data execution is already reserved; replay is held" },
         { status: 409 },
       );
-  } catch {
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError)
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 },
+      );
     return NextResponse.json(
       { error: "could not reserve the data execution" },
       { status: 503 },

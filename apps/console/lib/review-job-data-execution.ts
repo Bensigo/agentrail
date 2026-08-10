@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import { REDACTION_PLACEHOLDER } from "./secret-scan";
 import {
@@ -239,6 +240,13 @@ export function buildReviewJobDataAttempt(input: {
     input.boot.repo !== input.proof.job.repo ||
     input.boot.prNumber !== input.proof.job.prNumber ||
     input.boot.headSha !== input.proof.job.headSha ||
+    input.boot.id !== previewBootId({
+      workspaceId: input.proof.job.workspaceId,
+      repo: input.proof.job.repo,
+      prNumber: input.proof.job.prNumber,
+      headSha: input.proof.job.headSha,
+      cycleId: input.proof.job.id,
+    }) ||
     input.boot.status !== "ready" ||
     !previewUrl
   )

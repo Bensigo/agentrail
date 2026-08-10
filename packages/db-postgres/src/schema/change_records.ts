@@ -1,4 +1,5 @@
 import {
+  boolean,
   check,
   index,
   integer,
@@ -49,6 +50,18 @@ export const changeRecords = pgTable(
       .default([]),
     issueNumber: integer("issue_number"),
     prNumber: integer("pr_number"),
+    /**
+     * Mutable exact tip for the attached PR. `headShas` remains the immutable
+     * historical union; exact-head operations must use this pointer instead
+     * of treating any historical member as current.
+     */
+    currentPrHeadSha: text("current_pr_head_sha"),
+    /** UUID for the current occurrence of a head, distinct across SHA revisits. */
+    currentPrHeadCycleId: uuid("current_pr_head_cycle_id"),
+    /** Fail-closed authority bit for operational exact-head consumers. */
+    currentPrHeadAuthoritative: boolean("current_pr_head_authoritative")
+      .notNull()
+      .default(false),
     headShas: text("head_shas").array().notNull().default([]),
     mergedSha: text("merged_sha"),
     state: text("state").notNull().default("open"),
@@ -72,6 +85,21 @@ export const changeRecords = pgTable(
     workspaceRepoIdx: index("change_records_workspace_repo_idx").on(
       t.workspaceId,
       t.repo
+    ),
+    currentPrHeadHistoryCheck: check(
+      "change_records_current_pr_head_history_check",
+      sql`(
+        ${t.currentPrHeadSha} IS NULL OR (
+          ${t.currentPrHeadSha} ~ '^[A-Fa-f0-9]{40}$'
+          AND ${t.currentPrHeadSha} = ANY(${t.headShas})
+        )
+      ) AND (
+        (${t.currentPrHeadSha} IS NULL) = (${t.currentPrHeadCycleId} IS NULL)
+      ) AND (
+        NOT ${t.currentPrHeadAuthoritative} OR (
+          ${t.currentPrHeadSha} IS NOT NULL AND ${t.currentPrHeadCycleId} IS NOT NULL
+        )
+      )`
     ),
   })
 );

@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "util";
 import { NextRequest, NextResponse } from "next/server";
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getReviewJobById,
   readAcceptanceContracts,
@@ -39,14 +40,16 @@ function parseBody(raw: unknown): { eveSessionId: string; plans: unknown[] } | n
 }
 
 function exactTimeline(
-  job: { workspaceId: string; repo: string; prNumber: number; headSha: string },
+  job: { id: string; workspaceId: string; repo: string; prNumber: number; headSha: string },
   timeline: Awaited<ReturnType<typeof readChangeRecordTimelineByPr>>
 ): timeline is NonNullable<typeof timeline> {
   return !!timeline &&
     timeline.record.workspaceId === job.workspaceId &&
     timeline.record.repo === job.repo &&
     timeline.record.prNumber === job.prNumber &&
-    timeline.record.headShas.includes(job.headSha);
+    timeline.record.currentPrHeadSha === job.headSha &&
+    timeline.record.currentPrHeadCycleId === job.id &&
+    timeline.record.currentPrHeadAuthoritative === true;
 }
 
 /** Persist one immutable safe-environment choice for every confirmed criterion. */
@@ -144,13 +147,39 @@ export async function POST(
     });
   }
 
-  const recorded = await appendChangeRecordEvent({
-    recordId: timeline.record.id,
-    eventKey,
-    stage: REVIEW_JOB_VERIFICATION_PLAN_STAGE,
-    actor: REVIEW_JOB_VERIFICATION_PLAN_ACTOR,
-    payloadRef: built.value,
-  });
+  let recorded: Awaited<
+    ReturnType<typeof appendCurrentReviewJobEventsAtomically>
+  >["events"][number];
+  try {
+    const result = await appendCurrentReviewJobEventsAtomically({
+      workspaceId: job.workspaceId,
+      recordId: timeline.record.id,
+      jobId: job.id,
+      repo: job.repo,
+      prNumber: job.prNumber,
+      headSha: job.headSha,
+      events: [
+        {
+          eventKey,
+          stage: REVIEW_JOB_VERIFICATION_PLAN_STAGE,
+          actor: REVIEW_JOB_VERIFICATION_PLAN_ACTOR,
+          payloadRef: built.value,
+        },
+      ],
+    });
+    recorded = result.events[0]!;
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError) {
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json(
+      { error: "could not record the verification plan" },
+      { status: 503 },
+    );
+  }
   if (!isDeepStrictEqual(recorded.event.payloadRef, built.value)) {
     return NextResponse.json(
       { error: "verification plan is immutable for this review job" },

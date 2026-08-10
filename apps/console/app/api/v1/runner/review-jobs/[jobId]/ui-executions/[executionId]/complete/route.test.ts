@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({ appendChangeRecordEvent: vi.fn(), getJaceSessionByEveSessionId: vi.fn(), getPreviewBoot: vi.fn() }));
+vi.mock("@agentrail/db-postgres", () => ({ appendChangeRecordEvent: vi.fn(), appendCurrentReviewJobEventsAtomically: vi.fn(), CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {}, previewBootId: vi.fn(() => "boot-1"), getJaceSessionByEveSessionId: vi.fn(), getPreviewBoot: vi.fn() }));
 vi.mock("../../../../../../../../../lib/review-job-proof-attestation", () => ({ resolveCurrentReviewJobPlan: vi.fn() }));
 vi.mock("../../../../../../../../../lib/artifacts/store", () => ({ artifactKey: vi.fn(() => "review-evidence/exact.png"), putArtifact: vi.fn(), signedGetUrl: vi.fn(), storageConfigured: vi.fn() }));
 
-import { appendChangeRecordEvent, getJaceSessionByEveSessionId, getPreviewBoot } from "@agentrail/db-postgres";
+import { appendChangeRecordEvent, appendCurrentReviewJobEventsAtomically, CurrentReviewJobNotCurrentError, getJaceSessionByEveSessionId, getPreviewBoot } from "@agentrail/db-postgres";
 import { artifactKey, putArtifact, signedGetUrl, storageConfigured } from "../../../../../../../../../lib/artifacts/store";
 import { type ExactReviewJobProof, resolveCurrentReviewJobPlan } from "../../../../../../../../../lib/review-job-proof-attestation";
 import { buildReviewJobUiAttempt, buildReviewJobUiResult, buildReviewJobUiScreenshotReservation, reviewJobUiAttemptEventKey, reviewJobUiResultEventKey, reviewJobUiScreenshotReservationEventKey } from "../../../../../../../../../lib/review-job-ui-execution";
@@ -46,6 +46,7 @@ beforeEach(() => {
   const bound = boundProof(); vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(bound.current as never); vi.mocked(getPreviewBoot).mockResolvedValue(preview() as never);
   vi.mocked(putArtifact).mockResolvedValue(undefined); vi.mocked(signedGetUrl).mockResolvedValue("https://evidence.example.test/signed" as never);
   vi.mocked(appendChangeRecordEvent).mockImplementation(async (input) => ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never);
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(async (input) => ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never);
 });
 afterEach(() => { for (const [key, value] of Object.entries(ORIGINAL_ENV)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
 
@@ -92,15 +93,16 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/ui-executions/[executionId]/co
     const response = await POST(request(body({ assertionPassed: false }), bound.attempt.executionId), params(bound.attempt.executionId));
     expect(response.status).toBe(201);
     expect(putArtifact).toHaveBeenCalledWith("review-evidence/exact.png", expect.any(Buffer), "image/png");
-    const reservation = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0];
+    const reservationCall = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0];
+    const reservation = reservationCall.events[0]!;
     expect(reservation).toMatchObject({
-      recordId: "record-1",
       eventKey: reviewJobUiScreenshotReservationEventKey({ proof: bound.current, plan: bound.plan }),
       stage: "verification",
       actor: "jace:review-ui-executor",
       payloadRef: { kind: "review_job_ui_screenshot_upload_reservation", result: { ...result, contentSha256: expect.any(String) } },
     });
-    const stored = vi.mocked(appendChangeRecordEvent).mock.calls[1]![0];
+    expect(reservationCall).toMatchObject({ workspaceId: "ws-1", recordId: "record-1", jobId: "job-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD_SHA });
+    const stored = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0];
     expect(stored).toMatchObject({ recordId: "record-1", eventKey: reviewJobUiResultEventKey({ proof: bound.current, plan: bound.plan }), stage: "verification", actor: "jace:review-ui-executor" });
     expect(stored.payloadRef).toMatchObject({ ...result, contentSha256: expect.any(String) });
     expect((await response.json()).state).toBe("failed");
@@ -137,33 +139,49 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/ui-executions/[executionId]/co
 
   it("reserves the exact screenshot before storage and rejects a competing payload without writing bytes", async () => {
     const bound = boundProof();
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({
-      event: { payloadRef: { kind: "review_job_ui_screenshot_upload_reservation", result: { artifactKey: "competing.png" } } },
-      inserted: false,
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({
+      events: [{ event: { payloadRef: { kind: "review_job_ui_screenshot_upload_reservation", result: { artifactKey: "competing.png" } } }, inserted: false }],
     } as never);
 
     const response = await POST(request(body(), bound.attempt.executionId), params(bound.attempt.executionId));
 
     expect(response.status).toBe(409);
     expect(putArtifact).not.toHaveBeenCalled();
-    expect(appendChangeRecordEvent).toHaveBeenCalledTimes(1);
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(1);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
   });
 
   it("reports store, receipt, and signing failures without claiming success", async () => {
     const bound = boundProof();
-    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(new Error("reservation down"));
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(new Error("reservation down"));
     expect((await POST(request(body(), bound.attempt.executionId), params(bound.attempt.executionId))).status).toBe(503);
     expect(putArtifact).not.toHaveBeenCalled();
 
     vi.mocked(putArtifact).mockRejectedValueOnce(new Error("store down"));
     expect((await POST(request(body(), bound.attempt.executionId), params(bound.attempt.executionId))).status).toBe(500);
 
-    vi.mocked(appendChangeRecordEvent)
-      .mockImplementationOnce(async (input) => ({ event: { payloadRef: input.payloadRef }, inserted: false }) as never)
-      .mockRejectedValueOnce(new Error("receipt down"));
+    vi.mocked(appendCurrentReviewJobEventsAtomically)
+      .mockImplementationOnce(async (input) => ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: false }] }) as never);
+    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(new Error("receipt down"));
     expect((await POST(request(body(), bound.attempt.executionId), params(bound.attempt.executionId))).status).toBe(503);
 
     vi.mocked(signedGetUrl).mockRejectedValueOnce(new Error("sign down"));
     expect((await POST(request(body(), bound.attempt.executionId), params(bound.attempt.executionId))).status).toBe(500);
+  });
+
+  it("returns 409 without storing bytes when a head advance wins before custody", async () => {
+    const bound = boundProof();
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
+      new CurrentReviewJobNotCurrentError("record_not_current")
+    );
+
+    const response = await POST(
+      request(body(), bound.attempt.executionId),
+      params(bound.attempt.executionId)
+    );
+
+    expect(response.status).toBe(409);
+    expect(putArtifact).not.toHaveBeenCalled();
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -11,7 +13,8 @@ vi.mock("../../../../../../../../lib/review-job-proof-attestation", () => ({
 }));
 
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -105,9 +108,9 @@ beforeEach(() => {
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(session() as never);
   vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(proof() as never);
   vi.mocked(getPreviewBoot).mockResolvedValue(boot() as never);
-  vi.mocked(appendChangeRecordEvent).mockImplementation(
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
     async (input) =>
-      ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
   );
 });
 afterEach(() => {
@@ -143,10 +146,18 @@ describe("API execution start", () => {
       executionId: attempt.executionId,
       apiRequest: { method: "GET", path: "/health", expectedStatus: 200 },
     });
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith(
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventKey: reviewJobApiAttemptEventKey({ proof: current, plan }),
-        payloadRef: attempt,
+        workspaceId: "ws-1",
+        recordId: "record-1",
+        jobId: "job-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha,
+        events: [expect.objectContaining({
+          eventKey: reviewJobApiAttemptEventKey({ proof: current, plan }),
+          payloadRef: attempt,
+        })],
       }),
     );
   });
@@ -184,7 +195,7 @@ describe("API execution start", () => {
       vi.mocked(getPreviewBoot).mockResolvedValue(invalidBoot as never);
       expect((await POST(request(body), params)).status).toBe(409);
     }
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
   it("holds both historical and racing attempt reservations, and surfaces an append outage", async () => {
     const current = proof();
@@ -193,14 +204,27 @@ describe("API execution start", () => {
     current.timeline.events = [eventless(reviewJobApiAttemptEventKey({ proof: current, plan }), attempt)];
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValueOnce(current as never);
     expect((await POST(request(body), params)).status).toBe(409);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
 
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(proof() as never);
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({ event: { payloadRef: attempt }, inserted: false } as never);
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({ events: [{ event: { payloadRef: attempt }, inserted: false }] } as never);
     expect((await POST(request(body), params)).status).toBe(409);
 
-    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(new Error("ledger down"));
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(new Error("ledger down"));
     expect((await POST(request(body), params)).status).toBe(503);
+  });
+
+  it("returns 409 when a head advance wins immediately before attempt custody", async () => {
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
+      new CurrentReviewJobNotCurrentError("record_not_current"),
+    );
+
+    const response = await POST(request(body), params);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "review job is no longer current for this pull request head",
+    });
   });
 });
 

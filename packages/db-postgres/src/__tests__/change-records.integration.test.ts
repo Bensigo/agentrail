@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
+import { readFile } from "node:fs/promises";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { repositories } from "../schema/repositories.js";
@@ -13,11 +14,16 @@ import {
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
+  changeRecords,
 } from "../schema/change_records.js";
+import { reviewJobs } from "../schema/review_jobs.js";
+import { previewBoots } from "../schema/preview_boots.js";
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
   appendChangeRecordEventsAtomically,
+  appendCurrentReviewJobEventsAtomically,
+  acceptanceRecordPullRequestHeadCycleId,
   acceptanceContextPackCustodyBaseIndexRevisionSha256,
   acceptanceContextPackCustodyOverlayManifestSha256,
   acceptanceContextOverlayHeadRangeCoordinateSha256,
@@ -29,6 +35,9 @@ import {
   reviewJobCorrectionPacketId,
   wikiPageBodySha256,
   attachConfirmedAcceptanceRecordToExternalPullRequest,
+  advanceConfirmedAcceptanceRecordPullRequestHead,
+  invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  enqueueCurrentReviewJobPreviewBoot,
   changeRecordId,
   createDraftAcceptanceContract,
   createDraftAcceptanceRecord,
@@ -44,10 +53,11 @@ import {
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   readAcceptanceContracts,
+  readChangeRecordByPr,
   readChangeRecordTimeline,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
-import { enqueueReviewJob } from "../queries/review_jobs.js";
+import { previewBootId } from "../queries/preview_boots.js";
 import {
   recordApprovalRequest,
   resolveAcceptanceContractApproval,
@@ -77,6 +87,19 @@ const DB_AVAILABLE: boolean = await (async () => {
                  WHERE table_schema = 'public' AND table_name = 'acceptance_compiled_context_packs'
                    AND column_name = 'exact_head_dependency_tree_proofs'
                ) AS acceptance_compiled_context_pack_tree_proofs,
+               EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'change_records'
+                   AND column_name = 'current_pr_head_sha'
+               ) AND EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'change_records'
+                   AND column_name = 'current_pr_head_authoritative'
+               ) AND EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'change_records'
+                   AND column_name = 'current_pr_head_cycle_id'
+               ) AS change_record_current_pr_head,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
       `)
@@ -89,6 +112,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_compiled_context_packs: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
+      change_record_current_pr_head: boolean;
       acceptance_intakes: string | null;
       acceptance_intake_messages: string | null;
     }>;
@@ -101,6 +125,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
+      rows[0]?.change_record_current_pr_head === true &&
       rows[0]?.acceptance_intakes === "acceptance_intakes" &&
       rows[0]?.acceptance_intake_messages === "acceptance_intake_messages"
     );
@@ -143,6 +168,50 @@ describe.skipIf(!DB_AVAILABLE)(
 
     afterEach(async () => {
       await db.delete(workspaces).where(eq(workspaces.id, wsId));
+    });
+
+    it("executes the exact 0088 legacy-preview teardown statement against Postgres", async () => {
+      const migration = await readFile(new URL(
+        "../../drizzle/migrations/0088_change_records_current_pr_head.sql",
+        import.meta.url
+      ), "utf8");
+      const start = migration.indexOf('UPDATE "preview_boots"');
+      const end = migration.indexOf(";", start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const teardownStatement = migration.slice(start, end + 1);
+
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          CREATE TEMP TABLE "preview_boots" (
+            id text PRIMARY KEY,
+            status text NOT NULL,
+            reason text,
+            updated_at timestamptz NOT NULL DEFAULT now()
+          ) ON COMMIT DROP
+        `);
+        await tx.execute(sql`
+          INSERT INTO "preview_boots" (id, status) VALUES
+            ('pending', 'pending'),
+            ('claimed', 'claimed'),
+            ('booting', 'booting'),
+            ('ready', 'ready'),
+            ('failed', 'failed')
+        `);
+        await tx.execute(sql.raw(teardownStatement));
+        const rows = Array.from(await tx.execute(sql`
+          SELECT id, status, reason FROM "preview_boots" ORDER BY id
+        `)) as Array<{ id: string; status: string; reason: string | null }>;
+        const activeBeforeMigration = rows.filter((row) => row.id !== "failed");
+        expect(activeBeforeMigration).toHaveLength(4);
+        expect(activeBeforeMigration.every((row) =>
+          row.status === "torn_down"
+          && row.reason === "current Acceptance Record cycle unavailable after migration"
+        )).toBe(true);
+        expect(rows.find((row) => row.id === "failed")).toMatchObject({
+          status: "failed", reason: null,
+        });
+      });
     });
 
     it("find-or-create is deterministic and idempotent for an issue anchor", async () => {
@@ -204,12 +273,28 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(attached).toMatchObject({
         kind: "attached",
         inserted: true,
-        record: { id: draft.record.id, prNumber: 42, headShas: ["abc123def4567890"] },
+        record: {
+          id: draft.record.id,
+          prNumber: 42,
+          currentPrHeadSha: null,
+          currentPrHeadAuthoritative: false,
+          headShas: ["abc123def4567890"],
+        },
       });
       await expect(attachConfirmedAcceptanceRecordToExternalPullRequest(input)).resolves.toMatchObject({
         kind: "attached",
         inserted: false,
       });
+      await expect(readChangeRecordByPr({
+        workspaceId: wsId, repo: "acme/widgets", prNumber: 42,
+      })).resolves.toMatchObject({ id: draft.record.id, prNumber: 42 });
+      await expect(readChangeRecordByPr({
+        workspaceId: randomUUID(), repo: "acme/widgets", prNumber: 42,
+      })).resolves.toBeNull();
+      await expect(attachConfirmedAcceptanceRecordToExternalPullRequest({
+        ...input,
+        headSha: "def456abc1237890",
+      })).resolves.toEqual({ kind: "head_advance_required" });
 
       const other = await createDraftAcceptanceRecord({
         workspaceId: wsId,
@@ -226,6 +311,532 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(
         attachConfirmedAcceptanceRecordToExternalPullRequest({ ...input, recordId: other.record.id })
       ).resolves.toEqual({ kind: "already_attached" });
+    });
+
+    it("advances one confirmed PR head atomically and invalidates queued and running older heads", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "atomic-pr-head-advance",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+
+      const firstHead = "a".repeat(40);
+      const secondHead = "b".repeat(40);
+      const first = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 44,
+        headSha: firstHead, event: "opened", deliveryId: "delivery-head-a",
+        admitReviewJob: true,
+        headTransition: null,
+        source: "github_webhook", prUrl: "https://github.com/acme/widgets/pull/44",
+      });
+      expect(first).toMatchObject({
+        kind: "advanced", jobAdmitted: true, deduped: false, superseded: 0,
+        previousHeadSha: null, headChanged: true,
+        record: {
+          currentPrHeadSha: firstHead,
+          currentPrHeadAuthoritative: true,
+          headShas: [firstHead],
+        },
+      });
+      if (first.kind !== "advanced") throw new Error("expected first head advance");
+      await db.update(reviewJobs).set({ state: "running", claimedBy: "worker:one", claimedAt: new Date() })
+        .where(eq(reviewJobs.id, first.jobId));
+
+      const secondInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 44,
+        headSha: secondHead, event: "synchronize" as const, deliveryId: "delivery-head-b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: firstHead, afterHeadSha: secondHead },
+        source: "github_webhook" as const, prUrl: "https://github.com/acme/widgets/pull/44",
+      };
+      const second = await advanceConfirmedAcceptanceRecordPullRequestHead(secondInput);
+      expect(second).toMatchObject({
+        kind: "advanced", jobAdmitted: true, deduped: false, superseded: 1,
+        previousHeadSha: firstHead, headChanged: true,
+        record: { currentPrHeadSha: secondHead, headShas: [firstHead, secondHead] },
+      });
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, first.jobId)))[0]?.state)
+        .toBe("superseded");
+
+      const replay = await advanceConfirmedAcceptanceRecordPullRequestHead(secondInput);
+      expect(replay).toMatchObject({
+        kind: "advanced", deduped: true, superseded: 0,
+        previousHeadSha: secondHead, headChanged: false,
+      });
+      const provenance = await db.select().from(changeRecordEvents)
+        .where(eq(changeRecordEvents.recordId, draft.record.id));
+      expect(provenance).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          eventKey: `external-pr:attached:44:${first.jobId}`,
+          payloadRef: expect.objectContaining({
+            kind: "external_pr_attachment", previousHeadSha: null,
+            event: "opened", deliveryId: "delivery-head-a",
+          }),
+        }),
+        expect.objectContaining({
+          eventKey: `external-pr:head-advanced:44:${second.kind === "advanced" ? second.jobId : "missing"}`,
+          payloadRef: expect.objectContaining({
+            kind: "external_pr_head_advanced", previousHeadSha: firstHead,
+            event: "synchronize", deliveryId: "delivery-head-b",
+          }),
+        }),
+      ]));
+      expect(provenance.filter((event) =>
+        event.eventKey === `external-pr:head-advanced:44:${second.kind === "advanced" ? second.jobId : "missing"}`
+      )).toHaveLength(1);
+
+      const delayedOldHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        ...secondInput,
+        headSha: firstHead,
+        deliveryId: "delivery-delayed-old-head",
+        headTransition: { beforeHeadSha: "9".repeat(40), afterHeadSha: firstHead },
+      });
+      expect(delayedOldHead).toEqual({
+        kind: "stale_delivery", superseded: 1, previewBootsTornDown: 0,
+      });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({
+          currentPrHeadSha: secondHead,
+          currentPrHeadAuthoritative: false,
+          headShas: [firstHead, secondHead],
+        });
+      if (second.kind !== "advanced") throw new Error("expected second head advance");
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, second.jobId)))[0]?.state)
+        .toBe("superseded");
+      const heldEvents = await db.select().from(changeRecordEvents).where(
+        eq(changeRecordEvents.recordId, draft.record.id)
+      );
+      expect(heldEvents).toEqual(expect.arrayContaining([expect.objectContaining({
+        eventKey: "external-pr:head-transition-held:44:delivery-delayed-old-head",
+        payloadRef: {
+          kind: "external_pr_head_transition_held",
+          currentHeadSha: secondHead,
+          currentHeadCycleId: second.jobId,
+          observedHeadSha: firstHead,
+          event: "synchronize",
+          deliveryId: "delivery-delayed-old-head",
+          headTransition: { beforeHeadSha: "9".repeat(40), afterHeadSha: firstHead },
+          acceptanceContractVersion: 1,
+        },
+      })]));
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+        ...secondInput,
+        event: "ready_for_review",
+        deliveryId: "delivery-blocked-same-head-ready",
+        headTransition: null,
+      })).resolves.toEqual({
+        kind: "stale_delivery", superseded: 0, previewBootsTornDown: 0,
+      });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({ currentPrHeadSha: secondHead, currentPrHeadAuthoritative: false });
+    });
+
+    it("invalidates a draft synchronize without admitting work, then admits the same head when ready", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "draft-head-invalidation",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const firstHead = "1".repeat(40);
+      const draftHead = "2".repeat(40);
+      const first = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 46,
+        headSha: firstHead, event: "opened", deliveryId: "delivery-before-draft",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
+      });
+      if (first.kind !== "advanced") throw new Error("expected initial review admission");
+      await db.update(reviewJobs).set({ state: "running", claimedBy: "worker:draft", claimedAt: new Date() })
+        .where(eq(reviewJobs.id, first.jobId));
+
+      const draftInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 46,
+        headSha: draftHead, event: "synchronize" as const, deliveryId: "delivery-draft-head",
+        admitReviewJob: false,
+        headTransition: { beforeHeadSha: firstHead, afterHeadSha: draftHead },
+        source: "github_webhook" as const,
+      };
+      const advancedDraft = await advanceConfirmedAcceptanceRecordPullRequestHead(draftInput);
+      expect(advancedDraft).toMatchObject({
+        kind: "advanced", jobAdmitted: false, deduped: false, superseded: 1,
+        previousHeadSha: firstHead, headChanged: true,
+        record: { currentPrHeadSha: draftHead, currentPrHeadAuthoritative: true },
+      });
+      if (advancedDraft.kind !== "advanced") throw new Error("expected draft head advance");
+      expect(await db.select().from(reviewJobs).where(eq(reviewJobs.id, advancedDraft.jobId)))
+        .toHaveLength(0);
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead(draftInput)).resolves.toMatchObject({
+        kind: "advanced", jobAdmitted: false, deduped: true, superseded: 0,
+      });
+
+      const readyInput = {
+        ...draftInput,
+        event: "ready_for_review" as const,
+        deliveryId: "delivery-ready-head",
+        admitReviewJob: true,
+        headTransition: null,
+      };
+      const ready = await advanceConfirmedAcceptanceRecordPullRequestHead(readyInput);
+      expect(ready).toMatchObject({
+        kind: "advanced", jobAdmitted: true, deduped: false, superseded: 0,
+        previousHeadSha: draftHead, headChanged: false,
+      });
+      if (ready.kind !== "advanced") throw new Error("expected ready review admission");
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, ready.jobId)))[0])
+        .toMatchObject({ headSha: draftHead, event: "ready_for_review", state: "queued" });
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead(readyInput)).resolves.toMatchObject({
+        kind: "advanced", jobAdmitted: true, deduped: true, superseded: 0,
+      });
+    });
+
+    it("atomically revokes exact-head authority and active work on a signed merged delivery", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "terminal-head-invalidation",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const currentHead = "d".repeat(40);
+      const observedMergeHead = "e".repeat(40);
+      const advanced = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha: currentHead, event: "opened", deliveryId: "terminal-before-merge",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
+      });
+      if (advanced.kind !== "advanced") throw new Error("expected terminal test head admission");
+      await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, advanced.jobId));
+      const boot = await enqueueCurrentReviewJobPreviewBoot({
+        workspaceId: wsId, recordId: draft.record.id, jobId: advanced.jobId,
+        repo: "acme/widgets", prNumber: 43, headSha: currentHead, ref: "refs/pull/43/head",
+      });
+      await db.update(previewBoots).set({
+        status: "ready", url: "http://terminal-preview.test", port: 3100,
+      }).where(eq(previewBoots.id, boot.id));
+
+      const input = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha: observedMergeHead, event: "merged" as const,
+        deliveryId: "terminal-merged-delivery", source: "github_webhook" as const,
+      };
+      const invalidated = await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent(input);
+      expect(invalidated).toMatchObject({
+        kind: "invalidated", inserted: true, superseded: 1, previewBootsTornDown: 1,
+        currentHeadSha: currentHead, currentHeadCycleId: advanced.jobId,
+      });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({
+          currentPrHeadSha: currentHead,
+          currentPrHeadCycleId: advanced.jobId,
+          currentPrHeadAuthoritative: false,
+          headShas: [currentHead],
+        });
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, advanced.jobId)))[0]?.state)
+        .toBe("superseded");
+      expect((await db.select().from(previewBoots).where(eq(previewBoots.id, boot.id)))[0])
+        .toMatchObject({ status: "torn_down", reason: "acceptance record PR closed or merged" });
+      expect((await db.select().from(changeRecordEvents).where(
+        eq(changeRecordEvents.id, invalidated.kind === "invalidated" ? invalidated.provenanceEventId : randomUUID())
+      ))[0]).toMatchObject({
+        eventKey: "external-pr:head-invalidated:43:terminal-merged-delivery",
+        payloadRef: {
+          kind: "external_pr_head_invalidated_terminal",
+          repo: "acme/widgets",
+          prNumber: 43,
+          currentHeadSha: currentHead,
+          currentHeadCycleId: advanced.jobId,
+          observedHeadSha: observedMergeHead,
+          event: "merged",
+          deliveryId: "terminal-merged-delivery",
+          acceptanceContractVersion: 1,
+        },
+      });
+      await expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent(input))
+        .resolves.toMatchObject({
+          kind: "invalidated", inserted: false, superseded: 0, previewBootsTornDown: 0,
+          currentHeadSha: currentHead, currentHeadCycleId: advanced.jobId,
+        });
+    });
+
+    it("creates a fresh cycle, event, and job for every repeated-SHA transition", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "repeated-sha-cycles",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "a".repeat(40);
+      const headB = "b".repeat(40);
+      const headC = "c".repeat(40);
+      const advance = async (input: {
+        headSha: string;
+        event: "opened" | "synchronize";
+        deliveryId: string;
+        beforeHeadSha: string | null;
+      }) => {
+        const headTransition = input.beforeHeadSha === null ? null : {
+          beforeHeadSha: input.beforeHeadSha,
+          afterHeadSha: input.headSha,
+        };
+        const result = await advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 48,
+          headSha: input.headSha, event: input.event, deliveryId: input.deliveryId,
+          admitReviewJob: true, headTransition, source: "github_webhook",
+        });
+        if (result.kind !== "advanced") throw new Error(`expected ${input.deliveryId} advance`);
+        expect(result.jobId).toBe(acceptanceRecordPullRequestHeadCycleId({
+          workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 48,
+          headSha: input.headSha, event: input.event, deliveryId: input.deliveryId, headTransition,
+        }));
+        return result;
+      };
+
+      const a1 = await advance({ headSha: headA, event: "opened", deliveryId: "cycle-a-1", beforeHeadSha: null });
+      const b = await advance({ headSha: headB, event: "synchronize", deliveryId: "cycle-b", beforeHeadSha: headA });
+      const a2 = await advance({ headSha: headA, event: "synchronize", deliveryId: "cycle-a-2", beforeHeadSha: headB });
+      const c = await advance({ headSha: headC, event: "synchronize", deliveryId: "cycle-c", beforeHeadSha: headA });
+      const a3 = await advance({ headSha: headA, event: "synchronize", deliveryId: "cycle-a-3", beforeHeadSha: headC });
+
+      expect(new Set([a1.jobId, a2.jobId, a3.jobId]).size).toBe(3);
+      const aJobs = await db.select().from(reviewJobs).where(eq(reviewJobs.headSha, headA));
+      expect(aJobs).toHaveLength(3);
+      expect(aJobs.map((job) => job.id).sort()).toEqual([a1.jobId, a2.jobId, a3.jobId].sort());
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({
+          currentPrHeadSha: headA,
+          currentPrHeadCycleId: a3.jobId,
+          currentPrHeadAuthoritative: true,
+          headShas: [headA, headB, headC],
+        });
+      const events = await db.select().from(changeRecordEvents).where(
+        eq(changeRecordEvents.recordId, draft.record.id)
+      );
+      expect(events.filter((event) =>
+        event.eventKey.startsWith("external-pr:head-advanced:48:")
+        || event.eventKey.startsWith("external-pr:attached:48:")
+      )).toHaveLength(5);
+      expect([a1, b, a2, c].every((cycle) => cycle.jobId !== a3.jobId)).toBe(true);
+
+      await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, a1.jobId));
+      await expect(appendCurrentReviewJobEventsAtomically({
+        workspaceId: wsId, recordId: draft.record.id, jobId: a1.jobId,
+        repo: "acme/widgets", prNumber: 48, headSha: headA,
+        events: [{ eventKey: "cycle:stale-a1", stage: "review", actor: "reviewer-of-record", payloadRef: { cycle: a1.jobId } }],
+      })).rejects.toMatchObject({
+        code: "CURRENT_REVIEW_JOB_NOT_CURRENT", reason: "record_not_current",
+      });
+    });
+
+    it("cycle-binds preview boots and tears them down across draft, revisit, and route races", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "cycle-preview-boots",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "5".repeat(40);
+      const headB = "6".repeat(40);
+      const headC = "7".repeat(40);
+      const a1 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 49,
+        headSha: headA, event: "opened", deliveryId: "preview-cycle-a1",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
+      });
+      if (a1.kind !== "advanced") throw new Error("expected preview A1 cycle");
+      await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, a1.jobId));
+      const bootInput = (jobId: string, headSha: string) => ({
+        workspaceId: wsId, recordId: draft.record.id, jobId,
+        repo: "acme/widgets", prNumber: 49, headSha, ref: `refs/pull/49/head`,
+      });
+      const bootA1 = await enqueueCurrentReviewJobPreviewBoot(bootInput(a1.jobId, headA));
+      expect(bootA1).toEqual({
+        id: previewBootId({ workspaceId: wsId, repo: "acme/widgets", prNumber: 49, headSha: headA, cycleId: a1.jobId }),
+        deduped: false,
+        superseded: 0,
+      });
+      await expect(enqueueCurrentReviewJobPreviewBoot(bootInput(a1.jobId, headA)))
+        .resolves.toMatchObject({ id: bootA1.id, deduped: true, superseded: 0 });
+      await db.update(previewBoots).set({ status: "ready", url: "http://preview-a1.test", port: 3100 })
+        .where(eq(previewBoots.id, bootA1.id));
+
+      const bDraft = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 49,
+        headSha: headB, event: "synchronize", deliveryId: "preview-cycle-b-draft",
+        admitReviewJob: false,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      expect(bDraft).toMatchObject({
+        kind: "advanced", jobAdmitted: false, previewBootsTornDown: 1,
+      });
+      if (bDraft.kind !== "advanced") throw new Error("expected draft B cycle");
+      expect((await db.select().from(previewBoots).where(eq(previewBoots.id, bootA1.id)))[0])
+        .toMatchObject({ status: "torn_down", reason: "acceptance record head advanced" });
+
+      const bReady = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 49,
+        headSha: headB, event: "ready_for_review", deliveryId: "preview-cycle-b-ready",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
+      });
+      if (bReady.kind !== "advanced") throw new Error("expected ready B cycle");
+      expect(bReady.jobId).toBe(bDraft.jobId);
+      await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, bReady.jobId));
+      const bootB = await enqueueCurrentReviewJobPreviewBoot(bootInput(bReady.jobId, headB));
+
+      const a2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 49,
+        headSha: headA, event: "synchronize", deliveryId: "preview-cycle-a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      expect(a2).toMatchObject({ kind: "advanced", previewBootsTornDown: 1 });
+      if (a2.kind !== "advanced") throw new Error("expected preview A2 cycle");
+      expect(a2.jobId).not.toBe(a1.jobId);
+      expect((await db.select().from(previewBoots).where(eq(previewBoots.id, bootB.id)))[0]?.status)
+        .toBe("torn_down");
+      await db.update(reviewJobs).set({ state: "running" }).where(eq(reviewJobs.id, a2.jobId));
+      const bootA2 = await enqueueCurrentReviewJobPreviewBoot(bootInput(a2.jobId, headA));
+      expect(bootA2.id).not.toBe(bootA1.id);
+      await expect(enqueueCurrentReviewJobPreviewBoot(bootInput(a1.jobId, headA)))
+        .rejects.toMatchObject({
+          code: "CURRENT_REVIEW_JOB_NOT_CURRENT", reason: "record_not_current",
+        });
+
+      const [racingBoot, racingHead] = await Promise.allSettled([
+        enqueueCurrentReviewJobPreviewBoot(bootInput(a2.jobId, headA)),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 49,
+          headSha: headC, event: "synchronize", deliveryId: "preview-cycle-c-draft",
+          admitReviewJob: false,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headC },
+          source: "github_webhook",
+        }),
+      ]);
+      expect(racingHead.status).toBe("fulfilled");
+      if (racingBoot.status === "rejected") {
+        expect(racingBoot.reason).toMatchObject({ code: "CURRENT_REVIEW_JOB_NOT_CURRENT" });
+      }
+      expect((await db.select().from(previewBoots).where(eq(previewBoots.id, bootA2.id)))[0]?.status)
+        .toBe("torn_down");
+      const activeBoots = await db.select().from(previewBoots).where(sql`
+        ${previewBoots.workspaceId} = ${wsId}
+        AND ${previewBoots.repo} = 'acme/widgets'
+        AND ${previewBoots.prNumber} = 49
+        AND ${previewBoots.status} IN ('pending', 'claimed', 'booting', 'ready')
+      `);
+      expect(activeBoots).toHaveLength(0);
+    });
+
+    it("appends post-review events only for the locked current running head", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "guarded-current-head-events",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headSha = "c".repeat(40);
+      const advance = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 45,
+        headSha, event: "opened", deliveryId: "delivery-current-head",
+        admitReviewJob: true,
+        headTransition: null,
+        source: "github_webhook",
+      });
+      if (advance.kind !== "advanced") throw new Error("expected head advance");
+      const guardedInput = {
+        workspaceId: wsId, recordId: draft.record.id, jobId: advance.jobId,
+        repo: "acme/widgets", prNumber: 45, headSha,
+        events: [{
+          eventKey: `review:reservation:${advance.jobId}`,
+          stage: "review", actor: "reviewer-of-record",
+          payloadRef: { kind: "correction_reservation", headSha },
+        }],
+      };
+      await expect(appendCurrentReviewJobEventsAtomically(guardedInput))
+        .rejects.toThrow("running review job");
+      await db.update(reviewJobs).set({ state: "running", claimedBy: "worker:two", claimedAt: new Date() })
+        .where(eq(reviewJobs.id, advance.jobId));
+      const first = await appendCurrentReviewJobEventsAtomically(guardedInput);
+      const replay = await appendCurrentReviewJobEventsAtomically(guardedInput);
+      expect(first.events).toEqual([expect.objectContaining({ inserted: true })]);
+      expect(replay.events).toEqual([expect.objectContaining({ inserted: false })]);
+
+      const nextHead = "d".repeat(40);
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 45,
+        headSha: nextHead, event: "synchronize", deliveryId: "delivery-next-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: nextHead },
+        source: "github_webhook",
+      });
+      await expect(appendCurrentReviewJobEventsAtomically(guardedInput))
+        .rejects.toThrow("current PR head");
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({ currentPrHeadSha: nextHead, headShas: [headSha, nextHead] });
+    });
+
+    it("keeps draft opened/reopened heads jobless and fail-closes a non-synchronize head change", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "draft-opened-reopened",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const openedHead = "3".repeat(40);
+      const reopenedHead = "4".repeat(40);
+      const openedInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 47,
+        headSha: openedHead, event: "opened" as const, deliveryId: "delivery-draft-opened",
+        admitReviewJob: false, headTransition: null, source: "github_webhook" as const,
+      };
+      const opened = await advanceConfirmedAcceptanceRecordPullRequestHead(openedInput);
+      expect(opened).toMatchObject({
+        kind: "advanced", jobAdmitted: false, deduped: false,
+        record: { currentPrHeadSha: openedHead, currentPrHeadAuthoritative: true },
+      });
+      if (opened.kind !== "advanced") throw new Error("expected draft opened head");
+      expect(await db.select().from(reviewJobs).where(eq(reviewJobs.id, opened.jobId)))
+        .toHaveLength(0);
+
+      const ready = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        ...openedInput,
+        event: "ready_for_review",
+        deliveryId: "delivery-opened-ready",
+        admitReviewJob: true,
+      });
+      if (ready.kind !== "advanced") throw new Error("expected current-head job admission");
+      const reopened = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        ...openedInput,
+        headSha: reopenedHead,
+        event: "reopened",
+        deliveryId: "delivery-draft-reopened",
+        admitReviewJob: false,
+      });
+      expect(reopened).toEqual({
+        kind: "stale_delivery", superseded: 1, previewBootsTornDown: 0,
+      });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({
+          currentPrHeadSha: openedHead,
+          currentPrHeadAuthoritative: false,
+          headShas: [openedHead],
+        });
+      expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, ready.jobId)))[0]?.state)
+        .toBe("superseded");
+      expect(await db.select().from(reviewJobs).where(eq(reviewJobs.headSha, reopenedHead)))
+        .toHaveLength(0);
     });
 
     it("records one server-registered Builder route against exactly one confirmed Contract", async () => {
@@ -278,6 +889,27 @@ describe.skipIf(!DB_AVAILABLE)(
         capability: { availability: "unverified", activation: "github_mention", acknowledgement: "vendor_activity", repairHead: "github_synchronize" }, scopeBoundary: "correction_delivery_only",
       } });
 
+      const routeHeadA = "8".repeat(40);
+      const routeHeadB = "9".repeat(40);
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 41,
+        headSha: routeHeadA, event: "opened", deliveryId: "builder-route-head-a",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
+      });
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 41,
+        headSha: routeHeadB, event: "synchronize", deliveryId: "builder-route-head-b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: routeHeadA, afterHeadSha: routeHeadB },
+        source: "github_webhook",
+      });
+      await expect(readAcceptanceBuilderRouteSelection({
+        workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toMatchObject({
+        selection: { routeId: registered.route.id },
+        event: { eventKey: "acceptance-builder-route:selected" },
+      });
+
       await db.update(acceptanceBuilderRoutes).set({ configurationVersion: 3 })
         .where(eq(acceptanceBuilderRoutes.id, registered.route.id));
       await expect(readAcceptanceBuilderRouteSelection({
@@ -294,13 +926,13 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceContracts).set({
         status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
       }).where(eq(acceptanceContracts.id, draft.contract.id));
-      await attachConfirmedAcceptanceRecordToExternalPullRequest({
+      const admittedJob = await advanceConfirmedAcceptanceRecordPullRequestHead({
         workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 42,
-        headSha, source: "github_webhook",
+        headSha, event: "opened", deliveryId: "delivery-snapshot-head",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
       });
-      const job = await enqueueReviewJob({
-        workspaceId: wsId, repo: "acme/widgets", prNumber: 42, headSha, event: "synchronize",
-      });
+      if (admittedJob.kind !== "advanced") throw new Error("expected snapshot review admission");
+      const job = { id: admittedJob.jobId };
       const packetId = reviewJobCorrectionPacketId({
         jobId: job.id, criterionId: "AC-1", headSha, recordId: draft.record.id,
         acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
@@ -418,6 +1050,32 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       await expect(recordAcceptanceContextPackSnapshot(input))
         .rejects.toThrow("not the complete exact R8.1 payload set");
+      const nextHeadSha = "f".repeat(40);
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 42,
+        headSha: nextHeadSha, event: "synchronize", deliveryId: "delivery-snapshot-next-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: nextHeadSha },
+        source: "github_webhook",
+      });
+      const revisitedHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 42,
+        headSha, event: "synchronize", deliveryId: "delivery-snapshot-revisited-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: nextHeadSha, afterHeadSha: headSha },
+        source: "github_webhook",
+      });
+      expect(revisitedHead).toMatchObject({
+        kind: "advanced", record: { currentPrHeadSha: headSha },
+      });
+      if (revisitedHead.kind !== "advanced") throw new Error("expected snapshot head revisit");
+      expect(revisitedHead.jobId).not.toBe(job.id);
+      await expect(recordAcceptanceContextPackSnapshot(input))
+        .rejects.toThrow("Record head is not current");
+      await expect(resolveAcceptanceContextPackCustody({
+        workspaceId: wsId,
+        sourceSnapshotId: first.snapshot.id,
+      })).rejects.toThrow("Record head is no longer current");
       const rows = await db.select().from(acceptanceContextPackSnapshots)
         .where(eq(acceptanceContextPackSnapshots.id, first.snapshot.id));
       expect(rows).toHaveLength(1);
@@ -432,13 +1090,13 @@ describe.skipIf(!DB_AVAILABLE)(
         status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
       }).where(eq(acceptanceContracts.id, draft.contract.id));
       const headSha = "a".repeat(40);
-      await attachConfirmedAcceptanceRecordToExternalPullRequest({
-        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43, headSha,
-        source: "manual",
+      const admittedJob = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha, event: "opened", deliveryId: "delivery-compiled-head",
+        admitReviewJob: true, headTransition: null, source: "github_webhook",
       });
-      const job = await enqueueReviewJob({
-        workspaceId: wsId, repo: "acme/widgets", prNumber: 43, headSha, event: "opened",
-      });
+      if (admittedJob.kind !== "advanced") throw new Error("expected compiled Pack review admission");
+      const job = { id: admittedJob.jobId };
       const packetId = reviewJobCorrectionPacketId({
         jobId: job.id, criterionId: "AC-1", headSha, recordId: draft.record.id,
         acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
@@ -552,6 +1210,28 @@ describe.skipIf(!DB_AVAILABLE)(
       })).rejects.toThrow("does not match");
       await expect(persist({ ...compiled, renderedByteCount: 101 })).rejects.toThrow("does not match");
       await expect(resolveAcceptanceCompiledContextPack({ workspaceId: randomUUID(), sourceSnapshotId: snapshot.snapshot.id, compilerVersion: compiler.version, policyVersion: compiler.policyVersion })).resolves.toBeNull();
+      const nextHeadSha = "f".repeat(40);
+      await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha: nextHeadSha, event: "synchronize", deliveryId: "delivery-compiled-next-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: nextHeadSha },
+        source: "github_webhook",
+      });
+      const revisitedHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
+        headSha, event: "synchronize", deliveryId: "delivery-compiled-revisited-head",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: nextHeadSha, afterHeadSha: headSha },
+        source: "github_webhook",
+      });
+      if (revisitedHead.kind !== "advanced") throw new Error("expected compiled head revisit");
+      expect(revisitedHead.jobId).not.toBe(job.id);
+      await expect(resolveAcceptanceCompiledContextPack({
+        workspaceId: wsId, sourceSnapshotId: snapshot.snapshot.id,
+        compilerVersion: compiler.version, policyVersion: compiler.policyVersion,
+      })).resolves.toBeNull();
+      await expect(persist(compiled)).rejects.toThrow("Record head is no longer current");
       expect(await db.select().from(acceptanceCompiledContextPacks).where(eq(acceptanceCompiledContextPacks.id, first.pack.id))).toHaveLength(1);
     });
 

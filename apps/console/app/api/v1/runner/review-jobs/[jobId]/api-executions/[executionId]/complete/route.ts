@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
   appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -203,16 +205,33 @@ export async function POST(
     }
   }
   const reservation = buildReviewJobApiCardReservation(result);
-  let reserved: Awaited<ReturnType<typeof appendChangeRecordEvent>>;
+  let reserved: Awaited<
+    ReturnType<typeof appendCurrentReviewJobEventsAtomically>
+  >["events"][number];
   try {
-    reserved = await appendChangeRecordEvent({
+    const reservationResult = await appendCurrentReviewJobEventsAtomically({
+      workspaceId: proof.job.workspaceId,
       recordId: proof.timeline.record.id,
-      eventKey: reviewJobApiCardReservationEventKey({ proof, plan }),
-      stage: REVIEW_JOB_API_STAGE,
-      actor: REVIEW_JOB_API_ACTOR,
-      payloadRef: reservation,
+      jobId: proof.job.id,
+      repo: proof.job.repo,
+      prNumber: proof.job.prNumber,
+      headSha: proof.job.headSha,
+      events: [
+        {
+          eventKey: reviewJobApiCardReservationEventKey({ proof, plan }),
+          stage: REVIEW_JOB_API_STAGE,
+          actor: REVIEW_JOB_API_ACTOR,
+          payloadRef: reservation,
+        },
+      ],
     });
-  } catch {
+    reserved = reservationResult.events[0]!;
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError)
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 },
+      );
     return NextResponse.json(
       { error: "could not reserve API card custody" },
       { status: 503 },

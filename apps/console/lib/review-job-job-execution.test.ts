@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import {
   buildReviewJobVerificationPlan,
@@ -14,6 +15,7 @@ import {
 } from "./review-job-job-execution";
 
 const headSha = "a".repeat(40);
+const bootId = previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha, cycleId: "job-1" });
 const key = { keyId: "review-data-2026-08", key: Buffer.alloc(32, 7) };
 const binding = {
   workspaceId: "ws-1",
@@ -70,7 +72,7 @@ function proof(): ExactReviewJobProof {
   } as unknown as ExactReviewJobProof;
 }
 const boot = {
-  id: "boot-1",
+  id: bootId,
   workspaceId: "ws-1",
   repo: "acme/widgets",
   prNumber: 42,
@@ -113,6 +115,11 @@ describe("review-job execution custody", () => {
     expect(JSON.stringify(stored)).not.toContain("complete");
     const current = proof(),
       plan = current.verificationPlan.plans[0]!;
+    expect(buildReviewJobAttempt({
+      proof: current,
+      plan,
+      boot: { ...boot, id: previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha, cycleId: "job-old-cycle" }) },
+    })).toBeNull();
     const attempt = buildReviewJobAttempt({ proof: current, plan, boot })!;
     const result = buildReviewJobResult({
       attempt,

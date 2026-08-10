@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -14,7 +16,7 @@ vi.mock("../../../../../../../../lib/artifacts/store", () => ({
 }));
 
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -172,9 +174,9 @@ beforeEach(() => {
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(session() as never);
   vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(proof() as never);
   vi.mocked(getPreviewBoot).mockResolvedValue(boot() as never);
-  vi.mocked(appendChangeRecordEvent).mockImplementation(
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
     async (input) =>
-      ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
   );
 });
 
@@ -281,7 +283,7 @@ describe("job execution start", () => {
     delete process.env.REVIEW_DATA_HMAC_KEYS_JSON;
     expect((await POST(request(body), params)).status).toBe(409);
     expect(getPreviewBoot).not.toHaveBeenCalled();
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("rejects absent, expired, non-ready, and every cross-tuple preview", async () => {
@@ -298,7 +300,7 @@ describe("job execution start", () => {
       vi.mocked(getPreviewBoot).mockResolvedValue(invalidBoot as never);
       expect((await POST(request(body), params)).status).toBe(409);
     }
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("appends the exact attempt before returning only the server-owned request", async () => {
@@ -321,12 +323,19 @@ describe("job execution start", () => {
       previewUrl: "https://preview.example.test/",
       jobRequest: storedRequest(),
     });
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
       recordId: "record-1",
-      eventKey: reviewJobAttemptEventKey({ proof: current, plan }),
-      stage: "verification",
-      actor: "jace:review-job-executor",
-      payloadRef: attempt,
+      jobId: "job-1",
+      repo: "acme/widgets",
+      prNumber: 42,
+      headSha,
+      events: [{
+        eventKey: reviewJobAttemptEventKey({ proof: current, plan }),
+        stage: "verification",
+        actor: "jace:review-job-executor",
+        payloadRef: attempt,
+      }],
     });
   });
 
@@ -345,16 +354,15 @@ describe("job execution start", () => {
       current as never,
     );
     expect((await POST(request(body), params)).status).toBe(409);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
 
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(proof() as never);
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({
-      event: { payloadRef: attempt },
-      inserted: false,
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({
+      events: [{ event: { payloadRef: attempt }, inserted: false }],
     } as never);
     expect((await POST(request(body), params)).status).toBe(409);
 
-    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
       new Error("ledger down"),
     );
     expect((await POST(request(body), params)).status).toBe(503);

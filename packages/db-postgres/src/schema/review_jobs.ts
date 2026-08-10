@@ -10,16 +10,14 @@ import { workspaces } from "./workspaces.js";
  * existing reviewer choreography. This table has no consumers yet — the
  * claim/supersede/complete query layer lands in a later task.
  *
- * `id` is CALLER-SUPPLIED: a deterministic uuid5 of `(workspaceId, repo,
- * prNumber, headSha)`, computed in the query layer the same way
- * `github_intake.ts`'s `entryId` derives `queue_entries.id` (the `entryId`
- * precedent). Deliberately NO default here — neither `defaultRandom()` nor
- * SQL `gen_random_uuid()` — because the whole idempotency story
- * (`ON CONFLICT (id) DO NOTHING` making a replayed webhook a no-op) only
- * holds if the SAME logical (workspace, repo, pr, head) always hashes to the
- * SAME row. A random fallback would silently defeat that: a caller that
- * forgot to compute the deterministic id should hit a NOT NULL violation,
- * never get a fresh random id that masks the bug and double-admits the row.
+ * `id` is CALLER-SUPPLIED. Legacy queue admission derives a deterministic
+ * uuid5 from `(workspaceId, repo, prNumber, headSha)`. Acceptance Record
+ * admission instead uses its deterministic current-head cycle UUID so an
+ * A→B→A revisit creates a fresh job rather than colliding with the terminal
+ * first A row. Deliberately NO default here — neither `defaultRandom()` nor
+ * SQL `gen_random_uuid()` — because both paths require deterministic replay
+ * to hit `ON CONFLICT (id) DO NOTHING`; a missing caller id must fail rather
+ * than silently double-admit work.
  *
  * Naming note (exploration finding): the existing `review_gates`
  * table/dashboard is a DIFFERENT, unrelated concept (per-run CI+advisory
@@ -27,14 +25,16 @@ import { workspaces } from "./workspaces.js";
  * never "review gate".
  *
  * `state` lifecycle (spec §2): `queued` → `running` → `posted` | `failed`,
- * plus `superseded` (a newer push on the same PR replaced this still-queued
- * job before it ran) and `skipped` (the per-workspace daily budget was
- * already spent). Superseded/failed/posted/skipped are all terminal.
+ * plus `superseded` (a newer push on the same PR replaced this queued or
+ * already-running exact-head job) and `skipped` (the per-workspace daily
+ * budget was already spent). Superseded/failed/posted/skipped are terminal;
+ * guarded completion/release cannot revive an invalidated running job.
  */
 export const reviewJobs = pgTable(
   "review_jobs",
   {
-    // Deterministic uuid5 supplied by the caller — see doc-comment above.
+    // Deterministic legacy-head or Acceptance-cycle uuid5 supplied by the
+    // caller — see doc-comment above.
     // NOT defaultRandom(): a random fallback would defeat the
     // ON CONFLICT (id) DO NOTHING idempotency the design relies on.
     id: uuid("id").primaryKey(),
@@ -98,8 +98,9 @@ export const reviewJobs = pgTable(
       .on(t.state)
       .where(sql`${t.state} = 'queued'`),
     // Supersede-on-insert's lookup key (spec §2: "mark that (workspace,
-    // repo, pr)'s other queued jobs superseded") and any per-PR job history
-    // lookup.
+    // repo, pr)'s other jobs superseded") and any per-PR job history lookup.
+    // Legacy enqueue supersedes queued siblings; the Acceptance Record
+    // current-head transaction also supersedes running different-head jobs.
     prIdx: index("review_jobs_pr_idx").on(
       t.workspaceId,
       t.repo,

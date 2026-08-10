@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import {
   activeReviewDataHmacKey,
@@ -23,6 +24,7 @@ import {
 } from "./review-job-data-execution";
 
 const headSha = "a".repeat(40);
+const bootId = previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha, cycleId: "job-1" });
 const hmacKey = { keyId: "review-data-2026-08", key: Buffer.alloc(32, 7) };
 const digestBinding = {
   workspaceId: "ws-1",
@@ -98,7 +100,7 @@ function proof(events: unknown[] = []): ExactReviewJobProof {
 }
 function boot(overrides = {}) {
   return {
-    id: "boot-1",
+    id: bootId,
     workspaceId: "ws-1",
     repo: "acme/widgets",
     prNumber: 42,
@@ -336,6 +338,11 @@ describe("review-job data execution custody", () => {
   it("derives marker-only receipts and never accepts or persists raw observations", () => {
     const current = proof();
     const plan = current.verificationPlan.plans[0]!;
+    expect(buildReviewJobDataAttempt({
+      proof: current,
+      plan,
+      boot: boot({ id: previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha, cycleId: "job-old-cycle" }) }),
+    })).toBeNull();
     const attempt = buildReviewJobDataAttempt({
       proof: current,
       plan,

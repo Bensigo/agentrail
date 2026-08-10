@@ -60,21 +60,25 @@ function uuid5Url(name: string): string {
 }
 
 /**
- * The durable row id for a (workspaceId, repo, prNumber, headSha) — the
- * preview-boot twin of `review_jobs.ts`'s `reviewJobId`: same uuid5
- * mechanism, namespace seed `"preview-boot"` in place of `"review-job"`.
- * Deterministic so a replayed/duplicate boot request for the SAME
- * (workspace, repo, PR, head) always re-derives the SAME id, which is what
- * makes `enqueuePreviewBoot`'s `ON CONFLICT (id) DO NOTHING` an
- * exactly-once admit — see `schema/preview_boots.ts`'s own doc-comment on
- * `id` for why a random id here would silently defeat that.
+ * The durable row id for a legacy `(workspaceId, repo, prNumber, headSha)`
+ * boot, or for that tuple plus an Acceptance Record cycle. The optional
+ * cycle makes repeated-SHA occurrences distinct while preserving legacy ids
+ * for callers outside the authoritative Record path. Either form is
+ * deterministic, which makes `ON CONFLICT (id) DO NOTHING` replay-safe.
  */
 export function previewBootId(input: {
   workspaceId: string;
   repo: string;
   prNumber: number;
   headSha: string;
+  /** Current Acceptance Record cycle/job id; omitted preserves legacy ids. */
+  cycleId?: string;
 }): string {
+  if (input.cycleId) {
+    return uuid5Url(
+      `preview-boot-cycle:${input.workspaceId}:${input.repo}:${input.prNumber}:${input.headSha}:${input.cycleId}`
+    );
+  }
   return uuid5Url(
     `preview-boot:${input.workspaceId}:${input.repo}:${input.prNumber}:${input.headSha}`
   );

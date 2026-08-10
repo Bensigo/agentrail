@@ -24,7 +24,7 @@ import { NextRequest } from "next/server";
  * `mockResolvedValue` per test (proving ONE route calls its own mock
  * correctly, in isolation), this file backs the SAME functions with ONE
  * shared in-memory store (`vi.hoisted`, below) so the row the webhook's
- * `enqueueReviewJob` creates is the SAME row `claimReviewJob` finds,
+ * the atomic head-advance creates is the SAME row `claimReviewJob` finds,
  * `bindReviewJobSession` attaches a session to, and `completeReviewJob`
  * resolves — proving the ROUTES' wiring composes end to end, not just that
  * each one calls its own mock correctly (already covered by the four
@@ -85,10 +85,11 @@ interface FakeRepoRow {
   defaultBranch: string;
 }
 
-const { jobs, sessions, workspacesByInstallation, reposByWorkspace, resetStore, repoKey } =
+const { jobs, sessions, currentHeads, workspacesByInstallation, reposByWorkspace, resetStore, repoKey } =
   vi.hoisted(() => {
     const jobs = new Map<string, FakeJobRow>();
     const sessions = new Map<string, FakeSessionRow>();
+    const currentHeads = new Map<string, string>();
     const workspacesByInstallation = new Map<number, { workspaceId: string }>();
     const reposByWorkspace = new Map<string, FakeRepoRow>();
 
@@ -99,12 +100,14 @@ const { jobs, sessions, workspacesByInstallation, reposByWorkspace, resetStore, 
     return {
       jobs,
       sessions,
+      currentHeads,
       workspacesByInstallation,
       reposByWorkspace,
       repoKey,
       resetStore: () => {
         jobs.clear();
         sessions.clear();
+        currentHeads.clear();
         workspacesByInstallation.clear();
         reposByWorkspace.clear();
       },
@@ -112,6 +115,48 @@ const { jobs, sessions, workspacesByInstallation, reposByWorkspace, resetStore, 
   });
 
 vi.mock("@agentrail/db-postgres", () => ({
+  appendChangeRecordEvent: vi.fn(),
+  findOrCreateChangeRecord: vi.fn(),
+  recordReviewEvent: vi.fn(async () => ({ recorded: true, eventId: "review-event-e2e" })),
+  readChangeRecordByPr: vi.fn(async (input: {
+    workspaceId: string;
+    repo: string;
+    prNumber: number;
+  }) => currentHeads.has(`${input.workspaceId}:${input.repo}:${input.prNumber}`)
+    ? { id: "11111111-1111-4111-8111-111111111111" }
+    : null),
+  invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent: vi.fn(
+    async (input: {
+      workspaceId: string;
+      repo: string;
+      prNumber: number;
+    }) => {
+      let superseded = 0;
+      for (const job of jobs.values()) {
+        if (
+          job.workspaceId === input.workspaceId &&
+          job.repo === input.repo &&
+          job.prNumber === input.prNumber &&
+          (job.state === "queued" || job.state === "running")
+        ) {
+          job.state = "superseded";
+          job.updatedAt = new Date();
+          superseded += 1;
+        }
+      }
+      return {
+        kind: "invalidated",
+        inserted: true,
+        provenanceEventId: "terminal-event-e2e",
+        superseded,
+        previewBootsTornDown: 0,
+        currentHeadSha:
+          currentHeads.get(`${input.workspaceId}:${input.repo}:${input.prNumber}`) ?? null,
+        currentHeadCycleId: null,
+      };
+    }
+  ),
+  triggerDependencyWatchesForPush: vi.fn(async () => []),
   getWorkspaceByGithubInstallationId: vi.fn(async (installationId: number) => {
     return workspacesByInstallation.get(installationId) ?? null;
   }),
@@ -120,42 +165,74 @@ vi.mock("@agentrail/db-postgres", () => ({
     return reposByWorkspace.get(repoKey(workspaceId, name)) ?? null;
   }),
 
-  // Mirrors enqueueReviewJob's real contract
-  // (packages/db-postgres/src/queries/review_jobs.ts): deterministic-id
-  // dedupe + same-PR supersede of still-queued siblings with a different
-  // head, 'synchronize' seeding a ~60s next_eligible_at debounce.
-  enqueueReviewJob: vi.fn(
+  // Mirrors the webhook's one atomic DB boundary: advance the Record's
+  // current signed PR head, deterministic job dedupe, and same-PR
+  // supersession. This fake deliberately keeps the state in one function so
+  // the cross-route test cannot accidentally prove the former split calls.
+  advanceConfirmedAcceptanceRecordPullRequestHead: vi.fn(
     async (input: {
       workspaceId: string;
+      recordId: string;
       repo: string;
       prNumber: number;
       headSha: string;
       event: string;
+      headTransition: {
+        beforeHeadSha: string;
+        afterHeadSha: string;
+      } | null;
+      admitReviewJob: boolean;
     }) => {
-      const id = `job:${input.workspaceId}:${input.repo}:${input.prNumber}:${input.headSha}`;
-      if (jobs.has(id)) {
-        return { id, deduped: true, superseded: 0 };
+      const prKey = `${input.workspaceId}:${input.repo}:${input.prNumber}`;
+      const previousHeadSha = currentHeads.get(prKey) ?? null;
+      const headChanged = previousHeadSha !== input.headSha;
+      if (
+        previousHeadSha !== null &&
+        headChanged &&
+        (input.event !== "synchronize" ||
+          input.headTransition?.beforeHeadSha !== previousHeadSha)
+      ) {
+        let superseded = 0;
+        for (const job of jobs.values()) {
+          if (
+            job.workspaceId === input.workspaceId &&
+            job.repo === input.repo &&
+            job.prNumber === input.prNumber &&
+            (job.state === "queued" || job.state === "running")
+          ) {
+            job.state = "superseded";
+            job.updatedAt = new Date();
+            superseded += 1;
+          }
+        }
+        return { kind: "stale_delivery", superseded };
       }
-      const now = new Date();
-      jobs.set(id, {
-        id,
-        workspaceId: input.workspaceId,
-        repo: input.repo,
-        prNumber: input.prNumber,
-        headSha: input.headSha,
-        event: input.event,
-        state: "queued",
-        attempts: 0,
-        claimedBy: null,
-        claimedAt: null,
-        nextEligibleAt:
-          input.event === "synchronize" ? new Date(now.getTime() + 60_000) : null,
-        postedReviewUrl: null,
-        verdict: null,
-        skipReason: null,
-        createdAt: now,
-        updatedAt: now,
-      });
+      currentHeads.set(prKey, input.headSha);
+      const id = `job:${prKey}:${input.headSha}`;
+      let insertedJob = false;
+      if (input.admitReviewJob && !jobs.has(id)) {
+        const now = new Date();
+        jobs.set(id, {
+          id,
+          workspaceId: input.workspaceId,
+          repo: input.repo,
+          prNumber: input.prNumber,
+          headSha: input.headSha,
+          event: input.event,
+          state: "queued",
+          attempts: 0,
+          claimedBy: null,
+          claimedAt: null,
+          nextEligibleAt:
+            input.event === "synchronize" ? new Date(now.getTime() + 60_000) : null,
+          postedReviewUrl: null,
+          verdict: null,
+          skipReason: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        insertedJob = true;
+      }
 
       let superseded = 0;
       for (const other of jobs.values()) {
@@ -165,14 +242,23 @@ vi.mock("@agentrail/db-postgres", () => ({
           other.repo === input.repo &&
           other.prNumber === input.prNumber &&
           other.headSha !== input.headSha &&
-          other.state === "queued"
+          (other.state === "queued" || other.state === "running")
         ) {
           other.state = "superseded";
           other.updatedAt = new Date();
           superseded++;
         }
       }
-      return { id, deduped: false, superseded };
+      return {
+        kind: "advanced",
+        record: { id: input.recordId },
+        jobId: id,
+        jobAdmitted: input.admitReviewJob,
+        deduped: !headChanged && !insertedJob,
+        superseded,
+        previousHeadSha,
+        headChanged,
+      };
     }
   ),
 
@@ -332,6 +418,7 @@ function webhookRequest(body: string): NextRequest {
     headers: {
       "content-type": "application/json",
       "x-github-event": "pull_request",
+      "x-github-delivery": "delivery-e2e-1",
       "x-hub-signature-256": sign(body, WEBHOOK_SECRET),
     },
     body,
@@ -342,12 +429,29 @@ function prPayload(opts: {
   action: string;
   headSha: string;
   prNumber: number;
+  beforeHeadSha?: string;
+  draft?: boolean;
+  merged?: boolean;
 }): Record<string, unknown> {
   const { action, headSha, prNumber } = opts;
   return {
     action,
+    ...(action === "synchronize"
+      ? {
+          before: opts.beforeHeadSha ?? "0".repeat(40),
+          after: headSha,
+        }
+      : {}),
     number: prNumber,
-    pull_request: { number: prNumber, draft: false, head: { sha: headSha } },
+    pull_request: {
+      number: prNumber,
+      draft: opts.draft ?? false,
+      head: { sha: headSha },
+      merged: opts.merged ?? false,
+      merge_commit_sha: opts.merged ? "f".repeat(40) : null,
+      html_url: `https://github.com/${REPO_FULL_NAME}/pull/${prNumber}`,
+      body: "<!-- jace-acceptance-record: 11111111-1111-4111-8111-111111111111 -->",
+    },
     repository: { full_name: REPO_FULL_NAME },
     installation: { id: INSTALLATION_ID },
   };
@@ -402,9 +506,9 @@ afterEach(() => {
 });
 
 describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () => {
-  it("webhook -> claim -> bind -> complete: one PR's full lifecycle from intake to a posted, notified review", async () => {
+  it("webhook -> claim -> bind -> failed completion preserves one atomic intake lifecycle", async () => {
     const prNumber = 42;
-    const headSha = "e2ehead0001aaaa";
+    const headSha = "a".repeat(40);
 
     // 1. signed pull_request webhook (opened, enrolled workspace, connected repo)
     const webhookRes = await webhookPost(
@@ -416,6 +520,8 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
       enqueued: true,
       deduped: false,
       superseded: 0,
+      headChanged: true,
+      previousHeadSha: null,
     });
 
     // -> job row exists, queued
@@ -468,45 +574,167 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
       eveSessionId,
     });
 
-    // 4. complete {outcome: "posted", ...}
-    const postedReviewUrl = `https://github.com/${REPO_FULL_NAME}/pull/${prNumber}#pullrequestreview-1`;
-    const summaryLine = `AgentRail review posted for ${REPO_FULL_NAME}#${prNumber} — 3/3 ACs pass, no blockers`;
+    // 4. A failed worker attempt may requeue only while this exact job is
+    // still running. Posted completion has a separate exact-proof e2e lane.
     const completeRes = await completePost(
       completeRequest({
         jobId,
-        outcome: "posted",
-        postedReviewUrl,
-        verdict: "approve",
-        summaryLine,
+        outcome: "failed",
+        error: "transient GitHub 502",
       })
     );
     expect(completeRes.status).toBe(200);
     expect(await completeRes.json()).toEqual({ ok: true });
 
-    // -> job posted, with the request's own postedReviewUrl/verdict actually
-    // threaded through to completeReviewJob (NOT just proven by the notify
-    // text below — buildNotifyText reads postedReviewUrl straight off the
-    // request body, so notify content alone would pass even if the route
-    // failed to forward it to completeReviewJob; this reads the persisted
-    // row instead, which only reflects what the route actually passed on).
+    // -> same job becomes retryable; failed completion never fabricates a
+    // posted receipt or human notification.
     expect(jobs.get(jobId)).toMatchObject({
-      state: "posted",
-      postedReviewUrl,
-      verdict: "approve",
+      state: "queued",
+      attempts: 1,
+      postedReviewUrl: null,
+      verdict: null,
+    });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("opened A -> draft synchronize B -> ready B invalidates A before admitting B", async () => {
+    const prNumber = 55;
+    const headA = "d".repeat(40);
+    const headB = "e".repeat(40);
+
+    const opened = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({ action: "opened", headSha: headA, prNumber })
+    )));
+    expect(await opened.json()).toEqual(expect.objectContaining({
+      enqueued: true,
+      deduped: false,
+      headChanged: true,
+    }));
+
+    const draftAdvance = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({
+        action: "synchronize",
+        headSha: headB,
+        prNumber,
+        beforeHeadSha: headA,
+        draft: true,
+      })
+    )));
+    expect(await draftAdvance.json()).toEqual({
+      ok: true,
+      enqueued: false,
+      deduped: false,
+      superseded: 1,
+      headChanged: true,
+      previousHeadSha: headA,
+    });
+    expect(currentHeads.get(`${WORKSPACE_ID}:${REPO_FULL_NAME}:${prNumber}`))
+      .toBe(headB);
+    expect(Array.from(jobs.values()).find((job) => job.headSha === headA)?.state)
+      .toBe("superseded");
+    expect(Array.from(jobs.values()).some((job) => job.headSha === headB)).toBe(false);
+
+    const draftReplay = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({
+        action: "synchronize",
+        headSha: headB,
+        prNumber,
+        beforeHeadSha: headA,
+        draft: true,
+      })
+    )));
+    expect(await draftReplay.json()).toEqual({
+      ok: true,
+      enqueued: false,
+      deduped: true,
+      superseded: 0,
+      headChanged: false,
+      previousHeadSha: headB,
     });
 
-    // -> notify fired exactly once with the summaryLine content
-    expect(mockNotify).toHaveBeenCalledTimes(1);
-    const [notifiedWorkspaceId, notifiedText] = mockNotify.mock.calls[0]!;
-    expect(notifiedWorkspaceId).toBe(WORKSPACE_ID);
-    expect(notifiedText).toContain(summaryLine);
-    expect(notifiedText).toContain(postedReviewUrl);
+    const ready = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({
+        action: "ready_for_review",
+        headSha: headB,
+        prNumber,
+        draft: true,
+      })
+    )));
+    expect(await ready.json()).toEqual({
+      ok: true,
+      enqueued: true,
+      deduped: false,
+      superseded: 0,
+      headChanged: false,
+      previousHeadSha: headB,
+    });
+    expect(Array.from(jobs.values()).find((job) => job.headSha === headB))
+      .toMatchObject({ state: "queued", event: "ready_for_review" });
+  });
+
+  it("draft opened A -> draft reopened B blocks authority instead of leaving A live", async () => {
+    const prNumber = 56;
+    const headA = "1".repeat(40);
+    const headB = "2".repeat(40);
+
+    const opened = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({ action: "opened", headSha: headA, prNumber, draft: true })
+    )));
+    expect(await opened.json()).toEqual(expect.objectContaining({
+      enqueued: false,
+    }));
+    expect(jobs.size).toBe(0);
+
+    const reopened = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({ action: "reopened", headSha: headB, prNumber, draft: true })
+    )));
+    expect(await reopened.json()).toEqual({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "stale delivery; current head requires reconciliation",
+      superseded: 0,
+    });
+    expect(currentHeads.get(`${WORKSPACE_ID}:${REPO_FULL_NAME}:${prNumber}`))
+      .toBe(headA);
+    expect(jobs.size).toBe(0);
+  });
+
+  it("terminal close supersedes the attached current job without moving its head", async () => {
+    const prNumber = 57;
+    const headSha = "3".repeat(40);
+
+    await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({ action: "opened", headSha, prNumber })
+    )));
+    const queued = Array.from(jobs.values()).find(
+      (job) => job.prNumber === prNumber
+    )!;
+    expect(queued.state).toBe("queued");
+
+    const closed = await webhookPost(webhookRequest(JSON.stringify(
+      prPayload({ action: "closed", headSha, prNumber, merged: false })
+    )));
+
+    expect(await closed.json()).toEqual({
+      ok: true,
+      closed: true,
+      invalidated: true,
+      superseded: 1,
+      previewBootsTornDown: 0,
+    });
+    expect(queued.state).toBe("superseded");
+    expect(currentHeads.get(`${WORKSPACE_ID}:${REPO_FULL_NAME}:${prNumber}`))
+      .toBe(headSha);
+    expect((await claimPost(claimRequest({ workerId: "worker-closed" }))).status)
+      .toBe(204);
   });
 
   it("push storm: two synchronize deliveries for successive heads — first superseded, second present but eligible-deferred", async () => {
     const prNumber = 77;
-    const headA = "stormhead-a";
-    const headB = "stormhead-b";
+    const headA = "b".repeat(40);
+    const headB = "c".repeat(40);
 
     const firstRes = await webhookPost(
       webhookRequest(
@@ -519,11 +747,36 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
       enqueued: true,
       deduped: false,
       superseded: 0,
+      headChanged: true,
+      previousHeadSha: null,
     });
+
+    const replayRes = await webhookPost(
+      webhookRequest(
+        JSON.stringify(prPayload({ action: "synchronize", headSha: headA, prNumber }))
+      )
+    );
+    expect(replayRes.status).toBe(200);
+    expect(await replayRes.json()).toEqual({
+      ok: true,
+      enqueued: true,
+      deduped: true,
+      superseded: 0,
+      headChanged: false,
+      previousHeadSha: headA,
+    });
+    expect(jobs.size).toBe(1);
 
     const secondRes = await webhookPost(
       webhookRequest(
-        JSON.stringify(prPayload({ action: "synchronize", headSha: headB, prNumber }))
+        JSON.stringify(
+          prPayload({
+            action: "synchronize",
+            headSha: headB,
+            prNumber,
+            beforeHeadSha: headA,
+          })
+        )
       )
     );
     expect(secondRes.status).toBe(200);
@@ -532,6 +785,8 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
       enqueued: true,
       deduped: false,
       superseded: 1,
+      headChanged: true,
+      previousHeadSha: headA,
     });
 
     expect(jobs.size).toBe(2);
@@ -539,6 +794,16 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
     const rowB = Array.from(jobs.values()).find((j) => j.headSha === headB);
 
     // first (headA) is superseded by the second delivery's newer head ...
+    expect(rowA?.state).toBe("superseded");
+
+    const staleFailure = await completePost(
+      completeRequest({
+        jobId: rowA!.id,
+        outcome: "failed",
+        error: "late worker failure",
+      })
+    );
+    expect(staleFailure.status).toBe(409);
     expect(rowA?.state).toBe("superseded");
 
     // ... second (headB) is present and queued, but eligible-deferred: the
@@ -551,5 +816,30 @@ describe("Arc B reviewer-of-record — console cross-boundary e2e (Task 9)", () 
     // The claim route itself agrees: nothing is eligible right now (204).
     const claimRes = await claimPost(claimRequest({ workerId: "worker-1" }));
     expect(claimRes.status).toBe(204);
+
+    const delayedOldHead = await webhookPost(
+      webhookRequest(
+        JSON.stringify(
+          prPayload({
+            action: "synchronize",
+            headSha: headA,
+            prNumber,
+            beforeHeadSha: "0".repeat(40),
+          })
+        )
+      )
+    );
+    expect(delayedOldHead.status).toBe(200);
+    expect(await delayedOldHead.json()).toEqual({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "stale delivery; current head requires reconciliation",
+      superseded: 1,
+    });
+    expect(currentHeads.get(`${WORKSPACE_ID}:${REPO_FULL_NAME}:${prNumber}`))
+      .toBe(headB);
+    expect(rowB?.state).toBe("superseded");
   });
 });

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  enqueuePreviewBoot,
+  enqueueCurrentReviewJobPreviewBoot,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getReviewJobById,
   readAcceptanceContracts,
@@ -124,7 +125,9 @@ export async function POST(
     timeline.record.workspaceId !== job.workspaceId ||
     timeline.record.repo !== job.repo ||
     timeline.record.prNumber !== job.prNumber ||
-    !timeline.record.headShas.includes(job.headSha)
+    timeline.record.currentPrHeadSha !== job.headSha ||
+    timeline.record.currentPrHeadCycleId !== job.id ||
+    timeline.record.currentPrHeadAuthoritative !== true
   ) {
     return NextResponse.json(
       { error: "review job is not attached to an Acceptance Record at this head" },
@@ -156,13 +159,29 @@ export async function POST(
     );
   }
 
-  const result = await enqueuePreviewBoot({
-    workspaceId: job.workspaceId,
-    repo: job.repo,
-    prNumber: job.prNumber,
-    headSha: job.headSha,
-    ref: job.headSha,
-  });
+  let result: Awaited<ReturnType<typeof enqueueCurrentReviewJobPreviewBoot>>;
+  try {
+    result = await enqueueCurrentReviewJobPreviewBoot({
+      workspaceId: job.workspaceId,
+      recordId: timeline.record.id,
+      jobId: job.id,
+      repo: job.repo,
+      prNumber: job.prNumber,
+      headSha: job.headSha,
+      ref: job.headSha,
+    });
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError) {
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json(
+      { error: "could not enqueue the exact-head preview" },
+      { status: 503 }
+    );
+  }
 
   return NextResponse.json(
     { id: result.id, deduped: result.deduped },

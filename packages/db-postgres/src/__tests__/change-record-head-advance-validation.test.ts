@@ -1,0 +1,89 @@
+import { describe, expect, it } from "vitest";
+import {
+  advanceConfirmedAcceptanceRecordPullRequestHead,
+  CurrentReviewJobNotCurrentError,
+  invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
+  type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
+} from "../queries/change_records.js";
+
+const HEAD = "a".repeat(40);
+const BEFORE = "b".repeat(40);
+const BASE: AdvanceConfirmedAcceptanceRecordPullRequestHeadInput = {
+  workspaceId: "00000000-0000-4000-8000-000000000001",
+  recordId: "00000000-0000-4000-8000-000000000002",
+  repo: "acme/widgets",
+  prNumber: 42,
+  headSha: HEAD,
+  event: "opened",
+  deliveryId: "delivery-1",
+  admitReviewJob: true,
+  headTransition: null,
+  source: "github_webhook",
+  prUrl: "https://github.com/acme/widgets/pull/42",
+};
+const TERMINAL_BASE: InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput = {
+  workspaceId: BASE.workspaceId,
+  recordId: BASE.recordId,
+  repo: BASE.repo,
+  prNumber: BASE.prNumber,
+  headSha: HEAD,
+  event: "merged",
+  deliveryId: "delivery-terminal-1",
+  source: "github_webhook",
+};
+
+describe("confirmed Acceptance Record PR head advance boundary", () => {
+  it.each([
+    ["abbreviated head", { headSha: "abc123def4567890" }],
+    ["non-GitHub source", { source: "manual" }],
+    ["unknown action", { event: "edited" }],
+    ["arbitrary PR URL", { prUrl: "https://example.com/pull/42" }],
+    ["non-synchronize transition", {
+      headTransition: { beforeHeadSha: BEFORE, afterHeadSha: HEAD },
+    }],
+  ])("rejects %s before opening a transaction", async (_label, override) => {
+    await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+      ...BASE,
+      ...override,
+    } as AdvanceConfirmedAcceptanceRecordPullRequestHeadInput)).rejects.toThrow(
+      "bounded exact PR provenance"
+    );
+  });
+
+  it("requires synchronize before/after and binds after to the exact head", async () => {
+    await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+      ...BASE,
+      event: "synchronize",
+      headTransition: null,
+    })).rejects.toThrow("bounded exact PR provenance");
+    await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+      ...BASE,
+      event: "synchronize",
+      headTransition: { beforeHeadSha: BEFORE, afterHeadSha: "c".repeat(40) },
+    })).rejects.toThrow("bounded exact PR provenance");
+  });
+
+  it("exports a stable typed noncurrent signal distinct from storage errors", () => {
+    const error = new CurrentReviewJobNotCurrentError("record_not_current");
+    expect(error).toMatchObject({
+      name: "CurrentReviewJobNotCurrentError",
+      code: "CURRENT_REVIEW_JOB_NOT_CURRENT",
+      reason: "record_not_current",
+    });
+  });
+
+  it.each([
+    ["abbreviated observed head", { headSha: "abc123def4567890" }],
+    ["unknown terminal action", { event: "synchronize" }],
+    ["non-GitHub source", { source: "manual" }],
+    ["unbounded delivery id", { deliveryId: ` ${"x".repeat(256)}` }],
+  ])("rejects terminal invalidation with %s before opening a transaction", async (_label, override) => {
+    await expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent({
+      ...TERMINAL_BASE,
+      ...override,
+    } as InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput)).rejects.toThrow(
+      "bounded exact GitHub provenance"
+    );
+  });
+});

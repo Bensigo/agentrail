@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   getPreviewBoot,
   getReviewJobById,
+  previewBootId,
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
@@ -204,6 +205,13 @@ async function exactCriterionEvidence(
   evidenceKeys?: string[]
 ): Promise<boolean> {
   const { job, verificationPlan } = proof;
+  const expectedPreviewBootId = previewBootId({
+    workspaceId: job.workspaceId,
+    repo: job.repo,
+    prNumber: job.prNumber,
+    headSha: job.headSha,
+    cycleId: job.id,
+  });
   const plansByCriterion = new Map(
     verificationPlan.plans.map((plan) => [plan.criterionId, plan])
   );
@@ -261,6 +269,8 @@ async function exactCriterionEvidence(
         exactPreviewUrl = null;
       }
       if (
+        receipt.previewBootId !== expectedPreviewBootId ||
+        boot.id !== expectedPreviewBootId ||
         boot.workspaceId !== job.workspaceId ||
         boot.repo !== job.repo ||
         boot.prNumber !== job.prNumber ||
@@ -277,7 +287,7 @@ async function exactCriterionEvidence(
     }
 
     const bootId = exactPreviewBootId(result.evidenceRefs);
-    if (!bootId) return false;
+    if (!bootId || bootId !== expectedPreviewBootId) return false;
     let boot = boots.get(bootId);
     if (!boot) {
       const resolved = await getPreviewBoot(bootId);
@@ -286,6 +296,7 @@ async function exactCriterionEvidence(
       boots.set(bootId, boot);
     }
     if (
+      boot.id !== expectedPreviewBootId ||
       boot.workspaceId !== job.workspaceId ||
       boot.repo !== job.repo ||
       boot.prNumber !== job.prNumber ||
@@ -355,7 +366,9 @@ export async function resolveCurrentReviewJobPlan(
     timeline.record.workspaceId !== job.workspaceId ||
     timeline.record.repo !== job.repo ||
     timeline.record.prNumber !== job.prNumber ||
-    !timeline.record.headShas.includes(job.headSha)
+    timeline.record.currentPrHeadSha !== job.headSha ||
+    timeline.record.currentPrHeadCycleId !== job.id ||
+    timeline.record.currentPrHeadAuthoritative !== true
   ) {
     return null;
   }

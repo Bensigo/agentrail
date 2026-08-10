@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { acceptanceContextOverlayManifestSha256 } from "@agentrail/db-postgres";
-import { readExactHeadGithubContext } from "./github-exact-head-context";
+import {
+  MAX_EXACT_HEAD_COMMIT_RESPONSE_BYTES,
+  MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES,
+  MAX_EXACT_HEAD_PR_RESPONSE_BYTES,
+  readExactHeadGithubContext,
+} from "./github-exact-head-context";
 
 const TOKEN = "ghs_installation-token-secret";
 const HEAD = "a".repeat(40);
@@ -68,18 +74,24 @@ describe("readExactHeadGithubContext", () => {
             status: "removed",
             blobSha: null,
             previousPath: null,
+            headRanges: null,
+            patchSha256: null,
           },
           {
             path: "apps/console/lib/renamed.ts",
             status: "renamed",
             blobSha: BLOB,
             previousPath: "apps/console/lib/old-name.ts",
+            headRanges: null,
+            patchSha256: null,
           },
           {
             path: "apps/console/lib/widget.ts",
             status: "modified",
             blobSha: BLOB,
             previousPath: null,
+            headRanges: null,
+            patchSha256: null,
           },
         ],
         manifestSha256: acceptanceContextOverlayManifestSha256({
@@ -341,6 +353,47 @@ describe("readExactHeadGithubContext", () => {
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
 
+  it.each([
+    ["PR", MAX_EXACT_HEAD_PR_RESPONSE_BYTES, "invalid_pr_metadata", 1],
+    ["commit", MAX_EXACT_HEAD_COMMIT_RESPONSE_BYTES, "invalid_head_commit", 2],
+    ["compare", MAX_EXACT_HEAD_COMPARE_RESPONSE_BYTES, "invalid_compare_manifest", 3],
+  ])("bounds declared %s response bodies without surfacing their content", async (_label, cap, reason, calls) => {
+    const oversized = new Response(`upstream body must not leak ${TOKEN}`, {
+      status: 200,
+      headers: { "content-length": String(cap + 1) },
+    });
+    const responses = [
+      json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
+      json(200, { sha: HEAD, tree: { sha: TREE } }),
+      json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/a.ts", status: "modified", sha: BLOB }] }),
+    ];
+    responses[calls - 1] = oversized;
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(responses[0]!)
+      .mockResolvedValueOnce(responses[1]!)
+      .mockResolvedValueOnce(responses[2]!) as unknown as typeof fetch;
+
+    const result = await readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
+    expect(result).toEqual({ ok: false, kind: "not_proven", reason });
+    expect(global.fetch).toHaveBeenCalledTimes(calls);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it("aborts a stalled response body under the same timeout", async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn((_url: string, init: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof fetch;
+    const pending = readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
+    await vi.advanceTimersByTimeAsync(8000);
+    await expect(pending).resolves.toEqual({ ok: false, kind: "not_proven", reason: "github_unavailable" });
+  });
+
   it("rejects malformed PR metadata before any immutable-object request", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response("not JSON", { status: 200, headers: { "content-type": "application/json" } })
@@ -435,5 +488,55 @@ describe("readExactHeadGithubContext", () => {
     expect(first.ok && second.ok && first.snapshot.manifestSha256).toBe(
       second.ok ? second.snapshot.manifestSha256 : "not-a-snapshot"
     );
+  });
+
+  it("normalizes HEAD-side patch ranges, hashes raw patches, and leaves the v1 manifest unchanged", async () => {
+    const patch = [
+      "@@ -2,2 +2,3 @@ export const value = 1;",
+      " line two",
+      "+line three",
+      "@@ -20 +22,2 @@ export const other = 1;",
+      "+line twenty-two",
+    ].join("\n");
+    const changed = [{ filename: "src/widget.ts", status: "modified", sha: BLOB, patch }];
+    const exactResponses = (files: unknown[]) => [
+      json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
+      json(200, { sha: HEAD, tree: { sha: TREE } }),
+      json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files }),
+    ];
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(exactResponses(changed)[0]).mockResolvedValueOnce(exactResponses(changed)[1]).mockResolvedValueOnce(exactResponses(changed)[2])
+      .mockResolvedValueOnce(exactResponses(changed)[0]).mockResolvedValueOnce(exactResponses(changed)[1]).mockResolvedValueOnce(exactResponses(changed)[2]) as unknown as typeof fetch;
+    const first = await readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
+    const second = await readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
+
+    if (!first.ok || !second.ok) throw new Error("expected exact context snapshots");
+    expect(first.snapshot.changedFiles[0]).toEqual({
+      path: "src/widget.ts", status: "modified", blobSha: BLOB, previousPath: null,
+      headRanges: [{ startLine: 2, endLine: 4 }, { startLine: 22, endLine: 23 }],
+      patchSha256: createHash("sha256").update(patch, "utf8").digest("hex"),
+    });
+    expect(second.snapshot.changedFiles).toEqual(first.snapshot.changedFiles);
+    expect(first.snapshot.manifestSha256).toBe(acceptanceContextOverlayManifestSha256({
+      schemaVersion: 1, baseSha: BASE, mergeBaseSha: MERGE_BASE, headSha: HEAD,
+      files: [{ path: "src/widget.ts", status: "modified", blobSha: BLOB, previousPath: null }],
+    }));
+  });
+
+  it("keeps a missing patch explicit and rejects malformed hunk syntax", async () => {
+    const responses = [
+      json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
+      json(200, { sha: HEAD, tree: { sha: TREE } }),
+      json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/no-patch.ts", status: "modified", sha: BLOB }] }),
+      json(200, { head: { sha: HEAD }, base: { sha: BASE } }),
+      json(200, { sha: HEAD, tree: { sha: TREE } }),
+      json(200, { base_commit: { sha: BASE }, merge_base_commit: { sha: MERGE_BASE }, files: [{ filename: "src/bad-patch.ts", status: "modified", sha: BLOB, patch: "@@ -nope +1 @@" }] }),
+    ];
+    global.fetch = vi.fn();
+    for (const response of responses) vi.mocked(global.fetch).mockResolvedValueOnce(response);
+    const missing = await readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD });
+    expect(missing).toMatchObject({ ok: true, snapshot: { changedFiles: [{ headRanges: null, patchSha256: null }] } });
+    await expect(readExactHeadGithubContext({ token: TOKEN, repo: "bensigo/agentrail", prNumber: 82, expectedHeadSha: HEAD }))
+      .resolves.toEqual({ ok: false, kind: "not_proven", reason: "invalid_compare_manifest" });
   });
 });

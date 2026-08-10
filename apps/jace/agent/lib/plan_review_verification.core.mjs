@@ -179,6 +179,31 @@ export function normalizeDataRequest(value) {
   return { ...base, expectedJson };
 }
 
+/** The only preview-local job operation R7.2 can execute: one fixed POST,
+ * followed immediately by one bounded scalar JSON readback. */
+export function normalizeJobRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value, ["trigger", "readback"])) return null;
+  const trigger = value.trigger;
+  const readback = value.readback;
+  if (!trigger || typeof trigger !== "object" || Array.isArray(trigger) || !exactKeys(trigger, ["method", "path", "expectedStatus"])) return null;
+  if (!readback || typeof readback !== "object" || Array.isArray(readback) || !exactKeys(readback, ["method", "path", "expectedStatus", "expectedJson"])) return null;
+  // Reuse API's path/status hardening without loosening its GET-only contract.
+  const triggerBase = normalizeApiRequest({ method: "GET", path: trigger.path, expectedStatus: trigger.expectedStatus });
+  const readbackBase = normalizeDataRequest(readback);
+  const triggerMatch = (triggerBase?.path ?? "").match(/^\/__agentrail\/verification\/jobs\/([A-Za-z0-9._-]{1,64})\/trigger$/u);
+  const readbackMatch = (readbackBase?.path ?? "").match(/^\/__agentrail\/verification\/jobs\/([A-Za-z0-9._-]{1,64})\/result$/u);
+  if (
+    !triggerBase || triggerBase.method !== "GET" || !readbackBase || trigger.method !== "POST" ||
+    trigger.expectedStatus < 200 || trigger.expectedStatus > 299 ||
+    readbackBase.expectedStatus < 200 || readbackBase.expectedStatus > 299 ||
+    !triggerMatch || !readbackMatch || triggerMatch[1] !== readbackMatch[1]
+  ) return null;
+  return {
+    trigger: { method: "POST", path: triggerBase.path, expectedStatus: trigger.expectedStatus },
+    readback: { method: "GET", path: readbackBase.path, expectedStatus: readbackBase.expectedStatus, expectedJson: readbackBase.expectedJson },
+  };
+}
+
 /**
  * Validate and project the complete plan set. Projection means model-supplied
  * extras can never ride to the console as an undeclared second write shape.
@@ -213,6 +238,11 @@ export function normalizePlans(value) {
         const dataRequest = normalizeDataRequest(raw.dataRequest);
         if (!dataRequest) return null;
         plans.push({ criterionId, modality, status, flow, dataRequest });
+      } else if (modality === "job") {
+        if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "jobRequest"])) return null;
+        const jobRequest = normalizeJobRequest(raw.jobRequest);
+        if (!jobRequest) return null;
+        plans.push({ criterionId, modality, status, flow, jobRequest });
       } else return null;
     } else if (status === "not_testable") {
       if (

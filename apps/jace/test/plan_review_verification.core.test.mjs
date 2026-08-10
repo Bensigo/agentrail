@@ -5,6 +5,7 @@ import {
   normalizeApiRequest,
   normalizeDataPointer,
   normalizeDataRequest,
+  normalizeJobRequest,
   normalizePlans,
   normalizeUiSteps,
   planReviewVerification,
@@ -88,6 +89,29 @@ test("normalizeDataRequest admits only bounded strict JSON-scalar readback descr
     },
   ])
     assert.equal(normalizeDataRequest(invalid), null);
+});
+
+test("normalizeJobRequest admits only one paired preview-local POST and immediate scalar readback", () => {
+  const jobRequest = {
+    trigger: { method: "POST", path: "/__agentrail/verification/jobs/run-1/trigger", expectedStatus: 202 },
+    readback: {
+      method: "GET",
+      path: "/__agentrail/verification/jobs/run-1/result",
+      expectedStatus: 200,
+      expectedJson: [{ pointer: "/ready", equals: true }],
+    },
+  };
+  assert.deepEqual(normalizeJobRequest(jobRequest), jobRequest);
+  for (const invalid of [
+    { ...jobRequest, trigger: { ...jobRequest.trigger, method: "GET" } },
+    { ...jobRequest, trigger: { ...jobRequest.trigger, path: "/__agentrail/verification/jobs/run-1/result" } },
+    { ...jobRequest, readback: { ...jobRequest.readback, path: "/__agentrail/verification/jobs/other/result" } },
+    { ...jobRequest, trigger: { ...jobRequest.trigger, path: "/__agentrail/verification/jobs/run%2d1/trigger" } },
+    { ...jobRequest, trigger: { ...jobRequest.trigger, expectedStatus: 199 } },
+    { ...jobRequest, readback: { ...jobRequest.readback, expectedStatus: 300 } },
+  ]) assert.equal(normalizeJobRequest(invalid), null);
+  const jobPlan = { criterionId: "ac-job", modality: "job", status: "planned", flow: "Run and immediately read readiness.", jobRequest };
+  assert.deepEqual(normalizePlans([jobPlan]), [jobPlan]);
 });
 
 test("normalizePlans requires unique criteria and exact planned/not_testable alternatives", () => {

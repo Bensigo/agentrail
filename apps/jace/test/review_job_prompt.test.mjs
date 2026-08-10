@@ -106,7 +106,11 @@ test("PIN: R7.2 plans are structured, with API proof confined to one status-only
   assert.match(prompt, /headers, body, or credentials in the plan/);
   assert.match(prompt, /dataRequest: exactly method GET, one safe relative path, expectedStatus, and one to twelve exact \{pointer,equals\} JSON-scalar assertions/);
   assert.match(prompt, /Secrets, auth, external sources, arbitrary query, mutation, raw bodies, and non-scalar semantics remain modality data with status not_testable/);
-  assert.match(prompt, /Every job criterion MUST use modality job, status not_testable/);
+  assert.match(prompt, /A planned job criterion needs modality job, status planned/);
+  assert.match(prompt, /\/__agentrail\/verification\/jobs\/<id>\/trigger/);
+  assert.match(prompt, /\/__agentrail\/verification\/jobs\/<same-id>\/result/);
+  assert.match(prompt, /\[A-Za-z0-9\._-\]\{1,64\}/);
+  assert.match(prompt, /Body, auth, external, arbitrary, asynchronous-not-immediate, raw-body, and non-scalar jobs remain modality job with status not_testable/);
   assert.match(prompt, /server owns the user-visible modality policy/);
 });
 
@@ -126,6 +130,7 @@ test("PIN: only server-attested UI or API receipts may produce proven or failed"
   assert.match(prompt, /copy its state, expected, observed, and evidenceRef verbatim/);
   assert.match(prompt, /call execute_review_api once/);
   assert.match(prompt, /call execute_review_data once/);
+  assert.match(prompt, /call execute_review_job once/);
   assert.match(prompt, /Include every successful UI, API, or data evidenceKey/);
   assert.match(prompt, /only its server-attested receipt may produce proven or failed/);
   assert.match(prompt, /redirect errors and no response-body read/);
@@ -137,8 +142,8 @@ test("PIN: plan-declared not_testable results carry their stored reason", () => 
 });
 
 test("PIN: includes custodied screenshots and rejects arbitrary artifact keys", () => {
-  assert.match(reviewJobPrompt(JOB), /every successful UI, API, or data execution evidenceKey, and no other evidenceKeys/);
-  assert.match(reviewJobPrompt(JOB), /Include every successful UI, API, or data evidenceKey in evidenceKeys/);
+  assert.match(reviewJobPrompt(JOB), /every successful UI, API, or data execution evidenceKey, every successful job execution evidenceKey, and no other evidenceKeys/);
+  assert.match(reviewJobPrompt(JOB), /Include every successful UI, API, or data evidenceKey in evidenceKeys, and include every successful job evidenceKey too/);
 });
 
 test("PIN: carries a rung-2 boot log key into evidenceKeys", () => {
@@ -197,6 +202,8 @@ test("REVIEW_JOB_RESULT_SCHEMA: criterion results are explicit terminal, evidenc
   assert.deepEqual(results.items.required, ["criterionId", "state", "expected", "observed", "evidenceRefs"]);
   assert.deepEqual(results.items.properties.state.enum, ["proven", "failed", "not_proven", "not_testable"]);
   assert.match(results.description, /server-attested proven\/failed state/);
+  assert.match(results.description, /server-attested proven\/not_proven state/);
+  assert.match(results.description, /job mismatches never become failed/);
 });
 
 test("REVIEW_JOB_RESULT_SCHEMA: posted's description instructs failing loudly rather than reporting posted:false (the honesty coupling review_job_worker.core.mjs depends on)", () => {

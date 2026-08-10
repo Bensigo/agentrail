@@ -59,7 +59,17 @@ import {
   buildStoredDataVerificationRequest,
   dataScalarKind,
   reviewDataScalarHmac,
+  buildStoredJobVerificationRequest,
+  reviewJobScalarHmac,
 } from "../../../../../../../lib/review-job-verification-plan";
+import {
+  buildReviewJobAttempt,
+  buildReviewJobCardReservation,
+  buildReviewJobResult,
+  reviewJobAttemptEventKey,
+  reviewJobCardReservationEventKey,
+  reviewJobResultEventKey,
+} from "../../../../../../../lib/review-job-job-execution";
 import { POST } from "./route";
 
 const secret = "test-secret";
@@ -74,6 +84,8 @@ const apiEvidenceKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/response.json";
 const dataEvidenceKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/data.json";
+const jobEvidenceKey =
+  "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/job.json";
 const previewUrl = "http://127.0.0.1:43123";
 const dataHmacKey = {
   keyId: "route-test-2026-08",
@@ -147,6 +159,24 @@ function observedDataScalar(
       pointer: "/enabled",
       value,
     }),
+  };
+}
+
+function storedJobRequest(criterionId = "AC-1") {
+  return buildStoredJobVerificationRequest({
+    value: {
+      trigger: { method: "POST", path: "/__agentrail/verification/jobs/reindex-1/trigger", expectedStatus: 202 },
+      readback: { method: "GET", path: "/__agentrail/verification/jobs/reindex-1/result", expectedStatus: 200, expectedJson: [{ pointer: "/state", equals: "complete" }] },
+    },
+    binding: { workspaceId, recordId, jobId, headSha, contractId: contract.id, contractVersion: contract.version, criterionId },
+    hmacKey: dataHmacKey,
+  })!;
+}
+
+function observedJobScalar(request: ReturnType<typeof storedJobRequest>, value: string) {
+  return {
+    pointer: "/state", found: true, observedType: dataScalarKind(value),
+    observedHmacSha256: reviewJobScalarHmac({ key: dataHmacKey.key, context: request.readback.digestContext, pointer: "/state", value }),
   };
 }
 const planPayload = {
@@ -404,6 +434,51 @@ function installDataReceipt(observedStatus = 200) {
       criterionResults: [{ criterionId: "AC-1", state: result.state, expected: result.expected, observed: result.observed, evidenceRefs: [result.evidenceRef] }],
       verdict: result.state, summaryLine: `ada/widgets #98 — ${result.state}`,
       evidenceKeys: [dataEvidenceKey],
+    },
+  };
+}
+
+/** A server-custodied bodyless POST plus immediate HMAC-only readback. */
+function installJobReceipt(input: { triggerStatus?: number; readbackStatus?: number | null; observedValue?: string } = {}) {
+  const triggerStatus = input.triggerStatus ?? 202;
+  const readbackStatus = input.readbackStatus === undefined ? 200 : input.readbackStatus;
+  const jobRequest = storedJobRequest();
+  const verificationPlan = {
+    ...planPayload,
+    plans: [{
+      ...planPayload.plans[0], modality: "job", userVisible: false,
+      flow: "Trigger the bounded maintenance job and immediately read its result.",
+      uiSteps: null, apiRequest: null, dataRequest: null, jobRequest,
+    }],
+  };
+  const receiptTimeline: typeof timeline = {
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
+  };
+  const proof = { job, timeline: receiptTimeline, contract: { id: contract.id, version: contract.version, criteria: contract.contract.acceptanceCriteria }, verificationPlan } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = { id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl };
+  const attempt = buildReviewJobAttempt({ proof, plan, boot })!;
+  const observations = triggerStatus === 202 && readbackStatus === 200
+    ? [observedJobScalar(jobRequest, input.observedValue ?? "complete")]
+    : [];
+  const result = buildReviewJobResult({ attempt, plan, observedTriggerStatus: triggerStatus, observedReadbackStatus: readbackStatus, observations, artifactKey: jobEvidenceKey, contentSha256: "a".repeat(64) })!;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    ...contract, contract: { acceptanceCriteria: contract.contract.acceptanceCriteria.map((criterion) => ({ ...criterion, userVisible: false })) },
+  }] as never);
+  receiptTimeline.events.push(
+    { eventKey: reviewJobAttemptEventKey({ proof, plan }), payloadRef: attempt },
+    { eventKey: reviewJobCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobCardReservation(result) },
+    { eventKey: reviewJobResultEventKey({ proof, plan }), payloadRef: result },
+  );
+  timeline = receiptTimeline;
+  return {
+    attempt, result, plan, jobRequest,
+    body: {
+      ...validBody,
+      criterionResults: [{ criterionId: "AC-1", state: result.state, expected: result.expected, observed: result.observed, evidenceRefs: [result.evidenceRef] }],
+      verdict: result.state, summaryLine: `ada/widgets #98 — ${result.state}`,
+      evidenceKeys: [jobEvidenceKey],
     },
   };
 }
@@ -1403,5 +1478,72 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(response.status).toBe(409);
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("posts only the exact custodied job receipt; a trigger/readback/assertion mismatch is not_proven", async () => {
+    for (const [args, expectedState] of [
+      [{}, "proven"],
+      [{ triggerStatus: 503, readbackStatus: null }, "not_proven"],
+      [{ readbackStatus: 503 }, "not_proven"],
+      [{ observedValue: "running" }, "not_proven"],
+    ] as const) {
+      const fixture = installJobReceipt(args);
+      const response = await POST(request(fixture.body), params);
+      expect(response.status).toBe(201);
+      expect(fixture.body.verdict).toBe(fixture.result.state);
+      expect(fixture.result.state).toBe(expectedState);
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+    }
+  });
+
+  it("permits only an absent or exact pending job receipt to use R7.1 fallback; no job receipt can attest failed", async () => {
+    installJobReceipt();
+    timeline.events = timeline.events.slice(0, 1);
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    installJobReceipt();
+    timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":job-result:"));
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    const fixture = installJobReceipt();
+    expect((await POST(request(validBody), params)).status).toBe(409);
+    expect((await POST(request({ ...fixture.body, verdict: "failed", summaryLine: "ada/widgets #98 — failed", criterionResults: [{ ...fixture.body.criterionResults[0], state: "failed" }] }), params)).status).toBe(409);
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds malformed or mismatched job custody before GitHub", async () => {
+    const cases: Array<[string, (fixture: ReturnType<typeof installJobReceipt>) => void, Record<string, unknown> | null]> = [
+      ["result-only", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":job-attempt:")); }, null],
+      ["missing reservation", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":job-card:")); }, null],
+      ["attempt", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-attempt:"))!; event.payloadRef = { ...fixture.attempt, planDigest: "forged" }; }, null],
+      ["plan", () => { timeline.events[0]!.payloadRef = { ...timeline.events[0]!.payloadRef, plans: [{ ...(timeline.events[0]!.payloadRef.plans as Array<Record<string, unknown>>)[0]!, jobRequest: storedJobRequest("other") }] }; }, null],
+      ["head", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-result:"))!; event.payloadRef = { ...fixture.result, headSha: "foreign" }; }, null],
+      ["reservation", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-card:"))!; event.payloadRef = buildReviewJobCardReservation({ ...fixture.result, artifactKey: "review-evidence/competing.json" }); }, null],
+      ["observation", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observed: "[REDACTED_MISMATCH]", observedHmacSha256: "f".repeat(64), passed: false }] }; }, null],
+      ["HMAC", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-result:"))!; event.payloadRef = { ...fixture.result, assertions: [{ ...fixture.result.assertions[0], observedHmacSha256: "f".repeat(64) }] }; }, null],
+      ["state", (fixture) => { const event = timeline.events.find((item) => item.eventKey.includes(":job-result:"))!; event.payloadRef = { ...fixture.result, state: "failed" }; }, null],
+      ["boot", () => {}, { headSha: "foreign" }],
+      ["artifact boot", () => {}, { url: "http://127.0.0.1:49999" }],
+    ];
+    for (const [name, arrange, bootOverride] of cases) {
+      const fixture = installJobReceipt(); arrange(fixture);
+      if (bootOverride) vi.mocked(getPreviewBoot).mockResolvedValueOnce({ id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl, bootLogKey, ...bootOverride } as never);
+      expect((await POST(request(fixture.body), params)).status, name).toBe(409);
+    }
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("requires exactly the job card key and cannot downgrade a valid job receipt", async () => {
+    for (const evidenceKeys of [[], [bootLogKey], [jobEvidenceKey, jobEvidenceKey], [jobEvidenceKey, "review-evidence/extra.json"], ["review-evidence/extra.json"]]) {
+      const fixture = installJobReceipt();
+      expect((await POST(request({ ...fixture.body, evidenceKeys }), params)).status, JSON.stringify(evidenceKeys)).toBe(409);
+    }
+    installJobReceipt();
+    expect((await POST(request(validBody), params)).status).toBe(409);
   });
 });

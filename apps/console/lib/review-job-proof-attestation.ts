@@ -20,6 +20,9 @@ import {
 import {
   resolveReviewJobDataResult,
 } from "./review-job-data-execution";
+import {
+  resolveReviewJobResult,
+} from "./review-job-job-execution";
 
 export type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
 
@@ -227,7 +230,9 @@ async function exactCriterionEvidence(
         ? resolveReviewJobApiResult({ proof, plan })
         : plan.modality === "data"
           ? resolveReviewJobDataResult({ proof, plan })
-          : null;
+          : plan.modality === "job"
+            ? resolveReviewJobResult({ proof, plan })
+            : null;
     if (!receiptResolution || receiptResolution.status === "invalid") return false;
     const receipt = receiptResolution.result;
     if (receipt) {

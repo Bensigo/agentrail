@@ -2207,7 +2207,7 @@ export type ResolveAcceptanceContextPackCustodyInput = {
 
 export type AcceptanceContextPackCustodyResolution = {
   sourceSnapshot: Pick<AcceptanceContextPackSnapshotInput,
-    "recordId" | "reviewJobId" | "acceptanceContractId" | "acceptanceContractVersion" | "repo" | "prNumber"
+    "workspaceId" | "recordId" | "reviewJobId" | "acceptanceContractId" | "acceptanceContractVersion" | "repo" | "prNumber"
     | "expectedHeadSha" | "baseSha" | "mergeBaseSha" | "headTreeSha" | "packetIds" | "packetSetSha256"
     | "correctionPacketPayloadSetSha256" | "compilerVersion" | "baseIndex" | "overlay" | "provenance"
   > & { id: string };
@@ -2327,7 +2327,7 @@ export async function resolveAcceptanceContextPackCustody(
     }
     return {
       sourceSnapshot: {
-        id: snapshot.id, recordId: snapshot.recordId, reviewJobId: snapshot.reviewJobId,
+        id: snapshot.id, workspaceId: snapshot.workspaceId, recordId: snapshot.recordId, reviewJobId: snapshot.reviewJobId,
         acceptanceContractId: snapshot.acceptanceContractId, acceptanceContractVersion: snapshot.acceptanceContractVersion,
         repo: snapshot.repo, prNumber: snapshot.prNumber, expectedHeadSha: snapshot.expectedHeadSha,
         baseSha: snapshot.baseSha, mergeBaseSha: snapshot.mergeBaseSha, headTreeSha: snapshot.headTreeSha,

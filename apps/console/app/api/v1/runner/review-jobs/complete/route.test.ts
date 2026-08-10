@@ -25,6 +25,9 @@ vi.mock("@agentrail/db-postgres", async (importOriginal) => {
 vi.mock("../../result/notify", () => ({
   sendWorkspaceNotification: vi.fn(),
 }));
+vi.mock("../../../../../../lib/github-correction-dispatch-production", () => ({
+  produceAndRunGithubCorrectionDispatch: vi.fn(),
+}));
 
 import { POST } from "./route";
 import {
@@ -38,6 +41,7 @@ import {
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { sendWorkspaceNotification } from "../../result/notify";
+import { produceAndRunGithubCorrectionDispatch } from "../../../../../../lib/github-correction-dispatch-production";
 import {
   R7_READY_NOT_PROVEN_OBSERVATION,
   type CriterionResult,
@@ -99,6 +103,7 @@ const mockGetReviewJobById = vi.mocked(getReviewJobById);
 const mockReadAcceptanceContracts = vi.mocked(readAcceptanceContracts);
 const mockReadChangeRecordTimelineByPr = vi.mocked(readChangeRecordTimelineByPr);
 const mockNotify = vi.mocked(sendWorkspaceNotification);
+const mockProduceCorrectionDispatch = vi.mocked(produceAndRunGithubCorrectionDispatch);
 
 // Central-secret auth — same idiom as the sibling claim route's tests.
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
@@ -687,6 +692,12 @@ beforeEach(() => {
     inserted: true,
   } as never);
   mockNotify.mockResolvedValue(undefined as never);
+  mockProduceCorrectionDispatch.mockResolvedValue({
+    kind: "carrier_accepted",
+    dispatchId: "00000000-0000-4000-8000-000000000099",
+    githubCommentId: "123",
+    githubCommentUrl: "https://github.com/acme/widgets/issues/42#issuecomment-123",
+  });
 });
 
 afterEach(() => {
@@ -810,14 +821,60 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       const res = await POST(postReq(VALID_POSTED_BODY));
 
       expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
       expect(mockComplete).toHaveBeenCalledTimes(1);
       expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockProduceCorrectionDispatch).toHaveBeenCalledWith({
+        workspaceId: RUNNING_JOB.workspaceId,
+        jobId: RUNNING_JOB.id,
+      });
+      expect(mockReadChangeRecordTimelineByPr.mock.invocationCallOrder[0]).toBeLessThan(
+        mockProduceCorrectionDispatch.mock.invocationCallOrder[0]!
+      );
+      expect(mockProduceCorrectionDispatch.mock.invocationCallOrder[0]).toBeLessThan(
+        mockComplete.mock.invocationCallOrder[0]!
+      );
       expect(mockAppendChangeRecordEventsAtomically).not.toHaveBeenCalled();
       expect(
         mockAppendChangeRecordEvent.mock.calls.filter(([input]) =>
           input.eventKey.startsWith(`review:correction:${RUNNING_JOB.id}:`)
         )
       ).toEqual([]);
+    });
+
+    it("holds completion and notification until the selected carrier receipt is confirmed", async () => {
+      mockProduceCorrectionDispatch.mockResolvedValueOnce({
+        kind: "held",
+        reason: "storage_unavailable",
+      });
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        error: "the selected correction dispatch could not be stored",
+        correctionDispatch: "held",
+      });
+      expect(mockComplete).not.toHaveBeenCalled();
+      expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it("completes a proven review without creating an unnecessary correction dispatch", async () => {
+      const fixture = uiReceiptFixture(true);
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never
+      );
+      mockComplete.mockResolvedValueOnce({
+        ...POSTED_JOB,
+        verdict: fixture.result.state,
+      } as never);
+
+      const res = await POST(postReq(fixture.body));
+
+      expect(res.status).toBe(200);
+      expect(mockProduceCorrectionDispatch).not.toHaveBeenCalled();
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+      expect(mockNotify).toHaveBeenCalledTimes(1);
     });
 
     it("holds missing, malformed, or forged correction packet custody before completion or notification", async () => {

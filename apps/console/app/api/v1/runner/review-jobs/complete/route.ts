@@ -12,7 +12,11 @@ import {
   resolveExactReviewJobProof,
   reviewOutcomeDigest,
 } from "../../../../../../lib/review-job-proof-attestation";
-import { hasExactReviewJobCorrectionPackets } from "../../../../../../lib/review-job-correction-packet";
+import {
+  buildReviewJobCorrectionPackets,
+  hasExactReviewJobCorrectionPackets,
+} from "../../../../../../lib/review-job-correction-packet";
+import { produceAndRunGithubCorrectionDispatch } from "../../../../../../lib/github-correction-dispatch-production";
 import { sendWorkspaceNotification } from "../../result/notify";
 
 /**
@@ -20,8 +24,12 @@ import { sendWorkspaceNotification } from "../../result/notify";
  *
  * Arc B §3 (reviewer of record, spec
  * docs/superpowers/specs/2026-07-31-reviewer-of-record-design.md). The
- * headless Jace review worker's completion seam: resolve a claimed
- * (`running`) `review_jobs` row via the guarded `completeReviewJob`
+ * headless Jace review worker's completion seam. For an exactly attested
+ * posted review with correction packets, it first runs the one selected
+ * GitHub correction carrier and requires a durable `carrier_accepted`
+ * receipt; that receipt does not claim agent start, acknowledgement, or a
+ * repair head. It then resolves the claimed (`running`) `review_jobs` row via
+ * the guarded `completeReviewJob`
  * (`@agentrail/db-postgres` — `WHERE id = $1 AND state = 'running'`, so a
  * duplicate/late completion is a no-op), then — ONLY on `outcome: "posted"`
  * — fire the owner notification exactly once through the console's EXISTING
@@ -242,6 +250,35 @@ export async function POST(request: NextRequest) {
         },
         { status: 409 }
       );
+    }
+    const correctionPackets = buildReviewJobCorrectionPackets({
+      proof,
+      criterionResults: body.criterionResults,
+    });
+    if (!correctionPackets) {
+      return NextResponse.json(
+        { error: "the exact correction packet set could not be reconstructed" },
+        { status: 409 }
+      );
+    }
+    if (correctionPackets.length > 0) {
+      const correction = await produceAndRunGithubCorrectionDispatch({
+        workspaceId: proof.job.workspaceId,
+        jobId: proof.job.id,
+      });
+      if (correction.kind !== "carrier_accepted") {
+        const unavailable = correction.kind === "held"
+          && correction.reason === "storage_unavailable";
+        return NextResponse.json(
+          {
+            error: unavailable
+              ? "the selected correction dispatch could not be stored"
+              : "the selected correction dispatch did not reach a confirmed GitHub carrier receipt",
+            correctionDispatch: correction.kind,
+          },
+          { status: unavailable ? 503 : 409 }
+        );
+      }
     }
     // The posted URL is server-custodied by the post-review route. A model
     // cannot substitute a different URL during the later completion call.

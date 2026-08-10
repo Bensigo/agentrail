@@ -6,12 +6,14 @@ import {
   changeRecordEvents,
   changeRecords,
   acceptanceBuilderRoutes,
+  acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
   type AcceptanceBuilderRouteRow,
+  type AcceptanceCompiledContextPackRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
@@ -21,6 +23,11 @@ import {
 import { reviewJobs } from "../schema/review_jobs.js";
 import { repositories } from "../schema/repositories.js";
 import { wikiPages } from "../schema/wiki_pages.js";
+import {
+  exactGitTreeInclusionProofIdentity,
+  verifyExactGitTreeInclusionProof,
+  type ExactGitTreeInclusionProof,
+} from "../exact-git-tree-path-proof.js";
 
 const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
@@ -1591,8 +1598,43 @@ function canonicalJson(value: unknown): string | null {
   return `{${entries.join(",")}}`;
 }
 
+/**
+ * Canonical JSON for the compiled-Pack trust boundary. Unlike legacy snapshot
+ * identities, keys are ordered by their UTF-8 bytes so Node and DB consumers
+ * can re-hash the exact compiler/source-custody payload without locale drift.
+ */
+export function acceptanceContextPackCanonicalJson(value: unknown): string {
+  const encode = (item: unknown): string => {
+    if (item === null || typeof item === "string" || typeof item === "boolean") return JSON.stringify(item);
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw new Error("Context Pack canonical JSON cannot encode a non-finite number");
+      return JSON.stringify(item);
+    }
+    if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;
+    if (!isRecord(item) || Object.getPrototypeOf(item) !== Object.prototype) {
+      throw new Error("Context Pack canonical JSON requires plain JSON values");
+    }
+    const keys = Object.keys(item).sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
+    return `{${keys.map((key) => {
+      const nested = item[key];
+      if (nested === undefined) throw new Error("Context Pack canonical JSON cannot encode undefined");
+      return `${JSON.stringify(key)}:${encode(nested)}`;
+    }).join(",")}}`;
+  };
+  return encode(value);
+}
+
+/** SHA-256 counterpart of {@link acceptanceContextPackCanonicalJson}. */
+export function acceptanceContextPackCanonicalSha256(value: unknown): string {
+  return createHash("sha256").update(acceptanceContextPackCanonicalJson(value), "utf8").digest("hex");
+}
+
 function positiveBoundedInteger(value: unknown, max: number): value is number {
   return Number.isInteger(value) && (value as number) > 0 && (value as number) <= max;
+}
+
+function nonNegativeBoundedInteger(value: unknown, max: number): value is number {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= max;
 }
 
 function canonicalSha256(value: unknown): string {
@@ -2234,7 +2276,14 @@ export type AcceptanceContextPackCustodyResolution = {
 export async function resolveAcceptanceContextPackCustody(
   input: ResolveAcceptanceContextPackCustodyInput
 ): Promise<AcceptanceContextPackCustodyResolution> {
-  return db.transaction(async (tx) => {
+  return db.transaction((tx) => resolveAcceptanceContextPackCustodyInTransaction(tx, input));
+}
+
+/** Shared transaction-scoped authority check for custody resolution and Pack persistence. */
+async function resolveAcceptanceContextPackCustodyInTransaction(
+  tx: DbTransaction,
+  input: ResolveAcceptanceContextPackCustodyInput
+): Promise<AcceptanceContextPackCustodyResolution> {
     const snapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
       eq(acceptanceContextPackSnapshots.id, input.sourceSnapshotId),
       eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
@@ -2325,7 +2374,7 @@ export async function resolveAcceptanceContextPackCustody(
         throw new Error("Context Pack custody Wiki page identity or body bounds no longer match the snapshot");
       }
     }
-    return {
+  return {
       sourceSnapshot: {
         id: snapshot.id, workspaceId: snapshot.workspaceId, recordId: snapshot.recordId, reviewJobId: snapshot.reviewJobId,
         acceptanceContractId: snapshot.acceptanceContractId, acceptanceContractVersion: snapshot.acceptanceContractVersion,
@@ -2344,8 +2393,741 @@ export async function resolveAcceptanceContextPackCustody(
         inputsHashSha256: page.inputsHash, pageBodySha256: wikiPageBodySha256(page.bodyMd),
         stale: page.stale, bodyMd: page.bodyMd,
       })),
-    };
+  };
+}
+
+const COMPILED_PACK_BYTE_BUDGET = 65_536;
+const COMPILED_PACK_MAX_SOURCES = 64;
+const COMPILED_PACK_MAX_SELECTED_RANGES = 64;
+const SOURCE_CUSTODY_MAX_RECORDS = 128;
+const SOURCE_CUSTODY_MAX_FILE_BYTES = 256 * 1024;
+const SOURCE_CUSTODY_MAX_RECORD_BYTES = 1024 * 1024;
+const SOURCE_CUSTODY_MAX_DIRECT_READS = 16;
+const SOURCE_CUSTODY_MAX_DIRECT_BYTES = 512 * 1024;
+
+export type AcceptanceCompiledContextPackInput = {
+  kind: "compiled_acceptance_context_pack";
+  version: 1;
+  binding: Record<string, unknown>;
+  compiler: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+  sourceCustodyReceipt: Record<string, unknown>;
+  /** Durable handles only; native Git tree bodies remain transient. */
+  exactHeadDependencyTreeProofs: AcceptanceCompiledContextPackDependencyTreeProof[];
+  representations: Record<string, unknown>;
+  renderedByteCount: number;
+  packSha256: string;
+};
+
+/**
+ * Metadata retained for each selected exact-head dependency. Its matching
+ * native Git tree inclusion proof is supplied only at the write boundary.
+ */
+export type AcceptanceCompiledContextPackDependencyTreeProof = {
+  path: string;
+  blobSha: string;
+  proofIdentitySha256: string;
+};
+
+/**
+ * Ephemeral exact-source bytes used only to rederive Git/range identities at
+ * the write boundary. These bytes are never inserted into Postgres.
+ */
+export type AcceptanceCompiledContextPackExactSourceProof = {
+  kind: "exact_head_overlay" | "exact_head_dependency";
+  path: string;
+  content: string;
+};
+
+export type RecordAcceptanceCompiledContextPackInput = {
+  workspaceId: string;
+  sourceSnapshotId: string;
+  compiled: unknown;
+  exactSourceProofs: readonly AcceptanceCompiledContextPackExactSourceProof[];
+  /** Transient full native-tree proofs; raw tree bodies are never persisted. */
+  exactGitTreeInclusionProofs: readonly ExactGitTreeInclusionProof[];
+};
+
+export type ResolveAcceptanceCompiledContextPackInput = {
+  workspaceId: string;
+  sourceSnapshotId: string;
+  compilerVersion: string;
+  policyVersion: string;
+};
+
+type ParsedCompiledPack = AcceptanceCompiledContextPackInput & {
+  binding: Record<string, unknown>;
+  compiler: Record<string, unknown>;
+  manifest: Record<string, unknown>;
+  sourceCustodyReceipt: Record<string, unknown>;
+  representations: Record<string, unknown>;
+};
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && EXACT_SHA256.test(value);
+}
+
+function isSha1(value: unknown): value is string {
+  return typeof value === "string" && EXACT_SHA1.test(value);
+}
+
+function isExactHeadDependencyTreeProofMetadata(value: unknown): value is AcceptanceCompiledContextPackDependencyTreeProof {
+  return isRecord(value) && hasExactKeys(value, ["path", "blobSha", "proofIdentitySha256"])
+    && safeRepoPath(value["path"]) && isSha1(value["blobSha"]) && isSha256(value["proofIdentitySha256"]);
+}
+
+function dependencyTreeProofKey(value: Pick<AcceptanceCompiledContextPackDependencyTreeProof, "path" | "blobSha">): string {
+  return `${value.path}\u0000${value.blobSha}`;
+}
+
+function hasCanonicalDependencyTreeProofMetadata(value: unknown): value is AcceptanceCompiledContextPackDependencyTreeProof[] {
+  return Array.isArray(value) && value.length <= SOURCE_CUSTODY_MAX_DIRECT_READS
+    && value.every(isExactHeadDependencyTreeProofMetadata)
+    && value.every((item, index, items) => index === 0 || compareUtf8Text(
+      dependencyTreeProofKey(items[index - 1]!), dependencyTreeProofKey(item),
+    ) < 0);
+}
+
+function isPositiveLine(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAX_CONTEXT_CUSTODY_HEAD_LINE;
+}
+
+function isPackText(value: unknown, max = 2_000): value is string {
+  return safeSnapshotText(value, max);
+}
+
+function compareUtf8Text(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function hasForbiddenPackMetadata(value: unknown): boolean {
+  const forbiddenKeys = new Set([
+    "content", "body", "bodymd", "sourcetext", "rawsource", "rendered", "json", "markdown", "patch",
+    "snippet", "url", "uri", "token", "authorization", "secret", "password",
+  ]);
+  const visit = (item: unknown): boolean => {
+    if (typeof item === "string") return SECRET_LIKE.test(item) || /https?:\/\//iu.test(item);
+    if (item === null || typeof item === "boolean" || typeof item === "number") return false;
+    if (Array.isArray(item)) return item.some(visit);
+    if (!isRecord(item) || Object.getPrototypeOf(item) !== Object.prototype) return true;
+    return Object.entries(item).some(([key, nested]) => forbiddenKeys.has(key.toLowerCase()) || visit(nested));
+  };
+  return visit(value);
+}
+
+function hasSortedUniqueStrings(value: unknown, max: number): value is string[] {
+  return Array.isArray(value) && value.length <= max && value.every((item) => isPackText(item, 2_000))
+    && value.every((item, index, items) => index === 0 || compareUtf8Text(items[index - 1]!, item) < 0)
+    && new Set(value).size === value.length;
+}
+
+function isManifestExclusion(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !["exact_head_overlay", "exact_head_dependency", "base_index_background"].includes(value["source"] as string)
+    || !isManifestExclusionReason(value["reason"]) || (value["path"] !== null && !safeRepoPath(value["path"]))) return false;
+  return (hasExactKeys(value, ["source", "path", "reason"])
+    || (hasExactKeys(value, ["source", "path", "reason", "identitySha256"]) && isSha256(value["identitySha256"])));
+}
+
+function isManifestExclusionReason(value: unknown): value is string {
+  return value === "removed_at_exact_head" || value === "missing_patch_ranges"
+    || value === "range_byte_limit" || value === "range_byte_or_secret_limit"
+    || value === "unsupported_dependency_expression" || value === "dependency_limit"
+    || value === "dependency_not_found" || value === "base_index_gap"
+    || value === "base_index_stale"
+    || value === "base_index_content_limit" || value === "base_index_secret_policy"
+    || value === "base_index_page_limit" || value === "pack_budget"
+    || (typeof value === "string"
+      && /^dependency_(?:invalid_input|github_unavailable|github_rejected|invalid_tree|tree_limit|call_limit|invalid_blob|path_not_found|content_limit|unsafe_content|unsafe_path)$/u.test(value));
+}
+
+function manifestExclusionKey(value: Record<string, unknown>): string {
+  return `${value["source"]}\u0000${value["path"] ?? ""}\u0000${value["reason"]}\u0000${value["identitySha256"] ?? ""}`;
+}
+
+function isSourceCustodyExclusion(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !hasExactKeys(value, ["path", "source", "blobSha", "byteCount", "reason", "secretKinds", "findingCount"])
+    || !safeRepoPath(value["path"])
+    || (value["source"] !== "exact_head_overlay" && value["source"] !== "exact_head_tree_fallback")
+    || (value["blobSha"] !== null && !isSha1(value["blobSha"]))
+    || (value["byteCount"] !== null && !nonNegativeBoundedInteger(value["byteCount"], SOURCE_CUSTODY_MAX_FILE_BYTES))
+    || (value["reason"] !== "removed_at_exact_head" && value["reason"] !== "secret_path_policy" && value["reason"] !== "secret_content_policy")
+    || !Array.isArray(value["secretKinds"]) || value["secretKinds"].length > 16
+    || !value["secretKinds"].every((kind) => isPackText(kind, 128))
+    || !value["secretKinds"].every((kind, index, kinds) => index === 0 || compareUtf8Text(kinds[index - 1] as string, kind as string) < 0)
+    || new Set(value["secretKinds"]).size !== value["secretKinds"].length
+    || !Number.isSafeInteger(value["findingCount"]) || (value["findingCount"] as number) < 0 || (value["findingCount"] as number) > 1024) return false;
+  const secretKinds = value["secretKinds"] as string[];
+  const findingCount = value["findingCount"] as number;
+  if (value["reason"] === "removed_at_exact_head") {
+    return value["source"] === "exact_head_overlay" && value["blobSha"] === null
+      && value["byteCount"] === null && secretKinds.length === 0 && findingCount === 0;
+  }
+  if (value["reason"] === "secret_path_policy") {
+    return value["byteCount"] === null && secretKinds.length === 0 && findingCount === 0;
+  }
+  return value["blobSha"] !== null && value["byteCount"] !== null && secretKinds.length > 0 && findingCount > 0;
+}
+
+function sourceCustodyExclusionKey(value: Record<string, unknown>): string {
+  return `${value["source"]}\u0000${value["path"]}\u0000${value["reason"]}\u0000${value["blobSha"] ?? ""}`;
+}
+
+function sourceCustodyReadKey(value: Record<string, unknown>): string {
+  const record = isRecord(value["record"]) ? value["record"] : null;
+  return `${value["requestedPath"]}\u0000${value["outcome"]}\u0000${record?.["blobSha"] ?? value["reason"] ?? ""}`;
+}
+
+function exactSourceReasonMatches(value: Record<string, unknown>): boolean {
+  return value["kind"] === "exact_head_overlay"
+    ? value["reason"] === "exact_patch_head_range"
+    : value["reason"] === "static_relative_import" || value["reason"] === "static_python_import" || value["reason"] === "static_shell_source";
+}
+
+function exactSourceCitationMatches(value: Record<string, unknown>): boolean {
+  return value["citation"] === `${value["path"]}@${value["blobSha"]}#L${value["startLine"]}-L${value["endLine"]}`;
+}
+
+function isExactPackSource(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasExactKeys(value, [
+    "kind", "path", "blobSha", "fullContentSha256", "startLine", "endLine", "rangeSha256", "byteCount", "reason", "citation",
+  ]) && (value["kind"] === "exact_head_overlay" || value["kind"] === "exact_head_dependency")
+    && safeRepoPath(value["path"]) && isSha1(value["blobSha"]) && isSha256(value["fullContentSha256"])
+    && isPositiveLine(value["startLine"]) && isPositiveLine(value["endLine"])
+    && (value["startLine"] as number) <= (value["endLine"] as number)
+    && isSha256(value["rangeSha256"]) && positiveBoundedInteger(value["byteCount"], 12 * 1024)
+    && exactSourceReasonMatches(value) && exactSourceCitationMatches(value);
+}
+
+function isWikiPackSource(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasExactKeys(value, [
+    "kind", "pageId", "slug", "commitSha", "inputsHashSha256", "pageBodySha256", "stale", "startLine", "endLine", "rangeSha256", "byteCount", "reason", "citation",
+  ]) && value["kind"] === "base_index_background" && isUuid(value["pageId"])
+    && safeRepoPath(value["slug"]) && isSha1(value["commitSha"]) && isSha256(value["inputsHashSha256"])
+    && isSha256(value["pageBodySha256"]) && value["stale"] === false
+    && isPositiveLine(value["startLine"]) && isPositiveLine(value["endLine"])
+    && (value["startLine"] as number) <= (value["endLine"] as number)
+    && isSha256(value["rangeSha256"]) && positiveBoundedInteger(value["byteCount"], 12 * 1024)
+    && value["reason"] === "background_only"
+    && value["citation"] === `wiki:${value["slug"]}@${value["commitSha"]}#L${value["startLine"]}-L${value["endLine"]}`;
+}
+
+function packSourceKey(value: Record<string, unknown>): string {
+  const identifier = value["kind"] === "base_index_background" ? value["slug"] : value["path"];
+  return `${value["kind"]}\u0000${identifier}\u0000${String(value["startLine"]).padStart(10, "0")}\u0000${String(value["endLine"]).padStart(10, "0")}`;
+}
+
+function isSelectedExactRange(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && hasExactKeys(value, [
+    "kind", "path", "blobSha", "fullContentSha256", "startLine", "endLine", "rangeSha256", "byteCount",
+  ]) && (value["kind"] === "exact_head_overlay" || value["kind"] === "exact_head_dependency")
+    && safeRepoPath(value["path"]) && isSha1(value["blobSha"]) && isSha256(value["fullContentSha256"])
+    && isPositiveLine(value["startLine"]) && isPositiveLine(value["endLine"])
+    && (value["startLine"] as number) <= (value["endLine"] as number)
+    && isSha256(value["rangeSha256"]) && positiveBoundedInteger(value["byteCount"], 12 * 1024);
+}
+
+function selectedExactRangeKey(value: Record<string, unknown>): string {
+  return [value["kind"], value["path"], value["blobSha"], value["fullContentSha256"], value["startLine"], value["endLine"], value["rangeSha256"], value["byteCount"]].join("\u0000");
+}
+
+function selectedExactRangeReceiptKey(value: Record<string, unknown>): string {
+  return [value["kind"], value["path"], value["blobSha"], value["fullContentSha256"], value["startLine"], value["endLine"]].join("\u0000");
+}
+
+function isSourceCustodyReceipt(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "kind", "schemaVersion", "repo", "prNumber", "baseSha", "mergeBaseSha", "headSha", "headTreeSha", "manifestSha256",
+    "changedManifest", "records", "exclusions", "directReadReceipts", "selectedExactRanges", "identitySha256",
+  ]) || value["kind"] !== "exact_head_source_custody" || value["schemaVersion"] !== 2
+    || !safeRepo(value["repo"]) || !Number.isInteger(value["prNumber"]) || (value["prNumber"] as number) <= 0
+    || !isSha1(value["baseSha"]) || !isSha1(value["mergeBaseSha"]) || !isSha1(value["headSha"]) || !isSha1(value["headTreeSha"])
+    || !isSha256(value["manifestSha256"]) || !isSha256(value["identitySha256"])
+    || !Array.isArray(value["changedManifest"]) || value["changedManifest"].length === 0 || value["changedManifest"].length > MAX_CONTEXT_CUSTODY_COMPARE_FILES
+    || !Array.isArray(value["records"]) || value["records"].length > SOURCE_CUSTODY_MAX_RECORDS
+    || !Array.isArray(value["exclusions"]) || value["exclusions"].length > MAX_CONTEXT_CUSTODY_COMPARE_FILES
+    || !Array.isArray(value["directReadReceipts"]) || value["directReadReceipts"].length > SOURCE_CUSTODY_MAX_DIRECT_READS
+    || !Array.isArray(value["selectedExactRanges"]) || value["selectedExactRanges"].length > COMPILED_PACK_MAX_SELECTED_RANGES
+  ) return false;
+  const changed = value["changedManifest"];
+  if (!changed.every((item) => isRecord(item) && hasExactKeys(item, ["path", "status", "blobSha", "previousPath", "headRanges", "patchSha256", "patchByteCount"])
+    && safeRepoPath(item["path"]) && (item["status"] === "added" || item["status"] === "modified" || item["status"] === "removed"
+      || item["status"] === "renamed" || item["status"] === "copied" || item["status"] === "changed")
+    && (item["blobSha"] === null || isSha1(item["blobSha"])) && (item["previousPath"] === null || safeRepoPath(item["previousPath"]))
+    && Array.isArray(item["headRanges"]) && item["headRanges"].length <= MAX_CONTEXT_CUSTODY_HEAD_RANGES
+    && item["headRanges"].every((range) => isRecord(range) && hasExactKeys(range, ["startLine", "endLine"])
+      && isPositiveLine(range["startLine"]) && isPositiveLine(range["endLine"]) && (range["startLine"] as number) <= (range["endLine"] as number))
+    && ((item["patchSha256"] === null && item["patchByteCount"] === null && item["headRanges"].length === 0)
+      || (isSha256(item["patchSha256"]) && positiveBoundedInteger(item["patchByteCount"], MAX_CONTEXT_CUSTODY_PATCH_BYTES) && item["headRanges"].length > 0))
+  ) || !changed.every((item, index) => index === 0 || compareUtf8Text(
+    (changed[index - 1] as Record<string, unknown>)["path"] as string,
+    (item as Record<string, unknown>)["path"] as string,
+  ) < 0)) return false;
+  const records = value["records"];
+  const recordIdentity = (record: unknown): record is Record<string, unknown> => isRecord(record)
+    && hasExactKeys(record, ["path", "blobSha", "previousPath", "contentSha256", "byteCount", "lineCount", "source", "reason"])
+    && safeRepoPath(record["path"]) && isSha1(record["blobSha"]) && record["previousPath"] === null
+    && isSha256(record["contentSha256"]) && nonNegativeBoundedInteger(record["byteCount"], SOURCE_CUSTODY_MAX_FILE_BYTES)
+    && isPositiveLine(record["lineCount"]);
+  const topLevelRecord = (record: unknown): record is Record<string, unknown> =>
+    recordIdentity(record) && record["source"] === "exact_head_overlay" && record["reason"] === "exact_base_to_head_compare";
+  const directReadRecord = (record: unknown): record is Record<string, unknown> =>
+    recordIdentity(record) && record["source"] === "exact_head_tree_fallback" && record["reason"] === "exact_head_tree_path";
+  if (!records.every(topLevelRecord)
+    || records.reduce((total, record) => total + ((record as Record<string, unknown>)["byteCount"] as number), 0) > SOURCE_CUSTODY_MAX_RECORD_BYTES
+    || !records.every((record, index) => index === 0 || compareUtf8Text(
+      ((records[index - 1] as Record<string, unknown>)["path"] as string),
+      ((record as Record<string, unknown>)["path"] as string),
+    ) < 0)) return false;
+  const exclusions = value["exclusions"];
+  if (!exclusions.every((exclusion) => isSourceCustodyExclusion(exclusion)
+    && (exclusion as Record<string, unknown>)["source"] === "exact_head_overlay")
+    || !exclusions.every((exclusion, index) => index === 0 || compareUtf8Text(
+      sourceCustodyExclusionKey(exclusions[index - 1] as Record<string, unknown>),
+      sourceCustodyExclusionKey(exclusion as Record<string, unknown>),
+    ) < 0)) return false;
+  const reads = value["directReadReceipts"];
+  if (!reads.every((item) => isRecord(item) && typeof item["requestedPath"] === "string" && safeRepoPath(item["requestedPath"])
+    && item["headSha"] === value["headSha"] && item["headTreeSha"] === value["headTreeSha"]
+    && ((hasExactKeys(item, ["requestedPath", "headSha", "headTreeSha", "outcome", "record"])
+      && item["outcome"] === "record" && directReadRecord(item["record"]))
+      || (item["outcome"] === "not_proven" && (hasExactKeys(item, ["requestedPath", "headSha", "headTreeSha", "outcome", "reason"])
+        || (hasExactKeys(item, ["requestedPath", "headSha", "headTreeSha", "outcome", "reason", "exclusion"])
+          && isSourceCustodyExclusion(item["exclusion"])
+          && (item["exclusion"] as Record<string, unknown>)["source"] === "exact_head_tree_fallback"))
+        && (item["reason"] === "invalid_input" || item["reason"] === "github_unavailable" || item["reason"] === "github_rejected"
+          || item["reason"] === "invalid_tree" || item["reason"] === "tree_limit" || item["reason"] === "call_limit"
+          || item["reason"] === "invalid_blob" || item["reason"] === "path_not_found" || item["reason"] === "content_limit"
+          || item["reason"] === "unsafe_content" || item["reason"] === "unsafe_path"))))) return false;
+  if (new Set(reads.map((read) => (read as Record<string, unknown>)["requestedPath"])).size !== reads.length
+    || !reads.every((read, index) => index === 0 || compareUtf8Text(
+    sourceCustodyReadKey(reads[index - 1] as Record<string, unknown>),
+    sourceCustodyReadKey(read as Record<string, unknown>),
+  ) < 0)
+    || reads.reduce((total, read) => total + (isRecord((read as Record<string, unknown>)["record"])
+      ? ((read as Record<string, unknown>)["record"] as Record<string, unknown>)["byteCount"] as number : 0), 0) > SOURCE_CUSTODY_MAX_DIRECT_BYTES) return false;
+  const selected = value["selectedExactRanges"];
+  if (!selected.every(isSelectedExactRange)
+    || !selected.every((item, index) => index === 0 || compareUtf8Text(
+      selectedExactRangeReceiptKey(selected[index - 1] as Record<string, unknown>),
+      selectedExactRangeReceiptKey(item as Record<string, unknown>),
+    ) < 0)
+    || !selected.some((item) => (item as Record<string, unknown>)["kind"] === "exact_head_overlay")) return false;
+  try {
+    return Buffer.byteLength(acceptanceContextPackCanonicalJson(value), "utf8") <= COMPILED_PACK_BYTE_BUDGET;
+  } catch {
+    return false;
+  }
+}
+
+function parseCompiledAcceptanceContextPack(value: unknown): ParsedCompiledPack | null {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "kind", "version", "binding", "compiler", "manifest", "sourceCustodyReceipt", "exactHeadDependencyTreeProofs", "representations", "renderedByteCount", "packSha256",
+  ]) || value["kind"] !== "compiled_acceptance_context_pack" || value["version"] !== 1
+    || !isRecord(value["binding"]) || !isRecord(value["compiler"]) || !isRecord(value["manifest"])
+    || !isSourceCustodyReceipt(value["sourceCustodyReceipt"]) || !hasCanonicalDependencyTreeProofMetadata(value["exactHeadDependencyTreeProofs"])
+    || !isRecord(value["representations"])
+    || !positiveBoundedInteger(value["renderedByteCount"], COMPILED_PACK_BYTE_BUDGET) || !isSha256(value["packSha256"])
+    || hasForbiddenPackMetadata(value)
+  ) return null;
+  const binding = value["binding"];
+  if (!hasExactKeys(binding, [
+    "sourceSnapshotId", "workspaceId", "recordId", "reviewJobId", "acceptanceContractId", "acceptanceContractVersion", "acceptanceContractSha256",
+    "repo", "prNumber", "baseSha", "mergeBaseSha", "headSha", "headTreeSha", "packetSetSha256", "correctionPacketPayloadSetSha256",
+    "sourceSnapshotCompilerVersion", "baseIndexRevisionSha256", "overlayManifestSha256",
+  ]) || !isUuid(binding["sourceSnapshotId"]) || !isUuid(binding["workspaceId"]) || !isUuid(binding["recordId"]) || !isUuid(binding["reviewJobId"])
+    || !isUuid(binding["acceptanceContractId"]) || !Number.isInteger(binding["acceptanceContractVersion"]) || (binding["acceptanceContractVersion"] as number) <= 0
+    || !isSha256(binding["acceptanceContractSha256"]) || !safeRepo(binding["repo"]) || !Number.isInteger(binding["prNumber"]) || (binding["prNumber"] as number) <= 0
+    || !isSha1(binding["baseSha"]) || !isSha1(binding["mergeBaseSha"]) || !isSha1(binding["headSha"]) || !isSha1(binding["headTreeSha"])
+    || !isSha256(binding["packetSetSha256"]) || !isSha256(binding["correctionPacketPayloadSetSha256"])
+    || !isPackText(binding["sourceSnapshotCompilerVersion"], 128) || !isSha256(binding["baseIndexRevisionSha256"]) || !isSha256(binding["overlayManifestSha256"])
+  ) return null;
+  const compiler = value["compiler"];
+  if (!hasExactKeys(compiler, ["version", "policyVersion", "byteCounter", "byteBudget"])
+    || !isPackText(compiler["version"], 128) || !isPackText(compiler["policyVersion"], 128)
+    || compiler["byteCounter"] !== "utf8_byte_upper_bound_v1" || compiler["byteBudget"] !== COMPILED_PACK_BYTE_BUDGET) return null;
+  const representations = value["representations"];
+  if (!hasExactKeys(representations, ["jsonSha256", "markdownSha256"])
+    || !isSha256(representations["jsonSha256"]) || !isSha256(representations["markdownSha256"])) return null;
+  const manifest = value["manifest"];
+  if (!hasExactKeys(manifest, [
+    "version", "acceptanceCriterionIds", "unresolvedQuestionIds", "packetIds", "sources", "architectureBoundaries", "tests", "decisions", "exclusions", "sourceCustody", "budget", "custody",
+  ]) || manifest["version"] !== 1 || !hasSortedUniqueStrings(manifest["acceptanceCriterionIds"], 100)
+    || !hasSortedUniqueStrings(manifest["unresolvedQuestionIds"], 100) || !hasSortedUniqueStrings(manifest["packetIds"], 100)
+    || !Array.isArray(manifest["sources"]) || manifest["sources"].length === 0 || manifest["sources"].length > COMPILED_PACK_MAX_SOURCES
+    || !manifest["sources"].every((source) => isExactPackSource(source) || isWikiPackSource(source))
+    || !manifest["sources"].every((source, index, sources) => index === 0
+      || compareUtf8Text(packSourceKey(sources[index - 1] as Record<string, unknown>), packSourceKey(source as Record<string, unknown>)) < 0)
+    || !hasSortedUniqueStrings(manifest["architectureBoundaries"], 100) || !hasSortedUniqueStrings(manifest["tests"], 100)
+    || !hasSortedUniqueStrings(manifest["decisions"], 100) || !Array.isArray(manifest["exclusions"]) || manifest["exclusions"].length > COMPILED_PACK_MAX_SOURCES
+    || !manifest["exclusions"].every(isManifestExclusion)
+    || !manifest["exclusions"].every((item, index, exclusions) => index === 0
+      || compareUtf8Text(manifestExclusionKey(exclusions[index - 1] as Record<string, unknown>), manifestExclusionKey(item as Record<string, unknown>)) < 0)
+    || !isRecord(manifest["sourceCustody"]) || !hasExactKeys(manifest["sourceCustody"], ["kind", "schemaVersion", "identitySha256"])
+    || manifest["sourceCustody"]["kind"] !== "exact_head_source_custody" || manifest["sourceCustody"]["schemaVersion"] !== 2 || !isSha256(manifest["sourceCustody"]["identitySha256"])
+    || !isRecord(manifest["budget"]) || !hasExactKeys(manifest["budget"], ["counter", "limitBytes"])
+    || manifest["budget"]["counter"] !== "utf8_byte_upper_bound_v1" || manifest["budget"]["limitBytes"] !== COMPILED_PACK_BYTE_BUDGET
+    || !isRecord(manifest["custody"]) || !hasExactKeys(manifest["custody"], ["fullSourceUploadAllowed", "rawSourcePersisted", "snippetsPersisted"])
+    || manifest["custody"]["fullSourceUploadAllowed"] !== false || manifest["custody"]["rawSourcePersisted"] !== false || manifest["custody"]["snippetsPersisted"] !== false
+  ) return null;
+  return value as ParsedCompiledPack;
+}
+
+/** Closed parser for the metadata-only compiled Pack transport boundary. */
+export function validateAcceptanceCompiledContextPackInput(value: unknown): value is AcceptanceCompiledContextPackInput {
+  return parseCompiledAcceptanceContextPack(value) !== null;
+}
+
+function receiptCore(receipt: Record<string, unknown>): Record<string, unknown> {
+  const { identitySha256: _identitySha256, ...core } = receipt;
+  return core;
+}
+
+function compiledPackIdentity(pack: ParsedCompiledPack): string {
+  return acceptanceContextPackCanonicalSha256({
+    kind: pack.kind,
+    version: pack.version,
+    binding: pack.binding,
+    compiler: pack.compiler,
+    manifest: pack.manifest,
+    sourceCustodyReceipt: {
+      kind: pack.sourceCustodyReceipt["kind"],
+      schemaVersion: pack.sourceCustodyReceipt["schemaVersion"],
+      identitySha256: pack.sourceCustodyReceipt["identitySha256"],
+    },
+    exactHeadDependencyTreeProofs: pack.exactHeadDependencyTreeProofs,
+    representations: pack.representations,
+    renderedByteCount: pack.renderedByteCount,
   });
+}
+
+function exactGitTreeInclusionProofsMatch(
+  pack: ParsedCompiledPack,
+  proofs: readonly ExactGitTreeInclusionProof[],
+): boolean {
+  if (!Array.isArray(proofs)) return false;
+  const expected = new Map<string, AcceptanceCompiledContextPackDependencyTreeProof>();
+  for (const source of (pack.manifest["sources"] as Record<string, unknown>[]).filter(isExactPackSource)) {
+    if (source["kind"] !== "exact_head_dependency") continue;
+    const metadata = { path: source["path"] as string, blobSha: source["blobSha"] as string };
+    expected.set(dependencyTreeProofKey(metadata), { ...metadata, proofIdentitySha256: "" });
+  }
+  const declared = pack.exactHeadDependencyTreeProofs;
+  if (expected.size !== declared.length || proofs.length !== declared.length) return false;
+  const declaredByKey = new Map<string, AcceptanceCompiledContextPackDependencyTreeProof>();
+  for (const metadata of declared) {
+    const key = dependencyTreeProofKey(metadata);
+    if (!expected.has(key) || declaredByKey.has(key)) return false;
+    declaredByKey.set(key, metadata);
+  }
+  const seen = new Set<string>();
+  for (const proof of proofs) {
+    if (!verifyExactGitTreeInclusionProof(proof) || proof.headTreeSha !== pack.binding["headTreeSha"]
+      || proof.paths.length !== 1) return false;
+    const path = proof.paths[0]!;
+    const key = dependencyTreeProofKey(path);
+    const metadata = declaredByKey.get(key);
+    if (!metadata || seen.has(key) || exactGitTreeInclusionProofIdentity(proof) !== metadata.proofIdentitySha256) return false;
+    seen.add(key);
+  }
+  return seen.size === declaredByKey.size;
+}
+
+function sourceRangeText(body: string, startLine: number, endLine: number): string {
+  return body.split("\n").slice(startLine - 1, endLine).join("\n");
+}
+
+function gitBlobSha1(content: string): string {
+  const bytes = Buffer.from(content, "utf8");
+  return createHash("sha1").update(`blob ${bytes.length}\0`, "utf8").update(bytes).digest("hex");
+}
+
+function exactSourceProofsMatch(
+  pack: ParsedCompiledPack,
+  proofs: readonly AcceptanceCompiledContextPackExactSourceProof[],
+): boolean {
+  if (!Array.isArray(proofs) || proofs.length < 1 || proofs.length > COMPILED_PACK_MAX_SOURCES) return false;
+  const sources = (pack.manifest["sources"] as Record<string, unknown>[]).filter(isExactPackSource);
+  const sourceKeys = new Set(sources.map((source) => `${source["kind"]}\u0000${source["path"]}`));
+  if (sourceKeys.size !== proofs.length) return false;
+  const proofMap = new Map<string, AcceptanceCompiledContextPackExactSourceProof>();
+  let overlayBytes = 0;
+  let dependencyBytes = 0;
+  for (const proof of proofs) {
+    if (!isRecord(proof) || !hasExactKeys(proof, ["kind", "path", "content"])
+      || (proof.kind !== "exact_head_overlay" && proof.kind !== "exact_head_dependency")
+      || !safeRepoPath(proof.path) || typeof proof.content !== "string" || proof.content.includes("\0")) return false;
+    const bytes = Buffer.from(proof.content, "utf8");
+    if (bytes.length < 1 || bytes.length > SOURCE_CUSTODY_MAX_FILE_BYTES || bytes.toString("utf8") !== proof.content) return false;
+    if (proof.kind === "exact_head_overlay") overlayBytes += bytes.length;
+    else dependencyBytes += bytes.length;
+    const key = `${proof.kind}\u0000${proof.path}`;
+    if (!sourceKeys.has(key) || proofMap.has(key)) return false;
+    proofMap.set(key, { kind: proof.kind, path: proof.path, content: proof.content });
+  }
+  if (overlayBytes > SOURCE_CUSTODY_MAX_RECORD_BYTES || dependencyBytes > SOURCE_CUSTODY_MAX_DIRECT_BYTES) return false;
+  for (const source of sources) {
+    const proof = proofMap.get(`${source["kind"]}\u0000${source["path"]}`);
+    if (!proof) return false;
+    const bytes = Buffer.from(proof.content, "utf8");
+    const lines = proof.content.split("\n");
+    const startLine = source["startLine"] as number;
+    const endLine = source["endLine"] as number;
+    if (endLine > lines.length || gitBlobSha1(proof.content) !== source["blobSha"]
+      || createHash("sha256").update(bytes).digest("hex") !== source["fullContentSha256"]) return false;
+    const range = sourceRangeText(proof.content, startLine, endLine);
+    if (Buffer.byteLength(range, "utf8") !== source["byteCount"]
+      || createHash("sha256").update(range, "utf8").digest("hex") !== source["rangeSha256"]) return false;
+  }
+  return true;
+}
+
+/** Pure validation for the transient source proof accepted by the DB writer. */
+export function validateAcceptanceCompiledContextPackExactSourceProofs(input: {
+  compiled: unknown;
+  exactSourceProofs: readonly AcceptanceCompiledContextPackExactSourceProof[];
+}): boolean {
+  const parsed = parseCompiledAcceptanceContextPack(input?.compiled);
+  return parsed !== null && exactSourceProofsMatch(parsed, input.exactSourceProofs);
+}
+
+/** Pure validation for transient native-Git-tree proofs of selected dependencies. */
+export function validateAcceptanceCompiledContextPackExactGitTreeInclusionProofs(input: {
+  compiled: unknown;
+  exactGitTreeInclusionProofs: readonly ExactGitTreeInclusionProof[];
+}): boolean {
+  const parsed = parseCompiledAcceptanceContextPack(input?.compiled);
+  return parsed !== null && exactGitTreeInclusionProofsMatch(parsed, input.exactGitTreeInclusionProofs);
+}
+
+function bindingMatchesCustody(binding: Record<string, unknown>, custody: AcceptanceContextPackCustodyResolution): boolean {
+  const source = custody.sourceSnapshot;
+  return binding["sourceSnapshotId"] === source.id && binding["workspaceId"] === source.workspaceId
+    && binding["recordId"] === source.recordId && binding["reviewJobId"] === source.reviewJobId
+    && binding["acceptanceContractId"] === source.acceptanceContractId && binding["acceptanceContractVersion"] === source.acceptanceContractVersion
+    && binding["acceptanceContractSha256"] === custody.acceptanceContractSha256 && binding["repo"] === source.repo
+    && binding["prNumber"] === source.prNumber && binding["baseSha"] === source.baseSha && binding["mergeBaseSha"] === source.mergeBaseSha
+    && binding["headSha"] === source.expectedHeadSha && binding["headTreeSha"] === source.headTreeSha
+    && binding["packetSetSha256"] === source.packetSetSha256 && binding["correctionPacketPayloadSetSha256"] === custody.correctionPacketPayloadSetSha256
+    && binding["sourceSnapshotCompilerVersion"] === source.compilerVersion && binding["baseIndexRevisionSha256"] === source.baseIndex!.revisionSha256
+    && binding["overlayManifestSha256"] === source.overlay!.manifestSha256;
+}
+
+function receiptMatchesCustody(receipt: Record<string, unknown>, custody: AcceptanceContextPackCustodyResolution): boolean {
+  const source = custody.sourceSnapshot;
+  const overlay = source.overlay!;
+  if (receipt["repo"] !== source.repo || receipt["prNumber"] !== source.prNumber || receipt["baseSha"] !== source.baseSha
+    || receipt["mergeBaseSha"] !== source.mergeBaseSha || receipt["headSha"] !== source.expectedHeadSha || receipt["headTreeSha"] !== source.headTreeSha
+    || receipt["identitySha256"] !== acceptanceContextPackCanonicalSha256(receiptCore(receipt))) return false;
+  const expectedChanged = overlay.files.map((file) => ({
+    path: file.path, status: file.status, blobSha: file.blobSha, previousPath: file.previousPath,
+    headRanges: file.headRanges.map((range) => ({ startLine: range.startLine, endLine: range.endLine })),
+    patchSha256: file.patchSha256, patchByteCount: file.patchByteCount,
+  }));
+  const receiptChanged = receipt["changedManifest"] as Record<string, unknown>[];
+  if (!isDeepStrictEqual(receiptChanged, expectedChanged)) return false;
+  const v1ManifestSha256 = acceptanceContextOverlayManifestSha256({
+    schemaVersion: 1,
+    baseSha: overlay.baseSha,
+    mergeBaseSha: overlay.mergeBaseSha,
+    headSha: overlay.headSha,
+    files: overlay.files.map((file) => ({
+      path: file.path, status: file.status, blobSha: file.blobSha, previousPath: file.previousPath,
+    })),
+  });
+  return receipt["manifestSha256"] === v1ManifestSha256;
+}
+
+function sourcesMatchCustody(pack: ParsedCompiledPack, custody: AcceptanceContextPackCustodyResolution): boolean {
+  const manifest = pack.manifest;
+  const receipt = pack.sourceCustodyReceipt;
+  const overlay = custody.sourceSnapshot.overlay!;
+  const selected = receipt["selectedExactRanges"] as Record<string, unknown>[];
+  const selectedByKey = new Map(selected.map((range) => [selectedExactRangeKey(range), range]));
+  const sources = manifest["sources"] as Record<string, unknown>[];
+  const exactSources = sources.filter(isExactPackSource);
+  if (selectedByKey.size !== selected.length || exactSources.length !== selected.length
+    || new Set(exactSources.map(selectedExactRangeKey)).size !== exactSources.length) return false;
+  const records = new Map((receipt["records"] as Record<string, unknown>[]).map((record) => [record["path"] as string, record]));
+  const directReads = receipt["directReadReceipts"] as Record<string, unknown>[];
+  for (const source of exactSources) {
+    if (!selectedByKey.has(selectedExactRangeKey(source))) return false;
+    const path = source["path"] as string;
+    if (source["kind"] === "exact_head_overlay") {
+      const admitted = overlay.files.find((file) => file.path === path);
+      const record = records.get(path);
+      if (!admitted || !record || record["source"] !== "exact_head_overlay"
+        || record["blobSha"] !== source["blobSha"] || record["contentSha256"] !== source["fullContentSha256"]
+        || (source["endLine"] as number) > (record["lineCount"] as number)
+        || !admitted.headRanges.some((range) => (source["startLine"] as number) >= range.startLine && (source["endLine"] as number) <= range.endLine)) return false;
+    } else {
+      const read = directReads.find((candidate) => candidate["requestedPath"] === path && candidate["outcome"] === "record");
+      if (!read || read["headSha"] !== custody.sourceSnapshot.expectedHeadSha || read["headTreeSha"] !== custody.sourceSnapshot.headTreeSha
+        || !isRecord(read["record"]) || read["record"]["blobSha"] !== source["blobSha"]
+        || read["record"]["contentSha256"] !== source["fullContentSha256"]
+        || (source["endLine"] as number) > (read["record"]["lineCount"] as number)) return false;
+    }
+  }
+  const pages = new Map(custody.wikiPages.map((page) => [page.id, page]));
+  for (const source of sources.filter(isWikiPackSource)) {
+    const page = pages.get(source["pageId"] as string);
+    if (!page || source["slug"] !== page.slug || source["commitSha"] !== page.commitSha
+      || source["inputsHashSha256"] !== page.inputsHashSha256 || source["pageBodySha256"] !== page.pageBodySha256
+      || source["stale"] !== false) return false;
+    const range = sourceRangeText(page.bodyMd, source["startLine"] as number, source["endLine"] as number);
+    if (Buffer.byteLength(range, "utf8") !== source["byteCount"] || wikiPageBodySha256(range) !== source["rangeSha256"]) return false;
+  }
+  return true;
+}
+
+function receiptExclusionsMatchManifest(pack: ParsedCompiledPack, custody: AcceptanceContextPackCustodyResolution): boolean {
+  const exclusions = pack.manifest["exclusions"] as Record<string, unknown>[];
+  const hasExclusion = (source: string, path: string | null, reason: string, identitySha256?: string) =>
+    exclusions.some((item) => item["source"] === source && item["path"] === path && item["reason"] === reason
+      && (identitySha256 === undefined || item["identitySha256"] === identitySha256));
+  const receiptExclusions = pack.sourceCustodyReceipt["exclusions"] as Record<string, unknown>[];
+  if (!receiptExclusions.every((item) => hasExclusion(
+    "exact_head_overlay",
+    item["path"] as string,
+    item["reason"] as string,
+  ))) return false;
+  return custody.sourceSnapshot.baseIndex!.gaps.every((gap) => hasExclusion(
+    "base_index_background",
+    null,
+    "base_index_gap",
+    createHash("sha256").update(gap, "utf8").digest("hex"),
+  ));
+}
+
+function manifestMatchesCustody(pack: ParsedCompiledPack, custody: AcceptanceContextPackCustodyResolution): boolean {
+  const manifest = pack.manifest;
+  const sortedUnique = (values: readonly string[]) => [...new Set(values)].sort(compareUtf8Text);
+  const contractCriterionIds = sortedUnique(custody.contract.acceptanceCriteria.map((criterion) => criterion.id));
+  const questionIds = sortedUnique(custody.contract.unresolvedQuestions.map((question) => question.id));
+  const sources = manifest["sources"] as Record<string, unknown>[];
+  const expectedArchitectureBoundaries = sortedUnique([
+    ...custody.contract.nonGoals.map((value) => `non_goal:${value}`),
+    ...custody.contract.stops.map((value) => `stop:${value}`),
+  ]);
+  const expectedTests = sortedUnique(sources.flatMap((source) => isExactPackSource(source)
+    && /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)|(?:\.test|\.spec)\.[^.]+$/u.test(source["path"] as string)
+    ? [source["citation"] as string] : []));
+  return isDeepStrictEqual(manifest["acceptanceCriterionIds"], contractCriterionIds)
+    && isDeepStrictEqual(manifest["unresolvedQuestionIds"], questionIds)
+    && isDeepStrictEqual(manifest["packetIds"], custody.sourceSnapshot.packetIds)
+    && isDeepStrictEqual(manifest["architectureBoundaries"], expectedArchitectureBoundaries)
+    && isDeepStrictEqual(manifest["tests"], expectedTests)
+    && isDeepStrictEqual(manifest["decisions"], [])
+    && (manifest["sourceCustody"] as Record<string, unknown>)["identitySha256"] === pack.sourceCustodyReceipt["identitySha256"]
+    && sourcesMatchCustody(pack, custody)
+    && receiptExclusionsMatchManifest(pack, custody);
+}
+
+function compiledPackComparable(row: AcceptanceCompiledContextPackRow) {
+  return {
+    workspaceId: row.workspaceId,
+    sourceSnapshotId: row.sourceSnapshotId,
+    compilerVersion: row.compilerVersion,
+    policyVersion: row.policyVersion,
+    packSha256: row.packSha256,
+    sourceCustodyIdentitySha256: row.sourceCustodyIdentitySha256,
+    jsonSha256: row.jsonSha256,
+    markdownSha256: row.markdownSha256,
+    renderedByteCount: row.renderedByteCount,
+    binding: row.binding,
+    manifest: row.manifest,
+    sourceCustodyReceipt: row.sourceCustodyReceipt,
+    exactHeadDependencyTreeProofs: row.exactHeadDependencyTreeProofs,
+  };
+}
+
+function compiledPackInputComparable(pack: ParsedCompiledPack, workspaceId: string, sourceSnapshotId: string) {
+  return {
+    workspaceId,
+    sourceSnapshotId,
+    compilerVersion: pack.compiler["version"],
+    policyVersion: pack.compiler["policyVersion"],
+    packSha256: pack.packSha256,
+    sourceCustodyIdentitySha256: pack.sourceCustodyReceipt["identitySha256"],
+    jsonSha256: pack.representations["jsonSha256"],
+    markdownSha256: pack.representations["markdownSha256"],
+    renderedByteCount: pack.renderedByteCount,
+    binding: pack.binding,
+    manifest: pack.manifest,
+    sourceCustodyReceipt: pack.sourceCustodyReceipt,
+    exactHeadDependencyTreeProofs: pack.exactHeadDependencyTreeProofs,
+  };
+}
+
+export function acceptanceCompiledContextPackId(input: Pick<ResolveAcceptanceCompiledContextPackInput, "sourceSnapshotId" | "compilerVersion" | "policyVersion">): string {
+  return uuid5Url(`acceptance-compiled-context-pack:${input.sourceSnapshotId}:${input.compilerVersion}:${input.policyVersion}`);
+}
+
+/**
+ * Persists one fully revalidated, source-free compiled Pack. Replays are
+ * idempotent only if the complete metadata payload is identical.
+ */
+export async function recordAcceptanceCompiledContextPack(
+  input: RecordAcceptanceCompiledContextPackInput
+): Promise<{ pack: AcceptanceCompiledContextPackRow; inserted: boolean }> {
+  if (!isUuid(input?.workspaceId) || !isUuid(input?.sourceSnapshotId)) throw new Error("Invalid compiled Context Pack scope");
+  const compiled = parseCompiledAcceptanceContextPack(input.compiled);
+  if (!compiled || compiled.binding["workspaceId"] !== input.workspaceId || compiled.binding["sourceSnapshotId"] !== input.sourceSnapshotId) {
+    throw new Error("Invalid compiled Context Pack");
+  }
+  if (!exactSourceProofsMatch(compiled, input.exactSourceProofs)) {
+    throw new Error("Compiled Context Pack exact-source proof is invalid");
+  }
+  if (!exactGitTreeInclusionProofsMatch(compiled, input.exactGitTreeInclusionProofs)) {
+    throw new Error("Compiled Context Pack exact dependency tree proof is invalid");
+  }
+  const compilerVersion = compiled.compiler["version"] as string;
+  const policyVersion = compiled.compiler["policyVersion"] as string;
+  const id = acceptanceCompiledContextPackId({ sourceSnapshotId: input.sourceSnapshotId, compilerVersion, policyVersion });
+  const lockKey = `acceptance-compiled-context-pack:${input.sourceSnapshotId}:${compilerVersion}:${policyVersion}`;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, input);
+    if (!bindingMatchesCustody(compiled.binding, custody) || !receiptMatchesCustody(compiled.sourceCustodyReceipt, custody)
+      || !manifestMatchesCustody(compiled, custody) || compiled.packSha256 !== compiledPackIdentity(compiled)) {
+      throw new Error("Compiled Context Pack custody does not match the authoritative snapshot");
+    }
+    const values = {
+      id, workspaceId: input.workspaceId, sourceSnapshotId: input.sourceSnapshotId, compilerVersion, policyVersion,
+      packSha256: compiled.packSha256, sourceCustodyIdentitySha256: compiled.sourceCustodyReceipt["identitySha256"] as string,
+      jsonSha256: compiled.representations["jsonSha256"] as string, markdownSha256: compiled.representations["markdownSha256"] as string,
+      renderedByteCount: compiled.renderedByteCount, binding: compiled.binding, manifest: compiled.manifest,
+      sourceCustodyReceipt: compiled.sourceCustodyReceipt,
+      exactHeadDependencyTreeProofs: compiled.exactHeadDependencyTreeProofs,
+    };
+    const existing = await tx.select().from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
+      eq(acceptanceCompiledContextPacks.compilerVersion, compilerVersion),
+      eq(acceptanceCompiledContextPacks.policyVersion, policyVersion),
+    )).limit(1);
+    if (existing[0]) {
+      if (!isDeepStrictEqual(compiledPackComparable(existing[0]), compiledPackInputComparable(compiled, input.workspaceId, input.sourceSnapshotId))) {
+        throw new Error("Compiled Context Pack replay identity is already bound to different metadata");
+      }
+      return { pack: existing[0], inserted: false };
+    }
+    const rows = await tx.insert(acceptanceCompiledContextPacks).values(values).returning();
+    return { pack: rows[0]!, inserted: true };
+  });
+}
+
+/** Workspace-scoped immutable Pack read; no unbounded listing API is exposed. */
+export async function resolveAcceptanceCompiledContextPack(
+  input: ResolveAcceptanceCompiledContextPackInput
+): Promise<AcceptanceCompiledContextPackRow | null> {
+  if (!isUuid(input?.workspaceId) || !isUuid(input?.sourceSnapshotId)
+    || !isPackText(input?.compilerVersion, 128) || !isPackText(input?.policyVersion, 128)) return null;
+  const rows = await db.select().from(acceptanceCompiledContextPacks).where(and(
+    eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+    eq(acceptanceCompiledContextPacks.sourceSnapshotId, input.sourceSnapshotId),
+    eq(acceptanceCompiledContextPacks.compilerVersion, input.compilerVersion),
+    eq(acceptanceCompiledContextPacks.policyVersion, input.policyVersion),
+  )).limit(1);
+  return rows[0] ?? null;
 }
 
 /** Closed, metadata-only identity for one exact review-job/head Context Pack snapshot. */

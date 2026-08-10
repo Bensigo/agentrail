@@ -297,6 +297,74 @@ export const acceptanceContextPackSnapshots = pgTable(
 );
 
 /**
+ * Immutable, metadata-only output of the exact-head Context Pack compiler.
+ * Rendered representations and source text deliberately remain ephemeral.
+ */
+export const acceptanceCompiledContextPacks = pgTable(
+  "acceptance_compiled_context_packs",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourceSnapshotId: uuid("source_snapshot_id")
+      .notNull()
+      .references(() => acceptanceContextPackSnapshots.id, { onDelete: "restrict" }),
+    compilerVersion: text("compiler_version").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    packSha256: text("pack_sha256").notNull(),
+    sourceCustodyIdentitySha256: text("source_custody_identity_sha256").notNull(),
+    jsonSha256: text("json_sha256").notNull(),
+    markdownSha256: text("markdown_sha256").notNull(),
+    renderedByteCount: integer("rendered_byte_count").notNull(),
+    binding: jsonb("binding").$type<Record<string, unknown>>().notNull(),
+    manifest: jsonb("manifest").$type<Record<string, unknown>>().notNull(),
+    sourceCustodyReceipt: jsonb("source_custody_receipt").$type<Record<string, unknown>>().notNull(),
+    exactHeadDependencyTreeProofs: jsonb("exact_head_dependency_tree_proofs").$type<Array<{
+      path: string;
+      blobSha: string;
+      proofIdentitySha256: string;
+    }>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    replay: uniqueIndex("acceptance_compiled_context_packs_replay_key").on(
+      t.sourceSnapshotId, t.compilerVersion, t.policyVersion
+    ),
+    workspaceSnapshot: index("acceptance_compiled_context_packs_workspace_snapshot_idx").on(
+      t.workspaceId, t.sourceSnapshotId
+    ),
+    shaCheck: check(
+      "acceptance_compiled_context_packs_sha_check",
+      sql`${t.packSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.sourceCustodyIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.jsonSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.markdownSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    versionCheck: check(
+      "acceptance_compiled_context_packs_version_check",
+      sql`char_length(${t.compilerVersion}) BETWEEN 1 AND 128
+        AND btrim(${t.compilerVersion}) = ${t.compilerVersion}
+        AND ${t.compilerVersion} !~ '[[:cntrl:]]'
+        AND char_length(${t.policyVersion}) BETWEEN 1 AND 128
+        AND btrim(${t.policyVersion}) = ${t.policyVersion}
+        AND ${t.policyVersion} !~ '[[:cntrl:]]'`
+    ),
+    renderedByteCountCheck: check(
+      "acceptance_compiled_context_packs_rendered_byte_count_check",
+      sql`${t.renderedByteCount} > 0 AND ${t.renderedByteCount} <= 65536`
+    ),
+    metadataCheck: check(
+      "acceptance_compiled_context_packs_metadata_check",
+      sql`jsonb_typeof(${t.binding}) = 'object'
+        AND jsonb_typeof(${t.manifest}) = 'object'
+        AND jsonb_typeof(${t.sourceCustodyReceipt}) = 'object'
+        AND jsonb_typeof(${t.exactHeadDependencyTreeProofs}) = 'array'`
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -400,5 +468,6 @@ export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
 export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
+export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

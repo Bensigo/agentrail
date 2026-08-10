@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceBuilderRoutes,
+  acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
@@ -247,5 +248,40 @@ describe("0085_acceptance_context_pack_snapshots migration", () => {
     expect(sqlText).toContain("acceptance_context_pack_snapshots_identity_json_check");
     expect(sqlText).toContain('"acceptance_context_pack_snapshots_replay_key"');
     expect(sqlText).toContain('"acceptance_context_pack_snapshots_review_job_idx"');
+  });
+});
+
+describe("0087_acceptance_compiled_context_packs migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0087_acceptance_compiled_context_packs.sql"
+  );
+
+  it("declares an immutable metadata-only Pack row with workspace-scoped replay", () => {
+    expect(acceptanceCompiledContextPacks.workspaceId.notNull).toBe(true);
+    expect(acceptanceCompiledContextPacks.sourceSnapshotId.notNull).toBe(true);
+    expect(acceptanceCompiledContextPacks.binding.getSQLType()).toBe("jsonb");
+    expect(acceptanceCompiledContextPacks.manifest.getSQLType()).toBe("jsonb");
+    expect(acceptanceCompiledContextPacks.sourceCustodyReceipt.getSQLType()).toBe("jsonb");
+    expect(acceptanceCompiledContextPacks.exactHeadDependencyTreeProofs.getSQLType()).toBe("jsonb");
+    const config = getTableConfig(acceptanceCompiledContextPacks);
+    expect(config.indexes.find((index) =>
+      index.config.name === "acceptance_compiled_context_packs_replay_key"
+    )).toBeDefined();
+  });
+
+  it("is registered after the nullable 0086 custody upgrade", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_compiled_context_packs"');
+    expect(sqlText).toContain('"source_snapshot_id" uuid NOT NULL REFERENCES "acceptance_context_pack_snapshots"("id") ON DELETE restrict');
+    expect(sqlText).not.toContain("rendered_json");
+    expect(sqlText).not.toContain("source_text");
+    expect(sqlText).toContain('"exact_head_dependency_tree_proofs" jsonb NOT NULL');
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0087_acceptance_compiled_context_packs"
+    )).toMatchObject({ idx: 92, version: "7", breakpoints: true });
   });
 });

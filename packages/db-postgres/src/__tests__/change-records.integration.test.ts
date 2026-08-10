@@ -12,6 +12,8 @@ import {
   acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
+  acceptanceCorrectionDispatchGithubActivations,
+  acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceContextPackSnapshots,
@@ -64,6 +66,10 @@ import {
   queueSelectedCorrectionDispatch,
   reserveGithubCorrectionCarrierPreflight,
   reportGithubCorrectionCarrierPreflight,
+  reserveNextGithubCorrectionFindingPublication,
+  reportGithubCorrectionFindingPublication,
+  reserveGithubCorrectionActivation,
+  reportGithubCorrectionActivation,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -85,6 +91,8 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
                to_regclass('public.acceptance_correction_dispatches') AS acceptance_correction_dispatches,
                to_regclass('public.acceptance_correction_dispatch_github_preflights') AS acceptance_correction_dispatch_github_preflights,
+               to_regclass('public.acceptance_correction_dispatch_github_finding_publications') AS acceptance_correction_dispatch_github_finding_publications,
+               to_regclass('public.acceptance_correction_dispatch_github_activations') AS acceptance_correction_dispatch_github_activations,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -129,6 +137,8 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_compiled_context_packs: string | null;
       acceptance_correction_dispatches: string | null;
       acceptance_correction_dispatch_github_preflights: string | null;
+      acceptance_correction_dispatch_github_finding_publications: string | null;
+      acceptance_correction_dispatch_github_activations: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
       change_record_current_pr_head: boolean;
@@ -145,6 +155,8 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_correction_dispatches === "acceptance_correction_dispatches" &&
       rows[0]?.acceptance_correction_dispatch_github_preflights === "acceptance_correction_dispatch_github_preflights" &&
+      rows[0]?.acceptance_correction_dispatch_github_finding_publications === "acceptance_correction_dispatch_github_finding_publications" &&
+      rows[0]?.acceptance_correction_dispatch_github_activations === "acceptance_correction_dispatch_github_activations" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.change_record_current_pr_head === true &&
@@ -1642,6 +1654,11 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceCorrectionDispatches).set({
         dispatchIdentitySha256: originalDispatchIdentity,
       }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      const preflightResultEvent = (await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+      )).limit(1))[0]!;
       await db.update(changeRecordEvents).set({ payloadRef: { forged: true } }).where(and(
         eq(changeRecordEvents.recordId, draft.record.id),
         eq(changeRecordEvents.eventKey,
@@ -1665,9 +1682,211 @@ describe.skipIf(!DB_AVAILABLE)(
         capabilityProfileSnapshot: githubQueued.dispatch.capabilityProfileSnapshot,
         capabilityProfileSnapshotSha256: githubQueued.dispatch.capabilityProfileSnapshotSha256,
       }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecordEvents).set({ payloadRef: preflightResultEvent.payloadRef }).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+      ));
+
+      // Two-stage publication: one ordinary finding reservation wins, all
+      // findings reach a durable terminal result, then exactly one activation
+      // reservation contains the complete immutable packet bundle.
+      const findingReservations = await Promise.all([
+        reserveNextGithubCorrectionFindingPublication({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+        reserveNextGithubCorrectionFindingPublication({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+      ]);
+      expect(findingReservations.map((result) => result.kind).sort()).toEqual(["held", "reserved"]);
+      const findingReservation = findingReservations.find((result) => result.kind === "reserved");
+      if (!findingReservation || findingReservation.kind !== "reserved") throw new Error("expected finding reservation");
+      expect(findingReservation.publication).toMatchObject({
+        dispatchId: githubQueued.dispatch.id, packetId, criterionId: "AC-1",
+        headSha, baseSha: "b".repeat(40), headCycleId: job.id,
+        authorityGeneration: 1, routeId: selectedRoute.route.id,
+        capabilityProfileId: capability.profile.id,
+        readyPreflightId: retry.preflight.id,
+        status: "reserved", githubCommentId: null,
+      });
+      expect(findingReservation.body).not.toContain("@codex");
+      expect(findingReservation.body).not.toContain("@claude");
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({
+        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 2 },
+      });
+      await expect(reportGithubCorrectionFindingPublication({
+        workspaceId: wsId, publicationId: findingReservation.publication.id,
+        outcome: { kind: "unknown_post_outcome", reason: "github_unavailable" },
+      })).resolves.toMatchObject({ kind: "reported", publication: {
+        status: "ambiguous_hold", resultReason: "github_unavailable",
+      } });
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "held", reason: "ambiguous_hold" });
+      // Test-only rewind: the production API deliberately provides no retry.
+      // Removing the exact result event and projection lets this same fixture
+      // continue through the independent accepted-receipt branch.
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-finding:result:${job.id}:${packetId}`),
+      ));
+      await db.update(acceptanceCorrectionDispatchGithubFindingPublications).set({
+        status: "reserved", resultReason: null, completedAt: null,
+        githubCommentId: null, githubCommentUrl: null,
+      }).where(eq(acceptanceCorrectionDispatchGithubFindingPublications.id, findingReservation.publication.id));
+      await db.update(acceptanceCorrectionDispatches).set({
+        deliveryState: "queued", findingsState: "reserved",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      const findingUrl = "https://github.com/acme/widgets/pull/43#issuecomment-91001";
+      await expect(reportGithubCorrectionFindingPublication({
+        workspaceId: wsId, publicationId: findingReservation.publication.id,
+        outcome: { kind: "published", githubCommentId: "91001", githubCommentUrl: findingUrl },
+      })).resolves.toMatchObject({ kind: "reported", publication: {
+        status: "published", githubCommentId: "91001", githubCommentUrl: findingUrl,
+      } });
+      await expect(reportGithubCorrectionFindingPublication({
+        workspaceId: wsId, publicationId: findingReservation.publication.id,
+        outcome: { kind: "published", githubCommentId: "91001", githubCommentUrl: findingUrl },
+      })).resolves.toMatchObject({ kind: "replayed" });
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "complete", expected: 1, published: 1, boundedFailed: 0 });
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({
+        kind: "terminal", preflight: { id: retry.preflight.id, status: "ready", attempt: 2 },
+      });
+
+      const activationReservations = await Promise.all([
+        reserveGithubCorrectionActivation({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+        reserveGithubCorrectionActivation({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+      ]);
+      expect(activationReservations.map((result) => result.kind).sort()).toEqual(["held", "reserved"]);
+      const activationReservation = activationReservations.find((result) => result.kind === "reserved");
+      if (!activationReservation || activationReservation.kind !== "reserved") throw new Error("expected activation reservation");
+      expect((activationReservation.body.match(/@codex/g) ?? [])).toHaveLength(1);
+      expect(activationReservation.body).not.toContain("@claude");
+      expect(activationReservation.body.split(activationReservation.packetBundleBase64url)).toHaveLength(2);
+      expect(activationReservation.body.split(activationReservation.packetBundleSha256)).toHaveLength(2);
+      const decodedBundle = JSON.parse(Buffer.from(
+        activationReservation.packetBundleBase64url, "base64url"
+      ).toString("utf8"));
+      expect(decodedBundle).toMatchObject({ packets: [{ packetId }], binding: {
+        dispatchId: githubQueued.dispatch.id, headSha, baseSha: "b".repeat(40),
+        readyPreflight: { id: retry.preflight.id }, recipient: "codex",
+      } });
+      // Whole-worker restart after activation reservation: the finding phase
+      // replays only its terminal summary and activation exposes no second body.
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "complete", expected: 1, published: 1, boundedFailed: 0 });
+      await expect(reserveGithubCorrectionActivation({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "held", reason: "reserved" });
+      await expect(reportGithubCorrectionActivation({
+        workspaceId: wsId, activationId: activationReservation.activation.id,
+        outcome: { kind: "unknown_post_outcome", reason: "ambiguous_response" },
+      })).resolves.toMatchObject({ kind: "reported", activation: {
+        status: "ambiguous_hold", resultReason: "ambiguous_response",
+      } });
+      await expect(reserveGithubCorrectionActivation({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "held", reason: "ambiguous_hold" });
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-activation:result:${job.id}`),
+      ));
+      await db.update(acceptanceCorrectionDispatchGithubActivations).set({
+        status: "reserved", resultReason: null, completedAt: null,
+        githubCommentId: null, githubCommentUrl: null,
+      }).where(eq(acceptanceCorrectionDispatchGithubActivations.id, activationReservation.activation.id));
+      await db.update(acceptanceCorrectionDispatches).set({
+        deliveryState: "queued", activationState: "reserved",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      // A known GitHub rejection is terminal and replayed as a bodyless closed
+      // result. The worker can restart without creating or exposing a second
+      // activation reservation.
+      await expect(reportGithubCorrectionActivation({
+        workspaceId: wsId, activationId: activationReservation.activation.id,
+        outcome: { kind: "bounded_failed", reason: "github_rejected" },
+      })).resolves.toMatchObject({ kind: "reported", activation: {
+        status: "bounded_failed", resultReason: "github_rejected",
+      } });
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "complete", expected: 1, published: 1, boundedFailed: 0 });
+      await expect(reserveGithubCorrectionActivation({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({
+        kind: "bounded_failed",
+        activationId: activationReservation.activation.id,
+        reason: "github_rejected",
+      });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]).toMatchObject({
+        findingsState: "terminal", activationState: "failed",
+        deliveryState: "failed", agentState: "not_observed",
+      });
+      // Test-only rewind so this fixture can continue through the independent
+      // accepted-receipt and cross-table receipt-uniqueness branches.
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-activation:result:${job.id}`),
+      ));
+      await db.update(acceptanceCorrectionDispatchGithubActivations).set({
+        status: "reserved", resultReason: null, completedAt: null,
+        githubCommentId: null, githubCommentUrl: null,
+      }).where(eq(acceptanceCorrectionDispatchGithubActivations.id, activationReservation.activation.id));
+      await db.update(acceptanceCorrectionDispatches).set({
+        deliveryState: "queued", activationState: "reserved",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await expect(reportGithubCorrectionActivation({
+        workspaceId: wsId, activationId: activationReservation.activation.id,
+        outcome: { kind: "carrier_accepted", githubCommentId: "91001", githubCommentUrl: findingUrl },
+      })).rejects.toThrow("already bound to another finding or activation");
+      const activationUrl = "https://github.com/acme/widgets/pull/43#issuecomment-91002";
+      await expect(reportGithubCorrectionActivation({
+        workspaceId: wsId, activationId: activationReservation.activation.id,
+        outcome: { kind: "carrier_accepted", githubCommentId: "91002", githubCommentUrl: activationUrl },
+      })).resolves.toMatchObject({ kind: "reported", activation: {
+        status: "carrier_accepted", githubCommentId: "91002", githubCommentUrl: activationUrl,
+      } });
+      await expect(reportGithubCorrectionActivation({
+        workspaceId: wsId, activationId: activationReservation.activation.id,
+        outcome: { kind: "carrier_accepted", githubCommentId: "91002", githubCommentUrl: activationUrl },
+      })).resolves.toMatchObject({ kind: "replayed" });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]).toMatchObject({
+        findingsState: "terminal", activationState: "carrier_accepted",
+        deliveryState: "carrier_accepted", agentState: "not_observed",
+      });
+      // A terminal whole-worker retry returns the persisted receipt as truth.
+      // It cannot reach a new activation POST because no body is returned.
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "complete", expected: 1, published: 1, boundedFailed: 0 });
+      await expect(reserveGithubCorrectionActivation({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({
+        kind: "carrier_accepted",
+        activationId: activationReservation.activation.id,
+        githubCommentId: "91002",
+        githubCommentUrl: activationUrl,
+      });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]).toMatchObject({
+        findingsState: "terminal", activationState: "carrier_accepted",
+        deliveryState: "carrier_accepted", agentState: "not_observed",
+      });
 
       // Durable fallback remains queueable, but deliberately has no GitHub
       // vendor capability profile and still performs no carrier action.
+      await db.delete(acceptanceCorrectionDispatchGithubActivations)
+        .where(eq(acceptanceCorrectionDispatchGithubActivations.dispatchId, githubQueued.dispatch.id));
+      await db.delete(acceptanceCorrectionDispatchGithubFindingPublications)
+        .where(eq(acceptanceCorrectionDispatchGithubFindingPublications.dispatchId, githubQueued.dispatch.id));
       await db.delete(acceptanceCorrectionDispatchGithubPreflights)
         .where(eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, githubQueued.dispatch.id));
       await db.delete(acceptanceCorrectionDispatches)
@@ -1744,6 +1963,12 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       if (revisitedHead.kind !== "advanced") throw new Error("expected compiled head revisit");
       expect(revisitedHead.jobId).not.toBe(job.id);
+      await expect(reserveNextGithubCorrectionFindingPublication({
+        workspaceId: wsId, dispatchId: queued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      await expect(reserveGithubCorrectionActivation({
+        workspaceId: wsId, dispatchId: queued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
       await expect(resolveAcceptanceCompiledContextPack({
         workspaceId: wsId, sourceSnapshotId: snapshot.snapshot.id,
         compilerVersion: compiler.version, policyVersion: compiler.policyVersion,

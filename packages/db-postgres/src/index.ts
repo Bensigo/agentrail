@@ -1,6 +1,7 @@
 export { db } from "./db.js";
 export * from "./schema/index.js";
 export * from "./queries/index.js";
+export * from "./github-correction-dispatch-renderer.js";
 export { encryptSecret, decryptSecret, isEncrypted } from "./crypto.js";
 export {
   exactGitTreeInclusionProofIdentity,

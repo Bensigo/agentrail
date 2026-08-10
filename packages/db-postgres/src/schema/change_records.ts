@@ -627,6 +627,200 @@ export const acceptanceCorrectionDispatchGithubPreflights = pgTable(
   })
 );
 
+/** One inert PR finding-comment reservation for one immutable, sorted R8.1 packet. */
+export const acceptanceCorrectionDispatchGithubFindingPublications = pgTable(
+  "acceptance_correction_dispatch_github_finding_publications",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    dispatchId: uuid("dispatch_id").notNull().references(() => acceptanceCorrectionDispatches.id, { onDelete: "restrict" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    packetId: text("packet_id").notNull(),
+    criterionId: text("criterion_id").notNull(),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    routeId: uuid("route_id").notNull().references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeAdapter: text("route_adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    capabilityProfileId: uuid("capability_profile_id").notNull().references(
+      () => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }
+    ),
+    capabilityProfileSnapshotSha256: text("capability_profile_snapshot_sha256").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
+    readyPreflightId: uuid("ready_preflight_id").notNull().references(
+      () => acceptanceCorrectionDispatchGithubPreflights.id, { onDelete: "restrict" }
+    ),
+    readyPreflightIdentitySha256: text("ready_preflight_identity_sha256").notNull(),
+    publicationProtocolVersion: integer("publication_protocol_version").notNull().default(1),
+    publicationIdentitySha256: text("publication_identity_sha256").notNull(),
+    carrier: text("carrier").notNull().default("github_issue_comment"),
+    packetPayloadSha256: text("packet_payload_sha256").notNull(),
+    /** Null only for a terminal, locally rejected unpostable rendering. */
+    body: text("body"),
+    bodySha256: text("body_sha256"),
+    status: text("status").notNull().default("reserved"),
+    githubCommentId: text("github_comment_id"),
+    githubCommentUrl: text("github_comment_url"),
+    resultReason: text("result_reason"),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dispatchPacket: uniqueIndex("acceptance_correction_gh_findings_dispatch_packet_key").on(t.dispatchId, t.packetId),
+    commentReceipt: uniqueIndex("acceptance_correction_gh_findings_comment_receipt_key")
+      .on(t.githubCommentId).where(sql`${t.githubCommentId} IS NOT NULL`),
+    bindingCheck: check(
+      "acceptance_correction_gh_findings_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.baseSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.packetId} ~ '^correction-[A-Fa-f0-9]{48}$'
+        AND char_length(${t.criterionId}) BETWEEN 1 AND 512
+        AND btrim(${t.criterionId}) = ${t.criterionId}
+        AND ${t.criterionId} !~ '[[:cntrl:]]'
+        AND ${t.routeAdapter} IN ('github_codex', 'github_claude')
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.capabilityProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubInstallationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.readyPreflightIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.publicationProtocolVersion} = 1
+        AND ${t.publicationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.carrier} = 'github_issue_comment'
+        AND ${t.packetPayloadSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND (${t.body} IS NULL OR octet_length(${t.body}) BETWEEN 1 AND 12288)
+        AND (${t.bodySha256} IS NULL OR ${t.bodySha256} ~ '^[A-Fa-f0-9]{64}$')`
+    ),
+    stateCheck: check(
+      "acceptance_correction_gh_findings_state_check",
+      sql`${t.status} IN ('reserved', 'published', 'bounded_failed', 'ambiguous_hold')
+        AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
+        AND ((${t.status} = 'published') = (${t.githubCommentId} IS NOT NULL))
+        AND ((${t.status} = 'published') = (${t.githubCommentUrl} IS NOT NULL))
+        AND (${t.githubCommentId} IS NULL OR (char_length(${t.githubCommentId}) BETWEEN 1 AND 40 AND ${t.githubCommentId} ~ '^[1-9][0-9]*$'))
+        AND (${t.githubCommentUrl} IS NULL OR ${t.githubCommentUrl} = 'https://github.com/' || ${t.repo} || '/pull/' || (${t.prNumber})::text || '#issuecomment-' || ${t.githubCommentId})
+        AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
+        AND (${t.status} <> 'bounded_failed' OR ${t.resultReason} IN ('github_rejected', 'invalid_db_issued_body'))
+        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN ('github_unavailable', 'ambiguous_response'))
+        AND (${t.body} IS NOT NULL OR (${t.status} = 'bounded_failed' AND ${t.resultReason} = 'invalid_db_issued_body'))
+        AND ((${t.body} IS NULL) = (${t.bodySha256} IS NULL))
+        AND (${t.status} <> 'reserved' OR (${t.githubCommentId} IS NULL AND ${t.githubCommentUrl} IS NULL AND ${t.resultReason} IS NULL))`
+    ),
+  })
+);
+
+/** The one selected-recipient activation reservation after all findings are terminal. */
+export const acceptanceCorrectionDispatchGithubActivations = pgTable(
+  "acceptance_correction_dispatch_github_activations",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    dispatchId: uuid("dispatch_id").notNull().references(() => acceptanceCorrectionDispatches.id, { onDelete: "restrict" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    routeId: uuid("route_id").notNull().references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeAdapter: text("route_adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    capabilityProfileId: uuid("capability_profile_id").notNull().references(
+      () => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }
+    ),
+    capabilityProfileSnapshotSha256: text("capability_profile_snapshot_sha256").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
+    readyPreflightId: uuid("ready_preflight_id").notNull().references(
+      () => acceptanceCorrectionDispatchGithubPreflights.id, { onDelete: "restrict" }
+    ),
+    readyPreflightIdentitySha256: text("ready_preflight_identity_sha256").notNull(),
+    carrier: text("carrier").notNull().default("github_issue_comment"),
+    recipient: text("recipient").notNull(),
+    findingCoverageSha256: text("finding_coverage_sha256").notNull(),
+    packetSetSha256: text("packet_set_sha256").notNull(),
+    correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256").notNull(),
+    packetBundleSha256: text("packet_bundle_sha256"),
+    /** Null only when the canonical packet bundle cannot fit the carrier. */
+    body: text("body"),
+    bodySha256: text("body_sha256"),
+    activationProtocolVersion: integer("activation_protocol_version").notNull().default(1),
+    activationIdentitySha256: text("activation_identity_sha256").notNull(),
+    status: text("status").notNull().default("reserved"),
+    githubCommentId: text("github_comment_id"),
+    githubCommentUrl: text("github_comment_url"),
+    resultReason: text("result_reason"),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dispatch: uniqueIndex("acceptance_correction_gh_activations_dispatch_key").on(t.dispatchId),
+    commentReceipt: uniqueIndex("acceptance_correction_gh_activations_comment_receipt_key")
+      .on(t.githubCommentId).where(sql`${t.githubCommentId} IS NOT NULL`),
+    bindingCheck: check(
+      "acceptance_correction_gh_activations_binding_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.baseSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.routeAdapter} IN ('github_codex', 'github_claude')
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.capabilityProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubInstallationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.readyPreflightIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.carrier} = 'github_issue_comment'
+        AND ((${t.routeAdapter} = 'github_codex' AND ${t.recipient} = 'codex')
+          OR (${t.routeAdapter} = 'github_claude' AND ${t.recipient} = 'claude'))
+        AND ${t.findingCoverageSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.packetSetSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.correctionPacketPayloadSetSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND (${t.packetBundleSha256} IS NULL OR ${t.packetBundleSha256} ~ '^[A-Fa-f0-9]{64}$')
+        AND (${t.body} IS NULL OR octet_length(${t.body}) BETWEEN 1 AND 61440)
+        AND (${t.bodySha256} IS NULL OR ${t.bodySha256} ~ '^[A-Fa-f0-9]{64}$')
+        AND ${t.activationProtocolVersion} = 1
+        AND ${t.activationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    stateCheck: check(
+      "acceptance_correction_gh_activations_state_check",
+      sql`${t.status} IN ('reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold')
+        AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
+        AND ((${t.status} = 'carrier_accepted') = (${t.githubCommentId} IS NOT NULL))
+        AND ((${t.status} = 'carrier_accepted') = (${t.githubCommentUrl} IS NOT NULL))
+        AND (${t.githubCommentId} IS NULL OR (char_length(${t.githubCommentId}) BETWEEN 1 AND 40 AND ${t.githubCommentId} ~ '^[1-9][0-9]*$'))
+        AND (${t.githubCommentUrl} IS NULL OR ${t.githubCommentUrl} = 'https://github.com/' || ${t.repo} || '/pull/' || (${t.prNumber})::text || '#issuecomment-' || ${t.githubCommentId})
+        AND ((${t.status} IN ('bounded_failed', 'ambiguous_hold')) = (${t.resultReason} IS NOT NULL))
+        AND (${t.status} <> 'bounded_failed' OR ${t.resultReason} IN ('github_rejected', 'invalid_db_issued_body', 'activation_body_too_large'))
+        AND (${t.status} <> 'ambiguous_hold' OR ${t.resultReason} IN ('github_unavailable', 'ambiguous_response'))
+        AND (${t.body} IS NOT NULL OR (${t.status} = 'bounded_failed' AND ${t.resultReason} IN ('invalid_db_issued_body', 'activation_body_too_large')))
+        AND ((${t.body} IS NULL) = (${t.bodySha256} IS NULL))
+        AND ((${t.packetBundleSha256} IS NULL) = (${t.status} = 'bounded_failed' AND ${t.resultReason} = 'invalid_db_issued_body'))
+        AND (${t.status} <> 'reserved' OR (${t.githubCommentId} IS NULL AND ${t.githubCommentUrl} IS NULL AND ${t.resultReason} IS NULL))`
+    ),
+  })
+);
+
 /**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
@@ -735,5 +929,7 @@ export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnaps
 export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
 export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatches.$inferSelect;
 export type AcceptanceCorrectionDispatchGithubPreflightRow = typeof acceptanceCorrectionDispatchGithubPreflights.$inferSelect;
+export type AcceptanceCorrectionDispatchGithubFindingPublicationRow = typeof acceptanceCorrectionDispatchGithubFindingPublications.$inferSelect;
+export type AcceptanceCorrectionDispatchGithubActivationRow = typeof acceptanceCorrectionDispatchGithubActivations.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

@@ -182,6 +182,7 @@ const EXPECTED_TOOL_FILES = [
   "create_issue.ts",
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
+  "execute_review_ui.ts", // operational + ungated by design: replays one server-reserved bounded flow only inside an isolated exact-head preview; target, steps, result, and screenshot custody are server-bound
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
@@ -229,6 +230,7 @@ const EXPECTED_MUTATING_TOOLS = [
 // approval, and the gated-set test above asserts nothing else slips out of the
 // gate. See this file's header for the full argument behind the one entry.
 const UNGATED_ADVISORY_WRITES = [
+  "execute_review_ui.ts",
   "post_pr_review.ts",
   "record_judgment.ts",
   "save_brief.ts",
@@ -318,6 +320,25 @@ test("the enumerated ungated advisory writes wire NO approval gate at all", () =
       `${file} must not wire any approval field`,
     );
   }
+});
+
+test("execute_review_ui is the one closed, server-scoped operational UI write path", () => {
+  const tool = stripComments(readFileSync(`${toolsDir}/execute_review_ui.ts`, "utf8"));
+  assert.match(tool, /inputSchema:\s*z\.object\([\s\S]*jobId:[\s\S]*criterionId:[\s\S]*previewBootId:[\s\S]*\)\.strict\(\)/);
+  assert.match(tool, /eveSessionId:\s*ctx\.session\.id/);
+  assert.doesNotMatch(tool, /\b(?:repo|prNumber|headSha|previewUrl|uiSteps|state|expected|observed|evidenceKey)\s*:/);
+
+  const executionCore = readFileSync(
+    fileURLToPath(new URL("../agent/lib/review_ui_execution_console.core.mjs", import.meta.url)),
+    "utf8",
+  );
+  const cleanCore = stripComments(executionCore);
+  assert.match(cleanCore, /criterionId:\s*criterion,[\s\S]*previewBootId:\s*boot/);
+  assert.match(cleanCore, /eveSessionId:\s*session,[\s\S]*assertionPassed:[\s\S]*observedUrl:[\s\S]*imageBase64:[\s\S]*contentType:/);
+  assert.doesNotMatch(
+    cleanCore.match(/requestInit\(config\.token, \{[\s\S]*?\}\),/g)?.join("\n") ?? "",
+    /\b(?:repo|prNumber|headSha|previewUrl|uiSteps)\s*:/,
+  );
 });
 
 test("post_pr_review's severity filter is enforced in code, not in a prompt", () => {

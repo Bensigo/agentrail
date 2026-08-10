@@ -3,13 +3,22 @@ import assert from "node:assert/strict";
 import {
   buildVerificationPlanUrl,
   normalizePlans,
+  normalizeUiSteps,
   planReviewVerification,
 } from "../agent/lib/plan_review_verification.core.mjs";
 
 const env = { JACE_CONSOLE_BASE_URL: "https://console.example.com/", JACE_CONSOLE_TOKEN: "token" };
 const plans = [
-  { criterionId: "ac-ui", modality: "ui", status: "planned", flow: "Open /settings and save." },
-  { criterionId: "ac-api", modality: "api", status: "not_testable", notTestableReason: "The API executor is not available in R7.1." },
+  {
+    criterionId: "ac-ui", modality: "ui", status: "planned", flow: "Open /settings and save.",
+    uiSteps: [
+      { action: "open", path: "/settings" },
+      { action: "click", selector: "[data-testid=\"save\"]" },
+      { action: "expect_text", text: "Saved" },
+      { action: "screenshot", label: "saved-settings" },
+    ],
+  },
+  { criterionId: "ac-api", modality: "api", status: "not_testable", notTestableReason: "The API executor is not available in the UI-only R7.2 slice." },
 ];
 
 test("buildVerificationPlanUrl encodes the server-bound job id", () => {
@@ -26,6 +35,34 @@ test("normalizePlans requires unique criteria and exact planned/not_testable alt
   assert.equal(normalizePlans([{ ...plans[1], flow: "run it" }]), null);
   assert.equal(normalizePlans([plans[0], { ...plans[0], modality: "data" }]), null);
   assert.equal(normalizePlans([{ criterionId: "a", modality: "browser", status: "planned", flow: "x" }]), null);
+  assert.equal(normalizePlans([{ ...plans[0], extra: true }]), null);
+  assert.equal(normalizePlans([{ ...plans[1], extra: true }]), null);
+});
+
+test("normalizeUiSteps permits one bounded assertion flow and rejects escape hatches", () => {
+  assert.deepEqual(normalizeUiSteps(plans[0].uiSteps), plans[0].uiSteps);
+  assert.equal(normalizeUiSteps([
+    { action: "open", path: " /settings" },
+    { action: "expect_text", text: "Saved" },
+    { action: "screenshot", label: "proof" },
+  ]), null);
+  assert.equal(normalizeUiSteps([
+    { action: "open", path: "//other-host" },
+    { action: "expect_text", text: "Saved" },
+    { action: "screenshot", label: "proof" },
+  ]), null);
+  assert.equal(normalizeUiSteps([
+    { action: "open", path: "/settings" },
+    { action: "expect_text", text: "Saved" },
+    { action: "click", selector: "button" },
+    { action: "screenshot", label: "proof" },
+  ]), null);
+  assert.equal(normalizeUiSteps([
+    { action: "open", path: "/settings" },
+    { action: "expect_text", text: "Saved" },
+    { action: "expect_text", text: "Saved again" },
+    { action: "screenshot", label: "proof" },
+  ]), null);
 });
 
 test("posts exactly eveSessionId and the projected complete plans", async () => {

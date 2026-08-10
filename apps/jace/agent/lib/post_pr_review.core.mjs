@@ -752,8 +752,18 @@ export function sanitizeReviewInput(summary, comments) {
   return { summary: safeSummary, comments: safeComments };
 }
 
-const REVIEW_JOB_CRITERION_STATES = new Set(["not_proven", "not_testable"]);
-const REVIEW_JOB_VERDICTS = new Set(["not_proven", "not_testable"]);
+const REVIEW_JOB_CRITERION_STATES = new Set([
+  "proven",
+  "failed",
+  "not_proven",
+  "not_testable",
+]);
+const REVIEW_JOB_VERDICTS = new Set([
+  "proven",
+  "failed",
+  "not_proven",
+  "not_testable",
+]);
 
 /** Project the headless review attestation onto the exact server wire shape. */
 export function projectReviewJobAttestation(value) {

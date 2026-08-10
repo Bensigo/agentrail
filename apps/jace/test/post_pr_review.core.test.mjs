@@ -262,26 +262,55 @@ test("runPostPrReview sends a headless result to the encoded job-scoped pre-writ
   });
 });
 
-test("review-job attestation validation fails before transport on unsupported proof, missing evidence, or an invalid verdict", async () => {
+test("review-job attestation accepts every terminal criterion state and aggregate verdict, with evidence required except for not_testable", async () => {
   const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
-  for (const criterionResults of [
-    [{ criterionId: "AC-1", state: "proven", expected: "Expected", observed: "Observed", evidenceRefs: ["preview-boot:fake"] }],
-    [{ criterionId: "AC-1", state: "not_proven", expected: "Expected", observed: "Unavailable", evidenceRefs: [] }],
-  ]) {
-    const result = await runPostPrReview({
-      ...VALID_ARGS,
-      reviewJob: {
-        jobId: "job-1",
-        criterionResults,
-        verdict: "not_proven",
-        summaryLine: "held",
-      },
-      env: ENV,
-      transport,
-    });
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, "bad_request");
+  for (const state of ["proven", "failed", "not_proven", "not_testable"]) {
+    for (const verdict of ["proven", "failed", "not_proven", "not_testable"]) {
+      const result = await runPostPrReview({
+        ...VALID_ARGS,
+        reviewJob: {
+          jobId: "job-1",
+          criterionResults: [{
+            criterionId: "AC-1",
+            state,
+            expected: "Expected",
+            observed: "Observed",
+            evidenceRefs: state === "not_testable" ? [] : ["review-ui-execution:receipt-1"],
+          }],
+          verdict,
+          summaryLine: "held",
+        },
+        env: ENV,
+        transport,
+      });
+      assert.equal(result.ok, true, `${state}/${verdict} must be a valid closed attestation`);
+    }
   }
+  assert.equal(transport.calls.length, 16);
+});
+
+test("review-job attestation validation fails before transport on missing non-not_testable evidence or an invalid verdict", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  const missingEvidence = await runPostPrReview({
+    ...VALID_ARGS,
+    reviewJob: {
+      jobId: "job-1",
+      criterionResults: [{
+        criterionId: "AC-1",
+        state: "not_proven",
+        expected: "Expected",
+        observed: "Unavailable",
+        evidenceRefs: [],
+      }],
+      verdict: "not_proven",
+      summaryLine: "held",
+    },
+    env: ENV,
+    transport,
+  });
+  assert.equal(missingEvidence.ok, false);
+  assert.equal(missingEvidence.reason, "bad_request");
+
   const invalidVerdict = await runPostPrReview({
     ...VALID_ARGS,
     reviewJob: {
@@ -301,6 +330,62 @@ test("review-job attestation validation fails before transport on unsupported pr
   });
   assert.equal(invalidVerdict.ok, false);
   assert.equal(invalidVerdict.reason, "bad_request");
+  assert.equal(transport.calls.length, 0);
+});
+
+test("review-job attestation is a closed projection: it trims allowed fields and drops every caller-selected target field", () => {
+  const projected = projectReviewJobAttestation({
+    jobId: " job-1 ",
+    criterionResults: [{
+      criterionId: " AC-1 ",
+      state: "proven",
+      expected: " Expected ",
+      observed: " Observed ",
+      evidenceRefs: [" review-ui-execution:receipt-1 "],
+      repo: "evil/repo",
+      prNumber: 999,
+      headSha: "evil-head",
+    }],
+    verdict: " proven ",
+    summaryLine: " held ",
+    repo: "evil/repo",
+    prNumber: 999,
+    headSha: "evil-head",
+  });
+  assert.deepEqual(projected, {
+    jobId: "job-1",
+    criterionResults: [{
+      criterionId: "AC-1",
+      state: "proven",
+      expected: "Expected",
+      observed: "Observed",
+      evidenceRefs: ["review-ui-execution:receipt-1"],
+    }],
+    verdict: "proven",
+    summaryLine: "held",
+  });
+});
+
+test("review-job attestation validation fails before transport on malformed criterion input", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  for (const criterionResults of [
+    [{ criterionId: "AC-1", state: "not_proven", expected: "Expected", observed: "Unavailable", evidenceRefs: [] }],
+    [{ criterionId: "AC-1", state: "not-a-state", expected: "Expected", observed: "Unavailable", evidenceRefs: ["receipt"] }],
+  ]) {
+    const result = await runPostPrReview({
+      ...VALID_ARGS,
+      reviewJob: {
+        jobId: "job-1",
+        criterionResults,
+        verdict: "not_proven",
+        summaryLine: "held",
+      },
+      env: ENV,
+      transport,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "bad_request");
+  }
   assert.equal(transport.calls.length, 0);
 });
 

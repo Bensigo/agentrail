@@ -131,7 +131,7 @@ const NOTES = {
 };
 
 export const R7_READY_NOT_PROVEN_OBSERVATION =
-  "The isolated exact-head preview became ready, but R7.1 does not yet provide server-custodied criterion execution evidence; this criterion remains not proven until R7.2.";
+  "The isolated exact-head preview became ready, but no server-custodied criterion execution receipt was recorded for this run; this criterion remains not proven.";
 
 export function r7UnavailablePreviewObservation({ status, reason }) {
   const transition =

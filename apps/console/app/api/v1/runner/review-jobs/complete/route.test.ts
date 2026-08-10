@@ -33,9 +33,18 @@ import { sendWorkspaceNotification } from "../../result/notify";
 import {
   R7_READY_NOT_PROVEN_OBSERVATION,
   type CriterionResult,
+  type ExactReviewJobProof,
   r7UnavailablePreviewObservation,
   reviewOutcomeDigest,
 } from "../../../../../../lib/review-job-proof-attestation";
+import {
+  buildReviewJobUiAttempt,
+  buildReviewJobUiResult,
+  buildReviewJobUiScreenshotReservation,
+  reviewJobUiAttemptEventKey,
+  reviewJobUiResultEventKey,
+  reviewJobUiScreenshotReservationEventKey,
+} from "../../../../../../lib/review-job-ui-execution";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
@@ -55,6 +64,9 @@ const NOW = new Date("2026-08-01T00:00:00.000Z");
 const PREVIEW_BOOT_ID = "11111111-1111-5111-8111-111111111111";
 const BOOT_LOG_KEY =
   "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/boot.log";
+const SCREENSHOT_KEY =
+  "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/exact.png";
+const PREVIEW_URL = "http://preview.internal:4173";
 
 const POSTED_JOB = {
   id: "job-1",
@@ -251,6 +263,92 @@ const VALID_POSTED_BODY = {
     evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
   }],
 };
+
+const UI_STEPS = [
+  { action: "open", path: "/saved-values" },
+  { action: "expect_text", text: "Saved value" },
+  { action: "screenshot", label: "saved-value" },
+] as const;
+
+function uiReceiptFixture(assertionPassed = true) {
+  const planEvent = {
+    ...PLAN_EVENT,
+    payloadRef: {
+      ...PLAN_EVENT.payloadRef,
+      plans: [{ ...PLAN_EVENT.payloadRef.plans[0], uiSteps: [...UI_STEPS] }],
+    },
+  };
+  const receiptTimeline: {
+    record: typeof CHANGE_RECORD;
+    events: Array<{ eventKey: string; payloadRef: Record<string, unknown> }>;
+  } = {
+    record: CHANGE_RECORD,
+    events: [planEvent],
+  };
+  const proof = {
+    job: RUNNING_JOB,
+    timeline: receiptTimeline,
+    contract: {
+      id: CONFIRMED_CONTRACT[0]!.id,
+      version: CONFIRMED_CONTRACT[0]!.version,
+      criteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria,
+    },
+    verificationPlan: planEvent.payloadRef,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = {
+    id: PREVIEW_BOOT_ID,
+    workspaceId: RUNNING_JOB.workspaceId,
+    repo: RUNNING_JOB.repo,
+    prNumber: RUNNING_JOB.prNumber,
+    headSha: RUNNING_JOB.headSha,
+    status: "ready",
+    url: PREVIEW_URL,
+  };
+  const attempt = buildReviewJobUiAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobUiResult({
+    attempt,
+    plan,
+    assertionPassed,
+    artifactKey: SCREENSHOT_KEY,
+    contentType: "image/png",
+    contentSha256: "d".repeat(64),
+    observedUrl: `${PREVIEW_URL}/saved-values`,
+  })!;
+  receiptTimeline.events.push(
+    {
+      eventKey: reviewJobUiAttemptEventKey({ proof, plan }),
+      payloadRef: attempt,
+    },
+    {
+      eventKey: reviewJobUiScreenshotReservationEventKey({ proof, plan }),
+      payloadRef: buildReviewJobUiScreenshotReservation(result),
+    },
+    {
+      eventKey: reviewJobUiResultEventKey({ proof, plan }),
+      payloadRef: result,
+    }
+  );
+  return {
+    attempt,
+    result,
+    plan,
+    timeline: receiptTimeline,
+    body: {
+      ...VALID_POSTED_BODY,
+      verdict: result.state,
+      summaryLine: `AgentRail review posted for acme/widgets#42 — ${result.state}`,
+      criterionResults: [{
+        criterionId: "AC-1",
+        state: result.state,
+        expected: result.expected,
+        observed: result.observed,
+        evidenceRefs: [result.evidenceRef],
+      }],
+      evidenceKeys: [SCREENSHOT_KEY],
+    },
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -496,6 +594,244 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       expect(res.status).toBe(200);
       expect(mockGetPreviewBoot).toHaveBeenCalledWith(PREVIEW_BOOT_ID);
       expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("completes proven or failed only from the exact stored UI receipt and its decisive screenshot", async () => {
+      for (const assertionPassed of [true, false]) {
+        const fixture = uiReceiptFixture(assertionPassed);
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline) as never
+        );
+        mockComplete.mockResolvedValueOnce({
+          ...POSTED_JOB,
+          verdict: fixture.result.state,
+        } as never);
+        const body = assertionPassed
+          ? fixture.body
+          : { ...fixture.body, evidenceKeys: [SCREENSHOT_KEY, BOOT_LOG_KEY] };
+
+        const response = await POST(postReq(body));
+
+        expect(response.status).toBe(200);
+        expect(mockComplete).toHaveBeenCalledTimes(1);
+        mockComplete.mockClear();
+      }
+    });
+
+    it("keeps an executable UI plan at preview-only not_proven until its result receipt exists", async () => {
+      const fixture = uiReceiptFixture();
+      fixture.timeline.events = fixture.timeline.events.slice(0, 1);
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(fixture.timeline) as never
+      );
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+
+      const response = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(response.status).toBe(200);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a valid screenshot reservation without a final result at preview-only not_proven", async () => {
+      const fixture = uiReceiptFixture();
+      fixture.timeline.events = fixture.timeline.events.filter(
+        (event) => !String(event.eventKey).includes(":ui-result:")
+      );
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(fixture.timeline) as never
+      );
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+
+      const response = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(response.status).toBe(200);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not downgrade an existing UI receipt to preview-only not_proven", async () => {
+      const fixture = uiReceiptFixture();
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(fixture.timeline) as never
+      );
+
+      const response = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(response.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("holds forged or mismatched UI execution custody before completing the job", async () => {
+      const cases: Array<[string, (fixture: ReturnType<typeof uiReceiptFixture>) => void]> = [
+        ["attempt", (fixture) => {
+          fixture.timeline.events = fixture.timeline.events.filter(
+            (event) => !String(event.eventKey).includes(":ui-attempt:")
+          );
+        }],
+        ["attempt plan", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-attempt:")
+          )!;
+          event.payloadRef = { ...fixture.attempt, planDigest: "forged" };
+        }],
+        ["attempt execution", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-attempt:")
+          )!;
+          event.payloadRef = { ...fixture.attempt, executionId: "ui-forged" };
+        }],
+        ["result execution", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-result:")
+          )!;
+          event.payloadRef = { ...fixture.result, executionId: "ui-forged" };
+        }],
+        ["result head", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-result:")
+          )!;
+          event.payloadRef = { ...fixture.result, headSha: "foreign-head" };
+        }],
+        ["missing screenshot reservation", (fixture) => {
+          fixture.timeline.events = fixture.timeline.events.filter(
+            (event) => !String(event.eventKey).includes(":ui-screenshot:")
+          );
+        }],
+        ["mismatched screenshot reservation", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-screenshot:")
+          )!;
+          event.payloadRef = buildReviewJobUiScreenshotReservation({
+            ...fixture.result,
+            artifactKey: "review-evidence/competing.png",
+          });
+        }],
+        ["stored plan", (fixture) => {
+          const event = fixture.timeline.events[0]!;
+          const storedPlan = event.payloadRef.plans;
+          if (!Array.isArray(storedPlan) || storedPlan.length === 0) {
+            throw new Error("fixture must include a stored verification plan");
+          }
+          event.payloadRef = {
+            ...event.payloadRef,
+            plans: [{
+              ...storedPlan[0],
+              uiSteps: [
+                { action: "open", path: "/saved-values" },
+                { action: "expect_text", text: "Different text" },
+                { action: "screenshot", label: "saved-value" },
+              ],
+            }],
+          };
+        }],
+        ["boot tuple", () => {
+          mockGetPreviewBoot.mockResolvedValueOnce({
+            id: PREVIEW_BOOT_ID,
+            workspaceId: "ws-1",
+            repo: "acme/widgets",
+            prNumber: 42,
+            headSha: "b".repeat(40),
+            status: "ready",
+            url: PREVIEW_URL,
+            bootLogKey: BOOT_LOG_KEY,
+          } as never);
+        }],
+        ["boot URL", () => {
+          mockGetPreviewBoot.mockResolvedValueOnce({
+            id: PREVIEW_BOOT_ID,
+            workspaceId: "ws-1",
+            repo: "acme/widgets",
+            prNumber: 42,
+            headSha: "a".repeat(40),
+            status: "ready",
+            url: "http://preview.internal:4999",
+            bootLogKey: BOOT_LOG_KEY,
+          } as never);
+        }],
+        ["result observation", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) =>
+            String(candidate.eventKey).includes(":ui-result:")
+          )!;
+          event.payloadRef = { ...fixture.result, observed: "forged" };
+        }],
+      ];
+
+      for (const [name, arrange] of cases) {
+        const fixture = uiReceiptFixture();
+        arrange(fixture);
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline) as never
+        );
+        const response = await POST(postReq(fixture.body));
+        expect(response.status, name).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("holds preview-only fallback when a stored UI result is present but invalid", async () => {
+      for (const mutation of [
+        { executionId: "ui-forged" },
+        { headSha: "foreign-head" },
+        { observed: "forged" },
+      ]) {
+        const fixture = uiReceiptFixture();
+        const event = fixture.timeline.events.find((candidate) =>
+          String(candidate.eventKey).includes(":ui-result:")
+        )!;
+        event.payloadRef = { ...fixture.result, ...mutation };
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline) as never
+        );
+
+        const response = await POST(postReq(VALID_POSTED_BODY));
+
+        expect(response.status).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("requires the receipt screenshot key exactly once and allows only its current boot log beside it", async () => {
+      for (const evidenceKeys of [
+        [],
+        [BOOT_LOG_KEY],
+        [SCREENSHOT_KEY, SCREENSHOT_KEY],
+        [SCREENSHOT_KEY, "review-evidence/fabricated.png"],
+        ["review-evidence/fabricated.png"],
+      ]) {
+        const fixture = uiReceiptFixture();
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline) as never
+        );
+        const response = await POST(
+          postReq({ ...fixture.body, evidenceKeys })
+        );
+        expect(response.status, JSON.stringify(evidenceKeys)).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("holds caller changes to the UI receipt fields before completion", async () => {
+      for (const mutation of [
+        { state: "failed" },
+        { expected: "Different expected behavior." },
+        { observed: "The caller says it passed." },
+        { evidenceRefs: ["review-ui-execution:forged"] },
+      ]) {
+        const fixture = uiReceiptFixture();
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline) as never
+        );
+        const criterionResult = {
+          ...fixture.body.criterionResults[0],
+          ...mutation,
+        };
+        const response = await POST(postReq({
+          ...fixture.body,
+          criterionResults: [criterionResult],
+          verdict: criterionResult.state,
+        }));
+        expect(response.status).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
     });
 
     it("rejects direct-complete proof claims, changed observations, and extra references before completion", async () => {

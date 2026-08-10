@@ -95,6 +95,12 @@ const REQUEST_PLANS = [
     modality: "ui",
     status: "planned",
     flow: "Open saved filters, reload, and verify the named filter remains visible.",
+    uiSteps: [
+      { action: "open", path: "/filters" },
+      { action: "click", selector: "[data-testid=\"saved-filter\"]" },
+      { action: "expect_text", text: "Saved filter" },
+      { action: "screenshot", label: "saved-filter-visible" },
+    ],
   },
   {
     criterionId: "AC-API",
@@ -122,6 +128,12 @@ const STORED_PAYLOAD = {
       modality: "ui",
       environmentKind: "isolated_preview",
       flow: "Open saved filters, reload, and verify the named filter remains visible.",
+      uiSteps: [
+        { action: "open", path: "/filters" },
+        { action: "click", selector: "[data-testid=\"saved-filter\"]" },
+        { action: "expect_text", text: "Saved filter" },
+        { action: "screenshot", label: "saved-filter-visible" },
+      ],
       status: "planned",
       notTestableReason: null,
     },
@@ -131,6 +143,7 @@ const STORED_PAYLOAD = {
       modality: "api",
       environmentKind: null,
       flow: null,
+      uiSteps: null,
       status: "not_testable",
       notTestableReason: "The R7.2 API executor is not available in this deployment.",
     },
@@ -289,6 +302,8 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       [REQUEST_PLANS[0]],
       [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], criterionId: "AC-UI" }],
       [{ ...REQUEST_PLANS[0], flow: "" }, REQUEST_PLANS[1]],
+      [{ ...REQUEST_PLANS[0], uiSteps: [{ action: "open", path: "//external" }, { action: "expect_text", text: "Saved filter" }, { action: "screenshot", label: "proof" }] }, REQUEST_PLANS[1]],
+      [{ ...REQUEST_PLANS[0], uiSteps: [{ action: "open", path: "/filters" }, { action: "screenshot", label: "too early" }, { action: "expect_text", text: "Saved filter" }] }, REQUEST_PLANS[1]],
       [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], notTestableReason: "" }],
       [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], status: "planned", flow: "GET /filters" }],
       [{

@@ -57,6 +57,36 @@ function gitBlobSha(content: string): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
+function recursiveGitTree(files: Array<{ path: string; mode: "100644" | "100755"; sha: string; size: number }>) {
+  const directories = new Set([""]);
+  for (const file of files) {
+    let directory = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+    while (directory) {
+      directories.add(directory);
+      directory = directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : "";
+    }
+  }
+  const treeEntries: Array<{ path: string; mode: string; type: string; sha: string; size?: number }> = files.map((file) => ({ ...file, type: "blob" }));
+  const treeShas = new Map<string, string>();
+  for (const directory of [...directories].sort((left, right) => (right ? right.split("/").length : 0) - (left ? left.split("/").length : 0) || Buffer.compare(Buffer.from(left), Buffer.from(right)))) {
+    const entries = [
+      ...files.filter((file) => (file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "") === directory)
+        .map((file) => ({ name: file.path.slice(directory ? directory.length + 1 : 0), mode: file.mode, sha: file.sha })),
+      ...[...directories].filter((child) => child && (child.includes("/") ? child.slice(0, child.lastIndexOf("/")) : "") === directory)
+        .map((child) => {
+          const sha = treeShas.get(child);
+          if (!sha) throw new Error(`missing child tree ${child}`);
+          return { name: child.slice(directory ? directory.length + 1 : 0), mode: "40000", sha };
+        }),
+    ].sort((left, right) => Buffer.compare(Buffer.from(`${left.name}${left.mode === "40000" ? "/" : ""}`), Buffer.from(`${right.name}${right.mode === "40000" ? "/" : ""}`)));
+    const body = Buffer.concat(entries.map((entry) => Buffer.concat([Buffer.from(`${entry.mode} ${entry.name}\0`), Buffer.from(entry.sha, "hex")]))) ;
+    const sha = createHash("sha1").update(`tree ${body.byteLength}\0`).update(body).digest("hex");
+    treeShas.set(directory, sha);
+    if (directory) treeEntries.push({ path: directory, mode: "040000", type: "tree", sha });
+  }
+  return { sha: treeShas.get("")!, tree: treeEntries };
+}
+
 function blobResponse(content: string, sha = gitBlobSha(content)): Response {
   return json(200, { sha, size: Buffer.byteLength(content), encoding: "base64", content: Buffer.from(content).toString("base64") });
 }
@@ -413,20 +443,21 @@ describe("materializeExactHeadGithubContent", () => {
   it("resolves an exact tree path only after materialization, without any ref/contents/search request", async () => {
     const dependency = "export const dependency = true;\n";
     const dependencyBlob = gitBlobSha(dependency);
+    const gitTree = recursiveGitTree([
+        { path: "apps/console/lib/widget.ts", mode: "100644", sha: BLOB, size: SOURCE.length },
+        { path: "apps/console/lib/dependency.ts", mode: "100755", sha: dependencyBlob, size: Buffer.byteLength(dependency) },
+      ]);
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(json(200, { sha: TREE, truncated: false, tree: [
-        { path: "apps/console/lib/widget.ts", mode: "100644", type: "blob", sha: BLOB, size: SOURCE.length },
-        { path: "apps/console/lib/dependency.ts", mode: "100755", type: "blob", sha: dependencyBlob, size: Buffer.byteLength(dependency) },
-      ] }))
+      .mockResolvedValueOnce(json(200, { sha: gitTree.sha, truncated: false, tree: gitTree.tree }))
       .mockResolvedValueOnce(blobResponse(SOURCE, BLOB))
       .mockResolvedValueOnce(blobResponse(dependency, dependencyBlob));
     global.fetch = fetchMock as unknown as typeof fetch;
-    const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot() });
+    const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot({ headTreeSha: gitTree.sha }) });
     if (!result.ok) throw new Error("expected exact-head materialization");
     await expect(result.materialization.readExactPath("../.env")).resolves.toMatchObject({ ok: false, reason: "unsafe_path" });
     await expect(result.materialization.readExactPath("apps/console/lib/missing.ts")).resolves.toEqual({ ok: false, kind: "not_proven", reason: "path_not_found" });
-    await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob } });
-    await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob } });
+    await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob }, treeInclusionProof: { headTreeSha: gitTree.sha, paths: [{ path: "apps/console/lib/dependency.ts", blobSha: dependencyBlob }] } });
+    await expect(result.materialization.readExactPath("apps/console/lib/dependency.ts")).resolves.toMatchObject({ ok: true, record: { source: "exact_head_tree_fallback", blobSha: dependencyBlob }, treeInclusionProof: { headTreeSha: gitTree.sha, paths: [{ path: "apps/console/lib/dependency.ts", blobSha: dependencyBlob }] } });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls.map(([url]) => String(url)).join("\n")).not.toMatch(/contents\/|search\/code|ref=|archive|clone/);
   });
@@ -434,16 +465,17 @@ describe("materializeExactHeadGithubContent", () => {
   it("returns only policy exclusion metadata when direct exact-path fallback encounters secret path or content", async () => {
     const secretContent = "password=supersecretvalue\n";
     const secretBlob = gitBlobSha(secretContent);
+    const gitTree = recursiveGitTree([
+        { path: "apps/console/lib/widget.ts", mode: "100644", sha: BLOB, size: SOURCE.length },
+        { path: "src/dependency.ts", mode: "100644", sha: secretBlob, size: Buffer.byteLength(secretContent) },
+        { path: ".env", mode: "100644", sha: secretBlob, size: Buffer.byteLength(secretContent) },
+      ]);
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(json(200, { sha: TREE, truncated: false, tree: [
-        { path: "apps/console/lib/widget.ts", mode: "100644", type: "blob", sha: BLOB, size: SOURCE.length },
-        { path: "src/dependency.ts", mode: "100644", type: "blob", sha: secretBlob, size: Buffer.byteLength(secretContent) },
-        { path: ".env", mode: "100644", type: "blob", sha: secretBlob, size: Buffer.byteLength(secretContent) },
-      ] }))
+      .mockResolvedValueOnce(json(200, { sha: gitTree.sha, truncated: false, tree: gitTree.tree }))
       .mockResolvedValueOnce(blobResponse(SOURCE, BLOB))
       .mockResolvedValueOnce(blobResponse(secretContent, secretBlob));
     global.fetch = fetchMock as unknown as typeof fetch;
-    const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot() });
+    const result = await materializeExactHeadGithubContent({ token: TOKEN, snapshot: snapshot({ headTreeSha: gitTree.sha }) });
     if (!result.ok) throw new Error("expected exact-head materialization");
 
     await expect(result.materialization.readExactPath(".env")).resolves.toEqual({

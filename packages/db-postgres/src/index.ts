@@ -2,6 +2,18 @@ export { db } from "./db.js";
 export * from "./schema/index.js";
 export * from "./queries/index.js";
 export { encryptSecret, decryptSecret, isEncrypted } from "./crypto.js";
+export {
+  exactGitTreeInclusionProofIdentity,
+  verifyExactGitTreeInclusionProof,
+  MAX_EXACT_GIT_TREE_PROOF_DECODED_BYTES,
+  MAX_EXACT_GIT_TREE_PROOF_DEPTH,
+  MAX_EXACT_GIT_TREE_PROOF_ENTRIES_PER_TREE,
+  MAX_EXACT_GIT_TREE_PROOF_PATHS,
+  MAX_EXACT_GIT_TREE_PROOF_SERIALIZED_BYTES,
+  MAX_EXACT_GIT_TREE_PROOF_TREES,
+  MAX_EXACT_GIT_TREE_PROOF_TREE_BYTES,
+  type ExactGitTreeInclusionProof,
+} from "./exact-git-tree-path-proof.js";
 // OAuth Connect Wave 3, W3-T1 (`.superpowers/sdd/plan-oauth.md`) — discriminates
 // an already-decrypted `connectors.secret` plaintext as a legacy token or an
 // OAuth credential envelope. Sibling of crypto.ts, not folded into it — see

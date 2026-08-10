@@ -6,6 +6,7 @@ import {
   acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
   acceptanceCorrectionDispatches,
+  acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
@@ -72,6 +73,46 @@ describe("change_records schema — declarations (Arc D storage)", () => {
 
   it("gives a manual Acceptance Record a durable work key before issue or PR anchors exist", () => {
     expect(changeRecords.workKey.notNull).toBe(false);
+  });
+});
+
+describe("0092 GitHub correction carrier preflight migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0092_acceptance_correction_dispatch_github_preflights.sql"
+  );
+
+  it("keeps preflight custody server-bound, capped, and free of secrets or carrier receipts", () => {
+    expect(acceptanceCorrectionDispatchGithubPreflights.dispatchId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubPreflights.baseSha.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubPreflights.githubInstallationIdentitySha256.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubPreflights.result.getSQLType()).toBe("jsonb");
+    const config = getTableConfig(acceptanceCorrectionDispatchGithubPreflights);
+    expect(config.indexes.map((index) => index.config.name)).toContain(
+      "acceptance_correction_github_preflights_dispatch_attempt_key"
+    );
+    expect(config.checks.map((check) => check.name).sort()).toEqual([
+      "acceptance_correction_dispatch_github_preflights_binding_check",
+      "acceptance_correction_dispatch_github_preflights_status_check",
+    ]);
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain("issues_write_and_pull_requests_write_v1");
+    expect(sqlText).toContain('"attempt" BETWEEN 1 AND 8');
+    expect(sqlText).toContain("'reserved', 'ready', 'unavailable', 'indeterminate'");
+    expect(sqlText).toContain("storage_unavailable");
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("private_key");
+    expect(sqlText).not.toContain("raw_error");
+    expect(sqlText).not.toContain("comment_id");
+  });
+
+  it("is registered after capability profiles", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0092_acceptance_correction_dispatch_github_preflights"
+    )).toMatchObject({ idx: 97, version: "7", breakpoints: true });
   });
 });
 

@@ -18,6 +18,7 @@ import { randomBytes } from "crypto";
 import {
   resolveGithubAppConfig,
   mintInstallationToken,
+  mintCorrectionCarrierInstallationToken,
 } from "@agentrail/github-app";
 import { db } from "../db.js";
 import { workspaces, accounts } from "../schema/index.js";
@@ -92,6 +93,135 @@ export async function getInstallationToken(
   } catch {
     return null;
   }
+}
+
+export type GithubCorrectionCarrierCredentialResult =
+  | {
+      ok: true;
+      token: string;
+      expiresAt: string;
+      permissionBasis: {
+        repository: "scoped_installation_token";
+        issues: "write";
+        pullRequests: "write";
+      };
+    }
+  | {
+      ok: false;
+      kind: "unavailable";
+      reason: "installation_or_permission_denied";
+    }
+  | {
+      ok: false;
+      kind: "indeterminate";
+      reason: "github_unavailable" | "invalid_github_response" | "storage_unavailable";
+    };
+
+const GITHUB_REPOSITORY = /^([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type GithubCorrectionCarrierCredentialInput = {
+  workspaceId: string;
+  repo: string;
+};
+
+function isGithubCorrectionCarrierCredentialInput(
+  value: unknown
+): value is GithubCorrectionCarrierCredentialInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  if (
+    Object.keys(input).length !== 2 ||
+    !("workspaceId" in input) ||
+    !("repo" in input) ||
+    typeof input.workspaceId !== "string" ||
+    typeof input.repo !== "string" ||
+    !UUID.test(input.workspaceId)
+  ) {
+    return false;
+  }
+  return GITHUB_REPOSITORY.test(input.repo);
+}
+
+/**
+ * Resolves a repository-scoped correction-carrier credential without trusting
+ * a caller-supplied installation or account. This is credential preparation,
+ * not issue-comment delivery: it neither persists nor logs the minted token.
+ */
+export async function getGithubCorrectionCarrierCredential(
+  input: GithubCorrectionCarrierCredentialInput
+): Promise<GithubCorrectionCarrierCredentialResult> {
+  if (!isGithubCorrectionCarrierCredentialInput(input)) {
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    };
+  }
+  const match = GITHUB_REPOSITORY.exec(input.repo)!;
+  const [, owner, repoName] = match;
+  let installation: Awaited<ReturnType<typeof getGithubInstallation>>;
+  try {
+    installation = await getGithubInstallation(input.workspaceId);
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "storage_unavailable" };
+  }
+  // Installation identity is server-derived. A token for some other owner
+  // must not be used merely because a repository string was supplied.
+  if (
+    !installation?.accountLogin ||
+    installation.accountLogin.toLowerCase() !== owner!.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    };
+  }
+  const cfg = resolveGithubAppConfig(process.env);
+  if (!cfg.ok) {
+    return {
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    };
+  }
+  let minted: Awaited<ReturnType<typeof mintCorrectionCarrierInstallationToken>>;
+  try {
+    minted = await mintCorrectionCarrierInstallationToken(
+      {
+        installationId: installation.installationId,
+        owner: owner!,
+        repo: repoName!,
+      },
+      { appId: cfg.appId, privateKey: cfg.privateKey }
+    );
+  } catch {
+    return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+  }
+  if (minted.ok) {
+      return {
+        ok: true,
+        token: minted.token,
+        expiresAt: minted.expiresAt,
+        permissionBasis: minted.permissionBasis,
+      };
+  }
+  if (minted.kind === "indeterminate") {
+      return {
+        ok: false,
+        kind: "indeterminate",
+        reason:
+          minted.reason === "github_unavailable"
+            ? "github_unavailable"
+            : "invalid_github_response",
+      };
+  }
+  return {
+    ok: false,
+    kind: "unavailable",
+    reason: "installation_or_permission_denied",
+  };
 }
 
 export async function bindWorkspaceGithubInstallation(

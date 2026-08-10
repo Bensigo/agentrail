@@ -9,6 +9,7 @@ import {
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatches,
+  acceptanceCorrectionDispatchGithubPreflights,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
@@ -18,6 +19,7 @@ import {
   type AcceptanceBuilderRouteRow,
   type AcceptanceCompiledContextPackRow,
   type AcceptanceCorrectionDispatchRow,
+  type AcceptanceCorrectionDispatchGithubPreflightRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
@@ -5076,6 +5078,440 @@ export function acceptanceCorrectionDispatchId(input: {
   return uuid5Url(`acceptance-correction-dispatch:${input.recordId}:${input.headCycleId}`);
 }
 
+export const GITHUB_CORRECTION_CARRIER_PREFLIGHT_PERMISSION_CONTRACT =
+  "issues_write_and_pull_requests_write_v1" as const;
+const GITHUB_CORRECTION_CARRIER_PREFLIGHT_PROTOCOL_VERSION = 1 as const;
+const MAX_GITHUB_CORRECTION_CARRIER_PREFLIGHT_ATTEMPTS = 8;
+
+export type GithubCorrectionCarrierPreflightOutcome =
+  | { kind: "ready"; headSha: string; baseSha: string }
+  | { kind: "installation_or_permission_denied" }
+  | { kind: "remote_pr_not_active"; headSha: string; baseSha: string }
+  | { kind: "remote_head_mismatch"; expectedHeadSha: string; observedHeadSha: string }
+  | { kind: "remote_base_mismatch"; expectedBaseSha: string; observedBaseSha: string }
+  | { kind: "github_unavailable" }
+  | { kind: "invalid_github_response" }
+  /** Storage failed after reservation; terminally project it so retry is bounded. */
+  | { kind: "storage_unavailable" };
+
+export type ReserveGithubCorrectionCarrierPreflightInput = {
+  workspaceId: string;
+  dispatchId: string;
+};
+
+export type ReportGithubCorrectionCarrierPreflightInput = {
+  workspaceId: string;
+  preflightId: string;
+  outcome: GithubCorrectionCarrierPreflightOutcome;
+};
+
+export type ReserveGithubCorrectionCarrierPreflightResult =
+  | { kind: "reserved"; preflight: AcceptanceCorrectionDispatchGithubPreflightRow; inserted: true }
+  | { kind: "held"; preflight: AcceptanceCorrectionDispatchGithubPreflightRow; reason: "reserved" | "attempts_exhausted" }
+  | { kind: "terminal"; preflight: AcceptanceCorrectionDispatchGithubPreflightRow }
+  | { kind: "not_current" };
+
+export type ReportGithubCorrectionCarrierPreflightResult =
+  | { kind: "reported"; preflight: AcceptanceCorrectionDispatchGithubPreflightRow }
+  | { kind: "replayed"; preflight: AcceptanceCorrectionDispatchGithubPreflightRow }
+  | { kind: "not_current" };
+
+/** Stable per-attempt ID; an A→B→A revisit has a different dispatch ID. */
+export function acceptanceCorrectionDispatchGithubPreflightId(input: {
+  dispatchId: string;
+  attempt: number;
+}): string {
+  return uuid5Url(`acceptance-correction-dispatch-github-preflight:${input.dispatchId}:${input.attempt}`);
+}
+
+function isGithubCorrectionCarrierPreflightOutcome(
+  value: unknown
+): value is GithubCorrectionCarrierPreflightOutcome {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "installation_or_permission_denied"
+    || value.kind === "github_unavailable" || value.kind === "invalid_github_response"
+    || value.kind === "storage_unavailable") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  if (value.kind === "ready" || value.kind === "remote_pr_not_active") {
+    return hasExactKeys(value, ["kind", "headSha", "baseSha"])
+      && isSha1(value.headSha) && isSha1(value.baseSha);
+  }
+  if (value.kind === "remote_head_mismatch") {
+    return hasExactKeys(value, ["kind", "expectedHeadSha", "observedHeadSha"])
+      && isSha1(value.expectedHeadSha) && isSha1(value.observedHeadSha);
+  }
+  return value.kind === "remote_base_mismatch"
+    && hasExactKeys(value, ["kind", "expectedBaseSha", "observedBaseSha"])
+    && isSha1(value.expectedBaseSha) && isSha1(value.observedBaseSha);
+}
+
+function githubCorrectionCarrierPreflightStatus(
+  outcome: GithubCorrectionCarrierPreflightOutcome
+): "ready" | "unavailable" | "indeterminate" {
+  if (outcome.kind === "ready") return "ready";
+  if (outcome.kind === "github_unavailable" || outcome.kind === "invalid_github_response"
+    || outcome.kind === "storage_unavailable") {
+    return "indeterminate";
+  }
+  return "unavailable";
+}
+
+function githubCorrectionCarrierPreflightComparable(
+  row: AcceptanceCorrectionDispatchGithubPreflightRow
+) {
+  return {
+    id: row.id, workspaceId: row.workspaceId, dispatchId: row.dispatchId,
+    recordId: row.recordId, repo: row.repo, prNumber: row.prNumber,
+    headSha: row.headSha, baseSha: row.baseSha, headCycleId: row.headCycleId,
+    authorityGeneration: row.authorityGeneration,
+    dispatchIdentitySha256: row.dispatchIdentitySha256,
+    routeId: row.routeId, routeAdapter: row.routeAdapter,
+    routeConfigurationVersion: row.routeConfigurationVersion,
+    capabilityProfileId: row.capabilityProfileId,
+    capabilityProfileSnapshotSha256: row.capabilityProfileSnapshotSha256,
+    githubInstallationIdentitySha256: row.githubInstallationIdentitySha256,
+    preflightProtocolVersion: row.preflightProtocolVersion,
+    permissionContract: row.permissionContract, attempt: row.attempt,
+    preflightIdentitySha256: row.preflightIdentitySha256,
+    status: row.status, result: row.result,
+  };
+}
+
+function hasValidGithubCorrectionCarrierPreflightResult(
+  row: AcceptanceCorrectionDispatchGithubPreflightRow
+): boolean {
+  if (row.status === "reserved") return row.result == null && row.completedAt == null;
+  return row.completedAt != null && isGithubCorrectionCarrierPreflightOutcome(row.result)
+    && githubCorrectionCarrierPreflightStatus(row.result) === row.status;
+}
+
+function githubCorrectionCarrierPreflightIdentity(values: Record<string, unknown>): string {
+  const {
+    id: _id, status: _status, result: _result, reservedAt: _reservedAt,
+    completedAt: _completedAt, createdAt: _createdAt, updatedAt: _updatedAt,
+    preflightIdentitySha256: _identity, ...identity
+  } = values;
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_correction_dispatch_github_preflight", version: 1, ...identity,
+  });
+}
+
+function githubCorrectionCarrierPreflightValues(input: {
+  dispatch: AcceptanceCorrectionDispatchRow;
+  profile: AcceptanceBuilderRouteCapabilityProfileRow;
+  baseSha: string;
+  attempt: number;
+}) {
+  if (!isGithubNativeBuilderRouteAdapter(input.dispatch.routeAdapter)
+    || input.dispatch.capabilityProfileId == null
+    || input.dispatch.capabilityProfileSnapshotSha256 == null) {
+    throw new Error("GitHub correction preflight requires a profiled GitHub-native dispatch");
+  }
+  const unsigned = {
+    id: acceptanceCorrectionDispatchGithubPreflightId({ dispatchId: input.dispatch.id, attempt: input.attempt }),
+    workspaceId: input.dispatch.workspaceId, dispatchId: input.dispatch.id,
+    recordId: input.dispatch.recordId, repo: input.dispatch.repo,
+    prNumber: input.dispatch.prNumber, headSha: input.dispatch.headSha, baseSha: input.baseSha,
+    headCycleId: input.dispatch.headCycleId,
+    authorityGeneration: input.dispatch.authorityGeneration,
+    dispatchIdentitySha256: input.dispatch.dispatchIdentitySha256,
+    routeId: input.dispatch.routeId, routeAdapter: input.dispatch.routeAdapter,
+    routeConfigurationVersion: input.dispatch.routeConfigurationVersion,
+    capabilityProfileId: input.dispatch.capabilityProfileId,
+    capabilityProfileSnapshotSha256: input.dispatch.capabilityProfileSnapshotSha256,
+    githubInstallationIdentitySha256: input.profile.githubInstallationIdentitySha256,
+    preflightProtocolVersion: GITHUB_CORRECTION_CARRIER_PREFLIGHT_PROTOCOL_VERSION,
+    permissionContract: GITHUB_CORRECTION_CARRIER_PREFLIGHT_PERMISSION_CONTRACT,
+    attempt: input.attempt, status: "reserved" as const, result: null,
+  };
+  return { ...unsigned, preflightIdentitySha256: githubCorrectionCarrierPreflightIdentity(unsigned) };
+}
+
+function githubCorrectionCarrierPreflightEventPayload(input: {
+  preflight: AcceptanceCorrectionDispatchGithubPreflightRow;
+  kind: "reserved" | "result";
+  outcome?: GithubCorrectionCarrierPreflightOutcome;
+}): Record<string, unknown> {
+  const p = input.preflight;
+  return {
+    kind: input.kind === "reserved"
+      ? "acceptance_correction_dispatch_github_preflight_reserved"
+      : "acceptance_correction_dispatch_github_preflight_result",
+    version: 1, preflightId: p.id, preflightIdentitySha256: p.preflightIdentitySha256,
+    dispatch: { id: p.dispatchId, identitySha256: p.dispatchIdentitySha256 },
+    recordId: p.recordId, repository: p.repo, prNumber: p.prNumber,
+    headSha: p.headSha, baseSha: p.baseSha, headCycleId: p.headCycleId,
+    authorityGeneration: p.authorityGeneration,
+    route: { id: p.routeId, adapter: p.routeAdapter, configurationVersion: p.routeConfigurationVersion },
+    capabilityProfile: {
+      id: p.capabilityProfileId, snapshotSha256: p.capabilityProfileSnapshotSha256,
+      githubInstallationIdentitySha256: p.githubInstallationIdentitySha256,
+    },
+    protocolVersion: p.preflightProtocolVersion,
+    permissionContract: p.permissionContract, attempt: p.attempt,
+    ...(input.outcome ? { outcome: input.outcome } : {}),
+  };
+}
+
+async function hasVerifiedGithubCorrectionCarrierPreflightEventsInTransaction(
+  tx: DbTransaction,
+  row: AcceptanceCorrectionDispatchGithubPreflightRow
+): Promise<boolean> {
+  const reserved = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, row.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:github-preflight:reserved:${row.headCycleId}:${row.attempt}`),
+  )).limit(1))[0];
+  if (!reserved || reserved.stage !== "builder_handoff" || reserved.actor !== "server:github-carrier-preflight"
+    || !isDeepStrictEqual(reserved.payloadRef,
+      githubCorrectionCarrierPreflightEventPayload({ preflight: row, kind: "reserved" }))) return false;
+  if (row.status === "reserved") return true;
+  if (!isGithubCorrectionCarrierPreflightOutcome(row.result)) return false;
+  const result = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, row.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:github-preflight:result:${row.headCycleId}:${row.attempt}`),
+  )).limit(1))[0];
+  return !!result && result.stage === "builder_handoff" && result.actor === "server:github-carrier-preflight"
+    && isDeepStrictEqual(result.payloadRef,
+      githubCorrectionCarrierPreflightEventPayload({ preflight: row, kind: "result", outcome: row.result }));
+}
+
+type CurrentGithubCorrectionCarrierPreflightBinding = {
+  dispatch: AcceptanceCorrectionDispatchRow;
+  record: ChangeRecordRow;
+  route: AcceptanceBuilderRouteRow;
+  profile: AcceptanceBuilderRouteCapabilityProfileRow;
+  sourceSnapshot: AcceptanceContextPackSnapshotRow;
+};
+
+async function resolveCurrentGithubCorrectionCarrierPreflightBindingInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; dispatchId: string }
+): Promise<CurrentGithubCorrectionCarrierPreflightBinding | null> {
+  const dispatch = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+    eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+    isNull(acceptanceCorrectionDispatches.invalidatedAt),
+    eq(acceptanceCorrectionDispatches.deliveryState, "queued"),
+    eq(acceptanceCorrectionDispatches.agentState, "not_observed"),
+    eq(acceptanceCorrectionDispatches.findingsState, "not_started"),
+    eq(acceptanceCorrectionDispatches.activationState, "not_started"),
+    eq(acceptanceCorrectionDispatches.carrier, "github_comment"),
+  )).limit(1))[0];
+  if (!dispatch || !isGithubNativeBuilderRouteAdapter(dispatch.routeAdapter)
+    || dispatch.capabilityProfileId == null || dispatch.capabilityProfileSnapshot == null
+    || dispatch.capabilityProfileSnapshotSha256 == null) return null;
+  const dispatchComparable = correctionDispatchComparable(dispatch);
+  if (correctionDispatchIdentity(dispatchComparable) !== dispatch.dispatchIdentitySha256) return null;
+  const queued = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey, `acceptance-correction-dispatch:queued:${dispatch.headCycleId}`),
+  )).limit(1))[0];
+  if (!queued || queued.stage !== "builder_handoff" || queued.actor !== "server:dispatch-preparation"
+    || !isDeepStrictEqual(queued.payloadRef, correctionDispatchQueuedEventPayload(dispatchComparable))) return null;
+  const record = (await tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, dispatch.recordId),
+    eq(changeRecords.workspaceId, input.workspaceId),
+    eq(changeRecords.repo, dispatch.repo), eq(changeRecords.prNumber, dispatch.prNumber),
+  )).limit(1))[0];
+  if (!record || !record.currentPrHeadAuthoritative
+    || record.currentPrHeadSha !== dispatch.headSha
+    || record.currentPrHeadCycleId !== dispatch.headCycleId
+    || record.currentPrHeadAuthorityGeneration !== dispatch.authorityGeneration) return null;
+  const sourceSnapshot = (await tx.select().from(acceptanceContextPackSnapshots).where(and(
+    eq(acceptanceContextPackSnapshots.id, dispatch.sourceSnapshotId),
+    eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+    eq(acceptanceContextPackSnapshots.recordId, dispatch.recordId),
+    eq(acceptanceContextPackSnapshots.reviewJobId, dispatch.reviewJobId),
+    eq(acceptanceContextPackSnapshots.repo, dispatch.repo),
+    eq(acceptanceContextPackSnapshots.prNumber, dispatch.prNumber),
+    eq(acceptanceContextPackSnapshots.expectedHeadSha, dispatch.headSha),
+    eq(acceptanceContextPackSnapshots.status, "admitted"),
+  )).limit(1))[0];
+  if (!sourceSnapshot || sourceSnapshot.reviewJobId !== dispatch.headCycleId
+    || !sourceSnapshot.baseSha || !isSha1(sourceSnapshot.baseSha)) return null;
+  const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+    eq(acceptanceBuilderRoutes.id, dispatch.routeId),
+    eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+    eq(acceptanceBuilderRoutes.repo, dispatch.repo),
+    eq(acceptanceBuilderRoutes.status, "active"),
+    eq(acceptanceBuilderRoutes.adapter, dispatch.routeAdapter),
+    eq(acceptanceBuilderRoutes.configurationVersion, dispatch.routeConfigurationVersion),
+  )).limit(1))[0];
+  if (!route) return null;
+  const profile = await resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(tx, {
+    workspaceId: input.workspaceId, route,
+  });
+  if (!profile || profile.id !== dispatch.capabilityProfileId
+    || profile.snapshotSha256 !== dispatch.capabilityProfileSnapshotSha256
+    || !isDeepStrictEqual(profile.snapshot, dispatch.capabilityProfileSnapshot)) return null;
+  return { dispatch, record, route, profile, sourceSnapshot };
+}
+
+function preflightMatchesValues(
+  row: AcceptanceCorrectionDispatchGithubPreflightRow,
+  values: ReturnType<typeof githubCorrectionCarrierPreflightValues>
+): boolean {
+  return isDeepStrictEqual(
+    { ...githubCorrectionCarrierPreflightComparable(row), status: "reserved", result: null },
+    githubCorrectionCarrierPreflightComparable(values as AcceptanceCorrectionDispatchGithubPreflightRow)
+  );
+}
+
+/**
+ * Reserves exactly one carrier-inert GitHub App authorization/PR preflight.
+ * This DB package mints no token and performs no network action.
+ */
+export async function reserveGithubCorrectionCarrierPreflight(
+  input: ReserveGithubCorrectionCarrierPreflightInput
+): Promise<ReserveGithubCorrectionCarrierPreflightResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "dispatchId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.dispatchId)) {
+    throw new Error("GitHub correction carrier preflight requires only workspace and dispatch");
+  }
+  const candidate = (await db.select({ dispatch: acceptanceCorrectionDispatches }).from(acceptanceCorrectionDispatches)
+    .where(and(eq(acceptanceCorrectionDispatches.id, input.dispatchId),
+      eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId))).limit(1))[0];
+  if (!candidate) return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: candidate.dispatch.recordId,
+    repo: candidate.dispatch.repo, prNumber: candidate.dispatch.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const current = await resolveCurrentGithubCorrectionCarrierPreflightBindingInTransaction(tx, input);
+    if (!current) return { kind: "not_current" };
+    const latest = (await tx.select().from(acceptanceCorrectionDispatchGithubPreflights).where(and(
+      eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, input.workspaceId),
+      eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, current.dispatch.id),
+    )).orderBy(desc(acceptanceCorrectionDispatchGithubPreflights.attempt)).limit(1))[0];
+    if (latest) {
+      if (!hasValidGithubCorrectionCarrierPreflightResult(latest)) {
+        throw new Error("GitHub correction carrier preflight terminal result is invalid");
+      }
+      const expected = githubCorrectionCarrierPreflightValues({
+        dispatch: current.dispatch, profile: current.profile, baseSha: current.sourceSnapshot.baseSha!, attempt: latest.attempt,
+      });
+      if (!preflightMatchesValues(latest, expected)) {
+        throw new Error("GitHub correction carrier preflight replay is bound to different dispatch provenance");
+      }
+      if (!await hasVerifiedGithubCorrectionCarrierPreflightEventsInTransaction(tx, latest)) {
+        throw new Error("GitHub correction carrier preflight event custody is missing or does not match its attempt");
+      }
+      if (latest.status === "reserved") return { kind: "held", preflight: latest, reason: "reserved" };
+      if (latest.status === "ready" || latest.status === "unavailable") {
+        return { kind: "terminal", preflight: latest };
+      }
+      if (latest.status !== "indeterminate") {
+        throw new Error("GitHub correction carrier preflight has invalid status");
+      }
+      if (latest.attempt >= MAX_GITHUB_CORRECTION_CARRIER_PREFLIGHT_ATTEMPTS) {
+        return { kind: "held", preflight: latest, reason: "attempts_exhausted" };
+      }
+    }
+    const values = githubCorrectionCarrierPreflightValues({
+      dispatch: current.dispatch, profile: current.profile, baseSha: current.sourceSnapshot.baseSha!, attempt: (latest?.attempt ?? 0) + 1,
+    });
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: current.record.id,
+      eventKey: `acceptance-correction-dispatch:github-preflight:reserved:${current.dispatch.headCycleId}:${values.attempt}`,
+      stage: "builder_handoff", actor: "server:github-carrier-preflight",
+      payloadRef: githubCorrectionCarrierPreflightEventPayload({
+        preflight: values as AcceptanceCorrectionDispatchGithubPreflightRow, kind: "reserved",
+      }),
+    }]);
+    if (!event.events[0]!.inserted) {
+      throw new Error("GitHub correction carrier preflight reservation event unexpectedly replayed");
+    }
+    const rows = await tx.insert(acceptanceCorrectionDispatchGithubPreflights).values(values).returning();
+    return { kind: "reserved", preflight: rows[0]!, inserted: true };
+  });
+}
+
+/**
+ * Reports a closed carrier-preflight result after the Console's carrier-inert
+ * GitHub authorization/PR probe. A stale head/profile never receives a result
+ * projection.
+ */
+export async function reportGithubCorrectionCarrierPreflight(
+  input: ReportGithubCorrectionCarrierPreflightInput
+): Promise<ReportGithubCorrectionCarrierPreflightResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "preflightId", "outcome"])
+    || !isUuid(input.workspaceId) || !isUuid(input.preflightId)
+    || !isGithubCorrectionCarrierPreflightOutcome(input.outcome)) {
+    throw new Error("GitHub correction carrier preflight report requires only workspace, preflight, and closed outcome");
+  }
+  const candidate = (await db.select({ preflight: acceptanceCorrectionDispatchGithubPreflights }).from(acceptanceCorrectionDispatchGithubPreflights)
+    .where(and(eq(acceptanceCorrectionDispatchGithubPreflights.id, input.preflightId),
+      eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, input.workspaceId))).limit(1))[0];
+  if (!candidate) return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: candidate.preflight.recordId,
+    repo: candidate.preflight.repo, prNumber: candidate.preflight.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const preflight = (await tx.select().from(acceptanceCorrectionDispatchGithubPreflights).where(and(
+      eq(acceptanceCorrectionDispatchGithubPreflights.id, input.preflightId),
+      eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+    if (!preflight) return { kind: "not_current" };
+    const current = await resolveCurrentGithubCorrectionCarrierPreflightBindingInTransaction(tx, {
+      workspaceId: input.workspaceId, dispatchId: preflight.dispatchId,
+    });
+    if (!current) return { kind: "not_current" };
+    const expected = githubCorrectionCarrierPreflightValues({
+      dispatch: current.dispatch, profile: current.profile, baseSha: current.sourceSnapshot.baseSha!, attempt: preflight.attempt,
+    });
+    if (!preflightMatchesValues(preflight, expected)) return { kind: "not_current" };
+    if (!hasValidGithubCorrectionCarrierPreflightResult(preflight)) {
+      throw new Error("GitHub correction carrier preflight terminal result is invalid");
+    }
+    if (!await hasVerifiedGithubCorrectionCarrierPreflightEventsInTransaction(tx, preflight)) {
+      throw new Error("GitHub correction carrier preflight event custody is missing or does not match its attempt");
+    }
+    if (input.outcome.kind === "ready" && (input.outcome.headSha !== current.dispatch.headSha
+      || input.outcome.baseSha !== current.sourceSnapshot.baseSha)) {
+      return { kind: "not_current" };
+    }
+    if (input.outcome.kind === "remote_head_mismatch"
+      && (input.outcome.expectedHeadSha !== current.dispatch.headSha
+        || input.outcome.expectedHeadSha === input.outcome.observedHeadSha)) {
+      return { kind: "not_current" };
+    }
+    if (input.outcome.kind === "remote_base_mismatch"
+      && (input.outcome.expectedBaseSha !== current.sourceSnapshot.baseSha
+        || input.outcome.expectedBaseSha === input.outcome.observedBaseSha)) {
+      return { kind: "not_current" };
+    }
+    if (preflight.status !== "reserved") {
+      if (isDeepStrictEqual(preflight.result, input.outcome)) return { kind: "replayed", preflight };
+      throw new Error("GitHub correction carrier preflight outcome is already terminal");
+    }
+    const status = githubCorrectionCarrierPreflightStatus(input.outcome);
+    const projected = { ...preflight, status, result: input.outcome, completedAt: new Date() } as AcceptanceCorrectionDispatchGithubPreflightRow;
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: current.record.id,
+      eventKey: `acceptance-correction-dispatch:github-preflight:result:${current.dispatch.headCycleId}:${preflight.attempt}`,
+      stage: "builder_handoff", actor: "server:github-carrier-preflight",
+      payloadRef: githubCorrectionCarrierPreflightEventPayload({ preflight: projected, kind: "result", outcome: input.outcome }),
+    }]);
+    if (!event.events[0]!.inserted) {
+      throw new Error("GitHub correction carrier preflight result event unexpectedly replayed");
+    }
+    const rows = await tx.update(acceptanceCorrectionDispatchGithubPreflights).set({
+      status, result: input.outcome, completedAt: new Date(), updatedAt: new Date(),
+    }).where(and(eq(acceptanceCorrectionDispatchGithubPreflights.id, preflight.id),
+      eq(acceptanceCorrectionDispatchGithubPreflights.status, "reserved"))).returning();
+    if (rows.length !== 1) {
+      throw new Error("GitHub correction carrier preflight result lost its reserved precondition");
+    }
+    return { kind: "reported", preflight: rows[0]! };
+  });
+}
+
 function correctionDispatchComparable(row: AcceptanceCorrectionDispatchRow) {
   return {
     id: row.id, workspaceId: row.workspaceId, recordId: row.recordId, repo: row.repo, prNumber: row.prNumber, headSha: row.headSha,
@@ -5107,6 +5543,29 @@ function correctionDispatchIdentity(values: Record<string, unknown>): string {
   return acceptanceContextPackCanonicalSha256({
     kind: "acceptance_correction_dispatch", version: 1, ...identity,
   });
+}
+
+function correctionDispatchQueuedEventPayload(
+  values: ReturnType<typeof correctionDispatchComparable>
+): Record<string, unknown> {
+  return {
+    kind: "acceptance_correction_dispatch_queued", version: 1,
+    dispatchId: values.id, repository: values.repo, prNumber: values.prNumber,
+    dispatchProtocolVersion: values.dispatchProtocolVersion, dispatchIdentitySha256: values.dispatchIdentitySha256,
+    headSha: values.headSha, headCycleId: values.headCycleId,
+    authorityGeneration: values.authorityGeneration, sourceSnapshotId: values.sourceSnapshotId,
+    acceptanceContract: { id: values.acceptanceContractId, version: values.acceptanceContractVersion, sha256: values.acceptanceContractSha256 },
+    packets: { ids: values.packetIds, setSha256: values.packetSetSha256, payloadSetSha256: values.correctionPacketPayloadSetSha256 },
+    compiledPack: { id: values.compiledPackId, sha256: values.compiledPackSha256, compilerVersion: values.compilerVersion, policyVersion: values.policyVersion, jsonSha256: values.jsonSha256, markdownSha256: values.markdownSha256, sourceCustodyIdentitySha256: values.sourceCustodyIdentitySha256 },
+    route: { id: values.routeId, adapter: values.routeAdapter, configurationVersion: values.routeConfigurationVersion, snapshot: values.routeSnapshot, snapshotSha256: values.routeSnapshotSha256 },
+    capabilityProfile: values.capabilityProfileId === null ? null : {
+      id: values.capabilityProfileId,
+      snapshot: values.capabilityProfileSnapshot,
+      snapshotSha256: values.capabilityProfileSnapshotSha256,
+    },
+    deliveryState: values.deliveryState, agentState: values.agentState, findingsState: values.findingsState,
+    activationState: values.activationState, carrier: values.carrier,
+  };
 }
 
 async function resolveSelectedAcceptanceBuilderRouteInTransaction(
@@ -5270,24 +5729,7 @@ export async function queueSelectedCorrectionDispatch(
       eq(acceptanceCorrectionDispatches.headCycleId, source.reviewJobId),
     )).limit(1))[0];
     const eventKey = `acceptance-correction-dispatch:queued:${source.reviewJobId}`;
-    const eventPayload = {
-      kind: "acceptance_correction_dispatch_queued", version: 1,
-      dispatchId: values.id, repository: values.repo, prNumber: values.prNumber,
-      dispatchProtocolVersion: values.dispatchProtocolVersion, dispatchIdentitySha256: values.dispatchIdentitySha256,
-      headSha: values.headSha, headCycleId: values.headCycleId,
-      authorityGeneration: values.authorityGeneration, sourceSnapshotId: values.sourceSnapshotId,
-      acceptanceContract: { id: values.acceptanceContractId, version: values.acceptanceContractVersion, sha256: values.acceptanceContractSha256 },
-      packets: { ids: values.packetIds, setSha256: values.packetSetSha256, payloadSetSha256: values.correctionPacketPayloadSetSha256 },
-      compiledPack: { id: values.compiledPackId, sha256: values.compiledPackSha256, compilerVersion: values.compilerVersion, policyVersion: values.policyVersion, jsonSha256: values.jsonSha256, markdownSha256: values.markdownSha256, sourceCustodyIdentitySha256: values.sourceCustodyIdentitySha256 },
-      route: { id: values.routeId, adapter: values.routeAdapter, configurationVersion: values.routeConfigurationVersion, snapshot: values.routeSnapshot, snapshotSha256: values.routeSnapshotSha256 },
-      capabilityProfile: values.capabilityProfileId === null ? null : {
-        id: values.capabilityProfileId,
-        snapshot: values.capabilityProfileSnapshot,
-        snapshotSha256: values.capabilityProfileSnapshotSha256,
-      },
-      deliveryState: values.deliveryState, agentState: values.agentState, findingsState: values.findingsState,
-      activationState: values.activationState, carrier: values.carrier,
-    };
+    const eventPayload = correctionDispatchQueuedEventPayload(values);
     if (existing) {
       if (isGithubNativeBuilderRouteAdapter(route.route.adapter)
         && (existing.capabilityProfileId == null

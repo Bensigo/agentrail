@@ -143,6 +143,300 @@ export async function mintInstallationToken(
   };
 }
 
+/**
+ * A deliberately narrow installation-token mint for correction delivery
+ * preparation. Unlike {@link mintInstallationToken}, this asks GitHub for
+ * exactly one repository and the two permissions a future issue-comment
+ * carrier would need. It does not send a comment or otherwise contact a
+ * repository.
+ *
+ * The result is intentionally a different closed union from the broad legacy
+ * mint helper: callers must preserve the distinction between a known
+ * unavailable carrier and an indeterminate GitHub result.
+ */
+export const MAX_CORRECTION_CARRIER_TOKEN_RESPONSE_BYTES = 64 * 1024;
+
+export type CorrectionCarrierInstallationTokenResult =
+  | {
+      ok: true;
+      token: string;
+      expiresAt: string;
+      permissionBasis: {
+        repository: "scoped_installation_token";
+        issues: "write";
+        pullRequests: "write";
+      };
+    }
+  | {
+      ok: false;
+      kind: "unavailable";
+      reason:
+        | "invalid_input"
+        | "not_installed"
+        | "credential_rejected"
+        | "repository_not_granted"
+        | "required_permissions_not_granted";
+    }
+  | {
+      ok: false;
+      kind: "indeterminate";
+      reason: "github_unavailable" | "invalid_response";
+    };
+
+type CorrectionCarrierMintInput = {
+  installationId: string;
+  owner: string;
+  repo: string;
+};
+
+const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const GITHUB_INSTALLATION_ID = /^[0-9]{1,20}$/;
+const MAX_CORRECTION_CARRIER_TOKEN_BYTES = 8192;
+const MAX_CORRECTION_CARRIER_EXPIRY_BYTES = 64;
+
+function isGithubRepositorySegment(value: string): boolean {
+  return (
+    GITHUB_REPOSITORY_SEGMENT.test(value) &&
+    value !== "." &&
+    value !== ".."
+  );
+}
+
+function validCorrectionCarrierMintInput(
+  input: unknown
+): input is CorrectionCarrierMintInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+  const candidate = input as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 3 ||
+    !("installationId" in candidate) ||
+    !("owner" in candidate) ||
+    !("repo" in candidate) ||
+    typeof candidate.installationId !== "string" ||
+    typeof candidate.owner !== "string" ||
+    typeof candidate.repo !== "string"
+  ) return false;
+  return (
+    GITHUB_INSTALLATION_ID.test(candidate.installationId) &&
+    isGithubRepositorySegment(candidate.owner) &&
+    isGithubRepositorySegment(candidate.repo)
+  );
+}
+
+async function readBoundedGithubJson(
+  response: Response,
+  controller: AbortController
+): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    (!/^[0-9]+$/.test(declaredLength) ||
+      Number(declaredLength) > MAX_CORRECTION_CARRIER_TOKEN_RESPONSE_BYTES)
+  ) {
+    void response.body?.cancel().catch(() => undefined);
+    return { ok: false };
+  }
+  if (!response.body) return { ok: false };
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let rejectAbort!: (reason?: unknown) => void;
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined);
+    rejectAbort(new Error("github response timed out"));
+  };
+  const abort = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), abort]);
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > MAX_CORRECTION_CARRIER_TOKEN_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => undefined);
+        return { ok: false };
+      }
+      chunks.push(next.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return {
+      ok: true,
+      body: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+    };
+  } catch {
+    return { ok: false };
+  } finally {
+    controller.signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function hasCorrectionCarrierGrant(
+  body: unknown,
+  owner: string,
+  repo: string
+): body is {
+  token: string;
+  expires_at: string;
+  repositories: Array<{ full_name: string }>;
+  permissions: { issues: "write"; pull_requests: "write" };
+} {
+  if (!body || typeof body !== "object") return false;
+  const typed = body as {
+    token?: unknown;
+    expires_at?: unknown;
+    repositories?: unknown;
+    permissions?: unknown;
+  };
+  if (
+    typeof typed.token !== "string" ||
+    typed.token.length === 0 ||
+    typed.token.length > MAX_CORRECTION_CARRIER_TOKEN_BYTES ||
+    !/^[A-Za-z0-9_.-]+$/.test(typed.token) ||
+    typeof typed.expires_at !== "string" ||
+    typed.expires_at.length === 0 ||
+    typed.expires_at.length > MAX_CORRECTION_CARRIER_EXPIRY_BYTES ||
+    !Number.isFinite(Date.parse(typed.expires_at)) ||
+    Date.parse(typed.expires_at) <= Date.now() ||
+    Date.parse(typed.expires_at) > Date.now() + 24 * 60 * 60 * 1000 ||
+    !Array.isArray(typed.repositories) ||
+    typed.repositories.length !== 1 ||
+    !typed.repositories.every(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as { full_name?: unknown }).full_name === "string"
+    )
+  ) {
+    return false;
+  }
+  const fullName = (typed.repositories[0] as { full_name: string }).full_name;
+  if (fullName.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) return false;
+  const permissions = typed.permissions as
+    | { issues?: unknown; pull_requests?: unknown }
+    | undefined;
+  return permissions?.issues === "write" && permissions.pull_requests === "write";
+}
+
+/**
+ * Mints a repository-scoped GitHub App token suitable only for a later
+ * correction-carrier attempt. The timeout remains active while the response
+ * body streams, redirects are refused, and no failure carries a token or raw
+ * GitHub body.
+ */
+export async function mintCorrectionCarrierInstallationToken(
+  input: CorrectionCarrierMintInput,
+  cfg: { appId: string; privateKey: string },
+  fetchImpl: typeof fetch = fetch
+): Promise<CorrectionCarrierInstallationTokenResult> {
+  if (!validCorrectionCarrierMintInput(input)) {
+    return { ok: false, kind: "unavailable", reason: "invalid_input" };
+  }
+  let jwt: string;
+  try {
+    jwt = signAppJwt(cfg.appId, cfg.privateKey);
+  } catch {
+    return { ok: false, kind: "unavailable", reason: "credential_rejected" };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
+  try {
+    let response: Response;
+    try {
+      response = await fetchImpl(
+        `https://api.github.com/app/installations/${input.installationId}/access_tokens`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "agentrail-console",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            repositories: [input.repo],
+            permissions: { issues: "write", pull_requests: "write" },
+          }),
+          redirect: "error",
+          signal: controller.signal,
+        }
+      );
+    } catch {
+      return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+    }
+    if (response.status !== 201) {
+      void response.body?.cancel().catch(() => undefined);
+      if (response.status === 404) {
+        return { ok: false, kind: "unavailable", reason: "not_installed" };
+      }
+      if ([401, 403, 422].includes(response.status)) {
+        return { ok: false, kind: "unavailable", reason: "credential_rejected" };
+      }
+      return { ok: false, kind: "indeterminate", reason: "github_unavailable" };
+    }
+    const parsed = await readBoundedGithubJson(response, controller);
+    if (!parsed.ok) {
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    if (!hasCorrectionCarrierGrant(parsed.body, input.owner, input.repo)) {
+      const typed = parsed.body as { repositories?: unknown; permissions?: unknown };
+      if (!Array.isArray(typed?.repositories) || typed.repositories.length !== 1) {
+        return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+      }
+      const fullName = (typed.repositories[0] as { full_name?: unknown } | null)
+        ?.full_name;
+      if (typeof fullName !== "string") {
+        return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+      }
+      if (fullName.toLowerCase() !== `${input.owner}/${input.repo}`.toLowerCase()) {
+        return { ok: false, kind: "unavailable", reason: "repository_not_granted" };
+      }
+      if (!typed?.permissions || typeof typed.permissions !== "object") {
+        return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+      }
+      const permissions = typed.permissions as {
+        issues?: unknown;
+        pull_requests?: unknown;
+      };
+      if (
+        typeof permissions.issues !== "string" ||
+        typeof permissions.pull_requests !== "string"
+      ) {
+        return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+      }
+      if (permissions.issues !== "write" || permissions.pull_requests !== "write") {
+        return {
+          ok: false,
+          kind: "unavailable",
+          reason: "required_permissions_not_granted",
+        };
+      }
+      return { ok: false, kind: "indeterminate", reason: "invalid_response" };
+    }
+    return {
+      ok: true,
+      token: parsed.body.token,
+      expiresAt: parsed.body.expires_at,
+      permissionBasis: {
+        repository: "scoped_installation_token",
+        issues: "write",
+        pullRequests: "write",
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getInstallationAccount(
   installationId: string,
   cfg: { appId: string; privateKey: string },

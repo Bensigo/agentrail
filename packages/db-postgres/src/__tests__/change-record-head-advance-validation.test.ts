@@ -5,6 +5,9 @@ import {
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
   isGithubNativeBuilderRouteAdapter,
   queueSelectedCorrectionDispatch,
+  reserveGithubCorrectionCarrierPreflight,
+  reportGithubCorrectionCarrierPreflight,
+  acceptanceCorrectionDispatchGithubPreflightId,
   recordAcceptanceBuilderRouteCapabilityProfile,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
@@ -98,6 +101,37 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
     } as never)).rejects.toThrow("requires a workspace and compiled Pack");
     await expect(queueSelectedCorrectionDispatch({ workspaceId: BASE.workspaceId } as never))
       .rejects.toThrow("requires a workspace and compiled Pack");
+  });
+
+  it("admits only opaque server-bound GitHub carrier preflight coordinates and closed outcomes", async () => {
+    const dispatchId = "00000000-0000-4000-8000-000000000009";
+    const preflightId = acceptanceCorrectionDispatchGithubPreflightId({ dispatchId, attempt: 1 });
+    expect(preflightId).toBe(acceptanceCorrectionDispatchGithubPreflightId({ dispatchId, attempt: 1 }));
+    expect(preflightId).not.toBe(acceptanceCorrectionDispatchGithubPreflightId({ dispatchId, attempt: 2 }));
+    await expect(reserveGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, dispatchId, githubToken: "never-accepted",
+    } as never)).rejects.toThrow("requires only workspace and dispatch");
+    await expect(reportGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, preflightId,
+      outcome: { kind: "ready", headSha: HEAD, baseSha: BEFORE },
+      rawError: "never-persisted",
+    } as never)).rejects.toThrow("requires only workspace, preflight, and closed outcome");
+    await expect(reportGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, preflightId,
+      outcome: { kind: "ready", headSha: "short", baseSha: BEFORE },
+    } as never)).rejects.toThrow("requires only workspace, preflight, and closed outcome");
+    await expect(reportGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, preflightId,
+      outcome: { kind: "github_unavailable", detail: "untrusted" },
+    } as never)).rejects.toThrow("requires only workspace, preflight, and closed outcome");
+    await expect(reportGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, preflightId,
+      outcome: { kind: "storage_unavailable", detail: "untrusted" },
+    } as never)).rejects.toThrow("requires only workspace, preflight, and closed outcome");
+    await expect(reportGithubCorrectionCarrierPreflight({
+      workspaceId: BASE.workspaceId, preflightId,
+      outcome: { kind: "remote_base_mismatch", expectedBaseSha: "short", observedBaseSha: BEFORE },
+    } as never)).rejects.toThrow("requires only workspace, preflight, and closed outcome");
   });
 
   it.each([

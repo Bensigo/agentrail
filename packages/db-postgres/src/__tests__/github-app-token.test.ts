@@ -6,20 +6,24 @@ vi.mock("../db.js", () => ({
 vi.mock("@agentrail/github-app", () => ({
   resolveGithubAppConfig: vi.fn(),
   mintInstallationToken: vi.fn(),
+  mintCorrectionCarrierInstallationToken: vi.fn(),
 }));
 
 import { db } from "../db.js";
 import {
   resolveGithubAppConfig,
   mintInstallationToken,
+  mintCorrectionCarrierInstallationToken,
 } from "@agentrail/github-app";
 import {
   getInstallationToken,
+  getGithubCorrectionCarrierCredential,
   consumeGithubInstallState,
   getUserGithubIdentityById,
 } from "../queries/github-app-token.js";
 
 const mockDb = vi.mocked(db);
+const WORKSPACE_ID = "11111111-1111-4111-8111-111111111111";
 
 function selectChain(finalValue: unknown) {
   const chain: Record<string, unknown> = {};
@@ -90,6 +94,92 @@ describe("getInstallationToken", () => {
       reason: "not_installed",
     });
     expect(await getInstallationToken("ws-1")).toBeNull();
+  });
+});
+
+describe("getGithubCorrectionCarrierCredential", () => {
+  it("derives the installation server-side and mints only an exact owner/repository grant", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "777", accountLogin: "acme", accountType: "Organization" }]) as never
+    );
+    vi.mocked(mintCorrectionCarrierInstallationToken).mockResolvedValue({
+      ok: true,
+      token: "ghs_scoped",
+      expiresAt: "2030-01-01T00:00:00Z",
+      permissionBasis: {
+        repository: "scoped_installation_token",
+        issues: "write",
+        pullRequests: "write",
+      },
+    });
+    await expect(
+      getGithubCorrectionCarrierCredential({ workspaceId: WORKSPACE_ID, repo: "acme/widgets" })
+    ).resolves.toMatchObject({ ok: true, permissionBasis: { issues: "write", pullRequests: "write" } });
+    expect(mintCorrectionCarrierInstallationToken).toHaveBeenCalledWith(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      expect.objectContaining({ appId: "12345" })
+    );
+  });
+
+  it("refuses an owner mismatch before config or network minting", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "777", accountLogin: "other-owner", accountType: "Organization" }]) as never
+    );
+    await expect(
+      getGithubCorrectionCarrierCredential({ workspaceId: WORKSPACE_ID, repo: "acme/widgets" })
+    ).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "installation_or_permission_denied",
+    });
+    expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it("preserves indeterminate transport state and never leaks a failed token", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([{ installationId: "777", accountLogin: "acme", accountType: "Organization" }]) as never
+    );
+    vi.mocked(mintCorrectionCarrierInstallationToken).mockResolvedValue({
+      ok: false,
+      kind: "indeterminate",
+      reason: "github_unavailable",
+    });
+    const result = await getGithubCorrectionCarrierCredential({
+      workspaceId: WORKSPACE_ID,
+      repo: "acme/widgets",
+    });
+    expect(result).toEqual({ ok: false, kind: "indeterminate", reason: "github_unavailable" });
+    expect(JSON.stringify(result)).not.toContain("ghs_");
+  });
+
+  it("keeps a workspace installation storage failure distinct from GitHub availability", async () => {
+    mockDb.select.mockImplementation(() => {
+      throw new Error("database unavailable");
+    });
+    await expect(
+      getGithubCorrectionCarrierCredential({ workspaceId: WORKSPACE_ID, repo: "acme/widgets" })
+    ).resolves.toEqual({ ok: false, kind: "indeterminate", reason: "storage_unavailable" });
+    expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
+  });
+
+  it("refuses malformed or widened runtime input before any DB or mint call", async () => {
+    for (const input of [
+      null,
+      { workspaceId: WORKSPACE_ID, repo: "acme/widgets", installationId: "777" },
+      { workspaceId: "ws-1", repo: "acme/widgets" },
+      { workspaceId: WORKSPACE_ID, repo: "acme/ghs_token\nsecret" },
+      { workspaceId: WORKSPACE_ID, repo: "acme/widgets", token: "ghs_secret" },
+    ]) {
+      await expect(
+        getGithubCorrectionCarrierCredential(input as never)
+      ).resolves.toEqual({
+        ok: false,
+        kind: "unavailable",
+        reason: "installation_or_permission_denied",
+      });
+    }
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mintCorrectionCarrierInstallationToken).not.toHaveBeenCalled();
   });
 });
 

@@ -13,6 +13,7 @@ import {
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatches,
+  acceptanceCorrectionDispatchGithubPreflights,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
@@ -61,6 +62,8 @@ import {
   readChangeRecordByPr,
   readChangeRecordTimeline,
   queueSelectedCorrectionDispatch,
+  reserveGithubCorrectionCarrierPreflight,
+  reportGithubCorrectionCarrierPreflight,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -81,6 +84,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
                to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
                to_regclass('public.acceptance_correction_dispatches') AS acceptance_correction_dispatches,
+               to_regclass('public.acceptance_correction_dispatch_github_preflights') AS acceptance_correction_dispatch_github_preflights,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -124,6 +128,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_context_pack_snapshots: string | null;
       acceptance_compiled_context_packs: string | null;
       acceptance_correction_dispatches: string | null;
+      acceptance_correction_dispatch_github_preflights: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
       change_record_current_pr_head: boolean;
@@ -139,6 +144,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_correction_dispatches === "acceptance_correction_dispatches" &&
+      rows[0]?.acceptance_correction_dispatch_github_preflights === "acceptance_correction_dispatch_github_preflights" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.change_record_current_pr_head === true &&
@@ -1536,6 +1542,114 @@ describe.skipIf(!DB_AVAILABLE)(
         },
       });
       expect(githubQueuedReplay).toMatchObject({ inserted: false, dispatch: { id: githubQueued.dispatch.id } });
+      // The DB custody lane reserves/reports only a carrier-inert
+      // authentication/read preflight. It must not project carrier acceptance
+      // or agent activity.
+      const parallelPreflights = await Promise.all([
+        reserveGithubCorrectionCarrierPreflight({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+        reserveGithubCorrectionCarrierPreflight({ workspaceId: wsId, dispatchId: githubQueued.dispatch.id }),
+      ]);
+      expect(parallelPreflights.map((result) => result.kind).sort()).toEqual(["held", "reserved"]);
+      const preflight = parallelPreflights.find((result) => result.kind === "reserved");
+      expect(preflight).toMatchObject({
+        kind: "reserved", inserted: true,
+        preflight: {
+          dispatchId: githubQueued.dispatch.id, recordId: draft.record.id,
+          headSha, baseSha: "b".repeat(40), headCycleId: job.id, authorityGeneration: 1,
+          capabilityProfileId: capability.profile.id,
+          githubInstallationIdentitySha256: capability.profile.githubInstallationIdentitySha256,
+          permissionContract: "issues_write_and_pull_requests_write_v1",
+          attempt: 1, status: "reserved", result: null,
+        },
+      });
+      if (!preflight || preflight.kind !== "reserved") throw new Error("expected preflight reservation");
+      // A retargeted base with the identical PR head invalidates this Context
+      // Pack binding before a carrier result can be accepted.
+      await db.update(acceptanceContextPackSnapshots).set({ baseSha: "e".repeat(40) })
+        .where(eq(acceptanceContextPackSnapshots.id, snapshot.snapshot.id));
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: preflight.preflight.id,
+        outcome: { kind: "ready", headSha, baseSha: "b".repeat(40) },
+      })).resolves.toEqual({ kind: "not_current" });
+      await db.update(acceptanceContextPackSnapshots).set({ baseSha: "b".repeat(40) })
+        .where(eq(acceptanceContextPackSnapshots.id, snapshot.snapshot.id));
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "held", reason: "reserved", preflight: { id: preflight.preflight.id } });
+      const preflightResult = await reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: preflight.preflight.id,
+        // Credential storage failed after reservation. It is a closed,
+        // indeterminate projection so the next reservation can retry rather
+        // than leaving this attempt held indefinitely or misnaming GitHub.
+        outcome: { kind: "storage_unavailable" },
+      });
+      expect(preflightResult).toMatchObject({
+        kind: "reported", preflight: { id: preflight.preflight.id, status: "indeterminate", result: { kind: "storage_unavailable" } },
+      });
+      const retry = await reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      });
+      expect(retry).toMatchObject({ kind: "reserved", inserted: true, preflight: { attempt: 2, status: "reserved" } });
+      if (retry.kind !== "reserved") throw new Error("expected bounded preflight retry");
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: retry.preflight.id,
+        outcome: { kind: "ready", headSha, baseSha: "b".repeat(40) },
+      })).resolves.toMatchObject({ kind: "reported", preflight: { status: "ready" } });
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: retry.preflight.id,
+        outcome: { kind: "ready", headSha, baseSha: "b".repeat(40) },
+      })).resolves.toMatchObject({ kind: "replayed", preflight: { id: retry.preflight.id, status: "ready" } });
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: retry.preflight.id,
+        outcome: { kind: "remote_head_mismatch", expectedHeadSha: "c".repeat(40), observedHeadSha: "d".repeat(40) },
+      })).resolves.toEqual({ kind: "not_current" });
+      await expect(reportGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, preflightId: retry.preflight.id,
+        outcome: { kind: "installation_or_permission_denied" },
+      })).rejects.toThrow("already terminal");
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({ kind: "terminal", preflight: { id: retry.preflight.id, status: "ready" } });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]).toMatchObject({
+        deliveryState: "queued", agentState: "not_observed",
+        findingsState: "not_started", activationState: "not_started",
+      });
+      expect(await db.select().from(acceptanceCorrectionDispatchGithubPreflights).where(and(
+        eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, githubQueued.dispatch.id),
+        eq(acceptanceCorrectionDispatchGithubPreflights.workspaceId, wsId),
+      ))).toHaveLength(2);
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-preflight-drift",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-dispatch-profile",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      }).where(eq(workspaces.id, wsId));
+      const originalDispatchIdentity = githubQueued.dispatch.dispatchIdentitySha256;
+      await db.update(acceptanceCorrectionDispatches).set({
+        dispatchIdentitySha256: "f".repeat(64),
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toEqual({ kind: "not_current" });
+      await db.update(acceptanceCorrectionDispatches).set({
+        dispatchIdentitySha256: originalDispatchIdentity,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecordEvents).set({ payloadRef: { forged: true } }).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-preflight:result:${job.id}:2`),
+      ));
+      await expect(reserveGithubCorrectionCarrierPreflight({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).rejects.toThrow("event custody");
       // Migration 0091 deliberately leaves pre-profile rows nullable. A retry
       // must hold that historical aggregate; it may not silently bless or
       // rewrite it with today's capability configuration.
@@ -1554,6 +1668,8 @@ describe.skipIf(!DB_AVAILABLE)(
 
       // Durable fallback remains queueable, but deliberately has no GitHub
       // vendor capability profile and still performs no carrier action.
+      await db.delete(acceptanceCorrectionDispatchGithubPreflights)
+        .where(eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, githubQueued.dispatch.id));
       await db.delete(acceptanceCorrectionDispatches)
         .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
       await db.delete(changeRecordEvents).where(and(

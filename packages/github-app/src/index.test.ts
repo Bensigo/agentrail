@@ -4,6 +4,7 @@ import {
   resolveGithubAppConfig,
   signAppJwt,
   mintInstallationToken,
+  mintCorrectionCarrierInstallationToken,
   getInstallationAccount,
   botCommitIdentity,
   listUserInstallations,
@@ -116,6 +117,228 @@ describe("mintInstallationToken", () => {
     );
     expect(res).toEqual({ ok: false, reason: "github_rejected" });
     expect(fetchShouldNotBeCalled).not.toHaveBeenCalled();
+  });
+});
+
+describe("mintCorrectionCarrierInstallationToken", () => {
+  const cfg = { appId: "12345", privateKey };
+  const expiresAt = () => new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+  function grantedResponse(overrides: Record<string, unknown> = {}): Response {
+    return new Response(
+      JSON.stringify({
+        token: "ghs_scoped_token",
+        expires_at: expiresAt(),
+        repositories: [{ full_name: "acme/widgets" }],
+        permissions: { issues: "write", pull_requests: "write" },
+        ...overrides,
+      }),
+      { status: 201, headers: { "content-type": "application/json" } }
+    );
+  }
+
+  it("uses only the fixed scoped-token POST, refuses redirects, and carries the exact request body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(grantedResponse());
+    const result = await mintCorrectionCarrierInstallationToken(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      cfg,
+      fetchMock as unknown as typeof fetch
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      token: "ghs_scoped_token",
+      permissionBasis: {
+        repository: "scoped_installation_token",
+        issues: "write",
+        pullRequests: "write",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.github.com/app/installations/777/access_tokens");
+    expect(init).toMatchObject({ method: "POST", redirect: "error" });
+    expect(init.headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
+    expect(JSON.parse(init.body)).toEqual({
+      repositories: ["widgets"],
+      permissions: { issues: "write", pull_requests: "write" },
+    });
+  });
+
+  it("rejects invalid owner/repo input without a network attempt", async () => {
+    const fetchMock = vi.fn();
+    for (const input of [
+      null,
+      [],
+      { installationId: "777", owner: "acme/other", repo: "widgets" },
+      { installationId: "777", owner: "acme", repo: "widgets", token: "ghs_secret" },
+    ]) {
+      await expect(
+        mintCorrectionCarrierInstallationToken(input as never, cfg, fetchMock as unknown as typeof fetch)
+      ).resolves.toEqual({ ok: false, kind: "unavailable", reason: "invalid_input" });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires the exact repository and both granted write permissions", async () => {
+    const wrongRepo = vi.fn().mockResolvedValue(
+      grantedResponse({ repositories: [{ full_name: "acme/other" }] })
+    );
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        wrongRepo as unknown as typeof fetch
+      )
+    ).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "repository_not_granted",
+    });
+
+    const insufficientPermissions = vi.fn().mockResolvedValue(
+      grantedResponse({ permissions: { issues: "write", pull_requests: "read" } })
+    );
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        insufficientPermissions as unknown as typeof fetch
+      )
+    ).resolves.toEqual({
+      ok: false,
+      kind: "unavailable",
+      reason: "required_permissions_not_granted",
+    });
+  });
+
+  it("bounds streamed response bodies and classifies GitHub availability without exposing token material", async () => {
+    const cancel = vi.fn();
+    const oversized = vi.fn().mockResolvedValue(new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(64 * 1024 + 1));
+        },
+        cancel,
+      }),
+      { status: 201 }
+    ));
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        oversized as unknown as typeof fetch
+      )
+    ).resolves.toEqual({ ok: false, kind: "indeterminate", reason: "invalid_response" });
+    expect(cancel).toHaveBeenCalledOnce();
+
+    const unavailable = vi.fn().mockResolvedValue(new Response("{}", { status: 503 }));
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        unavailable as unknown as typeof fetch
+      )
+    ).resolves.toEqual({ ok: false, kind: "indeterminate", reason: "github_unavailable" });
+
+    const leaked = vi.fn().mockResolvedValue(grantedResponse({ token: "not a valid token\nsecret" }));
+    const failure = await mintCorrectionCarrierInstallationToken(
+      { installationId: "777", owner: "acme", repo: "widgets" },
+      cfg,
+      leaked as unknown as typeof fetch
+    );
+    expect(JSON.stringify(failure)).not.toContain("secret");
+  });
+
+  it("treats unexpected GitHub statuses and malformed response metadata as indeterminate", async () => {
+    for (const status of [200, 302, 429, 503]) {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status }));
+      await expect(
+        mintCorrectionCarrierInstallationToken(
+          { installationId: "777", owner: "acme", repo: "widgets" },
+          cfg,
+          fetchMock as unknown as typeof fetch
+        )
+      ).resolves.toEqual({ ok: false, kind: "indeterminate", reason: "github_unavailable" });
+    }
+    const malformed = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([0xc3, 0x28]), { status: 201 })
+    );
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        malformed as unknown as typeof fetch
+      )
+    ).resolves.toEqual({ ok: false, kind: "indeterminate", reason: "invalid_response" });
+  });
+
+  it("cancels a non-201 response body before returning its closed failure", async () => {
+    const cancel = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      { status: 403 }
+    ));
+    await expect(
+      mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        fetchMock as unknown as typeof fetch
+      )
+    ).resolves.toEqual({ ok: false, kind: "unavailable", reason: "credential_rejected" });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the timeout alive through a stalled response body and cancels an over-limit body", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn();
+      const stalled = new Response(
+        new ReadableStream<Uint8Array>({
+          pull: () => new Promise<void>(() => undefined),
+          cancel,
+        }),
+        { status: 201 }
+      );
+      const fetchMock = vi.fn().mockResolvedValue(stalled);
+      const result = mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        fetchMock as unknown as typeof fetch
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      await expect(result).resolves.toEqual({
+        ok: false,
+        kind: "indeterminate",
+        reason: "invalid_response",
+      });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a fetch stalled before response headers", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          (init.signal as AbortSignal).addEventListener("abort", () => reject(new Error("aborted")));
+        })
+      );
+      const pending = mintCorrectionCarrierInstallationToken(
+        { installationId: "777", owner: "acme", repo: "widgets" },
+        cfg,
+        fetchMock as unknown as typeof fetch
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        kind: "indeterminate",
+        reason: "github_unavailable",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -39,6 +39,7 @@ export {
 // §5/§6). getInstallationToken is the drop-in getGithubToken replacement.
 export {
   getInstallationToken,
+  getGithubCorrectionCarrierCredential,
   getGithubInstallation,
   bindWorkspaceGithubInstallation,
   mintGithubInstallState,

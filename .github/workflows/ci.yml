@@ -146,6 +146,7 @@ jobs:
           app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts
           lib/github-advisory-review.test.ts
           lib/github-current-pr.test.ts
+          lib/github-correction-carrier-preflight.test.ts
           lib/acceptance-context-pack-compiler.test.ts
           lib/acceptance-context-pack-source-custody.test.ts
           lib/correction-dispatch-renderer.test.ts

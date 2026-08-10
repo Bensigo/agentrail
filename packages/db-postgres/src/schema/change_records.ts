@@ -551,6 +551,83 @@ export const acceptanceCorrectionDispatches = pgTable(
 );
 
 /**
+ * Immutable-attempt custody for the carrier-inert GitHub App preflight that
+ * precedes GitHub-native correction delivery.  This is deliberately not a
+ * carrier receipt: a ready result proves only the bounded remote PR check,
+ * never that GitHub accepted a comment or a vendor started work. A closed
+ * `storage_unavailable` result remains indeterminate so a later reservation
+ * can create the bounded successor attempt.
+ */
+export const acceptanceCorrectionDispatchGithubPreflights = pgTable(
+  "acceptance_correction_dispatch_github_preflights",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    dispatchId: uuid("dispatch_id").notNull().references(() => acceptanceCorrectionDispatches.id, { onDelete: "restrict" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseSha: text("base_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    routeId: uuid("route_id").notNull().references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeAdapter: text("route_adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    capabilityProfileId: uuid("capability_profile_id").notNull().references(
+      () => acceptanceBuilderRouteCapabilityProfiles.id, { onDelete: "restrict" }
+    ),
+    capabilityProfileSnapshotSha256: text("capability_profile_snapshot_sha256").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
+    preflightProtocolVersion: integer("preflight_protocol_version").notNull().default(1),
+    permissionContract: text("permission_contract").notNull(),
+    attempt: integer("attempt").notNull(),
+    preflightIdentitySha256: text("preflight_identity_sha256").notNull(),
+    status: text("status").notNull().default("reserved"),
+    /** Closed result variant only; never a token, body, raw error, or receipt. */
+    result: jsonb("result").$type<Record<string, unknown>>(),
+    reservedAt: timestamp("reserved_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dispatchAttempt: uniqueIndex("acceptance_correction_github_preflights_dispatch_attempt_key")
+      .on(t.dispatchId, t.attempt),
+    workspaceDispatch: index("acceptance_correction_github_preflights_workspace_dispatch_idx")
+      .on(t.workspaceId, t.dispatchId, t.createdAt),
+    bindingCheck: check(
+      "acceptance_correction_dispatch_github_preflights_binding_check",
+      sql`btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+        AND split_part(${t.repo}, '/', 1) NOT IN ('.', '..')
+        AND split_part(${t.repo}, '/', 2) NOT IN ('.', '..')
+        AND ${t.prNumber} > 0
+        AND ${t.headSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.baseSha} ~ '^[A-Fa-f0-9]{40}$'
+        AND ${t.authorityGeneration} >= 0
+        AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.routeAdapter} IN ('github_codex', 'github_claude')
+        AND ${t.routeConfigurationVersion} > 0
+        AND ${t.capabilityProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.githubInstallationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND ${t.preflightProtocolVersion} = 1
+        AND ${t.permissionContract} = 'issues_write_and_pull_requests_write_v1'
+        AND ${t.attempt} BETWEEN 1 AND 8
+        AND ${t.preflightIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    statusCheck: check(
+      "acceptance_correction_dispatch_github_preflights_status_check",
+      sql`${t.status} IN ('reserved', 'ready', 'unavailable', 'indeterminate')
+        AND ((${t.status} = 'reserved') = (${t.result} IS NULL))
+        AND ((${t.status} = 'reserved') = (${t.completedAt} IS NULL))
+        AND (${t.result} IS NULL OR jsonb_typeof(${t.result}) = 'object')`
+    ),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -657,5 +734,6 @@ export type AcceptanceBuilderRouteCapabilityProfileRow = typeof acceptanceBuilde
 export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
 export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
 export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatches.$inferSelect;
+export type AcceptanceCorrectionDispatchGithubPreflightRow = typeof acceptanceCorrectionDispatchGithubPreflights.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

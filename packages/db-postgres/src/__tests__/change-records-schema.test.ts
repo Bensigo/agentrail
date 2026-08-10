@@ -3,7 +3,9 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
+  acceptanceCorrectionDispatches,
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
@@ -283,5 +285,63 @@ describe("0087_acceptance_compiled_context_packs migration", () => {
     expect(journal.entries.find(
       (entry: { tag: string }) => entry.tag === "0087_acceptance_compiled_context_packs"
     )).toMatchObject({ idx: 92, version: "7", breakpoints: true });
+  });
+});
+
+describe("0091_acceptance_builder_route_capability_profiles migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0091_acceptance_builder_route_capability_profiles.sql"
+  );
+
+  it("declares an immutable GitHub-native capability profile bound to one route revision", () => {
+    expect(acceptanceBuilderRouteCapabilityProfiles.workspaceId.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.routeId.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.repo.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.adapter.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.routeConfigurationVersion.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.githubInstallationIdentitySha256.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.snapshot.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.snapshot.getSQLType()).toBe("jsonb");
+    expect(acceptanceBuilderRouteCapabilityProfiles.snapshotSha256.notNull).toBe(true);
+    expect(acceptanceBuilderRouteCapabilityProfiles.recordedBy.notNull).toBe(true);
+    const config = getTableConfig(acceptanceBuilderRouteCapabilityProfiles);
+    expect(config.indexes.find((index) =>
+      index.config.name === "acceptance_builder_route_cap_profiles_route_config_key"
+    )).toBeDefined();
+    expect(config.checks.map((check) => check.name).sort()).toEqual([
+      "acceptance_builder_route_cap_profiles_config_version_check",
+      "acceptance_builder_route_capability_profiles_adapter_check",
+      "acceptance_builder_route_capability_profiles_recorded_by_check",
+      "acceptance_builder_route_capability_profiles_repo_check",
+      "acceptance_builder_route_capability_profiles_snapshot_check",
+    ]);
+  });
+
+  it("adds an all-or-nothing immutable profile snapshot to dispatches without retroactively blessing legacy rows", () => {
+    expect(acceptanceCorrectionDispatches.capabilityProfileId.notNull).toBe(false);
+    expect(acceptanceCorrectionDispatches.capabilityProfileSnapshot.notNull).toBe(false);
+    expect(acceptanceCorrectionDispatches.capabilityProfileSnapshot.getSQLType()).toBe("jsonb");
+    expect(acceptanceCorrectionDispatches.capabilityProfileSnapshotSha256.notNull).toBe(false);
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_builder_route_capability_profiles"');
+    expect(sqlText).toContain("'github_codex'");
+    expect(sqlText).toContain("'github_claude'");
+    expect(sqlText).not.toContain("codex_app_server");
+    expect(sqlText).not.toContain("mcp_correction_inbox");
+    expect(sqlText).toContain("acceptance_builder_route_cap_profiles_route_config_key");
+    expect(sqlText).toContain("acceptance_correction_dispatches_capability_profile_check");
+    expect(sqlText).toContain('"capability_profile_id" uuid');
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("private_key");
+  });
+
+  it("is registered after selected-route dispatch preparation", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0091_acceptance_builder_route_capability_profiles"
+    )).toMatchObject({ idx: 96, version: "7", breakpoints: true });
   });
 });

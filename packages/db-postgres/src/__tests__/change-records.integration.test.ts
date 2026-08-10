@@ -9,6 +9,7 @@ import { wikiPages } from "../schema/wiki_pages.js";
 import {
   acceptanceIntakeMessages,
   acceptanceIntakes,
+  acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatches,
@@ -52,8 +53,10 @@ import {
   recordAcceptanceCompiledContextPack,
   resolveAcceptanceCompiledContextPack,
   registerAcceptanceBuilderRoute,
+  recordAcceptanceBuilderRouteCapabilityProfile,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
+  resolveAcceptanceBuilderRouteCapabilityProfile,
   readAcceptanceContracts,
   readChangeRecordByPr,
   readChangeRecordTimeline,
@@ -74,6 +77,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.change_record_events') AS change_record_events,
                to_regclass('public.acceptance_contracts') AS acceptance_contracts,
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
+               to_regclass('public.acceptance_builder_route_capability_profiles') AS acceptance_builder_route_capability_profiles,
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
                to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
                to_regclass('public.acceptance_correction_dispatches') AS acceptance_correction_dispatches,
@@ -116,6 +120,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       change_record_events: string | null;
       acceptance_contracts: string | null;
       acceptance_builder_routes: string | null;
+      acceptance_builder_route_capability_profiles: string | null;
       acceptance_context_pack_snapshots: string | null;
       acceptance_compiled_context_packs: string | null;
       acceptance_correction_dispatches: string | null;
@@ -130,6 +135,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.change_record_events === "change_record_events" &&
       rows[0]?.acceptance_contracts === "acceptance_contracts" &&
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
+      rows[0]?.acceptance_builder_route_capability_profiles === "acceptance_builder_route_capability_profiles" &&
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
       rows[0]?.acceptance_correction_dispatches === "acceptance_correction_dispatches" &&
@@ -1107,10 +1113,51 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceContracts).set({
         status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
       }).where(eq(acceptanceContracts.id, draft.contract.id));
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-builder-route-1",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      })
+        .where(eq(workspaces.id, wsId));
       const registered = await registerAcceptanceBuilderRoute({
         workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
         configurationVersion: 2, registeredBy: "server:environment",
       });
+      const profileInput = {
+        workspaceId: wsId,
+        routeId: registered.route.id,
+        recordedBy: "server:route-capability-profile",
+      };
+      const profile = await recordAcceptanceBuilderRouteCapabilityProfile(profileInput);
+      const profileReplay = await recordAcceptanceBuilderRouteCapabilityProfile(profileInput);
+      expect(profile).toMatchObject({ inserted: true, profile: {
+        routeId: registered.route.id,
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        adapter: "github_codex",
+        routeConfigurationVersion: 2,
+        githubInstallationIdentitySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        snapshot: {
+          kind: "acceptance_builder_route_capability_profile",
+          version: 1,
+          workspaceId: wsId,
+          repo: "acme/widgets",
+          routeId: registered.route.id,
+          adapter: "github_codex",
+          routeConfigurationVersion: 2,
+          carrier: "github_issue_comment",
+          recipient: "codex",
+          findingPublication: "individual_no_vendor_mentions",
+          activation: "single_final_vendor_mention",
+          vendorAvailability: "not_asserted",
+          scopeBoundary: "correction_delivery_only",
+          githubInstallationIdentitySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      } });
+      expect(profileReplay).toMatchObject({ inserted: false, profile: { id: profile.profile.id } });
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: registered.route.id,
+      })).resolves.toMatchObject({ id: profile.profile.id });
       const input = {
         workspaceId: wsId,
         recordId: draft.record.id,
@@ -1163,6 +1210,9 @@ describe.skipIf(!DB_AVAILABLE)(
         .where(eq(acceptanceBuilderRoutes.id, registered.route.id));
       await expect(readAcceptanceBuilderRouteSelection({
         workspaceId: wsId, recordId: draft.record.id,
+      })).resolves.toBeNull();
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: registered.route.id,
       })).resolves.toBeNull();
     });
 
@@ -1338,11 +1388,17 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceContracts).set({
         status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
       }).where(eq(acceptanceContracts.id, draft.contract.id));
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-dispatch-profile",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      })
+        .where(eq(workspaces.id, wsId));
       const selectedRoute = await registerAcceptanceBuilderRoute({
         workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
         configurationVersion: 1, registeredBy: "server:environment",
       });
-      await recordAcceptanceBuilderRouteSelection({
+      const routeSelection = await recordAcceptanceBuilderRouteSelection({
         workspaceId: wsId, recordId: draft.record.id, selectedBy: "user:lead", routeId: selectedRoute.route.id,
       });
       const headSha = "a".repeat(40);
@@ -1455,9 +1511,16 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(replay).toMatchObject({ inserted: false, pack: { id: first.pack.id } });
       expect(first.pack.exactHeadDependencyTreeProofs).toEqual(core.exactHeadDependencyTreeProofs);
       expect(JSON.stringify(first.pack)).not.toContain("bodyBase64");
-      const queued = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
-      const queuedReplay = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
-      expect(queued).toMatchObject({
+      await expect(queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id }))
+        .rejects.toThrow("capability profile");
+      const capability = await recordAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId,
+        routeId: selectedRoute.route.id,
+        recordedBy: "server:route-capability-profile",
+      });
+      const githubQueued = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      const githubQueuedReplay = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      expect(githubQueued).toMatchObject({
         inserted: true,
         dispatch: {
           recordId: draft.record.id, headSha, headCycleId: job.id,
@@ -1466,9 +1529,72 @@ describe.skipIf(!DB_AVAILABLE)(
           compiledPackId: first.pack.id, compiledPackSha256: compiled.packSha256,
           jsonSha256: representations.jsonSha256, markdownSha256: representations.markdownSha256,
           routeId: selectedRoute.route.id, routeConfigurationVersion: 1,
+          capabilityProfileId: capability.profile.id,
+          capabilityProfileSnapshot: capability.profile.snapshot,
+          capabilityProfileSnapshotSha256: capability.profile.snapshotSha256,
           activationState: "not_started", deliveryState: "queued",
         },
       });
+      expect(githubQueuedReplay).toMatchObject({ inserted: false, dispatch: { id: githubQueued.dispatch.id } });
+      // Migration 0091 deliberately leaves pre-profile rows nullable. A retry
+      // must hold that historical aggregate; it may not silently bless or
+      // rewrite it with today's capability configuration.
+      await db.update(acceptanceCorrectionDispatches).set({
+        capabilityProfileId: null,
+        capabilityProfileSnapshot: null,
+        capabilityProfileSnapshotSha256: null,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await expect(queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id }))
+        .rejects.toThrow("unprofiled selected correction dispatch");
+      await db.update(acceptanceCorrectionDispatches).set({
+        capabilityProfileId: githubQueued.dispatch.capabilityProfileId,
+        capabilityProfileSnapshot: githubQueued.dispatch.capabilityProfileSnapshot,
+        capabilityProfileSnapshotSha256: githubQueued.dispatch.capabilityProfileSnapshotSha256,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+
+      // Durable fallback remains queueable, but deliberately has no GitHub
+      // vendor capability profile and still performs no carrier action.
+      await db.delete(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-correction-dispatch:queued:${job.id}`),
+      ));
+      await db.update(acceptanceBuilderRoutes).set({ adapter: "durable_jace_fallback" })
+        .where(eq(acceptanceBuilderRoutes.id, selectedRoute.route.id));
+      const selectionPayload = routeSelection.event.payloadRef as Record<string, unknown>;
+      await db.update(changeRecordEvents).set({ payloadRef: {
+        ...selectionPayload,
+        route: {
+          id: selectedRoute.route.id,
+          adapter: "durable_jace_fallback",
+          configurationVersion: 1,
+          status: "active",
+        },
+        snapshot: {
+          builder: { adapter: "durable_jace_fallback", routeId: selectedRoute.route.id },
+          protocol: "durable_notice",
+          capability: {
+            availability: "unverified",
+            activation: "none",
+            acknowledgement: "human_ack",
+            repairHead: "github_synchronize",
+          },
+          scopeBoundary: "correction_delivery_only",
+        },
+      } }).where(eq(changeRecordEvents.id, routeSelection.event.id));
+      const queued = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      const queuedReplay = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      expect(queued).toMatchObject({ inserted: true, dispatch: {
+        routeAdapter: "durable_jace_fallback",
+        carrier: "durable_notice",
+        capabilityProfileId: null,
+        capabilityProfileSnapshot: null,
+        capabilityProfileSnapshotSha256: null,
+        deliveryState: "queued",
+        agentState: "not_observed",
+        activationState: "not_started",
+      } });
       expect(queuedReplay).toMatchObject({ inserted: false, dispatch: { id: queued.dispatch.id } });
       await expect(persist({
         ...compiled, manifest: { ...compiled.manifest, exclusions: [{ source: "exact_head_overlay", path: "apps/filter.ts", reason: "Excluded", content: "raw source" }] },
@@ -1552,6 +1678,126 @@ describe.skipIf(!DB_AVAILABLE)(
           configurationVersion: 1, registeredBy: "server:environment",
         })).rejects.toThrow("Invalid Acceptance Builder route registration");
       }
+    });
+
+    it("fails capability profiles closed on installation, route scope, and revision drift", async () => {
+      const route = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      const input = {
+        workspaceId: wsId, routeId: route.route.id,
+        recordedBy: "server:route-capability-profile",
+      };
+      await expect(recordAcceptanceBuilderRouteCapabilityProfile(input))
+        .rejects.toThrow();
+
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-capability-a",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      })
+        .where(eq(workspaces.id, wsId));
+      const first = await recordAcceptanceBuilderRouteCapabilityProfile(input);
+      expect(first.inserted).toBe(true);
+
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-capability-b",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      })
+        .where(eq(workspaces.id, wsId));
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: route.route.id,
+      })).resolves.toBeNull();
+      await db.update(workspaces).set({
+        githubInstallationId: "installation-capability-a",
+        githubInstallationAccountLogin: "acme",
+        githubInstallationAccountType: "Organization",
+      })
+        .where(eq(workspaces.id, wsId));
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: route.route.id,
+      })).resolves.toMatchObject({ id: first.profile.id });
+
+      const fallback = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "durable_github_fallback",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(recordAcceptanceBuilderRouteCapabilityProfile({
+        ...input, routeId: fallback.route.id,
+      })).rejects.toThrow();
+      const disabled = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_claude",
+        status: "disabled", configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await expect(recordAcceptanceBuilderRouteCapabilityProfile({
+        ...input, routeId: disabled.route.id,
+      })).rejects.toThrow();
+      const otherRepo = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/other", adapter: "github_claude",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      const otherRepoProfile = await recordAcceptanceBuilderRouteCapabilityProfile({
+        ...input, routeId: otherRepo.route.id,
+      });
+      expect(otherRepoProfile).toMatchObject({ profile: {
+        repo: "acme/other", adapter: "github_claude",
+        snapshot: expect.objectContaining({ workspaceId: wsId, repo: "acme/other", routeId: otherRepo.route.id, adapter: "github_claude", routeConfigurationVersion: 1 }),
+      } });
+      expect(otherRepoProfile.profile.snapshotSha256).not.toBe(first.profile.snapshotSha256);
+
+      const sameRepoDifferentRoute = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      const sameRepoDifferentRouteProfile = await recordAcceptanceBuilderRouteCapabilityProfile({
+        ...input, routeId: sameRepoDifferentRoute.route.id,
+      });
+      expect(sameRepoDifferentRouteProfile.profile.snapshotSha256).not.toBe(first.profile.snapshotSha256);
+
+      // A syntactically valid snapshot copied from another route is not an
+      // authorization profile for this route: every bound identity must match.
+      await db.update(acceptanceBuilderRouteCapabilityProfiles).set({
+        snapshot: otherRepoProfile.profile.snapshot,
+        snapshotSha256: otherRepoProfile.profile.snapshotSha256,
+      }).where(eq(acceptanceBuilderRouteCapabilityProfiles.id, first.profile.id));
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: route.route.id,
+      })).resolves.toBeNull();
+
+      await db.update(acceptanceBuilderRoutes).set({ configurationVersion: 2 })
+        .where(eq(acceptanceBuilderRoutes.id, route.route.id));
+      await expect(resolveAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: wsId, routeId: route.route.id,
+      })).resolves.toBeNull();
+      const versionTwo = await recordAcceptanceBuilderRouteCapabilityProfile(input);
+      expect(versionTwo).toMatchObject({ profile: {
+        routeConfigurationVersion: 2,
+        snapshot: expect.objectContaining({ routeConfigurationVersion: 2 }),
+      } });
+      expect(versionTwo.profile.snapshotSha256).not.toBe(first.profile.snapshotSha256);
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "builder profile foreign workspace", slug: `builder-profile-${randomUUID()}`,
+        githubInstallationId: "installation-foreign",
+        githubInstallationAccountLogin: "foreign",
+        githubInstallationAccountType: "Organization",
+      }).returning({ id: workspaces.id }))[0]!;
+      const foreign = await registerAcceptanceBuilderRoute({
+        workspaceId: otherWorkspace.id, repo: "acme/widgets", adapter: "github_claude",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      const foreignProfile = await recordAcceptanceBuilderRouteCapabilityProfile({
+        workspaceId: otherWorkspace.id,
+        routeId: foreign.route.id,
+        recordedBy: "server:route-capability-profile",
+      });
+      expect(foreignProfile.profile.snapshotSha256).not.toBe(first.profile.snapshotSha256);
+      await expect(recordAcceptanceBuilderRouteCapabilityProfile({
+        ...input, routeId: foreign.route.id,
+      })).rejects.toThrow();
+      await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
     });
 
     it("persists one canonical Intake message idempotently and refuses source-key collisions", async () => {

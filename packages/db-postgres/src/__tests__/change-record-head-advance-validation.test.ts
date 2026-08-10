@@ -3,7 +3,9 @@ import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
   CurrentReviewJobNotCurrentError,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  isGithubNativeBuilderRouteAdapter,
   queueSelectedCorrectionDispatch,
+  recordAcceptanceBuilderRouteCapabilityProfile,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
   type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
@@ -51,6 +53,38 @@ const RECONCILE_BASE = {
 };
 
 describe("confirmed Acceptance Record PR head advance boundary", () => {
+  it("requires capability profiles only for the selected GitHub vendor adapters", () => {
+    expect(isGithubNativeBuilderRouteAdapter("github_codex")).toBe(true);
+    expect(isGithubNativeBuilderRouteAdapter("github_claude")).toBe(true);
+    expect(isGithubNativeBuilderRouteAdapter("durable_github_fallback")).toBe(false);
+    expect(isGithubNativeBuilderRouteAdapter("durable_jace_fallback")).toBe(false);
+  });
+
+  it("accepts only server-derived builder-route capability profile identity", async () => {
+    const identity = {
+      workspaceId: BASE.workspaceId,
+      routeId: "00000000-0000-4000-8000-000000000010",
+      recordedBy: "server:route-capability-profile",
+    };
+    for (const untrusted of [
+      { mention: "@codex" },
+      { recipient: "codex" },
+      { carrier: "github_issue_comment" },
+      { configuration: { arbitrary: "caller-controlled" } },
+      { githubToken: "ghs-never-persist-or-accept" },
+      { workspaceGithubInstallationId: "caller-controlled" },
+    ]) {
+      await expect(recordAcceptanceBuilderRouteCapabilityProfile({
+        ...identity,
+        ...untrusted,
+      } as never)).rejects.toThrow("requires only workspace, route, and server actor");
+    }
+    await expect(recordAcceptanceBuilderRouteCapabilityProfile({
+      ...identity,
+      recordedBy: "user:owner",
+    } as never)).rejects.toThrow("requires only workspace, route, and server actor");
+  });
+
   it("accepts only an opaque compiled Pack reference for selected-route dispatch preparation", async () => {
     const opaque = {
       workspaceId: BASE.workspaceId,

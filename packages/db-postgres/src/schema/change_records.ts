@@ -211,6 +211,67 @@ export const acceptanceBuilderRoutes = pgTable(
 );
 
 /**
+ * Immutable, server-derived authorization configuration for one GitHub-native
+ * Builder route revision. This is intentionally not a vendor availability or
+ * activity receipt: a later carrier must still record its own acceptance.
+ */
+export const acceptanceBuilderRouteCapabilityProfiles = pgTable(
+  "acceptance_builder_route_capability_profiles",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    routeId: uuid("route_id")
+      .notNull()
+      .references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    repo: text("repo").notNull(),
+    adapter: text("adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    githubInstallationIdentitySha256: text("github_installation_identity_sha256").notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    snapshotSha256: text("snapshot_sha256").notNull(),
+    recordedBy: text("recorded_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    routeConfiguration: uniqueIndex(
+      "acceptance_builder_route_cap_profiles_route_config_key"
+    ).on(t.routeId, t.routeConfigurationVersion),
+    workspaceRepo: index(
+      "acceptance_builder_route_capability_profiles_workspace_repo_idx"
+    ).on(t.workspaceId, t.repo, t.createdAt),
+    adapterCheck: check(
+      "acceptance_builder_route_capability_profiles_adapter_check",
+      sql`${t.adapter} IN ('github_codex', 'github_claude')`
+    ),
+    repoCheck: check(
+      "acceptance_builder_route_capability_profiles_repo_check",
+      sql`char_length(${t.repo}) BETWEEN 3 AND 512
+        AND btrim(${t.repo}) = ${t.repo}
+        AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'`
+    ),
+    configurationVersionCheck: check(
+      "acceptance_builder_route_cap_profiles_config_version_check",
+      sql`${t.routeConfigurationVersion} > 0`
+    ),
+    snapshotCheck: check(
+      "acceptance_builder_route_capability_profiles_snapshot_check",
+      sql`${t.githubInstallationIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'
+        AND jsonb_typeof(${t.snapshot}) = 'object'
+        AND ${t.snapshotSha256} ~ '^[A-Fa-f0-9]{64}$'`
+    ),
+    recordedByCheck: check(
+      "acceptance_builder_route_capability_profiles_recorded_by_check",
+      sql`char_length(${t.recordedBy}) BETWEEN 8 AND 256
+        AND ${t.recordedBy} ~ '^server:[A-Za-z0-9][A-Za-z0-9._@+-]*$'`
+    ),
+  })
+);
+
+/**
  * Immutable, metadata-only source identity admitted for one exact review head.
  * It is not a compiled or delivered Context Pack. Later compiler/resolver
  * slices may only consume a row whose exact source identity is already bound.
@@ -442,6 +503,13 @@ export const acceptanceCorrectionDispatches = pgTable(
     routeConfigurationVersion: integer("route_configuration_version").notNull(),
     routeSnapshot: jsonb("route_snapshot").$type<Record<string, unknown>>().notNull(),
     routeSnapshotSha256: text("route_snapshot_sha256").notNull(),
+    /** Null for legacy or durable-fallback rows; GitHub vendor execution must reject those rows. */
+    capabilityProfileId: uuid("capability_profile_id").references(
+      () => acceptanceBuilderRouteCapabilityProfiles.id,
+      { onDelete: "restrict" }
+    ),
+    capabilityProfileSnapshot: jsonb("capability_profile_snapshot").$type<Record<string, unknown>>(),
+    capabilityProfileSnapshotSha256: text("capability_profile_snapshot_sha256"),
     dispatchProtocolVersion: integer("dispatch_protocol_version").notNull().default(1),
     dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
     deliveryState: text("delivery_state").notNull().default("queued"),
@@ -465,6 +533,14 @@ export const acceptanceCorrectionDispatches = pgTable(
     packCheck: check("acceptance_correction_dispatches_pack_check", sql`${t.compiledPackSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.sourceCustodyIdentitySha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.jsonSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.markdownSha256} ~ '^[A-Fa-f0-9]{64}$'`),
     versionCheck: check("acceptance_correction_dispatches_version_check", sql`char_length(${t.compilerVersion}) BETWEEN 1 AND 128 AND btrim(${t.compilerVersion}) = ${t.compilerVersion} AND ${t.compilerVersion} !~ '[[:cntrl:]]' AND char_length(${t.policyVersion}) BETWEEN 1 AND 128 AND btrim(${t.policyVersion}) = ${t.policyVersion} AND ${t.policyVersion} !~ '[[:cntrl:]]' AND ${t.routeConfigurationVersion} > 0 AND ${t.dispatchProtocolVersion} = 1`),
     routeCheck: check("acceptance_correction_dispatches_route_check", sql`${t.routeAdapter} IN ('github_codex', 'github_claude', 'durable_github_fallback', 'durable_jace_fallback') AND jsonb_typeof(${t.routeSnapshot}) = 'object' AND ${t.routeSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`),
+    capabilityProfileCheck: check("acceptance_correction_dispatches_capability_profile_check", sql`(
+      (${t.capabilityProfileId} IS NULL)
+      = (${t.capabilityProfileSnapshot} IS NULL)
+      AND (${t.capabilityProfileId} IS NULL)
+      = (${t.capabilityProfileSnapshotSha256} IS NULL)
+      AND (${t.capabilityProfileSnapshot} IS NULL OR jsonb_typeof(${t.capabilityProfileSnapshot}) = 'object')
+      AND (${t.capabilityProfileSnapshotSha256} IS NULL OR ${t.capabilityProfileSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$')
+    )`),
     deliveryStateCheck: check("acceptance_correction_dispatches_delivery_state_check", sql`${t.deliveryState} IN ('queued', 'carrier_accepted', 'ambiguous_hold', 'failed', 'fallback')`),
     agentStateCheck: check("acceptance_correction_dispatches_agent_state_check", sql`${t.agentState} IN ('not_observed', 'started', 'acknowledged', 'failed')`),
     findingsStateCheck: check("acceptance_correction_dispatches_findings_state_check", sql`${t.findingsState} IN ('not_started', 'reserved', 'terminal', 'ambiguous_hold', 'failed')`),
@@ -577,6 +653,7 @@ export type ChangeRecordRow = typeof changeRecords.$inferSelect;
 export type ChangeRecordEventRow = typeof changeRecordEvents.$inferSelect;
 export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
+export type AcceptanceBuilderRouteCapabilityProfileRow = typeof acceptanceBuilderRouteCapabilityProfiles.$inferSelect;
 export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
 export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
 export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatches.$inferSelect;

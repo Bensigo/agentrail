@@ -11,18 +11,16 @@ import { MarketingNav } from "./_nav";
 import { PhoneDemo } from "./_phone-demo";
 import { UseCases } from "./_use-cases";
 import { Channels } from "./_channels";
-import { CountUp } from "./_stats";
-import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
+import { TierCards } from "./pricing/tier-cards";
 // Shared tier card grid (subscription-platform slice 10, Task 1 — owner
 // feedback 2026-08-02: the landing must show the FULL pricing cards, the
 // same presentation /pricing renders, not slice 9's compact one-line tier
 // summaries). Same TierCards component /pricing renders — see
 // ./pricing/tier-cards.tsx's own doc-comment for why the grid lives in its
 // own module rather than on either page.tsx file.
-import { TierCards } from "./pricing/tier-cards";
 
 
 /**
@@ -37,28 +35,20 @@ import { TierCards } from "./pricing/tier-cards";
  */
 const HOW_WE_WORK = [
   {
-    name: "Contract",
-    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions.",
+    name: "Keep your coding agent",
+    line: "Keep Codex, Claude Code, and the normal environment your team already uses.",
   },
   {
-    name: "Approve",
-    line: "You approve the contract before implementation starts. Nothing runs without that decision.",
+    name: "Set the bar",
+    line: "Turn the request into clear scope, acceptance criteria, boundaries, and planned checks. Confirm it before work starts.",
   },
   {
-    name: "Execute",
-    line: "The factory works inside the approved scope and records what it did.",
+    name: "Let the agent work",
+    line: "Jace gives the selected coding agent a bounded Context Pack for the confirmed task.",
   },
   {
-    name: "Size",
-    line: "The target is a focused, reviewable pull request. Oversized or high-risk work is split or escalated before review.",
-  },
-  {
-    name: "Verify",
-    line: "Tests and independent checks look for regressions before the pull request reaches your team.",
-  },
-  {
-    name: "Proof or refusal",
-    line: "The result should carry its evidence. If the contract cannot be proven, Jace should stop.",
+    name: "Decide with confidence",
+    line: "See the exact change and criterion-specific evidence. If it cannot be proven, Jace stops and sends a correction path.",
   },
 ];
 
@@ -107,11 +97,6 @@ export default async function LandingPage() {
   // when the hosted bot is configured, else the honest sign-in fallback
   // (never a dead link) — see `./_cta.ts`.
   const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
-
-  // Landing v2 §6 — live numbers: documented dogfood baseline + platform
-  // terminal outcomes, hourly-cached; baseline-only when the DB is away.
-  const stats = await getLandingStats();
-
   // #1284 AC2 (landing-honesty rule): resolves to null — rendering nothing
   // extra — until BOTH a Discord invite URL is configured AND the channel is
   // explicitly flagged live post-prod-verification. See `./_channel-cards.ts`.
@@ -151,37 +136,15 @@ export default async function LandingPage() {
             priority
             className="ar-rise rounded-full"
           />
-          <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
-            <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
-            <span className="text-heading-2 mt-5 block text-balance">
-            Every other agent gives you more pull requests. Jace gives your
-            team fewer review hours.
-            </span>
+          <h1 className="ar-rise mt-8 text-heading-1 text-balance" style={{ animationDelay: "60ms" }}>
+            Approve agent work with confidence.
           </h1>
           <p className="ar-rise mt-6 max-w-[58ch] text-[var(--gray-11)]" style={{ animationDelay: "110ms" }}>
-            Approved engineering work, acceptance criteria, verification, and
-            evidence attached to the result. If Jace cannot prove the change,
-            it stops.
+            Jace gives engineering teams the evidence and control they need to trust AI coding agents.
           </p>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
             <PrimaryCta cta={cta} />
           </div>
-        </div>
-      </section>
-
-      {/* The bottleneck section stays explicit: the note says attribution
-          is unavailable in the current source set, so the page does not
-          invent one. */}
-      <section className="px-6 pb-14 sm:pb-18">
-        <div className="mx-auto max-w-[720px]">
-          <Reveal>
-            <h2 className="text-heading-2 text-center">The bottleneck moved</h2>
-          </Reveal>
-          <Reveal delay={70}>
-            <p className="mx-auto mt-4 max-w-[42ch] text-center text-[var(--gray-11)]">
-              Attribution unavailable in the current source set.
-            </p>
-          </Reveal>
         </div>
       </section>
 
@@ -195,8 +158,7 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
-              Before the code, there is a contract: goal, non-goals, criteria,
-              blast radius, and stop conditions.
+              Before work starts, a request becomes clear scope, acceptance criteria, and planned checks.
             </p>
           </Reveal>
         </div>
@@ -208,7 +170,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">What your team gets back</h2>
+            <h2 className="text-heading-2 text-center">What makes agent work reviewable</h2>
           </Reveal>
         </div>
         <div className="mt-12">
@@ -272,12 +234,12 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">
-              Meet Jace where work already gets discussed
+              Jace fits where agent work already happens
             </h2>
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Start in chat. The approved change ends as a pull request.
+              Start from the channel or coding agent your team already uses. Jace keeps the acceptance record and evidence connected.
             </p>
           </Reveal>
           <div className="mt-12">
@@ -291,60 +253,14 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 6 — The numbers: live stats (baseline + platform outcomes) as
-          tilted paper scraps, count-up on scroll. The failed card is
-          deliberately DIFFERENT (wider, untilted, sentence label) — the
-          slop audit's LS-1/LS-2 fix: honest numbers shouldn't wear the
-          identical-stat-grid costume. Labels sit at --gray-11 (GQ-1). */}
       <section className="px-6 py-24 sm:py-32">
-        <div className="mx-auto max-w-[760px]">
+        <div className="mx-auto max-w-[560px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">The numbers</h2>
+            <h2 className="text-heading-2 text-center">Evidence that changes the decision</h2>
           </Reveal>
-          <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
-            Runs completed, verification passed, and work that did not land.
-            Counted from the platform database, refreshed hourly.
+          <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
+            Review the agreed criteria, the exact change, and the evidence for each claim before deciding what happens next.
           </p>
-          <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
-            {/* Cards stay inlined: the mono-on-data craft pin scans 300
-                chars BACKWARD from each literal {stats.x} marker for a mono
-                class, so the class must sit in the same JSX block. */}
-            <Reveal>
-              <div className="w-[168px] -rotate-2 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.shipped}
-                />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">verification passed</p>
-              </div>
-            </Reveal>
-            <Reveal delay={70}>
-              <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.workedOn}
-                />
-                <p className="text-body-sm mt-2 text-[var(--gray-11)]">runs completed</p>
-              </div>
-            </Reveal>
-            <Reveal delay={140}>
-              <div className="w-[240px] rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[260px]">
-                <CountUp
-                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
-                  value={stats.didntLand}
-                />
-                <p className="mt-2 text-[var(--gray-11)]">
-                  didn&apos;t land — counted, not hidden
-                </p>
-              </div>
-            </Reveal>
-          </div>
-          {stats.source === "baseline-only" ? (
-            <p className="text-body-sm mt-8 text-center text-[var(--gray-11)]">
-              Live counts unavailable right now; these are the documented
-              dogfood record.
-            </p>
-          ) : null}
         </div>
       </section>
 
@@ -447,8 +363,7 @@ export default async function LandingPage() {
             </span>
           </h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
-            Connect GitHub, approve the contract, and get a pull request with
-            the proof attached.
+            Start with a confirmed change and see evidence attached to the result.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />

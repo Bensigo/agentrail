@@ -39,22 +39,22 @@ interface ChannelPanel {
 
 const PANELS: ChannelPanel[] = [
   {
-    id: "telegram",
-    name: "Telegram",
-    line: "DM me on Telegram. A message becomes a brief in under a minute.",
-    buttonLabel: "Message Jace on Telegram",
-  },
-  {
     id: "slack",
     name: "Slack",
-    line: "Add me to a channel. Mention me with a task and approve from the thread.",
+    line: "Bring Jace into the conversation where the work is being shaped.",
     buttonLabel: "Add Jace to Slack",
   },
   {
     id: "discord",
     name: "Discord",
-    line: "Drop me in your server. I post briefs and outcome pings where the team can see them.",
+    line: "Keep the task, its criteria, and its evidence visible to the team.",
     buttonLabel: "Add Jace to Discord",
+  },
+  {
+    id: "telegram",
+    name: "Telegram",
+    line: "Start a task in chat and move it into a confirmed Acceptance Record.",
+    buttonLabel: "Message Jace on Telegram",
   },
 ];
 

@@ -62,6 +62,15 @@ export const changeRecords = pgTable(
     currentPrHeadAuthoritative: boolean("current_pr_head_authoritative")
       .notNull()
       .default(false),
+    /**
+     * Monotonic revision for every authority-changing PR observation. A
+     * reconciler must present the revision it read before it can restore
+     * authority, so a later signed delivery cannot be overwritten by a stale
+     * GitHub API read.
+     */
+    currentPrHeadAuthorityGeneration: integer("current_pr_head_authority_generation")
+      .notNull()
+      .default(0),
     headShas: text("head_shas").array().notNull().default([]),
     mergedSha: text("merged_sha"),
     state: text("state").notNull().default("open"),
@@ -100,6 +109,10 @@ export const changeRecords = pgTable(
           ${t.currentPrHeadSha} IS NOT NULL AND ${t.currentPrHeadCycleId} IS NOT NULL
         )
       )`
+    ),
+    currentPrHeadAuthorityGenerationCheck: check(
+      "change_records_current_pr_head_authority_generation_check",
+      sql`${t.currentPrHeadAuthorityGeneration} >= 0`
     ),
   })
 );

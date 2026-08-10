@@ -3,6 +3,7 @@ import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
   CurrentReviewJobNotCurrentError,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  reconcileConfirmedAcceptanceRecordPullRequestHead,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
   type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
 } from "../queries/change_records.js";
@@ -31,6 +32,21 @@ const TERMINAL_BASE: InvalidateConfirmedAcceptanceRecordPullRequestHeadForTermin
   event: "merged",
   deliveryId: "delivery-terminal-1",
   source: "github_webhook",
+};
+const RECONCILE_BASE = {
+  workspaceId: BASE.workspaceId,
+  recordId: BASE.recordId,
+  repo: BASE.repo,
+  prNumber: BASE.prNumber,
+  expectedBlockedHeadSha: HEAD,
+  expectedBlockedCycleId: "00000000-0000-4000-8000-000000000003",
+  expectedBlockedAuthorityGeneration: 1,
+  observedHeadSha: "c".repeat(40),
+  observedBaseSha: "d".repeat(40),
+  observedState: "open" as const,
+  observedDraft: false,
+  observedMerged: false,
+  source: "github_app_api" as const,
 };
 
 describe("confirmed Acceptance Record PR head advance boundary", () => {
@@ -84,6 +100,20 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
       ...override,
     } as InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput)).rejects.toThrow(
       "bounded exact GitHub provenance"
+    );
+  });
+
+  it.each([
+    ["negative authority generation", { expectedBlockedAuthorityGeneration: -1 }],
+    ["abbreviated observed base", { observedBaseSha: "abc123" }],
+    ["unknown observed state", { observedState: "merged" }],
+    ["non-GitHub-App source", { source: "github_webhook" }],
+  ])("rejects reconciliation with %s before opening a transaction", async (_label, override) => {
+    await expect(reconcileConfirmedAcceptanceRecordPullRequestHead({
+      ...RECONCILE_BASE,
+      ...override,
+    } as typeof RECONCILE_BASE)).rejects.toThrow(
+      "bounded exact authenticated provenance"
     );
   });
 });

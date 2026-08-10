@@ -625,6 +625,13 @@
       "when": 1791900000000,
       "tag": "0088_change_records_current_pr_head",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1792000000000,
+      "tag": "0089_change_records_pr_head_authority_generation",
+      "breakpoints": true
     }
   ]
 }

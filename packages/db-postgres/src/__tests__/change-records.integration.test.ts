@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 import { readFile } from "node:fs/promises";
 import { db } from "../db.js";
@@ -37,6 +37,7 @@ import {
   attachConfirmedAcceptanceRecordToExternalPullRequest,
   advanceConfirmedAcceptanceRecordPullRequestHead,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  reconcileConfirmedAcceptanceRecordPullRequestHead,
   enqueueCurrentReviewJobPreviewBoot,
   changeRecordId,
   createDraftAcceptanceContract,
@@ -99,6 +100,10 @@ const DB_AVAILABLE: boolean = await (async () => {
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'change_records'
                    AND column_name = 'current_pr_head_cycle_id'
+               ) AND EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'change_records'
+                   AND column_name = 'current_pr_head_authority_generation'
                ) AS change_record_current_pr_head,
                to_regclass('public.acceptance_intakes') AS acceptance_intakes,
                to_regclass('public.acceptance_intake_messages') AS acceptance_intake_messages
@@ -366,8 +371,9 @@ describe.skipIf(!DB_AVAILABLE)(
 
       const replay = await advanceConfirmedAcceptanceRecordPullRequestHead(secondInput);
       expect(replay).toMatchObject({
-        kind: "advanced", deduped: true, superseded: 0,
-        previousHeadSha: secondHead, headChanged: false,
+        kind: "delivery_replayed", currentHeadSha: secondHead,
+        currentHeadCycleId: second.kind === "advanced" ? second.jobId : "missing",
+        currentAuthoritative: true, authorityGeneration: 2,
       });
       const provenance = await db.select().from(changeRecordEvents)
         .where(eq(changeRecordEvents.recordId, draft.record.id));
@@ -397,7 +403,7 @@ describe.skipIf(!DB_AVAILABLE)(
         deliveryId: "delivery-delayed-old-head",
         headTransition: { beforeHeadSha: "9".repeat(40), afterHeadSha: firstHead },
       });
-      expect(delayedOldHead).toEqual({
+      expect(delayedOldHead).toMatchObject({
         kind: "stale_delivery", superseded: 1, previewBootsTornDown: 0,
       });
       expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
@@ -418,6 +424,8 @@ describe.skipIf(!DB_AVAILABLE)(
           kind: "external_pr_head_transition_held",
           currentHeadSha: secondHead,
           currentHeadCycleId: second.jobId,
+          authorityGenerationBefore: 2,
+          authorityGenerationAfter: 3,
           observedHeadSha: firstHead,
           event: "synchronize",
           deliveryId: "delivery-delayed-old-head",
@@ -430,11 +438,243 @@ describe.skipIf(!DB_AVAILABLE)(
         event: "ready_for_review",
         deliveryId: "delivery-blocked-same-head-ready",
         headTransition: null,
-      })).resolves.toEqual({
+      })).resolves.toMatchObject({
         kind: "stale_delivery", superseded: 0, previewBootsTornDown: 0,
       });
       expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
         .toMatchObject({ currentPrHeadSha: secondHead, currentPrHeadAuthoritative: false });
+    });
+
+    it("reconciles only its blocked authority generation and never replays an old delivery over the new head", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "reconcile-authority-generation",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "a".repeat(40);
+      const headB = "b".repeat(40);
+      const headC = "c".repeat(40);
+      const initial = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 145,
+        headSha: headA, event: "opened", deliveryId: "reconcile-open-a", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (initial.kind !== "advanced") throw new Error("expected initial head");
+      const heldInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 145,
+        headSha: headB, event: "synchronize" as const, deliveryId: "reconcile-held-b", admitReviewJob: true,
+        headTransition: { beforeHeadSha: "d".repeat(40), afterHeadSha: headB }, source: "github_webhook" as const,
+      };
+      const held = await advanceConfirmedAcceptanceRecordPullRequestHead(heldInput);
+      expect(held).toMatchObject({
+        kind: "stale_delivery", blockedHeadSha: headA, blockedCycleId: initial.jobId,
+        authorityGeneration: 2, replayed: false,
+      });
+      if (held.kind !== "stale_delivery") throw new Error("expected held delivery");
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead(heldInput)).resolves.toMatchObject({
+        kind: "stale_delivery", replayed: true, blockedHeadSha: headA,
+        authorityGeneration: 2, superseded: 0, previewBootsTornDown: 0,
+      });
+      await db.update(changeRecordEvents).set({ actor: "corrupt:out-of-band" }).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, "external-pr:head-transition-held:145:reconcile-held-b"),
+      ));
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead(heldInput)).resolves.toMatchObject({
+        kind: "delivery_replayed", currentHeadSha: headA,
+        currentHeadCycleId: initial.jobId, currentAuthoritative: false, authorityGeneration: 2,
+      });
+      await db.update(changeRecordEvents).set({ actor: "github_webhook" }).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey, "external-pr:head-transition-held:145:reconcile-held-b"),
+      ));
+
+      const reconciled = await reconcileConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 145,
+        expectedBlockedHeadSha: held.blockedHeadSha,
+        expectedBlockedCycleId: held.blockedCycleId!,
+        expectedBlockedAuthorityGeneration: held.authorityGeneration,
+        observedHeadSha: headC, observedBaseSha: "e".repeat(40), observedState: "open",
+        observedDraft: false, observedMerged: false, source: "github_app_api",
+      });
+      expect(reconciled).toMatchObject({
+        kind: "reconciled", observedHeadSha: headC, jobAdmitted: true,
+        authorityGeneration: 3, record: { currentPrHeadSha: headC, currentPrHeadAuthoritative: true },
+      });
+      await expect(reconcileConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 145,
+        expectedBlockedHeadSha: held.blockedHeadSha,
+        expectedBlockedCycleId: held.blockedCycleId!,
+        expectedBlockedAuthorityGeneration: held.authorityGeneration,
+        observedHeadSha: headC, observedBaseSha: "e".repeat(40), observedState: "open",
+        observedDraft: false, observedMerged: false, source: "github_app_api",
+      })).resolves.toMatchObject({ kind: "already_current", jobAdmitted: true, authorityGeneration: 3 });
+      const replay = await advanceConfirmedAcceptanceRecordPullRequestHead(heldInput);
+      expect(replay).toMatchObject({
+        kind: "delivery_replayed", currentHeadSha: headC, currentAuthoritative: true, authorityGeneration: 3,
+      });
+    });
+
+    it("does not let a replayed terminal delivery revoke a later reconciled head", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "terminal-delivery-replay",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "1".repeat(40);
+      const headC = "3".repeat(40);
+      const initial = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 146,
+        headSha: headA, event: "opened", deliveryId: "terminal-open-a", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (initial.kind !== "advanced") throw new Error("expected initial head");
+      const terminalInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 146,
+        headSha: headA, event: "closed" as const, deliveryId: "terminal-close-a", source: "github_webhook" as const,
+      };
+      const terminal = await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent(terminalInput);
+      expect(terminal).toMatchObject({ kind: "invalidated", inserted: true, authorityGeneration: 2 });
+      const reconciled = await reconcileConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 146,
+        expectedBlockedHeadSha: headA, expectedBlockedCycleId: initial.jobId,
+        expectedBlockedAuthorityGeneration: 2,
+        observedHeadSha: headC, observedBaseSha: "4".repeat(40), observedState: "open",
+        observedDraft: false, observedMerged: false, source: "github_app_api",
+      });
+      expect(reconciled).toMatchObject({ kind: "reconciled", authorityGeneration: 3 });
+      await expect(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent(terminalInput))
+        .resolves.toMatchObject({
+          kind: "invalidated", inserted: false, currentHeadSha: headC,
+          currentAuthoritative: true, authorityGeneration: 3,
+        });
+    });
+
+    it("accepts a draft reconciliation retry after a signed ready event admits its same cycle", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "reconcile-draft-ready-retry",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "a".repeat(40);
+      const headC = "c".repeat(40);
+      const initial = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 149,
+        headSha: headA, event: "opened", deliveryId: "draft-reconcile-open", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (initial.kind !== "advanced") throw new Error("expected initial head");
+      const held = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 149,
+        headSha: "b".repeat(40), event: "synchronize", deliveryId: "draft-reconcile-held", admitReviewJob: false,
+        headTransition: { beforeHeadSha: "d".repeat(40), afterHeadSha: "b".repeat(40) }, source: "github_webhook",
+      });
+      if (held.kind !== "stale_delivery") throw new Error("expected held delivery");
+      const reconcileInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 149,
+        expectedBlockedHeadSha: held.blockedHeadSha,
+        expectedBlockedCycleId: held.blockedCycleId!,
+        expectedBlockedAuthorityGeneration: held.authorityGeneration,
+        observedHeadSha: headC, observedBaseSha: "e".repeat(40), observedState: "open" as const,
+        observedDraft: true, observedMerged: false, source: "github_app_api" as const,
+      };
+      const reconciled = await reconcileConfirmedAcceptanceRecordPullRequestHead(reconcileInput);
+      expect(reconciled).toMatchObject({ kind: "reconciled", jobAdmitted: false });
+      const ready = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 149,
+        headSha: headC, event: "ready_for_review", deliveryId: "draft-reconcile-ready", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      expect(ready).toMatchObject({ kind: "advanced", jobAdmitted: true, headChanged: false });
+      await expect(reconcileConfirmedAcceptanceRecordPullRequestHead(reconcileInput)).resolves.toMatchObject({
+        kind: "already_current", jobAdmitted: true, authorityGeneration: 3,
+      });
+    });
+
+    it("rejects an API reconciliation when a later signed delivery advanced the blocked generation", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "reconcile-generation-race",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "5".repeat(40);
+      const initial = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 147,
+        headSha: headA, event: "opened", deliveryId: "race-open-a", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (initial.kind !== "advanced") throw new Error("expected initial head");
+      const firstHeld = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 147,
+        headSha: "6".repeat(40), event: "synchronize", deliveryId: "race-held-b", admitReviewJob: true,
+        headTransition: { beforeHeadSha: "7".repeat(40), afterHeadSha: "6".repeat(40) }, source: "github_webhook",
+      });
+      if (firstHeld.kind !== "stale_delivery") throw new Error("expected first held delivery");
+      await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 147,
+        headSha: "8".repeat(40), event: "synchronize", deliveryId: "race-later-held-c", admitReviewJob: true,
+        headTransition: { beforeHeadSha: "9".repeat(40), afterHeadSha: "8".repeat(40) }, source: "github_webhook",
+      })).resolves.toMatchObject({ kind: "stale_delivery", authorityGeneration: 3 });
+      await expect(reconcileConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 147,
+        expectedBlockedHeadSha: firstHeld.blockedHeadSha,
+        expectedBlockedCycleId: firstHeld.blockedCycleId!,
+        expectedBlockedAuthorityGeneration: firstHeld.authorityGeneration,
+        observedHeadSha: "a".repeat(40), observedBaseSha: "b".repeat(40), observedState: "open",
+        observedDraft: false, observedMerged: false, source: "github_app_api",
+      })).resolves.toMatchObject({
+        kind: "blocked_precondition_changed", currentHeadSha: headA,
+        currentAuthoritative: false, authorityGeneration: 3,
+      });
+      expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
+        .toMatchObject({ currentPrHeadSha: headA, currentPrHeadAuthoritative: false, currentPrHeadAuthorityGeneration: 3 });
+    });
+
+    it("persists a closed GitHub reconciliation once and keeps its authority revoked on replay", async () => {
+      const draft = await createDraftAcceptanceRecord({
+        workspaceId: wsId, repo: "acme/widgets", workKey: "reconcile-closed-replay",
+        originChannel: "codex_mcp", contract: completeContract(), createdBy: "user:lead",
+      });
+      await db.update(acceptanceContracts).set({
+        status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
+      }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const headA = "a".repeat(40);
+      const initial = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 148,
+        headSha: headA, event: "opened", deliveryId: "closed-reconcile-open", admitReviewJob: true,
+        headTransition: null, source: "github_webhook",
+      });
+      if (initial.kind !== "advanced") throw new Error("expected initial head");
+      const held = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 148,
+        headSha: "b".repeat(40), event: "synchronize", deliveryId: "closed-reconcile-held", admitReviewJob: true,
+        headTransition: { beforeHeadSha: "c".repeat(40), afterHeadSha: "b".repeat(40) }, source: "github_webhook",
+      });
+      if (held.kind !== "stale_delivery") throw new Error("expected held delivery");
+      const closedInput = {
+        workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 148,
+        expectedBlockedHeadSha: held.blockedHeadSha,
+        expectedBlockedCycleId: held.blockedCycleId!,
+        expectedBlockedAuthorityGeneration: held.authorityGeneration,
+        observedHeadSha: "d".repeat(40), observedBaseSha: "e".repeat(40), observedState: "closed" as const,
+        observedDraft: false, observedMerged: true, source: "github_app_api" as const,
+      };
+      await expect(reconcileConfirmedAcceptanceRecordPullRequestHead(closedInput)).resolves.toMatchObject({
+        kind: "closed", currentHeadSha: headA, currentAuthoritative: false, authorityGeneration: 3,
+      });
+      await expect(reconcileConfirmedAcceptanceRecordPullRequestHead(closedInput)).resolves.toMatchObject({
+        kind: "closed", currentHeadSha: headA, currentAuthoritative: false,
+        authorityGeneration: 3, superseded: 0, previewBootsTornDown: 0,
+      });
+      const events = await db.select().from(changeRecordEvents).where(eq(changeRecordEvents.recordId, draft.record.id));
+      expect(events.filter((event) => event.payloadRef.kind === "external_pr_head_reconciliation_closed")).toHaveLength(1);
     });
 
     it("invalidates a draft synchronize without admitting work, then admits the same head when ready", async () => {
@@ -473,7 +713,9 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(await db.select().from(reviewJobs).where(eq(reviewJobs.id, advancedDraft.jobId)))
         .toHaveLength(0);
       await expect(advanceConfirmedAcceptanceRecordPullRequestHead(draftInput)).resolves.toMatchObject({
-        kind: "advanced", jobAdmitted: false, deduped: true, superseded: 0,
+        kind: "delivery_replayed", currentHeadSha: draftHead,
+        currentHeadCycleId: advancedDraft.jobId,
+        currentAuthoritative: true, authorityGeneration: 2,
       });
 
       const readyInput = {
@@ -492,7 +734,9 @@ describe.skipIf(!DB_AVAILABLE)(
       expect((await db.select().from(reviewJobs).where(eq(reviewJobs.id, ready.jobId)))[0])
         .toMatchObject({ headSha: draftHead, event: "ready_for_review", state: "queued" });
       await expect(advanceConfirmedAcceptanceRecordPullRequestHead(readyInput)).resolves.toMatchObject({
-        kind: "advanced", jobAdmitted: true, deduped: true, superseded: 0,
+        kind: "delivery_replayed", currentHeadSha: draftHead,
+        currentHeadCycleId: advancedDraft.jobId,
+        currentAuthoritative: true, authorityGeneration: 2,
       });
     });
 
@@ -824,7 +1068,7 @@ describe.skipIf(!DB_AVAILABLE)(
         deliveryId: "delivery-draft-reopened",
         admitReviewJob: false,
       });
-      expect(reopened).toEqual({
+      expect(reopened).toMatchObject({
         kind: "stale_delivery", superseded: 1, previewBootsTornDown: 0,
       });
       expect((await db.select().from(changeRecords).where(eq(changeRecords.id, draft.record.id)))[0])
@@ -1393,6 +1637,15 @@ describe.skipIf(!DB_AVAILABLE)(
         prNumber: 456,
       });
       expect(prRecord.id).not.toBe(issueRecord.id);
+      const currentHead = "f".repeat(40);
+      const currentCycleId = randomUUID();
+      await db.update(changeRecords).set({
+        currentPrHeadSha: currentHead,
+        currentPrHeadCycleId: currentCycleId,
+        currentPrHeadAuthoritative: false,
+        currentPrHeadAuthorityGeneration: 7,
+        headShas: [currentHead],
+      }).where(eq(changeRecords.id, prRecord.id));
 
       await appendChangeRecordEvent({
         recordId: prRecord.id,
@@ -1412,7 +1665,13 @@ describe.skipIf(!DB_AVAILABLE)(
       });
       expect(unified.id).toBe(issueRecord.id);
       expect(unified.prNumber).toBe(456);
-      expect(unified.headShas).toEqual(["sha-1"]);
+      expect(unified.headShas).toEqual([currentHead, "sha-1"]);
+      expect(unified).toMatchObject({
+        currentPrHeadSha: currentHead,
+        currentPrHeadCycleId: currentCycleId,
+        currentPrHeadAuthoritative: false,
+        currentPrHeadAuthorityGeneration: 7,
+      });
 
       const timeline = await readChangeRecordTimeline({
         workspaceId: wsId,

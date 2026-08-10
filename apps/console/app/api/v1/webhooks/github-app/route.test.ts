@@ -4,7 +4,9 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   advanceConfirmedAcceptanceRecordPullRequestHead: vi.fn(),
+  reconcileConfirmedAcceptanceRecordPullRequestHead: vi.fn(),
   getWorkspaceByGithubInstallationId: vi.fn(),
+  getInstallationToken: vi.fn(),
   getRepositoryByName: vi.fn(),
   appendChangeRecordEvent: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
@@ -12,10 +14,15 @@ vi.mock("@agentrail/db-postgres", () => ({
   readChangeRecordByPr: vi.fn(),
   recordReviewEvent: vi.fn(),
 }));
+vi.mock("../../../../../lib/github-current-pr", () => ({
+  readCurrentGithubPullRequest: vi.fn(),
+}));
 import { POST } from "./route";
 import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
+  reconcileConfirmedAcceptanceRecordPullRequestHead,
   getWorkspaceByGithubInstallationId,
+  getInstallationToken,
   getRepositoryByName,
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
@@ -23,6 +30,7 @@ import {
   readChangeRecordByPr,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
+import { readCurrentGithubPullRequest } from "../../../../../lib/github-current-pr";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -154,6 +162,12 @@ beforeEach(() => {
     previousHeadSha: null,
     headChanged: true,
   } as never);
+  vi.mocked(getInstallationToken).mockResolvedValue(null);
+  vi.mocked(readCurrentGithubPullRequest).mockResolvedValue({
+    ok: false,
+    kind: "not_proven",
+    reason: "github_unavailable",
+  });
   vi.mocked(findOrCreateChangeRecord).mockResolvedValue({ id: "change-1" } as never);
   vi.mocked(invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent).mockResolvedValue({
     kind: "invalidated",
@@ -399,7 +413,12 @@ describe("POST /api/v1/webhooks/github-app", () => {
   it("5a0. a draft reopened at a different head fail-closes as blocked rather than leaving old work live", async () => {
     vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
       kind: "stale_delivery",
+      provenanceEventId: "held-draft",
+      blockedHeadSha: "a".repeat(40),
+      blockedCycleId: "cycle-old",
+      authorityGeneration: 7,
       superseded: 1,
+      previewBootsTornDown: 0,
     } as never);
     const body = JSON.stringify(prPayload({
       action: "reopened",
@@ -414,9 +433,10 @@ describe("POST /api/v1/webhooks/github-app", () => {
       ignored: true,
       enqueued: false,
       blocked: true,
-      reason: "stale delivery; current head requires reconciliation",
+      reason: "GitHub reconciliation is unavailable",
       superseded: 1,
     });
+    expect(readCurrentGithubPullRequest).not.toHaveBeenCalled();
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "reopened",
@@ -424,6 +444,191 @@ describe("POST /api/v1/webhooks/github-app", () => {
         headTransition: null,
       })
     );
+  });
+
+  it("5a0r. a replayed delivery is acknowledged as deduped without minting a token or reading GitHub", async () => {
+    vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "delivery_replayed",
+      currentAuthoritative: true,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({ action: "reopened" }))));
+
+    expect(await response.json()).toEqual({
+      ok: true, enqueued: false, deduped: true, replayed: true, blocked: false,
+    });
+    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(readCurrentGithubPullRequest).not.toHaveBeenCalled();
+    expect(reconcileConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
+  });
+
+  it("5a0a. an authenticated current GitHub read reconciles only its exact blocked tuple, without exposing its token", async () => {
+    const token = "ghs-never-return-this";
+    const blockedHeadSha = "a".repeat(40);
+    const currentHeadSha = "b".repeat(40);
+    vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "stale_delivery",
+      provenanceEventId: "held-event-1",
+      blockedHeadSha,
+      blockedCycleId: "cycle-old",
+      authorityGeneration: 7,
+      superseded: 1,
+      previewBootsTornDown: 0,
+    } as never);
+    vi.mocked(getInstallationToken).mockResolvedValueOnce(token);
+    vi.mocked(readCurrentGithubPullRequest).mockResolvedValueOnce({
+      ok: true,
+      pullRequest: {
+        repo: "ada/widgets",
+        prNumber: 42,
+        headSha: currentHeadSha,
+        baseSha: "c".repeat(40),
+        state: "open",
+        draft: false,
+        merged: false,
+        htmlUrl: "https://github.com/ada/widgets/pull/42",
+      },
+    });
+    vi.mocked(reconcileConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "reconciled",
+      jobAdmitted: true,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({
+      action: "reopened", headSha: currentHeadSha,
+    }))));
+
+    const responseBody = await response.text();
+    expect(JSON.parse(responseBody)).toEqual({
+      ok: true, reconciled: true, alreadyCurrent: false,
+      enqueued: true, blocked: false, superseded: 1,
+    });
+    expect(responseBody).not.toContain(token);
+    expect(getInstallationToken).toHaveBeenCalledWith(WORKSPACE_ID);
+    expect(readCurrentGithubPullRequest).toHaveBeenCalledWith({
+      token, repo: "ada/widgets", prNumber: 42,
+    });
+    expect(reconcileConfirmedAcceptanceRecordPullRequestHead).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      recordId: "11111111-1111-4111-8111-111111111111",
+      repo: "ada/widgets",
+      prNumber: 42,
+      expectedBlockedHeadSha: blockedHeadSha,
+      expectedBlockedCycleId: "cycle-old",
+      expectedBlockedAuthorityGeneration: 7,
+      observedHeadSha: currentHeadSha,
+      observedBaseSha: "c".repeat(40),
+      observedState: "open",
+      observedDraft: false,
+      observedMerged: false,
+      source: "github_app_api",
+    });
+  });
+
+  it("5a0b. a later signed delivery wins the GitHub-read/DB-commit race without a false blocked claim", async () => {
+    vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "stale_delivery",
+      provenanceEventId: "held-event-1",
+      blockedHeadSha: "a".repeat(40),
+      blockedCycleId: "cycle-old",
+      authorityGeneration: 7,
+      superseded: 1,
+      previewBootsTornDown: 0,
+    } as never);
+    vi.mocked(getInstallationToken).mockResolvedValueOnce("ghs-token");
+    vi.mocked(readCurrentGithubPullRequest).mockResolvedValueOnce({
+      ok: true,
+      pullRequest: {
+        repo: "ada/widgets", prNumber: 42, headSha: "b".repeat(40), baseSha: "c".repeat(40),
+        state: "open", draft: false, merged: false, htmlUrl: "https://github.com/ada/widgets/pull/42",
+      },
+    });
+    vi.mocked(reconcileConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "blocked_precondition_changed",
+      currentAuthoritative: true,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({ action: "reopened", headSha: "b".repeat(40) }))));
+
+    expect(await response.json()).toEqual({
+      ok: true, ignored: true, enqueued: false, reconciled: false, blocked: false,
+      reason: "reconciliation precondition changed", superseded: 1,
+    });
+  });
+
+  it("5a0c. malformed or unavailable current reads remain blocked and never call reconciliation", async () => {
+    for (const reason of ["invalid_pr_metadata", "github_unavailable"] as const) {
+      vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+        kind: "stale_delivery", provenanceEventId: `held-${reason}`,
+        blockedHeadSha: "a".repeat(40), blockedCycleId: "cycle-old", authorityGeneration: 7,
+        superseded: 0, previewBootsTornDown: 0,
+      } as never);
+      vi.mocked(getInstallationToken).mockResolvedValueOnce("ghs-token");
+      vi.mocked(readCurrentGithubPullRequest).mockResolvedValueOnce({
+        ok: false, kind: "not_proven", reason,
+      });
+      const response = await POST(makeRequest(JSON.stringify(prPayload({ action: "reopened", headSha: "b".repeat(40) }))));
+      expect((await response.json()).blocked).toBe(true);
+    }
+    expect(reconcileConfirmedAcceptanceRecordPullRequestHead).not.toHaveBeenCalled();
+  });
+
+  it("5a0d. authenticated closed or merged metadata reaches the DB terminal path and never enqueues", async () => {
+    vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "stale_delivery", provenanceEventId: "held-closed",
+      blockedHeadSha: "a".repeat(40), blockedCycleId: "cycle-old", authorityGeneration: 7,
+      superseded: 0, previewBootsTornDown: 0,
+    } as never);
+    vi.mocked(getInstallationToken).mockResolvedValueOnce("ghs-token");
+    vi.mocked(readCurrentGithubPullRequest).mockResolvedValueOnce({
+      ok: true,
+      pullRequest: {
+        repo: "ada/widgets", prNumber: 42, headSha: "b".repeat(40), baseSha: "c".repeat(40),
+        state: "closed", draft: false, merged: true, htmlUrl: "https://github.com/ada/widgets/pull/42",
+      },
+    });
+    vi.mocked(reconcileConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "closed", currentAuthoritative: false,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({ action: "reopened", headSha: "b".repeat(40) }))));
+
+    expect(await response.json()).toEqual({
+      ok: true, ignored: true, enqueued: false, reconciled: false, blocked: true,
+      reason: "current pull request is closed or merged", superseded: 0,
+    });
+    expect(reconcileConfirmedAcceptanceRecordPullRequestHead).toHaveBeenCalledWith(expect.objectContaining({
+      observedState: "closed", observedMerged: true,
+    }));
+  });
+
+  it("5a0e. an authenticated draft head restores custody without claiming a review job", async () => {
+    vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "stale_delivery", provenanceEventId: "held-draft-reconcile",
+      blockedHeadSha: "a".repeat(40), blockedCycleId: "cycle-old", authorityGeneration: 7,
+      superseded: 0, previewBootsTornDown: 0,
+    } as never);
+    vi.mocked(getInstallationToken).mockResolvedValueOnce("ghs-token");
+    vi.mocked(readCurrentGithubPullRequest).mockResolvedValueOnce({
+      ok: true,
+      pullRequest: {
+        repo: "ada/widgets", prNumber: 42, headSha: "b".repeat(40), baseSha: "c".repeat(40),
+        state: "open", draft: true, merged: false, htmlUrl: "https://github.com/ada/widgets/pull/42",
+      },
+    });
+    vi.mocked(reconcileConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
+      kind: "reconciled", jobAdmitted: false,
+    } as never);
+
+    const response = await POST(makeRequest(JSON.stringify(prPayload({ action: "reopened", headSha: "b".repeat(40) }))));
+
+    expect(await response.json()).toEqual({
+      ok: true, reconciled: true, alreadyCurrent: false,
+      enqueued: false, blocked: false, superseded: 0,
+    });
+    expect(reconcileConfirmedAcceptanceRecordPullRequestHead).toHaveBeenCalledWith(expect.objectContaining({
+      observedDraft: true,
+    }));
   });
 
   it("5a. draft synchronize advances and invalidates the head without admitting a review job", async () => {
@@ -801,7 +1006,12 @@ describe("POST /api/v1/webhooks/github-app", () => {
   it("9d3. treats a delayed old-head delivery as stale without reporting an enqueue", async () => {
     vi.mocked(advanceConfirmedAcceptanceRecordPullRequestHead).mockResolvedValueOnce({
       kind: "stale_delivery",
+      provenanceEventId: "held-delayed",
+      blockedHeadSha: "a".repeat(40),
+      blockedCycleId: "cycle-old",
+      authorityGeneration: 7,
       superseded: 1,
+      previewBootsTornDown: 0,
     } as never);
     const body = JSON.stringify(
       prPayload({
@@ -819,7 +1029,7 @@ describe("POST /api/v1/webhooks/github-app", () => {
       ignored: true,
       enqueued: false,
       blocked: true,
-      reason: "stale delivery; current head requires reconciliation",
+      reason: "GitHub reconciliation is unavailable",
       superseded: 1,
     });
     expect(advanceConfirmedAcceptanceRecordPullRequestHead).toHaveBeenCalledOnce();

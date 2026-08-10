@@ -12,6 +12,10 @@ const journalUrl = new URL(
   "../../drizzle/migrations/meta/_journal.json",
   import.meta.url
 );
+const generationMigrationUrl = new URL(
+  "../../drizzle/migrations/0089_change_records_pr_head_authority_generation.sql",
+  import.meta.url
+);
 
 describe("0088 current Acceptance Record PR head migration", () => {
   it("declares one nullable current-head pointer without rewriting immutable history", () => {
@@ -76,5 +80,34 @@ describe("0088 current Acceptance Record PR head migration", () => {
         (entry) => entry.tag === "0088_change_records_current_pr_head"
       )
     ).toMatchObject({ idx: 93, version: "7" });
+  });
+});
+
+describe("0089 current Acceptance Record PR authority generation migration", () => {
+  it("declares a nonnegative monotonic authority revision", () => {
+    expect(changeRecords.currentPrHeadAuthorityGeneration.notNull).toBe(true);
+    expect(changeRecords.currentPrHeadAuthorityGeneration.hasDefault).toBe(true);
+    expect(changeRecords.currentPrHeadAuthorityGeneration.getSQLType()).toBe("integer");
+  });
+
+  it("adds a fail-closed revision without rewriting existing authority", async () => {
+    const migration = await readFile(fileURLToPath(generationMigrationUrl), "utf8");
+    expect(migration).toContain(
+      'ADD COLUMN IF NOT EXISTS "current_pr_head_authority_generation" integer NOT NULL DEFAULT 0'
+    );
+    expect(migration).toContain(
+      'CONSTRAINT "change_records_current_pr_head_authority_generation_check"'
+    );
+    expect(migration).toContain('"current_pr_head_authority_generation" >= 0');
+    expect(migration).not.toContain('UPDATE "change_records"');
+  });
+
+  it("is registered immediately after current-head custody", async () => {
+    const journal = JSON.parse(
+      await readFile(fileURLToPath(journalUrl), "utf8")
+    ) as { entries: Array<{ idx: number; tag: string; version: string }> };
+    expect(journal.entries.find(
+      (entry) => entry.tag === "0089_change_records_pr_head_authority_generation"
+    )).toMatchObject({ idx: 94, version: "7" });
   });
 });

@@ -147,6 +147,8 @@ function mapChangeRecordRow(row: Record<string, unknown>): ChangeRecordRow {
     currentPrHeadCycleId: (row.current_pr_head_cycle_id as string | null) ?? null,
     currentPrHeadAuthoritative:
       (row.current_pr_head_authoritative as boolean | null) ?? false,
+    currentPrHeadAuthorityGeneration:
+      (row.current_pr_head_authority_generation as number | null) ?? 0,
     headShas: (row.head_shas as string[] | null) ?? [],
     mergedSha: (row.merged_sha as string | null) ?? null,
     state: row.state as string,
@@ -283,6 +285,10 @@ export async function findOrCreateChangeRecord(
             current_pr_head_authoritative = CASE
               WHEN current_pr_head_sha IS NOT NULL THEN current_pr_head_authoritative
               ELSE ${(prRecord.current_pr_head_authoritative as boolean | null | undefined) ?? false}
+            END,
+            current_pr_head_authority_generation = CASE
+              WHEN current_pr_head_sha IS NOT NULL THEN current_pr_head_authority_generation
+              ELSE ${(prRecord.current_pr_head_authority_generation as number | null | undefined) ?? 0}
             END,
             head_shas = ${mergeHeadShasSql(mergedHeadShas)},
             merged_sha = COALESCE(${input.mergedSha ?? null}, merged_sha),
@@ -540,6 +546,30 @@ export function acceptanceRecordPullRequestHeadCycleId(input: {
   ])}`);
 }
 
+function acceptanceRecordPullRequestReconciliationCycleId(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  expectedBlockedHeadSha: string;
+  expectedBlockedCycleId: string;
+  expectedBlockedAuthorityGeneration: number;
+  observedHeadSha: string;
+  observedBaseSha: string;
+}): string {
+  return uuid5Url(`acceptance-record-pr-head-reconciliation-cycle:${JSON.stringify([
+    input.workspaceId,
+    input.recordId,
+    input.repo,
+    input.prNumber,
+    input.expectedBlockedHeadSha,
+    input.expectedBlockedCycleId,
+    input.expectedBlockedAuthorityGeneration,
+    input.observedHeadSha,
+    input.observedBaseSha,
+  ])}`);
+}
+
 /**
  * Binds a PR discovered outside Jace to the already-confirmed Acceptance
  * Record it explicitly names. This never guesses by repository, branch, or
@@ -706,7 +736,24 @@ export type AdvanceConfirmedAcceptanceRecordPullRequestHeadResult =
       headChanged: boolean;
     }
   | { kind: "not_found" | "not_confirmed" | "already_attached" }
-  | { kind: "stale_delivery"; superseded: number; previewBootsTornDown: number };
+  | {
+      kind: "stale_delivery";
+      provenanceEventId: string;
+      blockedHeadSha: string;
+      blockedCycleId: string | null;
+      authorityGeneration: number;
+      replayed: boolean;
+      currentAuthoritative: boolean;
+      superseded: number;
+      previewBootsTornDown: number;
+    }
+  | {
+      kind: "delivery_replayed";
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+      currentAuthoritative: boolean;
+      authorityGeneration: number;
+    };
 
 /**
  * Establish or advance the mutable exact PR tip for one confirmed Acceptance
@@ -762,6 +809,82 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
       return { kind: "already_attached" };
     }
 
+    // Receipt the immutable signed delivery before consulting mutable head
+    // state. A replay must be a total no-op even if a later push/reconciliation
+    // has changed the current pointer since the original processing.
+    const heldEventKey = `external-pr:head-transition-held:${input.prNumber}:${input.deliveryId}`;
+    const deliveryEventKey = `external-pr:delivery:${input.prNumber}:${input.deliveryId}`;
+    const deliveryReceipt = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: deliveryEventKey,
+      stage: "external_pr",
+      actor: input.source,
+      payloadRef: {
+        kind: "external_pr_delivery",
+        repo: input.repo,
+        prNumber: input.prNumber,
+        headSha: input.headSha,
+        event: input.event,
+        deliveryId: input.deliveryId,
+        headTransition: input.headTransition,
+        admitReviewJob: input.admitReviewJob,
+        prUrl: input.prUrl ?? null,
+      },
+    }]);
+    if (!deliveryReceipt.events[0]!.inserted) {
+      const held = (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, input.recordId),
+        eq(changeRecordEvents.eventKey, heldEventKey),
+      )).limit(1))[0];
+      const heldPayload = held?.payloadRef;
+      const heldGenerationAfter = typeof heldPayload?.["authorityGenerationAfter"] === "number"
+        ? heldPayload["authorityGenerationAfter"]
+        : null;
+      const heldGenerationBefore = typeof heldPayload?.["authorityGenerationBefore"] === "number"
+        ? heldPayload["authorityGenerationBefore"]
+        : null;
+      const heldHead = typeof heldPayload?.["currentHeadSha"] === "string"
+        ? heldPayload["currentHeadSha"]
+        : null;
+      const heldCycle = typeof heldPayload?.["currentHeadCycleId"] === "string"
+        ? heldPayload["currentHeadCycleId"]
+        : null;
+      const exactHeldReceipt = held?.stage === "external_pr"
+        && held.actor === "github_webhook"
+        && heldPayload?.["kind"] === "external_pr_head_transition_held"
+        && heldPayload["observedHeadSha"] === input.headSha
+        && heldPayload["event"] === input.event
+        && heldPayload["deliveryId"] === input.deliveryId
+        && isDeepStrictEqual(heldPayload["headTransition"], input.headTransition)
+        && heldPayload["acceptanceContractVersion"] === confirmed[0].version
+        && Number.isInteger(heldGenerationBefore)
+        && heldGenerationBefore! >= 0
+        && heldGenerationAfter === heldGenerationBefore! + 1;
+      if (exactHeldReceipt && held && heldHead && !record.currentPrHeadAuthoritative
+        && record.currentPrHeadSha === heldHead
+        && record.currentPrHeadCycleId === heldCycle
+        && record.currentPrHeadAuthorityGeneration === heldGenerationAfter) {
+        return {
+          kind: "stale_delivery",
+          provenanceEventId: held.id,
+          blockedHeadSha: heldHead,
+          blockedCycleId: heldCycle,
+          authorityGeneration: heldGenerationAfter,
+          replayed: true,
+          currentAuthoritative: false,
+          superseded: 0,
+          previewBootsTornDown: 0,
+        };
+      }
+      return {
+        kind: "delivery_replayed",
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        currentAuthoritative: record.currentPrHeadAuthoritative,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+      };
+    }
+
     const previousHeadSha = record.currentPrHeadSha;
     const observedCycleId = acceptanceRecordPullRequestHeadCycleId(input);
     if (previousHeadSha != null && (
@@ -772,15 +895,17 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           || input.headTransition === null
           || input.headTransition.beforeHeadSha !== previousHeadSha)
     )) {
-      await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      const held = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
         recordId: input.recordId,
-        eventKey: `external-pr:head-transition-held:${input.prNumber}:${input.deliveryId}`,
+        eventKey: heldEventKey,
         stage: "external_pr",
         actor: "github_webhook",
         payloadRef: {
           kind: "external_pr_head_transition_held",
           currentHeadSha: previousHeadSha,
           currentHeadCycleId: record.currentPrHeadCycleId,
+          authorityGenerationBefore: record.currentPrHeadAuthorityGeneration,
+          authorityGenerationAfter: record.currentPrHeadAuthorityGeneration + 1,
           observedHeadSha: input.headSha,
           event: input.event,
           deliveryId: input.deliveryId,
@@ -788,14 +913,18 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           acceptanceContractVersion: confirmed[0].version,
         },
       }]);
-      await tx.update(changeRecords).set({
-        currentPrHeadAuthoritative: false,
-        updatedAt: new Date(),
-      }).where(and(
-        eq(changeRecords.id, input.recordId),
-        eq(changeRecords.workspaceId, input.workspaceId),
-      ));
-      const blocked = Array.from(await tx.execute(sql`
+      const authorityGeneration = record.currentPrHeadAuthorityGeneration + (held.events[0]!.inserted ? 1 : 0);
+      if (held.events[0]!.inserted) {
+        await tx.update(changeRecords).set({
+          currentPrHeadAuthoritative: false,
+          currentPrHeadAuthorityGeneration: sql`${changeRecords.currentPrHeadAuthorityGeneration} + 1`,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(changeRecords.id, input.recordId),
+          eq(changeRecords.workspaceId, input.workspaceId),
+        ));
+      }
+      const blocked = held.events[0]!.inserted ? Array.from(await tx.execute(sql`
         UPDATE review_jobs
         SET state = 'superseded', updated_at = now()
         WHERE workspace_id = ${input.workspaceId}
@@ -803,8 +932,8 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           AND pr_number = ${input.prNumber}
           AND state IN ('queued', 'running')
         RETURNING id
-      `));
-      const tornDownBoots = Array.from(await tx.execute(sql`
+      `)) : [];
+      const tornDownBoots = held.events[0]!.inserted ? Array.from(await tx.execute(sql`
         UPDATE preview_boots
         SET status = 'torn_down', reason = 'acceptance record head transition held', updated_at = now()
         WHERE workspace_id = ${input.workspaceId}
@@ -812,9 +941,15 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           AND pr_number = ${input.prNumber}
           AND status IN ('pending', 'claimed', 'booting', 'ready')
         RETURNING id
-      `));
+      `)) : [];
       return {
         kind: "stale_delivery",
+        provenanceEventId: held.events[0]!.event.id,
+        blockedHeadSha: previousHeadSha,
+        blockedCycleId: record.currentPrHeadCycleId,
+        authorityGeneration,
+        replayed: false,
+        currentAuthoritative: false,
         superseded: blocked.length,
         previewBootsTornDown: tornDownBoots.length,
       };
@@ -827,27 +962,12 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
     if (!cycleId) {
       throw new Error("Authoritative PR head is missing its current cycle");
     }
-    let advanced = record;
-    if (headChanged || !wasAttached) {
-      const rows = await tx.update(changeRecords).set({
-        prNumber: input.prNumber,
-        currentPrHeadSha: input.headSha,
-        currentPrHeadCycleId: cycleId,
-        currentPrHeadAuthoritative: true,
-        headShas: normalizeHeadShas([...record.headShas, input.headSha]),
-        updatedAt: new Date(),
-      }).where(and(
-        eq(changeRecords.id, input.recordId),
-        eq(changeRecords.workspaceId, input.workspaceId),
-      )).returning();
-      advanced = rows[0]!;
-    }
-
+    let authorityEventInserted = false;
     if (headChanged || !wasAttached) {
       const eventKey = wasAttached
         ? `external-pr:head-advanced:${input.prNumber}:${cycleId}`
         : `external-pr:attached:${input.prNumber}:${cycleId}`;
-      await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      const provenance = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
         recordId: input.recordId,
         eventKey,
         stage: "external_pr",
@@ -866,6 +986,25 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           acceptanceContractVersion: confirmed[0].version,
         },
       }]);
+      authorityEventInserted = provenance.events[0]!.inserted;
+    }
+
+    let advanced = record;
+    if (headChanged || !wasAttached) {
+      const rows = await tx.update(changeRecords).set({
+        prNumber: input.prNumber,
+        currentPrHeadSha: input.headSha,
+        currentPrHeadCycleId: cycleId,
+        currentPrHeadAuthoritative: true,
+        currentPrHeadAuthorityGeneration:
+          sql`${changeRecords.currentPrHeadAuthorityGeneration} + ${authorityEventInserted ? 1 : 0}`,
+        headShas: normalizeHeadShas([...record.headShas, input.headSha]),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+      )).returning();
+      advanced = rows[0]!;
     }
 
     const jobId = cycleId;
@@ -952,6 +1091,8 @@ export type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventRe
       previewBootsTornDown: number;
       currentHeadSha: string | null;
       currentHeadCycleId: string | null;
+      authorityGeneration: number;
+      currentAuthoritative: boolean;
     }
   | { kind: "not_found" | "not_confirmed" | "not_attached" };
 
@@ -993,9 +1134,60 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
     if (!confirmed[0]) return { kind: "not_confirmed" };
     if (record.prNumber !== input.prNumber) return { kind: "not_attached" };
 
+    const deliveryEventKey = `external-pr:delivery:${input.prNumber}:${input.deliveryId}`;
+    const deliveryReceipt = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: deliveryEventKey,
+      stage: "external_pr",
+      actor: input.source,
+      payloadRef: {
+        kind: "external_pr_delivery",
+        repo: input.repo,
+        prNumber: input.prNumber,
+        headSha: input.headSha,
+        event: input.event,
+        deliveryId: input.deliveryId,
+        headTransition: null,
+        admitReviewJob: false,
+        prUrl: null,
+      },
+    }]);
+    if (!deliveryReceipt.events[0]!.inserted) {
+      return {
+        kind: "invalidated",
+        inserted: false,
+        provenanceEventId: deliveryReceipt.events[0]!.event.id,
+        superseded: 0,
+        previewBootsTornDown: 0,
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        currentAuthoritative: record.currentPrHeadAuthoritative,
+      };
+    }
+
+    const terminalEventKey = `external-pr:head-invalidated:${input.prNumber}:${input.deliveryId}`;
+    const existingTerminal = (await tx.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, terminalEventKey),
+    )).limit(1))[0];
+    if (existingTerminal) {
+      return {
+        kind: "invalidated",
+        inserted: false,
+        provenanceEventId: existingTerminal.id,
+        superseded: 0,
+        previewBootsTornDown: 0,
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        currentAuthoritative: record.currentPrHeadAuthoritative,
+      };
+    }
+
     const provenance = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
       recordId: input.recordId,
-      eventKey: `external-pr:head-invalidated:${input.prNumber}:${input.deliveryId}`,
+      eventKey: terminalEventKey,
       stage: "external_pr",
       actor: "github_webhook",
       payloadRef: {
@@ -1011,16 +1203,19 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
       },
     }]);
 
-    if (record.currentPrHeadAuthoritative) {
+    const authorityGeneration = record.currentPrHeadAuthorityGeneration
+      + (provenance.events[0]!.inserted ? 1 : 0);
+    if (provenance.events[0]!.inserted) {
       await tx.update(changeRecords).set({
         currentPrHeadAuthoritative: false,
+        currentPrHeadAuthorityGeneration: sql`${changeRecords.currentPrHeadAuthorityGeneration} + 1`,
         updatedAt: new Date(),
       }).where(and(
         eq(changeRecords.id, input.recordId),
         eq(changeRecords.workspaceId, input.workspaceId),
       ));
     }
-    const blocked = Array.from(await tx.execute(sql`
+    const blocked = provenance.events[0]!.inserted ? Array.from(await tx.execute(sql`
       UPDATE review_jobs
       SET state = 'superseded', updated_at = now()
       WHERE workspace_id = ${input.workspaceId}
@@ -1028,8 +1223,8 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
         AND pr_number = ${input.prNumber}
         AND state IN ('queued', 'running')
       RETURNING id
-    `));
-    const tornDownBoots = Array.from(await tx.execute(sql`
+    `)) : [];
+    const tornDownBoots = provenance.events[0]!.inserted ? Array.from(await tx.execute(sql`
       UPDATE preview_boots
       SET status = 'torn_down', reason = 'acceptance record PR closed or merged', updated_at = now()
       WHERE workspace_id = ${input.workspaceId}
@@ -1037,7 +1232,7 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
         AND pr_number = ${input.prNumber}
         AND status IN ('pending', 'claimed', 'booting', 'ready')
       RETURNING id
-    `));
+    `)) : [];
 
     return {
       kind: "invalidated",
@@ -1047,6 +1242,345 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
       previewBootsTornDown: tornDownBoots.length,
       currentHeadSha: record.currentPrHeadSha,
       currentHeadCycleId: record.currentPrHeadCycleId,
+      authorityGeneration,
+      currentAuthoritative: false,
+    };
+  });
+}
+
+export type ReconcileConfirmedAcceptanceRecordPullRequestHeadInput = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  expectedBlockedHeadSha: string;
+  expectedBlockedCycleId: string;
+  expectedBlockedAuthorityGeneration: number;
+  observedHeadSha: string;
+  observedBaseSha: string;
+  observedState: "open" | "closed";
+  observedDraft: boolean;
+  observedMerged: boolean;
+  source: "github_app_api";
+};
+
+export type ReconcileConfirmedAcceptanceRecordPullRequestHeadResult =
+  | {
+      kind: "reconciled" | "already_current";
+      record: ChangeRecordRow;
+      jobId: string | null;
+      jobAdmitted: boolean;
+      deduped: boolean;
+      observedHeadSha: string;
+      currentHeadCycleId: string;
+      authorityGeneration: number;
+      superseded: number;
+      previewBootsTornDown: number;
+    }
+  | {
+      kind: "closed";
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+      currentAuthoritative: boolean;
+      authorityGeneration: number;
+      superseded: number;
+      previewBootsTornDown: number;
+    }
+  | {
+      kind: "blocked_precondition_changed";
+      currentHeadSha: string | null;
+      currentHeadCycleId: string | null;
+      currentAuthoritative: boolean;
+      authorityGeneration: number;
+    }
+  | { kind: "not_found" | "not_confirmed" | "not_attached" };
+
+/**
+ * Restore exact-head authority only after the authenticated GitHub API has
+ * read the PR's current open tip. The caller supplies the blocked tuple it
+ * observed; the monotonic generation makes every later signed observation win
+ * over an in-flight API request under the same advisory lock.
+ */
+export async function reconcileConfirmedAcceptanceRecordPullRequestHead(
+  input: ReconcileConfirmedAcceptanceRecordPullRequestHeadInput
+): Promise<ReconcileConfirmedAcceptanceRecordPullRequestHeadResult> {
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0
+    || !EXACT_GITHUB_HEAD_SHA.test(input.expectedBlockedHeadSha)
+    || !isUuid(input.expectedBlockedCycleId)
+    || !Number.isInteger(input.expectedBlockedAuthorityGeneration)
+    || input.expectedBlockedAuthorityGeneration < 0
+    || !EXACT_GITHUB_HEAD_SHA.test(input.observedHeadSha)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.observedBaseSha)
+    || (input.observedState !== "open" && input.observedState !== "closed")
+    || typeof input.observedDraft !== "boolean"
+    || typeof input.observedMerged !== "boolean"
+    || input.source !== "github_app_api") {
+    throw new Error("GitHub current-head reconciliation requires bounded exact authenticated provenance");
+  }
+  const lockKey = acceptanceRecordPullRequestLockKey(input);
+  const cycleId = acceptanceRecordPullRequestReconciliationCycleId(input);
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.repo, input.repo),
+    )).limit(1))[0];
+    if (!record) return { kind: "not_found" };
+
+    const confirmed = await tx.select({
+      id: acceptanceContracts.id,
+      version: acceptanceContracts.version,
+    }).from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.recordId, input.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).limit(1);
+    if (!confirmed[0]) return { kind: "not_confirmed" };
+    if (record.prNumber !== input.prNumber) return { kind: "not_attached" };
+
+    const preconditionChanged = () => ({
+      kind: "blocked_precondition_changed" as const,
+      currentHeadSha: record.currentPrHeadSha,
+      currentHeadCycleId: record.currentPrHeadCycleId,
+      currentAuthoritative: record.currentPrHeadAuthoritative,
+      authorityGeneration: record.currentPrHeadAuthorityGeneration,
+    });
+    const reconciliationEventKey = `external-pr:head-reconciled:${input.prNumber}:${cycleId}`;
+    const reconciliationPayload = {
+      kind: "external_pr_head_reconciled",
+      repo: input.repo,
+      prNumber: input.prNumber,
+      expectedBlockedHeadSha: input.expectedBlockedHeadSha,
+      expectedBlockedCycleId: input.expectedBlockedCycleId,
+      expectedBlockedAuthorityGeneration: input.expectedBlockedAuthorityGeneration,
+      observedHeadSha: input.observedHeadSha,
+      observedBaseSha: input.observedBaseSha,
+      observedState: input.observedState,
+      observedDraft: input.observedDraft,
+      observedMerged: input.observedMerged,
+      headCycleId: cycleId,
+      acceptanceContractVersion: confirmed[0].version,
+    };
+    if (input.observedState === "open" && !input.observedMerged
+      && record.currentPrHeadAuthoritative
+      && record.currentPrHeadSha === input.observedHeadSha
+      && record.currentPrHeadCycleId === cycleId
+      && record.currentPrHeadAuthorityGeneration === input.expectedBlockedAuthorityGeneration + 1) {
+      const event = (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, input.recordId),
+        eq(changeRecordEvents.eventKey, reconciliationEventKey),
+      )).limit(1))[0];
+      const job = (await tx.select({
+        id: reviewJobs.id,
+        headSha: reviewJobs.headSha,
+        event: reviewJobs.event,
+      }).from(reviewJobs).where(and(
+        eq(reviewJobs.id, cycleId),
+        eq(reviewJobs.workspaceId, input.workspaceId),
+        eq(reviewJobs.repo, input.repo),
+        eq(reviewJobs.prNumber, input.prNumber),
+      )).limit(1))[0];
+      // A draft reconciliation deliberately admits no job. A later signed
+      // ready_for_review delivery may validly admit this same exact cycle
+      // without advancing authority generation; preserve that state on an
+      // API retry while rejecting every other job shape.
+      const jobMatches = input.observedDraft
+        ? job == null || (job?.headSha === input.observedHeadSha && job.event === "ready_for_review")
+        : job?.headSha === input.observedHeadSha && job.event === "reconciled";
+      if (event?.stage === "external_pr" && event.actor === input.source
+        && isDeepStrictEqual(event.payloadRef, reconciliationPayload)
+        && jobMatches) {
+        return {
+          kind: "already_current",
+          record,
+          jobId: job?.id ?? null,
+          jobAdmitted: job != null,
+          deduped: true,
+          observedHeadSha: input.observedHeadSha,
+          currentHeadCycleId: cycleId,
+          authorityGeneration: record.currentPrHeadAuthorityGeneration,
+          superseded: 0,
+          previewBootsTornDown: 0,
+        };
+      }
+      return preconditionChanged();
+    }
+
+    const closedEventKey = `external-pr:head-reconciliation-closed:${input.prNumber}:${cycleId}`;
+    const closedPayload = {
+      kind: "external_pr_head_reconciliation_closed",
+      repo: input.repo,
+      prNumber: input.prNumber,
+      expectedBlockedHeadSha: input.expectedBlockedHeadSha,
+      expectedBlockedCycleId: input.expectedBlockedCycleId,
+      expectedBlockedAuthorityGeneration: input.expectedBlockedAuthorityGeneration,
+      observedHeadSha: input.observedHeadSha,
+      observedBaseSha: input.observedBaseSha,
+      observedState: input.observedState,
+      observedDraft: input.observedDraft,
+      observedMerged: input.observedMerged,
+      headCycleId: cycleId,
+      acceptanceContractVersion: confirmed[0].version,
+    };
+    const existingClosed = input.observedState !== "open" || input.observedMerged
+      ? (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, input.recordId),
+        eq(changeRecordEvents.eventKey, closedEventKey),
+      )).limit(1))[0]
+      : null;
+    if (existingClosed
+      && !record.currentPrHeadAuthoritative
+      && record.currentPrHeadSha === input.expectedBlockedHeadSha
+      && record.currentPrHeadCycleId === input.expectedBlockedCycleId
+      && record.currentPrHeadAuthorityGeneration === input.expectedBlockedAuthorityGeneration + 1
+      && existingClosed.stage === "external_pr"
+      && existingClosed.actor === input.source
+      && isDeepStrictEqual(existingClosed.payloadRef, closedPayload)) {
+      return {
+        kind: "closed",
+        currentHeadSha: record.currentPrHeadSha,
+        currentHeadCycleId: record.currentPrHeadCycleId,
+        currentAuthoritative: record.currentPrHeadAuthoritative,
+        authorityGeneration: record.currentPrHeadAuthorityGeneration,
+        superseded: 0,
+        previewBootsTornDown: 0,
+      };
+    }
+    if (record.currentPrHeadSha !== input.expectedBlockedHeadSha
+      || record.currentPrHeadCycleId !== input.expectedBlockedCycleId
+      || record.currentPrHeadAuthoritative
+      || record.currentPrHeadAuthorityGeneration !== input.expectedBlockedAuthorityGeneration) {
+      return preconditionChanged();
+    }
+
+    if (input.observedState !== "open" || input.observedMerged) {
+      const receipt = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: input.recordId,
+        eventKey: closedEventKey,
+        stage: "external_pr",
+        actor: input.source,
+        payloadRef: closedPayload,
+      }]);
+      if (!receipt.events[0]!.inserted) throw new Error("Closed reconciliation provenance insertion unexpectedly replayed");
+      const rows = await tx.update(changeRecords).set({
+        currentPrHeadAuthoritative: false,
+        currentPrHeadAuthorityGeneration: sql`${changeRecords.currentPrHeadAuthorityGeneration} + 1`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(changeRecords.id, input.recordId),
+        eq(changeRecords.workspaceId, input.workspaceId),
+        eq(changeRecords.currentPrHeadSha, input.expectedBlockedHeadSha),
+        eq(changeRecords.currentPrHeadCycleId, input.expectedBlockedCycleId),
+        eq(changeRecords.currentPrHeadAuthoritative, false),
+        eq(changeRecords.currentPrHeadAuthorityGeneration, input.expectedBlockedAuthorityGeneration),
+      )).returning();
+      if (!rows[0]) throw new Error("Closed reconciliation lost its locked precondition");
+      const blocked = Array.from(await tx.execute(sql`
+        UPDATE review_jobs SET state = 'superseded', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId} AND repo = ${input.repo} AND pr_number = ${input.prNumber}
+          AND state IN ('queued', 'running') RETURNING id
+      `));
+      const boots = Array.from(await tx.execute(sql`
+        UPDATE preview_boots SET status = 'torn_down', reason = 'acceptance record reconciliation observed closed PR', updated_at = now()
+        WHERE workspace_id = ${input.workspaceId} AND repo = ${input.repo} AND pr_number = ${input.prNumber}
+          AND status IN ('pending', 'claimed', 'booting', 'ready') RETURNING id
+      `));
+      return {
+        kind: "closed",
+        currentHeadSha: rows[0].currentPrHeadSha,
+        currentHeadCycleId: rows[0].currentPrHeadCycleId,
+        currentAuthoritative: false,
+        authorityGeneration: rows[0].currentPrHeadAuthorityGeneration,
+        superseded: blocked.length,
+        previewBootsTornDown: boots.length,
+      };
+    }
+
+    const existingEvent = (await tx.select({ id: changeRecordEvents.id }).from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, input.recordId),
+      eq(changeRecordEvents.eventKey, reconciliationEventKey),
+    )).limit(1))[0];
+    if (existingEvent) return preconditionChanged();
+
+    const provenance = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: input.recordId,
+      eventKey: reconciliationEventKey,
+      stage: "external_pr",
+      actor: input.source,
+      payloadRef: reconciliationPayload,
+    }]);
+    if (!provenance.events[0]!.inserted) {
+      throw new Error("Current-head reconciliation provenance insertion unexpectedly replayed");
+    }
+
+    const rows = await tx.update(changeRecords).set({
+      currentPrHeadSha: input.observedHeadSha,
+      currentPrHeadCycleId: cycleId,
+      currentPrHeadAuthoritative: true,
+      currentPrHeadAuthorityGeneration: sql`${changeRecords.currentPrHeadAuthorityGeneration} + 1`,
+      headShas: normalizeHeadShas([...record.headShas, input.observedHeadSha]),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(changeRecords.id, input.recordId),
+      eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.currentPrHeadSha, input.expectedBlockedHeadSha),
+      eq(changeRecords.currentPrHeadCycleId, input.expectedBlockedCycleId),
+      eq(changeRecords.currentPrHeadAuthoritative, false),
+      eq(changeRecords.currentPrHeadAuthorityGeneration, input.expectedBlockedAuthorityGeneration),
+    )).returning();
+    const reconciled = rows[0];
+    if (!reconciled) throw new Error("Current-head reconciliation lost its locked precondition");
+
+    let jobId: string | null = null;
+    let jobAdmitted = false;
+    if (!input.observedDraft) {
+      const inserted = Array.from(await tx.execute(sql`
+        INSERT INTO review_jobs (
+          id, workspace_id, repo, pr_number, head_sha, event
+        ) VALUES (
+          ${cycleId}, ${input.workspaceId}, ${input.repo}, ${input.prNumber}, ${input.observedHeadSha}, 'reconciled'
+        ) ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `));
+      jobId = cycleId;
+      jobAdmitted = inserted.length === 1;
+      if (!jobAdmitted) {
+        throw new Error("Current-head reconciliation review job unexpectedly replayed");
+      }
+    }
+
+    const supersededRows = Array.from(await tx.execute(sql`
+      UPDATE review_jobs
+      SET state = 'superseded', updated_at = now()
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND pr_number = ${input.prNumber}
+        AND id <> ${cycleId}
+        AND state IN ('queued', 'running')
+      RETURNING id
+    `));
+    const tornDownBoots = Array.from(await tx.execute(sql`
+      UPDATE preview_boots
+      SET status = 'torn_down', reason = 'acceptance record head reconciled', updated_at = now()
+      WHERE workspace_id = ${input.workspaceId}
+        AND repo = ${input.repo}
+        AND pr_number = ${input.prNumber}
+        AND status IN ('pending', 'claimed', 'booting', 'ready')
+      RETURNING id
+    `));
+
+    return {
+      kind: "reconciled",
+      record: reconciled,
+      jobId,
+      jobAdmitted,
+      deduped: false,
+      observedHeadSha: input.observedHeadSha,
+      currentHeadCycleId: cycleId,
+      authorityGeneration: reconciled.currentPrHeadAuthorityGeneration,
+      superseded: supersededRows.length,
+      previewBootsTornDown: tornDownBoots.length,
     };
   });
 }

@@ -20,7 +20,9 @@ const eveSessionId = "eve-session-1";
 const completeContract = {
   originalRequest: "Add saved filters",
   normalizedRequirements: ["Persist filters"],
-  acceptanceCriteria: [{ id: "AC-1", text: "A saved filter can be reopened" }],
+  acceptanceCriteria: [
+    { id: "AC-1", text: "A saved filter can be reopened", userVisible: true },
+  ],
   nonGoals: [],
   risks: [],
   stops: [],

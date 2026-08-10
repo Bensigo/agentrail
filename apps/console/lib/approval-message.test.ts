@@ -454,16 +454,20 @@ describe("renderApprovalMessage — acceptance contract confirmation", () => {
       title: "Add saved filters",
       version: 3,
       acceptanceCriteria: [
-        { id: "AC-1", text: "A user can save a filter" },
-        "Saved filters persist after reload",
+        { id: "AC-1", text: "A user can save a filter", userVisible: true },
+        {
+          id: "AC-2",
+          text: "Saved filters persist in storage",
+          userVisible: false,
+        },
       ],
       nonGoals: ["Do not change sharing permissions"],
     });
 
     expect(text).toContain("Confirm this Acceptance Contract?");
     expect(text).toContain("Version: 3");
-    expect(text).toContain("A user can save a filter");
-    expect(text).toContain("Saved filters persist after reload");
+    expect(text).toContain("A user can save a filter [user-visible: yes]");
+    expect(text).toContain("Saved filters persist in storage [user-visible: no]");
     expect(text).toContain("Do not change sharing permissions");
   });
 

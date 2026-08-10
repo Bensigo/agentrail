@@ -86,7 +86,9 @@ test("projects the record and stage evidence while preserving the untrusted-data
       ],
       acceptanceContract: {
         version: 2,
-        criteria: [{ id: "AC-1", text: "The saved value is visible." }],
+        criteria: [
+          { id: "AC-1", text: "The saved value is visible.", userVisible: true },
+        ],
       },
     }),
   }));
@@ -97,7 +99,9 @@ test("projects the record and stage evidence while preserving the untrusted-data
   assert.equal(result.stageEvidence.length, 2);
   assert.deepEqual(result.acceptanceContract, {
     version: 2,
-    criteria: [{ id: "AC-1", text: "The saved value is visible." }],
+    criteria: [
+      { id: "AC-1", text: "The saved value is visible.", userVisible: true },
+    ],
   });
   assert.equal(result.contentIsUntrusted, true);
   assert.equal(transport.calls[0].init.method, "POST");
@@ -115,12 +119,48 @@ test("projects only a complete confirmed Contract and marks malformed contract d
       json: async () => ({
         found: true,
         record: { id: "record-1", workspaceId: "ws-1", repo: "ada/widgets", issueNumber: null, prNumber: 98, state: "open" },
-        acceptanceContract: { version: 2, criteria: [{ id: "AC-1", text: "ok" }, { id: "", text: "unsafe" }] },
+        acceptanceContract: {
+          version: 2,
+          criteria: [
+            { id: "AC-1", text: "ok", userVisible: false },
+            { id: "", text: "unsafe", userVisible: true },
+          ],
+        },
       }),
     })),
   });
   assert.equal(result.ok, true);
   assert.equal(result.found, true);
+  assert.equal(result.acceptanceContract, null);
+});
+
+test("legacy confirmed criteria without userVisible fail closed", async () => {
+  const result = await fetchChangeRecord({
+    env: ENV,
+    eveSessionId: "eve-1",
+    repo: "ada/widgets",
+    prNumber: 98,
+    transport: fakeTransport(async () => ({
+      status: 200,
+      json: async () => ({
+        found: true,
+        record: {
+          id: "record-1",
+          workspaceId: "ws-1",
+          repo: "ada/widgets",
+          issueNumber: null,
+          prNumber: 98,
+          state: "open",
+        },
+        acceptanceContract: {
+          version: 1,
+          criteria: [{ id: "AC-1", text: "Legacy criterion" }],
+        },
+      }),
+    })),
+  });
+
+  assert.equal(result.ok, true);
   assert.equal(result.acceptanceContract, null);
 });
 

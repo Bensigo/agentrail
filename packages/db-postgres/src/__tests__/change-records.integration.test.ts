@@ -61,7 +61,9 @@ function completeContract(overrides: Record<string, unknown> = {}): Record<strin
   return {
     originalRequest: "Add saved filters",
     normalizedRequirements: ["Users can save and reuse a filter"],
-    acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+    acceptanceCriteria: [
+      { id: "AC-1", text: "A user can save a filter", userVisible: true },
+    ],
     nonGoals: [],
     risks: [],
     environment: { kind: "existing_preview" },
@@ -638,7 +640,9 @@ describe.skipIf(!DB_AVAILABLE)(
         sourceReferences: [{ kind: "codex_thread", id: "thread-1" }],
         contract: completeContract({
           originalRequest: "Add a red save button",
-          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          acceptanceCriteria: [
+            { id: "AC-1", text: "Save button is red", userVisible: true },
+          ],
         }),
         createdBy: "user:lead",
       });
@@ -667,7 +671,9 @@ describe.skipIf(!DB_AVAILABLE)(
         recordId: draft.record.id,
         contract: completeContract({
           originalRequest: "Add a red save button",
-          acceptanceCriteria: [{ id: "AC-1", text: "Save button is red" }],
+          acceptanceCriteria: [
+            { id: "AC-1", text: "Save button is red", userVisible: true },
+          ],
           unresolvedQuestions: [{ id: "Q-1", text: "Which theme token?" }],
         }),
         createdBy: "user:lead",

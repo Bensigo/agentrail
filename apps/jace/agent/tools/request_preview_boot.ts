@@ -29,25 +29,25 @@ function sleep(ms: number): Promise<void> {
 
 export default defineTool({
   description:
-    "Request a sandboxed preview boot for a GitHub pull request, then poll " +
+    "Request a sandboxed preview boot for the current review job, then poll " +
     "the console until it returns a booted URL or a stable degraded result. " +
     "Use this only when reviewing a PR with behavioral acceptance criteria " +
-    "and no reachable preview URL. Ungated by design: review jobs are " +
+    "and no server-attested preview URL. The console derives the workspace, " +
+    "repository, PR, and exact head from the bound review job; they are never " +
+    "accepted from model input. Ungated by design: review jobs are " +
     "headless, and this tool never merges, deploys, comments, or mutates " +
     "the repository. It returns degraded results instead of throwing when " +
     "the console is unavailable, preview boots are disabled, the workspace " +
-    "is not enrolled, or the boot does not become ready.",
+    "is not enrolled, or the boot does not become ready. Only results with " +
+    "attestedState and attestedObservation may become R7.1 criterion outcomes; " +
+    "a ready environment remains not_proven until R7.2 execution custody.",
   inputSchema: z.object({
-    repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
-    prNumber: z.number().int().positive().describe("The pull request number."),
-    headSha: z.string().min(1).describe("The pull request head SHA to boot."),
+    jobId: z.string().min(1).describe("The current review job id from the headless review prompt."),
   }),
   async execute(input, ctx) {
     return requestPreviewBoot({
       eveSessionId: ctx.session.id,
-      repo: input.repo,
-      prNumber: input.prNumber,
-      headSha: input.headSha,
+      jobId: input.jobId,
       env: process.env,
       transport: realTransport,
       sleep,

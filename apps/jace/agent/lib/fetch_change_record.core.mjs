@@ -93,7 +93,8 @@ function projectAcceptanceContract(value) {
   const criteria = value.criteria.map((item) => ({
     id: typeof item?.id === "string" ? item.id.trim() : "",
     text: typeof item?.text === "string" ? item.text.trim() : "",
-  })).filter((item) => item.id && item.text);
+    userVisible: typeof item?.userVisible === "boolean" ? item.userVisible : null,
+  })).filter((item) => item.id && item.text && item.userVisible !== null);
   return criteria.length === value.criteria.length && criteria.length > 0
     ? { version: value.version, criteria }
     : null;

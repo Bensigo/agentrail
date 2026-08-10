@@ -67,16 +67,16 @@ function makeResult(overrides = {}) {
   return {
     posted: true,
     reviewUrl: "https://github.com/ada/widgets/pull/7#pullrequestreview-1",
-    verdict: "approve",
+    verdict: "not_proven",
     blockers: [],
-    summaryLine: "ada/widgets#7: approve, no blockers",
+    summaryLine: "ada/widgets#7: not_proven",
     criterionResults: [
       {
         criterionId: "AC-1",
-        state: "proven",
+        state: "not_proven",
         expected: "The saved value is visible.",
-        observed: "The saved value is visible.",
-        evidenceRefs: ["artifact://review/ac-1"],
+        observed: "The exact-head preview was ready; execution evidence is pending R7.2.",
+        evidenceRefs: ["preview-boot:boot-1"],
       },
     ],
     ...overrides,

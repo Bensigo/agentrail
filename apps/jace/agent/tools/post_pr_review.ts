@@ -68,6 +68,14 @@ const JUDGMENT_ITEM = z.object({
   basis: z.array(z.string()).default([]),
 });
 
+const REVIEW_JOB_CRITERION_RESULT = z.object({
+  criterionId: z.string().min(1),
+  state: z.enum(["proven", "failed", "not_proven", "not_testable"]),
+  expected: z.string().min(1),
+  observed: z.string().min(1),
+  evidenceRefs: z.array(z.string().min(1)),
+});
+
 export default defineTool({
   description:
     "Post an ADVISORY code review to an existing GitHub pull request: a " +
@@ -89,7 +97,8 @@ export default defineTool({
     "summary as a per-AC checklist. When qa's ac_results were folded into " +
     "that same coverage, relay their evidence_images too — the checklist " +
     "links them, capped at 4 per entry. Pass its judgment verbatim too — " +
-    "it is rendered as a compact judgment line and is never re-judged here.",
+    "it is rendered as a compact judgment line and is never re-judged here. " +
+    "For a headless review job, pass reviewJob with that job's complete terminal criterion results, verdict, summaryLine, and evidence keys. The console then derives the target from the bound job, validates exact-head evidence before GitHub, and reserves the single external write.",
   inputSchema: z.object({
     repo: z.string().min(1).describe("The reviewed repo, as owner/name."),
     prNumber: z.number().int().positive().describe("The pull request number."),
@@ -175,8 +184,20 @@ export default defineTool({
         "The reviewer's structured judgment over the change — simplest, " +
           "architecture, debt, hiddenRisks — passed through verbatim and " +
           "never re-judged here. Rendered into the posted summary as a " +
-          "compact judgment line (folded when the summary is already near " +
+        "compact judgment line (folded when the summary is already near " +
           "its cap). Null when the reviewer's verdict was 'degraded'.",
+      ),
+    reviewJob: z
+      .object({
+        jobId: z.string().min(1),
+        criterionResults: z.array(REVIEW_JOB_CRITERION_RESULT).min(1),
+        verdict: z.enum(["not_proven", "not_testable"]),
+        summaryLine: z.string().min(1),
+        evidenceKeys: z.array(z.string().min(1)).optional(),
+      })
+      .optional()
+      .describe(
+        "Required only inside a bound headless review-job session. The server validates this exact outcome against the immutable Contract plan and exact-head preview before posting.",
       ),
   }),
   async execute(input, ctx) {
@@ -188,6 +209,7 @@ export default defineTool({
       comments: input.comments,
       acCoverage: input.acCoverage,
       judgment: input.judgment,
+      reviewJob: input.reviewJob,
       env: process.env,
       transport: realTransport,
       changeRecordTransport: realTransport,

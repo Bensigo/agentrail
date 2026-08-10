@@ -19,12 +19,14 @@ import {
   POLL_TTL_MS,
   MAX_POLL_ATTEMPTS,
   BLIP_RETRY_DELAY_MS,
+  R7_READY_NOT_PROVEN_OBSERVATION,
   resolveConsoleConfig,
   buildPreviewBootUrl,
   buildPreviewBootStatusUrl,
   classifyStatus,
   degraded,
   nextBackoffDelay,
+  r7UnavailablePreviewObservation,
   requestPreviewBoot,
 } from "../agent/lib/request_preview_boot.core.mjs";
 
@@ -35,9 +37,7 @@ const ENV = {
 
 const ARGS = {
   eveSessionId: "eve-session-1",
-  repo: "ada/widgets",
-  prNumber: 7,
-  headSha: "abc123def",
+  jobId: "job-1",
 };
 
 // A fake transport that records every call and replies from a queue of
@@ -125,10 +125,10 @@ test("resolveConsoleConfig reports exactly which vars are missing", () => {
   });
 });
 
-test("buildPreviewBootUrl joins the base url and the preview-boots path", () => {
+test("buildPreviewBootUrl addresses the server-owned review-job preview route", () => {
   assert.equal(
-    buildPreviewBootUrl("https://console.example.com"),
-    `https://console.example.com${PREVIEW_BOOTS_PATH}`,
+    buildPreviewBootUrl("https://console.example.com", "job/1 x"),
+    "https://console.example.com/api/v1/runner/review-jobs/job%2F1%20x/preview",
   );
 });
 
@@ -156,7 +156,7 @@ test("classifyStatus maps POST statuses per the brief: 503/403/404/409/400/2xx/o
   assert.equal(classifyStatus(503).reason, "boots_disabled");
   assert.equal(classifyStatus(403).reason, "not_enrolled");
   assert.equal(classifyStatus(404).reason, "session_or_repo");
-  assert.equal(classifyStatus(409).reason, "no_workspace");
+  assert.equal(classifyStatus(409).reason, "review_context");
   assert.equal(classifyStatus(400).reason, "bad_request");
   assert.equal(classifyStatus(500).reason, "request_failed");
   assert.equal(classifyStatus(401).reason, "request_failed");
@@ -226,6 +226,8 @@ test("happy path: POST then poll pending x2 then ready -> {ok:true, id, url}", a
     ok: true,
     id: "boot-1",
     url: "https://preview.example.com/boot-1",
+    attestedState: "not_proven",
+    attestedObservation: R7_READY_NOT_PROVEN_OBSERVATION,
     bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot/boot.log",
   });
   assert.equal(transport.calls.length, 4); // POST + 3 GETs
@@ -235,15 +237,15 @@ test("happy path: POST then poll pending x2 then ready -> {ok:true, id, url}", a
   assert.ok(sleep.delays[2] >= 10000 && sleep.delays[2] < 10250);
 
   const postCall = transport.calls[0];
-  assert.equal(postCall.url, `https://console.example.com${PREVIEW_BOOTS_PATH}`);
+  assert.equal(
+    postCall.url,
+    "https://console.example.com/api/v1/runner/review-jobs/job-1/preview",
+  );
   assert.equal(postCall.init.method, "POST");
   assert.equal(postCall.init.headers.Authorization, "Bearer tok-secret-123");
   assert.equal(postCall.init.headers["Content-Type"], "application/json");
   assert.deepEqual(JSON.parse(postCall.init.body), {
     eveSessionId: "eve-session-1",
-    repo: "ada/widgets",
-    prNumber: 7,
-    headSha: "abc123def",
   });
 
   const getCall = transport.calls[1];
@@ -297,7 +299,13 @@ test("poll status failed -> degraded boot_failed, carrying the console's own rea
   assert.deepEqual(
     result,
     degraded("boot_failed", {
-      reason: "npm ci exited 1",
+      id: "boot-1",
+      bootReason: "npm ci exited 1",
+      attestedState: "not_testable",
+      attestedObservation: r7UnavailablePreviewObservation({
+        status: "failed",
+        reason: "npm ci exited 1",
+      }),
       bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
     }),
   );
@@ -325,9 +333,73 @@ test("poll status torn_down -> degraded boot_gone", async () => {
   assert.deepEqual(
     result,
     degraded("boot_gone", {
+      id: "boot-1",
+      bootReason: null,
       bootLogKey: "review-evidence/ws/ada__widgets/7/abc123def/boot.log",
     }),
   );
+});
+
+test("torn_down with a retained ready URL carries only the R7.1 not_proven attestation", async () => {
+  const transport = fakeTransport(
+    async () => ({ status: 200, json: async () => postedBody() }),
+    async () => ({
+      status: 200,
+      json: async () =>
+        pollBody({
+          status: "torn_down",
+          url: "https://preview.example.com/boot-1",
+          reason: "ttl_expired",
+        }),
+    }),
+  );
+
+  const result = await requestPreviewBoot({
+    ...ARGS,
+    env: ENV,
+    transport,
+    sleep: fakeSleep(),
+    now: fakeClock(0, 1000),
+  });
+
+  assert.deepEqual(
+    result,
+    degraded("boot_gone", {
+      id: "boot-1",
+      bootReason: "ttl_expired",
+      attestedState: "not_proven",
+      attestedObservation: R7_READY_NOT_PROVEN_OBSERVATION,
+    }),
+  );
+});
+
+test("failed after ready and reasonless failures carry no postable attested result", async () => {
+  for (const body of [
+    pollBody({
+      status: "failed",
+      url: "https://preview.example.com/boot-1",
+      reason: "stale",
+    }),
+    pollBody({ status: "failed", reason: "   " }),
+    pollBody({ status: "failed", reason: "line one\nline two" }),
+    pollBody({ status: "failed", reason: "x".repeat(2001) }),
+  ]) {
+    const transport = fakeTransport(
+      async () => ({ status: 200, json: async () => postedBody() }),
+      async () => ({ status: 200, json: async () => body }),
+    );
+    const result = await requestPreviewBoot({
+      ...ARGS,
+      env: ENV,
+      transport,
+      sleep: fakeSleep(),
+      now: fakeClock(0, 1000),
+    });
+    assert.equal(result.reason, "boot_failed");
+    assert.equal(result.id, "boot-1");
+    assert.ok(!("attestedState" in result));
+    assert.ok(!("attestedObservation" in result));
+  }
 });
 
 test("poll 404 -> degraded boot_lost, no retry (a 404 is stable, not treated as a blip)", async () => {
@@ -424,8 +496,8 @@ test("POST 404 -> degraded session_or_repo", async () => {
   assert.equal(transport.calls.length, 1);
 });
 
-test("POST 409 -> degraded no_workspace", async () => {
-  const transport = fakeTransport(async () => ({ status: 409, json: async () => ({ error: "no workspace" }) }));
+test("POST 409 -> degraded review_context", async () => {
+  const transport = fakeTransport(async () => ({ status: 409, json: async () => ({ error: "review job is not attached to an Acceptance Record at this head" }) }));
   const result = await requestPreviewBoot({
     ...ARGS,
     env: ENV,
@@ -433,7 +505,7 @@ test("POST 409 -> degraded no_workspace", async () => {
     sleep: fakeSleep(),
     now: fakeClock(0, 1000),
   });
-  assert.deepEqual(result, degraded("no_workspace"));
+  assert.deepEqual(result, degraded("review_context"));
   assert.equal(transport.calls.length, 1);
 });
 
@@ -450,19 +522,13 @@ test("POST 400 (console-side) -> degraded bad_request", async () => {
   assert.equal(transport.calls.length, 1);
 });
 
-test("blank eveSessionId/repo/headSha or a non-positive-integer prNumber -> degraded bad_request, no call at all (our own pre-validation)", async () => {
+test("blank eveSessionId or jobId -> degraded bad_request, no call at all (our own pre-validation)", async () => {
   const transport = fakeTransport(async () => ({ status: 200, json: async () => postedBody() }));
   for (const overrides of [
     { eveSessionId: "" },
     { eveSessionId: "   " },
-    { repo: "" },
-    { repo: "   " },
-    { headSha: "" },
-    { headSha: "   " },
-    { prNumber: 0 },
-    { prNumber: -1 },
-    { prNumber: 1.5 },
-    { prNumber: NaN },
+    { jobId: "" },
+    { jobId: "   " },
   ]) {
     const result = await requestPreviewBoot({ ...ARGS, ...overrides, env: ENV, transport, sleep: fakeSleep(), now: fakeClock(0, 1000) });
     assert.deepEqual(result, degraded("bad_request"), JSON.stringify(overrides));
@@ -569,7 +635,13 @@ test("backoff happens BEFORE the first GET, and a transient GET throw gets exact
     now: fakeClock(0, 1000),
   });
 
-  assert.deepEqual(result, { ok: true, id: "boot-1", url: "https://preview.example.com/boot-1" });
+  assert.deepEqual(result, {
+    ok: true,
+    id: "boot-1",
+    url: "https://preview.example.com/boot-1",
+    attestedState: "not_proven",
+    attestedObservation: R7_READY_NOT_PROVEN_OBSERVATION,
+  });
   assert.equal(events.length, 5);
   assert.equal(events[0], "transport:POST");
   assert.ok(events[1].startsWith("sleep:"), events[1]); // backoff BEFORE the first GET
@@ -605,7 +677,13 @@ test("GET throws TWICE in a row (blip retry also fails) -> this attempt yields n
     now: fakeClock(0, 1000),
   });
 
-  assert.deepEqual(result, { ok: true, id: "boot-1", url: "https://preview.example.com/boot-1" });
+  assert.deepEqual(result, {
+    ok: true,
+    id: "boot-1",
+    url: "https://preview.example.com/boot-1",
+    attestedState: "not_proven",
+    attestedObservation: R7_READY_NOT_PROVEN_OBSERVATION,
+  });
   // POST + (GET1 throw + GET1-retry throw) + GET2(pending) + GET3(ready)
   assert.equal(transport.calls.length, 5);
   // backoff(attempt0), blip(500), backoff(attempt1), backoff(attempt2)

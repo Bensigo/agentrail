@@ -4,6 +4,7 @@ import {
   getChatIdentityById,
   getInstallationToken,
   getRepositoryByName,
+  getReviewJobById,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
@@ -192,7 +193,12 @@ function classifyGithubError(status: number, body: unknown): { status: number; e
 }
 
 type ResolveOutcome =
-  | { ok: true; workspaceId: string; token: string }
+  | {
+      ok: true;
+      workspaceId: string;
+      token: string;
+      session: NonNullable<Awaited<ReturnType<typeof getJaceSessionByEveSessionId>>>;
+    }
   | { ok: false; response: NextResponse };
 
 /**
@@ -253,7 +259,7 @@ async function resolveWorkspaceRepoToken(
     };
   }
 
-  return { ok: true, workspaceId, token };
+  return { ok: true, workspaceId, token, session };
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +496,35 @@ export async function GET(request: NextRequest) {
 
   const resolved = await resolveWorkspaceRepoToken(eveSessionId, repo);
   if (!resolved.ok) return resolved.response;
-  const { token } = resolved;
+  const { token, session, workspaceId } = resolved;
+
+  let boundReviewJob: NonNullable<Awaited<ReturnType<typeof getReviewJobById>>> | null = null;
+  if (session.channel === "review-job") {
+    const conversationKey = session.conversationKey?.trim() ?? "";
+    const jobId = conversationKey.startsWith("review-job:")
+      ? conversationKey.slice("review-job:".length).trim()
+      : "";
+    if (session.status !== "active" || !jobId) {
+      return NextResponse.json(
+        { error: "review session is not bound to the requested running job" },
+        { status: 409 }
+      );
+    }
+    const job = await getReviewJobById(jobId);
+    if (
+      !job ||
+      job.state !== "running" ||
+      job.workspaceId !== workspaceId ||
+      job.repo !== repo ||
+      job.prNumber !== prNumber
+    ) {
+      return NextResponse.json(
+        { error: "review session is not bound to the requested running job" },
+        { status: 409 }
+      );
+    }
+    boundReviewJob = job;
+  }
 
   let prRes: Response;
   try {
@@ -506,6 +540,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error }, { status });
   }
   const prBody = (await prRes.json().catch(() => ({}))) as GithubPrResponse;
+  if (boundReviewJob) {
+    const githubHeadSha =
+      prBody.head && typeof prBody.head.sha === "string"
+        ? prBody.head.sha.trim()
+        : "";
+    if (!githubHeadSha || githubHeadSha !== boundReviewJob.headSha) {
+      return NextResponse.json(
+        { error: "GitHub PR head no longer matches the running review job" },
+        { status: 409 }
+      );
+    }
+  }
 
   const filesResult = await fetchAllPrFiles(repo, prNumber, token);
   if (!filesResult.ok) {
@@ -654,6 +700,15 @@ export async function POST(request: NextRequest) {
 
   const resolved = await resolveWorkspaceRepoToken(eveSessionId, repo);
   if (!resolved.ok) return resolved.response;
+  if (resolved.session.channel === "review-job") {
+    return NextResponse.json(
+      {
+        error:
+          "headless review jobs must use their job-scoped attested post route",
+      },
+      { status: 409 }
+    );
+  }
   const { token } = resolved;
 
   const inlineComments: GithubReviewComment[] = comments.map((c) => ({
@@ -694,11 +749,21 @@ export async function POST(request: NextRequest) {
   }
 
   const posted = (await res.json().catch(() => ({}))) as { html_url?: unknown };
+  const reviewUrl =
+    typeof posted.html_url === "string" && posted.html_url.trim()
+      ? posted.html_url.trim()
+      : null;
+  if (!reviewUrl) {
+    return NextResponse.json(
+      { error: "GitHub returned no inspectable review receipt." },
+      { status: 502 }
+    );
+  }
 
   return NextResponse.json(
     {
       posted: true,
-      reviewUrl: typeof posted.html_url === "string" ? posted.html_url : null,
+      reviewUrl,
       summary: finalSummary,
       inlineCommentsPosted: foldedComments.length > 0 ? 0 : inlineComments.length,
       foldedComments,

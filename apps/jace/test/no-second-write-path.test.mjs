@@ -192,6 +192,7 @@ const EXPECTED_TOOL_FILES = [
   "fetch_work_status.ts", // read-only: reads in-flight/recent runs + issue-queue entries (optionally scoped to a ref) over the console token API for "how's that going"; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): posts an ADVISORY, COMMENT-only PR review, severity-filtered to blocker/major in code; no child_process (HTTP to the console, like create_repo/create_goal)
+  "plan_review_verification.ts", // operational + ungated by design: records the complete, server-bound review verification plan before evidence collection; headless review jobs cannot await approval
   "record_judgment.ts", // UNGATED by design: records bounded internal chat/grilling learning evidence only; no GitHub/workspace mutation and no child_process
   "record_verdict.ts", // UNGATED by design (see this file's header + UNGATED_ADVISORY_WRITES): FAIL-CLOSED, server-validated verdict write (computeVerdictEligibility re-checked server-side, not trusted from the model) + a fire-and-forget Langfuse score on success only; no child_process (HTTP to the console, like save_brief)
   "request_preview_boot.ts", // operational + ungated by design (B2b reviewer wiring): requests/polls a console preview boot for the calling root session; no repo/workspace mutation, no approval, no child_process
@@ -359,6 +360,39 @@ test("post_pr_review stays advisory + server-scoped: the console hardcodes COMME
     route,
     /getRepositoryByName\(/,
     "the console must verify the repo is connected to the session's own workspace before posting",
+  );
+});
+
+test("headless post_pr_review uses the job-scoped pre-write evidence gate and the generic route rejects that session", () => {
+  const jobRoutePath = fileURLToPath(
+    new URL(
+      "../../console/app/api/v1/runner/review-jobs/[jobId]/post-review/route.ts",
+      import.meta.url,
+    ),
+  );
+  const genericRoutePath = fileURLToPath(
+    new URL("../../console/app/api/v1/runner/pr-review/route.ts", import.meta.url),
+  );
+  const githubHelperPath = fileURLToPath(
+    new URL("../../console/lib/github-advisory-review.ts", import.meta.url),
+  );
+  if (!existsSync(jobRoutePath)) return;
+  const jobRoute = stripComments(readFileSync(jobRoutePath, "utf8"));
+  const genericRoute = stripComments(readFileSync(genericRoutePath, "utf8"));
+  const githubHelper = stripComments(readFileSync(githubHelperPath, "utf8"));
+  assert.match(jobRoute, /resolveExactReviewJobProof\(/);
+  assert.match(jobRoute, /reviewPostAttemptEventKey\(/);
+  assert.match(jobRoute, /postGithubAdvisoryReview\(/);
+  assert.ok(
+    jobRoute.indexOf("reviewPostAttemptEventKey(") <
+      jobRoute.indexOf("postGithubAdvisoryReview("),
+    "the durable attempt reservation must be constructed before the GitHub write",
+  );
+  assert.match(genericRoute, /headless review jobs must use their job-scoped attested post route/);
+  assert.match(
+    githubHelper,
+    /event:\s*"COMMENT"/,
+    "the job-scoped GitHub helper must remain advisory by construction",
   );
 });
 

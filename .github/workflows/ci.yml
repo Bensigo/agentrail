@@ -123,9 +123,18 @@ jobs:
         run: pnpm --filter @agentrail/db-postgres migrate
       - name: db-postgres — vitest (incl. jace-intake kill switch)
         run: pnpm --filter @agentrail/db-postgres test
-      # Prove the kill-switch gate is wired at the real inbound boundary: run the
-      # inbound Jace route's vitest, which asserts a disabled connector never
-      # forwards to the sidecar and an enabled one does.
-      - name: console — jace inbound route (kill-switch wiring)
+      # Prove the kill-switch gate plus the exact-head review/preview boundary
+      # at the real Console routes. The latter asserts that a review-job session
+      # can persist only a full server-bound criterion plan, enqueue only that
+      # job's PR head, attest only the R7.1 environment outcome before an
+      # exact-commit GitHub write, and reject the generic posting route as a
+      # headless-session bypass. Criterion execution stays held for R7.2.
+      - name: console — Jace inbound and exact-head review routes
         working-directory: apps/console
-        run: pnpm exec vitest run app/api/v1/connectors/jace/inbound
+        run: >-
+          pnpm exec vitest run
+          app/api/v1/connectors/jace/inbound
+          app/api/v1/runner/pr-review/route.test.ts
+          app/api/v1/runner/review-jobs
+          app/api/v1/runner/preview-boots
+          lib/github-advisory-review.test.ts

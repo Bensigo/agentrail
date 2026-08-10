@@ -24,15 +24,14 @@
 //
 // UPDATED (B2b-ii's Task 2, 2026-08-03 — docs/superpowers/plans/2026-08-03-
 // b2b-reviewer-wiring.md): the QA-fold bullet now has explicit environment
-// rungs. Rung 1 uses a reachable PR preview URL. Rung 2 calls
-// request_preview_boot(repo, prNumber, headSha) when no preview URL is present
-// and uses the booted URL if it becomes ready. Rung 1's B2a evidence_images
-// relay remains part of the QA fold. Rung 2's bootLogKey rides the structured
-// result's evidenceKeys so the existing review-job completion path persists
-// the boot log in the artifact trail. If neither environment is available,
-// behavioral ACs stay not_testable with the concrete reason and the posted
-// review names the environment rung reached. The full-string EXPECTED pin in
-// test/review_job_prompt.test.mjs is updated in lockstep.
+// handling. The tool now accepts only the review job id; the console resolves
+// the workspace/repo/PR/head from that bound running job and admits an isolated
+// exact-head boot. R7.1 attests the environment decision only: a ready boot
+// remains `not_proven` until R7.2 provides server-custodied criterion
+// execution artifacts; a before-ready terminal failure may be `not_testable`
+// only when the tool returns the server-recomputed state/observation. The
+// full-string EXPECTED pin in test/review_job_prompt.test.mjs is updated in
+// lockstep.
 //
 // WHAT THIS PROMPT DELIBERATELY DOES NOT SAY: it never tells the model what
 // to do if posting fails. That is intentional, not an oversight. See
@@ -63,9 +62,10 @@ export function reviewJobPrompt(job) {
     `You are executing review job ${id} headlessly — no human is in this conversation.`,
     `Review PR #${prNumber} in ${repo} at head ${headSha}. Do exactly your normal review choreography:`,
     `- First call fetch_change_record for this repo and PR. Use ONLY its confirmed acceptanceContract criteria. If it is missing or malformed, do not post a success review; return posted:false with the reason.`,
+    `- After fetching the confirmed Contract and before collecting proof, call plan_review_verification once with jobId ${id} and every confirmed criterion exactly once. For this R7.1 slice, only a ui criterion may be planned: give it modality ui, status planned, and a bounded criterion-specific flow. The console binds that plan to the isolated exact-head preview; do not put an environment, repository, PR, or head in the plan. Every api, job, or data criterion MUST use its actual modality, status not_testable, and the concrete reason that its executor is not available until R7.2. A user-visible criterion remains modality ui even when it is not_testable; never relabel it to avoid the UI path. A planned criterion needs flow and no notTestableReason; a not_testable criterion needs notTestableReason and no flow. If the plan cannot be recorded, do not report a successful review.`,
+    `- If any ui criterion was planned, call request_preview_boot with jobId ${id}. The console derives the workspace, repo, PR, and exact head from the bound running job; never supply or substitute those fields yourself. R7.1 attests only the environment, not criterion execution: for every planned ui criterion use the tool's attestedState and attestedObservation verbatim and exactly one evidenceRef, preview-boot:<returned boot id>. A ready exact-head preview is therefore not_proven until R7.2 adds server-custodied criterion execution artifacts; never turn it into proven or failed from model-authored QA. A before-ready failed/torn-down boot is not_testable only when the tool returns an attestedState and attestedObservation. If the tool returns no attestedState, do not post or report success; let the turn fail. If it returns a bootLogKey, that exact key may be the only evidenceKeys entry; do not add screenshot or other artifact keys in R7.1. A PR-comment preview URL is not exact-head evidence unless the server attests it; no such existing-preview rung is currently wired. For a plan-declared not_testable criterion, use its stored concrete notTestableReason with no evidenceRefs.`,
     `- Dispatch the reviewer subagent for this PR. Relay its result with your standing honesty rules: acCoverage and judgment verbatim, cannot_judge never softened, evidence lines included.`,
-    `- Post the review with post_pr_review. One review, one verdict.`,
-    `- If acceptance criteria are behavioral (running-app behavior a diff cannot prove) AND the PR carries a reachable preview URL, dispatch qa against it and fold its ac_results into the posted review's coverage before posting (rung 1). Fold its evidence_images through too, verbatim — the posted review links them per AC. If there is no preview URL, call request_preview_boot with (repo, prNumber, headSha); if it returns a booted URL, dispatch qa against THAT url exactly as rung 1 (rung 2). Regardless of whether the boot becomes ready, if request_preview_boot returns a bootLogKey, include that key in evidenceKeys in the structured result. If there is no preview URL AND no boot becomes ready, do NOT guess: the affected ACs are not_testable with the concrete reason, and the posted review says which environment rung was reached.`,
+    `- Only after every criterionResult is terminal, set verdict to not_proven when any criterion is not_proven, otherwise not_testable. Post once with post_pr_review and include reviewJob: { jobId: ${id}, criterionResults, verdict, summaryLine, evidenceKeys when present }. The console derives the target from the bound job, validates the exact Contract plan and preview evidence before GitHub, and reserves the one external write. Return the same verdict, summaryLine, criterionResults, and evidenceKeys verbatim after the tool succeeds. One review, one verdict.`,
     `- Do not create issues, send channel messages, or take any action beyond the review itself.`,
     `Return ONLY the structured result: posted, reviewUrl, verdict, blockers (every blocker-severity finding title), summaryLine (one line for the owner: repo, PR, verdict, judgment verdicts), criterionResults (exactly one terminal result for every confirmed criterion), and evidenceKeys when evidence was captured.`,
   ].join("\n");
@@ -83,18 +83,12 @@ export function reviewJobPrompt(job) {
  * completes `outcome:"failed"` instead of `"posted"` whenever this field is
  * anything but a literal `true`.
  *
- * `evidenceKeys` (B2a §1 Task 3, B2b boot-log attachment, spec
- * docs/superpowers/specs/2026-08-02-b2-behavioral-evidence-design.md) — NEW,
- * OPTIONAL (deliberately absent from `required`): the object-store keys
- * (Task 2's `review-evidence` upload route) the reviewer subagent's relayed
- * QA evidence actually cited, plus the B2b `bootLogKey` returned by
- * `request_preview_boot` on any terminal rung-2 result, if any. review_job_worker.core.mjs passes
- * `result.evidenceKeys` through to `complete()` unchanged, ONLY when
- * present, on the `posted` path — see that module's own doc-comment. This
- * task deliberately does NOT touch `reviewJobPrompt`'s own instruction text
- * above (which fields to ask the model to RETURN is Task 6's "one sentence"
- * change, per the B2a plan) — only this schema gains the field, so a model
- * that has no reason to populate it yet still validates cleanly.
+ * `evidenceKeys` is optional because a preview boot may have no retained log.
+ * In R7.1 the only allowed key is the exact `bootLogKey` returned by
+ * `request_preview_boot`; screenshot and criterion-execution artifacts remain
+ * unavailable until R7.2. review_job_worker.core.mjs passes a present array
+ * through to `complete()` unchanged, where the Console resolves it against
+ * the exact boot before accepting the posted outcome.
  */
 export const REVIEW_JOB_RESULT_SCHEMA = {
   type: "object",
@@ -104,18 +98,18 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
     posted: {
       type: "boolean",
       description:
-        "Whether post_pr_review actually posted a review. This turn must " +
+        "Whether the job-scoped, pre-write-attested post_pr_review call actually posted a review. This turn must " +
         "only complete when a review was genuinely posted — if posting " +
         "fails, do not return this result at all; let the failure " +
         "propagate instead of reporting posted:false.",
     },
     reviewUrl: {
-      type: ["string", "null"],
-      description: "The posted review's URL, or null if the platform did not return one.",
+      type: "string",
+      description: "The inspectable URL returned for the posted GitHub review.",
     },
     verdict: {
-      type: "string",
-      description: "The posted review's verdict, exactly as post_pr_review recorded it.",
+      enum: ["not_proven", "not_testable"],
+      description: "The R7.1 trust verdict: not_proven when any planned exact-head environment became ready, otherwise not_testable.",
     },
     blockers: {
       type: "array",
@@ -128,14 +122,14 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
     },
     criterionResults: {
       type: "array",
-      description: "Exactly one result for every confirmed Acceptance Contract criterion: criterionId, state (proven|failed|not_proven|not_testable), expected, observed, and evidenceRefs. Do not invent a criterion or a pass.",
+      description: "Exactly one result for every confirmed Acceptance Contract criterion. In R7.1, a planned UI result uses only the tool-attested not_proven/not_testable state and observation plus exactly one preview-boot:<id> reference; proven and failed require R7.2 custody and are not allowed yet. A plan-declared not_testable result uses its stored reason and no evidenceRefs.",
       items: {
         type: "object",
         additionalProperties: false,
         required: ["criterionId", "state", "expected", "observed", "evidenceRefs"],
         properties: {
           criterionId: { type: "string" },
-          state: { enum: ["proven", "failed", "not_proven", "not_testable"] },
+          state: { enum: ["not_proven", "not_testable"] },
           expected: { type: "string" }, observed: { type: "string" },
           evidenceRefs: { type: "array", items: { type: "string" } },
         },
@@ -145,10 +139,9 @@ export const REVIEW_JOB_RESULT_SCHEMA = {
       type: "array",
       items: { type: "string" },
       description:
-        "The object-store keys of every per-AC evidence screenshot this " +
-        "review cited, plus any B2b boot-log key returned by " +
-        "request_preview_boot. Omit this field entirely when no evidence " +
-        "was captured — do not return an empty array to mean the same thing.",
+        "R7.1 permits only the exact server-custodied bootLogKey returned by " +
+        "request_preview_boot. Screenshot and criterion artifact keys require " +
+        "the R7.2 custody seam. Omit this field when no bootLogKey was returned.",
     },
   },
 };

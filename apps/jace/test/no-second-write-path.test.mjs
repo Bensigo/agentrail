@@ -184,6 +184,7 @@ const EXPECTED_TOOL_FILES = [
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "execute_review_ui.ts", // operational + ungated by design: replays one server-reserved bounded flow only inside an isolated exact-head preview; target, steps, result, and screenshot custody are server-bound
   "execute_review_api.ts", // operational + ungated by design: performs one server-reserved same-origin GET/status check inside an isolated exact-head preview; target, descriptor, result, and receipt are server-bound
+  "execute_review_data.ts", // operational + ungated by design: performs one server-reserved bounded JSON-scalar readback inside an isolated exact-head preview; target, descriptor, typed HMAC observations, and receipt are server-bound
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_briefs.ts", // read-only (briefs spec PR #1487): reads BRIEFS — the durable understanding of one product idea (list/get/search) — over the console token API; no approval, no child_process
   "fetch_change_record.ts", // read-only (Arc D): reads the canonical lifecycle evidence for one PR; no approval, no child_process
@@ -233,6 +234,7 @@ const EXPECTED_MUTATING_TOOLS = [
 const UNGATED_ADVISORY_WRITES = [
   "execute_review_ui.ts",
   "execute_review_api.ts",
+  "execute_review_data.ts",
   "post_pr_review.ts",
   "record_judgment.ts",
   "save_brief.ts",
@@ -352,6 +354,17 @@ test("execute_review_api is the one closed, server-scoped operational API write 
   const cleanCore = stripComments(executionCore);
   assert.match(cleanCore, /criterionId:\s*criterion,[\s\S]*previewBootId:\s*boot/);
   assert.match(cleanCore, /eveSessionId:\s*session,[\s\S]*observedStatus:/);
+});
+
+test("execute_review_data is the one closed, server-scoped operational data write path", () => {
+  const tool = stripComments(readFileSync(`${toolsDir}/execute_review_data.ts`, "utf8"));
+  assert.match(tool, /inputSchema:\s*z[\s\S]*?\.object\([\s\S]*jobId:[\s\S]*criterionId:[\s\S]*previewBootId:[\s\S]*\)\s*\.strict\(\)/);
+  assert.match(tool, /eveSessionId:\s*ctx\.session\.id/);
+  assert.doesNotMatch(tool, /\b(?:repo|prNumber|headSha|previewUrl|dataRequest|expectedJson|observations|state|expected|observed)\s*:/);
+  const executionCore = readFileSync(fileURLToPath(new URL("../agent/lib/review_data_execution_console.core.mjs", import.meta.url)), "utf8");
+  const cleanCore = stripComments(executionCore);
+  assert.match(cleanCore, /criterionId:\s*criterion,[\s\S]*previewBootId:\s*boot/);
+  assert.match(cleanCore, /eveSessionId:\s*session,[\s\S]*observedStatus:[\s\S]*observations:/);
 });
 
 test("post_pr_review's severity filter is enforced in code, not in a prompt", () => {

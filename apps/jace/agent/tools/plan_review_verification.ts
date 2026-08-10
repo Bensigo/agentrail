@@ -3,7 +3,7 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { normalizeApiRequest, normalizeUiSteps, planReviewVerification } from "../lib/plan_review_verification.core.mjs";
+import { normalizeApiRequest, normalizeDataRequest, normalizeUiSteps, planReviewVerification } from "../lib/plan_review_verification.core.mjs";
 
 const TIMEOUT_MS = 8000;
 
@@ -42,6 +42,20 @@ const apiRequest = z.object({
 }).strict().superRefine((value, ctx) => {
   if (!normalizeApiRequest(value)) ctx.addIssue({ code: "custom", message: "apiRequest must be one strict relative GET status check" });
 });
+const dataScalar = z.union([
+  z.string().max(2_000).refine((value) => !/[\x00-\x1f\x7f]/.test(value)),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+const dataRequest = z.object({
+  method: z.literal("GET"),
+  path: uiText,
+  expectedStatus: z.number().int().min(100).max(599),
+  expectedJson: z.array(z.object({ pointer: z.string().max(512), equals: dataScalar }).strict()).min(1).max(12),
+}).strict().superRefine((value, ctx) => {
+  if (!normalizeDataRequest(value)) ctx.addIssue({ code: "custom", message: "dataRequest must be one strict relative GET with bounded JSON scalar assertions" });
+});
 const plan = z.union([
   z.object({
     criterionId: z.string().min(1),
@@ -56,6 +70,13 @@ const plan = z.union([
     status: z.literal("planned"),
     flow: z.string().min(1),
     apiRequest,
+  }).strict(),
+  z.object({
+    criterionId: z.string().min(1),
+    modality: z.literal("data"),
+    status: z.literal("planned"),
+    flow: z.string().min(1),
+    dataRequest,
   }).strict(),
   z.object({
     criterionId: z.string().min(1),

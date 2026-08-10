@@ -142,4 +142,5 @@ jobs:
           app/api/v1/runner/preview-boots
           lib/github-advisory-review.test.ts
           lib/review-job-api-execution.test.ts
+          lib/review-job-data-execution.test.ts
           lib/review-job-ui-execution.test.ts

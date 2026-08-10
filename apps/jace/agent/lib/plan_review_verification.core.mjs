@@ -136,6 +136,49 @@ export function normalizeApiRequest(value) {
   return { method: "GET", path, expectedStatus: value.expectedStatus };
 }
 
+function dataScalar(value) {
+  return value === null || typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (typeof value === "string" && value.length <= MAX_UI_STEP_TEXT && !/[\x00-\x1f\x7f]/.test(value));
+}
+
+function sensitiveExpected(value) {
+  if (Number.isInteger(value) && Math.abs(value) >= 100_000_000) return true;
+  if (typeof value !== "string") return false;
+  const digits = value.replace(/\D/g, "");
+  return /[^\s@]+@[^\s@]+\.[^\s@]+/u.test(value) ||
+    /\b\d{3}-?\d{2}-?\d{4}\b/u.test(value) ||
+    (digits.length >= 10 && digits.length <= 19);
+}
+
+/** A bounded RFC6901 pointer. Array-index canonicality is checked at resolution time: `/01` can be an object key but not an array index. */
+export function normalizeDataPointer(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.length > 512 || /[\x00-\x1f\x7f]/.test(value)) return null;
+  for (const segment of value.slice(1).split("/")) {
+    if (/~(?![01])/u.test(segment)) return null;
+    const decoded = segment.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (/(?:token|password|passwd|passcode|secret|api[_-]?key|authorization|cookie|credential|private[_-]?key|client[_-]?secret|pin|otp|ssn|social[-_ ]?security|tax[-_ ]?id|card|credit|cvv|cvc|pan|email|phone|mobile|address|birth|dob)/iu.test(decoded)) return null;
+  }
+  return value;
+}
+
+/** Project the only bounded JSON-readback descriptor this executor can perform. */
+export function normalizeDataRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !exactKeys(value, ["method", "path", "expectedStatus", "expectedJson"])) return null;
+  const base = normalizeApiRequest({ method: value.method, path: value.path, expectedStatus: value.expectedStatus });
+  if (!base || !Array.isArray(value.expectedJson) || value.expectedJson.length < 1 || value.expectedJson.length > 12) return null;
+  const pointers = new Set();
+  const expectedJson = [];
+  for (const raw of value.expectedJson) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !exactKeys(raw, ["pointer", "equals"])) return null;
+    const pointer = normalizeDataPointer(raw.pointer);
+    if (!pointer || pointers.has(pointer) || !dataScalar(raw.equals) || sensitiveExpected(raw.equals)) return null;
+    pointers.add(pointer);
+    expectedJson.push({ pointer, equals: raw.equals });
+  }
+  return { ...base, expectedJson };
+}
+
 /**
  * Validate and project the complete plan set. Projection means model-supplied
  * extras can never ride to the console as an undeclared second write shape.
@@ -165,6 +208,11 @@ export function normalizePlans(value) {
         const apiRequest = normalizeApiRequest(raw.apiRequest);
         if (!apiRequest) return null;
         plans.push({ criterionId, modality, status, flow, apiRequest });
+      } else if (modality === "data") {
+        if (!exactKeys(raw, ["criterionId", "modality", "status", "flow", "dataRequest"])) return null;
+        const dataRequest = normalizeDataRequest(raw.dataRequest);
+        if (!dataRequest) return null;
+        plans.push({ criterionId, modality, status, flow, dataRequest });
       } else return null;
     } else if (status === "not_testable") {
       if (

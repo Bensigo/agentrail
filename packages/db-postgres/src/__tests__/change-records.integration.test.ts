@@ -12,6 +12,7 @@ import {
 import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   appendChangeRecordEvent,
+  appendChangeRecordEventsAtomically,
   attachConfirmedAcceptanceRecordToExternalPullRequest,
   changeRecordId,
   createDraftAcceptanceContract,
@@ -356,6 +357,118 @@ describe.skipIf(!DB_AVAILABLE)(
         artifact: "ac_evidence.json",
         runId: "run-1",
       });
+    });
+
+    it("atomically appends an ordered batch and allows an exact replay", async () => {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        prNumber: 10,
+      });
+      const events = [
+        {
+          recordId: record.id,
+          eventKey: "batch:contract",
+          stage: "contract",
+          actor: "console_user:user-1",
+          payloadRef: { version: 1, kind: "acceptance_contract" },
+          at: new Date("2026-08-10T09:00:00.000Z"),
+        },
+        {
+          recordId: record.id,
+          eventKey: "batch:evidence",
+          stage: "evidence",
+          actor: "console_user:user-1",
+          payloadRef: { artifactKey: "evidence/run-1.json", kind: "criterion_evidence" },
+          at: new Date("2026-08-10T09:01:00.000Z"),
+        },
+      ];
+
+      const first = await appendChangeRecordEventsAtomically(events);
+      expect(first.events.map((result) => result.inserted)).toEqual([true, true]);
+      expect(first.events.map((result) => result.event.eventKey)).toEqual([
+        "batch:contract",
+        "batch:evidence",
+      ]);
+
+      const replay = await appendChangeRecordEventsAtomically(events.map((event) => ({
+        ...event,
+        at: new Date("2026-08-10T10:00:00.000Z"),
+      })));
+      expect(replay.events.map((result) => result.inserted)).toEqual([false, false]);
+      expect(replay.events.map((result) => result.event.id)).toEqual(
+        first.events.map((result) => result.event.id)
+      );
+    });
+
+    it("rolls back new batch events when a reused event key has different provenance", async () => {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        prNumber: 11,
+      });
+      await appendChangeRecordEvent({
+        recordId: record.id,
+        eventKey: "batch:already-recorded",
+        stage: "contract",
+        actor: "console_user:user-1",
+        payloadRef: { version: 1 },
+      });
+
+      await expect(appendChangeRecordEventsAtomically([
+        {
+          recordId: record.id,
+          eventKey: "batch:must-roll-back",
+          stage: "evidence",
+          actor: "console_user:user-1",
+          payloadRef: { artifactKey: "evidence/new.json" },
+        },
+        {
+          recordId: record.id,
+          eventKey: "batch:already-recorded",
+          stage: "evidence",
+          actor: "console_user:user-1",
+          payloadRef: { version: 1 },
+        },
+      ])).rejects.toThrow("already bound to different stage, actor, or payloadRef");
+
+      const persisted = await db
+        .select()
+        .from(changeRecordEvents)
+        .where(eq(changeRecordEvents.recordId, record.id));
+      expect(persisted.map((event) => event.eventKey).sort()).toEqual(["batch:already-recorded"]);
+    });
+
+    it("keeps exact preexisting events and atomically appends only the new remainder", async () => {
+      const record = await findOrCreateChangeRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        prNumber: 12,
+      });
+      const preexisting = {
+        recordId: record.id,
+        eventKey: "batch:preexisting",
+        stage: "contract",
+        actor: "console_user:user-1",
+        payloadRef: { version: 1 },
+      };
+      await appendChangeRecordEvent(preexisting);
+
+      const appended = await appendChangeRecordEventsAtomically([
+        { ...preexisting, at: new Date("2026-08-10T10:00:00.000Z") },
+        {
+          recordId: record.id,
+          eventKey: "batch:new",
+          stage: "evidence",
+          actor: "console_user:user-1",
+          payloadRef: { artifactKey: "evidence/new.json" },
+        },
+      ]);
+      expect(appended.events.map((result) => result.inserted)).toEqual([false, true]);
+      expect(appended.events.map((result) => result.event.eventKey)).toEqual([
+        "batch:preexisting",
+        "batch:new",
+      ]);
     });
 
     it("records post-merge outcomes append-only, carries merge provenance forward, and stays replay-safe after later state changes", async () => {

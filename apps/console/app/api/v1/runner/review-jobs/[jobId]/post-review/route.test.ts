@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
+  appendChangeRecordEventsAtomically: vi.fn(),
   getInstallationToken: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("../../../../../../../lib/github-advisory-review", () => ({
 
 import {
   appendChangeRecordEvent,
+  appendChangeRecordEventsAtomically,
   getInstallationToken,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
@@ -197,6 +199,11 @@ const planPayload = {
       modality: "ui",
       environmentKind: "isolated_preview",
       flow: "Save a value, reload, and observe the saved row.",
+      uiSteps: [
+        { action: "open", path: "/saved-values" },
+        { action: "expect_text", text: "Saved value" },
+        { action: "screenshot", label: "saved-value" },
+      ],
       status: "planned",
       notTestableReason: null,
     },
@@ -754,6 +761,13 @@ function request(body: unknown = validBody, authorized = true) {
 
 const params = { params: Promise.resolve({ jobId }) };
 
+function correctionEventKeys() {
+  return vi
+    .mocked(appendChangeRecordEventsAtomically)
+    .mock.calls.flatMap(([inputs]) => inputs.map((input) => input.eventKey))
+    .filter((eventKey) => eventKey.startsWith(`review:correction:${jobId}:`));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.JACE_CONSOLE_TOKEN = secret;
@@ -786,6 +800,12 @@ beforeEach(() => {
   vi.mocked(appendChangeRecordEvent).mockImplementation(async (input) => ({
     inserted: true,
     event: { eventKey: input.eventKey, payloadRef: input.payloadRef },
+  }) as never);
+  vi.mocked(appendChangeRecordEventsAtomically).mockImplementation(async (inputs) => ({
+    events: inputs.map((input) => ({
+      inserted: true,
+      event: { eventKey: input.eventKey, payloadRef: input.payloadRef },
+    })),
   }) as never);
   vi.mocked(postGithubAdvisoryReview).mockResolvedValue({
     ok: true,
@@ -846,7 +866,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
   });
 
-  it("reserves the exact outcome before one COMMENT-only GitHub helper call, then records the posted receipt", async () => {
+  it("persists the exact not_proven correction packet before repository, token, and GitHub work", async () => {
     const response = await POST(request(), params);
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({
@@ -855,6 +875,13 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
       reviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-1",
     });
 
+    expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
+    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(getRepositoryByName).mock.invocationCallOrder[0]
+    );
+    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(getInstallationToken).mock.invocationCallOrder[0]
+    );
     expect(getRepositoryByName).toHaveBeenCalledWith(workspaceId, job.repo);
     expect(postGithubAdvisoryReview).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -903,6 +930,76 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     );
   });
 
+  it("appends correction packets only for failed or not_proven criteria in mixed exact coverage", async () => {
+    const body = installVerdictPriorityProof([
+      "proven",
+      "not_testable",
+      "not_proven",
+      "failed",
+    ]);
+
+    const response = await POST(
+      request({ ...body, verdict: "failed", summaryLine: "ada/widgets #98 — failed" }),
+      params
+    );
+
+    expect(response.status).toBe(201);
+    expect(correctionEventKeys()).toEqual([
+      `review:correction:${jobId}:AC-3`,
+      `review:correction:${jobId}:AC-4`,
+    ]);
+  });
+
+  it("atomically persists the complete packet set when more than 100 criteria need correction", async () => {
+    const body = installVerdictPriorityProof(
+      Array.from({ length: 101 }, () => "not_proven" as const)
+    );
+
+    const response = await POST(
+      request({
+        ...body,
+        verdict: "not_proven",
+        summaryLine: "ada/widgets #98 — not_proven",
+      }),
+      params
+    );
+
+    expect(response.status).toBe(201);
+    expect(appendChangeRecordEventsAtomically).toHaveBeenCalledOnce();
+    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.calls[0]![0]).toHaveLength(101);
+  });
+
+  it("does not append correction packets when every criterion is proven or not_testable", async () => {
+    const body = installVerdictPriorityProof(["proven", "not_testable"]);
+
+    const response = await POST(
+      request({
+        ...body,
+        verdict: "not_testable",
+        summaryLine: "ada/widgets #98 — not_testable",
+      }),
+      params
+    );
+
+    expect(response.status).toBe(201);
+    expect(correctionEventKeys()).toEqual([]);
+    expect(appendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+  });
+
+  it("holds before repository, token, or GitHub work when correction packet custody cannot be persisted", async () => {
+    vi.mocked(appendChangeRecordEventsAtomically).mockRejectedValueOnce(
+      new Error("packet provenance conflicts with its deterministic event key")
+    );
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(503);
+    expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
+    expect(getRepositoryByName).not.toHaveBeenCalled();
+    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
   it("an existing attempt with no posted receipt holds instead of issuing a duplicate GitHub write", async () => {
     timeline.events.push({
       eventKey: `review:github-attempt:${jobId}`,
@@ -917,6 +1014,13 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
   it("replays an exact stored posted receipt without a second reservation or GitHub write", async () => {
     const first = await POST(request(), params);
     expect(first.status).toBe(201);
+    expect(appendChangeRecordEventsAtomically).toHaveBeenCalledOnce();
+    for (const correction of vi.mocked(appendChangeRecordEventsAtomically).mock.calls[0]![0]) {
+      timeline.events.push({
+        eventKey: correction.eventKey,
+        payloadRef: correction.payloadRef,
+      });
+    }
     const postedCall = vi.mocked(appendChangeRecordEvent).mock.calls[1][0];
     timeline.events.push({
       eventKey: postedCall.eventKey,
@@ -937,6 +1041,48 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
   });
 
+  it("holds a posted replay when its correction packet custody is missing, malformed, or forged", async () => {
+    const first = await POST(request(), params);
+    expect(first.status).toBe(201);
+    const correctionEvents = vi
+      .mocked(appendChangeRecordEventsAtomically)
+      .mock.calls[0]![0]
+      .map((input) => ({ eventKey: input.eventKey, payloadRef: { ...input.payloadRef } }));
+    const posted = vi.mocked(appendChangeRecordEvent).mock.calls[1]![0];
+    const plan = timeline.events[0]!;
+
+    const cases: Array<[string, Array<{ eventKey: string; payloadRef: Record<string, unknown> }>]> = [
+      ["missing", []],
+      ["malformed", [{ ...correctionEvents[0]!, payloadRef: { kind: "malformed" } }]],
+      ["forged", [{
+        ...correctionEvents[0]!,
+        payloadRef: { ...correctionEvents[0]!.payloadRef, observed: "forged observation" },
+      }]],
+    ];
+
+    for (const [name, corrections] of cases) {
+      timeline.events = [
+        plan,
+        ...corrections,
+        { eventKey: posted.eventKey, payloadRef: posted.payloadRef },
+      ];
+      vi.mocked(appendChangeRecordEventsAtomically).mockClear();
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(getRepositoryByName).mockClear();
+      vi.mocked(getInstallationToken).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+
+      const replay = await POST(request(), params);
+
+      expect(replay.status, name).toBe(409);
+      expect(appendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+      expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+      expect(getRepositoryByName).not.toHaveBeenCalled();
+      expect(getInstallationToken).not.toHaveBeenCalled();
+      expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+    }
+  });
+
   it("a GitHub failure leaves only the durable attempt reservation and never records a false posted receipt", async () => {
     vi.mocked(postGithubAdvisoryReview).mockResolvedValue({
       ok: false,
@@ -946,6 +1092,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     const response = await POST(request(), params);
     expect(response.status).toBe(502);
     expect(appendChangeRecordEvent).toHaveBeenCalledTimes(1);
+    expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
     expect(appendChangeRecordEvent).toHaveBeenCalledWith(
       expect.objectContaining({ eventKey: `review:github-attempt:${jobId}` })
     );

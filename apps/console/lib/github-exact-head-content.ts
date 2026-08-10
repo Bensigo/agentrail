@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { acceptanceContextOverlayManifestSha256 } from "@agentrail/db-postgres";
+import {
+  acceptanceContextOverlayManifestSha256,
+  MAX_EXACT_GIT_TREE_PROOF_DECODED_BYTES,
+  verifyExactGitTreeInclusionProof,
+  type ExactGitTreeInclusionProof,
+} from "@agentrail/db-postgres";
 import { scanForSecrets } from "./secret-scan";
 import type { ExactHeadGithubContextSnapshot } from "./github-exact-head-context";
 
@@ -51,7 +56,7 @@ export interface ExactHeadContentExclusion {
 }
 
 export type ExactHeadContentReadResult =
-  | { ok: true; record: ExactHeadContentRecord }
+  | { ok: true; record: ExactHeadContentRecord; treeInclusionProof?: ExactGitTreeInclusionProof }
   | { ok: false; kind: "not_proven"; reason: ExactHeadContentFailureReason; exclusion?: ExactHeadContentExclusion };
 
 export type ExactHeadContentFailureReason =
@@ -101,6 +106,7 @@ interface ReadState {
   calls: number;
   fallbackReads: number;
   fallbackBytes: number;
+  fallbackProofBytes: number;
 }
 
 type GithubJsonRead =
@@ -272,6 +278,73 @@ function parseVerifiedTree(value: unknown, snapshot: ExactHeadGithubContextSnaps
 
 function gitBlobSha(bytes: Uint8Array): string {
   return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex");
+}
+
+function nativeTreeMode(entry: VerifiedTreeEntry): string | null {
+  if (entry.type === "tree") return entry.mode === "040000" || entry.mode === "40000" ? "40000" : null;
+  if (entry.type === "commit") return entry.mode === "160000" ? "160000" : null;
+  return entry.mode === "100644" || entry.mode === "100755" || entry.mode === "120000" ? entry.mode : null;
+}
+
+function parentPath(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "" : path.slice(0, slash);
+}
+
+function exactTreeInclusionProof(input: {
+  tree: VerifiedTree;
+  headTreeSha: string;
+  path: string;
+  blobSha: string;
+}): ExactGitTreeInclusionProof | null {
+  const parts = input.path.split("/");
+  if (parts.length > 32) return null;
+  const trees: Array<{ sha1: string; bodyBase64: string }> = [];
+  let currentPath = "";
+  let expectedTreeSha = input.headTreeSha.toLowerCase();
+  for (let index = 0; index < parts.length; index += 1) {
+    const immediate = [...input.tree.byPath.values()]
+      .filter((entry) => parentPath(entry.path) === currentPath)
+      .map((entry) => {
+        const mode = nativeTreeMode(entry);
+        const name = entry.path.slice(currentPath.length === 0 ? 0 : currentPath.length + 1);
+        return mode === null || name.includes("/") ? null : { mode, name, sha: entry.sha };
+      });
+    if (immediate.some((entry) => entry === null) || immediate.length === 0 || immediate.length > 4_096) return null;
+    const entries = immediate as Array<{ mode: string; name: string; sha: string }>;
+    entries.sort((left, right) => Buffer.compare(
+      Buffer.from(`${left.name}${left.mode === "40000" ? "/" : ""}`, "utf8"),
+      Buffer.from(`${right.name}${right.mode === "40000" ? "/" : ""}`, "utf8"),
+    ));
+    if (entries.some((entry, entryIndex) => entryIndex > 0 && entries[entryIndex - 1]!.name === entry.name)) return null;
+    const body = Buffer.concat(entries.map((entry) => Buffer.concat([
+      Buffer.from(`${entry.mode} ${entry.name}\0`, "utf8"), Buffer.from(entry.sha, "hex"),
+    ])));
+    const actualTreeSha = createHash("sha1").update(`tree ${body.byteLength}\0`, "utf8").update(body).digest("hex");
+    if (actualTreeSha !== expectedTreeSha) return null;
+    trees.push({ sha1: actualTreeSha, bodyBase64: body.toString("base64") });
+    const child = entries.find((entry) => entry.name === parts[index]);
+    if (!child) return null;
+    if (index === parts.length - 1) {
+      if ((child.mode !== "100644" && child.mode !== "100755") || child.sha !== input.blobSha.toLowerCase()) return null;
+    } else {
+      if (child.mode !== "40000") return null;
+      currentPath = currentPath ? `${currentPath}/${parts[index]}` : parts[index]!;
+      expectedTreeSha = child.sha;
+    }
+  }
+  const proof: ExactGitTreeInclusionProof = {
+    kind: "exact_git_tree_inclusion_batch",
+    version: 1,
+    headTreeSha: input.headTreeSha.toLowerCase(),
+    trees: trees.sort((left, right) => Buffer.compare(Buffer.from(left.sha1, "utf8"), Buffer.from(right.sha1, "utf8"))),
+    paths: [{ path: input.path, blobSha: input.blobSha.toLowerCase() }],
+  };
+  return verifyExactGitTreeInclusionProof(proof) ? proof : null;
+}
+
+function exactTreeProofDecodedBytes(proof: ExactGitTreeInclusionProof): number {
+  return proof.trees.reduce((total, tree) => total + Buffer.from(tree.bodyBase64, "base64").byteLength, 0);
 }
 
 function decodeCanonicalBase64(content: unknown, declaredSize: unknown): Uint8Array | null {
@@ -458,7 +531,7 @@ export async function materializeExactHeadGithubContent(input: {
     };
   }
 
-  const state: ReadState = { calls: 0, fallbackReads: 0, fallbackBytes: 0 };
+  const state: ReadState = { calls: 0, fallbackReads: 0, fallbackBytes: 0, fallbackProofBytes: 0 };
   state.calls += 1;
   const fetchedTree = await fetchGithubJson(`${GITHUB_API}/repos/${snapshot.repo}/git/trees/${snapshot.headTreeSha.toLowerCase()}?recursive=1`, input.token, MAX_EXACT_HEAD_TREE_RESPONSE_BYTES);
   if (!fetchedTree.ok) return { ok: false, kind: "not_proven", reason: fetchedTree.reason === "invalid_response" ? "invalid_tree" : fetchedTree.reason, exclusions };
@@ -497,6 +570,7 @@ export async function materializeExactHeadGithubContent(input: {
   }
 
   const cachedRecords = new Map(records.map((record) => [record.path, record]));
+  const cachedFallbackProofs = new Map<string, ExactGitTreeInclusionProof>();
   const readExactPath = async (path: string): Promise<ExactHeadContentReadResult> => {
     if (!isSafePath(path)) return { ok: false, kind: "not_proven", reason: "unsafe_path" };
     if (isSecretPath(path)) {
@@ -515,7 +589,10 @@ export async function materializeExactHeadGithubContent(input: {
       };
     }
     const cached = cachedRecords.get(path);
-    if (cached) return { ok: true, record: cached };
+    if (cached) {
+      const treeInclusionProof = cachedFallbackProofs.get(path);
+      return treeInclusionProof ? { ok: true, record: cached, treeInclusionProof } : { ok: true, record: cached };
+    }
     const entry = tree.byPath.get(path);
     if (!entry) return { ok: false, kind: "not_proven", reason: "path_not_found" };
     if (entry.type !== "blob" || !SAFE_MODE.has(entry.mode)) return { ok: false, kind: "not_proven", reason: "invalid_tree" };
@@ -524,10 +601,19 @@ export async function materializeExactHeadGithubContent(input: {
       return { ok: false, kind: "not_proven", reason: "content_limit" };
     }
     state.fallbackReads += 1;
+    const treeInclusionProof = exactTreeInclusionProof({ tree, headTreeSha: snapshot.headTreeSha, path, blobSha: entry.sha });
+    if (!treeInclusionProof) return { ok: false, kind: "not_proven", reason: "invalid_tree" };
+    const proofBytes = exactTreeProofDecodedBytes(treeInclusionProof);
+    if (state.fallbackProofBytes + proofBytes > MAX_EXACT_GIT_TREE_PROOF_DECODED_BYTES) {
+      return { ok: false, kind: "not_proven", reason: "content_limit" };
+    }
     const read = await readBlob({ token: input.token, repo: snapshot.repo, entry, previousPath: null, state, source: "exact_head_tree_fallback", reason: "exact_head_tree_path" });
     if (read.ok) {
       state.fallbackBytes += read.record.byteCount;
+      state.fallbackProofBytes += proofBytes;
       cachedRecords.set(path, read.record);
+      cachedFallbackProofs.set(path, treeInclusionProof);
+      return { ...read, treeInclusionProof };
     }
     return read;
   };

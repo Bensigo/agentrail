@@ -365,7 +365,11 @@ describe.skipIf(!DB_AVAILABLE)(
         workspaceId: wsId,
         sourceSnapshotId: first.snapshot.id,
       });
-      expect(custody.sourceSnapshot).toMatchObject({ id: first.snapshot.id, repo: "acme/widgets" });
+      expect(custody.sourceSnapshot).toMatchObject({
+        id: first.snapshot.id,
+        workspaceId: wsId,
+        repo: "acme/widgets",
+      });
       expect(custody.wikiPages).toEqual([expect.objectContaining({ id: wiki.id, bodyMd: wikiBody })]);
       await expect(resolveAcceptanceContextPackCustody({
         workspaceId: wsId,

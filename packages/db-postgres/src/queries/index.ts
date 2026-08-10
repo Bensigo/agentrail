@@ -3287,6 +3287,7 @@ export {
   attachConfirmedAcceptanceRecordToExternalPullRequest,
   advanceConfirmedAcceptanceRecordPullRequestHead,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  reconcileConfirmedAcceptanceRecordPullRequestHead,
   appendChangeRecordEvent,
   appendChangeRecordEventsAtomically,
   appendCurrentReviewJobEventsAtomically,

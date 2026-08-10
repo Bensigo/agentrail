@@ -2,7 +2,9 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
+  reconcileConfirmedAcceptanceRecordPullRequestHead,
   getWorkspaceByGithubInstallationId,
+  getInstallationToken,
   getRepositoryByName,
   appendChangeRecordEvent,
   findOrCreateChangeRecord,
@@ -11,6 +13,7 @@ import {
   triggerDependencyWatchesForPush,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
+import { readCurrentGithubPullRequest } from "../../../../../lib/github-current-pr";
 
 /**
  * GitHub-App `pull_request` webhook — the intake half of Arc B's reviewer of
@@ -18,8 +21,10 @@ import {
  * §1). Every admitted PR event becomes one durable `review_jobs` row
  * (`enqueueReviewJob`, `@agentrail/db-postgres`); a headless Jace worker
  * (a later task) claims rows and posts the one review of record. This route
- * only ADMITS — it never reviews, never calls GitHub back, and once auth
- * passes it is never itself a source of retries: GitHub redelivers on
+ * only ADMITS — it never reviews. A signed stale head may make one bounded,
+ * authenticated GitHub-App read to reconcile custody; it never trusts a
+ * caller-supplied replacement head. Once auth passes it is never itself a
+ * source of retries: GitHub redelivers on
  * anything but a 2xx, so EVERY post-auth outcome here is 200 (house
  * doctrine, `../../connectors/telegram/webhook/route.ts`) — the only 4xx
  * this route ever returns is an auth failure, before the payload is trusted
@@ -62,9 +67,10 @@ import {
  * then does `advanceConfirmedAcceptanceRecordPullRequestHead` atomically bind
  * the signed head as the Record's current PR head, supersede obsolete work,
  * and admit that exact review job unless the PR is still draft. The signed
- * action and delivery id are part of that one transaction. A replayed
- * delivery for the same (workspace, repo, PR, head) reuses the deterministic
- * state and comes back `deduped: true` — still 200, never an error.
+ * action and delivery id are part of that one transaction. A replayed signed
+ * delivery id is a total no-op and comes back `deduped: true`
+ * — still 200, never an error. Head-only identity would wrongly collapse an
+ * A→B→A history, so receipt identity is the exact GitHub delivery id.
  */
 
 const SIGNATURE_HEADER = "x-hub-signature-256";
@@ -134,6 +140,106 @@ function ignored(reason?: string): NextResponse {
   return NextResponse.json(
     reason ? { ok: true, ignored: true, reason } : { ok: true, ignored: true }
   );
+}
+
+/**
+ * A stale signed delivery has already revoked authority in the DB. This is the
+ * only place we ask GitHub for a current head, using the workspace App token;
+ * a public caller can never supply a replacement SHA. The DB repeats the
+ * blocked tuple and authority-generation check under the same PR lock, so a
+ * later signed push wins over this read/commit race.
+ */
+async function reconcileStalePullRequestDelivery(input: {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  stale: Extract<Awaited<ReturnType<typeof advanceConfirmedAcceptanceRecordPullRequestHead>>, { kind: "stale_delivery" }>;
+}): Promise<NextResponse> {
+  if (!input.stale.blockedCycleId) {
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "blocked head has no reconciliation cycle",
+      superseded: input.stale.superseded,
+    });
+  }
+  let token: string | null;
+  try {
+    token = await getInstallationToken(input.workspaceId);
+  } catch {
+    token = null;
+  }
+  if (!token) {
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "GitHub reconciliation is unavailable",
+      superseded: input.stale.superseded,
+    });
+  }
+
+  const current = await readCurrentGithubPullRequest({
+    token,
+    repo: input.repo,
+    prNumber: input.prNumber,
+  });
+  if (!current.ok) {
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "current GitHub pull request is not proven",
+      superseded: input.stale.superseded,
+    });
+  }
+
+  const reconciled = await reconcileConfirmedAcceptanceRecordPullRequestHead({
+    workspaceId: input.workspaceId,
+    recordId: input.recordId,
+    repo: input.repo,
+    prNumber: input.prNumber,
+    expectedBlockedHeadSha: input.stale.blockedHeadSha,
+    expectedBlockedCycleId: input.stale.blockedCycleId,
+    expectedBlockedAuthorityGeneration: input.stale.authorityGeneration,
+    observedHeadSha: current.pullRequest.headSha,
+    observedBaseSha: current.pullRequest.baseSha,
+    observedState: current.pullRequest.state,
+    observedDraft: current.pullRequest.draft,
+    observedMerged: current.pullRequest.merged,
+    source: "github_app_api",
+  });
+  if (reconciled.kind === "reconciled" || reconciled.kind === "already_current") {
+    return NextResponse.json({
+      ok: true,
+      reconciled: reconciled.kind === "reconciled",
+      alreadyCurrent: reconciled.kind === "already_current",
+      enqueued: reconciled.jobAdmitted,
+      blocked: false,
+      superseded: input.stale.superseded,
+    });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    ignored: true,
+    enqueued: false,
+    reconciled: false,
+    blocked: reconciled.kind === "closed"
+      ? true
+      : reconciled.kind === "blocked_precondition_changed"
+        ? !reconciled.currentAuthoritative
+        : true,
+    reason: reconciled.kind === "closed"
+      ? "current pull request is closed or merged"
+      : "reconciliation precondition changed",
+    superseded: input.stale.superseded,
+  });
 }
 
 function acceptanceRecordMarker(body: unknown):
@@ -570,14 +676,22 @@ export async function POST(request: NextRequest) {
     source: "github_webhook",
     prUrl,
   });
-  if (result.kind === "stale_delivery") {
+  if (result.kind === "delivery_replayed") {
     return NextResponse.json({
       ok: true,
-      ignored: true,
       enqueued: false,
-      blocked: true,
-      reason: "stale delivery; current head requires reconciliation",
-      superseded: result.superseded,
+      deduped: true,
+      replayed: true,
+      blocked: !result.currentAuthoritative,
+    });
+  }
+  if (result.kind === "stale_delivery") {
+    return reconcileStalePullRequestDelivery({
+      workspaceId: workspace.workspaceId,
+      recordId,
+      repo: repoFullName,
+      prNumber,
+      stale: result,
     });
   }
   if (result.kind !== "advanced") {

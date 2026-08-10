@@ -145,6 +145,7 @@ jobs:
           app/api/v1/runner/preview-boots
           app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts
           lib/github-advisory-review.test.ts
+          lib/github-current-pr.test.ts
           lib/acceptance-context-pack-compiler.test.ts
           lib/acceptance-context-pack-source-custody.test.ts
           lib/github-exact-head-content.test.ts

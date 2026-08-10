@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
+  appendChangeRecordEventsAtomically: vi.fn(),
   completeReviewJob: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
   getPreviewBoot: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../../result/notify", () => ({
 import { POST } from "./route";
 import {
   appendChangeRecordEvent,
+  appendChangeRecordEventsAtomically,
   completeReviewJob,
   findOrCreateChangeRecord,
   getPreviewBoot,
@@ -34,6 +36,7 @@ import {
   R7_READY_NOT_PROVEN_OBSERVATION,
   type CriterionResult,
   type ExactReviewJobProof,
+  parseCriterionResults,
   r7UnavailablePreviewObservation,
   reviewOutcomeDigest,
 } from "../../../../../../lib/review-job-proof-attestation";
@@ -76,8 +79,13 @@ import {
   reviewJobCardReservationEventKey,
   reviewJobResultEventKey,
 } from "../../../../../../lib/review-job-job-execution";
+import {
+  buildReviewJobCorrectionPackets,
+  reviewJobCorrectionPacketEventKey,
+} from "../../../../../../lib/review-job-correction-packet";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
+const mockAppendChangeRecordEventsAtomically = vi.mocked(appendChangeRecordEventsAtomically);
 const mockComplete = vi.mocked(completeReviewJob);
 const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
 const mockGetPreviewBoot = vi.mocked(getPreviewBoot);
@@ -254,6 +262,11 @@ const PLAN_EVENT = {
       modality: "ui",
       environmentKind: "isolated_preview",
       flow: "Save the value, reload, and verify it remains visible.",
+      uiSteps: [
+        { action: "open", path: "/saved-values" },
+        { action: "expect_text", text: "Saved value" },
+        { action: "screenshot", label: "saved-value" },
+      ],
       status: "planned",
       notTestableReason: null,
     }],
@@ -269,9 +282,55 @@ const CONTRACT_TIMELINE = {
 
 let latestRequestBody: Record<string, unknown> | null = null;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCorrectionPacketTimelineEvent(
+  event: unknown
+): event is { eventKey: string; payloadRef: unknown } {
+  return (
+    isRecord(event) &&
+    typeof event.eventKey === "string" &&
+    event.eventKey.startsWith(`review:correction:${RUNNING_JOB.id}:`) &&
+    "payloadRef" in event
+  );
+}
+
+function correctionPacketEvents(
+  base: { record: typeof CHANGE_RECORD; events: Array<{ eventKey: string; payloadRef: Record<string, unknown> }> },
+  body: Record<string, unknown> | null
+) {
+  const criterionResults = parseCriterionResults(body?.criterionResults);
+  const planEvent = base.events.find(
+    (event) => event.eventKey === `verification:plan:${RUNNING_JOB.id}`
+  );
+  if (!criterionResults || !planEvent) return [];
+  const proof = {
+    job: RUNNING_JOB,
+    timeline: base,
+    contract: {
+      id: CONFIRMED_CONTRACT[0]!.id,
+      version: CONFIRMED_CONTRACT[0]!.version,
+      criteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria,
+    },
+    verificationPlan: planEvent.payloadRef,
+  } as unknown as ExactReviewJobProof;
+  return (buildReviewJobCorrectionPackets({ proof, criterionResults }) ?? []).map(
+    (packet) => ({
+      eventKey: reviewJobCorrectionPacketEventKey({
+        jobId: packet.jobId,
+        criterionId: packet.criterion.id,
+      })!,
+      payloadRef: packet,
+    })
+  );
+}
+
 function timelineWithPostedAttestation(
   base: { record: typeof CHANGE_RECORD; events: unknown[] },
-  body: Record<string, unknown> | null = latestRequestBody
+  body: Record<string, unknown> | null = latestRequestBody,
+  options: { correctionPackets?: boolean } = {}
 ) {
   const criterionResults = Array.isArray(body?.criterionResults)
     ? body.criterionResults
@@ -289,6 +348,9 @@ function timelineWithPostedAttestation(
     ...base,
     events: [
       ...base.events,
+      ...(options.correctionPackets === false
+        ? []
+        : correctionPacketEvents(base as never, body)),
       {
         id: "event-github-posted-1",
         recordId: "record-1",
@@ -732,6 +794,60 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
   });
 
   describe("confirmed Contract coverage", () => {
+    it("accepts only the exact server-derived correction packet set and never appends packets during completion", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(res.status).toBe(200);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockAppendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+      expect(
+        mockAppendChangeRecordEvent.mock.calls.filter(([input]) =>
+          input.eventKey.startsWith(`review:correction:${RUNNING_JOB.id}:`)
+        )
+      ).toEqual([]);
+    });
+
+    it("holds missing, malformed, or forged correction packet custody before completion or notification", async () => {
+      const cases: Array<[string, (timeline: ReturnType<typeof timelineWithPostedAttestation>) => void]> = [
+        ["missing", () => {}],
+        ["malformed", (timeline) => {
+          const packet = timeline.events.find(isCorrectionPacketTimelineEvent);
+          if (!packet) throw new Error("expected an exact correction packet fixture");
+          packet.payloadRef = null;
+        }],
+        ["forged", (timeline) => {
+          const packet = timeline.events.find(isCorrectionPacketTimelineEvent);
+          if (!packet) throw new Error("expected an exact correction packet fixture");
+          if (!isRecord(packet.payloadRef)) {
+            throw new Error("expected an object correction packet fixture");
+          }
+          packet.payloadRef = { ...packet.payloadRef, observed: "forged observation" };
+        }],
+      ];
+
+      for (const [name, arrange] of cases) {
+        const timeline = timelineWithPostedAttestation(
+          CONTRACT_TIMELINE,
+          VALID_POSTED_BODY,
+          { correctionPackets: name !== "missing" }
+        );
+        arrange(timeline);
+        mockReadChangeRecordTimelineByPr.mockResolvedValueOnce(timeline as never);
+        mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+
+        const res = await POST(postReq(VALID_POSTED_BODY));
+
+        expect(res.status, name).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+    });
+
     it("rejects a valid-looking result when no server-owned pre-write GitHub attestation exists", async () => {
       mockReadChangeRecordTimelineByPr.mockResolvedValue(CONTRACT_TIMELINE as never);
 

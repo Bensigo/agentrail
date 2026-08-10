@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
   appendChangeRecordEvent,
+  appendChangeRecordEventsAtomically,
   getInstallationToken,
   getJaceSessionByEveSessionId,
   getRepositoryByName,
@@ -23,6 +24,11 @@ import {
   reviewPostedAttestationEventKey,
   reviewPostedAttestationPayload,
 } from "../../../../../../../lib/review-job-proof-attestation";
+import {
+  buildReviewJobCorrectionPackets,
+  hasExactReviewJobCorrectionPackets,
+  reviewJobCorrectionPacketEventKey,
+} from "../../../../../../../lib/review-job-correction-packet";
 
 interface ReviewComment {
   path: string;
@@ -239,7 +245,20 @@ export async function POST(
     outcomeDigest,
     postPayloadDigest,
   });
-  if (priorPosted) return replayResponse(body, priorPosted);
+  if (priorPosted) {
+    if (
+      !hasExactReviewJobCorrectionPackets({
+        proof,
+        criterionResults: body.criterionResults,
+      })
+    ) {
+      return NextResponse.json(
+        { error: "posted review is missing its exact correction packet custody" },
+        { status: 409 }
+      );
+    }
+    return replayResponse(body, priorPosted);
+  }
   if (existingEvent(proof.timeline.events, postedEventKey)) {
     return NextResponse.json(
       { error: "this review job already posted a different attested review" },
@@ -259,6 +278,63 @@ export async function POST(
       },
       { status: 409 }
     );
+  }
+
+  const correctionPackets = buildReviewJobCorrectionPackets({
+    proof,
+    criterionResults: body.criterionResults,
+  });
+  if (!correctionPackets) {
+    return NextResponse.json(
+      { error: "review correction packets could not be derived from the exact proof" },
+      { status: 409 }
+    );
+  }
+  const correctionPrefix = `review:correction:${jobId}:`;
+  const existingCorrectionEvents = proof.timeline.events.filter((event) =>
+    event.eventKey.startsWith(correctionPrefix)
+  );
+  if (
+    existingCorrectionEvents.length > 0 &&
+    !hasExactReviewJobCorrectionPackets({
+      proof,
+      criterionResults: body.criterionResults,
+    })
+  ) {
+    return NextResponse.json(
+      { error: "stored review correction packets conflict with the exact proof" },
+      { status: 409 }
+    );
+  }
+  if (correctionPackets.length > 0) {
+    const correctionEvents = [];
+    for (const packet of correctionPackets) {
+      const eventKey = reviewJobCorrectionPacketEventKey({
+        jobId: packet.jobId,
+        criterionId: packet.criterion.id,
+      });
+      if (!eventKey) {
+        return NextResponse.json(
+          { error: "review correction packet identity is invalid" },
+          { status: 409 }
+        );
+      }
+      correctionEvents.push({
+        recordId: proof.timeline.record.id,
+        eventKey,
+        stage: REVIEW_JOB_POST_STAGE,
+        actor: REVIEW_JOB_POST_ACTOR,
+        payloadRef: packet,
+      });
+    }
+    try {
+      await appendChangeRecordEventsAtomically(correctionEvents);
+    } catch {
+      return NextResponse.json(
+        { error: "could not persist the exact review correction packets" },
+        { status: 503 }
+      );
+    }
   }
 
   const repo = await getRepositoryByName(proof.job.workspaceId, proof.job.repo);

@@ -131,8 +131,9 @@ jobs:
       # can persist only a full server-bound criterion plan, enqueue only that
       # job's PR head, attest the R7.1 environment fallback plus R7.2's
       # deterministic UI screenshot, API status-card, data assertion-card,
-      # and bounded job assertion-card receipts before an exact-commit GitHub
-      # write, and reject the generic posting route.
+      # and bounded job assertion-card receipts plus immutable correction
+      # packets before an exact-commit GitHub write, and reject the generic
+      # posting route.
       - name: console — Jace inbound and exact-head review routes
         working-directory: apps/console
         run: >-
@@ -142,6 +143,7 @@ jobs:
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           lib/github-advisory-review.test.ts
+          lib/review-job-correction-packet.test.ts
           lib/review-job-api-execution.test.ts
           lib/review-job-data-execution.test.ts
           lib/review-job-job-execution.test.ts

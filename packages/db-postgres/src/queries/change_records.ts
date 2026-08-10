@@ -298,9 +298,20 @@ export type AppendChangeRecordEventInput = {
   at?: Date;
 };
 
+export type AppendChangeRecordEventResult = {
+  event: ChangeRecordEventRow;
+  inserted: boolean;
+};
+
+export type AppendChangeRecordEventsAtomicallyInput = readonly AppendChangeRecordEventInput[];
+
+export type AppendChangeRecordEventsAtomicallyResult = {
+  events: AppendChangeRecordEventResult[];
+};
+
 export async function appendChangeRecordEvent(
   input: AppendChangeRecordEventInput
-): Promise<{ event: ChangeRecordEventRow; inserted: boolean }> {
+): Promise<AppendChangeRecordEventResult> {
   const id = changeRecordEventId({
     recordId: input.recordId,
     eventKey: input.eventKey,
@@ -350,6 +361,77 @@ export async function appendChangeRecordEvent(
         : (raw as ChangeRecordEventRow),
     inserted: inserted[0] != null,
   };
+}
+
+/**
+ * Append one bounded, single-Record event batch as one all-or-nothing write.
+ *
+ * A retry may reuse an event key only when it names the same immutable event
+ * provenance. `at` deliberately does not participate in that comparison: a
+ * retry can occur at a different wall-clock time while still referring to the
+ * original event key.
+ */
+export async function appendChangeRecordEventsAtomically(
+  inputs: AppendChangeRecordEventsAtomicallyInput
+): Promise<AppendChangeRecordEventsAtomicallyResult> {
+  if (inputs.length === 0) {
+    throw new Error("appendChangeRecordEventsAtomically requires at least one event");
+  }
+
+  const recordId = inputs[0]!.recordId;
+  const eventKeys = new Set<string>();
+  for (const input of inputs) {
+    if (input.recordId !== recordId) {
+      throw new Error("appendChangeRecordEventsAtomically requires one recordId");
+    }
+    if (eventKeys.has(input.eventKey)) {
+      throw new Error("appendChangeRecordEventsAtomically does not allow duplicate eventKeys");
+    }
+    eventKeys.add(input.eventKey);
+  }
+
+  return db.transaction(async (tx) => {
+    const events: AppendChangeRecordEventResult[] = [];
+    for (const input of inputs) {
+      const at = (input.at ?? new Date()).toISOString();
+      const insertedRows = Array.from(await tx.execute(sql`
+        INSERT INTO change_record_events (
+          id, record_id, event_key, stage, at, actor, payload_ref
+        )
+        VALUES (
+          ${changeRecordEventId({ recordId: input.recordId, eventKey: input.eventKey })},
+          ${input.recordId},
+          ${input.eventKey},
+          ${input.stage},
+          ${at},
+          ${input.actor},
+          ${JSON.stringify(input.payloadRef)}::jsonb
+        )
+        ON CONFLICT (record_id, event_key) DO NOTHING
+        RETURNING *
+      `)) as Array<Record<string, unknown>>;
+      const rawEvent = (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, input.recordId),
+        eq(changeRecordEvents.eventKey, input.eventKey),
+      )).limit(1))[0];
+      if (!rawEvent) {
+        throw new Error("appendChangeRecordEventsAtomically: event was not inserted or found");
+      }
+
+      const event = rawEvent as ChangeRecordEventRow;
+      if (
+        event.stage !== input.stage
+        || event.actor !== input.actor
+        || !isDeepStrictEqual(event.payloadRef, input.payloadRef)
+      ) {
+        throw new Error(
+          "appendChangeRecordEventsAtomically: event key is already bound to different stage, actor, or payloadRef"
+        );
+      }
+      events.push({ event, inserted: insertedRows[0] != null });
+    }
+    return { events };
+  });
 }
 
 export type AttachConfirmedAcceptanceRecordToExternalPullRequestResult =

@@ -12,6 +12,7 @@ import {
   resolveExactReviewJobProof,
   reviewOutcomeDigest,
 } from "../../../../../../lib/review-job-proof-attestation";
+import { hasExactReviewJobCorrectionPackets } from "../../../../../../lib/review-job-correction-packet";
 import { sendWorkspaceNotification } from "../../result/notify";
 
 /**
@@ -225,11 +226,19 @@ export async function POST(request: NextRequest) {
       proof && outcomeDigest
         ? findMatchingPostedAttestation({ proof, outcomeDigest })
         : null;
-    if (!proof || !postedAttestation) {
+    if (
+      !proof ||
+      !postedAttestation ||
+      !body.criterionResults ||
+      !hasExactReviewJobCorrectionPackets({
+        proof,
+        criterionResults: body.criterionResults,
+      })
+    ) {
       return NextResponse.json(
         {
           error:
-            "review result was not attested before the GitHub write against the confirmed Contract plan and exact-head R7.1 environment outcome",
+            "review result and its exact correction packets were not attested before the GitHub write against the confirmed Contract plan and exact-head evidence",
         },
         { status: 409 }
       );

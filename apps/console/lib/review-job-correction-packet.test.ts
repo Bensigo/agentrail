@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { CriterionResult, ExactReviewJobProof } from "./review-job-proof-attestation";
 import {
   buildReviewJobApiAttempt,
@@ -54,7 +55,14 @@ const base = {
   contract: { id: "contract-1", version: 3 },
 };
 const boot = {
-  id: "boot-1", workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42,
+  id: previewBootId({
+    workspaceId: base.job.workspaceId,
+    repo: base.job.repo,
+    prNumber: base.job.prNumber,
+    headSha: base.job.headSha,
+    cycleId: base.job.id,
+  }),
+  workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42,
   headSha: HEAD, status: "ready", url: "https://preview.example.test/",
 };
 

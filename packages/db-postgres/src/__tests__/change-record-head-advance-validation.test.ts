@@ -3,6 +3,7 @@ import {
   advanceConfirmedAcceptanceRecordPullRequestHead,
   CurrentReviewJobNotCurrentError,
   invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  queueSelectedCorrectionDispatch,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
   type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
@@ -50,6 +51,21 @@ const RECONCILE_BASE = {
 };
 
 describe("confirmed Acceptance Record PR head advance boundary", () => {
+  it("accepts only an opaque compiled Pack reference for selected-route dispatch preparation", async () => {
+    const opaque = {
+      workspaceId: BASE.workspaceId,
+      compiledPackId: "00000000-0000-4000-8000-000000000009",
+    };
+    await expect(queueSelectedCorrectionDispatch({
+      ...opaque,
+      headSha: HEAD,
+      routeId: "00000000-0000-4000-8000-000000000010",
+      packet: { arbitrary: "caller-controlled" },
+    } as never)).rejects.toThrow("requires a workspace and compiled Pack");
+    await expect(queueSelectedCorrectionDispatch({ workspaceId: BASE.workspaceId } as never))
+      .rejects.toThrow("requires a workspace and compiled Pack");
+  });
+
   it.each([
     ["abbreviated head", { headSha: "abc123def4567890" }],
     ["non-GitHub source", { source: "manual" }],

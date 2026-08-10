@@ -7,6 +7,7 @@ import {
   changeRecords,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
+  acceptanceCorrectionDispatches,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
@@ -14,6 +15,7 @@ import {
   type AcceptanceContractRow,
   type AcceptanceBuilderRouteRow,
   type AcceptanceCompiledContextPackRow,
+  type AcceptanceCorrectionDispatchRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
@@ -942,6 +944,13 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
           AND status IN ('pending', 'claimed', 'booting', 'ready')
         RETURNING id
       `)) : [];
+      if (held.events[0]!.inserted) {
+        await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+          workspaceId: input.workspaceId, recordId: input.recordId,
+          headSha: previousHeadSha, headCycleId: record.currentPrHeadCycleId,
+          reason: "authority_blocked",
+        });
+      }
       return {
         kind: "stale_delivery",
         provenanceEventId: held.events[0]!.event.id,
@@ -1053,6 +1062,11 @@ export async function advanceConfirmedAcceptanceRecordPullRequestHead(
         RETURNING id
       `));
       previewBootsTornDown = tornDownBoots.length;
+      await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+        workspaceId: input.workspaceId, recordId: input.recordId,
+        headSha: previousHeadSha, headCycleId: record.currentPrHeadCycleId,
+        reason: "head_advanced", successorHeadSha: input.headSha, successorHeadCycleId: cycleId,
+      });
     }
 
     return {
@@ -1233,6 +1247,13 @@ export async function invalidateConfirmedAcceptanceRecordPullRequestHeadForTermi
         AND status IN ('pending', 'claimed', 'booting', 'ready')
       RETURNING id
     `)) : [];
+    if (provenance.events[0]!.inserted) {
+      await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+        workspaceId: input.workspaceId, recordId: input.recordId,
+        headSha: record.currentPrHeadSha, headCycleId: record.currentPrHeadCycleId,
+        reason: "terminal",
+      });
+    }
 
     return {
       kind: "invalidated",
@@ -1486,6 +1507,11 @@ export async function reconcileConfirmedAcceptanceRecordPullRequestHead(
         WHERE workspace_id = ${input.workspaceId} AND repo = ${input.repo} AND pr_number = ${input.prNumber}
           AND status IN ('pending', 'claimed', 'booting', 'ready') RETURNING id
       `));
+      await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+        workspaceId: input.workspaceId, recordId: input.recordId,
+        headSha: input.expectedBlockedHeadSha, headCycleId: input.expectedBlockedCycleId,
+        reason: "authority_blocked",
+      });
       return {
         kind: "closed",
         currentHeadSha: rows[0].currentPrHeadSha,
@@ -1569,6 +1595,11 @@ export async function reconcileConfirmedAcceptanceRecordPullRequestHead(
         AND status IN ('pending', 'claimed', 'booting', 'ready')
       RETURNING id
     `));
+    await invalidateAcceptanceCorrectionDispatchForHeadInTransaction(tx, {
+      workspaceId: input.workspaceId, recordId: input.recordId,
+      headSha: input.expectedBlockedHeadSha, headCycleId: input.expectedBlockedCycleId,
+      reason: "reconciled", successorHeadSha: input.observedHeadSha, successorHeadCycleId: cycleId,
+    });
 
     return {
       kind: "reconciled",
@@ -4755,4 +4786,323 @@ export async function readAcceptanceBuilderRouteSelection(input: {
     || !isDeepStrictEqual(builderRouteSnapshot(route), parsed.snapshot)
   ) return null;
   return { selection: parsed.selection, route, snapshot: parsed.snapshot, event };
+}
+
+export type QueueSelectedCorrectionDispatchInput = {
+  workspaceId: string;
+  compiledPackId: string;
+};
+
+export type AcceptanceCorrectionDispatchInvalidationReason =
+  | "head_advanced"
+  | "authority_blocked"
+  | "terminal"
+  | "reconciled";
+
+/** Stable identity for one aggregate, never one historical SHA alone. */
+export function acceptanceCorrectionDispatchId(input: {
+  recordId: string;
+  headCycleId: string;
+}): string {
+  return uuid5Url(`acceptance-correction-dispatch:${input.recordId}:${input.headCycleId}`);
+}
+
+function correctionDispatchComparable(row: AcceptanceCorrectionDispatchRow) {
+  return {
+    id: row.id, workspaceId: row.workspaceId, recordId: row.recordId, repo: row.repo, prNumber: row.prNumber, headSha: row.headSha,
+    headCycleId: row.headCycleId, authorityGeneration: row.authorityGeneration,
+    sourceSnapshotId: row.sourceSnapshotId, reviewJobId: row.reviewJobId,
+    acceptanceContractId: row.acceptanceContractId,
+    acceptanceContractVersion: row.acceptanceContractVersion,
+    acceptanceContractSha256: row.acceptanceContractSha256,
+    packetIds: row.packetIds, packetSetSha256: row.packetSetSha256,
+    correctionPacketPayloadSetSha256: row.correctionPacketPayloadSetSha256,
+    compiledPackId: row.compiledPackId, compiledPackSha256: row.compiledPackSha256,
+    compilerVersion: row.compilerVersion, policyVersion: row.policyVersion,
+    jsonSha256: row.jsonSha256, markdownSha256: row.markdownSha256,
+    sourceCustodyIdentitySha256: row.sourceCustodyIdentitySha256,
+    routeId: row.routeId, routeAdapter: row.routeAdapter,
+    routeConfigurationVersion: row.routeConfigurationVersion, routeSnapshot: row.routeSnapshot,
+    routeSnapshotSha256: row.routeSnapshotSha256,
+    dispatchProtocolVersion: row.dispatchProtocolVersion, dispatchIdentitySha256: row.dispatchIdentitySha256,
+    deliveryState: row.deliveryState, agentState: row.agentState,
+    findingsState: row.findingsState, activationState: row.activationState, carrier: row.carrier,
+  };
+}
+
+function correctionDispatchIdentity(values: Record<string, unknown>): string {
+  const { id: _id, dispatchIdentitySha256: _identity, ...identity } = values;
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_correction_dispatch", version: 1, ...identity,
+  });
+}
+
+async function resolveSelectedAcceptanceBuilderRouteInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; record: ChangeRecordRow; contract: AcceptanceContractRow }
+): Promise<AcceptanceBuilderRouteSelectionResolution> {
+  const events = await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, input.record.id),
+    eq(changeRecordEvents.eventKey, ACCEPTANCE_BUILDER_ROUTE_EVENT_KEY),
+  )).limit(1);
+  const event = events[0];
+  if (!event || event.stage !== "builder_handoff" || !isBuilderRouteActor(event.actor, true)) {
+    throw new Error("Acceptance Builder route selection is missing or invalid");
+  }
+  const parsed = parseAcceptanceBuilderRoutePayload(event.payloadRef);
+  if (!parsed || parsed.workspaceId !== input.workspaceId || parsed.repository !== input.record.repo
+    || parsed.recordId !== input.record.id || parsed.contractId !== input.contract.id
+    || parsed.contractVersion !== input.contract.version) {
+    throw new Error("Acceptance Builder route selection is not bound to the current Record and Contract");
+  }
+  const rows = Array.from(await tx.execute(sql`
+    SELECT * FROM acceptance_builder_routes
+    WHERE id = ${parsed.routeId} AND workspace_id = ${input.workspaceId}
+      AND repo = ${input.record.repo} AND status = 'active'
+    FOR SHARE
+  `)) as Array<Record<string, unknown>>;
+  if (rows.length !== 1) throw new Error("Acceptance Builder route is unavailable for this Record");
+  const route = mapAcceptanceBuilderRouteRow(rows[0]!);
+  if (!isBuilderRouteAdapter(route.adapter) || route.adapter !== parsed.routeAdapter
+    || route.configurationVersion !== parsed.routeConfigurationVersion
+    || !isDeepStrictEqual(builderRouteSnapshot(route), parsed.snapshot)) {
+    throw new Error("Acceptance Builder route configuration no longer matches its selection");
+  }
+  return { selection: parsed.selection, route, snapshot: parsed.snapshot, event };
+}
+
+/**
+ * Server-only dispatch preparation. Its public shape admits only a workspace
+ * and already-persisted Pack UUID; every other delivery coordinate is derived
+ * and revalidated under the same per-PR lock used by head authority changes.
+ */
+export async function queueSelectedCorrectionDispatch(
+  input: QueueSelectedCorrectionDispatchInput
+): Promise<{ dispatch: AcceptanceCorrectionDispatchRow; inserted: boolean }> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "compiledPackId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.compiledPackId)) {
+    throw new Error("Selected correction dispatch requires a workspace and compiled Pack");
+  }
+  const candidate = (await db.select({
+    pack: acceptanceCompiledContextPacks,
+    snapshot: acceptanceContextPackSnapshots,
+    record: changeRecords,
+  }).from(acceptanceCompiledContextPacks)
+    .innerJoin(acceptanceContextPackSnapshots, eq(acceptanceCompiledContextPacks.sourceSnapshotId, acceptanceContextPackSnapshots.id))
+    .innerJoin(changeRecords, eq(acceptanceContextPackSnapshots.recordId, changeRecords.id))
+    .where(and(
+      eq(acceptanceCompiledContextPacks.id, input.compiledPackId),
+      eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+      eq(acceptanceContextPackSnapshots.workspaceId, input.workspaceId),
+      eq(changeRecords.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+  if (!candidate) throw new Error("Compiled Context Pack is missing or outside this workspace");
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: input.workspaceId, recordId: candidate.record.id,
+    repo: candidate.record.repo, prNumber: candidate.record.prNumber ?? 0,
+  });
+  if (candidate.record.prNumber == null) throw new Error("Compiled Context Pack Record is not attached to a pull request");
+
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const pack = (await tx.select().from(acceptanceCompiledContextPacks).where(and(
+      eq(acceptanceCompiledContextPacks.id, input.compiledPackId),
+      eq(acceptanceCompiledContextPacks.workspaceId, input.workspaceId),
+    )).limit(1))[0];
+    if (!pack) throw new Error("Compiled Context Pack is missing or outside this workspace");
+    const custody = await resolveAcceptanceContextPackCustodyInTransaction(tx, {
+      workspaceId: input.workspaceId, sourceSnapshotId: pack.sourceSnapshotId,
+    });
+    const source = custody.sourceSnapshot;
+    if (source.packetIds.length < 1 || source.packetIds.length > 100
+      || !source.packetIds.every((packetId, index) => index === 0 || source.packetIds[index - 1]! < packetId)) {
+      throw new Error("Selected correction dispatch admitted packet set is not canonical");
+    }
+    const record = (await tx.select().from(changeRecords).where(and(
+      eq(changeRecords.id, source.recordId), eq(changeRecords.workspaceId, input.workspaceId),
+      eq(changeRecords.repo, source.repo), eq(changeRecords.prNumber, source.prNumber),
+    )).limit(1))[0];
+    if (!record || !record.currentPrHeadAuthoritative || record.currentPrHeadSha !== source.expectedHeadSha
+      || record.currentPrHeadCycleId !== source.reviewJobId) {
+      throw new Error("Selected correction dispatch Record head is no longer current");
+    }
+    const confirmed = (await tx.select().from(acceptanceContracts).where(and(
+      eq(acceptanceContracts.id, source.acceptanceContractId),
+      eq(acceptanceContracts.recordId, source.recordId),
+      eq(acceptanceContracts.status, "confirmed"),
+    )).limit(1))[0];
+    if (!confirmed || confirmed.version !== source.acceptanceContractVersion
+      || custody.acceptanceContractSha256 !== acceptanceContractSha256({
+        acceptanceContractId: confirmed.id,
+        acceptanceContractVersion: confirmed.version,
+        contract: confirmed.contract,
+      })) {
+      throw new Error("Selected correction dispatch Contract is no longer the admitted confirmed Contract");
+    }
+    const reconstructedPack = parseCompiledAcceptanceContextPack({
+      kind: "compiled_acceptance_context_pack", version: 1, binding: pack.binding,
+      compiler: {
+        version: pack.compilerVersion, policyVersion: pack.policyVersion,
+        byteCounter: "utf8_byte_upper_bound_v1", byteBudget: COMPILED_PACK_BYTE_BUDGET,
+      }, manifest: pack.manifest, sourceCustodyReceipt: pack.sourceCustodyReceipt,
+      exactHeadDependencyTreeProofs: pack.exactHeadDependencyTreeProofs,
+      representations: { jsonSha256: pack.jsonSha256, markdownSha256: pack.markdownSha256 },
+      renderedByteCount: pack.renderedByteCount, packSha256: pack.packSha256,
+    });
+    if (!reconstructedPack || compiledPackIdentity(reconstructedPack) !== pack.packSha256
+      || !bindingMatchesCustody(pack.binding, custody) || !receiptMatchesCustody(pack.sourceCustodyReceipt, custody)) {
+      throw new Error("Selected correction dispatch compiled Pack no longer matches the admitted custody");
+    }
+    const route = await resolveSelectedAcceptanceBuilderRouteInTransaction(tx, {
+      workspaceId: input.workspaceId, record, contract: confirmed,
+    });
+    const carrier = route.snapshot.protocol;
+    const routeSnapshotSha256 = acceptanceContextPackCanonicalSha256(route.snapshot);
+    const unsignedValues = {
+      id: acceptanceCorrectionDispatchId({ recordId: record.id, headCycleId: source.reviewJobId }),
+      workspaceId: input.workspaceId, recordId: record.id, repo: source.repo, prNumber: source.prNumber, headSha: source.expectedHeadSha,
+      headCycleId: source.reviewJobId, authorityGeneration: record.currentPrHeadAuthorityGeneration,
+      sourceSnapshotId: source.id, reviewJobId: source.reviewJobId,
+      acceptanceContractId: source.acceptanceContractId,
+      acceptanceContractVersion: source.acceptanceContractVersion,
+      acceptanceContractSha256: custody.acceptanceContractSha256,
+      packetIds: source.packetIds, packetSetSha256: source.packetSetSha256,
+      correctionPacketPayloadSetSha256: custody.correctionPacketPayloadSetSha256,
+      compiledPackId: pack.id, compiledPackSha256: pack.packSha256,
+      compilerVersion: pack.compilerVersion, policyVersion: pack.policyVersion,
+      jsonSha256: pack.jsonSha256, markdownSha256: pack.markdownSha256,
+      sourceCustodyIdentitySha256: pack.sourceCustodyIdentitySha256,
+      routeId: route.route.id, routeAdapter: route.route.adapter,
+      routeConfigurationVersion: route.route.configurationVersion, routeSnapshot: route.snapshot,
+      routeSnapshotSha256, dispatchProtocolVersion: 1,
+      deliveryState: "queued" as const, agentState: "not_observed" as const,
+      findingsState: "not_started" as const, activationState: "not_started" as const,
+      carrier,
+    };
+    const values = { ...unsignedValues, dispatchIdentitySha256: correctionDispatchIdentity(unsignedValues) };
+    const existing = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+      eq(acceptanceCorrectionDispatches.recordId, record.id),
+      eq(acceptanceCorrectionDispatches.headCycleId, source.reviewJobId),
+    )).limit(1))[0];
+    const eventKey = `acceptance-correction-dispatch:queued:${source.reviewJobId}`;
+    const eventPayload = {
+      kind: "acceptance_correction_dispatch_queued", version: 1,
+      dispatchId: values.id, repository: values.repo, prNumber: values.prNumber,
+      dispatchProtocolVersion: values.dispatchProtocolVersion, dispatchIdentitySha256: values.dispatchIdentitySha256,
+      headSha: values.headSha, headCycleId: values.headCycleId,
+      authorityGeneration: values.authorityGeneration, sourceSnapshotId: values.sourceSnapshotId,
+      acceptanceContract: { id: values.acceptanceContractId, version: values.acceptanceContractVersion, sha256: values.acceptanceContractSha256 },
+      packets: { ids: values.packetIds, setSha256: values.packetSetSha256, payloadSetSha256: values.correctionPacketPayloadSetSha256 },
+      compiledPack: { id: values.compiledPackId, sha256: values.compiledPackSha256, compilerVersion: values.compilerVersion, policyVersion: values.policyVersion, jsonSha256: values.jsonSha256, markdownSha256: values.markdownSha256, sourceCustodyIdentitySha256: values.sourceCustodyIdentitySha256 },
+      route: { id: values.routeId, adapter: values.routeAdapter, configurationVersion: values.routeConfigurationVersion, snapshot: values.routeSnapshot, snapshotSha256: values.routeSnapshotSha256 },
+      deliveryState: values.deliveryState, agentState: values.agentState, findingsState: values.findingsState,
+      activationState: values.activationState, carrier: values.carrier,
+    };
+    if (existing) {
+      if (!isDeepStrictEqual(correctionDispatchComparable(existing), values)) {
+        throw new Error("Selected correction dispatch replay is already bound to different Pack or route provenance");
+      }
+      const queued = (await tx.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, record.id), eq(changeRecordEvents.eventKey, eventKey),
+      )).limit(1))[0];
+      if (!queued || queued.stage !== "builder_handoff" || queued.actor !== "server:dispatch-preparation"
+        || !isDeepStrictEqual(queued.payloadRef, eventPayload)) {
+        throw new Error("Selected correction dispatch queued event is missing or does not match its aggregate");
+      }
+      return { dispatch: existing, inserted: false };
+    }
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: record.id, eventKey, stage: "builder_handoff", actor: "server:dispatch-preparation", payloadRef: eventPayload,
+    }]);
+    if (!event.events[0]!.inserted) throw new Error("Selected correction dispatch queued event unexpectedly replayed");
+    const rows = await tx.insert(acceptanceCorrectionDispatches).values(values).returning();
+    return { dispatch: rows[0]!, inserted: true };
+  });
+}
+
+/**
+ * Called only inside the shared PR advisory-lock transaction. It tombstones a
+ * cycle once. A later reconciliation appends a successor event and projects
+ * only a previously unknown successor through a null-CAS.
+ */
+async function invalidateAcceptanceCorrectionDispatchForHeadInTransaction(
+  tx: DbTransaction,
+  input: {
+    workspaceId: string; recordId: string; headSha: string | null; headCycleId: string | null;
+    reason: AcceptanceCorrectionDispatchInvalidationReason;
+    successorHeadSha?: string | null; successorHeadCycleId?: string | null;
+  }
+): Promise<number> {
+  if (!input.headSha || !input.headCycleId) return 0;
+  if ((input.successorHeadSha == null) !== (input.successorHeadCycleId == null)) {
+    throw new Error("Correction dispatch successor must include both head and cycle");
+  }
+  const active = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+    eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+    eq(acceptanceCorrectionDispatches.recordId, input.recordId),
+    eq(acceptanceCorrectionDispatches.headSha, input.headSha),
+    eq(acceptanceCorrectionDispatches.headCycleId, input.headCycleId),
+    isNull(acceptanceCorrectionDispatches.invalidatedAt),
+  )).limit(1))[0];
+  if (!active) {
+    if (input.successorHeadSha != null && input.successorHeadCycleId != null) {
+      const tombstone = (await tx.select().from(acceptanceCorrectionDispatches).where(and(
+        eq(acceptanceCorrectionDispatches.workspaceId, input.workspaceId),
+        eq(acceptanceCorrectionDispatches.recordId, input.recordId),
+        eq(acceptanceCorrectionDispatches.headSha, input.headSha),
+        eq(acceptanceCorrectionDispatches.headCycleId, input.headCycleId),
+      )).limit(1))[0];
+      if (tombstone?.invalidatedAt != null) {
+        await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+          recordId: input.recordId,
+          eventKey: `acceptance-correction-dispatch:successor:${input.headCycleId}:${input.successorHeadCycleId}`,
+          stage: "builder_handoff", actor: "server:dispatch-preparation",
+          payloadRef: {
+            kind: "acceptance_correction_dispatch_successor_recorded", version: 1,
+            dispatchId: tombstone.id, dispatchIdentitySha256: tombstone.dispatchIdentitySha256,
+            invalidationReason: tombstone.invalidationReason,
+            successorHeadSha: input.successorHeadSha, successorHeadCycleId: input.successorHeadCycleId,
+          },
+        }]);
+        // The immutable successor event is the authority for this late
+        // knowledge.  Project it once with a null-CAS; no dispatch identity,
+        // invalidation reason, or delivery state is ever changed.
+        await tx.update(acceptanceCorrectionDispatches).set({
+          successorHeadSha: input.successorHeadSha,
+          successorHeadCycleId: input.successorHeadCycleId,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(acceptanceCorrectionDispatches.id, tombstone.id),
+          isNull(acceptanceCorrectionDispatches.successorHeadSha),
+          isNull(acceptanceCorrectionDispatches.successorHeadCycleId),
+        ));
+      }
+    }
+    return 0;
+  }
+  const eventKey = `acceptance-correction-dispatch:invalidated:${input.headCycleId}`;
+  const payloadRef = {
+    kind: "acceptance_correction_dispatch_invalidated", version: 1,
+    dispatchId: active.id, dispatchIdentitySha256: active.dispatchIdentitySha256,
+    reason: input.reason, headSha: input.headSha, headCycleId: input.headCycleId,
+    successorHeadSha: input.successorHeadSha ?? null,
+    successorHeadCycleId: input.successorHeadCycleId ?? null,
+  };
+  const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+    recordId: input.recordId, eventKey, stage: "builder_handoff",
+    actor: "server:dispatch-preparation", payloadRef,
+  }]);
+  if (!event.events[0]!.inserted) {
+    throw new Error("Correction dispatch invalidation event unexpectedly replayed before its row update");
+  }
+  const rows = await tx.update(acceptanceCorrectionDispatches).set({
+    invalidatedAt: new Date(), invalidationReason: input.reason,
+    successorHeadSha: input.successorHeadSha ?? null,
+    successorHeadCycleId: input.successorHeadCycleId ?? null, updatedAt: new Date(),
+  }).where(and(
+    eq(acceptanceCorrectionDispatches.id, active.id),
+    isNull(acceptanceCorrectionDispatches.invalidatedAt),
+  )).returning({ id: acceptanceCorrectionDispatches.id });
+  if (rows.length !== 1) throw new Error("Correction dispatch invalidation lost its locked precondition");
+  return 1;
 }

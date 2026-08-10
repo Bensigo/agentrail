@@ -148,6 +148,7 @@ jobs:
           lib/github-current-pr.test.ts
           lib/acceptance-context-pack-compiler.test.ts
           lib/acceptance-context-pack-source-custody.test.ts
+          lib/correction-dispatch-renderer.test.ts
           lib/github-exact-head-content.test.ts
           lib/github-exact-head-context.test.ts
           lib/review-job-correction-packet.test.ts

@@ -6,6 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getChatIdentityById: vi.fn(),
   getInstallationToken: vi.fn(),
   getRepositoryByName: vi.fn(),
+  getReviewJobById: vi.fn(),
 }));
 import { GET, POST } from "./route";
 import {
@@ -13,6 +14,7 @@ import {
   getChatIdentityById,
   getInstallationToken,
   getRepositoryByName,
+  getReviewJobById,
 } from "@agentrail/db-postgres";
 
 const NOW = new Date("2026-07-23T00:00:00.000Z");
@@ -78,6 +80,23 @@ const CONNECTED_REPO = {
   updatedAt: NOW,
 };
 
+const REVIEW_JOB_SESSION = {
+  ...PINNED_SESSION,
+  chatIdentityId: null,
+  channel: "review-job",
+  conversationKey: "review-job:job-1",
+  status: "active",
+};
+
+const RUNNING_REVIEW_JOB = {
+  id: "job-1",
+  workspaceId: "ws-1",
+  repo: "ada/widgets",
+  prNumber: 98,
+  headSha: "abc123def4567890",
+  state: "running",
+};
+
 function githubJsonResponse(status: number, body: unknown): unknown {
   return {
     ok: status >= 200 && status < 300,
@@ -137,6 +156,7 @@ beforeEach(() => {
   vi.mocked(getChatIdentityById).mockResolvedValue(BOUND_IDENTITY as never);
   vi.mocked(getInstallationToken).mockResolvedValue(MOCK_TOKEN);
   vi.mocked(getRepositoryByName).mockResolvedValue(CONNECTED_REPO as never);
+  vi.mocked(getReviewJobById).mockResolvedValue(RUNNING_REVIEW_JOB as never);
 });
 
 const originalFetch = global.fetch;
@@ -274,6 +294,69 @@ describe("GET /api/v1/runner/pr-review", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "GitHub is not connected for this workspace — install the Jace GitHub App first",
+    });
+  });
+
+  it("binds a review-job read to its running job's exact repo and PR before GitHub", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
+      REVIEW_JOB_SESSION as never
+    );
+    const fetchMock = mockFetchSequence();
+
+    for (const query of [
+      { repo: "other/repo", prNumber: "98" },
+      { repo: "ada/widgets", prNumber: "99" },
+    ]) {
+      const res = await GET(
+        getReq({ eveSessionId: "eve-session-1", ...query })
+      );
+      expect(res.status).toBe(409);
+    }
+    expect(getReviewJobById).toHaveBeenCalledWith("job-1");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("holds a review-job read when GitHub's current head is missing or differs, before fetching files", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
+      REVIEW_JOB_SESSION as never
+    );
+    for (const head of [{ ref: "branch" }, { ref: "branch", sha: "new-head" }]) {
+      const fetchMock = mockFetchSequence(prMetaResponse({ head }));
+      const res = await GET(
+        getReq({
+          eveSessionId: "eve-session-1",
+          repo: "ada/widgets",
+          prNumber: "98",
+        })
+      );
+      expect(res.status).toBe(409);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("allows a review-job reader to fetch only its exact running head", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
+      REVIEW_JOB_SESSION as never
+    );
+    mockFetchSequence(
+      prMetaResponse({
+        head: { ref: "ada/widgets-branch", sha: RUNNING_REVIEW_JOB.headSha },
+      }),
+      filesPage([fileEntry()]),
+      graphqlIssuesResponse([])
+    );
+
+    const res = await GET(
+      getReq({
+        eveSessionId: "eve-session-1",
+        repo: "ada/widgets",
+        prNumber: "98",
+      })
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      headSha: RUNNING_REVIEW_JOB.headSha,
     });
   });
 
@@ -764,6 +847,24 @@ describe("POST /api/v1/runner/pr-review", () => {
     expect(res.status).toBe(409);
   });
 
+  it("rejects a review-job session before GitHub so it cannot bypass the job-scoped evidence gate", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...PINNED_SESSION,
+      chatIdentityId: null,
+      channel: "review-job",
+      conversationKey: "review-job:job-1",
+    } as never);
+    const fetchMock = mockFetchSequence();
+
+    const res = await POST(postReq(VALID_BODY));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: "headless review jobs must use their job-scoped attested post route",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------
   // the GitHub review call — event is HARDCODED to COMMENT
   // ---------------------------------------------------------------------
@@ -806,6 +907,20 @@ describe("POST /api/v1/runner/pr-review", () => {
       foldedComments: [],
     });
   });
+
+  it.each([{}, { html_url: "   " }, { html_url: 42 }])(
+    "fails closed when GitHub returns 2xx without an inspectable review receipt",
+    async (body) => {
+      mockFetchSequence(githubJsonResponse(200, body));
+
+      const res = await POST(postReq(VALID_BODY));
+
+      expect(res.status).toBe(502);
+      await expect(res.json()).resolves.toEqual({
+        error: "GitHub returned no inspectable review receipt.",
+      });
+    }
+  );
 
   // ---------------------------------------------------------------------
   // 422 — retry ONCE with comments folded into the summary

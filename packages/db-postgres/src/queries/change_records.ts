@@ -883,12 +883,16 @@ function isNonBlankString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function hasNamedText(item: unknown): boolean {
+function hasNamedText(item: unknown): item is Record<string, unknown> {
   return (
     isRecord(item) &&
     isNonBlankString(item["id"]) &&
     isNonBlankString(item["text"])
   );
+}
+
+function isAcceptanceCriterion(item: unknown): boolean {
+  return hasNamedText(item) && typeof item["userVisible"] === "boolean";
 }
 
 /**
@@ -907,7 +911,7 @@ export function validateAcceptanceContract(
     errors.push("normalizedRequirements");
   }
   const criteria = contract["acceptanceCriteria"];
-  if (!Array.isArray(criteria) || criteria.length === 0 || !criteria.every(hasNamedText)) {
+  if (!Array.isArray(criteria) || criteria.length === 0 || !criteria.every(isAcceptanceCriterion)) {
     errors.push("acceptanceCriteria");
   }
   for (const field of ["nonGoals", "risks", "stops", "unresolvedQuestions"] as const) {

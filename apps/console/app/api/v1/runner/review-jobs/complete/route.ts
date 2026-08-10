@@ -3,11 +3,15 @@ import {
   appendChangeRecordEvent,
   completeReviewJob,
   findOrCreateChangeRecord,
-  getReviewJobById,
-  readAcceptanceContracts,
-  readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
+import {
+  type CriterionResult,
+  findMatchingPostedAttestation,
+  parseCriterionResults,
+  resolveExactReviewJobProof,
+  reviewOutcomeDigest,
+} from "../../../../../../lib/review-job-proof-attestation";
 import { sendWorkspaceNotification } from "../../result/notify";
 
 /**
@@ -29,28 +33,29 @@ import { sendWorkspaceNotification } from "../../result/notify";
  * — the worker IS Jace, the same guard the sibling `claim` route uses.
  *
  * BODY: `{ jobId, outcome: "posted"|"failed", postedReviewUrl?, verdict?,
- * summaryLine?, error?, evidenceKeys? }`. `jobId`/`outcome` are the only
- * required fields (400 otherwise, before any db call); the rest are
- * pass-through fields `completeReviewJob` itself treats as optional.
+ * summaryLine?, error?, evidenceKeys?, criterionResults? }`. `jobId` and
+ * `outcome` are always required. A posted outcome additionally requires the
+ * complete criterion results and must match the server-custodied pre-write
+ * GitHub receipt; failed outcomes retain the prior retry path.
  *
  * `evidenceKeys` (B2a §1 Task 3): when present, must be an array of strings
  * — a present-but-malformed value (not an array, or an array with a
  * non-string element) is a 400, same as a missing required field; ABSENT is
  * fine (undefined rides straight through to `completeReviewJob`, which
  * leaves `evidence_keys` untouched at NULL — see that function's own
- * doc-comment). This route never inspects the array's contents beyond the
- * type check — it is Task 2's `review-evidence` upload route, not this one,
- * that owns key-shape validation.
+ * doc-comment). For posted outcomes the shared proof resolver also requires
+ * every key to be custodied on the exact preview boot cited by the immutable
+ * verification plan.
  *
  * CONTENT OWNERSHIP (worker composes, console only routes): the worker's
  * canned choreography (design spec §4) already assembles the human-facing
  * line — repo+PR, the judgment verdicts, any `blocker` items — into
  * `summaryLine` before calling this route. This route's ENTIRE
- * responsibility for notify content is appending the review URL to that
- * already-composed line (`buildNotifyText` below) and handing the result to
- * `sendWorkspaceNotification` — it never re-derives or re-formats the
- * judgment content itself, and never inspects `verdict` beyond passing it
- * through to `completeReviewJob` for storage.
+ * responsibility for notify content is appending the server-custodied review
+ * URL to that already-composed line (`buildNotifyText` below) and handing the
+ * result to `sendWorkspaceNotification`. Before that side effect, the route
+ * verifies the verdict and criterion results against the exact Contract plan,
+ * preview state, and persisted pre-write GitHub receipt.
  *
  * UNKNOWN JOB OR NOT-RUNNING: `completeReviewJob` returns `null` when its own
  * guarded UPDATE matched no row (unknown `jobId`, or a job that already
@@ -63,15 +68,6 @@ import { sendWorkspaceNotification } from "../../result/notify";
  */
 
 type Outcome = "posted" | "failed";
-type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
-
-interface CriterionResult {
-  criterionId: string;
-  state: CriterionState;
-  expected: string;
-  observed: string;
-  evidenceRefs: string[];
-}
 
 interface CompleteBody {
   jobId: string;
@@ -98,32 +94,6 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((item) => typeof item === "string");
 }
 
-const CRITERION_STATES = new Set<CriterionState>([
-  "proven",
-  "failed",
-  "not_proven",
-  "not_testable",
-]);
-
-function parseCriterionResults(value: unknown): CriterionResult[] | null {
-  if (!Array.isArray(value)) return null;
-  const ids = new Set<string>();
-  const results: CriterionResult[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") return null;
-    const item = entry as Record<string, unknown>;
-    const criterionId = typeof item.criterionId === "string" ? item.criterionId.trim() : "";
-    const state = item.state;
-    const expected = typeof item.expected === "string" ? item.expected.trim() : "";
-    const observed = typeof item.observed === "string" ? item.observed.trim() : "";
-    if (!criterionId || ids.has(criterionId) || !CRITERION_STATES.has(state as CriterionState) || !expected || !observed || !isStringArray(item.evidenceRefs)) return null;
-    if (state !== "not_testable" && item.evidenceRefs.length === 0) return null;
-    ids.add(criterionId);
-    results.push({ criterionId, state: state as CriterionState, expected, observed, evidenceRefs: item.evidenceRefs });
-  }
-  return results;
-}
-
 function parseCompleteBody(raw: unknown): CompleteBody | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -138,60 +108,13 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
   return {
     jobId: o.jobId,
     outcome: o.outcome,
-    postedReviewUrl: typeof o.postedReviewUrl === "string" ? o.postedReviewUrl : undefined,
-    verdict: typeof o.verdict === "string" ? o.verdict : undefined,
-    summaryLine: typeof o.summaryLine === "string" ? o.summaryLine : undefined,
-    error: typeof o.error === "string" ? o.error : undefined,
+    postedReviewUrl: typeof o.postedReviewUrl === "string" ? o.postedReviewUrl.trim() : undefined,
+    verdict: typeof o.verdict === "string" ? o.verdict.trim() : undefined,
+    summaryLine: typeof o.summaryLine === "string" ? o.summaryLine.trim() : undefined,
+    error: typeof o.error === "string" ? o.error.trim() : undefined,
     evidenceKeys: isStringArray(o.evidenceKeys) ? o.evidenceKeys : undefined,
     criterionResults: criterionResults ?? undefined,
   };
-}
-
-function confirmedCriterionIds(
-  contracts: Awaited<ReturnType<typeof readAcceptanceContracts>>
-): Set<string> | null {
-  const contract = contracts?.find((item) => item.status === "confirmed");
-  const criteria = contract?.contract.acceptanceCriteria;
-  if (!contract || !Array.isArray(criteria) || criteria.length === 0) return null;
-
-  const ids = new Set<string>();
-  for (const criterion of criteria) {
-    const id =
-      criterion && typeof criterion === "object" && typeof (criterion as Record<string, unknown>).id === "string"
-        ? (criterion as Record<string, unknown>).id.trim()
-        : "";
-    if (!id || ids.has(id)) return null;
-    ids.add(id);
-  }
-  return ids;
-}
-
-/**
- * A posted review is valid only when it is bound to the same exact PR head as
- * a Change Record with a confirmed Contract, and it supplies one result for
- * every Contract criterion. This is deliberately checked before the guarded
- * completion update so an incomplete or foreign result cannot turn a running
- * job into a posted job.
- */
-async function hasExactConfirmedCriterionCoverage(
-  job: NonNullable<Awaited<ReturnType<typeof getReviewJobById>>>,
-  criterionResults: CriterionResult[]
-): Promise<boolean> {
-  const timeline = await readChangeRecordTimelineByPr({
-    workspaceId: job.workspaceId,
-    repo: job.repo,
-    prNumber: job.prNumber,
-  });
-  if (!timeline || !timeline.record.headShas.includes(job.headSha)) return false;
-
-  const expectedIds = confirmedCriterionIds(
-    await readAcceptanceContracts({
-      workspaceId: job.workspaceId,
-      recordId: timeline.record.id,
-    })
-  );
-  if (!expectedIds || expectedIds.size !== criterionResults.length) return false;
-  return criterionResults.every((result) => expectedIds.has(result.criterionId));
 }
 
 /**
@@ -282,18 +205,38 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.outcome === "posted") {
-    const job = await getReviewJobById(body.jobId);
-    if (
-      !job ||
-      job.state !== "running" ||
-      !body.criterionResults ||
-      !(await hasExactConfirmedCriterionCoverage(job, body.criterionResults))
-    ) {
+    const proof = body.criterionResults
+      ? await resolveExactReviewJobProof({
+          jobId: body.jobId,
+          criterionResults: body.criterionResults,
+          verdict: body.verdict,
+          evidenceKeys: body.evidenceKeys,
+        })
+      : null;
+    const outcomeDigest = body.criterionResults
+      ? reviewOutcomeDigest({
+          criterionResults: body.criterionResults,
+          verdict: body.verdict,
+          summaryLine: body.summaryLine,
+          evidenceKeys: body.evidenceKeys,
+        })
+      : null;
+    const postedAttestation =
+      proof && outcomeDigest
+        ? findMatchingPostedAttestation({ proof, outcomeDigest })
+        : null;
+    if (!proof || !postedAttestation) {
       return NextResponse.json(
-        { error: "review result does not exactly cover the confirmed Contract for this PR head" },
+        {
+          error:
+            "review result was not attested before the GitHub write against the confirmed Contract plan and exact-head R7.1 environment outcome",
+        },
         { status: 409 }
       );
     }
+    // The posted URL is server-custodied by the post-review route. A model
+    // cannot substitute a different URL during the later completion call.
+    body.postedReviewUrl = postedAttestation.postedReviewUrl;
   }
 
   const result = await completeReviewJob({

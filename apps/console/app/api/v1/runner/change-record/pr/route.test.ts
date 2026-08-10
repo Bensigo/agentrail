@@ -88,7 +88,11 @@ beforeEach(() => {
     {
       status: "confirmed",
       version: 3,
-      contract: { acceptanceCriteria: [{ id: "AC-1", text: "The change works." }] },
+      contract: {
+        acceptanceCriteria: [
+          { id: "AC-1", text: "The change works.", userVisible: true },
+        ],
+      },
     },
   ] as never);
 });
@@ -187,14 +191,41 @@ describe("POST /api/v1/runner/change-record/pr", () => {
       ],
       acceptanceContract: {
         version: 3,
-        criteria: [{ id: "AC-1", text: "The change works." }],
+        criteria: [
+          { id: "AC-1", text: "The change works.", userVisible: true },
+        ],
       },
     });
   });
 
   it("returns a null contract rather than inventing criteria when no confirmed contract exists", async () => {
     vi.mocked(readAcceptanceContracts).mockResolvedValue([
-      { status: "draft", version: 4, contract: { acceptanceCriteria: [{ id: "AC-2", text: "Draft only." }] } },
+      {
+        status: "draft",
+        version: 4,
+        contract: {
+          acceptanceCriteria: [
+            { id: "AC-2", text: "Draft only.", userVisible: false },
+          ],
+        },
+      },
+    ] as never);
+
+    const res = await POST(req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98 }));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).acceptanceContract).toBeNull();
+  });
+
+  it("returns a null contract for legacy confirmed criteria without userVisible", async () => {
+    vi.mocked(readAcceptanceContracts).mockResolvedValue([
+      {
+        status: "confirmed",
+        version: 2,
+        contract: {
+          acceptanceCriteria: [{ id: "AC-1", text: "Legacy criterion" }],
+        },
+      },
     ] as never);
 
     const res = await POST(req({ eveSessionId: "eve-1", repo: "ada/widgets", prNumber: 98 }));

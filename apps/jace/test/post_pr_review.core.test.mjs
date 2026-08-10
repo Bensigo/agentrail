@@ -14,16 +14,19 @@ import assert from "node:assert/strict";
 import {
   PR_REVIEW_PATH,
   PR_CHANGE_RECORD_PATH,
+  REVIEW_JOB_POST_PATH_PREFIX,
   SUMMARY_MAX_LEN,
   COMMENT_BODY_MAX_LEN,
   POSTABLE_SEVERITIES,
   resolveConsoleConfig,
   buildPrReviewUrl,
+  buildReviewJobPostUrl,
   buildPrChangeRecordUrl,
   classifyStatus,
   failure,
   filterPostableComments,
   sanitizeReviewInput,
+  projectReviewJobAttestation,
   runPostPrReview,
   renderAcCoverage,
   coverageCounts,
@@ -210,6 +213,130 @@ test("runPostPrReview posts { eveSessionId, repo, prNumber, summary, comments } 
     summary: "Looks good overall.",
     comments: [{ path: "src/index.ts", line: 12, body: "Consider a null check here." }],
   });
+});
+
+test("runPostPrReview sends a headless result to the encoded job-scoped pre-write attestation route without caller target fields", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  const reviewJob = {
+    jobId: "job/one",
+    criterionResults: [{
+      criterionId: "AC-1",
+      state: "not_proven",
+      expected: "Saved state is visible.",
+      observed: "The exact-head environment was ready; execution evidence is pending R7.2.",
+      evidenceRefs: ["preview-boot:boot-1"],
+      ignored: "must not ride the wire",
+    }],
+    verdict: "not_proven",
+    summaryLine: "ada/widgets #98 — not_proven",
+    evidenceKeys: ["reviews/job-1/boot.log"],
+    repo: "evil/target-must-not-ride",
+  };
+
+  const result = await runPostPrReview({
+    ...VALID_ARGS,
+    reviewJob,
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${REVIEW_JOB_POST_PATH_PREFIX}/job%2Fone/post-review`,
+  );
+  assert.deepEqual(JSON.parse(transport.calls[0].init.body), {
+    eveSessionId: "eve-session-1",
+    summary: "Looks good overall.",
+    comments: [{ path: "src/index.ts", line: 12, body: "Consider a null check here." }],
+    criterionResults: [{
+      criterionId: "AC-1",
+      state: "not_proven",
+      expected: "Saved state is visible.",
+      observed: "The exact-head environment was ready; execution evidence is pending R7.2.",
+      evidenceRefs: ["preview-boot:boot-1"],
+    }],
+    verdict: "not_proven",
+    summaryLine: "ada/widgets #98 — not_proven",
+    evidenceKeys: ["reviews/job-1/boot.log"],
+  });
+});
+
+test("review-job attestation validation fails before transport on unsupported proof, missing evidence, or an invalid verdict", async () => {
+  const transport = fakeTransport(() => ({ status: 201, json: async () => successBody() }));
+  for (const criterionResults of [
+    [{ criterionId: "AC-1", state: "proven", expected: "Expected", observed: "Observed", evidenceRefs: ["preview-boot:fake"] }],
+    [{ criterionId: "AC-1", state: "not_proven", expected: "Expected", observed: "Unavailable", evidenceRefs: [] }],
+  ]) {
+    const result = await runPostPrReview({
+      ...VALID_ARGS,
+      reviewJob: {
+        jobId: "job-1",
+        criterionResults,
+        verdict: "not_proven",
+        summaryLine: "held",
+      },
+      env: ENV,
+      transport,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "bad_request");
+  }
+  const invalidVerdict = await runPostPrReview({
+    ...VALID_ARGS,
+    reviewJob: {
+      jobId: "job-1",
+      criterionResults: [{
+        criterionId: "AC-1",
+        state: "not_testable",
+        expected: "Expected",
+        observed: "Unavailable",
+        evidenceRefs: [],
+      }],
+      verdict: "approve",
+      summaryLine: "held",
+    },
+    env: ENV,
+    transport,
+  });
+  assert.equal(invalidVerdict.ok, false);
+  assert.equal(invalidVerdict.reason, "bad_request");
+  assert.equal(transport.calls.length, 0);
+});
+
+test("buildReviewJobPostUrl encodes the opaque job id and projectReviewJobAttestation is a closed projection", () => {
+  assert.equal(
+    buildReviewJobPostUrl("https://console.example.com", "job/a b"),
+    "https://console.example.com/api/v1/runner/review-jobs/job%2Fa%20b/post-review",
+  );
+  assert.deepEqual(
+    projectReviewJobAttestation({
+      jobId: " job-1 ",
+      criterionResults: [{
+        criterionId: " AC-1 ",
+        state: "not_testable",
+        expected: " Expected ",
+        observed: " No executor ",
+        evidenceRefs: [],
+        extra: true,
+      }],
+      verdict: " not_testable ",
+      summaryLine: " held ",
+      extra: "drop",
+    }),
+    {
+      jobId: "job-1",
+      criterionResults: [{
+        criterionId: "AC-1",
+        state: "not_testable",
+        expected: "Expected",
+        observed: "No executor",
+        evidenceRefs: [],
+      }],
+      verdict: "not_testable",
+      summaryLine: "held",
+    },
+  );
 });
 
 test("runPostPrReview accepts an empty summary when comments are present", async () => {
@@ -429,6 +556,18 @@ test("failure(bad_body) when the console responds 2xx but posted is not true", a
   assert.equal(result.reason, "bad_body");
 });
 
+test("failure(bad_body) when a posted response has no inspectable review URL", async () => {
+  for (const reviewUrl of [undefined, null, "   ", 42]) {
+    const transport = fakeTransport(() => ({
+      status: 201,
+      json: async () => ({ posted: true, reviewUrl }),
+    }));
+    const result = await runPostPrReview({ ...VALID_ARGS, env: ENV, transport });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "bad_body");
+  }
+});
+
 test("a thrown transport error never leaks the bearer token even when the thrown message names it", async () => {
   const transport = fakeTransport(() => {
     throw new Error("request to https://console.example.com failed, Authorization: Bearer tok-secret-123");
@@ -623,7 +762,7 @@ test("runPostPrReview sends the composed summary (with the coverage block) to th
 test("omitting acCoverage leaves the posted body byte-identical to today's", async () => {
   const respond = async () => ({
     status: 201,
-    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/review-1", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
   });
   const t1 = fakeTransport(respond);
   const t2 = fakeTransport(respond);
@@ -643,7 +782,7 @@ test("omitting acCoverage leaves the posted body byte-identical to today's", asy
 test("coverage criterion text is hardened before it leaves (no zero-width smuggling, @everyone defanged)", async () => {
   const transport = fakeTransport(async () => ({
     status: 201,
-    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/review-1", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
   }));
   await runPostPrReview({
     eveSessionId: "eve-session-1",
@@ -926,7 +1065,7 @@ test("runPostPrReview sends the judgment line inside the composed summary", asyn
 test("judgment note text is hardened before it leaves (no zero-width smuggling, @everyone defanged)", async () => {
   const transport = fakeTransport(async () => ({
     status: 201,
-    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/review-1", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
   }));
   await runPostPrReview({
     eveSessionId: "eve-session-1",
@@ -952,7 +1091,7 @@ test("judgment note text is hardened before it leaves (no zero-width smuggling, 
 test("omitting judgment leaves the posted body byte-identical to a call that never knew about judgment", async () => {
   const respond = async () => ({
     status: 201,
-    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/review-1", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
   });
   const t1 = fakeTransport(respond);
   const t2 = fakeTransport(respond);
@@ -1221,7 +1360,7 @@ test("REGRESSION: a no-evidence coverage entry renders byte-identical to the pre
 test("REGRESSION: runPostPrReview sends a byte-identical body whether an entry's evidence_images key is entirely absent or present-but-empty", async () => {
   const respond = async () => ({
     status: 201,
-    json: async () => ({ posted: true, reviewUrl: null, summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
+    json: async () => ({ posted: true, reviewUrl: "https://github.com/review-1", summary: "x", inlineCommentsPosted: 0, foldedComments: [] }),
   });
   const t1 = fakeTransport(respond);
   const t2 = fakeTransport(respond);

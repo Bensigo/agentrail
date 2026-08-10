@@ -369,11 +369,23 @@ function contractCriterionText(value: unknown): string {
   return "";
 }
 
+function acceptanceCriterionConfirmationText(value: unknown): string {
+  const text = contractCriterionText(value);
+  if (!text) return "";
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return `${text} [user-visible: unspecified]`;
+  }
+  const userVisible = (value as Record<string, unknown>)["userVisible"];
+  return `${text} [user-visible: ${
+    userVisible === true ? "yes" : userVisible === false ? "no" : "unspecified"
+  }]`;
+}
+
 function renderAcceptanceContractConfirmation(input: Record<string, unknown>): string {
   const goal = sanitizeField(input["goal"] ?? input["title"], 500) || "(no summary recorded)";
   const version = sanitizeField(input["version"], 20) || "?";
   const criteria = Array.isArray(input["acceptanceCriteria"])
-    ? input["acceptanceCriteria"].map(contractCriterionText).filter(Boolean)
+    ? input["acceptanceCriteria"].map(acceptanceCriterionConfirmationText).filter(Boolean)
     : [];
   const nonGoals = Array.isArray(input["nonGoals"])
     ? input["nonGoals"].map(contractCriterionText).filter(Boolean)

@@ -37,7 +37,9 @@ const draft = {
   contract: {
     originalRequest: "Add saved filters",
     normalizedRequirements: ["Users can save filters"],
-    acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+    acceptanceCriteria: [
+      { id: "AC-1", text: "A user can save a filter", userVisible: true },
+    ],
     nonGoals: [],
     risks: [],
     environment: { kind: "existing_preview" },
@@ -95,6 +97,9 @@ describe("POST /api/v1/runner/acceptance-contract-approvals", () => {
           recordId: "record-1",
           acceptanceContractId: "contract-1",
           version: 2,
+          acceptanceCriteria: [
+            { id: "AC-1", text: "A user can save a filter", userVisible: true },
+          ],
         }),
       })
     );

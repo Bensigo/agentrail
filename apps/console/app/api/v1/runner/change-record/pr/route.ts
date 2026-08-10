@@ -18,7 +18,10 @@ type StageEvidence = {
   url: string | null;
 };
 
-type ConfirmedContract = { version: number; criteria: { id: string; text: string }[] };
+type ConfirmedContract = {
+  version: number;
+  criteria: { id: string; text: string; userVisible: boolean }[];
+};
 
 function confirmedContract(contracts: Awaited<ReturnType<typeof readAcceptanceContracts>>): ConfirmedContract | null {
   const contract = contracts?.find((item) => item.status === "confirmed");
@@ -28,9 +31,17 @@ function confirmedContract(contracts: Awaited<ReturnType<typeof readAcceptanceCo
     const item = criterion && typeof criterion === "object" ? criterion as Record<string, unknown> : null;
     const id = typeof item?.id === "string" ? item.id.trim() : "";
     const text = typeof item?.text === "string" ? item.text.trim() : "";
-    return id && text ? { id, text } : null;
+    const userVisible = item?.userVisible;
+    return id && text && typeof userVisible === "boolean"
+      ? { id, text, userVisible }
+      : null;
   });
-  return projected.every(Boolean) ? { version: contract.version, criteria: projected as { id: string; text: string }[] } : null;
+  return projected.every(Boolean)
+    ? {
+        version: contract.version,
+        criteria: projected as { id: string; text: string; userVisible: boolean }[],
+      }
+    : null;
 }
 
 function parseBody(raw: unknown):

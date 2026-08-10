@@ -5,6 +5,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
   completeReviewJob: vi.fn(),
   findOrCreateChangeRecord: vi.fn(),
+  getPreviewBoot: vi.fn(),
   getReviewJobById: vi.fn(),
   readAcceptanceContracts: vi.fn(),
   readChangeRecordTimelineByPr: vi.fn(),
@@ -23,15 +24,23 @@ import {
   appendChangeRecordEvent,
   completeReviewJob,
   findOrCreateChangeRecord,
+  getPreviewBoot,
   getReviewJobById,
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
 import { sendWorkspaceNotification } from "../../result/notify";
+import {
+  R7_READY_NOT_PROVEN_OBSERVATION,
+  type CriterionResult,
+  r7UnavailablePreviewObservation,
+  reviewOutcomeDigest,
+} from "../../../../../../lib/review-job-proof-attestation";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
 const mockFindOrCreateChangeRecord = vi.mocked(findOrCreateChangeRecord);
+const mockGetPreviewBoot = vi.mocked(getPreviewBoot);
 const mockGetReviewJobById = vi.mocked(getReviewJobById);
 const mockReadAcceptanceContracts = vi.mocked(readAcceptanceContracts);
 const mockReadChangeRecordTimelineByPr = vi.mocked(readChangeRecordTimelineByPr);
@@ -43,6 +52,9 @@ const SECRET = "jace-shared-secret-abc123";
 const ORIGINAL_ENV = process.env[ENV_KEY];
 
 const NOW = new Date("2026-08-01T00:00:00.000Z");
+const PREVIEW_BOOT_ID = "11111111-1111-5111-8111-111111111111";
+const BOOT_LOG_KEY =
+  "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/boot.log";
 
 const POSTED_JOB = {
   id: "job-1",
@@ -57,7 +69,7 @@ const POSTED_JOB = {
   claimedAt: NOW,
   nextEligibleAt: null,
   postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
-  verdict: "approve",
+  verdict: "not_proven",
   skipReason: null,
   createdAt: NOW,
   updatedAt: NOW,
@@ -102,22 +114,108 @@ const RUNNING_JOB = {
   verdict: null,
 };
 
-const CONTRACT_TIMELINE = {
-  record: CHANGE_RECORD,
-  events: [],
-};
-
 const CONFIRMED_CONTRACT = [{
+  id: "contract-1",
   status: "confirmed",
   version: 2,
   contract: {
     acceptanceCriteria: [
-      { id: "AC-1", text: "The saved value is visible." },
+      { id: "AC-1", text: "The saved value is visible.", userVisible: true },
     ],
   },
 }];
 
+const PLAN_EVENT = {
+  id: "event-plan-1",
+  recordId: "record-1",
+  eventKey: "verification:plan:job-1",
+  stage: "verification",
+  actor: "jace:review-verification-planner",
+  payloadRef: {
+    kind: "review_job_verification_plan",
+    jobId: "job-1",
+    workspaceId: "ws-1",
+    repo: "acme/widgets",
+    prNumber: 42,
+    headSha: "a".repeat(40),
+    recordId: "record-1",
+    acceptanceContractId: "contract-1",
+    acceptanceContractVersion: 2,
+    plannedBy: "jace:review-job-worker",
+    plans: [{
+      criterionId: "AC-1",
+      criterionTextSnapshot: "The saved value is visible.",
+      modality: "ui",
+      environmentKind: "isolated_preview",
+      flow: "Save the value, reload, and verify it remains visible.",
+      status: "planned",
+      notTestableReason: null,
+    }],
+  },
+  at: NOW,
+  createdAt: NOW,
+};
+
+const CONTRACT_TIMELINE = {
+  record: CHANGE_RECORD,
+  events: [PLAN_EVENT],
+};
+
+let latestRequestBody: Record<string, unknown> | null = null;
+
+function timelineWithPostedAttestation(
+  base: { record: typeof CHANGE_RECORD; events: unknown[] },
+  body: Record<string, unknown> | null = latestRequestBody
+) {
+  const criterionResults = Array.isArray(body?.criterionResults)
+    ? body.criterionResults
+    : null;
+  if (!criterionResults) return base;
+  const outcomeDigest = reviewOutcomeDigest({
+    criterionResults: criterionResults as CriterionResult[],
+    verdict: typeof body?.verdict === "string" ? body.verdict : undefined,
+    summaryLine: typeof body?.summaryLine === "string" ? body.summaryLine : undefined,
+    evidenceKeys: Array.isArray(body?.evidenceKeys)
+      ? (body.evidenceKeys as string[])
+      : undefined,
+  });
+  return {
+    ...base,
+    events: [
+      ...base.events,
+      {
+        id: "event-github-posted-1",
+        recordId: "record-1",
+        eventKey: "review:github-posted:job-1",
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: {
+          kind: "review_job_github_posted",
+          jobId: "job-1",
+          workspaceId: "ws-1",
+          repo: "acme/widgets",
+          prNumber: 42,
+          headSha: "a".repeat(40),
+          recordId: "record-1",
+          acceptanceContractId: "contract-1",
+          acceptanceContractVersion: 2,
+          outcomeDigest,
+          postPayloadDigest: "test-post-payload-digest",
+          postedReviewUrl:
+            "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
+        },
+        at: NOW,
+        createdAt: NOW,
+      },
+    ],
+  };
+}
+
 function postReq(body: unknown, withAuth = true): NextRequest {
+  latestRequestBody =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
   return new NextRequest("http://localhost/api/v1/runner/review-jobs/complete", {
     method: "POST",
     headers: {
@@ -143,23 +241,36 @@ const VALID_POSTED_BODY = {
   jobId: "job-1",
   outcome: "posted" as const,
   postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
-  verdict: "approve",
-  summaryLine: "AgentRail review posted for acme/widgets#42 — 3/3 ACs pass, no blockers",
+  verdict: "not_proven",
+  summaryLine: "AgentRail review posted for acme/widgets#42 — not_proven",
   criterionResults: [{
     criterionId: "AC-1",
-    state: "proven",
+    state: "not_proven",
     expected: "The saved value is visible.",
-    observed: "The saved value is visible.",
-    evidenceRefs: ["artifact://review/ac-1"],
+    observed: R7_READY_NOT_PROVEN_OBSERVATION,
+    evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
   }],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  latestRequestBody = VALID_POSTED_BODY;
   process.env[ENV_KEY] = SECRET;
   mockComplete.mockResolvedValue(null as never);
+  mockGetPreviewBoot.mockResolvedValue({
+    id: PREVIEW_BOOT_ID,
+    workspaceId: "ws-1",
+    repo: "acme/widgets",
+    prNumber: 42,
+    headSha: "a".repeat(40),
+    status: "ready",
+    url: "http://preview.internal:4173",
+    bootLogKey: BOOT_LOG_KEY,
+  } as never);
   mockGetReviewJobById.mockResolvedValue(RUNNING_JOB as never);
-  mockReadChangeRecordTimelineByPr.mockResolvedValue(CONTRACT_TIMELINE as never);
+  mockReadChangeRecordTimelineByPr.mockImplementation(
+    async () => timelineWithPostedAttestation(CONTRACT_TIMELINE) as never
+  );
   mockReadAcceptanceContracts.mockResolvedValue(CONFIRMED_CONTRACT as never);
   mockFindOrCreateChangeRecord.mockResolvedValue(CHANGE_RECORD as never);
   mockAppendChangeRecordEvent.mockResolvedValue({
@@ -283,6 +394,438 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
   });
 
   describe("confirmed Contract coverage", () => {
+    it("rejects a valid-looking result when no server-owned pre-write GitHub attestation exists", async () => {
+      mockReadChangeRecordTimelineByPr.mockResolvedValue(CONTRACT_TIMELINE as never);
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(res.status).toBe(409);
+      expect(mockGetPreviewBoot).toHaveBeenCalledWith(PREVIEW_BOOT_ID);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a terminal result whose verdict differs from the pre-write attested outcome", async () => {
+      mockReadChangeRecordTimelineByPr.mockResolvedValue(
+        timelineWithPostedAttestation(CONTRACT_TIMELINE, VALID_POSTED_BODY) as never
+      );
+
+      const res = await POST(
+        postReq({ ...VALID_POSTED_BODY, verdict: "request_changes" })
+      );
+
+      expect(res.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a legacy confirmed criterion without userVisible", async () => {
+      mockReadAcceptanceContracts.mockResolvedValue([{
+        ...CONFIRMED_CONTRACT[0],
+        contract: {
+          acceptanceCriteria: [{ id: "AC-1", text: "Legacy criterion" }],
+        },
+      }] as never);
+
+      const res = await POST(postReq(VALID_POSTED_BODY));
+
+      expect(res.status).toBe(409);
+      expect(mockGetPreviewBoot).not.toHaveBeenCalled();
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a non-not_testable result that cites artifacts but no exact-head preview boot", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: ["artifact://review/ac-1"],
+      }];
+
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+
+      expect(res.status).toBe(409);
+      expect(mockGetPreviewBoot).not.toHaveBeenCalled();
+      expect(mockComplete).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+    });
+
+    it("rejects exact-head boot evidence when the review job has no persisted criterion plan", async () => {
+      mockReadChangeRecordTimelineByPr.mockResolvedValue({
+        ...CONTRACT_TIMELINE,
+        events: [],
+      } as never);
+      mockGetPreviewBoot.mockResolvedValue({
+        id: PREVIEW_BOOT_ID,
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        status: "ready",
+        url: "http://preview.internal:4173",
+      } as never);
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+      }];
+
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+
+      expect(res.status).toBe(409);
+      expect(mockGetPreviewBoot).not.toHaveBeenCalled();
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("accepts a ready preview boot only when the server row matches the review job's exact head", async () => {
+      mockGetPreviewBoot.mockResolvedValue({
+        id: PREVIEW_BOOT_ID,
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        status: "ready",
+        url: "http://preview.internal:4173",
+      } as never);
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+      }];
+
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+
+      expect(res.status).toBe(200);
+      expect(mockGetPreviewBoot).toHaveBeenCalledWith(PREVIEW_BOOT_ID);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects direct-complete proof claims, changed observations, and extra references before completion", async () => {
+      for (const criterionResult of [
+        {
+          ...VALID_POSTED_BODY.criterionResults[0],
+          state: "proven",
+          observed: "The model says it passed.",
+        },
+        {
+          ...VALID_POSTED_BODY.criterionResults[0],
+          state: "failed",
+          observed: "The model says it failed.",
+        },
+        {
+          ...VALID_POSTED_BODY.criterionResults[0],
+          observed: "A different environment-only claim.",
+        },
+        {
+          ...VALID_POSTED_BODY.criterionResults[0],
+          evidenceRefs: [
+            `preview-boot:${PREVIEW_BOOT_ID}`,
+            "artifact://fabricated",
+          ],
+        },
+      ]) {
+        const res = await POST(
+          postReq({ ...VALID_POSTED_BODY, criterionResults: [criterionResult] })
+        );
+        expect(res.status).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("accepts a server-custodied before-ready boot failure only as not_testable", async () => {
+      const reason = "preview command exited 1";
+      mockGetPreviewBoot.mockResolvedValue({
+        id: PREVIEW_BOOT_ID,
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        status: "failed",
+        url: null,
+        reason,
+        bootLogKey: BOOT_LOG_KEY,
+      } as never);
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        state: "not_testable",
+        observed: r7UnavailablePreviewObservation({ status: "failed", reason }),
+      }];
+
+      const response = await POST(postReq({
+        ...VALID_POSTED_BODY,
+        criterionResults,
+        verdict: "not_testable",
+        summaryLine: "AgentRail review posted for acme/widgets#42 — not_testable",
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds in-flight, failed-after-ready, and reasonless terminal boots", async () => {
+      for (const boot of [
+        { status: "pending", url: null, reason: null },
+        { status: "ready", url: null, reason: null },
+        { status: "failed", url: "http://preview.internal:4173", reason: "stale" },
+        { status: "failed", url: null, reason: "   " },
+        { status: "torn_down", url: null, reason: null },
+      ]) {
+        mockGetPreviewBoot.mockResolvedValueOnce({
+          id: PREVIEW_BOOT_ID,
+          workspaceId: "ws-1",
+          repo: "acme/widgets",
+          prNumber: 42,
+          headSha: "a".repeat(40),
+          bootLogKey: BOOT_LOG_KEY,
+          ...boot,
+        } as never);
+        const response = await POST(postReq(VALID_POSTED_BODY));
+        expect(response.status).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects arbitrary evidenceKeys that are not custodied on the exact boot", async () => {
+      const response = await POST(postReq({
+        ...VALID_POSTED_BODY,
+        evidenceKeys: ["review-evidence/fabricated.png"],
+      }));
+
+      expect(response.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a fabricated preview-boot evidence reference before completing the review", async () => {
+      const criterionResults = [{
+        criterionId: "AC-1",
+        state: "not_proven",
+        expected: "Saving a filter preserves it after reload.",
+        observed: "No safe preview was available for the reload flow.",
+        evidenceRefs: ["preview-boot:unavailable"],
+      }];
+
+      const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+
+      expect(res.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+      expect(mockAppendChangeRecordEvent).not.toHaveBeenCalled();
+    });
+
+    it("rejects a real preview boot from a different workspace, PR, or head", async () => {
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+      }];
+      for (const mismatch of [
+        { workspaceId: "ws-other" },
+        { prNumber: 99 },
+        { headSha: "b".repeat(40) },
+      ]) {
+        mockGetPreviewBoot.mockResolvedValueOnce({
+          id: PREVIEW_BOOT_ID,
+          workspaceId: "ws-1",
+          repo: "acme/widgets",
+          prNumber: 42,
+          headSha: "a".repeat(40),
+          status: "ready",
+          url: "http://preview.internal:4173",
+          ...mismatch,
+        } as never);
+
+        const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+        expect(res.status).toBe(409);
+      }
+
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("accepts a torn-down boot when it retains the URL from its ready transition", async () => {
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+      }];
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      mockGetPreviewBoot.mockResolvedValueOnce({
+        id: PREVIEW_BOOT_ID,
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        status: "torn_down",
+        url: "http://preview.internal:4173",
+      } as never);
+
+      const afterReady = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+      expect(afterReady.status).toBe(200);
+    });
+
+    it("accepts a plan-declared not_testable criterion only with its stored reason and no boot", async () => {
+      const criterionText = "The API returns the saved value.";
+      const notTestableReason = "The R7.2 API executor is not available in this deployment.";
+      mockReadAcceptanceContracts.mockResolvedValue([{
+        ...CONFIRMED_CONTRACT[0],
+        contract: {
+          acceptanceCriteria: [{ id: "AC-1", text: criterionText, userVisible: false }],
+        },
+      }] as never);
+      const notTestableTimeline = {
+        ...CONTRACT_TIMELINE,
+        events: [{
+          ...PLAN_EVENT,
+          payloadRef: {
+            ...PLAN_EVENT.payloadRef,
+            plans: [{
+              criterionId: "AC-1",
+              criterionTextSnapshot: criterionText,
+              modality: "api",
+              environmentKind: null,
+              flow: null,
+              status: "not_testable",
+              notTestableReason,
+            }],
+          },
+        }],
+      };
+      mockReadChangeRecordTimelineByPr.mockImplementation(
+        async () => timelineWithPostedAttestation(notTestableTimeline) as never
+      );
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        criterionId: "AC-1",
+        state: "not_testable",
+        expected: criterionText,
+        observed: notTestableReason,
+        evidenceRefs: [],
+      }];
+
+      const response = await POST(postReq({
+        ...VALID_POSTED_BODY,
+        criterionResults,
+        verdict: "not_testable",
+        summaryLine: "AgentRail review posted for acme/widgets#42 — not_testable",
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockGetPreviewBoot).not.toHaveBeenCalled();
+      expect(mockComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a plan-declared not_testable criterion that changes its reason or claims proof", async () => {
+      const criterionText = "The API returns the saved value.";
+      const notTestableReason = "The R7.2 API executor is not available in this deployment.";
+      mockReadAcceptanceContracts.mockResolvedValue([{
+        ...CONFIRMED_CONTRACT[0],
+        contract: {
+          acceptanceCriteria: [{ id: "AC-1", text: criterionText, userVisible: false }],
+        },
+      }] as never);
+      mockReadChangeRecordTimelineByPr.mockResolvedValue({
+        ...CONTRACT_TIMELINE,
+        events: [{
+          ...PLAN_EVENT,
+          payloadRef: {
+            ...PLAN_EVENT.payloadRef,
+            plans: [{
+              criterionId: "AC-1",
+              criterionTextSnapshot: criterionText,
+              modality: "api",
+              environmentKind: null,
+              flow: null,
+              status: "not_testable",
+              notTestableReason,
+            }],
+          },
+        }],
+      } as never);
+
+      for (const criterionResults of [
+        [{
+          criterionId: "AC-1",
+          state: "not_testable",
+          expected: criterionText,
+          observed: "A different reason.",
+          evidenceRefs: [],
+        }],
+        [{
+          criterionId: "AC-1",
+          state: "proven",
+          expected: criterionText,
+          observed: "Claimed proof despite the declared hold.",
+          evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+        }],
+      ]) {
+        const response = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+        expect(response.status).toBe(409);
+      }
+
+      expect(mockGetPreviewBoot).not.toHaveBeenCalled();
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a stored plan that relabels a user-visible criterion away from ui", async () => {
+      const notTestableReason = "Incorrectly classified as an API-only criterion.";
+      mockReadAcceptanceContracts.mockResolvedValue([{
+        ...CONFIRMED_CONTRACT[0],
+        contract: {
+          acceptanceCriteria: [{
+            id: "AC-1",
+            text: "The saved value is visible.",
+            userVisible: true,
+          }],
+        },
+      }] as never);
+      mockReadChangeRecordTimelineByPr.mockResolvedValue({
+        ...CONTRACT_TIMELINE,
+        events: [{
+          ...PLAN_EVENT,
+          payloadRef: {
+            ...PLAN_EVENT.payloadRef,
+            plans: [{
+              criterionId: "AC-1",
+              criterionTextSnapshot: "The saved value is visible.",
+              modality: "api",
+              environmentKind: null,
+              flow: null,
+              status: "not_testable",
+              notTestableReason,
+            }],
+          },
+        }],
+      } as never);
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        criterionId: "AC-1",
+        state: "not_testable",
+        expected: "The saved value is visible.",
+        observed: notTestableReason,
+        evidenceRefs: [],
+      }];
+
+      const response = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+
+      expect(response.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("rejects a torn-down boot that never reached ready and has no URL", async () => {
+      const criterionResults = [{
+        ...VALID_POSTED_BODY.criterionResults[0],
+        evidenceRefs: [`preview-boot:${PREVIEW_BOOT_ID}`],
+      }];
+      mockGetPreviewBoot.mockResolvedValueOnce({
+        id: PREVIEW_BOOT_ID,
+        workspaceId: "ws-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha: "a".repeat(40),
+        status: "torn_down",
+        url: null,
+      } as never);
+
+      const beforeReady = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+      expect(beforeReady.status).toBe(409);
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
     it("409 before completion when the Contract is missing, the head is foreign, or results do not exactly match the confirmed criterion IDs", async () => {
       const cases = [
         () => mockReadAcceptanceContracts.mockResolvedValue([] as never),
@@ -331,16 +874,32 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
         postReq({
           ...VALID_POSTED_BODY,
           postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
-          verdict: "approve",
+          verdict: "not_proven",
         })
       );
       expect(mockComplete).toHaveBeenCalledWith({
         jobId: "job-1",
         outcome: "posted",
         postedReviewUrl: "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
-        verdict: "approve",
+        verdict: "not_proven",
         error: null,
       });
+    });
+
+    it("uses the server-custodied posted URL instead of a caller substitution", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      await POST(
+        postReq({
+          ...VALID_POSTED_BODY,
+          postedReviewUrl: "https://evil.example/review",
+        })
+      );
+      expect(mockComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          postedReviewUrl:
+            "https://github.com/acme/widgets/pull/42#pullrequestreview-1",
+        })
+      );
     });
 
     // B2a §1 Task 3 — evidenceKeys passthrough. The test directly above
@@ -352,16 +911,16 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       await POST(
         postReq({
           ...VALID_POSTED_BODY,
-          evidenceKeys: ["review-evidence/ws-1/acme__widgets/42/sha/ac-1/1.png"],
+          evidenceKeys: [BOOT_LOG_KEY],
         })
       );
       expect(mockComplete).toHaveBeenCalledWith({
         jobId: "job-1",
         outcome: "posted",
         postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
-        verdict: "approve",
+        verdict: "not_proven",
         error: null,
-        evidenceKeys: ["review-evidence/ws-1/acme__widgets/42/sha/ac-1/1.png"],
+        evidenceKeys: [BOOT_LOG_KEY],
       });
     });
 
@@ -445,7 +1004,7 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
           prNumber: 42,
           headSha: "a".repeat(40),
           postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
-          verdict: "approve",
+          verdict: "not_proven",
           evidenceKeys: null,
           criterionResults: VALID_POSTED_BODY.criterionResults,
         },
@@ -455,13 +1014,7 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
 
     it("persists typed terminal outcomes with the exact review head", async () => {
       mockComplete.mockResolvedValue(POSTED_JOB as never);
-      const criterionResults = [{
-        criterionId: "AC-1",
-        state: "not_proven",
-        expected: "Saving a filter preserves it after reload.",
-        observed: "No safe preview was available for the reload flow.",
-        evidenceRefs: ["preview-boot:unavailable"],
-      }];
+      const criterionResults = VALID_POSTED_BODY.criterionResults;
       await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
       expect(mockAppendChangeRecordEvent).toHaveBeenCalledWith(
         expect.objectContaining({

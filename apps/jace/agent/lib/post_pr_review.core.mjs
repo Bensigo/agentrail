@@ -70,6 +70,7 @@ import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 
 export const PR_REVIEW_PATH = "/api/v1/runner/pr-review";
 export const PR_CHANGE_RECORD_PATH = "/api/v1/runner/change-record/pr";
+export const REVIEW_JOB_POST_PATH_PREFIX = "/api/v1/runner/review-jobs";
 
 // Backstops against context flooding, not content limits — mirrors
 // sanitize-untrusted.core.mjs's FIELD_CAPS idiom for create_issue's fields.
@@ -572,6 +573,10 @@ export function buildPrReviewUrl(baseUrl) {
   return `${baseUrl}${PR_REVIEW_PATH}`;
 }
 
+export function buildReviewJobPostUrl(baseUrl, jobId) {
+  return `${baseUrl}${REVIEW_JOB_POST_PATH_PREFIX}/${encodeURIComponent(jobId)}/post-review`;
+}
+
 export function buildPrChangeRecordUrl(baseUrl) {
   return `${baseUrl}${PR_CHANGE_RECORD_PATH}`;
 }
@@ -747,6 +752,72 @@ export function sanitizeReviewInput(summary, comments) {
   return { summary: safeSummary, comments: safeComments };
 }
 
+const REVIEW_JOB_CRITERION_STATES = new Set(["not_proven", "not_testable"]);
+const REVIEW_JOB_VERDICTS = new Set(["not_proven", "not_testable"]);
+
+/** Project the headless review attestation onto the exact server wire shape. */
+export function projectReviewJobAttestation(value) {
+  if (!value || typeof value !== "object") return null;
+  const jobId = String(value.jobId ?? "").trim();
+  const verdict = String(value.verdict ?? "").trim();
+  const summaryLine = String(value.summaryLine ?? "").trim();
+  if (
+    !jobId ||
+    !REVIEW_JOB_VERDICTS.has(verdict) ||
+    !summaryLine ||
+    !Array.isArray(value.criterionResults)
+  ) {
+    return null;
+  }
+  const ids = new Set();
+  const criterionResults = [];
+  for (const raw of value.criterionResults) {
+    if (!raw || typeof raw !== "object") return null;
+    const criterionId = String(raw.criterionId ?? "").trim();
+    const expected = String(raw.expected ?? "").trim();
+    const observed = String(raw.observed ?? "").trim();
+    const state = raw.state;
+    if (
+      !criterionId ||
+      ids.has(criterionId) ||
+      !expected ||
+      !observed ||
+      !REVIEW_JOB_CRITERION_STATES.has(state) ||
+      !Array.isArray(raw.evidenceRefs) ||
+      raw.evidenceRefs.some((reference) => typeof reference !== "string" || !reference.trim()) ||
+      (state !== "not_testable" && raw.evidenceRefs.length === 0)
+    ) {
+      return null;
+    }
+    ids.add(criterionId);
+    criterionResults.push({
+      criterionId,
+      state,
+      expected,
+      observed,
+      evidenceRefs: raw.evidenceRefs.map((reference) => reference.trim()),
+    });
+  }
+  if (criterionResults.length === 0) return null;
+  let evidenceKeys;
+  if (value.evidenceKeys !== undefined) {
+    if (
+      !Array.isArray(value.evidenceKeys) ||
+      value.evidenceKeys.some((key) => typeof key !== "string" || !key.trim())
+    ) {
+      return null;
+    }
+    evidenceKeys = value.evidenceKeys.map((key) => key.trim());
+  }
+  return {
+    jobId,
+    criterionResults,
+    verdict,
+    summaryLine,
+    ...(evidenceKeys === undefined ? {} : { evidenceKeys }),
+  };
+}
+
 /**
  * Post an advisory PR review for the conversation identified by
  * `eveSessionId`. Returns `{ ok: true, reviewUrl, summary,
@@ -792,6 +863,7 @@ export function sanitizeReviewInput(summary, comments) {
  *           summary: string, comments: Array<{path: string, line: number, body: string}>,
  *           acCoverage?: unknown,
  *           judgment?: unknown,
+ *           reviewJob?: unknown,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }>,
@@ -806,6 +878,7 @@ export async function runPostPrReview({
   comments,
   acCoverage = null,
   judgment = null,
+  reviewJob = null,
   env = {},
   transport,
   changeRecordTransport = null,
@@ -845,20 +918,42 @@ export async function runPostPrReview({
   );
   const safe = sanitizeReviewInput(composed, postable);
 
+  const reviewJobAttestation =
+    reviewJob === null || reviewJob === undefined
+      ? null
+      : projectReviewJobAttestation(reviewJob);
+  if (reviewJob !== null && reviewJob !== undefined && !reviewJobAttestation) {
+    return failure("bad_request");
+  }
+
   // Nothing worth posting and nothing to say: report it honestly rather than
   // spending a call the console would 400 anyway.
   if (safe.summary.trim().length === 0 && safe.comments.length === 0) {
     return failure("nothing_to_post");
   }
 
-  const url = buildPrReviewUrl(cfg.baseUrl);
-  const requestBody = {
-    eveSessionId: sessionId,
-    repo: repoTrimmed,
-    prNumber: prNum,
-    summary: safe.summary,
-    comments: safe.comments,
-  };
+  const url = reviewJobAttestation
+    ? buildReviewJobPostUrl(cfg.baseUrl, reviewJobAttestation.jobId)
+    : buildPrReviewUrl(cfg.baseUrl);
+  const requestBody = reviewJobAttestation
+    ? {
+        eveSessionId: sessionId,
+        summary: safe.summary,
+        comments: safe.comments,
+        criterionResults: reviewJobAttestation.criterionResults,
+        verdict: reviewJobAttestation.verdict,
+        summaryLine: reviewJobAttestation.summaryLine,
+        ...(reviewJobAttestation.evidenceKeys === undefined
+          ? {}
+          : { evidenceKeys: reviewJobAttestation.evidenceKeys }),
+      }
+    : {
+        eveSessionId: sessionId,
+        repo: repoTrimmed,
+        prNumber: prNum,
+        summary: safe.summary,
+        comments: safe.comments,
+      };
 
   let res;
   try {
@@ -899,13 +994,20 @@ export async function runPostPrReview({
     return failure("bad_body");
   }
 
-  if (!body || typeof body !== "object" || body.posted !== true) {
+  const reviewUrl =
+    body &&
+    typeof body === "object" &&
+    typeof body.reviewUrl === "string" &&
+    body.reviewUrl.trim()
+      ? body.reviewUrl.trim()
+      : null;
+  if (!body || typeof body !== "object" || body.posted !== true || !reviewUrl) {
     return failure("bad_body");
   }
 
   return {
     ok: true,
-    reviewUrl: typeof body.reviewUrl === "string" ? body.reviewUrl : null,
+    reviewUrl,
     summary: typeof body.summary === "string" ? body.summary : safe.summary,
     inlineCommentsPosted:
       typeof body.inlineCommentsPosted === "number" ? body.inlineCommentsPosted : 0,

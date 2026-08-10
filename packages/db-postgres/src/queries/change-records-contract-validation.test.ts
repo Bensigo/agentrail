@@ -4,7 +4,9 @@ import { validateAcceptanceContract } from "./change_records.js";
 const completeContract = {
   originalRequest: "Add saved filters",
   normalizedRequirements: ["Users can save and reuse a filter"],
-  acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+  acceptanceCriteria: [
+    { id: "AC-1", text: "A user can save a filter", userVisible: true },
+  ],
   nonGoals: [],
   risks: [],
   environment: { kind: "existing_preview" },
@@ -21,7 +23,9 @@ describe("validateAcceptanceContract", () => {
     expect(
       validateAcceptanceContract({
         originalRequest: "Add saved filters",
-        acceptanceCriteria: [{ id: "AC-1", text: "A user can save a filter" }],
+        acceptanceCriteria: [
+          { id: "AC-1", text: "A user can save a filter", userVisible: true },
+        ],
         unresolvedQuestions: [],
       })
     ).toEqual({
@@ -40,12 +44,23 @@ describe("validateAcceptanceContract", () => {
     expect(
       validateAcceptanceContract({
         ...completeContract,
-        acceptanceCriteria: [{ id: "AC-1" }],
+        acceptanceCriteria: [{ id: "AC-1", userVisible: true }],
         unresolvedQuestions: [{ id: "Q-1" }],
       })
     ).toEqual({
       ok: false,
       errors: expect.arrayContaining(["acceptanceCriteria", "unresolvedQuestions"]),
     });
+  });
+
+  it("requires an explicit boolean userVisible discriminator on every criterion", () => {
+    for (const acceptanceCriteria of [
+      [{ id: "AC-1", text: "Legacy criterion" }],
+      [{ id: "AC-1", text: "Malformed criterion", userVisible: "yes" }],
+    ]) {
+      expect(
+        validateAcceptanceContract({ ...completeContract, acceptanceCriteria })
+      ).toEqual({ ok: false, errors: ["acceptanceCriteria"] });
+    }
   });
 });

@@ -1,7 +1,7 @@
 // request_preview_boot — root's seam onto the console's boot plane (B2b Task
 // 3, plan docs/superpowers/plans/2026-08-02-b2b-sandbox-boot.md; live on main
-// from #1573): POST apps/console/app/api/v1/runner/preview-boots to request a
-// sandboxed preview boot of a PR's head commit, then poll GET
+// from #1573): POST the server-owned review-job preview route to request a
+// sandboxed preview boot of that job's exact head, then poll GET
 // .../preview-boots/{id} until the boot reaches a terminal status. No SDK, no
 // network primitives of its own: the HTTP call is an injected `transport`
 // seam (real fetch-with-timeout in the thin tool wrapper, a fake in tests),
@@ -60,6 +60,7 @@
 // describe the RETRIEVAL gap, never the issue's contents").
 
 export const PREVIEW_BOOTS_PATH = "/api/v1/runner/preview-boots";
+const REVIEW_JOBS_PATH = "/api/v1/runner/review-jobs";
 
 // Poll backoff: 2s -> 5s -> 10s, then capped at 10s for every subsequent
 // attempt, jittered by up to +250ms so many concurrent pollers don't beat in
@@ -106,15 +107,15 @@ const NOTES = {
   config_missing:
     "The console preview-boot endpoint is not configured for this Jace deployment (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN); no preview boot could be requested.",
   bad_request:
-    "The preview-boot request was malformed (missing/blank eveSessionId, repo, or headSha, or a non-positive prNumber); no preview boot could be requested.",
+    "The preview-boot request was malformed (missing/blank eveSessionId or review job id); no preview boot could be requested.",
   boots_disabled:
     "Preview boots are not enabled on this console deployment right now; no preview boot could be requested.",
   not_enrolled:
     "This workspace is not enrolled for preview boots; no preview boot could be requested.",
   session_or_repo:
-    "The console could not resolve this session, or this repo is not connected to the workspace; no preview boot could be requested.",
-  no_workspace:
-    "This session is not yet fully bound to a workspace; no preview boot could be requested.",
+    "The console could not resolve this review session; no preview boot could be requested.",
+  review_context:
+    "The console could not validate a bound running review job, its exact Acceptance Record head, and one confirmed Acceptance Contract; no preview boot could be requested.",
   request_failed:
     "The console rejected the preview-boot request with an unexpected status; no preview boot could be requested.",
   bad_body:
@@ -128,6 +129,27 @@ const NOTES = {
   boot_lost:
     "The console no longer recognizes this preview boot for this session; its state could not be confirmed.",
 };
+
+export const R7_READY_NOT_PROVEN_OBSERVATION =
+  "The isolated exact-head preview became ready, but R7.1 does not yet provide server-custodied criterion execution evidence; this criterion remains not proven until R7.2.";
+
+export function r7UnavailablePreviewObservation({ status, reason }) {
+  const transition =
+    status === "failed"
+      ? "failed before it became ready"
+      : "was torn down before it became ready";
+  return `The isolated exact-head preview ${transition}: ${reason}`;
+}
+
+function attestableBootReason(value) {
+  if (typeof value !== "string") return null;
+  const reason = value.trim();
+  return reason &&
+    reason.length <= 2_000 &&
+    !/[\u0000-\u001f\u007f]/u.test(reason)
+    ? reason
+    : null;
+}
 
 /**
  * Resolve the console endpoint + bearer from the environment. Trims both,
@@ -150,13 +172,14 @@ export function resolveConsoleConfig(env = {}) {
 }
 
 /**
- * Build the POST .../preview-boots URL. Every field rides in the body, never
- * here.
+ * Build the POST .../review-jobs/{jobId}/preview URL. The job id selects an
+ * already-bound server row; the code identity never rides in the body.
  * @param {string} baseUrl — already trimmed + de-slashed
+ * @param {string} jobId
  * @returns {string}
  */
-export function buildPreviewBootUrl(baseUrl) {
-  return `${baseUrl}${PREVIEW_BOOTS_PATH}`;
+export function buildPreviewBootUrl(baseUrl, jobId) {
+  return `${baseUrl}${REVIEW_JOBS_PATH}/${encodeURIComponent(jobId)}/preview`;
 }
 
 /**
@@ -177,9 +200,9 @@ export function buildPreviewBootStatusUrl(baseUrl, id, eveSessionId) {
 /**
  * Map the POST's HTTP status to an outcome. 2xx -> ok; everything else -> a
  * specific degraded reason, per the route's own documented response shapes
- * (apps/console/app/api/v1/runner/preview-boots/route.ts): 503 boots
- * disabled, 403 workspace not enrolled, 404 session/repo unresolved, 409 no
- * workspace bound yet, 400 malformed body. Anything else (including a 401
+ * (apps/console/app/api/v1/runner/review-jobs/[jobId]/preview/route.ts): 503
+ * boots disabled, 403 workspace not enrolled, 404 session unresolved, 409
+ * review-job/Record/Contract binding unavailable, 400 malformed body. Anything else (including a 401
  * from a misconfigured bearer) falls into the generic `request_failed`
  * catch-all, which alone carries the raw status as an extra field — see
  * requestPreviewBoot's own doc comment.
@@ -191,7 +214,7 @@ export function classifyStatus(status) {
   if (status === 400) return { ok: false, reason: "bad_request" };
   if (status === 403) return { ok: false, reason: "not_enrolled" };
   if (status === 404) return { ok: false, reason: "session_or_repo" };
-  if (status === 409) return { ok: false, reason: "no_workspace" };
+  if (status === 409) return { ok: false, reason: "review_context" };
   if (status === 503) return { ok: false, reason: "boots_disabled" };
   return { ok: false, reason: "request_failed" };
 }
@@ -234,8 +257,8 @@ export function degraded(reason, extra = {}) {
  * behavior this module has, and it is retrying a WAIT, not a failed write).
  * @returns {Promise<{ ok: true, id: string } | { ok: false, result: object }>}
  */
-async function postPreviewBoot({ baseUrl, token, eveSessionId, repo, prNumber, headSha, transport }) {
-  const url = buildPreviewBootUrl(baseUrl);
+async function postPreviewBoot({ baseUrl, token, eveSessionId, jobId, transport }) {
+  const url = buildPreviewBootUrl(baseUrl, jobId);
   let res;
   try {
     res = await transport(url, {
@@ -245,7 +268,7 @@ async function postPreviewBoot({ baseUrl, token, eveSessionId, repo, prNumber, h
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ eveSessionId, repo, prNumber, headSha }),
+      body: JSON.stringify({ eveSessionId }),
     });
   } catch {
     // Network error / DNS / timeout — a single failed attempt, reported not retried.
@@ -381,17 +404,52 @@ async function pollPreviewBoot({ baseUrl, token, id, eveSessionId, transport, sl
         if (typeof polled.url !== "string" || !polled.url.trim()) {
           return degraded("bad_body");
         }
-        const result = { ok: true, id, url: polled.url };
+        const result = {
+          ok: true,
+          id,
+          url: polled.url,
+          attestedState: "not_proven",
+          attestedObservation: R7_READY_NOT_PROVEN_OBSERVATION,
+        };
         if (polled.bootLogKey) result.bootLogKey = polled.bootLogKey;
         return result;
       }
       if (polled.status === "failed") {
-        const extra = { reason: polled.reason };
+        const bootReason = attestableBootReason(polled.reason);
+        const readyUrl =
+          typeof polled.url === "string" && polled.url.trim()
+            ? polled.url.trim()
+            : null;
+        const extra = { id, bootReason };
+        if (!readyUrl && bootReason) {
+          extra.attestedState = "not_testable";
+          extra.attestedObservation = r7UnavailablePreviewObservation({
+            status: "failed",
+            reason: bootReason,
+          });
+        }
         if (polled.bootLogKey) extra.bootLogKey = polled.bootLogKey;
         return degraded("boot_failed", extra);
       }
       if (polled.status === "torn_down") {
-        return degraded("boot_gone", polled.bootLogKey ? { bootLogKey: polled.bootLogKey } : {});
+        const readyUrl =
+          typeof polled.url === "string" && polled.url.trim()
+            ? polled.url.trim()
+            : null;
+        const bootReason = attestableBootReason(polled.reason);
+        const extra = { id, bootReason };
+        if (readyUrl) {
+          extra.attestedState = "not_proven";
+          extra.attestedObservation = R7_READY_NOT_PROVEN_OBSERVATION;
+        } else if (bootReason) {
+          extra.attestedState = "not_testable";
+          extra.attestedObservation = r7UnavailablePreviewObservation({
+            status: "torn_down",
+            reason: bootReason,
+          });
+        }
+        if (polled.bootLogKey) extra.bootLogKey = polled.bootLogKey;
+        return degraded("boot_gone", extra);
       }
       // pending / claimed / booting / any other value this module doesn't
       // recognize as terminal -> still in flight -> loop back and re-check
@@ -405,40 +463,37 @@ async function pollPreviewBoot({ baseUrl, token, id, eveSessionId, transport, sl
 }
 
 /**
- * Request a sandboxed preview boot of `repo`'s `headSha` for PR `prNumber`,
- * then wait for it to become ready. Never throws:
+ * Request a sandboxed preview boot for a server-bound review job, then wait
+ * for it to become ready. The console derives workspace/repo/PR/head from
+ * that running job; the model never supplies the code identity. Never throws:
  *
  *   1. unset console config                    -> degraded("config_missing", {missing})
- *   2. blank eveSessionId/repo/headSha, or a
- *      non-positive-integer prNumber            -> degraded("bad_request")
+ *   2. blank eveSessionId or jobId               -> degraded("bad_request")
  *   3. POST transport throws                    -> degraded("unreachable")
  *   4. POST non-2xx                              -> degraded(<mapped reason>[, {status}])
  *   5. POST non-JSON / missing `id` in the body  -> degraded("bad_body")
- *   6. poll reaches `ready`                      -> { ok: true, id, url }
- *   7. poll reaches `failed`                     -> degraded("boot_failed", {reason, bootLogKey?})
- *   8. poll reaches `torn_down`                  -> degraded("boot_gone", {bootLogKey?})
+ *   6. poll reaches `ready`                      -> environment-attested not_proven
+ *   7. poll reaches before-ready `failed`        -> environment-attested not_testable
+ *   8. poll reaches `torn_down`                  -> attested only when URL or reason proves a terminal rung
  *   9. poll TTL (or the MAX_POLL_ATTEMPTS
  *      backstop) elapses first                   -> degraded("boot_timeout")
  *  10. poll GET 404s                              -> degraded("boot_lost")
  *
- * `reason` on `boot_failed` (step 7) relays the console's OWN `reason`
- * column verbatim (coerced to a string, or null) — this is trusted,
- * operational text from Jace's own boot worker (e.g. "npm ci exited 1"),
- * not untrusted PR-diff content, so unlike post_pr_review's `summary`/
- * `comments` it needs no hardenUntrusted() pass before riding out.
+ * `bootReason` on terminal rows relays the console-custodied `reason`
+ * column after the same trim/length/control-character checks the console
+ * attestation applies. It is worker-authored operational text (for example,
+ * "npm ci exited 1"), not a server-defined reason code.
  *
- * @param {{ eveSessionId: string, repo: string, prNumber: number, headSha: string,
+ * @param {{ eveSessionId: string, jobId: string,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: object) => Promise<{status: number, json: () => Promise<unknown>}>,
  *           sleep: (ms: number) => Promise<void>,
  *           now?: () => number }} args
- * @returns {Promise<{ok:true,id:string,url:string,bootLogKey?:string} | {ok:false,degraded:true,reason:string,note:string,bootLogKey?:string,[k:string]:unknown}>}
+ * @returns {Promise<{ok:true,id:string,url:string,attestedState:"not_proven",attestedObservation:string,bootLogKey?:string} | {ok:false,degraded:true,reason:string,note:string,id?:string,bootReason?:string|null,attestedState?:"not_proven"|"not_testable",attestedObservation?:string,bootLogKey?:string,[k:string]:unknown}>}
  */
 export async function requestPreviewBoot({
   eveSessionId,
-  repo,
-  prNumber,
-  headSha,
+  jobId,
   env = {},
   transport,
   sleep,
@@ -449,10 +504,8 @@ export async function requestPreviewBoot({
     if (!cfg.ok) return degraded("config_missing", { missing: cfg.missing });
 
     const sessionId = String(eveSessionId ?? "").trim();
-    const repoTrimmed = String(repo ?? "").trim();
-    const prNum = Number(prNumber);
-    const headShaTrimmed = String(headSha ?? "").trim();
-    if (!sessionId || !repoTrimmed || !Number.isInteger(prNum) || prNum <= 0 || !headShaTrimmed) {
+    const reviewJobId = String(jobId ?? "").trim();
+    if (!sessionId || !reviewJobId) {
       return degraded("bad_request");
     }
 
@@ -460,9 +513,7 @@ export async function requestPreviewBoot({
       baseUrl: cfg.baseUrl,
       token: cfg.token,
       eveSessionId: sessionId,
-      repo: repoTrimmed,
-      prNumber: prNum,
-      headSha: headShaTrimmed,
+      jobId: reviewJobId,
       transport,
     });
     if (!posted.ok) return posted.result;

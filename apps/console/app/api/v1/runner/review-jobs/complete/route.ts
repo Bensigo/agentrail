@@ -60,6 +60,15 @@ import { sendWorkspaceNotification } from "../../result/notify";
  */
 
 type Outcome = "posted" | "failed";
+type CriterionState = "proven" | "failed" | "not_proven" | "not_testable";
+
+interface CriterionResult {
+  criterionId: string;
+  state: CriterionState;
+  expected: string;
+  observed: string;
+  evidenceRefs: string[];
+}
 
 interface CompleteBody {
   jobId: string;
@@ -69,6 +78,7 @@ interface CompleteBody {
   summaryLine?: string;
   error?: string;
   evidenceKeys?: string[];
+  criterionResults?: CriterionResult[];
 }
 
 type CompletedReviewJob = Awaited<ReturnType<typeof completeReviewJob>>;
@@ -85,6 +95,32 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((item) => typeof item === "string");
 }
 
+const CRITERION_STATES = new Set<CriterionState>([
+  "proven",
+  "failed",
+  "not_proven",
+  "not_testable",
+]);
+
+function parseCriterionResults(value: unknown): CriterionResult[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids = new Set<string>();
+  const results: CriterionResult[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") return null;
+    const item = entry as Record<string, unknown>;
+    const criterionId = typeof item.criterionId === "string" ? item.criterionId.trim() : "";
+    const state = item.state;
+    const expected = typeof item.expected === "string" ? item.expected.trim() : "";
+    const observed = typeof item.observed === "string" ? item.observed.trim() : "";
+    if (!criterionId || ids.has(criterionId) || !CRITERION_STATES.has(state as CriterionState) || !expected || !observed || !isStringArray(item.evidenceRefs)) return null;
+    if (state !== "not_testable" && item.evidenceRefs.length === 0) return null;
+    ids.add(criterionId);
+    results.push({ criterionId, state: state as CriterionState, expected, observed, evidenceRefs: item.evidenceRefs });
+  }
+  return results;
+}
+
 function parseCompleteBody(raw: unknown): CompleteBody | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
@@ -93,6 +129,8 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
   // shape every other body-shape violation in this route gets); absent
   // (undefined) is fine and falls through to the mapping below.
   if (o.evidenceKeys !== undefined && !isStringArray(o.evidenceKeys)) return null;
+  const criterionResults = o.criterionResults === undefined ? undefined : parseCriterionResults(o.criterionResults);
+  if (o.criterionResults !== undefined && criterionResults === null) return null;
   return {
     jobId: o.jobId,
     outcome: o.outcome,
@@ -101,6 +139,7 @@ function parseCompleteBody(raw: unknown): CompleteBody | null {
     summaryLine: typeof o.summaryLine === "string" ? o.summaryLine : undefined,
     error: typeof o.error === "string" ? o.error : undefined,
     evidenceKeys: isStringArray(o.evidenceKeys) ? o.evidenceKeys : undefined,
+    criterionResults: criterionResults ?? undefined,
   };
 }
 
@@ -160,6 +199,7 @@ async function appendReviewPostedChangeRecordEvent(
         postedReviewUrl: body.postedReviewUrl ?? job.postedReviewUrl ?? null,
         verdict: body.verdict ?? job.verdict ?? null,
         evidenceKeys: body.evidenceKeys ?? job.evidenceKeys ?? null,
+        criterionResults: body.criterionResults ?? null,
       },
       at: job.updatedAt instanceof Date ? job.updatedAt : undefined,
     });

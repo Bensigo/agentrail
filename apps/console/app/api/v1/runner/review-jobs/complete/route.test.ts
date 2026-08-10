@@ -219,6 +219,19 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       expect(res.status).toBe(400);
       expect(mockComplete).not.toHaveBeenCalled();
     });
+
+    it("400 when criterionResults repeat a criterion, use an unsupported state, or omit inspectable evidence", async () => {
+      for (const criterionResults of [
+        [{ criterionId: "AC-1", state: "green", expected: "x", observed: "x", evidenceRefs: [] }],
+        [{ criterionId: "AC-1", state: "proven", expected: "x", observed: "x", evidenceRefs: [] }],
+        [{ criterionId: "AC-1", state: "proven", expected: "x", observed: "x", evidenceRefs: [] }, { criterionId: "AC-1", state: "failed", expected: "x", observed: "y", evidenceRefs: ["artifact://a"] }],
+        [{ criterionId: "AC-1", state: "proven", expected: "x", observed: "x", evidenceRefs: "artifact://a" }],
+      ]) {
+        const res = await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+        expect(res.status).toBe(400);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
   });
 
   // ---------------------------------------------------------------------
@@ -355,9 +368,30 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
           postedReviewUrl: VALID_POSTED_BODY.postedReviewUrl,
           verdict: "approve",
           evidenceKeys: null,
+          criterionResults: null,
         },
         at: NOW,
       });
+    });
+
+    it("persists typed terminal outcomes with the exact review head", async () => {
+      mockComplete.mockResolvedValue(POSTED_JOB as never);
+      const criterionResults = [{
+        criterionId: "AC-1",
+        state: "not_proven",
+        expected: "Saving a filter preserves it after reload.",
+        observed: "No safe preview was available for the reload flow.",
+        evidenceRefs: ["preview-boot:unavailable"],
+      }];
+      await POST(postReq({ ...VALID_POSTED_BODY, criterionResults }));
+      expect(mockAppendChangeRecordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payloadRef: expect.objectContaining({
+            headSha: "a".repeat(40),
+            criterionResults,
+          }),
+        })
+      );
     });
 
     it("treats a duplicate Change Record event as an idempotent success", async () => {

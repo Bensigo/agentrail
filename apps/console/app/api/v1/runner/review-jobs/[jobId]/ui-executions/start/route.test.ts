@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(), getJaceSessionByEveSessionId: vi.fn(), getPreviewBoot: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
+  getJaceSessionByEveSessionId: vi.fn(), getPreviewBoot: vi.fn(),
 }));
 vi.mock("../../../../../../../../lib/review-job-proof-attestation", () => ({ resolveCurrentReviewJobPlan: vi.fn() }));
 
-import { appendChangeRecordEvent, getJaceSessionByEveSessionId, getPreviewBoot } from "@agentrail/db-postgres";
+import { appendCurrentReviewJobEventsAtomically, getJaceSessionByEveSessionId, getPreviewBoot } from "@agentrail/db-postgres";
 import { type ExactReviewJobProof, resolveCurrentReviewJobPlan } from "../../../../../../../../lib/review-job-proof-attestation";
 import { buildReviewJobUiAttempt, reviewJobUiAttemptEventKey } from "../../../../../../../../lib/review-job-ui-execution";
 import { POST } from "./route";
@@ -40,7 +43,7 @@ beforeEach(() => {
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(session() as never);
   vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(currentProof() as never);
   vi.mocked(getPreviewBoot).mockResolvedValue(preview() as never);
-  vi.mocked(appendChangeRecordEvent).mockImplementation(async (input) => ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never);
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(async (input) => ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never);
 });
 afterEach(() => { if (ORIGINAL_TOKEN === undefined) delete process.env.JACE_CONSOLE_TOKEN; else process.env.JACE_CONSOLE_TOKEN = ORIGINAL_TOKEN; });
 
@@ -68,7 +71,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/ui-executions/start", () => {
       vi.mocked(getPreviewBoot).mockResolvedValueOnce(altered as never);
       expect((await POST(request(body), params())).status).toBe(409);
     }
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("appends the server-built attempt before returning the exact uiSteps", async () => {
@@ -77,14 +80,14 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/ui-executions/start", () => {
     const proof = currentProof(); const plan = proof.verificationPlan.plans[0]; const attempt = buildReviewJobUiAttempt({ proof, plan, boot: preview() })!;
     expect(response.status).toBe(201);
     expect(payload).toEqual({ ok: true, executionId: attempt.executionId, jobId: "job-1", criterionId: "AC-UI", expected: "The filter is visible.", previewBootId: "boot-1", previewUrl: "https://preview.example.test/filters", uiSteps: plan.uiSteps });
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith({ recordId: "record-1", eventKey: reviewJobUiAttemptEventKey({ proof, plan }), stage: "verification", actor: "jace:review-ui-executor", payloadRef: attempt });
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledWith({ workspaceId: "ws-1", recordId: "record-1", jobId: "job-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD_SHA, events: [{ eventKey: reviewJobUiAttemptEventKey({ proof, plan }), stage: "verification", actor: "jace:review-ui-executor", payloadRef: attempt }] });
   });
 
   it("holds existing or racing reservations instead of replaying browser actions", async () => {
     const proof = currentProof(); const plan = proof.verificationPlan.plans[0]; const attempt = buildReviewJobUiAttempt({ proof, plan, boot: preview() })!;
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValueOnce(currentProof([{ eventKey: reviewJobUiAttemptEventKey({ proof, plan }), payloadRef: attempt }]) as never);
     expect((await POST(request(body), params())).status).toBe(409);
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({ event: { payloadRef: attempt }, inserted: false } as never);
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({ events: [{ event: { payloadRef: attempt }, inserted: false }] } as never);
     expect((await POST(request(body), params())).status).toBe(409);
   });
 });

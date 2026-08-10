@@ -1,12 +1,13 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
-  enqueueReviewJob,
+  advanceConfirmedAcceptanceRecordPullRequestHead,
   getWorkspaceByGithubInstallationId,
   getRepositoryByName,
   appendChangeRecordEvent,
-  attachConfirmedAcceptanceRecordToExternalPullRequest,
   findOrCreateChangeRecord,
+  invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent,
+  readChangeRecordByPr,
   triggerDependencyWatchesForPush,
   recordReviewEvent,
 } from "@agentrail/db-postgres";
@@ -49,22 +50,21 @@ import {
  * `pull_request`, `pull_request_review`, or the enrolled dependency-watch
  * `push` path (checked off the header alone, no body parsing needed) ->
  * the body must parse as JSON -> `action` must be one of
- * opened|ready_for_review|reopened|synchronize, or a merged `closed` event -> a draft PR
- * (`pull_request.draft === true`) is skipped for opened/reopened/synchronize
- * (it (re-)enters once `ready_for_review` fires later; THAT action is never
- * draft-gated, regardless of the payload's `draft` value) -> `installation.id`
+ * opened|ready_for_review|reopened|synchronize, or a terminal `closed` event ->
+ * every signed draft action still maintains exact-head custody, but only
+ * `ready_for_review` admits its review job -> `installation.id`
  * must resolve to a workspace (`getWorkspaceByGithubInstallationId`) -> that
  * workspace must be in the `REVIEWER_OF_RECORD_WORKSPACES` rollout allowlist
  * (comma-separated, trimmed; empty/unset disables intake for EVERY
  * workspace — dogfood-only until the allowlist grows) -> `repository.full_name`
  * must be a repo the workspace has actually connected
  * (`getRepositoryByName`; never proxies an unconnected repo's events). Only
- * then does `enqueueReviewJob` run, keyed by `headSha = pull_request.head.sha`
- * and `event = action` (the `review_jobs.event` column drives both the
- * worker prompt and the `synchronize` debounce — see that query's own
- * doc-comment). A replayed delivery for the same (workspace, repo, pr, head)
- * re-derives the SAME deterministic row id and comes back `deduped: true` —
- * still 200, never an error.
+ * then does `advanceConfirmedAcceptanceRecordPullRequestHead` atomically bind
+ * the signed head as the Record's current PR head, supersede obsolete work,
+ * and admit that exact review job unless the PR is still draft. The signed
+ * action and delivery id are part of that one transaction. A replayed
+ * delivery for the same (workspace, repo, PR, head) reuses the deterministic
+ * state and comes back `deduped: true` — still 200, never an error.
  */
 
 const SIGNATURE_HEADER = "x-hub-signature-256";
@@ -73,21 +73,29 @@ const EVENT_HEADER = "x-github-event";
 const ENROLLED_WORKSPACES_ENV = "REVIEWER_OF_RECORD_WORKSPACES";
 const ACCEPTANCE_RECORD_MARKER = /<!--\s*jace-acceptance-record\s*:\s*([\s\S]*?)\s*-->/gi;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GIT_SHA = /^[0-9a-f]{40}$/i;
 
-// The four `pull_request` actions this queue admits (design spec §1). A
-// merged `closed` delivery is handled separately as a Change Record event.
-const TRIGGER_ACTIONS = new Set([
+// The four `pull_request` actions this intake handles (design spec §1). A
+// draft synchronize advances custody without queue admission; every `closed`
+// delivery invalidates attached exact-head work without queue admission.
+type PullRequestTriggerAction =
+  | "opened"
+  | "ready_for_review"
+  | "reopened"
+  | "synchronize";
+
+const TRIGGER_ACTIONS = new Set<PullRequestTriggerAction>([
   "opened",
   "ready_for_review",
   "reopened",
   "synchronize",
 ]);
 
-// Of those four, the ones a draft PR is skipped for. `ready_for_review` is
-// deliberately excluded from this set: that IS the action a draft graduates
-// through, so it is never draft-gated regardless of the payload's own
-// `draft` value.
-const DRAFT_SKIP_ACTIONS = new Set(["opened", "reopened", "synchronize"]);
+function isPullRequestTriggerAction(
+  value: string
+): value is PullRequestTriggerAction {
+  return TRIGGER_ACTIONS.has(value as PullRequestTriggerAction);
+}
 
 function verifySignature(
   raw: string,
@@ -152,6 +160,31 @@ function actorTypeFromGitHubUserType(value: unknown): "human" | "agent" | "unkno
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+type SignedHeadTransition = {
+  beforeHeadSha: string;
+  afterHeadSha: string;
+};
+
+function signedHeadTransition(
+  action: string,
+  body: Record<string, unknown>,
+  headSha: string
+): { ok: true; value: SignedHeadTransition | null } | { ok: false } {
+  if (action !== "synchronize") return { ok: true, value: null };
+  const beforeHeadSha = body.before;
+  const afterHeadSha = body.after;
+  if (
+    typeof beforeHeadSha !== "string" ||
+    typeof afterHeadSha !== "string" ||
+    !GIT_SHA.test(beforeHeadSha) ||
+    !GIT_SHA.test(afterHeadSha) ||
+    afterHeadSha !== headSha
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, value: { beforeHeadSha, afterHeadSha } };
 }
 
 function reviewEventTypeForPullRequestAction(
@@ -287,14 +320,24 @@ export async function POST(request: NextRequest) {
 
   const action = typeof body.action === "string" ? body.action : "";
   const deliveryId = request.headers.get(DELIVERY_HEADER);
+  if (
+    !deliveryId ||
+    deliveryId.length > 256 ||
+    deliveryId !== deliveryId.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(deliveryId)
+  ) {
+    return ignored("invalid delivery id");
+  }
   const prObj = asObject(body.pull_request);
   const reviewObj = asObject(body.review);
+  const isTerminalClose = action === "closed";
   const isMergedClose = action === "closed" && prObj?.merged === true;
+  const triggerAction = isPullRequestTriggerAction(action) ? action : null;
 
   if (
     githubEvent === "pull_request_review"
       ? action !== "submitted"
-      : !TRIGGER_ACTIONS.has(action) && !isMergedClose
+      : !triggerAction && !isTerminalClose
   ) {
     return ignored();
   }
@@ -303,9 +346,35 @@ export async function POST(request: NextRequest) {
     return ignored();
   }
 
-  if (prObj.draft === true && DRAFT_SKIP_ACTIONS.has(action)) {
+  const admitReviewJob =
+    triggerAction === "ready_for_review" || prObj.draft !== true;
+
+  const head = prObj.head;
+  const headSha =
+    head && typeof head === "object"
+      ? (head as Record<string, unknown>).sha
+      : undefined;
+  const prNumber = prObj.number;
+  if (
+    typeof headSha !== "string" ||
+    !GIT_SHA.test(headSha) ||
+    typeof prNumber !== "number" ||
+    !Number.isInteger(prNumber) ||
+    prNumber <= 0
+  ) {
     return ignored();
   }
+  const headTransition = signedHeadTransition(action, body, headSha);
+  if (!headTransition.ok) return ignored("invalid head transition");
+
+  const repoFullName = asObject(body.repository)?.full_name;
+  if (typeof repoFullName !== "string") return ignored();
+  const expectedPrUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
+  const signedPrUrl = prObj.html_url;
+  if (signedPrUrl != null && signedPrUrl !== expectedPrUrl) {
+    return ignored("invalid pull request URL");
+  }
+  const prUrl = typeof signedPrUrl === "string" ? signedPrUrl : null;
 
   const installation = body.installation;
   const installationId =
@@ -325,11 +394,6 @@ export async function POST(request: NextRequest) {
     return ignored("not enrolled");
   }
 
-  const repoFullName = asObject(body.repository)?.full_name;
-  if (typeof repoFullName !== "string") {
-    return ignored();
-  }
-
   const connectedRepo = await getRepositoryByName(
     workspace.workspaceId,
     repoFullName
@@ -338,12 +402,6 @@ export async function POST(request: NextRequest) {
     return ignored();
   }
 
-  const head = prObj.head;
-  const headSha =
-    head && typeof head === "object"
-      ? (head as Record<string, unknown>).sha
-      : undefined;
-  const prNumber = prObj.number;
   const occurredAt =
     githubEvent === "pull_request_review" &&
     typeof reviewObj?.submitted_at === "string"
@@ -355,10 +413,6 @@ export async function POST(request: NextRequest) {
       : typeof prObj.created_at === "string"
         ? new Date(prObj.created_at)
         : new Date();
-
-  if (typeof headSha !== "string" || typeof prNumber !== "number") {
-    return ignored();
-  }
 
   const reviewEventType =
     githubEvent === "pull_request_review"
@@ -389,6 +443,34 @@ export async function POST(request: NextRequest) {
 
   if (githubEvent === "pull_request_review") {
     return NextResponse.json({ ok: true, recorded: reviewEventType === "review_submitted" });
+  }
+
+  const attachedRecord = githubEvent === "pull_request"
+    ? await readChangeRecordByPr({
+        workspaceId: workspace.workspaceId,
+        repo: repoFullName,
+        prNumber,
+      })
+    : null;
+
+  let terminalInvalidation: Awaited<
+    ReturnType<typeof invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent>
+  > | null = null;
+  if (isTerminalClose && attachedRecord) {
+    terminalInvalidation =
+      await invalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEvent({
+        workspaceId: workspace.workspaceId,
+        recordId: attachedRecord.id,
+        repo: repoFullName,
+        prNumber,
+        headSha,
+        event: isMergedClose ? "merged" : "closed",
+        deliveryId,
+        source: "github_webhook",
+      });
+    if (terminalInvalidation.kind !== "invalidated") {
+      return ignored(`acceptance record ${terminalInvalidation.kind}`);
+    }
   }
 
   if (isMergedClose) {
@@ -426,8 +508,7 @@ export async function POST(request: NextRequest) {
           kind: "merge",
           repo: repoFullName,
           prNumber,
-          url:
-            typeof prObj.html_url === "string" ? prObj.html_url : null,
+          url: prUrl,
           mergeCommitSha,
           outcome: "merged",
         },
@@ -438,38 +519,78 @@ export async function POST(request: NextRequest) {
       // idempotent when it does.
       console.error("[github-app/webhook] merge change-record attach failed:", error);
     }
-    return NextResponse.json({ ok: true, merged: true });
+    return NextResponse.json({
+      ok: true,
+      merged: true,
+      invalidated: terminalInvalidation?.kind === "invalidated",
+      superseded:
+        terminalInvalidation?.kind === "invalidated"
+          ? terminalInvalidation.superseded
+          : 0,
+      previewBootsTornDown:
+        terminalInvalidation?.kind === "invalidated"
+          ? terminalInvalidation.previewBootsTornDown
+          : 0,
+    });
   }
 
+  if (isTerminalClose) {
+    return NextResponse.json({
+      ok: true,
+      closed: true,
+      invalidated: terminalInvalidation?.kind === "invalidated",
+      superseded:
+        terminalInvalidation?.kind === "invalidated"
+          ? terminalInvalidation.superseded
+          : 0,
+      previewBootsTornDown:
+        terminalInvalidation?.kind === "invalidated"
+          ? terminalInvalidation.previewBootsTornDown
+          : 0,
+    });
+  }
+
+  if (!triggerAction) return ignored();
   const marker = acceptanceRecordMarker(prObj.body);
-  if (marker.kind !== "record") {
+  const recordId = attachedRecord?.id ??
+    (marker.kind === "record" ? marker.recordId : null);
+  if (!recordId) {
     return ignored(`acceptance record ${marker.kind}`);
   }
-  const attachment = await attachConfirmedAcceptanceRecordToExternalPullRequest({
+  const result = await advanceConfirmedAcceptanceRecordPullRequestHead({
     workspaceId: workspace.workspaceId,
-    recordId: marker.recordId,
+    recordId,
     repo: repoFullName,
     prNumber,
     headSha,
+    event: triggerAction,
+    deliveryId,
+    headTransition: headTransition.value,
+    admitReviewJob,
     source: "github_webhook",
-    prUrl: typeof prObj.html_url === "string" ? prObj.html_url : null,
+    prUrl,
   });
-  if (attachment.kind !== "attached") {
-    return ignored(`acceptance record ${attachment.kind}`);
+  if (result.kind === "stale_delivery") {
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      enqueued: false,
+      blocked: true,
+      reason: "stale delivery; current head requires reconciliation",
+      superseded: result.superseded,
+    });
   }
-
-  const result = await enqueueReviewJob({
-    workspaceId: workspace.workspaceId,
-    repo: repoFullName,
-    prNumber,
-    headSha,
-    event: action,
-  });
+  if (result.kind !== "advanced") {
+    return ignored(`acceptance record ${result.kind}`);
+  }
 
   return NextResponse.json({
     ok: true,
-    enqueued: true,
+    enqueued: result.jobAdmitted,
     deduped: result.deduped,
     superseded: result.superseded,
+    previewBootsTornDown: result.previewBootsTornDown,
+    headChanged: result.headChanged,
+    previousHeadSha: result.previousHeadSha,
   });
 }

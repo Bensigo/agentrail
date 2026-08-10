@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
   getJaceSessionByEveSessionId: vi.fn(),
   getReviewJobById: vi.fn(),
   readAcceptanceContracts: vi.fn(),
@@ -10,7 +11,8 @@ vi.mock("@agentrail/db-postgres", () => ({
 }));
 
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getReviewJobById,
   readAcceptanceContracts,
@@ -77,6 +79,9 @@ const RECORD = {
   issueNumber: null,
   prNumber: 42,
   headShas: [HEAD_SHA],
+  currentPrHeadSha: HEAD_SHA,
+  currentPrHeadCycleId: "job-1",
+  currentPrHeadAuthoritative: true,
   mergedSha: null,
   state: "open",
   createdAt: NOW,
@@ -211,9 +216,8 @@ beforeEach(() => {
   vi.mocked(getReviewJobById).mockResolvedValue(RUNNING_JOB as never);
   vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue({ record: RECORD, events: [] } as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue([CONTRACT] as never);
-  vi.mocked(appendChangeRecordEvent).mockResolvedValue({
-    event: PLAN_EVENT,
-    inserted: true,
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValue({
+    events: [{ event: PLAN_EVENT, inserted: true }],
   } as never);
 });
 
@@ -250,7 +254,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
 
     expect(response.status).toBe(400);
     expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("rejects a session that is not active and bound to the path job", async () => {
@@ -281,12 +285,17 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       expect(response.status).toBe(409);
     }
 
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
-  it("rejects a foreign head or anything other than one valid confirmed Contract", async () => {
+  it("rejects a historical head or anything other than one valid confirmed Contract", async () => {
     vi.mocked(readChangeRecordTimelineByPr).mockResolvedValueOnce({
-      record: { ...RECORD, headShas: ["b".repeat(40)] },
+      record: {
+        ...RECORD,
+        headShas: [HEAD_SHA, "b".repeat(40)],
+        currentPrHeadSha: "b".repeat(40),
+        currentPrHeadAuthoritative: true,
+      },
       events: [],
     } as never);
     expect((await POST(
@@ -303,7 +312,39 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       params()
     )).status).toBe(409);
 
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
+  });
+
+  it("rejects the matching pointer while its exact-head authority is blocked", async () => {
+    vi.mocked(readChangeRecordTimelineByPr).mockResolvedValueOnce({
+      record: { ...RECORD, currentPrHeadAuthoritative: false },
+      events: [],
+    } as never);
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: REQUEST_PLANS }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(readAcceptanceContracts).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
+  });
+
+  it("rejects an earlier cycle after the pull request revisits the same SHA", async () => {
+    vi.mocked(readChangeRecordTimelineByPr).mockResolvedValueOnce({
+      record: { ...RECORD, currentPrHeadCycleId: "job-new-cycle" },
+      events: [],
+    } as never);
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: REQUEST_PLANS }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(readAcceptanceContracts).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("rejects a legacy confirmed Contract whose criteria omit userVisible", async () => {
@@ -323,7 +364,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("requires one valid plan per confirmed criterion and fails closed on malformed descriptors or unsupported executors", async () => {
@@ -359,7 +400,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       expect(response.status).toBe(400);
     }
 
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("keeps a legacy planned API payload without a descriptor readable but non-executable", () => {
@@ -403,14 +444,17 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       postReq({ eveSessionId: "eve-session-1", plans: dataPlans }),
       params()
     )).status).toBe(400);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
 
     process.env.REVIEW_DATA_HMAC_ACTIVE_KEY_ID = HMAC_KEY_ID;
     process.env.REVIEW_DATA_HMAC_KEYS_JSON = HMAC_KEYS_JSON;
-    vi.mocked(appendChangeRecordEvent).mockImplementationOnce(async (input) => ({
-      event: { payloadRef: input.payloadRef },
-      inserted: true,
-    }) as never);
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementationOnce(
+      async (input) => ({
+        events: [
+          { event: { payloadRef: input.events[0]!.payloadRef }, inserted: true },
+        ],
+      }) as never,
+    );
     const response = await POST(
       postReq({ eveSessionId: "eve-session-1", plans: dataPlans }),
       params()
@@ -447,12 +491,35 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
       acceptanceContractVersion: 3,
       plans: STORED_PAYLOAD.plans,
     });
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith({
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
       recordId: "record-1",
-      eventKey: "verification:plan:job-1",
-      stage: "verification",
-      actor: "jace:review-verification-planner",
-      payloadRef: STORED_PAYLOAD,
+      jobId: "job-1",
+      repo: "acme/widgets",
+      prNumber: 42,
+      headSha: HEAD_SHA,
+      events: [{
+        eventKey: "verification:plan:job-1",
+        stage: "verification",
+        actor: "jace:review-verification-planner",
+        payloadRef: STORED_PAYLOAD,
+      }],
+    });
+  });
+
+  it("returns 409 when a head advance wins immediately before plan custody", async () => {
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
+      new CurrentReviewJobNotCurrentError("record_not_current")
+    );
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1", plans: REQUEST_PLANS }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "review job is no longer current for this pull request head",
     });
   });
 
@@ -473,7 +540,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).inserted).toBe(false);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 
   it("rejects an attempt to replace the immutable plan for the same review job", async () => {
@@ -496,6 +563,6 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
 });

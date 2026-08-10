@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
-  appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -9,7 +11,7 @@ vi.mock("../../../../../../../../lib/review-job-proof-attestation", () => ({
   resolveCurrentReviewJobPlan: vi.fn(),
 }));
 import {
-  appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -121,9 +123,9 @@ beforeEach(() => {
     url: "https://preview.example.test/",
     expiresAt: new Date(Date.now() + 60000),
   } as never);
-  vi.mocked(appendChangeRecordEvent).mockImplementation(
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
     async (input) =>
-      ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
   );
 });
 afterEach(() => {
@@ -162,7 +164,7 @@ describe("data execution start", () => {
     delete process.env.REVIEW_DATA_HMAC_KEYS_JSON;
     expect((await POST(request(body), params)).status).toBe(409);
     expect(getPreviewBoot).not.toHaveBeenCalled();
-    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
   it("reserves only exact planned data for active session and ready matching boot", async () => {
     const response = await POST(request(body), params);
@@ -183,7 +185,7 @@ describe("data execution start", () => {
         digestContext: storedRequest().digestContext,
       },
     });
-    expect(appendChangeRecordEvent).toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalled();
     vi.mocked(getPreviewBoot).mockResolvedValueOnce({
       id: "boot-1",
       workspaceId: "ws-1",

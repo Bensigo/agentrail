@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import {
   buildReviewJobApiAttempt,
@@ -16,6 +17,7 @@ import {
 } from "./review-job-api-execution";
 
 const HEAD = "a".repeat(40);
+const BOOT_ID = previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD, cycleId: "job-1" });
 function proof(events: unknown[] = []): ExactReviewJobProof {
   return {
     job: {
@@ -46,7 +48,7 @@ function proof(events: unknown[] = []): ExactReviewJobProof {
 }
 function boot(overrides = {}) {
   return {
-    id: "boot-1",
+    id: BOOT_ID,
     workspaceId: "ws-1",
     repo: "acme/widgets",
     prNumber: 42,
@@ -112,6 +114,13 @@ describe("review-job API execution custody helpers", () => {
         proof: current,
         plan,
         boot: boot({ headSha: "b".repeat(40) }),
+      }),
+    ).toBeNull();
+    expect(
+      buildReviewJobApiAttempt({
+        proof: current,
+        plan,
+        boot: boot({ id: previewBootId({ workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD, cycleId: "job-old-cycle" }) }),
       }),
     ).toBeNull();
     expect(

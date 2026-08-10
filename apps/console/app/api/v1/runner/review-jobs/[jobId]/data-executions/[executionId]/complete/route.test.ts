@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -16,6 +19,7 @@ vi.mock("../../../../../../../../../lib/artifacts/store", () => ({
 }));
 import {
   appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -178,6 +182,10 @@ beforeEach(() => {
   vi.mocked(appendChangeRecordEvent).mockImplementation(
     async (input) =>
       ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
+  );
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
+    async (input) =>
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
   );
   vi.mocked(putArtifact).mockResolvedValue(undefined);
   vi.mocked(signedGetUrl).mockResolvedValue(

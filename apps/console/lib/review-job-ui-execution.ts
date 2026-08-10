@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { previewBootId } from "@agentrail/db-postgres";
 import type { ExactReviewJobProof } from "./review-job-proof-attestation";
 import type {
   StoredCriterionVerificationPlan,
@@ -239,6 +240,13 @@ export function buildReviewJobUiAttempt(input: {
     boot.repo !== proof.job.repo ||
     boot.prNumber !== proof.job.prNumber ||
     boot.headSha !== proof.job.headSha ||
+    boot.id !== previewBootId({
+      workspaceId: proof.job.workspaceId,
+      repo: proof.job.repo,
+      prNumber: proof.job.prNumber,
+      headSha: proof.job.headSha,
+      cycleId: proof.job.id,
+    }) ||
     boot.status !== "ready" ||
     !previewUrl
   ) {

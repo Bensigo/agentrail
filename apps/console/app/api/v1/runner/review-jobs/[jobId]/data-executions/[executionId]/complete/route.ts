@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
   appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -218,19 +220,34 @@ export async function POST(
   }
   const reservation = buildReviewJobDataCardReservation(result);
   try {
-    const reserved = await appendChangeRecordEvent({
+    const reservationResult = await appendCurrentReviewJobEventsAtomically({
+      workspaceId: proof.job.workspaceId,
       recordId: proof.timeline.record.id,
-      eventKey: reviewJobDataCardReservationEventKey({ proof, plan }),
-      stage: REVIEW_JOB_DATA_STAGE,
-      actor: REVIEW_JOB_DATA_ACTOR,
-      payloadRef: reservation,
+      jobId: proof.job.id,
+      repo: proof.job.repo,
+      prNumber: proof.job.prNumber,
+      headSha: proof.job.headSha,
+      events: [
+        {
+          eventKey: reviewJobDataCardReservationEventKey({ proof, plan }),
+          stage: REVIEW_JOB_DATA_STAGE,
+          actor: REVIEW_JOB_DATA_ACTOR,
+          payloadRef: reservation,
+        },
+      ],
     });
+    const reserved = reservationResult.events[0]!;
     if (!isDeepStrictEqual(reserved.event.payloadRef, reservation))
       return NextResponse.json(
         { error: "data card upload is immutable" },
         { status: 409 },
       );
-  } catch {
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError)
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 },
+      );
     return NextResponse.json(
       { error: "could not reserve data card custody" },
       { status: 503 },

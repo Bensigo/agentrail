@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
 import { reviewJobs } from "../schema/review_jobs.js";
+import { changeRecords } from "../schema/change_records.js";
 import { jaceSessions } from "../schema/jace_sessions.js";
 import {
   reviewJobId,
@@ -13,6 +14,7 @@ import {
   bindReviewJobSession,
   releaseReviewJob,
 } from "../queries/review_jobs.js";
+import { changeRecordId } from "../queries/change_records.js";
 import { getWorkspaceByGithubInstallationId } from "../queries/github-app-token.js";
 
 /**
@@ -26,8 +28,9 @@ import { getWorkspaceByGithubInstallationId } from "../queries/github-app-token.
  * see `review-jobs.test.ts`'s own doc-comment for why those cases are not
  * duplicated there as hollow mock-based stand-ins.
  *
- * Requires a reachable Postgres at `DATABASE_URL`, migrated through
- * `0065_review_jobs`. Skips cleanly (not a failure) when no DB is reachable.
+ * Requires a reachable Postgres at `DATABASE_URL`, migrated through the
+ * R8.2c current-head migration (0088). Skips cleanly when that authority
+ * column or the database is unavailable.
  *
  * Isolation: every describe block below creates a FRESH workspace per test
  * (beforeEach/afterEach) rather than sharing one across the file. This
@@ -40,8 +43,25 @@ import { getWorkspaceByGithubInstallationId } from "../queries/github-app-token.
  */
 const DB_AVAILABLE: boolean = await (async () => {
   try {
-    await db.execute(sql`SELECT 1`);
-    return true;
+    const rows = Array.from(await db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'change_records'
+          AND column_name = 'current_pr_head_sha'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'change_records'
+          AND column_name = 'current_pr_head_authoritative'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'change_records'
+          AND column_name = 'current_pr_head_cycle_id'
+      ) AS current_pr_head
+    `)) as Array<{ current_pr_head: boolean }>;
+    return rows[0]?.current_pr_head === true;
   } catch {
     return false;
   }
@@ -87,8 +107,30 @@ describe.skipIf(!DB_AVAILABLE)(
     ): Promise<string> {
       const repo = overrides.repo ?? "acme/widgets";
       const prNumber = overrides.prNumber ?? 1;
-      const headSha = overrides.headSha ?? randomUUID().replace(/-/g, "");
+      const headSha = overrides.headSha ?? `${randomUUID().replace(/-/g, "")}00000000`;
       const id = reviewJobId({ workspaceId, repo, prNumber, headSha });
+      const existingRecord = (await db.select().from(changeRecords).where(
+        eq(changeRecords.id, changeRecordId({ workspaceId, repo, prNumber }))
+      ).limit(1))[0];
+      if (existingRecord) {
+        await db.update(changeRecords).set({
+          currentPrHeadSha: headSha,
+          currentPrHeadCycleId: id,
+          currentPrHeadAuthoritative: true,
+          headShas: Array.from(new Set([...existingRecord.headShas, headSha])).sort(),
+        }).where(eq(changeRecords.id, existingRecord.id));
+      } else {
+        await db.insert(changeRecords).values({
+          id: changeRecordId({ workspaceId, repo, prNumber }),
+          workspaceId,
+          repo,
+          prNumber,
+          currentPrHeadSha: headSha,
+          currentPrHeadCycleId: id,
+          currentPrHeadAuthoritative: true,
+          headShas: [headSha],
+        });
+      }
       await db.insert(reviewJobs).values({
         id,
         workspaceId,
@@ -350,6 +392,33 @@ describe.skipIf(!DB_AVAILABLE)(
 
       it("returns null when nothing is queued", async () => {
         expect(await claimReviewJob({ workerId: "w1", dailyBudget: 100 })).toBeNull();
+      });
+
+      it("does not claim a queued job without an exact current-head Change Record", async () => {
+        const headSha = "unbound-head";
+        const id = reviewJobId({ workspaceId: wsId, repo: "acme/unbound", prNumber: 999, headSha });
+        await db.insert(reviewJobs).values({
+          id, workspaceId: wsId, repo: "acme/unbound", prNumber: 999,
+          headSha, event: "opened", state: "queued",
+        });
+
+        expect(await claimReviewJob({ workerId: "w1", dailyBudget: 100 })).toBeNull();
+        expect((await readReviewJob(id)).state).toBe("queued");
+      });
+
+      it("does not claim a queued job whose current-head pointer is non-authoritative", async () => {
+        const id = await insertReviewJob(wsId);
+        const row = await readReviewJob(id);
+        await db.update(changeRecords).set({ currentPrHeadAuthoritative: false }).where(
+          eq(changeRecords.id, changeRecordId({
+            workspaceId: wsId,
+            repo: row.repo,
+            prNumber: row.prNumber,
+          }))
+        );
+
+        expect(await claimReviewJob({ workerId: "w1", dailyBudget: 100 })).toBeNull();
+        expect((await readReviewJob(id)).state).toBe("queued");
       });
 
       it("skips a queued job whose next_eligible_at is still in the future", async () => {

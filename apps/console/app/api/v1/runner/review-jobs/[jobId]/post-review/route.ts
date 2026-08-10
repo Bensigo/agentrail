@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import {
   appendChangeRecordEvent,
-  appendChangeRecordEventsAtomically,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getInstallationToken,
   getJaceSessionByEveSessionId,
   getRepositoryByName,
@@ -320,7 +321,6 @@ export async function POST(
         );
       }
       correctionEvents.push({
-        recordId: proof.timeline.record.id,
         eventKey,
         stage: REVIEW_JOB_POST_STAGE,
         actor: REVIEW_JOB_POST_ACTOR,
@@ -328,8 +328,22 @@ export async function POST(
       });
     }
     try {
-      await appendChangeRecordEventsAtomically(correctionEvents);
-    } catch {
+      await appendCurrentReviewJobEventsAtomically({
+        workspaceId: proof.job.workspaceId,
+        recordId: proof.timeline.record.id,
+        jobId: proof.job.id,
+        repo: proof.job.repo,
+        prNumber: proof.job.prNumber,
+        headSha: proof.job.headSha,
+        events: correctionEvents,
+      });
+    } catch (error) {
+      if (error instanceof CurrentReviewJobNotCurrentError) {
+        return NextResponse.json(
+          { error: "review job is no longer current for this pull request head" },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
         { error: "could not persist the exact review correction packets" },
         { status: 503 }
@@ -363,16 +377,34 @@ export async function POST(
     outcomeDigest,
     postPayloadDigest,
   });
-  let attempt: Awaited<ReturnType<typeof appendChangeRecordEvent>>;
+  let attempt: Awaited<
+    ReturnType<typeof appendCurrentReviewJobEventsAtomically>
+  >["events"][number];
   try {
-    attempt = await appendChangeRecordEvent({
+    const reservation = await appendCurrentReviewJobEventsAtomically({
+      workspaceId: proof.job.workspaceId,
       recordId: proof.timeline.record.id,
-      eventKey: attemptEventKey,
-      stage: REVIEW_JOB_POST_STAGE,
-      actor: REVIEW_JOB_POST_ACTOR,
-      payloadRef: attemptPayload,
+      jobId: proof.job.id,
+      repo: proof.job.repo,
+      prNumber: proof.job.prNumber,
+      headSha: proof.job.headSha,
+      events: [
+        {
+          eventKey: attemptEventKey,
+          stage: REVIEW_JOB_POST_STAGE,
+          actor: REVIEW_JOB_POST_ACTOR,
+          payloadRef: attemptPayload,
+        },
+      ],
     });
-  } catch {
+    attempt = reservation.events[0]!;
+  } catch (error) {
+    if (error instanceof CurrentReviewJobNotCurrentError) {
+      return NextResponse.json(
+        { error: "review job is no longer current for this pull request head" },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
       { error: "could not reserve the GitHub review attempt" },
       { status: 503 }
@@ -385,10 +417,29 @@ export async function POST(
     );
   }
 
+  // The guarded reservation above closes the storage-side race. Resolve the
+  // complete server-owned proof once more after it is durable and make this
+  // the final local step before fetch. A push observed here holds the old
+  // job without contacting GitHub. GitHub itself cannot participate in this
+  // transaction, so a push can still race once the external request is in
+  // flight; any resulting receipt remains bound to this historical head.
+  const currentProof = await resolveExactReviewJobProof({
+    jobId,
+    criterionResults: body.criterionResults,
+    verdict: body.verdict,
+    evidenceKeys: body.evidenceKeys,
+  });
+  if (!currentProof) {
+    return NextResponse.json(
+      { error: "review job is no longer current for this pull request head" },
+      { status: 409 }
+    );
+  }
+
   const posted = await postGithubAdvisoryReview({
-    repo: proof.job.repo,
-    prNumber: proof.job.prNumber,
-    headSha: proof.job.headSha,
+    repo: currentProof.job.repo,
+    prNumber: currentProof.job.prNumber,
+    headSha: currentProof.job.headSha,
     token,
     summary: githubSummary,
     comments: body.comments,
@@ -398,7 +449,7 @@ export async function POST(
   }
 
   const postedPayload = reviewPostedAttestationPayload({
-    proof,
+    proof: currentProof,
     outcomeDigest,
     postPayloadDigest,
     postedReviewUrl: posted.reviewUrl,
@@ -408,7 +459,7 @@ export async function POST(
   let recorded: Awaited<ReturnType<typeof appendChangeRecordEvent>>;
   try {
     recorded = await appendChangeRecordEvent({
-      recordId: proof.timeline.record.id,
+      recordId: currentProof.timeline.record.id,
       eventKey: postedEventKey,
       stage: REVIEW_JOB_POST_STAGE,
       actor: REVIEW_JOB_POST_ACTOR,

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
-  enqueuePreviewBoot: vi.fn(),
+  enqueueCurrentReviewJobPreviewBoot: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
   getJaceSessionByEveSessionId: vi.fn(),
   getReviewJobById: vi.fn(),
   readAcceptanceContracts: vi.fn(),
@@ -10,7 +11,8 @@ vi.mock("@agentrail/db-postgres", () => ({
 }));
 
 import {
-  enqueuePreviewBoot,
+  enqueueCurrentReviewJobPreviewBoot,
+  CurrentReviewJobNotCurrentError,
   getJaceSessionByEveSessionId,
   getReviewJobById,
   readAcceptanceContracts,
@@ -72,6 +74,9 @@ const EXACT_HEAD_TIMELINE = {
     issueNumber: null,
     prNumber: 42,
     headShas: [HEAD_SHA],
+    currentPrHeadSha: HEAD_SHA,
+    currentPrHeadCycleId: "job-1",
+    currentPrHeadAuthoritative: true,
     mergedSha: null,
     state: "open",
     createdAt: NOW,
@@ -156,7 +161,7 @@ beforeEach(() => {
     events: [PLAN_EVENT],
   } as never);
   vi.mocked(readAcceptanceContracts).mockResolvedValue(CONFIRMED_CONTRACT as never);
-  vi.mocked(enqueuePreviewBoot).mockResolvedValue({
+  vi.mocked(enqueueCurrentReviewJobPreviewBoot).mockResolvedValue({
     id: "boot-1",
     deduped: false,
     superseded: 0,
@@ -207,7 +212,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
 
     expect(response.status).toBe(400);
     expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("rejects a session that is not bound to the path job before looking up that job", async () => {
@@ -223,7 +228,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
 
     expect(response.status).toBe(409);
     expect(getReviewJobById).not.toHaveBeenCalled();
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("rejects a closed review-job session before looking up that job", async () => {
@@ -239,7 +244,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
 
     expect(response.status).toBe(409);
     expect(getReviewJobById).not.toHaveBeenCalled();
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("rejects a non-running job or a session from another workspace", async () => {
@@ -255,13 +260,18 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
       expect(response.status).toBe(409);
     }
 
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
-  it("rejects a review head that is not attached to the Acceptance Record", async () => {
+  it("rejects a historical review head after the Acceptance Record advances", async () => {
     vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue({
       ...EXACT_HEAD_TIMELINE,
-      record: { ...EXACT_HEAD_TIMELINE.record, headShas: ["b".repeat(40)] },
+      record: {
+        ...EXACT_HEAD_TIMELINE.record,
+        headShas: [HEAD_SHA, "b".repeat(40)],
+        currentPrHeadSha: "b".repeat(40),
+        currentPrHeadAuthoritative: true,
+      },
     } as never);
 
     const response = await POST(
@@ -271,7 +281,45 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
 
     expect(response.status).toBe(409);
     expect(readAcceptanceContracts).not.toHaveBeenCalled();
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
+  });
+
+  it("rejects the matching pointer while its exact-head authority is blocked", async () => {
+    vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue({
+      ...EXACT_HEAD_TIMELINE,
+      record: {
+        ...EXACT_HEAD_TIMELINE.record,
+        currentPrHeadAuthoritative: false,
+      },
+    } as never);
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1" }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(readAcceptanceContracts).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
+  });
+
+  it("rejects an earlier cycle that revisited the same head SHA", async () => {
+    vi.mocked(readChangeRecordTimelineByPr).mockResolvedValue({
+      ...EXACT_HEAD_TIMELINE,
+      record: {
+        ...EXACT_HEAD_TIMELINE.record,
+        currentPrHeadCycleId: "job-new-cycle",
+      },
+    } as never);
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1" }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(readAcceptanceContracts).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("rejects absent, multiple, or malformed confirmed Contracts", async () => {
@@ -302,7 +350,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
       expect(response.status).toBe(409);
     }
 
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("rejects boot admission until the exact review job has a persisted planned UI criterion", async () => {
@@ -314,7 +362,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(enqueuePreviewBoot).not.toHaveBeenCalled();
+    expect(enqueueCurrentReviewJobPreviewBoot).not.toHaveBeenCalled();
   });
 
   it("admits the exact review head from the bound running job, never a caller-supplied tuple", async () => {
@@ -325,8 +373,10 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ id: "boot-1", deduped: false });
-    expect(enqueuePreviewBoot).toHaveBeenCalledWith({
+    expect(enqueueCurrentReviewJobPreviewBoot).toHaveBeenCalledWith({
       workspaceId: "ws-1",
+      recordId: "record-1",
+      jobId: "job-1",
       repo: "acme/widgets",
       prNumber: 42,
       headSha: HEAD_SHA,
@@ -335,7 +385,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
   });
 
   it("surfaces deterministic boot deduplication without leaking supersession details", async () => {
-    vi.mocked(enqueuePreviewBoot).mockResolvedValue({
+    vi.mocked(enqueueCurrentReviewJobPreviewBoot).mockResolvedValue({
       id: "boot-1",
       deduped: true,
       superseded: 3,
@@ -347,5 +397,21 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/preview", () => {
     );
 
     expect(await response.json()).toEqual({ id: "boot-1", deduped: true });
+  });
+
+  it("holds a head advance that wins after the read checks and before enqueue", async () => {
+    vi.mocked(enqueueCurrentReviewJobPreviewBoot).mockRejectedValueOnce(
+      new CurrentReviewJobNotCurrentError("record_not_current")
+    );
+
+    const response = await POST(
+      postReq({ eveSessionId: "eve-session-1" }),
+      params()
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "review job is no longer current for this pull request head",
+    });
   });
 });

@@ -3,6 +3,9 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -18,6 +21,7 @@ vi.mock("../../../../../../../../../lib/artifacts/store", () => ({
 
 import {
   appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -148,6 +152,10 @@ beforeEach(() => {
     async (input) =>
       ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
   );
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
+    async (input) =>
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
+  );
   vi.mocked(putArtifact).mockResolvedValue(undefined);
   vi.mocked(signedGetUrl).mockResolvedValue(
     "https://evidence.example.test/signed" as never,
@@ -216,12 +224,20 @@ describe("API execution complete", () => {
     const uploaded = vi.mocked(putArtifact).mock.calls[0]![1] as Buffer;
     expect(uploaded.toString()).toContain('"method":"GET"');
     expect(uploaded.toString()).not.toContain("authorization");
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith(
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventKey: reviewJobApiCardReservationEventKey({
-          proof: item.current,
-          plan: item.plan,
-        }),
+        workspaceId: "ws-1",
+        recordId: "record-1",
+        jobId: "job-1",
+        repo: "acme/widgets",
+        prNumber: 42,
+        headSha,
+        events: [expect.objectContaining({
+          eventKey: reviewJobApiCardReservationEventKey({
+            proof: item.current,
+            plan: item.plan,
+          }),
+        })],
       }),
     );
     expect(appendChangeRecordEvent).toHaveBeenCalledWith(
@@ -235,14 +251,13 @@ describe("API execution complete", () => {
   });
   it("holds competing or malformed custody before writing artifacts", async () => {
     const item = bound();
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({
-      event: {
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({
+      events: [{ event: {
         payloadRef: {
           kind: "review_job_api_card_upload_reservation",
           result: { artifactKey: "other.json" },
         },
-      },
-      inserted: false,
+      }, inserted: false }],
     } as never);
     expect(
       (
@@ -295,14 +310,14 @@ describe("API execution complete", () => {
     }
     expect(putArtifact).not.toHaveBeenCalled();
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
   });
   it("returns an exact immutable replay without another upload, and rejects a conflicting stored result", async () => {
     const item = bound();
     const input = { eveSessionId: "eve-1", observedStatus: 200 };
     expect((await POST(request(input, item.attempt.executionId), params(item.attempt.executionId))).status).toBe(201);
-    const calls = vi.mocked(appendChangeRecordEvent).mock.calls;
-    const reservation = calls[0]![0].payloadRef as Record<string, unknown>;
-    const result = calls[1]![0].payloadRef as Record<string, unknown>;
+    const reservation = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0].events[0]!.payloadRef as Record<string, unknown>;
+    const result = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0].payloadRef as Record<string, unknown>;
     item.current.timeline.events.push(
       event(reviewJobApiCardReservationEventKey({ proof: item.current, plan: item.plan }), reservation),
       event(reviewJobApiResultEventKey({ proof: item.current, plan: item.plan }), result),
@@ -325,7 +340,7 @@ describe("API execution complete", () => {
     const input = { eveSessionId: "eve-1", observedStatus: 200 };
     vi.mocked(putArtifact).mockRejectedValueOnce(new Error("store down"));
     expect((await POST(request(input, item.attempt.executionId), params(item.attempt.executionId))).status).toBe(500);
-    const reservation = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0].payloadRef as Record<string, unknown>;
+    const reservation = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0].events[0]!.payloadRef as Record<string, unknown>;
     item.current.timeline.events.push(event(reviewJobApiCardReservationEventKey({ proof: item.current, plan: item.plan }), reservation));
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(item.current as never);
     vi.mocked(putArtifact).mockResolvedValue(undefined);
@@ -333,10 +348,10 @@ describe("API execution complete", () => {
 
     const second = bound();
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(second.current as never);
-    vi.mocked(appendChangeRecordEvent).mockImplementationOnce(async (input) => ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never).mockRejectedValueOnce(new Error("result append down"));
+    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(new Error("result append down"));
     expect((await POST(request(input, second.attempt.executionId), params(second.attempt.executionId))).status).toBe(503);
     expect(putArtifact).toHaveBeenCalled();
-    const secondReservation = vi.mocked(appendChangeRecordEvent).mock.calls.at(-2)![0].payloadRef as Record<string, unknown>;
+    const secondReservation = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls.at(-1)![0].events[0]!.payloadRef as Record<string, unknown>;
     second.current.timeline.events.push(event(reviewJobApiCardReservationEventKey({ proof: second.current, plan: second.plan }), secondReservation));
     expect((await POST(request(input, second.attempt.executionId), params(second.attempt.executionId))).status).toBe(201);
 

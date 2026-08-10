@@ -21,15 +21,13 @@ import { workspaces } from "./workspaces.js";
  * plane — the same reasoning `review_jobs.ts` already used to justify not
  * reusing `queue_entries` for a differently-shaped job.
  *
- * `id` is CALLER-SUPPLIED: a deterministic uuid5 of `(workspaceId, repo,
- * prNumber, headSha)`, computed in the query layer (Task 2's
- * `previewBootId`) the same way `review_jobs.ts`'s `reviewJobId` derives
- * its id. Deliberately NO default here — neither `defaultRandom()` nor SQL
- * `gen_random_uuid()` — because a replayed/duplicate boot request must hit
- * `ON CONFLICT (id) DO NOTHING` and dedupe, never silently mint a second
- * row for the same logical (workspace, repo, pr, head): a caller that
- * forgot to compute the deterministic id should hit a NOT NULL violation,
- * never get a fresh random id that masks the bug and double-admits the row.
+ * `id` is CALLER-SUPPLIED and deterministic. Legacy callers hash
+ * `(workspaceId, repo, prNumber, headSha)`; current Acceptance Record callers
+ * also bind the active cycle/job id so an A→B→A revisit gets a fresh boot.
+ * Deliberately NO default here — neither `defaultRandom()` nor SQL
+ * `gen_random_uuid()` — because replay must hit `ON CONFLICT (id) DO
+ * NOTHING`, while a missing caller id must fail rather than silently
+ * double-admit a row.
  *
  * `status` lifecycle: `pending` -> `claimed` -> `booting` -> `ready`, plus
  * terminal `failed` (no recipe / boot error / stale liveness) and

@@ -3,6 +3,9 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   appendChangeRecordEvent: vi.fn(),
+  appendCurrentReviewJobEventsAtomically: vi.fn(),
+  CurrentReviewJobNotCurrentError: class CurrentReviewJobNotCurrentError extends Error {},
+  previewBootId: vi.fn(() => "boot-1"),
   getJaceSessionByEveSessionId: vi.fn(),
   getPreviewBoot: vi.fn(),
 }));
@@ -18,6 +21,7 @@ vi.mock("../../../../../../../../../lib/artifacts/store", () => ({
 
 import {
   appendChangeRecordEvent,
+  appendCurrentReviewJobEventsAtomically,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
 } from "@agentrail/db-postgres";
@@ -223,6 +227,10 @@ beforeEach(() => {
   vi.mocked(appendChangeRecordEvent).mockImplementation(
     async (input) =>
       ({ event: { payloadRef: input.payloadRef }, inserted: true }) as never,
+  );
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(
+    async (input) =>
+      ({ events: [{ event: { payloadRef: input.events[0]!.payloadRef }, inserted: true }] }) as never,
   );
   vi.mocked(putArtifact).mockResolvedValue(undefined);
   vi.mocked(signedGetUrl).mockResolvedValue(
@@ -522,7 +530,7 @@ describe("job execution complete", () => {
       ],
     });
     expect(
-      vi.mocked(appendChangeRecordEvent).mock.invocationCallOrder[0],
+      vi.mocked(appendCurrentReviewJobEventsAtomically).mock.invocationCallOrder[0],
     ).toBeLessThan(vi.mocked(putArtifact).mock.invocationCallOrder[0]!);
   });
 
@@ -582,14 +590,13 @@ describe("job execution complete", () => {
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(
       item.current as never,
     );
-    vi.mocked(appendChangeRecordEvent).mockResolvedValueOnce({
-      event: {
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockResolvedValueOnce({
+      events: [{ event: {
         payloadRef: {
           kind: "review_job_card_upload_reservation",
           result: { artifactKey: "other.json" },
         },
-      },
-      inserted: false,
+      }, inserted: false }],
     } as never);
     expect(
       (
@@ -639,9 +646,8 @@ describe("job execution complete", () => {
         )
       ).status,
     ).toBe(201);
-    const calls = vi.mocked(appendChangeRecordEvent).mock.calls;
-    const reservation = calls[0]![0].payloadRef as Record<string, unknown>;
-    const result = calls[1]![0].payloadRef as Record<string, unknown>;
+    const reservation = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0].events[0]!.payloadRef as Record<string, unknown>;
+    const result = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0].payloadRef as Record<string, unknown>;
     item.current.timeline.events.push(
       event(
         reviewJobCardReservationEventKey({
@@ -715,8 +721,8 @@ describe("job execution complete", () => {
         )
       ).status,
     ).toBe(500);
-    const reservation = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0]
-      .payloadRef as Record<string, unknown>;
+    const reservation = vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0]
+      .events[0]!.payloadRef as Record<string, unknown>;
     item.current.timeline.events.push(
       event(
         reviewJobCardReservationEventKey({
@@ -745,7 +751,7 @@ describe("job execution complete", () => {
     vi.mocked(resolveCurrentReviewJobPlan).mockResolvedValue(
       reservationFailure.current as never,
     );
-    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
       new Error("reservation append down"),
     );
     expect(
@@ -781,15 +787,9 @@ describe("job execution complete", () => {
       resultFailure.current as never,
     );
     vi.mocked(putArtifact).mockResolvedValue(undefined);
-    vi.mocked(appendChangeRecordEvent)
-      .mockImplementationOnce(
-        async (input) =>
-          ({
-            event: { payloadRef: input.payloadRef },
-            inserted: true,
-          }) as never,
-      )
-      .mockRejectedValueOnce(new Error("result append down"));
+    vi.mocked(appendChangeRecordEvent).mockRejectedValueOnce(
+      new Error("result append down"),
+    );
     expect(
       (
         await POST(

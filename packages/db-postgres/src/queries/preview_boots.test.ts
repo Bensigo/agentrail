@@ -86,6 +86,16 @@ describe("previewBootId (pure, deterministic uuid5)", () => {
       previewBootId({ ...BASE, headSha: "b".repeat(40) })
     );
   });
+
+  it("keeps legacy ids stable but gives repeated heads distinct Acceptance Record cycle ids", () => {
+    const legacy = previewBootId(BASE);
+    const cycleA = previewBootId({ ...BASE, cycleId: "00000000-0000-5000-8000-000000000001" });
+    const cycleB = previewBootId({ ...BASE, cycleId: "00000000-0000-5000-8000-000000000002" });
+
+    expect(previewBootId(BASE)).toBe(legacy);
+    expect(cycleA).not.toBe(legacy);
+    expect(cycleB).not.toBe(cycleA);
+  });
 });
 
 describe.skipIf(!DB_AVAILABLE)(

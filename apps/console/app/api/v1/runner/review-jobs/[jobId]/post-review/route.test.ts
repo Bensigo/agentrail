@@ -3,14 +3,22 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@agentrail/db-postgres")>();
+  const CurrentHeadError = actual.CurrentReviewJobNotCurrentError ?? class extends Error {
+    readonly code = "CURRENT_REVIEW_JOB_NOT_CURRENT";
+    constructor(readonly reason: "record_not_current" | "job_not_running") {
+      super(`Current review job is not current: ${reason}`);
+    }
+  };
   return {
     appendChangeRecordEvent: vi.fn(),
-    appendChangeRecordEventsAtomically: vi.fn(),
+    appendCurrentReviewJobEventsAtomically: vi.fn(),
+    CurrentReviewJobNotCurrentError: CurrentHeadError,
     getInstallationToken: vi.fn(),
     getJaceSessionByEveSessionId: vi.fn(),
     getPreviewBoot: vi.fn(),
     getRepositoryByName: vi.fn(),
     getReviewJobById: vi.fn(),
+    previewBootId: vi.fn(() => "boot-1"),
     readAcceptanceContracts: vi.fn(),
     readChangeRecordTimelineByPr: vi.fn(),
     reviewJobCorrectionPacketId: actual.reviewJobCorrectionPacketId,
@@ -23,7 +31,8 @@ vi.mock("../../../../../../../lib/github-advisory-review", () => ({
 
 import {
   appendChangeRecordEvent,
-  appendChangeRecordEventsAtomically,
+  appendCurrentReviewJobEventsAtomically,
+  CurrentReviewJobNotCurrentError,
   getInstallationToken,
   getJaceSessionByEveSessionId,
   getPreviewBoot,
@@ -222,6 +231,9 @@ let timeline: {
     repo: string;
     prNumber: number;
     headShas: string[];
+    currentPrHeadSha: string | null;
+    currentPrHeadCycleId: string | null;
+    currentPrHeadAuthoritative: boolean;
   };
   events: Array<{ eventKey: string; payloadRef: Record<string, unknown> }>;
 };
@@ -265,6 +277,9 @@ function installUiReceipt(assertionPassed = true) {
       repo: job.repo,
       prNumber: job.prNumber,
       headShas: [headSha],
+      currentPrHeadSha: headSha,
+      currentPrHeadCycleId: jobId,
+      currentPrHeadAuthoritative: true,
     },
     events: [{
       eventKey: `verification:plan:${jobId}`,
@@ -349,7 +364,7 @@ function installApiReceipt(observedStatus = 200) {
     }],
   };
   const receiptTimeline: typeof timeline = {
-    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha], currentPrHeadSha: headSha, currentPrHeadCycleId: jobId, currentPrHeadAuthoritative: true },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
   };
   const proof = {
@@ -411,7 +426,7 @@ function installDataReceipt(observedStatus = 200) {
     }],
   };
   const receiptTimeline: typeof timeline = {
-    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha], currentPrHeadSha: headSha, currentPrHeadCycleId: jobId, currentPrHeadAuthoritative: true },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
   };
   const proof = {
@@ -464,7 +479,7 @@ function installJobReceipt(input: { triggerStatus?: number; readbackStatus?: num
     }],
   };
   const receiptTimeline: typeof timeline = {
-    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha], currentPrHeadSha: headSha, currentPrHeadCycleId: jobId, currentPrHeadAuthoritative: true },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
   };
   const proof = { job, timeline: receiptTimeline, contract: { id: contract.id, version: contract.version, criteria: contract.contract.acceptanceCriteria }, verificationPlan } as unknown as ExactReviewJobProof;
@@ -512,7 +527,7 @@ function installDataVerdictPriorityProof() {
     })),
   };
   const priorityTimeline: typeof timeline = {
-    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha], currentPrHeadSha: headSha, currentPrHeadCycleId: jobId, currentPrHeadAuthoritative: true },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
   };
   const proof = {
@@ -570,7 +585,7 @@ function installApiVerdictPriorityProof() {
     })),
   };
   const priorityTimeline: typeof timeline = {
-    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha], currentPrHeadSha: headSha, currentPrHeadCycleId: jobId, currentPrHeadAuthoritative: true },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
   };
   const proof = {
@@ -649,6 +664,9 @@ function installVerdictPriorityProof(
       repo: job.repo,
       prNumber: job.prNumber,
       headShas: [headSha],
+      currentPrHeadSha: headSha,
+      currentPrHeadCycleId: jobId,
+      currentPrHeadAuthoritative: true,
     },
     events: [{
       eventKey: `verification:plan:${jobId}`,
@@ -677,7 +695,9 @@ function installVerdictPriorityProof(
       });
       continue;
     }
-    const bootId = `boot-${index + 1}`;
+    // One exact current-cycle preview is shared by every criterion in the
+    // immutable plan; criterion fan-out must not invent independent boots.
+    const bootId = "boot-1";
     const boot = {
       id: bootId,
       workspaceId,
@@ -768,8 +788,8 @@ const params = { params: Promise.resolve({ jobId }) };
 
 function correctionEventKeys() {
   return vi
-    .mocked(appendChangeRecordEventsAtomically)
-    .mock.calls.flatMap(([inputs]) => inputs.map((input) => input.eventKey))
+    .mocked(appendCurrentReviewJobEventsAtomically)
+    .mock.calls.flatMap(([input]) => input.events.map((event) => event.eventKey))
     .filter((eventKey) => eventKey.startsWith(`review:correction:${jobId}:`));
 }
 
@@ -783,6 +803,9 @@ beforeEach(() => {
       repo: job.repo,
       prNumber: job.prNumber,
       headShas: [headSha],
+      currentPrHeadSha: headSha,
+      currentPrHeadCycleId: jobId,
+      currentPrHeadAuthoritative: true,
     },
     events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: planPayload }],
   };
@@ -806,10 +829,10 @@ beforeEach(() => {
     inserted: true,
     event: { eventKey: input.eventKey, payloadRef: input.payloadRef },
   }) as never);
-  vi.mocked(appendChangeRecordEventsAtomically).mockImplementation(async (inputs) => ({
-    events: inputs.map((input) => ({
+  vi.mocked(appendCurrentReviewJobEventsAtomically).mockImplementation(async (input) => ({
+    events: input.events.map((event) => ({
       inserted: true,
-      event: { eventKey: input.eventKey, payloadRef: input.payloadRef },
+      event: { eventKey: event.eventKey, payloadRef: event.payloadRef },
     })),
   }) as never);
   vi.mocked(postGithubAdvisoryReview).mockResolvedValue({
@@ -881,10 +904,10 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     });
 
     expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
-    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(vi.mocked(appendCurrentReviewJobEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(getRepositoryByName).mock.invocationCallOrder[0]
     );
-    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(vi.mocked(appendCurrentReviewJobEventsAtomically).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(getInstallationToken).mock.invocationCallOrder[0]
     );
     expect(getRepositoryByName).toHaveBeenCalledWith(workspaceId, job.repo);
@@ -901,29 +924,36 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(
       vi.mocked(postGithubAdvisoryReview).mock.calls[0][0].summary
     ).toMatch(/^\*\*AgentRail exact-head verification: not_proven\.\*\*/);
-    expect(appendChangeRecordEvent).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(appendChangeRecordEvent).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(appendCurrentReviewJobEventsAtomically).mock.invocationCallOrder[1]).toBeLessThan(
       vi.mocked(postGithubAdvisoryReview).mock.invocationCallOrder[0]
     );
     expect(vi.mocked(postGithubAdvisoryReview).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(appendChangeRecordEvent).mock.invocationCallOrder[1]
+      vi.mocked(appendChangeRecordEvent).mock.invocationCallOrder[0]
     );
-    expect(appendChangeRecordEvent).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        recordId,
-        eventKey: `review:github-attempt:${jobId}`,
-        payloadRef: expect.objectContaining({
-          jobId,
-          repo: job.repo,
-          prNumber: job.prNumber,
-          headSha,
-          acceptanceContractVersion: contract.version,
-        }),
-      })
-    );
-    expect(appendChangeRecordEvent).toHaveBeenNthCalledWith(
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenNthCalledWith(
       2,
+      {
+        workspaceId,
+        recordId,
+        jobId,
+        repo: job.repo,
+        prNumber: job.prNumber,
+        headSha,
+        events: [expect.objectContaining({
+          eventKey: `review:github-attempt:${jobId}`,
+          payloadRef: expect.objectContaining({
+            jobId,
+            repo: job.repo,
+            prNumber: job.prNumber,
+            headSha,
+            acceptanceContractVersion: contract.version,
+          }),
+        })],
+      }
+    );
+    expect(appendChangeRecordEvent).toHaveBeenCalledTimes(1);
+    expect(appendChangeRecordEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         recordId,
         eventKey: `review:github-posted:${jobId}`,
@@ -970,8 +1000,10 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     );
 
     expect(response.status).toBe(201);
-    expect(appendChangeRecordEventsAtomically).toHaveBeenCalledOnce();
-    expect(vi.mocked(appendChangeRecordEventsAtomically).mock.calls[0]![0]).toHaveLength(101);
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0].events
+    ).toHaveLength(101);
   });
 
   it("does not append correction packets when every criterion is proven or not_testable", async () => {
@@ -988,11 +1020,11 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
 
     expect(response.status).toBe(201);
     expect(correctionEventKeys()).toEqual([]);
-    expect(appendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledOnce();
   });
 
   it("holds before repository, token, or GitHub work when correction packet custody cannot be persisted", async () => {
-    vi.mocked(appendChangeRecordEventsAtomically).mockRejectedValueOnce(
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
       new Error("packet provenance conflicts with its deterministic event key")
     );
 
@@ -1002,6 +1034,115 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
     expect(getRepositoryByName).not.toHaveBeenCalled();
     expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("maps a superseding head during correction custody to 409 before any GitHub preparation", async () => {
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockRejectedValueOnce(
+      new CurrentReviewJobNotCurrentError("record_not_current")
+    );
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "review job is no longer current for this pull request head",
+    });
+    expect(getRepositoryByName).not.toHaveBeenCalled();
+    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("maps a superseding head at the final attempt reservation to 409 with no fetch", async () => {
+    vi.mocked(appendCurrentReviewJobEventsAtomically)
+      .mockImplementationOnce(async (input) => ({
+        events: input.events.map((event) => ({
+          inserted: true,
+          event: { eventKey: event.eventKey, payloadRef: event.payloadRef },
+        })),
+      }) as never)
+      .mockRejectedValueOnce(
+        new CurrentReviewJobNotCurrentError("record_not_current")
+      );
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    expect(getRepositoryByName).toHaveBeenCalledOnce();
+    expect(getInstallationToken).toHaveBeenCalledOnce();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+  });
+
+  it("re-resolves current-head proof after reservation and never fetches when the head advanced", async () => {
+    let timelineReads = 0;
+    vi.mocked(readChangeRecordTimelineByPr).mockImplementation(async () => {
+      timelineReads += 1;
+      if (timelineReads === 1) return timeline as never;
+      return {
+        ...timeline,
+        record: {
+          ...timeline.record,
+          headShas: [headSha, "b".repeat(40)],
+          currentPrHeadSha: "b".repeat(40),
+          currentPrHeadAuthoritative: true,
+        },
+      } as never;
+    });
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    expect(readChangeRecordTimelineByPr).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(appendCurrentReviewJobEventsAtomically).mock.invocationCallOrder[1]
+    ).toBeLessThan(
+      vi.mocked(readChangeRecordTimelineByPr).mock.invocationCallOrder[1]
+    );
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+  });
+
+  it("holds a historical job even when its head remains in Record history", async () => {
+    timeline.record = {
+      ...timeline.record,
+      headShas: [headSha, "b".repeat(40)],
+      currentPrHeadSha: "b".repeat(40),
+      currentPrHeadAuthoritative: true,
+    };
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds the matching head while its authoritative pointer is blocked", async () => {
+    timeline.record = {
+      ...timeline.record,
+      currentPrHeadAuthoritative: false,
+    };
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("holds an earlier cycle after the pull request revisits the same SHA", async () => {
+    timeline.record = {
+      ...timeline.record,
+      currentPrHeadCycleId: "job-new-cycle",
+    };
+
+    const response = await POST(request(), params);
+
+    expect(response.status).toBe(409);
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
   });
 
@@ -1019,18 +1160,19 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
   it("replays an exact stored posted receipt without a second reservation or GitHub write", async () => {
     const first = await POST(request(), params);
     expect(first.status).toBe(201);
-    expect(appendChangeRecordEventsAtomically).toHaveBeenCalledOnce();
-    for (const correction of vi.mocked(appendChangeRecordEventsAtomically).mock.calls[0]![0]) {
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    for (const correction of vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[0]![0].events) {
       timeline.events.push({
         eventKey: correction.eventKey,
         payloadRef: correction.payloadRef,
       });
     }
-    const postedCall = vi.mocked(appendChangeRecordEvent).mock.calls[1][0];
+    const postedCall = vi.mocked(appendChangeRecordEvent).mock.calls[0][0];
     timeline.events.push({
       eventKey: postedCall.eventKey,
       payloadRef: postedCall.payloadRef,
     });
+    vi.mocked(appendCurrentReviewJobEventsAtomically).mockClear();
     vi.mocked(appendChangeRecordEvent).mockClear();
     vi.mocked(postGithubAdvisoryReview).mockClear();
 
@@ -1042,6 +1184,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
       replayed: true,
       reviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-1",
     });
+    expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
   });
@@ -1050,10 +1193,10 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     const first = await POST(request(), params);
     expect(first.status).toBe(201);
     const correctionEvents = vi
-      .mocked(appendChangeRecordEventsAtomically)
-      .mock.calls[0]![0]
+      .mocked(appendCurrentReviewJobEventsAtomically)
+      .mock.calls[0]![0].events
       .map((input) => ({ eventKey: input.eventKey, payloadRef: { ...input.payloadRef } }));
-    const posted = vi.mocked(appendChangeRecordEvent).mock.calls[1]![0];
+    const posted = vi.mocked(appendChangeRecordEvent).mock.calls[0]![0];
     const plan = timeline.events[0]!;
 
     const cases: Array<[string, Array<{ eventKey: string; payloadRef: Record<string, unknown> }>]> = [
@@ -1071,7 +1214,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
         ...corrections,
         { eventKey: posted.eventKey, payloadRef: posted.payloadRef },
       ];
-      vi.mocked(appendChangeRecordEventsAtomically).mockClear();
+      vi.mocked(appendCurrentReviewJobEventsAtomically).mockClear();
       vi.mocked(appendChangeRecordEvent).mockClear();
       vi.mocked(getRepositoryByName).mockClear();
       vi.mocked(getInstallationToken).mockClear();
@@ -1080,7 +1223,7 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
       const replay = await POST(request(), params);
 
       expect(replay.status, name).toBe(409);
-      expect(appendChangeRecordEventsAtomically).not.toHaveBeenCalled();
+      expect(appendCurrentReviewJobEventsAtomically).not.toHaveBeenCalled();
       expect(appendChangeRecordEvent).not.toHaveBeenCalled();
       expect(getRepositoryByName).not.toHaveBeenCalled();
       expect(getInstallationToken).not.toHaveBeenCalled();
@@ -1096,11 +1239,14 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     });
     const response = await POST(request(), params);
     expect(response.status).toBe(502);
-    expect(appendChangeRecordEvent).toHaveBeenCalledTimes(1);
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
     expect(correctionEventKeys()).toEqual([`review:correction:${jobId}:AC-1`]);
-    expect(appendChangeRecordEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ eventKey: `review:github-attempt:${jobId}` })
-    );
+    expect(appendCurrentReviewJobEventsAtomically).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(appendCurrentReviewJobEventsAtomically).mock.calls[1]![0].events
+    ).toEqual([
+      expect.objectContaining({ eventKey: `review:github-attempt:${jobId}` }),
+    ]);
   });
 
   it("rejects proof claims and extra artifact references without an exact stored UI receipt", async () => {

@@ -9,6 +9,7 @@ vi.mock("@agentrail/db-postgres", async (importOriginal) => {
     completeReviewJob: vi.fn(),
     findOrCreateChangeRecord: vi.fn(),
     getPreviewBoot: vi.fn(),
+    previewBootId: vi.fn(() => "11111111-1111-5111-8111-111111111111"),
     getReviewJobById: vi.fn(),
     readAcceptanceContracts: vi.fn(),
     readChangeRecordTimelineByPr: vi.fn(),
@@ -148,6 +149,9 @@ const CHANGE_RECORD = {
   issueNumber: null,
   prNumber: 42,
   headShas: ["a".repeat(40)],
+  currentPrHeadSha: "a".repeat(40),
+  currentPrHeadCycleId: "job-1",
+  currentPrHeadAuthoritative: true,
   mergedSha: null,
   state: "open",
   createdAt: NOW,
@@ -791,7 +795,8 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
     });
 
     it("400 when a posted result omits criterionResults", async () => {
-      const { criterionResults, ...withoutCriteria } = VALID_POSTED_BODY;
+      const withoutCriteria = { ...VALID_POSTED_BODY };
+      Reflect.deleteProperty(withoutCriteria, "criterionResults");
       const res = await POST(postReq(withoutCriteria));
       expect(res.status).toBe(400);
       expect(mockGetReviewJobById).not.toHaveBeenCalled();
@@ -1687,18 +1692,31 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       expect(mockComplete).not.toHaveBeenCalled();
     });
 
-    it("409 before completion when the Contract is missing, the head is foreign, or results do not exactly match the confirmed criterion IDs", async () => {
+    it("409 before completion when Contract/head authority or criterion coverage is not exact", async () => {
       const cases = [
         () => mockReadAcceptanceContracts.mockResolvedValue([] as never),
         () => mockReadChangeRecordTimelineByPr.mockResolvedValue({
           ...CONTRACT_TIMELINE,
-          record: { ...CHANGE_RECORD, headShas: ["b".repeat(40)] },
+          record: {
+            ...CHANGE_RECORD,
+            headShas: ["a".repeat(40), "b".repeat(40)],
+            currentPrHeadSha: "b".repeat(40),
+            currentPrHeadAuthoritative: true,
+          },
+        } as never),
+        () => mockReadChangeRecordTimelineByPr.mockResolvedValue({
+          ...CONTRACT_TIMELINE,
+          record: { ...CHANGE_RECORD, currentPrHeadAuthoritative: false },
+        } as never),
+        () => mockReadChangeRecordTimelineByPr.mockResolvedValue({
+          ...CONTRACT_TIMELINE,
+          record: { ...CHANGE_RECORD, currentPrHeadCycleId: "job-new-cycle" },
         } as never),
         () => {},
       ];
       for (const arrange of cases) {
         arrange();
-        const body = cases.indexOf(arrange) === 2
+        const body = cases.indexOf(arrange) === 4
           ? { ...VALID_POSTED_BODY, criterionResults: [{ ...VALID_POSTED_BODY.criterionResults[0], criterionId: "AC-foreign" }] }
           : VALID_POSTED_BODY;
         const res = await POST(postReq(body));
@@ -2013,10 +2031,11 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
       });
     });
 
-    it("409 when the job is unknown/not-running for a failed completion too", async () => {
+    it("409 when a failed completion targets a superseded/non-running job, so it cannot be requeued", async () => {
       mockComplete.mockResolvedValue(null as never);
       const res = await POST(postReq({ jobId: "job-1", outcome: "failed" }));
       expect(res.status).toBe(409);
+      expect(mockComplete).toHaveBeenCalledTimes(1);
       expect(mockNotify).not.toHaveBeenCalled();
     });
   });

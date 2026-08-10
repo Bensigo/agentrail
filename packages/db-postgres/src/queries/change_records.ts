@@ -5,6 +5,7 @@ import { db } from "../db.js";
 import {
   changeRecordEvents,
   changeRecords,
+  acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatches,
@@ -13,6 +14,7 @@ import {
   acceptanceIntakes,
   acceptanceIntakeMessages,
   type AcceptanceContractRow,
+  type AcceptanceBuilderRouteCapabilityProfileRow,
   type AcceptanceBuilderRouteRow,
   type AcceptanceCompiledContextPackRow,
   type AcceptanceCorrectionDispatchRow,
@@ -22,6 +24,7 @@ import {
   type ChangeRecordEventRow,
   type ChangeRecordRow,
 } from "../schema/change_records.js";
+import { workspaces } from "../schema/workspaces.js";
 import { reviewJobs } from "../schema/review_jobs.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
@@ -2601,6 +2604,10 @@ export type AcceptanceBuilderRouteAdapter =
 
 export type AcceptanceBuilderRouteStatus = "active" | "disabled";
 
+export type GithubNativeAcceptanceBuilderRouteAdapter =
+  | "github_codex"
+  | "github_claude";
+
 /**
  * Public selection contains only the identifier of a server-registered route.
  * Builder configuration and task identity are never accepted from this input.
@@ -2646,6 +2653,40 @@ export type RegisterAcceptanceBuilderRouteInput = {
   registeredBy: string;
 };
 
+/**
+ * Closed, metadata-only policy for a later GitHub-native correction carrier.
+ * It permits a future carrier attempt; it does not assert the vendor is
+ * installed, accepted the carrier, started, acknowledged, or repaired.
+ */
+export type AcceptanceBuilderRouteCapabilityProfileSnapshot = {
+  kind: "acceptance_builder_route_capability_profile";
+  version: 1;
+  workspaceId: string;
+  repo: string;
+  routeId: string;
+  adapter: GithubNativeAcceptanceBuilderRouteAdapter;
+  routeConfigurationVersion: number;
+  carrier: "github_issue_comment";
+  carrierIdentity: "workspace_github_app_installation";
+  findingPublication: "individual_no_vendor_mentions";
+  activation: "single_final_vendor_mention";
+  recipient: "codex" | "claude";
+  configuration: "configuration_bound";
+  preflight: "required";
+  vendorAvailability: "not_asserted";
+  vendorActivity: "required";
+  repairHead: "github_synchronize";
+  scopeBoundary: "correction_delivery_only";
+  githubInstallationIdentitySha256: string;
+};
+
+/** Public shape has no caller-controlled adapter, recipient, or carrier data. */
+export type RecordAcceptanceBuilderRouteCapabilityProfileInput = {
+  workspaceId: string;
+  routeId: string;
+  recordedBy: string;
+};
+
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -2668,9 +2709,22 @@ function isBuilderRouteActor(value: unknown, humanOnly = false): value is string
     && new RegExp(`^${prefix}:[A-Za-z0-9][A-Za-z0-9._@+-]*$`).test(value);
 }
 
+function isServerBuilderRouteActor(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length >= 8
+    && value.length <= 256
+    && /^server:[A-Za-z0-9][A-Za-z0-9._@+-]*$/.test(value);
+}
+
 function isBuilderRouteAdapter(value: unknown): value is AcceptanceBuilderRouteAdapter {
   return value === "github_codex" || value === "github_claude"
     || value === "durable_github_fallback" || value === "durable_jace_fallback";
+}
+
+export function isGithubNativeBuilderRouteAdapter(
+  value: unknown
+): value is GithubNativeAcceptanceBuilderRouteAdapter {
+  return value === "github_codex" || value === "github_claude";
 }
 
 export function validateAcceptanceBuilderRouteSelection(
@@ -4588,6 +4642,221 @@ function builderRouteSnapshot(route: AcceptanceBuilderRouteRow): AcceptanceBuild
   };
 }
 
+function builderRouteCapabilityProfileSnapshot(input: {
+  route: AcceptanceBuilderRouteRow;
+  githubInstallationIdentitySha256: string;
+}): AcceptanceBuilderRouteCapabilityProfileSnapshot {
+  if (!isGithubNativeBuilderRouteAdapter(input.route.adapter)) {
+    throw new Error("Acceptance Builder capability supports GitHub-native routes only");
+  }
+  return {
+    kind: "acceptance_builder_route_capability_profile",
+    version: 1,
+    workspaceId: input.route.workspaceId,
+    repo: input.route.repo,
+    routeId: input.route.id,
+    adapter: input.route.adapter,
+    routeConfigurationVersion: input.route.configurationVersion,
+    carrier: "github_issue_comment",
+    carrierIdentity: "workspace_github_app_installation",
+    findingPublication: "individual_no_vendor_mentions",
+    activation: "single_final_vendor_mention",
+    recipient: input.route.adapter === "github_codex" ? "codex" : "claude",
+    configuration: "configuration_bound",
+    preflight: "required",
+    vendorAvailability: "not_asserted",
+    vendorActivity: "required",
+    repairHead: "github_synchronize",
+    scopeBoundary: "correction_delivery_only",
+    githubInstallationIdentitySha256: input.githubInstallationIdentitySha256,
+  };
+}
+
+function builderRouteCapabilityProfileComparable(
+  row: AcceptanceBuilderRouteCapabilityProfileRow
+) {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    routeId: row.routeId,
+    repo: row.repo,
+    adapter: row.adapter,
+    routeConfigurationVersion: row.routeConfigurationVersion,
+    githubInstallationIdentitySha256: row.githubInstallationIdentitySha256,
+    snapshot: row.snapshot,
+    snapshotSha256: row.snapshotSha256,
+    recordedBy: row.recordedBy,
+  };
+}
+
+function builderRouteCapabilityProfileValues(input: {
+  route: AcceptanceBuilderRouteRow;
+  githubInstallationIdentitySha256: string;
+  recordedBy: string;
+}) {
+  const snapshot = builderRouteCapabilityProfileSnapshot(input);
+  return {
+    id: acceptanceBuilderRouteCapabilityProfileId({
+      routeId: input.route.id,
+      routeConfigurationVersion: input.route.configurationVersion,
+    }),
+    workspaceId: input.route.workspaceId,
+    routeId: input.route.id,
+    repo: input.route.repo,
+    adapter: input.route.adapter,
+    routeConfigurationVersion: input.route.configurationVersion,
+    githubInstallationIdentitySha256: input.githubInstallationIdentitySha256,
+    snapshot,
+    snapshotSha256: acceptanceContextPackCanonicalSha256(snapshot),
+    recordedBy: input.recordedBy,
+  };
+}
+
+/** One profile exists for one immutable server route configuration revision. */
+export function acceptanceBuilderRouteCapabilityProfileId(input: {
+  routeId: string;
+  routeConfigurationVersion: number;
+}): string {
+  return uuid5Url(
+    `acceptance-builder-route-capability-profile:${input.routeId}:${input.routeConfigurationVersion}`
+  );
+}
+
+function githubInstallationIdentitySha256(input: {
+  workspaceId: string;
+  installationId: unknown;
+  accountLogin: unknown;
+  accountType: unknown;
+}): string | null {
+  if (typeof input.installationId !== "string" || !input.installationId.trim()
+    || input.installationId.trim() !== input.installationId || input.installationId.length > 128
+    || /[\u0000-\u001f\u007f]/.test(input.installationId)
+    || typeof input.accountLogin !== "string" || !input.accountLogin.trim()
+    || input.accountLogin.trim() !== input.accountLogin || input.accountLogin.length > 256
+    || /[\u0000-\u001f\u007f]/.test(input.accountLogin)
+    || (input.accountType !== "User" && input.accountType !== "Organization")) return null;
+  return acceptanceContextPackCanonicalSha256({
+    kind: "workspace_github_installation_identity",
+    version: 1,
+    workspaceId: input.workspaceId,
+    installationId: input.installationId,
+    accountLogin: input.accountLogin,
+    accountType: input.accountType,
+  });
+}
+
+async function resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(
+  tx: DbTransaction,
+  input: { workspaceId: string; route: AcceptanceBuilderRouteRow }
+): Promise<AcceptanceBuilderRouteCapabilityProfileRow | null> {
+  if (!isGithubNativeBuilderRouteAdapter(input.route.adapter)
+    || input.route.workspaceId !== input.workspaceId
+    || input.route.status !== "active") return null;
+  const installation = (await tx.select({
+    installationId: workspaces.githubInstallationId,
+    accountLogin: workspaces.githubInstallationAccountLogin,
+    accountType: workspaces.githubInstallationAccountType,
+  }).from(workspaces).where(eq(workspaces.id, input.workspaceId)).limit(1))[0];
+  const installationIdentitySha256 = installation && githubInstallationIdentitySha256({
+    workspaceId: input.workspaceId,
+    installationId: installation.installationId,
+    accountLogin: installation.accountLogin,
+    accountType: installation.accountType,
+  });
+  if (!installationIdentitySha256) return null;
+  const profile = (await tx.select().from(acceptanceBuilderRouteCapabilityProfiles).where(and(
+    eq(acceptanceBuilderRouteCapabilityProfiles.routeId, input.route.id),
+    eq(acceptanceBuilderRouteCapabilityProfiles.workspaceId, input.workspaceId),
+    eq(acceptanceBuilderRouteCapabilityProfiles.routeConfigurationVersion, input.route.configurationVersion),
+  )).limit(1))[0];
+  if (!profile) return null;
+  const expected = builderRouteCapabilityProfileValues({
+    route: input.route,
+    githubInstallationIdentitySha256: installationIdentitySha256,
+    recordedBy: profile.recordedBy,
+  });
+  return isDeepStrictEqual(builderRouteCapabilityProfileComparable(profile), expected)
+    ? profile
+    : null;
+}
+
+/**
+ * Persist only the capability configuration derived from the active route and
+ * workspace's existing GitHub installation identity. No token is minted and
+ * no GitHub, vendor, or carrier request occurs here.
+ */
+export async function recordAcceptanceBuilderRouteCapabilityProfile(
+  input: RecordAcceptanceBuilderRouteCapabilityProfileInput
+): Promise<{ profile: AcceptanceBuilderRouteCapabilityProfileRow; inserted: boolean }> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "routeId", "recordedBy"])
+    || !isUuid(input.workspaceId) || !isUuid(input.routeId)
+    || !isServerBuilderRouteActor(input.recordedBy)) {
+    throw new Error("Acceptance Builder capability profile requires only workspace, route, and server actor");
+  }
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`acceptance-builder-route-capability:${input.routeId}`}))`);
+    const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+      eq(acceptanceBuilderRoutes.id, input.routeId),
+      eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderRoutes.status, "active"),
+    )).limit(1))[0];
+    if (!route) throw new Error("Acceptance Builder route is unavailable for capability configuration");
+    if (!isGithubNativeBuilderRouteAdapter(route.adapter)) {
+      throw new Error("Acceptance Builder capability supports GitHub-native routes only");
+    }
+    const workspace = (await tx.select({
+      installationId: workspaces.githubInstallationId,
+      accountLogin: workspaces.githubInstallationAccountLogin,
+      accountType: workspaces.githubInstallationAccountType,
+    }).from(workspaces).where(eq(workspaces.id, input.workspaceId)).limit(1))[0];
+    const installationIdentitySha256 = workspace && githubInstallationIdentitySha256({
+      workspaceId: input.workspaceId,
+      installationId: workspace.installationId,
+      accountLogin: workspace.accountLogin,
+      accountType: workspace.accountType,
+    });
+    if (!installationIdentitySha256) {
+      throw new Error("Acceptance Builder capability requires a current workspace GitHub installation");
+    }
+    const values = builderRouteCapabilityProfileValues({
+      route,
+      githubInstallationIdentitySha256: installationIdentitySha256,
+      recordedBy: input.recordedBy,
+    });
+    const existing = (await tx.select().from(acceptanceBuilderRouteCapabilityProfiles).where(and(
+      eq(acceptanceBuilderRouteCapabilityProfiles.routeId, route.id),
+      eq(acceptanceBuilderRouteCapabilityProfiles.routeConfigurationVersion, route.configurationVersion),
+    )).limit(1))[0];
+    if (existing) {
+      if (!isDeepStrictEqual(builderRouteCapabilityProfileComparable(existing), values)) {
+        throw new Error("Acceptance Builder capability profile is already bound to different configuration");
+      }
+      return { profile: existing, inserted: false };
+    }
+    const rows = await tx.insert(acceptanceBuilderRouteCapabilityProfiles).values(values).returning();
+    return { profile: rows[0]!, inserted: true };
+  });
+}
+
+/** Resolves only a profile that still exactly matches active server configuration. */
+export async function resolveAcceptanceBuilderRouteCapabilityProfile(input: {
+  workspaceId: string;
+  routeId: string;
+}): Promise<AcceptanceBuilderRouteCapabilityProfileRow | null> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "routeId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.routeId)) return null;
+  return db.transaction(async (tx) => {
+    const route = (await tx.select().from(acceptanceBuilderRoutes).where(and(
+      eq(acceptanceBuilderRoutes.id, input.routeId),
+      eq(acceptanceBuilderRoutes.workspaceId, input.workspaceId),
+      eq(acceptanceBuilderRoutes.status, "active"),
+    )).limit(1))[0];
+    return route
+      ? resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(tx, { workspaceId: input.workspaceId, route })
+      : null;
+  });
+}
+
 function builderRoutePayload(input: {
   record: ChangeRecordRow;
   contract: AcceptanceContractRow;
@@ -4824,6 +5093,9 @@ function correctionDispatchComparable(row: AcceptanceCorrectionDispatchRow) {
     routeId: row.routeId, routeAdapter: row.routeAdapter,
     routeConfigurationVersion: row.routeConfigurationVersion, routeSnapshot: row.routeSnapshot,
     routeSnapshotSha256: row.routeSnapshotSha256,
+    capabilityProfileId: row.capabilityProfileId,
+    capabilityProfileSnapshot: row.capabilityProfileSnapshot,
+    capabilityProfileSnapshotSha256: row.capabilityProfileSnapshotSha256,
     dispatchProtocolVersion: row.dispatchProtocolVersion, dispatchIdentitySha256: row.dispatchIdentitySha256,
     deliveryState: row.deliveryState, agentState: row.agentState,
     findingsState: row.findingsState, activationState: row.activationState, carrier: row.carrier,
@@ -4956,6 +5228,16 @@ export async function queueSelectedCorrectionDispatch(
     const route = await resolveSelectedAcceptanceBuilderRouteInTransaction(tx, {
       workspaceId: input.workspaceId, record, contract: confirmed,
     });
+    let capabilityProfile: AcceptanceBuilderRouteCapabilityProfileRow | null = null;
+    if (isGithubNativeBuilderRouteAdapter(route.route.adapter)) {
+      capabilityProfile = await resolveAcceptanceBuilderRouteCapabilityProfileInTransaction(tx, {
+        workspaceId: input.workspaceId,
+        route: route.route,
+      });
+      if (!capabilityProfile) {
+        throw new Error("Selected correction dispatch requires an exact current GitHub capability profile");
+      }
+    }
     const carrier = route.snapshot.protocol;
     const routeSnapshotSha256 = acceptanceContextPackCanonicalSha256(route.snapshot);
     const unsignedValues = {
@@ -4975,6 +5257,9 @@ export async function queueSelectedCorrectionDispatch(
       routeId: route.route.id, routeAdapter: route.route.adapter,
       routeConfigurationVersion: route.route.configurationVersion, routeSnapshot: route.snapshot,
       routeSnapshotSha256, dispatchProtocolVersion: 1,
+      capabilityProfileId: capabilityProfile?.id ?? null,
+      capabilityProfileSnapshot: capabilityProfile?.snapshot ?? null,
+      capabilityProfileSnapshotSha256: capabilityProfile?.snapshotSha256 ?? null,
       deliveryState: "queued" as const, agentState: "not_observed" as const,
       findingsState: "not_started" as const, activationState: "not_started" as const,
       carrier,
@@ -4995,10 +5280,21 @@ export async function queueSelectedCorrectionDispatch(
       packets: { ids: values.packetIds, setSha256: values.packetSetSha256, payloadSetSha256: values.correctionPacketPayloadSetSha256 },
       compiledPack: { id: values.compiledPackId, sha256: values.compiledPackSha256, compilerVersion: values.compilerVersion, policyVersion: values.policyVersion, jsonSha256: values.jsonSha256, markdownSha256: values.markdownSha256, sourceCustodyIdentitySha256: values.sourceCustodyIdentitySha256 },
       route: { id: values.routeId, adapter: values.routeAdapter, configurationVersion: values.routeConfigurationVersion, snapshot: values.routeSnapshot, snapshotSha256: values.routeSnapshotSha256 },
+      capabilityProfile: values.capabilityProfileId === null ? null : {
+        id: values.capabilityProfileId,
+        snapshot: values.capabilityProfileSnapshot,
+        snapshotSha256: values.capabilityProfileSnapshotSha256,
+      },
       deliveryState: values.deliveryState, agentState: values.agentState, findingsState: values.findingsState,
       activationState: values.activationState, carrier: values.carrier,
     };
     if (existing) {
+      if (isGithubNativeBuilderRouteAdapter(route.route.adapter)
+        && (existing.capabilityProfileId == null
+        || existing.capabilityProfileSnapshot == null
+        || existing.capabilityProfileSnapshotSha256 == null)) {
+        throw new Error("Existing unprofiled selected correction dispatch is held pending a new head cycle");
+      }
       if (!isDeepStrictEqual(correctionDispatchComparable(existing), values)) {
         throw new Error("Selected correction dispatch replay is already bound to different Pack or route provenance");
       }

@@ -406,6 +406,75 @@ export const acceptanceCompiledContextPacks = pgTable(
 );
 
 /**
+ * One server-derived delivery aggregate for one immutable occurrence of a PR
+ * head.  This deliberately contains no vendor task locator or credential: a
+ * later worker may use the selected route snapshot, but cannot reinterpret
+ * the Record, Pack, packets, or current-head authority it was given.
+ */
+export const acceptanceCorrectionDispatches = pgTable(
+  "acceptance_correction_dispatches",
+  {
+    id: uuid("id").primaryKey(),
+    workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    recordId: uuid("record_id").notNull().references(() => changeRecords.id, { onDelete: "cascade" }),
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    headSha: text("head_sha").notNull(),
+    headCycleId: uuid("head_cycle_id").notNull(),
+    authorityGeneration: integer("authority_generation").notNull(),
+    sourceSnapshotId: uuid("source_snapshot_id").notNull().references(() => acceptanceContextPackSnapshots.id, { onDelete: "restrict" }),
+    reviewJobId: uuid("review_job_id").notNull().references(() => reviewJobs.id, { onDelete: "restrict" }),
+    acceptanceContractId: uuid("acceptance_contract_id").notNull().references(() => acceptanceContracts.id, { onDelete: "restrict" }),
+    acceptanceContractVersion: integer("acceptance_contract_version").notNull(),
+    acceptanceContractSha256: text("acceptance_contract_sha256").notNull(),
+    packetIds: jsonb("packet_ids").$type<string[]>().notNull(),
+    packetSetSha256: text("packet_set_sha256").notNull(),
+    correctionPacketPayloadSetSha256: text("correction_packet_payload_set_sha256").notNull(),
+    compiledPackId: uuid("compiled_pack_id").notNull().references(() => acceptanceCompiledContextPacks.id, { onDelete: "restrict" }),
+    compiledPackSha256: text("compiled_pack_sha256").notNull(),
+    compilerVersion: text("compiler_version").notNull(),
+    policyVersion: text("policy_version").notNull(),
+    jsonSha256: text("json_sha256").notNull(),
+    markdownSha256: text("markdown_sha256").notNull(),
+    sourceCustodyIdentitySha256: text("source_custody_identity_sha256").notNull(),
+    routeId: uuid("route_id").notNull().references(() => acceptanceBuilderRoutes.id, { onDelete: "restrict" }),
+    routeAdapter: text("route_adapter").notNull(),
+    routeConfigurationVersion: integer("route_configuration_version").notNull(),
+    routeSnapshot: jsonb("route_snapshot").$type<Record<string, unknown>>().notNull(),
+    routeSnapshotSha256: text("route_snapshot_sha256").notNull(),
+    dispatchProtocolVersion: integer("dispatch_protocol_version").notNull().default(1),
+    dispatchIdentitySha256: text("dispatch_identity_sha256").notNull(),
+    deliveryState: text("delivery_state").notNull().default("queued"),
+    agentState: text("agent_state").notNull().default("not_observed"),
+    findingsState: text("findings_state").notNull().default("not_started"),
+    activationState: text("activation_state").notNull().default("not_started"),
+    carrier: text("carrier").notNull(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason"),
+    successorHeadSha: text("successor_head_sha"),
+    successorHeadCycleId: uuid("successor_head_cycle_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    recordCycle: uniqueIndex("acceptance_correction_dispatches_record_cycle_key").on(t.recordId, t.headCycleId),
+    workspaceRecord: index("acceptance_correction_dispatches_workspace_record_idx").on(t.workspaceId, t.recordId, t.createdAt),
+    headCheck: check("acceptance_correction_dispatches_head_check", sql`${t.headSha} ~ '^[A-Fa-f0-9]{40}$' AND ${t.authorityGeneration} >= 0 AND char_length(${t.repo}) BETWEEN 3 AND 512 AND btrim(${t.repo}) = ${t.repo} AND ${t.repo} ~ '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' AND ${t.prNumber} > 0`),
+    contractCheck: check("acceptance_correction_dispatches_contract_check", sql`${t.acceptanceContractVersion} > 0 AND ${t.acceptanceContractSha256} ~ '^[A-Fa-f0-9]{64}$'`),
+    packetCheck: check("acceptance_correction_dispatches_packet_check", sql`jsonb_typeof(${t.packetIds}) = 'array' AND jsonb_array_length(${t.packetIds}) BETWEEN 1 AND 100 AND ${t.packetSetSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.correctionPacketPayloadSetSha256} ~ '^[A-Fa-f0-9]{64}$'`),
+    packCheck: check("acceptance_correction_dispatches_pack_check", sql`${t.compiledPackSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.sourceCustodyIdentitySha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.jsonSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.markdownSha256} ~ '^[A-Fa-f0-9]{64}$'`),
+    versionCheck: check("acceptance_correction_dispatches_version_check", sql`char_length(${t.compilerVersion}) BETWEEN 1 AND 128 AND btrim(${t.compilerVersion}) = ${t.compilerVersion} AND ${t.compilerVersion} !~ '[[:cntrl:]]' AND char_length(${t.policyVersion}) BETWEEN 1 AND 128 AND btrim(${t.policyVersion}) = ${t.policyVersion} AND ${t.policyVersion} !~ '[[:cntrl:]]' AND ${t.routeConfigurationVersion} > 0 AND ${t.dispatchProtocolVersion} = 1`),
+    routeCheck: check("acceptance_correction_dispatches_route_check", sql`${t.routeAdapter} IN ('github_codex', 'github_claude', 'durable_github_fallback', 'durable_jace_fallback') AND jsonb_typeof(${t.routeSnapshot}) = 'object' AND ${t.routeSnapshotSha256} ~ '^[A-Fa-f0-9]{64}$' AND ${t.dispatchIdentitySha256} ~ '^[A-Fa-f0-9]{64}$'`),
+    deliveryStateCheck: check("acceptance_correction_dispatches_delivery_state_check", sql`${t.deliveryState} IN ('queued', 'carrier_accepted', 'ambiguous_hold', 'failed', 'fallback')`),
+    agentStateCheck: check("acceptance_correction_dispatches_agent_state_check", sql`${t.agentState} IN ('not_observed', 'started', 'acknowledged', 'failed')`),
+    findingsStateCheck: check("acceptance_correction_dispatches_findings_state_check", sql`${t.findingsState} IN ('not_started', 'reserved', 'terminal', 'ambiguous_hold', 'failed')`),
+    activationStateCheck: check("acceptance_correction_dispatches_activation_state_check", sql`${t.activationState} IN ('not_started', 'reserved', 'carrier_accepted', 'ambiguous_hold', 'failed', 'fallback')`),
+    carrierCheck: check("acceptance_correction_dispatches_carrier_check", sql`${t.carrier} IN ('github_comment', 'durable_notice')`),
+    invalidationCheck: check("acceptance_correction_dispatches_invalidation_check", sql`(${t.invalidatedAt} IS NULL) = (${t.invalidationReason} IS NULL) AND (${t.successorHeadSha} IS NULL) = (${t.successorHeadCycleId} IS NULL) AND (${t.successorHeadSha} IS NULL OR ${t.successorHeadSha} ~ '^[A-Fa-f0-9]{40}$') AND (${t.invalidationReason} IS NULL OR ${t.invalidationReason} IN ('head_advanced', 'authority_blocked', 'terminal', 'reconciled'))`),
+  })
+);
+
+/**
  * The durable, pre-repository start of the acceptance spine. A request may
  * not yet identify a repository, so it cannot safely become a Change Record.
  * This stores only its channel provenance and bounded conversation identity
@@ -510,5 +579,6 @@ export type AcceptanceContractRow = typeof acceptanceContracts.$inferSelect;
 export type AcceptanceBuilderRouteRow = typeof acceptanceBuilderRoutes.$inferSelect;
 export type AcceptanceContextPackSnapshotRow = typeof acceptanceContextPackSnapshots.$inferSelect;
 export type AcceptanceCompiledContextPackRow = typeof acceptanceCompiledContextPacks.$inferSelect;
+export type AcceptanceCorrectionDispatchRow = typeof acceptanceCorrectionDispatches.$inferSelect;
 export type AcceptanceIntakeRow = typeof acceptanceIntakes.$inferSelect;
 export type AcceptanceIntakeMessageRow = typeof acceptanceIntakeMessages.$inferSelect;

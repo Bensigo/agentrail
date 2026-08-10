@@ -11,6 +11,7 @@ import {
   acceptanceIntakes,
   acceptanceBuilderRoutes,
   acceptanceCompiledContextPacks,
+  acceptanceCorrectionDispatches,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   changeRecordEvents,
@@ -56,6 +57,7 @@ import {
   readAcceptanceContracts,
   readChangeRecordByPr,
   readChangeRecordTimeline,
+  queueSelectedCorrectionDispatch,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -74,6 +76,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_builder_routes') AS acceptance_builder_routes,
                to_regclass('public.acceptance_context_pack_snapshots') AS acceptance_context_pack_snapshots,
                to_regclass('public.acceptance_compiled_context_packs') AS acceptance_compiled_context_packs,
+               to_regclass('public.acceptance_correction_dispatches') AS acceptance_correction_dispatches,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -115,6 +118,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_builder_routes: string | null;
       acceptance_context_pack_snapshots: string | null;
       acceptance_compiled_context_packs: string | null;
+      acceptance_correction_dispatches: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
       change_record_current_pr_head: boolean;
@@ -128,6 +132,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_builder_routes === "acceptance_builder_routes" &&
       rows[0]?.acceptance_context_pack_snapshots === "acceptance_context_pack_snapshots" &&
       rows[0]?.acceptance_compiled_context_packs === "acceptance_compiled_context_packs" &&
+      rows[0]?.acceptance_correction_dispatches === "acceptance_correction_dispatches" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.change_record_current_pr_head === true &&
@@ -1333,6 +1338,13 @@ describe.skipIf(!DB_AVAILABLE)(
       await db.update(acceptanceContracts).set({
         status: "confirmed", confirmedBy: "console_user:user-1", confirmedAt: new Date(),
       }).where(eq(acceptanceContracts.id, draft.contract.id));
+      const selectedRoute = await registerAcceptanceBuilderRoute({
+        workspaceId: wsId, repo: "acme/widgets", adapter: "github_codex",
+        configurationVersion: 1, registeredBy: "server:environment",
+      });
+      await recordAcceptanceBuilderRouteSelection({
+        workspaceId: wsId, recordId: draft.record.id, selectedBy: "user:lead", routeId: selectedRoute.route.id,
+      });
       const headSha = "a".repeat(40);
       const admittedJob = await advanceConfirmedAcceptanceRecordPullRequestHead({
         workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
@@ -1443,6 +1455,21 @@ describe.skipIf(!DB_AVAILABLE)(
       expect(replay).toMatchObject({ inserted: false, pack: { id: first.pack.id } });
       expect(first.pack.exactHeadDependencyTreeProofs).toEqual(core.exactHeadDependencyTreeProofs);
       expect(JSON.stringify(first.pack)).not.toContain("bodyBase64");
+      const queued = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      const queuedReplay = await queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id });
+      expect(queued).toMatchObject({
+        inserted: true,
+        dispatch: {
+          recordId: draft.record.id, headSha, headCycleId: job.id,
+          authorityGeneration: 1, sourceSnapshotId: snapshot.snapshot.id,
+          acceptanceContractId: draft.contract.id, acceptanceContractVersion: 1,
+          compiledPackId: first.pack.id, compiledPackSha256: compiled.packSha256,
+          jsonSha256: representations.jsonSha256, markdownSha256: representations.markdownSha256,
+          routeId: selectedRoute.route.id, routeConfigurationVersion: 1,
+          activationState: "not_started", deliveryState: "queued",
+        },
+      });
+      expect(queuedReplay).toMatchObject({ inserted: false, dispatch: { id: queued.dispatch.id } });
       await expect(persist({
         ...compiled, manifest: { ...compiled.manifest, exclusions: [{ source: "exact_head_overlay", path: "apps/filter.ts", reason: "Excluded", content: "raw source" }] },
       })).rejects.toThrow("Invalid compiled Context Pack");
@@ -1462,6 +1489,10 @@ describe.skipIf(!DB_AVAILABLE)(
         headTransition: { beforeHeadSha: headSha, afterHeadSha: nextHeadSha },
         source: "github_webhook",
       });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, queued.dispatch.id)))[0]).toMatchObject({
+        invalidationReason: "head_advanced", successorHeadSha: nextHeadSha,
+      });
       const revisitedHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
         workspaceId: wsId, recordId: draft.record.id, repo: "acme/widgets", prNumber: 43,
         headSha, event: "synchronize", deliveryId: "delivery-compiled-revisited-head",
@@ -1475,6 +1506,8 @@ describe.skipIf(!DB_AVAILABLE)(
         workspaceId: wsId, sourceSnapshotId: snapshot.snapshot.id,
         compilerVersion: compiler.version, policyVersion: compiler.policyVersion,
       })).resolves.toBeNull();
+      await expect(queueSelectedCorrectionDispatch({ workspaceId: wsId, compiledPackId: first.pack.id }))
+        .rejects.toThrow("current");
       await expect(persist(compiled)).rejects.toThrow("Record head is no longer current");
       expect(await db.select().from(acceptanceCompiledContextPacks).where(eq(acceptanceCompiledContextPacks.id, first.pack.id))).toHaveLength(1);
     });

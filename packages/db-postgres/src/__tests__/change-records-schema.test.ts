@@ -6,6 +6,8 @@ import {
   acceptanceBuilderRouteCapabilityProfiles,
   acceptanceBuilderRoutes,
   acceptanceCorrectionDispatches,
+  acceptanceCorrectionDispatchGithubActivations,
+  acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCompiledContextPacks,
   acceptanceContextPackSnapshots,
@@ -113,6 +115,75 @@ describe("0092 GitHub correction carrier preflight migration", () => {
     expect(journal.entries.find(
       (entry: { tag: string }) => entry.tag === "0092_acceptance_correction_dispatch_github_preflights"
     )).toMatchObject({ idx: 97, version: "7", breakpoints: true });
+  });
+});
+
+describe("0093 two-stage GitHub correction carrier migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0093_acceptance_correction_dispatch_github_comments.sql"
+  );
+
+  it("declares immutable packet and activation reservations with closed receipts", () => {
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.dispatchId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.packetId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.baseSha.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.githubInstallationIdentitySha256.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.readyPreflightId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.body.notNull).toBe(false);
+    expect(acceptanceCorrectionDispatchGithubFindingPublications.bodySha256.notNull).toBe(false);
+    expect(acceptanceCorrectionDispatchGithubActivations.dispatchId.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubActivations.findingCoverageSha256.notNull).toBe(true);
+    expect(acceptanceCorrectionDispatchGithubActivations.packetBundleSha256.notNull).toBe(false);
+    expect(acceptanceCorrectionDispatchGithubActivations.body.notNull).toBe(false);
+
+    const findingConfig = getTableConfig(acceptanceCorrectionDispatchGithubFindingPublications);
+    expect(findingConfig.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_correction_gh_findings_comment_receipt_key",
+      "acceptance_correction_gh_findings_dispatch_packet_key",
+    ]);
+    expect(findingConfig.checks.map((check) => check.name).sort()).toEqual([
+      "acceptance_correction_gh_findings_binding_check",
+      "acceptance_correction_gh_findings_state_check",
+    ]);
+    const activationConfig = getTableConfig(acceptanceCorrectionDispatchGithubActivations);
+    expect(activationConfig.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_correction_gh_activations_comment_receipt_key",
+      "acceptance_correction_gh_activations_dispatch_key",
+    ]);
+    expect(activationConfig.checks.map((check) => check.name).sort()).toEqual([
+      "acceptance_correction_gh_activations_binding_check",
+      "acceptance_correction_gh_activations_state_check",
+    ]);
+  });
+
+  it("creates only final tables/indexes with byte caps and closed failure reasons", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_correction_dispatch_github_finding_publications"');
+    expect(sqlText).toContain('CREATE TABLE IF NOT EXISTS "acceptance_correction_dispatch_github_activations"');
+    expect(sqlText).not.toContain('ALTER TABLE "acceptance_correction_dispatch_github_finding_publications"');
+    expect(sqlText).not.toContain('ALTER TABLE "acceptance_correction_dispatch_github_activations"');
+    expect(sqlText).toContain('octet_length("body") BETWEEN 1 AND 12288');
+    expect(sqlText).toContain('octet_length("body") BETWEEN 1 AND 61440');
+    expect(sqlText).toContain("'reserved', 'published', 'bounded_failed', 'ambiguous_hold'");
+    expect(sqlText).toContain("'reserved', 'carrier_accepted', 'bounded_failed', 'ambiguous_hold'");
+    expect(sqlText).toContain("'github_unavailable', 'ambiguous_response'");
+    expect(sqlText).toContain("'activation_body_too_large'");
+    expect(sqlText).toContain('ON DELETE restrict');
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("private_key");
+    expect(sqlText).not.toContain("raw_response");
+    expect(sqlText).not.toContain("agent_acknowledged");
+    expect(sqlText).not.toContain("repair_head");
+  });
+
+  it("is registered directly after the preflight migration", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0093_acceptance_correction_dispatch_github_comments"
+    )).toMatchObject({ idx: 98, version: "7", breakpoints: true });
   });
 });
 

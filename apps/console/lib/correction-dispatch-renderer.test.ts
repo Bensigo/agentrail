@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   GITHUB_CORRECTION_DISPATCH_BINDING_KIND,
   GITHUB_CORRECTION_DISPATCH_BINDING_VERSION,
-  MAX_GITHUB_CORRECTION_FINDING_CHARS,
+  MAX_GITHUB_CORRECTION_FINDING_BYTES,
+  githubCorrectionPacketPayloadSha256,
   isExactGitHubCorrectionFindingComment,
   parseGitHubCorrectionFindingComment,
   renderGitHubCorrectionFinding,
@@ -14,6 +15,7 @@ import {
 import type { ReviewJobCorrectionPacket } from "./review-job-correction-packet";
 
 const HEAD = "a".repeat(40);
+const WORKSPACE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 function packet(overrides: Partial<ReviewJobCorrectionPacket> = {}): ReviewJobCorrectionPacket {
   const value: ReviewJobCorrectionPacket = {
@@ -22,7 +24,7 @@ function packet(overrides: Partial<ReviewJobCorrectionPacket> = {}): ReviewJobCo
       jobId: "job-1", criterionId: "AC-R8", headSha: HEAD, recordId: "record-1",
       acceptanceContractId: "contract-1", acceptanceContractVersion: 2,
     }),
-    workspaceId: "workspace-1", repo: "acme/widgets", prNumber: 42, headSha: HEAD,
+    workspaceId: WORKSPACE_ID, repo: "acme/widgets", prNumber: 42, headSha: HEAD,
     recordId: "record-1", jobId: "job-1", acceptanceContract: { id: "contract-1", version: 2 },
     criterion: { id: "AC-R8", snapshot: "The health endpoint returns HTTP 200." },
     basis: "acceptance_contract", state: "failed", expected: "The health endpoint returns HTTP 200.",
@@ -44,10 +46,26 @@ function packet(overrides: Partial<ReviewJobCorrectionPacket> = {}): ReviewJobCo
 function binding(value = packet()): GitHubCorrectionDispatchBinding {
   return {
     kind: GITHUB_CORRECTION_DISPATCH_BINDING_KIND, version: GITHUB_CORRECTION_DISPATCH_BINDING_VERSION,
-    dispatchId: "11111111-1111-4111-8111-111111111111", recordId: value.recordId, reviewJobId: value.jobId,
-    repo: value.repo, prNumber: value.prNumber, headSha: value.headSha, packetId: value.packetId,
-    acceptanceContract: { ...value.acceptanceContract }, packetSetSha256: "c".repeat(64),
-    correctionPacketPayloadSetSha256: "d".repeat(64), contextPack: { id: "pack-1", sha256: "b".repeat(64) },
+    workspaceId: value.workspaceId,
+    dispatchId: "11111111-1111-4111-8111-111111111111", dispatchIdentitySha256: "1".repeat(64),
+    recordId: value.recordId, reviewJobId: value.jobId, repo: value.repo, prNumber: value.prNumber,
+    baseSha: "e".repeat(40), headSha: value.headSha,
+    headCycleId: "22222222-2222-4222-8222-222222222222", authorityGeneration: 3,
+    packetId: value.packetId, packetPayloadSha256: githubCorrectionPacketPayloadSha256(value)!,
+    acceptanceContract: { ...value.acceptanceContract, sha256: "2".repeat(64) },
+    packetSetSha256: "c".repeat(64), correctionPacketPayloadSetSha256: "d".repeat(64),
+    contextPack: {
+      id: "pack-1", sha256: "b".repeat(64), sourceSnapshotId: "snapshot-1",
+      sourceCustodyIdentitySha256: "3".repeat(64),
+    },
+    route: {
+      id: "33333333-3333-4333-8333-333333333333", adapter: "github_codex", configurationVersion: 1,
+    },
+    capabilityProfile: {
+      id: "44444444-4444-4444-8444-444444444444", snapshotSha256: "4".repeat(64),
+      githubInstallationIdentitySha256: "5".repeat(64),
+    },
+    readyPreflight: { id: "55555555-5555-4555-8555-555555555555", identitySha256: "6".repeat(64) },
   };
 }
 
@@ -56,7 +74,7 @@ describe("GitHub correction dispatch renderer", () => {
     const value = packet();
     const rendered = renderGitHubCorrectionFinding({ packet: value, binding: binding(value) });
     expect(rendered).not.toBeNull();
-    expect(rendered!.comment.length).toBeLessThanOrEqual(MAX_GITHUB_CORRECTION_FINDING_CHARS);
+    expect(Buffer.byteLength(rendered!.comment, "utf8")).toBeLessThanOrEqual(MAX_GITHUB_CORRECTION_FINDING_BYTES);
     expect(rendered!.comment).toContain("## Trusted identity");
     expect(rendered!.comment).toContain(`Packet ID: ${value.packetId.replace(/-/gu, "\\-")}`);
     expect(rendered!.comment).toContain(`Original exact head: ${HEAD}`);

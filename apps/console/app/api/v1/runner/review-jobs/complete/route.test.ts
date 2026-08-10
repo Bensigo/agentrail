@@ -45,6 +45,14 @@ import {
   reviewJobUiResultEventKey,
   reviewJobUiScreenshotReservationEventKey,
 } from "../../../../../../lib/review-job-ui-execution";
+import {
+  buildReviewJobApiAttempt,
+  buildReviewJobApiCardReservation,
+  buildReviewJobApiResult,
+  reviewJobApiAttemptEventKey,
+  reviewJobApiCardReservationEventKey,
+  reviewJobApiResultEventKey,
+} from "../../../../../../lib/review-job-api-execution";
 
 const mockAppendChangeRecordEvent = vi.mocked(appendChangeRecordEvent);
 const mockComplete = vi.mocked(completeReviewJob);
@@ -66,6 +74,8 @@ const BOOT_LOG_KEY =
   "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/boot.log";
 const SCREENSHOT_KEY =
   "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/exact.png";
+const API_EVIDENCE_KEY =
+  "review-evidence/ws-1/acme__widgets/42/aaaaaaaa/AC-1/response.json";
 const PREVIEW_URL = "http://preview.internal:4173";
 
 const POSTED_JOB = {
@@ -346,6 +356,75 @@ function uiReceiptFixture(assertionPassed = true) {
         evidenceRefs: [result.evidenceRef],
       }],
       evidenceKeys: [SCREENSHOT_KEY],
+    },
+  };
+}
+
+function apiReceiptFixture(observedStatus = 200) {
+  const apiRequest = { method: "GET", path: "/health", expectedStatus: 200 };
+  const planEvent = {
+    ...PLAN_EVENT,
+    payloadRef: {
+      ...PLAN_EVENT.payloadRef,
+      plans: [{
+        ...PLAN_EVENT.payloadRef.plans[0],
+        modality: "api",
+        flow: "Request the bounded health endpoint and inspect its status.",
+        uiSteps: null,
+        apiRequest,
+      }],
+    },
+  };
+  const receiptTimeline: {
+    record: typeof CHANGE_RECORD;
+    events: Array<{ eventKey: string; payloadRef: Record<string, unknown> }>;
+  } = { record: CHANGE_RECORD, events: [planEvent] };
+  const proof = {
+    job: RUNNING_JOB,
+    timeline: receiptTimeline,
+    contract: {
+      id: CONFIRMED_CONTRACT[0]!.id,
+      version: CONFIRMED_CONTRACT[0]!.version,
+      criteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria,
+    },
+    verificationPlan: planEvent.payloadRef,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = {
+    id: PREVIEW_BOOT_ID, workspaceId: RUNNING_JOB.workspaceId, repo: RUNNING_JOB.repo,
+    prNumber: RUNNING_JOB.prNumber, headSha: RUNNING_JOB.headSha,
+    status: "ready", url: PREVIEW_URL,
+  };
+  const attempt = buildReviewJobApiAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobApiResult({
+    attempt, plan, observedStatus, artifactKey: API_EVIDENCE_KEY,
+    contentSha256: "e".repeat(64),
+  })!;
+  mockReadAcceptanceContracts.mockResolvedValue([{
+    ...CONFIRMED_CONTRACT[0]!,
+    contract: {
+      acceptanceCriteria: CONFIRMED_CONTRACT[0]!.contract.acceptanceCriteria.map((criterion) => ({
+        ...criterion,
+        userVisible: false,
+      })),
+    },
+  }] as never);
+  receiptTimeline.events.push(
+    { eventKey: reviewJobApiAttemptEventKey({ proof, plan }), payloadRef: attempt },
+    { eventKey: reviewJobApiCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobApiCardReservation(result) },
+    { eventKey: reviewJobApiResultEventKey({ proof, plan }), payloadRef: result }
+  );
+  return {
+    attempt, result, plan, timeline: receiptTimeline,
+    body: {
+      ...VALID_POSTED_BODY,
+      verdict: result.state,
+      summaryLine: `AgentRail review posted for acme/widgets#42 — ${result.state}`,
+      criterionResults: [{
+        criterionId: "AC-1", state: result.state, expected: result.expected,
+        observed: result.observed, evidenceRefs: [result.evidenceRef],
+      }],
+      evidenceKeys: [API_EVIDENCE_KEY],
     },
   };
 }
@@ -786,6 +865,100 @@ describe("POST /api/v1/runner/review-jobs/complete", () => {
 
         expect(response.status).toBe(409);
       }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("completes exact API proven and failed receipts with their required JSON custody key", async () => {
+      for (const observedStatus of [200, 503]) {
+        const fixture = apiReceiptFixture(observedStatus);
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never
+        );
+        mockComplete.mockResolvedValueOnce({ ...POSTED_JOB, verdict: fixture.result.state } as never);
+
+        const response = await POST(postReq(fixture.body));
+
+        expect(response.status).toBe(200);
+        expect(mockComplete).toHaveBeenCalledWith(expect.objectContaining({
+          verdict: fixture.result.state,
+          evidenceKeys: [API_EVIDENCE_KEY],
+        }));
+        mockComplete.mockClear();
+      }
+    });
+
+    it("holds result-only, malformed, mismatched, and present-invalid API custody before completion", async () => {
+      const cases: Array<[string, (fixture: ReturnType<typeof apiReceiptFixture>) => void, Record<string, unknown> | null]> = [
+        ["result-only", (fixture) => {
+          fixture.timeline.events = fixture.timeline.events.filter((event) => !event.eventKey.includes(":api-attempt:"));
+        }, null],
+        ["missing reservation", (fixture) => {
+          fixture.timeline.events = fixture.timeline.events.filter((event) => !event.eventKey.includes(":api-card:"));
+        }, null],
+        ["attempt plan", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":api-attempt:"))!;
+          event.payloadRef = { ...fixture.attempt, planDigest: "forged" };
+        }, null],
+        ["result head", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":api-result:"))!;
+          event.payloadRef = { ...fixture.result, headSha: "foreign-head" };
+        }, null],
+        ["reservation artifact", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":api-card:"))!;
+          event.payloadRef = buildReviewJobApiCardReservation({ ...fixture.result, artifactKey: "review-evidence/competing.json" });
+        }, null],
+        ["boot tuple", () => {}, { headSha: "b".repeat(40) }],
+        ["boot URL", () => {}, { url: "http://preview.internal:4999" }],
+        ["result observation", (fixture) => {
+          const event = fixture.timeline.events.find((candidate) => candidate.eventKey.includes(":api-result:"))!;
+          event.payloadRef = { ...fixture.result, observed: "forged" };
+        }, null],
+      ];
+      for (const [name, arrange, bootOverride] of cases) {
+        const fixture = apiReceiptFixture();
+        arrange(fixture);
+        if (bootOverride) {
+          mockGetPreviewBoot.mockResolvedValueOnce({
+            id: PREVIEW_BOOT_ID, workspaceId: "ws-1", repo: "acme/widgets", prNumber: 42,
+            headSha: "a".repeat(40), status: "ready", url: PREVIEW_URL,
+            bootLogKey: BOOT_LOG_KEY, ...bootOverride,
+          } as never);
+        }
+        mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+          async () => timelineWithPostedAttestation(fixture.timeline, fixture.body) as never
+        );
+        const response = await POST(postReq(fixture.body));
+        expect(response.status, name).toBe(409);
+      }
+      expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it("permits only absent or one exact pending API reservation to use the R7.1 preview fallback", async () => {
+      const absent = apiReceiptFixture();
+      absent.timeline.events = absent.timeline.events.slice(0, 1);
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(absent.timeline, VALID_POSTED_BODY) as never
+      );
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(200);
+      mockComplete.mockClear();
+
+      const pending = apiReceiptFixture();
+      pending.timeline.events = pending.timeline.events.filter((event) => !event.eventKey.includes(":api-result:"));
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(pending.timeline, VALID_POSTED_BODY) as never
+      );
+      mockComplete.mockResolvedValueOnce(POSTED_JOB as never);
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(200);
+      mockComplete.mockClear();
+
+      const invalid = apiReceiptFixture();
+      const resultEvent = invalid.timeline.events.find((event) => event.eventKey.includes(":api-result:"))!;
+      resultEvent.payloadRef = { ...invalid.result, observed: "forged" };
+      mockReadChangeRecordTimelineByPr.mockImplementationOnce(
+        async () => timelineWithPostedAttestation(invalid.timeline, VALID_POSTED_BODY) as never
+      );
+      expect((await POST(postReq(VALID_POSTED_BODY))).status).toBe(409);
       expect(mockComplete).not.toHaveBeenCalled();
     });
 

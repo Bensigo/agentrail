@@ -39,6 +39,14 @@ import {
   reviewJobUiResultEventKey,
   reviewJobUiScreenshotReservationEventKey,
 } from "../../../../../../../lib/review-job-ui-execution";
+import {
+  buildReviewJobApiAttempt,
+  buildReviewJobApiCardReservation,
+  buildReviewJobApiResult,
+  reviewJobApiAttemptEventKey,
+  reviewJobApiCardReservationEventKey,
+  reviewJobApiResultEventKey,
+} from "../../../../../../../lib/review-job-api-execution";
 import { POST } from "./route";
 
 const secret = "test-secret";
@@ -49,6 +57,8 @@ const headSha = "abcdef1234567890";
 const bootLogKey = "review-evidence/ws-1/ada__widgets/98/abcdef/boot.log";
 const screenshotKey =
   "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/exact.png";
+const apiEvidenceKey =
+  "review-evidence/ws-1/ada__widgets/98/abcdef/AC-1/response.json";
 const previewUrl = "http://127.0.0.1:43123";
 
 const session = {
@@ -224,6 +234,127 @@ function installUiReceipt(assertionPassed = true) {
       summaryLine: `ada/widgets #98 — ${result.state}`,
       evidenceKeys: [screenshotKey],
     },
+  };
+}
+
+function installApiReceipt(observedStatus = 200) {
+  const apiRequest = { method: "GET", path: "/health", expectedStatus: 200 };
+  const verificationPlan = {
+    ...planPayload,
+    plans: [{
+      ...planPayload.plans[0],
+      modality: "api",
+      flow: "Request the bounded health endpoint and inspect its status.",
+      uiSteps: null,
+      apiRequest,
+    }],
+  };
+  const receiptTimeline: typeof timeline = {
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
+  };
+  const proof = {
+    job,
+    timeline: receiptTimeline,
+    contract: { id: contract.id, version: contract.version, criteria: contract.contract.acceptanceCriteria },
+    verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const plan = proof.verificationPlan.plans[0];
+  const boot = { id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl };
+  const attempt = buildReviewJobApiAttempt({ proof, plan, boot })!;
+  const result = buildReviewJobApiResult({
+    attempt,
+    plan,
+    observedStatus,
+    artifactKey: apiEvidenceKey,
+    contentSha256: "a".repeat(64),
+  })!;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    ...contract,
+    contract: {
+      acceptanceCriteria: contract.contract.acceptanceCriteria.map((criterion) => ({
+        ...criterion,
+        userVisible: false,
+      })),
+    },
+  }] as never);
+  receiptTimeline.events.push(
+    { eventKey: reviewJobApiAttemptEventKey({ proof, plan }), payloadRef: attempt },
+    { eventKey: reviewJobApiCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobApiCardReservation(result) },
+    { eventKey: reviewJobApiResultEventKey({ proof, plan }), payloadRef: result }
+  );
+  timeline = receiptTimeline;
+  return {
+    attempt,
+    result,
+    plan,
+    body: {
+      ...validBody,
+      criterionResults: [{
+        criterionId: "AC-1", state: result.state, expected: result.expected,
+        observed: result.observed, evidenceRefs: [result.evidenceRef],
+      }],
+      verdict: result.state,
+      summaryLine: `ada/widgets #98 — ${result.state}`,
+      evidenceKeys: [apiEvidenceKey],
+    },
+  };
+}
+
+function installApiVerdictPriorityProof() {
+  const criteria = [
+    { id: "AC-1", text: "The health endpoint returns its planned status.", userVisible: false },
+    { id: "AC-2", text: "The status endpoint returns its planned status.", userVisible: false },
+  ];
+  const verificationPlan = {
+    ...planPayload,
+    plans: criteria.map((criterion, index) => ({
+      criterionId: criterion.id,
+      criterionTextSnapshot: criterion.text,
+      modality: "api",
+      environmentKind: "isolated_preview",
+      flow: "Request the bounded endpoint and inspect its status.",
+      uiSteps: null,
+      status: "planned",
+      notTestableReason: null,
+      apiRequest: { method: "GET", path: index ? "/status" : "/health", expectedStatus: 200 },
+    })),
+  };
+  const priorityTimeline: typeof timeline = {
+    record: { id: recordId, workspaceId, repo: job.repo, prNumber: job.prNumber, headShas: [headSha] },
+    events: [{ eventKey: `verification:plan:${jobId}`, payloadRef: verificationPlan }],
+  };
+  const proof = {
+    job, timeline: priorityTimeline,
+    contract: { id: contract.id, version: contract.version, criteria }, verificationPlan,
+  } as unknown as ExactReviewJobProof;
+  const boot = { id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber, headSha, status: "ready", url: previewUrl };
+  const results = proof.verificationPlan.plans.map((plan, index) => {
+    const attempt = buildReviewJobApiAttempt({ proof, plan, boot })!;
+    const result = buildReviewJobApiResult({
+      attempt, plan, observedStatus: index ? 503 : 200,
+      artifactKey: `${apiEvidenceKey}.${index}`, contentSha256: `${index + 1}`.repeat(64),
+    })!;
+    priorityTimeline.events.push(
+      { eventKey: reviewJobApiAttemptEventKey({ proof, plan }), payloadRef: attempt },
+      { eventKey: reviewJobApiCardReservationEventKey({ proof, plan }), payloadRef: buildReviewJobApiCardReservation(result) },
+      { eventKey: reviewJobApiResultEventKey({ proof, plan }), payloadRef: result }
+    );
+    return result;
+  });
+  timeline = priorityTimeline;
+  vi.mocked(readAcceptanceContracts).mockResolvedValue([{
+    ...contract, contract: { acceptanceCriteria: criteria },
+  }] as never);
+  return {
+    ...validBody,
+    criterionResults: results.map((result) => ({
+      criterionId: result.criterionId, state: result.state, expected: result.expected,
+      observed: result.observed, evidenceRefs: [result.evidenceRef],
+    })),
+    verdict: "failed",
+    summaryLine: "ada/widgets #98 — failed",
+    evidenceKeys: results.map((result) => result.artifactKey),
   };
 }
 
@@ -775,6 +906,91 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/post-review", () => {
     }
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
     expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("posts exact API proven and failed receipts, with their JSON custody key", async () => {
+    for (const observedStatus of [200, 503]) {
+      const fixture = installApiReceipt(observedStatus);
+      const response = await POST(request(fixture.body), params);
+
+      expect(response.status).toBe(201);
+      expect(vi.mocked(postGithubAdvisoryReview).mock.calls[0]?.[0].summary)
+        .toContain(`AgentRail exact-head verification: ${fixture.result.state}`);
+      expect(fixture.body.evidenceKeys).toEqual([apiEvidenceKey]);
+      vi.mocked(appendChangeRecordEvent).mockClear();
+      vi.mocked(postGithubAdvisoryReview).mockClear();
+    }
+  });
+
+  it("holds malformed, result-only, mismatched, and present-invalid API receipts before GitHub", async () => {
+    const cases: Array<[string, (fixture: ReturnType<typeof installApiReceipt>) => void, Record<string, unknown> | null]> = [
+      ["result-only", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":api-attempt:")); }, null],
+      ["missing reservation", () => { timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":api-card:")); }, null],
+      ["attempt plan", (fixture) => {
+        const event = timeline.events.find((candidate) => candidate.eventKey.includes(":api-attempt:"))!;
+        event.payloadRef = { ...fixture.attempt, planDigest: "forged" };
+      }, null],
+      ["result head", (fixture) => {
+        const event = timeline.events.find((candidate) => candidate.eventKey.includes(":api-result:"))!;
+        event.payloadRef = { ...fixture.result, headSha: "foreign-head" };
+      }, null],
+      ["reservation artifact", (fixture) => {
+        const event = timeline.events.find((candidate) => candidate.eventKey.includes(":api-card:"))!;
+        event.payloadRef = buildReviewJobApiCardReservation({ ...fixture.result, artifactKey: "review-evidence/competing.json" });
+      }, null],
+      ["boot tuple", () => {}, { headSha: "foreign-head" }],
+      ["boot URL", () => {}, { url: "http://127.0.0.1:49999" }],
+      ["result observation", (fixture) => {
+        const event = timeline.events.find((candidate) => candidate.eventKey.includes(":api-result:"))!;
+        event.payloadRef = { ...fixture.result, observed: "forged" };
+      }, null],
+    ];
+
+    for (const [name, arrange, bootOverride] of cases) {
+      const fixture = installApiReceipt();
+      arrange(fixture);
+      if (bootOverride) {
+        vi.mocked(getPreviewBoot).mockResolvedValueOnce({
+          id: "boot-1", workspaceId, repo: job.repo, prNumber: job.prNumber,
+          headSha, status: "ready", url: previewUrl, bootLogKey, ...bootOverride,
+        } as never);
+      }
+      const response = await POST(request(fixture.body), params);
+      expect(response.status, name).toBe(409);
+    }
+    expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("permits only absent or one exact pending API reservation to use the R7.1 preview fallback", async () => {
+    installApiReceipt();
+    timeline.events = timeline.events.slice(0, 1);
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    installApiReceipt();
+    timeline.events = timeline.events.filter((event) => !event.eventKey.includes(":api-result:"));
+    expect((await POST(request(validBody), params)).status).toBe(201);
+    vi.mocked(appendChangeRecordEvent).mockClear();
+    vi.mocked(postGithubAdvisoryReview).mockClear();
+
+    const invalid = installApiReceipt();
+    const resultEvent = timeline.events.find((event) => event.eventKey.includes(":api-result:"))!;
+    resultEvent.payloadRef = { ...invalid.result, observed: "forged" };
+    expect((await POST(request(validBody), params)).status).toBe(409);
+    expect(postGithubAdvisoryReview).not.toHaveBeenCalled();
+  });
+
+  it("gives an exact failed API receipt priority over a proven API receipt", async () => {
+    const body = installApiVerdictPriorityProof();
+    const rejected = await POST(request({ ...body, verdict: "proven", summaryLine: "ada/widgets #98 — proven" }), params);
+    expect(rejected.status).toBe(409);
+
+    const accepted = await POST(request(body), params);
+    expect(accepted.status).toBe(201);
+    expect(vi.mocked(postGithubAdvisoryReview).mock.calls[0]?.[0].summary)
+      .toContain("AgentRail exact-head verification: failed");
   });
 
   it("requires the receipt screenshot key exactly once and allows only its current boot log beside it", async () => {

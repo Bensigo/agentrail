@@ -16,6 +16,10 @@ import {
   readAcceptanceContracts,
   readChangeRecordTimelineByPr,
 } from "@agentrail/db-postgres";
+import {
+  confirmedVerificationContract,
+  parseStoredReviewJobVerificationPlan,
+} from "../../../../../../../lib/review-job-verification-plan";
 import { POST } from "./route";
 
 const SECRET = "jace-shared-secret-abc123";
@@ -105,8 +109,13 @@ const REQUEST_PLANS = [
   {
     criterionId: "AC-API",
     modality: "api",
-    status: "not_testable",
-    notTestableReason: "The R7.2 API executor is not available in this deployment.",
+    status: "planned",
+    flow: "Read the saved filter endpoint and require an OK response.",
+    apiRequest: {
+      method: "GET",
+      path: "/api/filters/saved",
+      expectedStatus: 200,
+    },
   },
 ];
 
@@ -134,6 +143,7 @@ const STORED_PAYLOAD = {
         { action: "expect_text", text: "Saved filter" },
         { action: "screenshot", label: "saved-filter-visible" },
       ],
+      apiRequest: null,
       status: "planned",
       notTestableReason: null,
     },
@@ -141,11 +151,16 @@ const STORED_PAYLOAD = {
       criterionId: "AC-API",
       criterionTextSnapshot: "The API returns the saved filter.",
       modality: "api",
-      environmentKind: null,
-      flow: null,
+      environmentKind: "isolated_preview",
+      flow: "Read the saved filter endpoint and require an OK response.",
       uiSteps: null,
-      status: "not_testable",
-      notTestableReason: "The R7.2 API executor is not available in this deployment.",
+      apiRequest: {
+        method: "GET",
+        path: "/api/filters/saved",
+        expectedStatus: 200,
+      },
+      status: "planned",
+      notTestableReason: null,
     },
   ],
 };
@@ -297,15 +312,23 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
   });
 
-  it("requires one valid plan per confirmed criterion and fails closed on unsupported executors", async () => {
+  it("requires one valid plan per confirmed criterion and fails closed on malformed descriptors or unsupported executors", async () => {
     const invalidPlans = [
       [REQUEST_PLANS[0]],
       [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], criterionId: "AC-UI" }],
       [{ ...REQUEST_PLANS[0], flow: "" }, REQUEST_PLANS[1]],
       [{ ...REQUEST_PLANS[0], uiSteps: [{ action: "open", path: "//external" }, { action: "expect_text", text: "Saved filter" }, { action: "screenshot", label: "proof" }] }, REQUEST_PLANS[1]],
       [{ ...REQUEST_PLANS[0], uiSteps: [{ action: "open", path: "/filters" }, { action: "screenshot", label: "too early" }, { action: "expect_text", text: "Saved filter" }] }, REQUEST_PLANS[1]],
-      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], notTestableReason: "" }],
-      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], status: "planned", flow: "GET /filters" }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, method: "POST" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, path: "https://other.example/api" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, path: "/api/../admin" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, path: "/api%2f%2e%2e%2fadmin" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, path: "/api/filters?scope=all" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, headers: { Authorization: "Bearer secret" } } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, body: "mutation payload" } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, expectedStatus: 99 } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], apiRequest: { ...REQUEST_PLANS[1].apiRequest, expectedStatus: 600 } }],
+      [REQUEST_PLANS[0], { ...REQUEST_PLANS[1], modality: "job" }],
       [{
         criterionId: "AC-UI",
         modality: "api",
@@ -323,6 +346,27 @@ describe("POST /api/v1/runner/review-jobs/[jobId]/verification-plan", () => {
     }
 
     expect(appendChangeRecordEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps a legacy planned API payload without a descriptor readable but non-executable", () => {
+    const legacyPayload = {
+      ...STORED_PAYLOAD,
+      plans: STORED_PAYLOAD.plans.map((plan) =>
+        plan.criterionId === "AC-API"
+          ? Object.fromEntries(Object.entries(plan).filter(([key]) => key !== "apiRequest"))
+          : plan
+      ),
+    };
+    const contract = confirmedVerificationContract([CONTRACT]);
+    expect(contract).not.toBeNull();
+    const parsed = parseStoredReviewJobVerificationPlan({
+      payload: legacyPayload,
+      job: RUNNING_JOB,
+      recordId: RECORD.id,
+      contract: contract!,
+    });
+
+    expect(parsed?.plans.find((plan) => plan.criterionId === "AC-API")?.apiRequest).toBeNull();
   });
 
   it("persists one immutable exact-job plan event in confirmed criterion order", async () => {

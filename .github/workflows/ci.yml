@@ -130,8 +130,8 @@ jobs:
       # at the real Console routes. The latter asserts that a review-job session
       # can persist only a full server-bound criterion plan, enqueue only that
       # job's PR head, attest the R7.1 environment fallback plus R7.2's
-      # deterministic planned-UI screenshot receipt before an exact-commit
-      # GitHub write, and reject the generic posting route as a bypass.
+      # deterministic UI screenshot and API status-card receipts before an
+      # exact-commit GitHub write, and reject the generic posting route.
       - name: console — Jace inbound and exact-head review routes
         working-directory: apps/console
         run: >-
@@ -141,4 +141,5 @@ jobs:
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           lib/github-advisory-review.test.ts
+          lib/review-job-api-execution.test.ts
           lib/review-job-ui-execution.test.ts

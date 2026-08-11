@@ -175,12 +175,134 @@ export type AcceptanceFinalDecisionEnvelope =
         | "invalid_decision_custody";
     };
 
+type AcceptanceReviewCycleBinding = {
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  reviewJobId: string;
+  reviewVerdict: "proven" | "failed" | "not_proven" | "not_testable";
+  postedReviewUrl: string;
+  postedAttestationEventId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+};
+
+type AcceptanceReviewEffortReceipt = {
+  eventId: string;
+  eventKey: string;
+  minutes: number;
+  source: "human_input";
+  recordedBy: string;
+  recordedRole: "owner" | "admin";
+  recordedAt: string;
+};
+
+type AcceptanceReviewDecisionReceipt = {
+  eventId: string;
+  eventKey: string;
+  decision: AcceptancePrDecision;
+  rationale: string | null;
+  decidedBy: string;
+  decidedRole: "owner" | "admin";
+  decidedAt: string;
+};
+
+type AcceptanceHistoricalPostMergeOutcome =
+  | {
+      kind: "deployed";
+      revisionSha: string;
+      environment: string;
+      deploymentReference: string;
+    }
+  | { kind: "incident"; revisionSha: string; incidentReference: string }
+  | {
+      kind: "reverted";
+      revertedSha: string;
+      revertSha: string;
+      revertReference: string;
+    };
+
+type AcceptanceReviewCycle = {
+  binding: AcceptanceReviewCycleBinding;
+  current: boolean;
+  reviewedAt: string;
+  effort: { kind: "known"; value: AcceptanceReviewEffortReceipt } | { kind: "unknown" };
+  decision: { kind: "known"; value: AcceptanceReviewDecisionReceipt } | { kind: "unknown" };
+  signedMerge:
+    | {
+        kind: "known";
+        value: {
+          mergeEventId: string;
+          deliveryEventId: string;
+          mergeSha: string;
+          mergedAt: string;
+          decisionAlignment: "aligned" | "decision_conflicts_merge" | "not_recorded";
+        };
+      }
+    | { kind: "unknown" };
+  postMergeOutcomes:
+    | {
+        kind: "known";
+        values: Array<{
+          eventId: string;
+          eventKey: string;
+          outcome: AcceptanceHistoricalPostMergeOutcome;
+          recordedBy: string;
+          recordedAt: string;
+        }>;
+      }
+    | { kind: "unknown" };
+};
+
+type ReviewMetricsCountSummary = { eligible: number; known: number; unknown: number };
+
+export type AcceptancePrReviewMetricsEnvelope =
+  | {
+      kind: "record";
+      workspaceId: string;
+      recordId: string;
+      repo: string;
+      prNumber: number;
+      currentCycle: null | {
+        headSha: string;
+        headCycleId: string;
+        authorityGeneration: number;
+      };
+      cycles: AcceptanceReviewCycle[];
+      summary: {
+        reviewEffort: ReviewMetricsCountSummary & {
+          totalMinutes: number | null;
+          averageMinutes: number | null;
+        };
+        decisions: ReviewMetricsCountSummary;
+        signedMerges: ReviewMetricsCountSummary;
+        postMergeOutcomes: ReviewMetricsCountSummary;
+      };
+    }
+  | { kind: "not_found" }
+  | {
+      kind: "unavailable";
+      reason:
+        | "record_not_attached"
+        | "invalid_record_custody"
+        | "confirmed_contract_unavailable"
+        | "invalid_review_custody"
+        | "invalid_effort_custody"
+        | "invalid_decision_custody"
+        | "invalid_merge_custody"
+        | "invalid_post_merge_custody";
+    };
+
 type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
   correctionPackets: AcceptanceCorrectionPacketsEnvelope;
   finalDecision: AcceptanceFinalDecisionEnvelope;
+  reviewMetrics: AcceptancePrReviewMetricsEnvelope;
   canRecordFinalDecision: boolean;
+  canRecordReviewEffort: boolean;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -499,8 +621,271 @@ export function isFinalDecisionEnvelope(value: unknown): value is AcceptanceFina
     && isIsoTimestamp(decision.decidedAt);
 }
 
+function isUserActor(value: unknown): value is string {
+  return typeof value === "string"
+    && /^user:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isReviewCycleBinding(value: unknown): value is AcceptanceReviewCycleBinding {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "workspaceId", "recordId", "repo", "prNumber", "headSha", "headCycleId",
+    "reviewJobId", "reviewVerdict", "postedReviewUrl", "postedAttestationEventId",
+    "acceptanceContract",
+  ])) return false;
+  return typeof value.workspaceId === "string" && UUID.test(value.workspaceId)
+    && typeof value.recordId === "string" && UUID.test(value.recordId)
+    && isSafeRepo(value.repo)
+    && isPositiveInteger(value.prNumber)
+    && typeof value.headSha === "string" && SHA1.test(value.headSha)
+    && typeof value.headCycleId === "string" && UUID.test(value.headCycleId)
+    && typeof value.reviewJobId === "string" && UUID.test(value.reviewJobId)
+    && value.headCycleId === value.reviewJobId
+    && (value.reviewVerdict === "proven" || value.reviewVerdict === "failed"
+      || value.reviewVerdict === "not_proven" || value.reviewVerdict === "not_testable")
+    && isGithubReviewUrl(value.postedReviewUrl, value.repo, value.prNumber)
+    && typeof value.postedAttestationEventId === "string"
+    && UUID.test(value.postedAttestationEventId)
+    && isObject(value.acceptanceContract)
+    && hasExactKeys(value.acceptanceContract, ["id", "version", "sha256"])
+    && typeof value.acceptanceContract.id === "string" && UUID.test(value.acceptanceContract.id)
+    && isPositiveInteger(value.acceptanceContract.version)
+    && typeof value.acceptanceContract.sha256 === "string"
+    && SHA256.test(value.acceptanceContract.sha256);
+}
+
+function isReviewEffortEvidence(value: unknown, reviewJobId: string): value is AcceptanceReviewCycle["effort"] {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  if (value.kind !== "known" || !hasExactKeys(value, ["kind", "value"])
+    || !isObject(value.value) || !hasExactKeys(value.value, [
+      "eventId", "eventKey", "minutes", "source", "recordedBy", "recordedRole", "recordedAt",
+    ])) return false;
+  const receipt = value.value;
+  return typeof receipt.eventId === "string" && UUID.test(receipt.eventId)
+    && receipt.eventKey === `acceptance-pr-review-effort:${reviewJobId}`
+    && Number.isSafeInteger(receipt.minutes) && (receipt.minutes as number) >= 1
+    && (receipt.minutes as number) <= 1_440
+    && receipt.source === "human_input"
+    && isUserActor(receipt.recordedBy)
+    && (receipt.recordedRole === "owner" || receipt.recordedRole === "admin")
+    && isIsoTimestamp(receipt.recordedAt);
+}
+
+function isReviewDecisionEvidence(
+  value: unknown,
+  binding: AcceptanceReviewCycleBinding,
+): value is AcceptanceReviewCycle["decision"] {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  if (value.kind !== "known" || !hasExactKeys(value, ["kind", "value"])
+    || !isObject(value.value) || !hasExactKeys(value.value, [
+      "eventId", "eventKey", "decision", "rationale", "decidedBy", "decidedRole", "decidedAt",
+    ])) return false;
+  const decision = value.value;
+  return typeof decision.eventId === "string" && UUID.test(decision.eventId)
+    && decision.eventKey === `acceptance-pr-decision:${binding.reviewJobId}`
+    && isAcceptancePrDecision(decision.decision)
+    && (decision.decision !== "approved" || binding.reviewVerdict === "proven")
+    && isDecisionRationale(decision.rationale)
+    && (decision.decision !== "approved_with_exception" || decision.rationale !== null)
+    && isUserActor(decision.decidedBy)
+    && (decision.decidedRole === "owner" || decision.decidedRole === "admin")
+    && isIsoTimestamp(decision.decidedAt);
+}
+
+function isSignedMergeEvidence(value: unknown): value is AcceptanceReviewCycle["signedMerge"] {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  if (value.kind !== "known" || !hasExactKeys(value, ["kind", "value"])
+    || !isObject(value.value) || !hasExactKeys(value.value, [
+      "mergeEventId", "deliveryEventId", "mergeSha", "mergedAt", "decisionAlignment",
+    ])) return false;
+  const receipt = value.value;
+  return typeof receipt.mergeEventId === "string" && UUID.test(receipt.mergeEventId)
+    && typeof receipt.deliveryEventId === "string" && UUID.test(receipt.deliveryEventId)
+    && typeof receipt.mergeSha === "string" && SHA1.test(receipt.mergeSha)
+    && isIsoTimestamp(receipt.mergedAt)
+    && (receipt.decisionAlignment === "aligned"
+      || receipt.decisionAlignment === "decision_conflicts_merge"
+      || receipt.decisionAlignment === "not_recorded");
+}
+
+function isPostMergeOutcomesEvidence(value: unknown): value is AcceptanceReviewCycle["postMergeOutcomes"] {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  if (value.kind !== "known" || !hasExactKeys(value, ["kind", "values"])
+    || !Array.isArray(value.values) || value.values.length === 0) return false;
+  const eventIds = new Set<string>();
+  const eventKeys = new Set<string>();
+  return value.values.every((event) => {
+    if (!isObject(event) || !hasExactKeys(event, [
+      "eventId", "eventKey", "outcome", "recordedBy", "recordedAt",
+    ]) || typeof event.eventId !== "string" || !UUID.test(event.eventId)
+      || eventIds.has(event.eventId) || typeof event.eventKey !== "string"
+      || !isPostMergeOutcome(event.outcome)
+      || !isBoundedReference(event.recordedBy, 256) || !isIsoTimestamp(event.recordedAt)) return false;
+    const expectedEventKey = event.outcome.kind === "deployed"
+      ? `acceptance-post-merge:deployed:${event.outcome.deploymentReference}`
+      : event.outcome.kind === "incident"
+        ? `acceptance-post-merge:incident:${event.outcome.incidentReference}`
+        : `acceptance-post-merge:reverted:${event.outcome.revertSha}`;
+    if (event.eventKey !== expectedEventKey || eventKeys.has(event.eventKey)) return false;
+    eventIds.add(event.eventId);
+    eventKeys.add(event.eventKey);
+    return true;
+  });
+}
+
+function isBoundedReference(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max
+    && value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function isPostMergeOutcome(value: unknown): value is AcceptanceHistoricalPostMergeOutcome {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  const gitSha = (candidate: unknown) => typeof candidate === "string"
+    && /^[0-9a-f]{7,64}$/iu.test(candidate);
+  if (value.kind === "deployed") {
+    return hasExactKeys(value, ["kind", "revisionSha", "environment", "deploymentReference"])
+      && gitSha(value.revisionSha) && isBoundedReference(value.environment, 160)
+      && isBoundedReference(value.deploymentReference, 1_024);
+  }
+  if (value.kind === "incident") {
+    return hasExactKeys(value, ["kind", "revisionSha", "incidentReference"])
+      && gitSha(value.revisionSha) && isBoundedReference(value.incidentReference, 1_024);
+  }
+  if (value.kind === "reverted") {
+    return hasExactKeys(value, ["kind", "revertedSha", "revertSha", "revertReference"])
+      && gitSha(value.revertedSha) && gitSha(value.revertSha)
+      && isBoundedReference(value.revertReference, 1_024);
+  }
+  return false;
+}
+
+function isReviewMetricsCountSummary(value: unknown): value is ReviewMetricsCountSummary {
+  return isObject(value) && hasExactKeys(value, ["eligible", "known", "unknown"])
+    && isNonNegativeInteger(value.eligible) && isNonNegativeInteger(value.known)
+    && isNonNegativeInteger(value.unknown)
+    && value.eligible === (value.known as number) + (value.unknown as number);
+}
+
+export function isReviewMetricsEnvelope(value: unknown): value is AcceptancePrReviewMetricsEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found") return hasExactKeys(value, ["kind"]);
+  if (value.kind === "unavailable") {
+    return hasExactKeys(value, ["kind", "reason"]) && (
+      value.reason === "record_not_attached"
+      || value.reason === "invalid_record_custody"
+      || value.reason === "confirmed_contract_unavailable"
+      || value.reason === "invalid_review_custody"
+      || value.reason === "invalid_effort_custody"
+      || value.reason === "invalid_decision_custody"
+      || value.reason === "invalid_merge_custody"
+      || value.reason === "invalid_post_merge_custody"
+    );
+  }
+  if (value.kind !== "record" || !hasExactKeys(value, [
+    "kind", "workspaceId", "recordId", "repo", "prNumber", "currentCycle", "cycles", "summary",
+  ]) || typeof value.workspaceId !== "string" || !UUID.test(value.workspaceId)
+    || typeof value.recordId !== "string" || !UUID.test(value.recordId)
+    || !isSafeRepo(value.repo) || !isPositiveInteger(value.prNumber)
+    || !Array.isArray(value.cycles) || !isObject(value.summary)
+    || !hasExactKeys(value.summary, ["reviewEffort", "decisions", "signedMerges", "postMergeOutcomes"])) {
+    return false;
+  }
+
+  if (value.currentCycle !== null && (!isObject(value.currentCycle)
+    || !hasExactKeys(value.currentCycle, ["headSha", "headCycleId", "authorityGeneration"])
+    || typeof value.currentCycle.headSha !== "string" || !SHA1.test(value.currentCycle.headSha)
+    || typeof value.currentCycle.headCycleId !== "string" || !UUID.test(value.currentCycle.headCycleId)
+    || !isNonNegativeInteger(value.currentCycle.authorityGeneration))) return false;
+
+  const cycles = value.cycles as unknown[];
+  let priorSortKey: string | null = null;
+  let currentCount = 0;
+  const cycleIds = new Set<string>();
+  const validatedCycles: AcceptanceReviewCycle[] = [];
+  for (const candidate of cycles) {
+    if (!isObject(candidate) || !hasExactKeys(candidate, [
+      "binding", "current", "reviewedAt", "effort", "decision", "signedMerge", "postMergeOutcomes",
+    ]) || !isReviewCycleBinding(candidate.binding) || typeof candidate.current !== "boolean"
+      || !isIsoTimestamp(candidate.reviewedAt)
+      || !isReviewEffortEvidence(candidate.effort, candidate.binding.reviewJobId)
+      || !isReviewDecisionEvidence(candidate.decision, candidate.binding)
+      || !isSignedMergeEvidence(candidate.signedMerge)
+      || !isPostMergeOutcomesEvidence(candidate.postMergeOutcomes)
+      || (candidate.signedMerge.kind === "unknown" && candidate.postMergeOutcomes.kind !== "unknown")
+      || candidate.binding.workspaceId !== value.workspaceId
+      || candidate.binding.recordId !== value.recordId
+      || candidate.binding.repo !== value.repo
+      || candidate.binding.prNumber !== value.prNumber
+      || cycleIds.has(candidate.binding.headCycleId)) return false;
+    const sortKey = `${candidate.reviewedAt}:${candidate.binding.headCycleId}`;
+    if (priorSortKey !== null && priorSortKey > sortKey) return false;
+    priorSortKey = sortKey;
+    cycleIds.add(candidate.binding.headCycleId);
+    const matchesCurrent = value.currentCycle !== null
+      && candidate.binding.headSha === value.currentCycle.headSha
+      && candidate.binding.headCycleId === value.currentCycle.headCycleId;
+    if (candidate.current !== matchesCurrent) return false;
+    if (candidate.current) {
+      currentCount += 1;
+    }
+    validatedCycles.push(candidate as AcceptanceReviewCycle);
+  }
+  if ((value.currentCycle === null && currentCount !== 0) || currentCount > 1) return false;
+
+  const reviewEffort = value.summary.reviewEffort;
+  const decisions = value.summary.decisions;
+  const signedMerges = value.summary.signedMerges;
+  const postMergeOutcomes = value.summary.postMergeOutcomes;
+  if (!isObject(reviewEffort) || !hasExactKeys(reviewEffort, [
+    "eligible", "known", "unknown", "totalMinutes", "averageMinutes",
+  ]) || !isNonNegativeInteger(reviewEffort.eligible)
+    || !isNonNegativeInteger(reviewEffort.known) || !isNonNegativeInteger(reviewEffort.unknown)
+    || reviewEffort.eligible !== (reviewEffort.known as number) + (reviewEffort.unknown as number)
+    || !isReviewMetricsCountSummary(decisions)
+    || !isReviewMetricsCountSummary(signedMerges)
+    || !isReviewMetricsCountSummary(postMergeOutcomes)) return false;
+
+  const effortValues = validatedCycles.flatMap((cycle) =>
+    cycle.effort.kind === "known" ? [cycle.effort.value.minutes] : []);
+  const expectedCounts = {
+    reviewEffort: effortValues.length,
+    decisions: validatedCycles.filter((cycle) => cycle.decision.kind === "known").length,
+    signedMerges: validatedCycles.filter((cycle) => cycle.signedMerge.kind === "known").length,
+    postMergeOutcomes: validatedCycles.filter((cycle) =>
+      cycle.signedMerge.kind === "known" && cycle.postMergeOutcomes.kind === "known").length,
+  };
+  if (reviewEffort.eligible !== validatedCycles.length
+    || reviewEffort.known !== expectedCounts.reviewEffort
+    || reviewEffort.unknown !== validatedCycles.length - expectedCounts.reviewEffort
+    || decisions.eligible !== validatedCycles.length || decisions.known !== expectedCounts.decisions
+    || decisions.unknown !== validatedCycles.length - expectedCounts.decisions
+    || signedMerges.eligible !== validatedCycles.length || signedMerges.known !== expectedCounts.signedMerges
+    || signedMerges.unknown !== validatedCycles.length - expectedCounts.signedMerges
+    || postMergeOutcomes.eligible !== expectedCounts.signedMerges
+    || postMergeOutcomes.known !== expectedCounts.postMergeOutcomes
+    || postMergeOutcomes.unknown !== expectedCounts.signedMerges - expectedCounts.postMergeOutcomes) return false;
+
+  if (effortValues.length === 0) {
+    return reviewEffort.totalMinutes === null && reviewEffort.averageMinutes === null;
+  }
+  const totalMinutes = effortValues.reduce((sum, minutes) => sum + minutes, 0);
+  return reviewEffort.totalMinutes === totalMinutes
+    && reviewEffort.averageMinutes === totalMinutes / effortValues.length;
+}
+
 export function changeRecordApiPath(workspaceId: string, recordId: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
+}
+
+export function reviewEffortPatchBody(bindingId: string, minutes: number): {
+  action: "record_pr_review_effort";
+  bindingId: string;
+  minutes: number;
+} {
+  return { action: "record_pr_review_effort", bindingId, minutes };
 }
 
 export function finalDecisionPatchBody(
@@ -989,6 +1374,181 @@ export function FinalDecisionPanel({
   );
 }
 
+function currentEffortCycle(
+  reviewMetrics: AcceptancePrReviewMetricsEnvelope,
+  finalDecision: AcceptanceFinalDecisionEnvelope,
+): AcceptanceReviewCycle | null {
+  if (reviewMetrics.kind !== "record" || reviewMetrics.currentCycle === null
+    || finalDecision.kind !== "current") return null;
+  const cycle = reviewMetrics.cycles.find((candidate) => candidate.current) ?? null;
+  if (!cycle) return null;
+  const decisionBinding = finalDecision.binding;
+  return cycle.binding.workspaceId === decisionBinding.workspaceId
+    && cycle.binding.recordId === decisionBinding.recordId
+    && cycle.binding.repo === decisionBinding.repo
+    && cycle.binding.prNumber === decisionBinding.prNumber
+    && cycle.binding.headSha === decisionBinding.headSha
+    && cycle.binding.headCycleId === decisionBinding.headCycleId
+    && cycle.binding.reviewJobId === decisionBinding.reviewJobId
+    ? cycle
+    : null;
+}
+
+function evidenceCountCopy(summary: ReviewMetricsCountSummary): string {
+  return `${summary.known}/${summary.eligible} recorded · ${summary.unknown}/${summary.eligible} unknown`;
+}
+
+export function ReviewMetricsPanel({
+  reviewMetrics,
+  finalDecision,
+  canRecordReviewEffort,
+  onRecordEffort,
+  recordingEffort,
+  effortError,
+  effortMinutes,
+  onEffortMinutesChange,
+}: {
+  reviewMetrics: AcceptancePrReviewMetricsEnvelope;
+  finalDecision: AcceptanceFinalDecisionEnvelope;
+  canRecordReviewEffort: boolean;
+  onRecordEffort: (minutes: number) => void;
+  recordingEffort: boolean;
+  effortError: string | null;
+  effortMinutes: string;
+  onEffortMinutesChange: (value: string) => void;
+}) {
+  if (reviewMetrics.kind !== "record") {
+    const message = reviewMetrics.kind === "not_found"
+      ? "No Acceptance Record metrics were found."
+      : "Review metrics could not be validated, so no historical cycle summary is shown.";
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          PR review metrics
+        </h2>
+        <p className="mt-3 text-sm text-[var(--gray-09)]">{message}</p>
+      </section>
+    );
+  }
+
+  const currentCycle = currentEffortCycle(reviewMetrics, finalDecision);
+  const mayRecordCurrentEffort = canRecordReviewEffort
+    && currentCycle?.effort.kind === "unknown";
+  const parsedMinutes = /^\d+$/u.test(effortMinutes) ? Number(effortMinutes) : null;
+  const validMinutes = parsedMinutes !== null && Number.isSafeInteger(parsedMinutes)
+    && parsedMinutes >= 1 && parsedMinutes <= 1_440;
+  const { summary } = reviewMetrics;
+
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          PR review metrics
+        </h2>
+        <p className="mt-2 text-xs text-[var(--gray-09)]">
+          Historical exact-head cycles. Unknown means no receipt was recorded; it does not mean 0 minutes.
+        </p>
+      </div>
+      <div className="space-y-4 px-4 py-4">
+        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          <CorrectionDatum label="Review effort">
+            {evidenceCountCopy(summary.reviewEffort)}
+            {summary.reviewEffort.known > 0
+              ? ` · ${summary.reviewEffort.totalMinutes} total minutes · ${summary.reviewEffort.averageMinutes} average across recorded cycles`
+              : " · no recorded-minute average"}
+          </CorrectionDatum>
+          <CorrectionDatum label="Human decisions">{evidenceCountCopy(summary.decisions)}</CorrectionDatum>
+          <CorrectionDatum label="Signed merges">{evidenceCountCopy(summary.signedMerges)}</CorrectionDatum>
+          <CorrectionDatum label="Post-merge outcomes">
+            {evidenceCountCopy(summary.postMergeOutcomes)}
+          </CorrectionDatum>
+        </dl>
+
+        {reviewMetrics.cycles.length === 0 ? (
+          <p className="text-sm text-[var(--gray-09)]">No attested review cycles are recorded.</p>
+        ) : (
+          <ol className="space-y-2">
+            {reviewMetrics.cycles.map((cycle) => (
+              <li
+                key={cycle.binding.headCycleId}
+                className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-medium text-[var(--gray-12)]">
+                    {cycle.current ? "Current exact-head cycle" : "Historical exact-head cycle"}
+                  </p>
+                  <time className="text-[var(--gray-09)]" dateTime={cycle.reviewedAt}>
+                    {formatChangeRecordDate(cycle.reviewedAt)}
+                  </time>
+                </div>
+                <dl className="mt-3 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                  <CorrectionDatum label="Exact head" mono>{cycle.binding.headSha}</CorrectionDatum>
+                  <CorrectionDatum label="Head cycle" mono>{cycle.binding.headCycleId}</CorrectionDatum>
+                  <CorrectionDatum label="Review effort">
+                    {cycle.effort.kind === "known"
+                      ? `Recorded: ${cycle.effort.value.minutes} whole minutes`
+                      : "Unknown — not recorded; not zero"}
+                  </CorrectionDatum>
+                  <CorrectionDatum label="Human decision">
+                    {cycle.decision.kind === "known"
+                      ? `Recorded: ${finalDecisionLabel(cycle.decision.value.decision)}`
+                      : "Unknown — not recorded"}
+                  </CorrectionDatum>
+                  <CorrectionDatum label="Signed merge">
+                    {cycle.signedMerge.kind === "known"
+                      ? `Recorded: ${cycle.signedMerge.value.decisionAlignment}`
+                      : "Unknown — not recorded"}
+                  </CorrectionDatum>
+                  <CorrectionDatum label="Post-merge outcomes">
+                    {cycle.postMergeOutcomes.kind === "known"
+                      ? `Recorded: ${cycle.postMergeOutcomes.values.map((event) => event.outcome.kind).join(", ")}`
+                      : "Unknown — not recorded"}
+                  </CorrectionDatum>
+                </dl>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {mayRecordCurrentEffort ? (
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+            <label
+              className="block text-xs font-medium text-[var(--gray-12)]"
+              htmlFor={`review-effort-${currentCycle.binding.headCycleId}`}
+            >
+              Current cycle review effort (whole minutes)
+            </label>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                id={`review-effort-${currentCycle.binding.headCycleId}`}
+                type="number"
+                min={1}
+                max={1_440}
+                step={1}
+                value={effortMinutes}
+                onChange={(event) => onEffortMinutesChange(event.target.value)}
+                className="w-32 rounded border border-[var(--gray-06)] bg-[var(--gray-01)] px-2 py-1.5 text-xs text-[var(--gray-12)]"
+              />
+              <button
+                type="button"
+                disabled={recordingEffort || !validMinutes}
+                onClick={() => validMinutes && onRecordEffort(parsedMinutes)}
+                className="rounded bg-[var(--blue-09)] px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-60"
+              >
+                {recordingEffort ? "Recording…" : "Record review effort"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-[var(--gray-09)]">
+              One immutable human-input receipt for this exact head and cycle.
+            </p>
+          </div>
+        ) : null}
+        {effortError ? <p className="text-sm text-[var(--red-11)]">{effortError}</p> : null}
+      </div>
+    </section>
+  );
+}
+
 export function LifecycleTimeline({ events }: { events: ChangeRecordEvent[] }) {
   return (
     <section>
@@ -1049,6 +1609,9 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [deciding, setDeciding] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [exceptionRationale, setExceptionRationale] = useState("");
+  const [recordingEffort, setRecordingEffort] = useState(false);
+  const [effortError, setEffortError] = useState<string | null>(null);
+  const [effortMinutes, setEffortMinutes] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1067,7 +1630,9 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         if (!body.record || !Array.isArray(body.events)
           || !isCorrectionPacketsEnvelope(body.correctionPackets)
           || !isFinalDecisionEnvelope(body.finalDecision)
-          || typeof body.canRecordFinalDecision !== "boolean") {
+          || !isReviewMetricsEnvelope(body.reviewMetrics)
+          || typeof body.canRecordFinalDecision !== "boolean"
+          || typeof body.canRecordReviewEffort !== "boolean") {
           throw new Error("Change record response was incomplete");
         }
         setData(body as ChangeRecordResponse);
@@ -1121,6 +1686,46 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
+  async function recordReviewEffort(minutes: number) {
+    if (!data || data.finalDecision.kind !== "current"
+      || currentEffortCycle(data.reviewMetrics, data.finalDecision)?.effort.kind !== "unknown") {
+      setEffortError("The current exact-head effort binding is no longer available");
+      return;
+    }
+    if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 1_440) {
+      setEffortError("Review effort must be 1 to 1440 whole minutes");
+      return;
+    }
+    setRecordingEffort(true);
+    setEffortError(null);
+    try {
+      const response = await fetch(changeRecordApiPath(workspaceId, recordId), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(reviewEffortPatchBody(
+          data.finalDecision.binding.bindingId,
+          minutes,
+        )),
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        kind?: string;
+        error?: string;
+        reason?: string;
+      };
+      if (!response.ok || (body.kind !== "recorded" && body.kind !== "replayed")) {
+        throw new Error(body.error ?? body.reason ?? `HTTP ${response.status}`);
+      }
+      setEffortMinutes("");
+      setReloadVersion((current) => current + 1);
+    } catch (caught) {
+      setEffortError(
+        caught instanceof Error ? caught.message : "Failed to record review effort",
+      );
+    } finally {
+      setRecordingEffort(false);
+    }
+  }
+
   const backHref = `/dashboard/${workspaceId}/work`;
   if (loading) {
     return (
@@ -1169,6 +1774,16 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         decisionError={decisionError}
         exceptionRationale={exceptionRationale}
         onExceptionRationaleChange={setExceptionRationale}
+      />
+      <ReviewMetricsPanel
+        reviewMetrics={data.reviewMetrics}
+        finalDecision={data.finalDecision}
+        canRecordReviewEffort={data.canRecordReviewEffort}
+        onRecordEffort={recordReviewEffort}
+        recordingEffort={recordingEffort}
+        effortError={effortError}
+        effortMinutes={effortMinutes}
+        onEffortMinutesChange={setEffortMinutes}
       />
       <LifecycleTimeline events={data.events} />
     </div>

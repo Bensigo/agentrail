@@ -6,21 +6,27 @@ vi.mock("@agentrail/auth", () => ({
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   AcceptancePrDecisionConflictError: class AcceptancePrDecisionConflictError extends Error {},
+  AcceptancePrReviewEffortConflictError: class AcceptancePrReviewEffortConflictError extends Error {},
   getWorkspaceMembership: vi.fn(),
+  readAcceptancePrReviewMetrics: vi.fn(),
   readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
   readChangeRecordTimeline: vi.fn(),
   recordAcceptancePrDecision: vi.fn(),
+  recordAcceptancePrReviewEffort: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   AcceptancePrDecisionConflictError,
+  AcceptancePrReviewEffortConflictError,
   getWorkspaceMembership,
+  readAcceptancePrReviewMetrics,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
+  recordAcceptancePrReviewEffort,
 } from "@agentrail/db-postgres";
 import { GET, PATCH } from "./route";
 
@@ -40,6 +46,8 @@ const DECIDED_AT = new Date("2026-08-03T12:06:00.000Z");
 const DECISION_EVENT_ID = "00000000-0000-4000-8000-000000000077";
 const POSTED_ATTESTATION_EVENT_ID = "00000000-0000-4000-8000-000000000066";
 const DECISION_BINDING_ID = "00000000-0000-4000-8000-000000000055";
+const EFFORT_EVENT_ID = "00000000-0000-4000-8000-000000000054";
+const EFFORT_AT = new Date("2026-08-03T12:07:00.000Z");
 
 const currentCorrectionPackets = {
   kind: "current" as const,
@@ -113,6 +121,52 @@ const currentFinalDecision = {
     },
   },
   decision: null,
+};
+
+const currentReviewMetrics = {
+  kind: "record" as const,
+  workspaceId: WS,
+  recordId: RECORD,
+  repo: "ada/widgets",
+  prNumber: 98,
+  currentCycle: {
+    headSha: HEAD,
+    headCycleId: CYCLE,
+    authorityGeneration: 1,
+  },
+  cycles: [{
+    binding: {
+      workspaceId: WS,
+      recordId: RECORD,
+      repo: "ada/widgets",
+      prNumber: 98,
+      headSha: HEAD,
+      headCycleId: CYCLE,
+      reviewJobId: CYCLE,
+      reviewVerdict: "failed" as const,
+      postedReviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-5",
+      postedAttestationEventId: POSTED_ATTESTATION_EVENT_ID,
+      acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+    },
+    current: true,
+    reviewedAt: REVIEW_AT,
+    effort: { kind: "unknown" as const },
+    decision: { kind: "unknown" as const },
+    signedMerge: { kind: "unknown" as const },
+    postMergeOutcomes: { kind: "unknown" as const },
+  }],
+  summary: {
+    reviewEffort: {
+      eligible: 1,
+      known: 0,
+      unknown: 1,
+      totalMinutes: null,
+      averageMinutes: null,
+    },
+    decisions: { eligible: 1, known: 0, unknown: 1 },
+    signedMerges: { eligible: 1, known: 0, unknown: 1 },
+    postMergeOutcomes: { eligible: 0, known: 0, unknown: 0 },
+  },
 };
 
 function req(workspaceId = WS, recordId = RECORD): NextRequest {
@@ -191,6 +245,7 @@ beforeEach(() => {
   vi.mocked(readChangeRecordTimeline).mockResolvedValue(timeline as never);
   vi.mocked(readCurrentAcceptanceCorrectionPackets).mockResolvedValue(currentCorrectionPackets as never);
   vi.mocked(readCurrentAcceptancePrDecision).mockResolvedValue(currentFinalDecision as never);
+  vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue(currentReviewMetrics as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
     kind: "recorded",
     binding: currentFinalDecision.binding,
@@ -202,6 +257,19 @@ beforeEach(() => {
       decidedBy: `user:${USER}`,
       decidedRole: "owner",
       decidedAt: DECIDED_AT,
+    },
+  } as never);
+  vi.mocked(recordAcceptancePrReviewEffort).mockResolvedValue({
+    kind: "recorded",
+    binding: currentFinalDecision.binding,
+    effort: {
+      eventId: EFFORT_EVENT_ID,
+      eventKey: `acceptance-pr-review-effort:${CYCLE}`,
+      minutes: 37,
+      source: "human_input",
+      recordedBy: `user:${USER}`,
+      recordedRole: "owner",
+      recordedAt: EFFORT_AT,
     },
   } as never);
 });
@@ -217,6 +285,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -229,6 +298,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readChangeRecordTimeline).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -243,6 +313,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     });
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -306,7 +377,15 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       ],
       correctionPackets: currentCorrectionPackets,
       finalDecision: currentFinalDecision,
+      reviewMetrics: {
+        ...currentReviewMetrics,
+        cycles: [{
+          ...currentReviewMetrics.cycles[0],
+          reviewedAt: REVIEW_AT.toISOString(),
+        }],
+      },
       canRecordFinalDecision: false,
+      canRecordReviewEffort: false,
     });
     expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
       workspaceId: WS,
@@ -316,15 +395,21 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       workspaceId: WS,
       recordId: RECORD,
     });
+    expect(readAcceptancePrReviewMetrics).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
   });
 
   it("returns owner/admin decision capability without widening member read access", async () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "admin" } as never);
 
     const res = await GET(req(), { params: params() });
+    const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect((await res.json()).canRecordFinalDecision).toBe(true);
+    expect(body.canRecordFinalDecision).toBe(true);
+    expect(body.canRecordReviewEffort).toBe(true);
   });
 
   it("downgrades a current packet set when the separately read Record head cycle changed", async () => {
@@ -371,6 +456,127 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
     expect(res.status).toBe(200);
     expect((await res.json()).finalDecision).toEqual({ kind: "not_current" });
+  });
+
+  it("downgrades review metrics when their current cycle races the separately read Record head", async () => {
+    vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue({
+      ...currentReviewMetrics,
+      currentCycle: {
+        headSha: "e".repeat(40),
+        headCycleId: "00000000-0000-4000-8000-000000000100",
+        authorityGeneration: 2,
+      },
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).reviewMetrics).toEqual({
+      kind: "unavailable",
+      reason: "invalid_review_custody",
+    });
+  });
+
+  it("downgrades metrics when current-head authority and the metrics current-cycle marker disagree", async () => {
+    vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue({
+      ...currentReviewMetrics,
+      currentCycle: null,
+      cycles: [{ ...currentReviewMetrics.cycles[0], current: false }],
+    } as never);
+
+    const missingCurrent = await GET(req(), { params: params() });
+    expect((await missingCurrent.json()).reviewMetrics).toEqual({
+      kind: "unavailable",
+      reason: "invalid_review_custody",
+    });
+
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      record: { ...timeline.record, currentPrHeadAuthoritative: false },
+    } as never);
+    vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue(currentReviewMetrics as never);
+
+    const unexpectedCurrent = await GET(req(), { params: params() });
+    expect((await unexpectedCurrent.json()).reviewMetrics).toEqual({
+      kind: "unavailable",
+      reason: "invalid_review_custody",
+    });
+  });
+
+  it("serializes every historical review-metrics timestamp without inferring unknown effort", async () => {
+    vi.mocked(readAcceptancePrReviewMetrics).mockResolvedValue({
+      ...currentReviewMetrics,
+      cycles: [{
+        ...currentReviewMetrics.cycles[0],
+        effort: {
+          kind: "known",
+          value: {
+            eventId: EFFORT_EVENT_ID,
+            eventKey: `acceptance-pr-review-effort:${CYCLE}`,
+            minutes: 37,
+            source: "human_input",
+            recordedBy: `user:${USER}`,
+            recordedRole: "admin",
+            recordedAt: EFFORT_AT,
+          },
+        },
+        decision: {
+          kind: "known",
+          value: {
+            eventId: DECISION_EVENT_ID,
+            eventKey: `acceptance-pr-decision:${CYCLE}`,
+            decision: "changes_requested",
+            rationale: null,
+            decidedBy: `user:${USER}`,
+            decidedRole: "owner",
+            decidedAt: DECIDED_AT,
+          },
+        },
+        signedMerge: {
+          kind: "known",
+          value: {
+            mergeEventId: "00000000-0000-4000-8000-000000000053",
+            deliveryEventId: "00000000-0000-4000-8000-000000000052",
+            mergeSha: "b".repeat(40),
+            mergedAt: new Date("2026-08-03T12:08:00.000Z"),
+            decisionAlignment: "decision_conflicts_merge",
+          },
+        },
+        postMergeOutcomes: {
+          kind: "known",
+          values: [{
+            eventId: "00000000-0000-4000-8000-000000000051",
+            eventKey: "acceptance-post-merge:deployed:1",
+            outcome: "deployed",
+            recordedBy: `user:${USER}`,
+            recordedAt: new Date("2026-08-03T12:09:00.000Z"),
+          }],
+        },
+      }],
+      summary: {
+        ...currentReviewMetrics.summary,
+        reviewEffort: {
+          eligible: 1,
+          known: 1,
+          unknown: 0,
+          totalMinutes: 37,
+          averageMinutes: 37,
+        },
+        signedMerges: { eligible: 1, known: 1, unknown: 0 },
+        postMergeOutcomes: { eligible: 1, known: 1, unknown: 0 },
+      },
+    } as never);
+
+    const res = await GET(req(), { params: params() });
+    const body = await res.json();
+
+    expect(body.reviewMetrics.cycles[0]).toMatchObject({
+      reviewedAt: REVIEW_AT.toISOString(),
+      effort: { value: { recordedAt: EFFORT_AT.toISOString() } },
+      decision: { value: { decidedAt: DECIDED_AT.toISOString() } },
+      signedMerge: { value: { mergedAt: "2026-08-03T12:08:00.000Z" } },
+      postMergeOutcomes: { values: [{ recordedAt: "2026-08-03T12:09:00.000Z" }] },
+    });
   });
 
   it("serializes an immutable current decision timestamp and role", async () => {
@@ -428,6 +634,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     });
     expect(readCurrentAcceptanceCorrectionPackets).not.toHaveBeenCalled();
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
   });
 
   it("500 when current correction packet storage fails", async () => {
@@ -451,6 +658,15 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       error: "Failed to load change record detail",
     });
   });
+
+  it("500 when historical review-metrics storage fails", async () => {
+    vi.mocked(readAcceptancePrReviewMetrics).mockRejectedValue(new Error("db down"));
+
+    const res = await GET(req(), { params: params() });
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Failed to load change record detail" });
+  });
 });
 
 describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () => {
@@ -464,18 +680,21 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
     expect(unauthenticated.status).toBe(401);
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: "not-a-uuid" } } as never);
     const invalidActor = await PATCH(patchReq({ nope: true }), { params: params() });
     expect(invalidActor.status).toBe(401);
     expect(getWorkspaceMembership).not.toHaveBeenCalled();
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
 
     vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
     const forbidden = await PATCH(patchReq({ nope: true }), { params: params() });
     expect(forbidden.status).toBe(403);
     expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
   });
 
   it("rejects non-JSON, declared oversize, unknown decisions, and extra authority fields", async () => {
@@ -622,6 +841,118 @@ describe("PATCH /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () 
       decision: "rejected",
     }), { params: params() });
     expect(unavailable.status).toBe(503);
-    expect(JSON.stringify(await unavailable.json())).not.toContain("secret");
+    expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });
+  });
+
+  it("records whole-minute review effort using only the rendered binding and server-derived actor", async () => {
+    const response = await PATCH(patchReq({
+      action: "record_pr_review_effort",
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+    }), { params: params() });
+
+    expect(response.status).toBe(201);
+    expect(recordAcceptancePrReviewEffort).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+      recordedBy: `user:${USER}`,
+    });
+    expect(recordAcceptancePrDecision).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({
+      kind: "recorded",
+      binding: currentFinalDecision.binding,
+      effort: {
+        eventId: EFFORT_EVENT_ID,
+        eventKey: `acceptance-pr-review-effort:${CYCLE}`,
+        minutes: 37,
+        source: "human_input",
+        recordedBy: `user:${USER}`,
+        recordedRole: "owner",
+        recordedAt: EFFORT_AT.toISOString(),
+      },
+    });
+  });
+
+  it.each([
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID, minutes: 0 },
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID, minutes: 1_441 },
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID, minutes: 3.5 },
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID, minutes: "37" },
+    { action: "record_pr_review_effort", bindingId: "stale-head", minutes: 37 },
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID, minutes: 37, headSha: HEAD },
+    { action: "record_pr_review_effort", bindingId: DECISION_BINDING_ID },
+  ])("rejects invalid or authority-bearing review-effort input %#", async (body) => {
+    const response = await PATCH(patchReq(body), { params: params() });
+
+    expect(response.status).toBe(400);
+    expect(recordAcceptancePrReviewEffort).not.toHaveBeenCalled();
+  });
+
+  it("reports exact effort replay as 200 without inventing another receipt", async () => {
+    vi.mocked(recordAcceptancePrReviewEffort).mockResolvedValue({
+      kind: "replayed",
+      binding: currentFinalDecision.binding,
+      effort: {
+        eventId: EFFORT_EVENT_ID,
+        eventKey: `acceptance-pr-review-effort:${CYCLE}`,
+        minutes: 37,
+        source: "human_input",
+        recordedBy: `user:${USER}`,
+        recordedRole: "admin",
+        recordedAt: EFFORT_AT,
+      },
+    } as never);
+
+    const response = await PATCH(patchReq({
+      action: "record_pr_review_effort",
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+    }), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).kind).toBe("replayed");
+  });
+
+  it.each([
+    [{ kind: "not_found" }, 404],
+    [{ kind: "not_authorized" }, 403],
+    [{ kind: "not_current" }, 409],
+    [{ kind: "not_ready", reason: "invalid_review_custody" }, 409],
+  ] as const)("maps the closed review-effort DB result %# without inventing success", async (result, status) => {
+    vi.mocked(recordAcceptancePrReviewEffort).mockResolvedValue(result as never);
+
+    const response = await PATCH(patchReq({
+      action: "record_pr_review_effort",
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+    }), { params: params() });
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(result);
+  });
+
+  it("maps immutable effort conflicts to 409 and sanitizes storage failures", async () => {
+    vi.mocked(recordAcceptancePrReviewEffort).mockRejectedValueOnce(
+      new AcceptancePrReviewEffortConflictError(),
+    );
+    const conflict = await PATCH(patchReq({
+      action: "record_pr_review_effort",
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+    }), { params: params() });
+    expect(conflict.status).toBe(409);
+
+    vi.mocked(recordAcceptancePrReviewEffort).mockRejectedValueOnce(
+      new Error("postgres://secret@db/internal"),
+    );
+    const unavailable = await PATCH(patchReq({
+      action: "record_pr_review_effort",
+      bindingId: DECISION_BINDING_ID,
+      minutes: 37,
+    }), { params: params() });
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({ error: "Change Record action unavailable" });
   });
 });

@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   AcceptancePrDecisionConflictError,
+  AcceptancePrReviewEffortConflictError,
   getWorkspaceMembership,
+  readAcceptancePrReviewMetrics,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
   recordAcceptancePrDecision,
+  recordAcceptancePrReviewEffort,
 } from "@agentrail/db-postgres";
 
-const MAX_DECISION_BODY_BYTES = 20 * 1024;
+const MAX_PATCH_BODY_BYTES = 20 * 1024;
 const MAX_DECISION_RATIONALE_CHARS = 4_000;
 
 type AcceptancePrDecision =
@@ -25,6 +28,14 @@ type ParsedDecisionBody = {
   rationale?: string;
 };
 
+type ParsedReviewEffortBody = {
+  action: "record_pr_review_effort";
+  bindingId: string;
+  minutes: number;
+};
+
+type ParsedPatchBody = ParsedDecisionBody | ParsedReviewEffortBody;
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
 
@@ -38,7 +49,7 @@ function json(body: Record<string, unknown>, status = 200): NextResponse {
 async function readBoundedJson(request: Request): Promise<unknown | null> {
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null
-    && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_DECISION_BODY_BYTES)) {
+    && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_PATCH_BODY_BYTES)) {
     return null;
   }
   if (!request.body) return null;
@@ -51,7 +62,7 @@ async function readBoundedJson(request: Request): Promise<unknown | null> {
       const next = await reader.read();
       if (next.done) break;
       total += next.value.byteLength;
-      if (total > MAX_DECISION_BODY_BYTES) {
+      if (total > MAX_PATCH_BODY_BYTES) {
         try { await reader.cancel(); } catch { /* bounded failure */ }
         return null;
       }
@@ -108,6 +119,32 @@ function parseDecisionBody(value: unknown): ParsedDecisionBody | null {
   };
 }
 
+function parseReviewEffortBody(value: unknown): ParsedReviewEffortBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).length !== 3
+    || !Object.keys(input).every((key) => key === "action" || key === "bindingId" || key === "minutes")
+    || input.action !== "record_pr_review_effort"
+    || typeof input.bindingId !== "string" || !UUID.test(input.bindingId)
+    || !Number.isSafeInteger(input.minutes)
+    || (input.minutes as number) < 1 || (input.minutes as number) > 1_440) return null;
+  return {
+    action: "record_pr_review_effort",
+    bindingId: input.bindingId,
+    minutes: input.minutes as number,
+  };
+}
+
+function parsePatchBody(value: unknown): ParsedPatchBody | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const action = (value as Record<string, unknown>).action;
+  return action === "record_pr_decision"
+    ? parseDecisionBody(value)
+    : action === "record_pr_review_effort"
+      ? parseReviewEffortBody(value)
+      : null;
+}
+
 function serializeFinalDecision<T extends {
   kind: string;
   decision?: { decidedAt: Date } | null;
@@ -122,6 +159,17 @@ function serializeFinalDecision<T extends {
   };
 }
 
+function serializeDates(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(serializeDates);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, serializeDates(nested)]),
+    );
+  }
+  return value;
+}
+
 function currentDecisionMatchesTimeline(
   timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
   result: Extract<Awaited<ReturnType<typeof readCurrentAcceptancePrDecision>>, { kind: "current" }>,
@@ -134,6 +182,21 @@ function currentDecisionMatchesTimeline(
     && timeline.record.currentPrHeadSha === result.binding.headSha
     && timeline.record.currentPrHeadCycleId === result.binding.headCycleId
     && timeline.record.currentPrHeadAuthorityGeneration === result.binding.authorityGeneration;
+}
+
+function reviewMetricsMatchTimeline(
+  timeline: NonNullable<Awaited<ReturnType<typeof readChangeRecordTimeline>>>,
+  result: Extract<Awaited<ReturnType<typeof readAcceptancePrReviewMetrics>>, { kind: "record" }>,
+): boolean {
+  if (timeline.record.workspaceId !== result.workspaceId
+    || timeline.record.id !== result.recordId
+    || timeline.record.repo !== result.repo
+    || timeline.record.prNumber !== result.prNumber) return false;
+  if (result.currentCycle === null) return !timeline.record.currentPrHeadAuthoritative;
+  return timeline.record.currentPrHeadAuthoritative
+    && timeline.record.currentPrHeadSha === result.currentCycle.headSha
+    && timeline.record.currentPrHeadCycleId === result.currentCycle.headCycleId
+    && timeline.record.currentPrHeadAuthorityGeneration === result.currentCycle.authorityGeneration;
 }
 
 export async function GET(
@@ -157,9 +220,10 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    const [resolvedCorrectionPackets, resolvedFinalDecision] = await Promise.all([
+    const [resolvedCorrectionPackets, resolvedFinalDecision, resolvedReviewMetrics] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
+      readAcceptancePrReviewMetrics({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -178,6 +242,11 @@ export async function GET(
       && !currentDecisionMatchesTimeline(timeline, resolvedFinalDecision)
       ? { kind: "not_current" as const }
       : serializeFinalDecision(resolvedFinalDecision);
+    const reviewMetrics = resolvedReviewMetrics.kind === "record"
+      && !reviewMetricsMatchTimeline(timeline, resolvedReviewMetrics)
+      ? { kind: "unavailable" as const, reason: "invalid_review_custody" as const }
+      : serializeDates(resolvedReviewMetrics);
+    const canRecordHumanEvidence = membership.role === "owner" || membership.role === "admin";
 
     return json({
       record: {
@@ -207,8 +276,9 @@ export async function GET(
       })),
       correctionPackets,
       finalDecision,
-      canRecordFinalDecision:
-        membership.role === "owner" || membership.role === "admin",
+      reviewMetrics,
+      canRecordFinalDecision: canRecordHumanEvidence,
+      canRecordReviewEffort: canRecordHumanEvidence,
     });
   } catch (err) {
     console.error("[change-records] failed to load detail:", err);
@@ -220,7 +290,7 @@ export async function GET(
 }
 
 /**
- * Record a human decision for the server-derived current exact-head review.
+ * Record bounded human evidence for the server-derived current exact-head review.
  * This route has no GitHub client and cannot merge or otherwise mutate the PR.
  */
 export async function PATCH(
@@ -238,12 +308,28 @@ export async function PATCH(
     return json({ error: "Forbidden" }, 403);
   }
   if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase()
-    !== "application/json") return json({ error: "Invalid final decision" }, 400);
+    !== "application/json") return json({ error: "Invalid Change Record action" }, 400);
 
-  const body = parseDecisionBody(await readBoundedJson(request));
-  if (!body) return json({ error: "Invalid final decision" }, 400);
+  const body = parsePatchBody(await readBoundedJson(request));
+  if (!body) return json({ error: "Invalid Change Record action" }, 400);
 
   try {
+    if (body.action === "record_pr_review_effort") {
+      const result = await recordAcceptancePrReviewEffort({
+        workspaceId,
+        recordId,
+        bindingId: body.bindingId,
+        minutes: body.minutes,
+        recordedBy: `user:${session.user.id}`,
+      });
+      if (result.kind === "recorded" || result.kind === "replayed") {
+        return json(serializeDates(result) as Record<string, unknown>, result.kind === "recorded" ? 201 : 200);
+      }
+      if (result.kind === "not_found") return json(result, 404);
+      if (result.kind === "not_authorized") return json(result, 403);
+      return json(result, 409);
+    }
+
     const result = await recordAcceptancePrDecision({
       workspaceId,
       recordId,
@@ -259,10 +345,13 @@ export async function PATCH(
     if (result.kind === "not_authorized") return json(result, 403);
     return json(result, 409);
   } catch (error) {
+    if (error instanceof AcceptancePrReviewEffortConflictError) {
+      return json({ error: "Review effort conflicts with the existing exact-head receipt" }, 409);
+    }
     if (error instanceof AcceptancePrDecisionConflictError) {
       return json({ error: "Final decision conflicts with the existing exact-head decision" }, 409);
     }
-    console.error("[change-records] failed to record final decision:", error);
-    return json({ error: "Final decision unavailable" }, 503);
+    console.error("[change-records] failed to record human review evidence:", error);
+    return json({ error: "Change Record action unavailable" }, 503);
   }
 }

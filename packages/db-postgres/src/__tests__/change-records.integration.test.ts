@@ -74,6 +74,9 @@ import {
   readCurrentAcceptancePrDecision,
   recordAcceptancePrDecision,
   AcceptancePrDecisionConflictError,
+  recordAcceptancePrReviewEffort,
+  readAcceptancePrReviewMetrics,
+  AcceptancePrReviewEffortConflictError,
   recordSignedAcceptanceRecordMerge,
   SignedAcceptanceRecordMergeConflictError,
   recordAcceptanceInboundIntake,
@@ -2173,6 +2176,473 @@ describe.skipIf(!DB_AVAILABLE)(
         kind: "replayed",
         mergeEventId: merge.mergeEventId,
       });
+    });
+
+    it("records explicit current-cycle review effort and preserves unknown samples", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-review-effort-current",
+        prNumber: 167,
+        headSha: "1".repeat(40),
+        verdict: "proven",
+      });
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "record",
+        currentCycle: {
+          headSha: "1".repeat(40),
+          headCycleId: ready.advanced.jobId,
+          authorityGeneration: 1,
+        },
+        cycles: [{
+          current: true,
+          binding: {
+            headSha: "1".repeat(40),
+            headCycleId: ready.advanced.jobId,
+            reviewJobId: ready.advanced.jobId,
+          },
+          effort: { kind: "unknown" },
+          decision: { kind: "unknown" },
+          signedMerge: { kind: "unknown" },
+          postMergeOutcomes: { kind: "unknown" },
+        }],
+        summary: {
+          reviewEffort: {
+            eligible: 1, known: 0, unknown: 1,
+            totalMinutes: null, averageMinutes: null,
+          },
+          decisions: { eligible: 1, known: 0, unknown: 1 },
+          signedMerges: { eligible: 1, known: 0, unknown: 1 },
+          postMergeOutcomes: { eligible: 0, known: 0, unknown: 0 },
+        },
+      });
+
+      const input = {
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        minutes: 45,
+        recordedBy: actor,
+      };
+      const member = await addAcceptanceDecisionActor(wsId, "member");
+      const viewer = await addAcceptanceDecisionActor(wsId, "viewer");
+      await expect(recordAcceptancePrReviewEffort({ ...input, recordedBy: member }))
+        .resolves.toEqual({ kind: "not_authorized" });
+      await expect(recordAcceptancePrReviewEffort({ ...input, recordedBy: viewer }))
+        .resolves.toEqual({ kind: "not_authorized" });
+      const actorUserId = actor.slice("user:".length);
+      await db.update(workspaceMemberships).set({ role: "member" }).where(and(
+        eq(workspaceMemberships.workspaceId, wsId),
+        eq(workspaceMemberships.userId, actorUserId),
+      ));
+      await expect(recordAcceptancePrReviewEffort(input))
+        .resolves.toEqual({ kind: "not_authorized" });
+      expect(await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, ready.draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-pr-review-effort:${ready.advanced.jobId}`),
+      ))).toHaveLength(0);
+      await db.update(workspaceMemberships).set({ role: "owner" }).where(and(
+        eq(workspaceMemberships.workspaceId, wsId),
+        eq(workspaceMemberships.userId, actorUserId),
+      ));
+      const recorded = await recordAcceptancePrReviewEffort(input);
+      expect(recorded).toMatchObject({
+        kind: "recorded",
+        binding: { headCycleId: ready.advanced.jobId },
+        effort: {
+          eventKey: `acceptance-pr-review-effort:${ready.advanced.jobId}`,
+          source: "human_input",
+          minutes: 45,
+          recordedBy: actor,
+          recordedRole: "owner",
+        },
+      });
+      await expect(recordAcceptancePrReviewEffort(input)).resolves.toMatchObject({
+        kind: "replayed",
+        effort: {
+          eventId: recorded.kind === "recorded" ? recorded.effort.eventId : "missing",
+          source: "human_input",
+        },
+      });
+      await expect(recordAcceptancePrReviewEffort({ ...input, minutes: 46 }))
+        .rejects.toBeInstanceOf(AcceptancePrReviewEffortConflictError);
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "record",
+        cycles: [{ effort: { kind: "known", value: { minutes: 45, source: "human_input" } } }],
+        summary: {
+          reviewEffort: {
+            eligible: 1, known: 1, unknown: 0,
+            totalMinutes: 45, averageMinutes: 45,
+          },
+        },
+      });
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: randomUUID(),
+        recordId: ready.draft.record.id,
+      })).resolves.toEqual({ kind: "not_found" });
+
+      const effortWhere = and(
+        eq(changeRecordEvents.recordId, ready.draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-pr-review-effort:${ready.advanced.jobId}`),
+      );
+      const effortEvent = (await db.select().from(changeRecordEvents).where(effortWhere))[0]!;
+      await db.update(changeRecordEvents).set({
+        payloadRef: { ...effortEvent.payloadRef, source: "elapsed_time" },
+      }).where(effortWhere);
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_effort_custody" });
+    });
+
+    it("maps A-to-B-to-A effort, decisions, signed merge, and outcomes without collapsing unknowns", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "admin");
+      const repo = "acme/widgets";
+      const prNumber = 168;
+      const headA = "2".repeat(40);
+      const headB = "3".repeat(40);
+      const a1 = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-review-metrics-a-b-a",
+        prNumber,
+        headSha: headA,
+        verdict: "proven",
+      });
+      await recordAcceptancePrReviewEffort({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        minutes: 15,
+        recordedBy: actor,
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a1.binding.bindingId,
+        decision: "approved",
+        decidedBy: actor,
+      });
+
+      const b = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo,
+        prNumber,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "acceptance-review-metrics-a-b-a:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      if (b.kind !== "advanced") throw new Error("expected metrics B cycle");
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        jobId: b.jobId,
+        repo,
+        prNumber,
+        headSha: headB,
+        acceptanceContractId: a1.draft.contract.id,
+        verdict: "failed",
+      });
+      const bCurrent = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+      });
+      if (bCurrent.kind !== "current") throw new Error("expected metrics B binding");
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: bCurrent.binding.bindingId,
+        decision: "changes_requested",
+        decidedBy: actor,
+      });
+
+      const a2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo,
+        prNumber,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "acceptance-review-metrics-a-b-a:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (a2.kind !== "advanced") throw new Error("expected metrics A2 cycle");
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        jobId: a2.jobId,
+        repo,
+        prNumber,
+        headSha: headA,
+        acceptanceContractId: a1.draft.contract.id,
+        verdict: "proven",
+      });
+      const a2Current = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+      });
+      if (a2Current.kind !== "current") throw new Error("expected metrics A2 binding");
+      await recordAcceptancePrReviewEffort({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        bindingId: a2Current.binding.bindingId,
+        minutes: 25,
+        recordedBy: actor,
+      });
+
+      const merge = await recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        repo,
+        prNumber,
+        headSha: headA,
+        deliveryId: "acceptance-review-metrics-a-b-a:merged",
+        mergeSha: "4".repeat(40),
+      }));
+      if (merge.kind !== "recorded") throw new Error("expected metrics signed merge");
+      await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+        recordedBy: actor,
+        outcome: {
+          kind: "deployed",
+          revisionSha: "4".repeat(40),
+          environment: "production",
+          deploymentReference: "metrics:a-b-a:deployment",
+        },
+      });
+
+      const metrics = await readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: a1.draft.record.id,
+      });
+      expect(metrics).toMatchObject({
+        kind: "record",
+        currentCycle: null,
+        summary: {
+          reviewEffort: {
+            eligible: 3, known: 2, unknown: 1,
+            totalMinutes: 40, averageMinutes: 20,
+          },
+          decisions: { eligible: 3, known: 2, unknown: 1 },
+          signedMerges: { eligible: 3, known: 1, unknown: 2 },
+          postMergeOutcomes: { eligible: 1, known: 1, unknown: 0 },
+        },
+      });
+      if (metrics.kind !== "record") throw new Error("expected metrics Record result");
+      const cycleA1 = metrics.cycles.find((cycle) => cycle.binding.headCycleId === a1.advanced.jobId)!;
+      const cycleB = metrics.cycles.find((cycle) => cycle.binding.headCycleId === b.jobId)!;
+      const cycleA2 = metrics.cycles.find((cycle) => cycle.binding.headCycleId === a2.jobId)!;
+      expect(cycleA1).toMatchObject({
+        current: false,
+        binding: { headSha: headA },
+        effort: { kind: "known", value: { minutes: 15 } },
+        decision: { kind: "known", value: { decision: "approved" } },
+        signedMerge: { kind: "unknown" },
+      });
+      expect(cycleB).toMatchObject({
+        binding: { headSha: headB },
+        effort: { kind: "unknown" },
+        decision: { kind: "known", value: { decision: "changes_requested" } },
+      });
+      expect(cycleA2).toMatchObject({
+        current: false,
+        binding: { headSha: headA },
+        effort: { kind: "known", value: { minutes: 25 } },
+        decision: { kind: "unknown" },
+        signedMerge: {
+          kind: "known",
+          value: {
+            mergeEventId: merge.mergeEventId,
+            decisionAlignment: "not_recorded",
+          },
+        },
+        postMergeOutcomes: {
+          kind: "known",
+          values: [{ outcome: { kind: "deployed", revisionSha: "4".repeat(40) } }],
+        },
+      });
+      expect(cycleA1.binding.headCycleId).not.toBe(cycleA2.binding.headCycleId);
+      expect(cycleA1.binding).not.toHaveProperty("bindingId");
+      expect(cycleA1.binding).not.toHaveProperty("authorityGeneration");
+    });
+
+    it("serializes review effort with head advance and never rebinds a stale effort click", async () => {
+      const actor = await addAcceptanceDecisionActor(wsId, "owner");
+      const headA = "5".repeat(40);
+      const headB = "6".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-review-effort-head-race",
+        prNumber: 169,
+        headSha: headA,
+        verdict: "proven",
+      });
+      const effortInput = {
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        minutes: 12,
+        recordedBy: actor,
+      };
+      const [effort, b] = await Promise.all([
+        recordAcceptancePrReviewEffort(effortInput),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          repo: ready.repo,
+          prNumber: 169,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "acceptance-review-effort-head-race:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+      ]);
+      if (b.kind !== "advanced") throw new Error("expected racing effort B cycle");
+      expect(["recorded", "not_current"]).toContain(effort.kind);
+      const effortEvents = await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, ready.draft.record.id),
+        eq(changeRecordEvents.stage, "human_review_effort"),
+      ));
+      expect(effortEvents).toHaveLength(effort.kind === "recorded" ? 1 : 0);
+      expect(effortEvents).not.toContainEqual(expect.objectContaining({
+        eventKey: `acceptance-pr-review-effort:${b.jobId}`,
+      }));
+      await expect(recordAcceptancePrReviewEffort(effortInput))
+        .resolves.toEqual({ kind: "not_current" });
+
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        jobId: b.jobId,
+        repo: ready.repo,
+        prNumber: 169,
+        headSha: headB,
+        acceptanceContractId: ready.draft.contract.id,
+        verdict: "proven",
+      });
+      const metrics = await readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+      });
+      expect(metrics).toMatchObject({
+        kind: "record",
+        currentCycle: {
+          headSha: headB,
+          headCycleId: b.jobId,
+          authorityGeneration: 2,
+        },
+        summary: {
+          reviewEffort: {
+            eligible: 2,
+            known: effort.kind === "recorded" ? 1 : 0,
+            unknown: effort.kind === "recorded" ? 1 : 2,
+          },
+        },
+      });
+    });
+
+    it("fails review metrics closed for signed merges without attributable reviewed-cycle lineage", async () => {
+      const delayedHeadA = "7".repeat(40);
+      const delayedHeadB = "8".repeat(40);
+      const delayed = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-review-metrics-delayed-merge",
+        prNumber: 170,
+        headSha: delayedHeadA,
+        verdict: "proven",
+      });
+      const delayedB = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: delayed.draft.record.id,
+        repo: delayed.repo,
+        prNumber: 170,
+        headSha: delayedHeadB,
+        event: "synchronize",
+        deliveryId: "acceptance-review-metrics-delayed-merge:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: delayedHeadA, afterHeadSha: delayedHeadB },
+        source: "github_webhook",
+      });
+      if (delayedB.kind !== "advanced") throw new Error("expected delayed-merge B cycle");
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: delayed.draft.record.id,
+        jobId: delayedB.jobId,
+        repo: delayed.repo,
+        prNumber: 170,
+        headSha: delayedHeadB,
+        acceptanceContractId: delayed.draft.contract.id,
+        verdict: "proven",
+      });
+      const delayedMerge = await recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: delayed.draft.record.id,
+        repo: delayed.repo,
+        prNumber: 170,
+        headSha: delayedHeadA,
+        deliveryId: "acceptance-review-metrics-delayed-merge:merged",
+        mergeSha: "9".repeat(40),
+      }));
+      expect(delayedMerge).toMatchObject({
+        kind: "recorded",
+        decisionAlignment: {
+          kind: "not_current",
+          currentHeadSha: delayedHeadB,
+          currentHeadCycleId: delayedB.jobId,
+        },
+      });
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: delayed.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_merge_custody" });
+
+      const unavailable = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-review-metrics-unavailable-merge-custody",
+        prNumber: 171,
+        headSha: "a".repeat(40),
+        verdict: "proven",
+      });
+      await db.update(changeRecordEvents).set({ actor: "server:forged-attestation" })
+        .where(eq(changeRecordEvents.id, unavailable.posted.event.id));
+      const unavailableMerge = await recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: unavailable.draft.record.id,
+        repo: unavailable.repo,
+        prNumber: 171,
+        headSha: "a".repeat(40),
+        deliveryId: "acceptance-review-metrics-unavailable-merge-custody:merged",
+        mergeSha: "c".repeat(40),
+      }));
+      expect(unavailableMerge).toMatchObject({
+        kind: "recorded",
+        decisionAlignment: { kind: "custody_unavailable", reason: "invalid_review_custody" },
+      });
+
+      // Repairing the current source row cannot retroactively turn the
+      // immutable un-attributable merge receipt into a reviewed-cycle sample.
+      await db.update(changeRecordEvents).set({ actor: "reviewer-of-record" })
+        .where(eq(changeRecordEvents.id, unavailable.posted.event.id));
+      await expect(readAcceptancePrReviewMetrics({
+        workspaceId: wsId,
+        recordId: unavailable.draft.record.id,
+      })).resolves.toEqual({ kind: "unavailable", reason: "invalid_merge_custody" });
     });
 
     it("enforces owner/admin roles, all four choices, rationale rules, and the proven approval gate", async () => {

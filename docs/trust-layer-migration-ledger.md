@@ -1,7 +1,8 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `60715aac`, after merged PR
-#1677 and signed-merge convergence PR #1678.
+Last reconciled: 2026-08-11 at main commit `9f4f3e7f`, after merged PRs
+#1677 and #1678. PR #1679 carries the bounded R9.2 Record-scoped metrics
+slice described below.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -81,24 +82,36 @@ workflow, or customer run has been claimed.
 
 ## R9 progress
 
-R9.1 is source/test complete. PR #1677 added one owner/admin decision bound
-to the current posted, attested review cycle without giving Jace merge
-authority. PR #1678 makes the authenticated GitHub webhook the sole writer
-of merge state, records the factual merge separately from whether the exact
-decision aligned, and retains deploy, incident, and revert observations only
-against that immutable merge custody. It makes no GitHub merge request.
+R9.1 is merged and source/test complete. PR #1677 added one owner/admin
+decision bound to the current posted, attested review cycle without giving
+Jace merge authority. PR #1678 makes the authenticated GitHub webhook the
+sole writer of merge state, records the factual merge separately from whether
+the exact decision aligned, and retains deploy, incident, and revert
+observations only against that immutable merge custody. It makes no GitHub
+merge request.
 
-The local proof includes focused route/query tests and a migrated PostgreSQL
-run covering approval, exception, conflicting or absent decisions, immutable
-replay, A→B→A isolation, transaction rollback, and decision/head races. This
-is source/test and local-runtime proof only. No deployed GitHub delivery, live
-human decision, or customer outcome has been observed. R9 remains **FAIL / not
-release-ready** because R9.2 and deployed/live/customer proof are still open.
+PR #1679 makes R9.2 source/test complete in one bounded Record-scoped slice.
+It records one owner/admin-declared `human_input` effort total against the
+opaque current head-cycle binding and reads historical review, decision,
+signed-merge, and post-merge evidence only from the canonical Acceptance
+Record event ledger. Every metric keeps independent eligible, known, and
+unknown sample counts; absence is never converted to zero, and a signed merge
+without attributable review-cycle custody fails closed instead of being
+labelled unrecorded.
+
+The local proof includes focused route/query/component tests, a fresh migrated
+PostgreSQL run, the full database suite, package typechecks/builds, scoped
+lint, independent adversarial review, and a browser-rendered component
+screenshot at `docs/screenshots/r92-record-review-metrics.png`. The screenshot
+is component proof only, not an authenticated browser-to-server run. No
+deployed GitHub delivery, live human decision or effort receipt, or customer
+outcome has been observed. R9 remains **FAIL / not release-ready** until PR
+#1679 merges and the deployed/live and customer proof gates are satisfied.
 
 ## Remaining canonical order
 
-The next implementation work is R9.2, then R10, R11, and R12. Their canonical
-requirements remain:
+After PR #1679, the next implementation work is R10, R11, and R12. Their
+canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |
@@ -116,5 +129,7 @@ boundaries above. There is no remaining canonical R8 source blocker; deployed,
 live-provider, and customer proof remain separate release gates. R9.1 now
 records the current-head human decision and converges signed GitHub merge plus
 post-merge facts onto the same exact lineage without giving Jace merge
-authority. None of the remaining slices may reopen the bounded R8
-implementation merely because deployed, live, or customer proof is missing.
+authority. R9.2 adds explicit declared review effort and sample-honest
+Record-scoped outcome evidence without timers or merge authority. None of the
+remaining slices may reopen the bounded R8 implementation merely because
+deployed, live, or customer proof is missing.

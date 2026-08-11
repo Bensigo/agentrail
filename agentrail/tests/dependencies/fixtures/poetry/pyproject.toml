@@ -1,0 +1,12 @@
+[tool.poetry]
+name = "fixture-app"
+version = "0.1.0"
+description = "Bounded Poetry parser fixture"
+authors = ["AgentRail <engineering@example.invalid>"]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+Requests = "^2.31.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "~=8.2.0"

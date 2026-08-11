@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "profile": "jace-gradle-resolution-v1",
+  "sourceSha256": {
+    "build.gradle": "b1146fe81e45930fcff96b2915b45c98ae6f697b1a4cce7b60990b0a381ac37a",
+    "gradle.lockfile": "0927e0a51ea3fcfc3388f8b4a357f02cd19cef6af1466658db98ca50a421ea10",
+    "gradle/wrapper/gradle-wrapper.properties": "e279a9cc1222dd2d2e51ed8e5f423d35aeafeac3219cd13cdd9444d4dd2d5984"
+  },
+  "repository": "https://repo.maven.apache.org/maven2",
+  "complete": true,
+  "root": {
+    "directory": ".",
+    "projectPath": ":"
+  },
+  "directDependencies": [
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-databind",
+      "version": "2.17.2",
+      "configuration": "implementation"
+    }
+  ],
+  "wrapperJarSha256": null,
+  "packages": [
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-annotations",
+      "version": "2.17.2",
+      "scope": "compile",
+      "configurations": [
+        "compileClasspath",
+        "runtimeClasspath"
+      ],
+      "dependencies": [],
+      "pom": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.pom",
+        "sha512": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "artifactFile": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.jar",
+        "sha512": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-core",
+      "version": "2.17.2",
+      "scope": "compile",
+      "configurations": [
+        "compileClasspath",
+        "runtimeClasspath"
+      ],
+      "dependencies": [],
+      "pom": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.pom",
+        "sha512": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "artifactFile": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar",
+        "sha512": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "group": "com.fasterxml.jackson.core",
+      "artifact": "jackson-databind",
+      "version": "2.17.2",
+      "scope": "compile",
+      "configurations": [
+        "compileClasspath",
+        "runtimeClasspath"
+      ],
+      "dependencies": [
+        "com.fasterxml.jackson.core:jackson-annotations:2.17.2",
+        "com.fasterxml.jackson.core:jackson-core:2.17.2"
+      ],
+      "pom": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.pom",
+        "sha512": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "artifactFile": {
+        "url": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar",
+        "sha512": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    }
+  ]
+}

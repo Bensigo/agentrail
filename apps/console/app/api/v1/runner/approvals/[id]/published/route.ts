@@ -86,6 +86,11 @@ interface RawBody {
   url: string;
 }
 
+function isAcceptanceGatedIssueApproval(toolInput: Record<string, unknown>): boolean {
+  return Object.prototype.hasOwnProperty.call(toolInput, "acceptanceGatedIssueRequestId")
+    || Object.prototype.hasOwnProperty.call(toolInput, "_acceptanceGatedIssue");
+}
+
 function isRawBody(value: unknown): value is RawBody {
   if (!value || typeof value !== "object") return false;
   const body = value as Record<string, unknown>;
@@ -146,6 +151,15 @@ export async function POST(
       `[runner/approvals/published] approval ${id} has toolName ${approval.toolName}, not create_issue; refusing to stamp (returned as 404)`
     );
     return NextResponse.json({ error: "Approval not found" }, { status: 404 });
+  }
+  // Packet-bound correction approvals have a stronger, atomic receipt
+  // protocol. The generic ordinary-issue stamp must never pre-empt it or
+  // turn a caller-supplied URL into apparent correction publication proof.
+  if (isAcceptanceGatedIssueApproval(approval.toolInput)) {
+    return NextResponse.json(
+      { error: "Acceptance correction publication requires its bound receipt route" },
+      { status: 409 },
+    );
   }
 
   // Same resolution chain as POST /api/v1/runner/approvals — sourced from

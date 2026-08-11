@@ -17,6 +17,7 @@ Headless:
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -76,7 +77,7 @@ Usage:
   agentrail issue create <milestone-or-prd> [--agent codex|claude|cursor|hermes|custom]
                          [--target DIR] [--headless|--yes] [--dry-run]
   agentrail issue create --connector github [--repo <owner/name>]
-                         --title <t> --body <b>
+                         --title <t> --body <b> [--unlabeled]
   agentrail issue update --connector github [--repo <owner/name>]
                          --number <n> --title <t> --body <b>
 
@@ -95,6 +96,9 @@ AGENTRAIL_WORKSPACE_ID has connected on the AgentRail console (read from
 Postgres via DATABASE_URL) — connecting a repo on the console is enough on its
 own, no env vars required. Fails with a clear "connect a repo" error if
 neither source resolves both.
+
+``--unlabeled`` is a narrow Jace approval-custody mode: it creates the issue
+without a delivery trigger and prints a machine-readable GitHub 201 receipt.
 
 ``issue update --connector github``: edits an EXISTING issue's title/body in
 place (house-format body edits only — no label/state/comment changes). --repo
@@ -292,7 +296,8 @@ def _build_github_client(token: str, repo: str):
 
 
 def _create_via_connector(
-    *, connector: str, repo: Optional[str], title: Optional[str], body: Optional[str]
+    *, connector: str, repo: Optional[str], title: Optional[str], body: Optional[str],
+    unlabeled: bool = False,
 ) -> int:
     """Create a single labeled issue on an external connector via OAuth (MVP).
 
@@ -344,6 +349,23 @@ def _create_via_connector(
         )
 
     client = _build_github_client(token, resolved_repo)
+    if unlabeled:
+        receipt = client.create_unlabeled_issue(
+            repo=resolved_repo, title=title, body=body
+        )
+        print("AGENTRAIL_GATED_ISSUE_RECEIPT " + json.dumps({
+            "kind": "github_201",
+            "httpStatus": 201,
+            "githubIssueId": receipt.github_issue_id,
+            "githubIssueNumber": receipt.github_issue_number,
+            "githubApiUrl": receipt.github_api_url,
+            "githubIssueUrl": receipt.github_issue_url,
+            "githubRequestId": receipt.github_request_id,
+            "responseTitleSha256": receipt.response_title_sha256,
+            "responseBodySha256": receipt.response_body_sha256,
+            "state": receipt.state,
+        }, sort_keys=True, separators=(",", ":")))
+        return 0
     ref = client.create_issue(repo=resolved_repo, title=title, body=body)
     print(f"Created {ref.repo}#{ref.number} (label {TRIAGE_LABEL}): {ref.url}")
     return 0
@@ -458,6 +480,7 @@ def _dispatch_create(args: List[str]) -> int:
     repo: Optional[str] = None
     title: Optional[str] = None
     body: Optional[str] = None
+    unlabeled = False
 
     i = 0
     while i < len(args):
@@ -487,6 +510,9 @@ def _dispatch_create(args: List[str]) -> int:
                 raise UsageError("--body requires a value")
             body = args[i + 1]
             i += 2
+        elif a == "--unlabeled":
+            unlabeled = True
+            i += 1
         elif a in ("--headless", "--yes"):
             headless = True
             i += 1
@@ -505,8 +531,12 @@ def _dispatch_create(args: List[str]) -> int:
     # issue directly on the external source via the user's OAuth token.
     if connector is not None:
         return _create_via_connector(
-            connector=connector, repo=repo, title=title, body=body
+            connector=connector, repo=repo, title=title, body=body,
+            unlabeled=unlabeled,
         )
+
+    if unlabeled:
+        raise UsageError("--unlabeled requires --connector github")
 
     target = str(Path(target).resolve())
     agent = resolve_agent_name(target, agent_flag)

@@ -3,25 +3,31 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { workspaces } from "../schema/workspaces.js";
+import { users } from "../schema/auth.js";
+import { chatIdentities } from "../schema/chat_identities.js";
 import {
   acceptanceContracts,
   acceptanceGatedGithubIssuePublications,
+  acceptanceGatedGithubIssueRequests,
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { reviewJobs } from "../schema/review_jobs.js";
 import { workspaceMemberships } from "../schema/workspace_memberships.js";
+import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import {
   ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES,
   AcceptanceCriterionOutcomeBundleConflictError,
   AcceptanceGatedGithubIssueConflictError,
+  acceptanceGatedGithubIssueApprovalToolInput,
   acceptanceCriterionOutcomeBundleId,
   advanceConfirmedAcceptanceRecordPullRequestHead,
   appendChangeRecordEvent,
   appendCurrentReviewJobEventsAtomically,
   changeRecordEventId,
   createDraftAcceptanceRecord,
+  mintAcceptanceGatedGithubIssueApprovalRequest,
   readAcceptanceRecordDetail,
   readAcceptancePrReviewMetrics,
   readCurrentAcceptanceCriterionOutcomeBundle,
@@ -29,9 +35,13 @@ import {
   readCurrentAcceptancePrDecision,
   recordPostedAcceptanceCriterionOutcomeBundle,
   reportAcceptanceGatedGithubIssuePublication,
+  reportAcceptanceGatedGithubIssueApprovalPublication,
+  reportAcceptanceGatedGithubIssueManualReconciliation,
+  reserveAcceptanceGatedGithubIssueApprovalRequest,
   reserveCurrentAcceptanceGatedGithubIssue,
   reviewJobCorrectionPacketId,
   resolveAcceptanceCriterionArtifact,
+  resolveAcceptanceGatedGithubIssueApprovalRequest,
 } from "../queries/change_records.js";
 import { previewBootId } from "../queries/preview_boots.js";
 
@@ -41,7 +51,8 @@ const DB_AVAILABLE = await (async () => {
       SELECT to_regclass('public.change_record_events') IS NOT NULL
         AND to_regclass('public.acceptance_contracts') IS NOT NULL
         AND to_regclass('public.review_jobs') IS NOT NULL
-        AND to_regclass('public.preview_boots') IS NOT NULL AS ready
+        AND to_regclass('public.preview_boots') IS NOT NULL
+        AND to_regclass('public.acceptance_gated_github_issue_requests') IS NOT NULL AS ready
     `)) as Array<{ ready: boolean }>;
     return rows[0]?.ready === true;
   } catch {
@@ -762,10 +773,108 @@ async function projectPostedJob(
   }).where(eq(reviewJobs.id, fixture.jobId));
 }
 
+async function createGatedIssueApprovalSession(input: {
+  workspaceId: string;
+  role?: "owner" | "admin" | "member";
+  trackedUserIds: string[];
+}) {
+  const user = (await db.insert(users).values({
+    name: "R11.2 gated issue approver",
+    email: `r112-gated-${randomUUID()}@example.test`,
+  }).returning({ id: users.id }))[0]!;
+  input.trackedUserIds.push(user.id);
+  await db.insert(workspaceMemberships).values({
+    workspaceId: input.workspaceId,
+    userId: user.id,
+    role: input.role ?? "owner",
+  });
+  const identity = (await db.insert(chatIdentities).values({
+    platform: "telegram",
+    platformUserId: `r112-${randomUUID()}`,
+    userId: user.id,
+    workspaceId: input.workspaceId,
+  }).returning({ id: chatIdentities.id }))[0]!;
+  const eveSessionId = `eve-r112-${randomUUID()}`;
+  const session = (await db.insert(jaceSessions).values({
+    workspaceId: input.workspaceId,
+    chatIdentityId: identity.id,
+    channel: "telegram",
+    conversationKey: `r112-${randomUUID()}`,
+    eveSessionId,
+  }).returning({ id: jaceSessions.id }))[0]!;
+  return { userId: user.id, identityId: identity.id, sessionId: session.id, eveSessionId };
+}
+
+async function approveGatedIssueRequest(input: {
+  session: Awaited<ReturnType<typeof createGatedIssueApprovalSession>>;
+  workspaceId: string;
+  request: Extract<
+    Awaited<ReturnType<typeof mintAcceptanceGatedGithubIssueApprovalRequest>>,
+    { kind: "ready" }
+  >["request"];
+}) {
+  return recordGatedIssueApproval({
+    ...input,
+    status: "approved",
+  });
+}
+
+async function recordGatedIssueApproval(input: {
+  session: Awaited<ReturnType<typeof createGatedIssueApprovalSession>>;
+  workspaceId: string;
+  request: Extract<
+    Awaited<ReturnType<typeof mintAcceptanceGatedGithubIssueApprovalRequest>>,
+    { kind: "ready" }
+  >["request"];
+  status: "pending" | "approved" | "denied" | "expired";
+  createdAt?: Date;
+}) {
+  const resolved = input.status === "pending" ? null : new Date();
+  return (await db.insert(jaceApprovals).values({
+    workspaceId: input.workspaceId,
+    chatIdentityId: input.session.identityId,
+    sessionId: input.session.sessionId,
+    eveSessionId: input.session.eveSessionId,
+    requestId: `r112-gated-${randomUUID()}`,
+    callbackToken: `r112-callback-${randomUUID()}`,
+    toolName: "create_issue",
+    toolInput: acceptanceGatedGithubIssueApprovalToolInput(input.request),
+    approveOptionId: "approve",
+    denyOptionId: "deny",
+    status: input.status,
+    createdAt: input.createdAt,
+    resolvedAt: resolved,
+  }).returning({ id: jaceApprovals.id }))[0]!;
+}
+
+function gatedIssueReceipt(
+  request: Extract<
+    Awaited<ReturnType<typeof mintAcceptanceGatedGithubIssueApprovalRequest>>,
+    { kind: "ready" }
+  >["request"],
+  issueNumber: number,
+  repo = request.repoNormalized,
+) {
+  return {
+    kind: "github_201" as const,
+    httpStatus: 201 as const,
+    githubIssueId: String(9_000_000 + issueNumber),
+    githubIssueNumber: issueNumber,
+    githubApiUrl: `https://api.github.com/repos/${repo}/issues/${issueNumber}`,
+    githubIssueUrl: `https://github.com/${repo}/issues/${issueNumber}`,
+    githubRequestId: `github-request-r112-${issueNumber}`,
+    responseTitleSha256: request.titleSha256,
+    responseBodySha256: request.bodySha256,
+    state: "open" as const,
+  };
+}
+
 describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => {
   let workspaceId: string;
+  let approvalTestUserIds: string[];
 
   beforeEach(async () => {
+    approvalTestUserIds = [];
     workspaceId = (await db.insert(workspaces).values({
       name: "R11.2b criterion outcome bundle",
       slug: `r112b-${randomUUID()}`,
@@ -773,7 +882,20 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
   });
 
   afterEach(async () => {
+    await db.delete(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.workspaceId,
+      workspaceId,
+    ));
+    await db.delete(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.workspaceId,
+      workspaceId,
+    ));
+    await db.delete(jaceApprovals).where(eq(jaceApprovals.workspaceId, workspaceId));
+    await db.delete(chatIdentities).where(eq(chatIdentities.workspaceId, workspaceId));
     await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+    for (const userId of approvalTestUserIds) {
+      await db.delete(users).where(eq(users.id, userId));
+    }
   });
 
   it("requires the posted criterion bundle before deciding whether a gated issue applies", async () => {
@@ -1269,6 +1391,601 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
     expect(rows.some((row) => row.headSha === headB)).toBe(false);
     await expect(readCurrentAcceptanceGatedGithubIssue({ workspaceId, recordId: fixture.recordId }))
       .resolves.toEqual({ kind: "not_ready", reason: "criterion_outcome_bundle_not_recorded" });
+  });
+
+  it("mints one tenant- and session-bound approval request and linearizes its approved reservation", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-concurrency",
+      prNumber: 280,
+      headSha: "a".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+
+    const owner = await createGatedIssueApprovalSession({ workspaceId, trackedUserIds: approvalTestUserIds });
+    const member = await createGatedIssueApprovalSession({
+      workspaceId,
+      role: "member",
+      trackedUserIds: approvalTestUserIds,
+    });
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: member.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "not_authorized" });
+
+    const duplicate = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    await db.update(jaceSessions).set({ eveSessionId: owner.eveSessionId })
+      .where(eq(jaceSessions.id, duplicate.sessionId));
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "not_authorized" });
+    await db.delete(chatIdentities).where(eq(chatIdentities.id, duplicate.identityId));
+
+    const foreignWorkspaceId = (await db.insert(workspaces).values({
+      name: "R11.2 foreign gated workspace",
+      slug: `r112b-foreign-${randomUUID()}`,
+    }).returning({ id: workspaces.id }))[0]!.id;
+    const foreign = await createGatedIssueApprovalSession({
+      workspaceId: foreignWorkspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: foreign.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "not_found" });
+    await db.delete(chatIdentities).where(eq(chatIdentities.workspaceId, foreignWorkspaceId));
+    await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspaceId));
+
+    const minted = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (minted.kind !== "ready") throw new Error(`expected request, got ${JSON.stringify(minted)}`);
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toMatchObject({ kind: "ready", request: { id: minted.request.id } });
+    await expect(resolveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: member.eveSessionId,
+      requestId: minted.request.id,
+    })).resolves.toEqual({ kind: "not_found" });
+    expect(minted.request.packets).toHaveLength(1);
+    expect(minted.request.packets.map((packet) => packet.packetId)).toEqual(
+      [...minted.request.packets].map((packet) => packet.packetId).sort(),
+    );
+
+    const approval = await approveGatedIssueRequest({
+      session: owner,
+      workspaceId,
+      request: minted.request,
+    });
+    const attempts = await Promise.all([
+      reserveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: owner.eveSessionId,
+        requestId: minted.request.id,
+        approvalId: approval.id,
+      }),
+      reserveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: owner.eveSessionId,
+        requestId: minted.request.id,
+        approvalId: approval.id,
+      }),
+    ]);
+    expect(attempts.map((result) => result.kind).sort()).toEqual(["already_reserved", "reserved"]);
+    expect(await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.id,
+      minted.request.id,
+    ))).toEqual([expect.objectContaining({
+      status: "reserved",
+      approvalId: approval.id,
+      packets: minted.request.packets,
+      packetSetSha256: minted.request.packetSetSha256,
+      correctionPacketPayloadSetSha256: minted.request.correctionPacketPayloadSetSha256,
+    })]);
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.approvalRequestId,
+      minted.request.id,
+    ))).toEqual([expect.objectContaining({
+      requestProtocolVersion: 2,
+      approvalId: approval.id,
+      eveSessionId: owner.eveSessionId,
+      repoNormalized: REPO,
+    })]);
+  });
+
+  it("reclaims the immutable draft after denied or expired approval custody closes", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-closed-reclaim",
+      prNumber: 284,
+      headSha: "1".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const firstOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const secondOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const thirdOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const first = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: firstOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (first.kind !== "ready") throw new Error("expected first draft");
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "conflict" });
+    await recordGatedIssueApproval({
+      session: firstOwner,
+      workspaceId,
+      request: first.request,
+      status: "denied",
+    });
+
+    const second = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (second.kind !== "ready") throw new Error("expected denied-custody reclaim");
+    expect(second.request).toMatchObject({
+      id: first.request.id,
+      bindingId: first.request.bindingId,
+      requestIdentitySha256: first.request.requestIdentitySha256,
+      acceptanceContract: first.request.acceptanceContract,
+      packets: first.request.packets,
+      packetSetSha256: first.request.packetSetSha256,
+    });
+    await expect(resolveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: firstOwner.eveSessionId,
+      requestId: first.request.id,
+    })).resolves.toEqual({ kind: "not_found" });
+    await recordGatedIssueApproval({
+      session: secondOwner,
+      workspaceId,
+      request: second.request,
+      status: "expired",
+    });
+
+    const third = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: thirdOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    expect(third).toMatchObject({
+      kind: "ready",
+      request: {
+        id: first.request.id,
+        bindingId: first.request.bindingId,
+        requestIdentitySha256: first.request.requestIdentitySha256,
+      },
+    });
+    expect(await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.id,
+      first.request.id,
+    ))).toEqual([expect.objectContaining({
+      eveSessionId: thirdOwner.eveSessionId,
+      jaceSessionId: thirdOwner.sessionId,
+      requestedByUserId: thirdOwner.userId,
+      status: "draft",
+    })]);
+  });
+
+  it("expires a stale pending approval before reclaim and never reclaims fresh or approved custody", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-pending-lease",
+      prNumber: 285,
+      headSha: "2".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const firstOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const secondOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const thirdOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const first = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: firstOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (first.kind !== "ready") throw new Error("expected first draft");
+    const pending = await recordGatedIssueApproval({
+      session: firstOwner,
+      workspaceId,
+      request: first.request,
+      status: "pending",
+    });
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "conflict" });
+
+    await db.update(jaceApprovals).set({
+      createdAt: new Date(Date.now() - 36 * 60 * 1000),
+    }).where(eq(jaceApprovals.id, pending.id));
+    const reclaimed = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (reclaimed.kind !== "ready") throw new Error("expected stale-pending reclaim");
+    expect((await db.select().from(jaceApprovals).where(eq(jaceApprovals.id, pending.id)))[0])
+      .toMatchObject({ status: "expired", publishedIssueUrl: null });
+
+    await recordGatedIssueApproval({
+      session: secondOwner,
+      workspaceId,
+      request: reclaimed.request,
+      status: "approved",
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await db.update(acceptanceGatedGithubIssueRequests).set({
+      requestedAt: new Date(Date.now() - 60 * 60 * 1000),
+    }).where(eq(acceptanceGatedGithubIssueRequests.id, reclaimed.request.id));
+    await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: thirdOwner.eveSessionId,
+      recordId: fixture.recordId,
+    })).resolves.toEqual({ kind: "conflict" });
+  });
+
+  it("reclaims a fresh draft after the incumbent loses membership or its session closes", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-owner-loss",
+      prNumber: 286,
+      headSha: "3".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const firstOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const secondOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const thirdOwner = await createGatedIssueApprovalSession({
+      workspaceId,
+      trackedUserIds: approvalTestUserIds,
+    });
+    const first = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: firstOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (first.kind !== "ready") throw new Error("expected first draft");
+    await db.update(workspaceMemberships).set({ role: "member" }).where(and(
+      eq(workspaceMemberships.workspaceId, workspaceId),
+      eq(workspaceMemberships.userId, firstOwner.userId),
+    ));
+    const second = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (second.kind !== "ready") throw new Error("expected membership-loss reclaim");
+    expect(second.request.id).toBe(first.request.id);
+
+    await db.update(jaceSessions).set({ status: "closed" })
+      .where(eq(jaceSessions.id, secondOwner.sessionId));
+    await expect(resolveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: secondOwner.eveSessionId,
+      requestId: second.request.id,
+    })).resolves.toEqual({ kind: "not_authorized" });
+    const third = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: thirdOwner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    expect(third).toMatchObject({
+      kind: "ready",
+      request: {
+        id: first.request.id,
+        requestIdentitySha256: first.request.requestIdentitySha256,
+      },
+    });
+  });
+
+  it("retires approved draft custody after authority loss and requires the successor's fresh approval", async () => {
+    for (const [index, loss] of (["demoted", "closed_session"] as const).entries()) {
+      const fixture = await createBundleFixture({
+        workspaceId,
+        workKey: `gated-approved-owner-loss-${loss}`,
+        prNumber: 287 + index,
+        headSha: String(4 + index).repeat(40),
+      });
+      await makeUiFailure(fixture);
+      await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+      await projectPostedJob(fixture, "failed");
+      const incumbent = await createGatedIssueApprovalSession({
+        workspaceId,
+        trackedUserIds: approvalTestUserIds,
+      });
+      const successor = await createGatedIssueApprovalSession({
+        workspaceId,
+        trackedUserIds: approvalTestUserIds,
+      });
+      const first = await mintAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: incumbent.eveSessionId,
+        recordId: fixture.recordId,
+      });
+      if (first.kind !== "ready") throw new Error("expected incumbent draft");
+      const displacedApproval = await approveGatedIssueRequest({
+        session: incumbent,
+        workspaceId,
+        request: first.request,
+      });
+      await expect(mintAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: successor.eveSessionId,
+        recordId: fixture.recordId,
+      })).resolves.toEqual({ kind: "conflict" });
+
+      if (loss === "demoted") {
+        await db.update(workspaceMemberships).set({ role: "member" }).where(and(
+          eq(workspaceMemberships.workspaceId, workspaceId),
+          eq(workspaceMemberships.userId, incumbent.userId),
+        ));
+      } else {
+        await db.update(jaceSessions).set({ status: "closed" })
+          .where(eq(jaceSessions.id, incumbent.sessionId));
+      }
+      const transferred = await mintAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: successor.eveSessionId,
+        recordId: fixture.recordId,
+      });
+      if (transferred.kind !== "ready") throw new Error(`expected ${loss} handoff`);
+      expect(transferred.request).toMatchObject({
+        id: first.request.id,
+        bindingId: first.request.bindingId,
+        requestIdentitySha256: first.request.requestIdentitySha256,
+      });
+      await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: incumbent.eveSessionId,
+        requestId: first.request.id,
+        approvalId: displacedApproval.id,
+      })).resolves.toEqual({ kind: "not_found" });
+
+      const freshApproval = await approveGatedIssueRequest({
+        session: successor,
+        workspaceId,
+        request: transferred.request,
+      });
+      await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: successor.eveSessionId,
+        requestId: transferred.request.id,
+        approvalId: displacedApproval.id,
+      })).resolves.toEqual({ kind: "not_authorized" });
+      await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: successor.eveSessionId,
+        requestId: transferred.request.id,
+        approvalId: freshApproval.id,
+      })).resolves.toMatchObject({
+        kind: "reserved",
+        request: { id: transferred.request.id, status: "reserved" },
+      });
+      expect((await db.select().from(jaceApprovals).where(eq(
+        jaceApprovals.id,
+        displacedApproval.id,
+      )))[0]).toMatchObject({ status: "approved", publishedIssueUrl: null });
+      expect((await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+        acceptanceGatedGithubIssueRequests.id,
+        transferred.request.id,
+      )))[0]).toMatchObject({
+        status: "reserved",
+        approvalId: freshApproval.id,
+        requestedByUserId: successor.userId,
+        jaceSessionId: successor.sessionId,
+      });
+    }
+  });
+
+  it("keeps a wrong-repo receipt reserved until durable manual reconciliation closes retry", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-wrong-repo",
+      prNumber: 281,
+      headSha: "b".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const owner = await createGatedIssueApprovalSession({ workspaceId, trackedUserIds: approvalTestUserIds });
+    const minted = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (minted.kind !== "ready") throw new Error("expected approval request");
+    const approval = await approveGatedIssueRequest({ session: owner, workspaceId, request: minted.request });
+    await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+    })).resolves.toMatchObject({ kind: "reserved" });
+
+    const wrongRepoReceipt = gatedIssueReceipt(minted.request, 9281, "other/project");
+    await expect(reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+      receipt: wrongRepoReceipt,
+    })).resolves.toEqual({ kind: "conflict" });
+    expect(await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.id,
+      minted.request.id,
+    ))).toEqual([expect.objectContaining({ status: "reserved", reconciliationAt: null })]);
+
+    const reconciliation = {
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+      reason: "external_issue_wrong_repo" as const,
+      observedIssueUrl: wrongRepoReceipt.githubIssueUrl,
+    };
+    await expect(reportAcceptanceGatedGithubIssueManualReconciliation(reconciliation))
+      .resolves.toEqual({ kind: "recorded" });
+    await expect(reportAcceptanceGatedGithubIssueManualReconciliation(reconciliation))
+      .resolves.toEqual({ kind: "replayed" });
+    await expect(reportAcceptanceGatedGithubIssueManualReconciliation({
+      ...reconciliation,
+      reason: "publication_receipt_failed",
+    })).resolves.toEqual({ kind: "conflict" });
+    await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+    })).resolves.toEqual({ kind: "manual_reconciliation" });
+    await expect(reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: randomUUID(),
+    })).resolves.toEqual({ kind: "conflict" });
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.approvalRequestId,
+      minted.request.id,
+    ))).toEqual([expect.objectContaining({
+      status: "ambiguous_hold",
+      resultReason: "external_issue_wrong_repo",
+      observedIssueUrl: wrongRepoReceipt.githubIssueUrl,
+    })]);
+  });
+
+  it("replays an exact attested issue after head advance without rewriting terminal timestamps", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-terminal-replay",
+      prNumber: 282,
+      headSha: "c".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const owner = await createGatedIssueApprovalSession({ workspaceId, trackedUserIds: approvalTestUserIds });
+    const minted = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (minted.kind !== "ready") throw new Error("expected approval request");
+    const approval = await approveGatedIssueRequest({ session: owner, workspaceId, request: minted.request });
+    await reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+    });
+    const receipt = gatedIssueReceipt(minted.request, 9282, "ACME/Widgets");
+    const published = await reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+      receipt,
+    });
+    expect(published).toMatchObject({
+      kind: "published",
+      issue: { receipt: { githubIssueUrl: "https://github.com/acme/widgets/issues/9282" } },
+    });
+    const terminalBefore = (await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.id,
+      minted.request.id,
+    )))[0]!;
+
+    const headB = "d".repeat(40);
+    await expect(advanceConfirmedAcceptanceRecordPullRequestHead({
+      workspaceId,
+      recordId: fixture.recordId,
+      repo: REPO,
+      prNumber: fixture.prNumber,
+      headSha: headB,
+      event: "synchronize",
+      deliveryId: "gated-approval-terminal-replay:b",
+      admitReviewJob: true,
+      headTransition: { beforeHeadSha: fixture.headSha, afterHeadSha: headB },
+      source: "github_webhook",
+    })).resolves.toMatchObject({ kind: "advanced" });
+    await expect(reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+      receipt,
+    })).resolves.toMatchObject({ kind: "replayed" });
+    await expect(reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+      receipt: gatedIssueReceipt(minted.request, 9283),
+    })).resolves.toEqual({ kind: "conflict" });
+    await expect(reportAcceptanceGatedGithubIssueApprovalPublication({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: randomUUID(),
+      receipt,
+    })).resolves.toEqual({ kind: "conflict" });
+    const terminalAfter = (await db.select().from(acceptanceGatedGithubIssueRequests).where(eq(
+      acceptanceGatedGithubIssueRequests.id,
+      minted.request.id,
+    )))[0]!;
+    expect(terminalAfter.publishedAt?.valueOf()).toBe(terminalBefore.publishedAt?.valueOf());
+    expect(terminalAfter.updatedAt.valueOf()).toBe(terminalBefore.updatedAt.valueOf());
+  });
+
+  it("refuses an approved draft after authoritative head drift without creating a publication", async () => {
+    const fixture = await createBundleFixture({
+      workspaceId,
+      workKey: "gated-approval-stale",
+      prNumber: 283,
+      headSha: "e".repeat(40),
+    });
+    await makeUiFailure(fixture);
+    await recordPostedAcceptanceCriterionOutcomeBundle(writerInput(fixture));
+    await projectPostedJob(fixture, "failed");
+    const owner = await createGatedIssueApprovalSession({ workspaceId, trackedUserIds: approvalTestUserIds });
+    const minted = await mintAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      recordId: fixture.recordId,
+    });
+    if (minted.kind !== "ready") throw new Error("expected approval request");
+    const approval = await approveGatedIssueRequest({ session: owner, workspaceId, request: minted.request });
+    const headB = "f".repeat(40);
+    await advanceConfirmedAcceptanceRecordPullRequestHead({
+      workspaceId,
+      recordId: fixture.recordId,
+      repo: REPO,
+      prNumber: fixture.prNumber,
+      headSha: headB,
+      event: "synchronize",
+      deliveryId: "gated-approval-stale:b",
+      admitReviewJob: true,
+      headTransition: { beforeHeadSha: fixture.headSha, afterHeadSha: headB },
+      source: "github_webhook",
+    });
+    const reservation = await reserveAcceptanceGatedGithubIssueApprovalRequest({
+      eveSessionId: owner.eveSessionId,
+      requestId: minted.request.id,
+      approvalId: approval.id,
+    });
+    expect(reservation.kind).not.toBe("reserved");
+    expect(await db.select().from(acceptanceGatedGithubIssuePublications).where(eq(
+      acceptanceGatedGithubIssuePublications.approvalRequestId,
+      minted.request.id,
+    ))).toHaveLength(0);
   });
 
   it("atomically records, replays, and resolves one exact current bundle without exposing its object key", async () => {

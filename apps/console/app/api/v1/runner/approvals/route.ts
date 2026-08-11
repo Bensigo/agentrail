@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  acceptanceGatedGithubIssueApprovalToolInput,
   getBriefById,
   getJaceSessionByEveSessionId,
   getInvestigationById,
   recordApprovalRequest,
+  resolveAcceptanceGatedGithubIssueApprovalRequest,
 } from "@agentrail/db-postgres";
 import type { InvestigationIssueRole } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
@@ -321,6 +323,17 @@ function isRawBody(value: unknown): value is RawBody {
   );
 }
 
+const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu;
+
+function correctionRequestId(toolInput: Record<string, unknown>): string | null | "invalid" {
+  if (!("acceptanceGatedIssueRequestId" in toolInput)) return null;
+  const keys = Object.keys(toolInput);
+  return keys.length === 1 && typeof toolInput["acceptanceGatedIssueRequestId"] === "string"
+    && UUID_RE.test(toolInput["acceptanceGatedIssueRequestId"])
+    ? toolInput["acceptanceGatedIssueRequestId"]
+    : "invalid";
+}
+
 /**
  * Best-effort: render + send the rich approval message with its Approve/Deny
  * keyboard to the session's conversation. Telegram-only for v1 (spec scope —
@@ -402,15 +415,35 @@ export async function POST(request: NextRequest) {
   // session.anchoredInvestigationId (Task 12) is read straight off this SAME
   // row — see stampInvestigationLink's own doc-comment for the tenant
   // re-check that follows.
-  const toolInput =
-    body.toolName === "create_issue"
-      ? await enrichCreateIssueToolInput(
-          body.toolInput,
-          session.workspaceId ?? undefined,
-          session.anchoredBriefId,
-          session.anchoredInvestigationId
-        )
-      : body.toolInput;
+  let toolInput = body.toolInput;
+  if (body.toolName === "create_issue") {
+    const requestId = correctionRequestId(body.toolInput);
+    if (requestId === "invalid") {
+      return NextResponse.json(
+        { error: "A gated correction approval accepts only its opaque request id" },
+        { status: 400 },
+      );
+    }
+    if (requestId !== null) {
+      const resolved = await resolveAcceptanceGatedGithubIssueApprovalRequest({
+        eveSessionId: body.eveSessionId,
+        requestId,
+      });
+      if (resolved.kind !== "ready") {
+        const status = resolved.kind === "not_found" ? 404
+          : resolved.kind === "not_authorized" ? 403 : 409;
+        return NextResponse.json(resolved, { status });
+      }
+      toolInput = acceptanceGatedGithubIssueApprovalToolInput(resolved.request);
+    } else {
+      toolInput = await enrichCreateIssueToolInput(
+        body.toolInput,
+        session.workspaceId ?? undefined,
+        session.anchoredBriefId,
+        session.anchoredInvestigationId,
+      );
+    }
+  }
 
   const { approval, created } = await recordApprovalRequest({
     workspaceId: session.workspaceId ?? undefined,

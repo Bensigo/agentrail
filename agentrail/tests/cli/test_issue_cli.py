@@ -535,6 +535,45 @@ class ConnectorCreateTests(unittest.TestCase):
         self.assertIn("ready-for-agent", sent["labels"])
         self.assertIn("11", out.getvalue())
 
+    def test_unlabeled_connector_mode_prints_closed_receipt_without_trigger_label(self):
+        import json as _json
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        created = {
+            "id": 9012,
+            "number": 12,
+            "title": "Correction",
+            "body": "bounded body",
+            "state": "open",
+            "url": "https://api.github.com/repos/acme/widgets/issues/12",
+            "html_url": "https://github.com/acme/widgets/issues/12",
+            "_agentrail_github_request_id": "REQ:12",
+        }
+        transport = self._fake_transport(created)
+        client = GitHubOAuthClient(
+            token="gho_x", repos=["acme/widgets"], transport=transport
+        )
+        out = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "create", "--connector", "github", "--unlabeled",
+                "--repo", "acme/widgets", "--title", "Correction",
+                "--body", "bounded body",
+            ])
+
+        self.assertEqual(rc, 0)
+        sent = _json.loads(transport.calls[0]["body"])
+        self.assertEqual(sent, {"title": "Correction", "body": "bounded body"})
+        line = out.getvalue().strip()
+        self.assertTrue(line.startswith("AGENTRAIL_GATED_ISSUE_RECEIPT "))
+        receipt = _json.loads(line.split(" ", 1)[1])
+        self.assertEqual(receipt["githubIssueId"], "9012")
+        self.assertEqual(receipt["githubIssueUrl"], created["html_url"])
+        self.assertNotIn("ready-for-agent", line)
+
     def test_create_via_github_connector_requires_token(self):
         out = StringIO()
         err = StringIO()

@@ -8,7 +8,6 @@ import { StatHeader } from "../../../components/stat-header";
 import { EmptyState } from "../../../components/empty-state";
 import { ErrorState } from "../../../components/error-state";
 import { LoadingState } from "../../../components/loading-state";
-import { CreateIssueButton } from "./components/create-issue-button";
 import {
   blockingReasonLabel,
   blockingReasonSeverity,
@@ -273,11 +272,6 @@ function GateSubRow({
                 </span>
                 <span className="shrink-0">
                   <FindingDisposition workspaceId={workspaceId} gateId={gate.id} findingIndex={i} />
-                  <CreateIssueButton
-                    workspaceId={workspaceId}
-                    gateId={gate.id}
-                    findingIndex={i}
-                  />
                 </span>
               </li>
             ))}

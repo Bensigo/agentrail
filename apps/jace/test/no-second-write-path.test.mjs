@@ -154,7 +154,7 @@ const CHILD_PROCESS_IMPORT_RE =
 // the word "approval" somewhere in the file (several of these tool files
 // document, in prose, why they do or don't carry a gate).
 const CONSOLE_GATED_APPROVAL_RE =
-  /approval:\s*\(\s*ctx\s*\)\s*=>\s*consoleGatedApproval\(\s*ctx\s*\)/;
+  /approval:\s*\(\s*ctx\s*\)\s*=>\s*(?:consoleGatedApproval|createIssueApproval)\(\s*ctx\s*\)/;
 // Eve's stock always()/once() approval helpers, retired for the gated set by
 // PR ②. A bare `always(` catches both the call itself and (defensively) an
 // import of it; either would mean the stock gate crept back in somewhere.

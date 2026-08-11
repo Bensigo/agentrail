@@ -25,18 +25,78 @@ import { z } from "zod";
 //    agent/lib/console_gated_approval.core.mjs for what decides
 //    approved/denied and why a thrown/failed approval fn can never resolve
 //    to approved.
-import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runCreateIssue } from "../lib/create_issue.core.mjs";
+import {
+  createIssueApproval,
+  runAcceptanceGatedIssue,
+} from "../lib/acceptance_gated_issue.core.mjs";
 
 const execFileAsync = promisify(execFile);
+
+// Keep the ordinary create_issue contract byte-for-byte: defaults, descriptions,
+// unknown-key stripping, and parsed output are unchanged. The guard around it
+// only refuses the reserved correction discriminator from falling through.
+const ordinaryCreateIssueSchema = z.object({
+  title: z.string().min(1).describe("Concise issue title."),
+  parent: z
+    .string()
+    .default("")
+    .describe("Parent epic/milestone this issue belongs to."),
+  requiredContext: z
+    .string()
+    .default("")
+    .describe("CONTEXT.md / TASTE.md constraints and prior decisions."),
+  whatToBuild: z
+    .string()
+    .default("")
+    .describe("End-to-end vertical slice to build (no file paths)."),
+  acceptanceCriteria: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe(
+      "Observable/testable criteria; rendered as numbered `- [ ] ACn:` checkboxes.",
+    ),
+  verification: z
+    .string()
+    .default("")
+    .describe("How completion is verified (evidence expected)."),
+  repo: z
+    .string()
+    .optional()
+    .describe(
+      "Target owner/repo. Almost always omit this — it is auto-resolved " +
+        "from the workspace's connected GitHub repo. Only set it to " +
+        "override that for a workspace with multiple connected repos; " +
+        "JACE_TARGET_REPO is a deployment-level last-resort fallback, not " +
+        "something a user should ever need to configure.",
+    ),
+});
+
+const ordinaryWithoutCorrectionDiscriminator = z.any().superRefine((value, ctx) => {
+  if (value && typeof value === "object" && "recordId" in value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "recordId is reserved for the strict Acceptance correction mode",
+    });
+  }
+}).pipe(ordinaryCreateIssueSchema);
+
+const acceptanceCorrectionIssueSchema = z.object({
+  recordId: z.string().uuid().describe(
+    "Acceptance Record whose exact current full correction packet set should be proposed.",
+  ),
+}).strict();
 
 export default defineTool({
   description:
     "Create ONE AgentRail issue in the house format. This is the only way " +
     "Jace acts on the outside world; it is always human-approved before it " +
-    "runs. The AgentRail factory picks the issue up automatically via the " +
+    "runs. For an Acceptance Record correction, pass only { recordId }; " +
+    "the server supplies the exact current repo, title, body, Contract, and " +
+    "full correction packet set, and the issue is not sent to delivery. " +
+    "Ordinary issues are picked up automatically via the " +
     "server-applied ready-for-agent label. The target repo and GitHub " +
     "credentials are resolved automatically from the workspace's connected " +
     "GitHub repo (connected on the AgentRail console) — no repo/token input " +
@@ -49,43 +109,21 @@ export default defineTool({
     "INSTEAD of creating anything — relay that message verbatim rather than " +
     "retrying or filing without the stamp.",
   // Always require a human approve/reject before this tool executes.
-  approval: (ctx) => consoleGatedApproval(ctx),
-  inputSchema: z.object({
-    title: z.string().min(1).describe("Concise issue title."),
-    parent: z
-      .string()
-      .default("")
-      .describe("Parent epic/milestone this issue belongs to."),
-    requiredContext: z
-      .string()
-      .default("")
-      .describe("CONTEXT.md / TASTE.md constraints and prior decisions."),
-    whatToBuild: z
-      .string()
-      .default("")
-      .describe("End-to-end vertical slice to build (no file paths)."),
-    acceptanceCriteria: z
-      .array(z.string().min(1))
-      .min(1)
-      .describe(
-        "Observable/testable criteria; rendered as numbered `- [ ] ACn:` checkboxes.",
-      ),
-    verification: z
-      .string()
-      .default("")
-      .describe("How completion is verified (evidence expected)."),
-    repo: z
-      .string()
-      .optional()
-      .describe(
-        "Target owner/repo. Almost always omit this — it is auto-resolved " +
-          "from the workspace's connected GitHub repo. Only set it to " +
-          "override that for a workspace with multiple connected repos; " +
-          "JACE_TARGET_REPO is a deployment-level last-resort fallback, not " +
-          "something a user should ever need to configure.",
-      ),
-  }),
+  approval: (ctx) => createIssueApproval(ctx),
+  inputSchema: z.union([
+    acceptanceCorrectionIssueSchema,
+    ordinaryWithoutCorrectionDiscriminator,
+  ]),
   async execute(input, ctx) {
+    if ("recordId" in input) {
+      return runAcceptanceGatedIssue({
+        execFileFn: execFileAsync,
+        env: process.env,
+        recordId: input.recordId,
+        eveSessionId: ctx?.session?.id,
+        turnId: ctx?.session?.turn?.id,
+      });
+    }
     // The trigger label is applied server-side by the CLI; we never pass labels.
     return runCreateIssue({
       execFileFn: execFileAsync,

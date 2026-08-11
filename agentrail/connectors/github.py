@@ -24,6 +24,8 @@ import json
 import re
 import subprocess
 import urllib.request
+from dataclasses import dataclass
+from hashlib import sha256
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from agentrail.afk.input_contract import Rejected, admit_to_queue
@@ -39,6 +41,20 @@ from agentrail.connectors.base import (
 # issue so the OAuth polling intake brings it into the queue.
 TRIGGER_LABEL = "ready-for-agent"
 GITHUB_API = "https://api.github.com"
+
+
+@dataclass(frozen=True)
+class GitHubIssueCreationReceipt:
+    """Exact GitHub 201 custody returned for an unlabeled issue write."""
+
+    github_issue_id: str
+    github_issue_number: int
+    github_api_url: str
+    github_issue_url: str
+    github_request_id: str
+    response_title_sha256: str
+    response_body_sha256: str
+    state: str
 
 
 # --------------------------------------------------------------------------- #
@@ -368,6 +384,11 @@ def _default_rest_transport(token: str) -> RestTransport:
         with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed github.com host)
             raw = resp.read().decode("utf-8")
             parsed = json.loads(raw) if raw else None
+            if isinstance(parsed, dict):
+                parsed = dict(parsed)
+                parsed["_agentrail_github_request_id"] = (
+                    resp.headers.get("x-github-request-id") or ""
+                )
             return resp.status, parsed
 
     return _transport
@@ -479,6 +500,59 @@ class GitHubOAuthClient:
             title=created.get("title") or title,
             body=body,
             url=created.get("html_url") or "",
+        )
+
+    def create_unlabeled_issue(
+        self, *, repo: str, title: str, body: str
+    ) -> GitHubIssueCreationReceipt:
+        """Create exactly one issue without a delivery-trigger label.
+
+        This is the correction-custody writer used only after Jace's human
+        approval and durable reservation. It returns a closed receipt rather
+        than an ``IssueRef`` so the caller can attest the exact GitHub response.
+        """
+        url = f"{GITHUB_API}/repos/{repo}/issues"
+        status, raw = self._transport(
+            "POST",
+            url,
+            headers=self._headers(),
+            body=json.dumps({"title": title, "body": body}),
+        )
+        created = raw if isinstance(raw, dict) else {}
+        issue_id = created.get("id")
+        number = created.get("number")
+        api_url = created.get("url")
+        issue_url = created.get("html_url")
+        request_id = created.get("_agentrail_github_request_id")
+        response_title = created.get("title")
+        response_body = created.get("body")
+        state = created.get("state")
+        if (
+            status != 201
+            or not isinstance(issue_id, int)
+            or issue_id <= 0
+            or not isinstance(number, int)
+            or number <= 0
+            or not isinstance(api_url, str)
+            or not api_url
+            or not isinstance(issue_url, str)
+            or not issue_url
+            or not isinstance(request_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9:-]{1,128}", request_id)
+            or response_title != title
+            or response_body != body
+            or state != "open"
+        ):
+            raise RuntimeError("GitHub did not return a complete issue creation receipt")
+        return GitHubIssueCreationReceipt(
+            github_issue_id=str(issue_id),
+            github_issue_number=number,
+            github_api_url=api_url,
+            github_issue_url=issue_url,
+            github_request_id=request_id,
+            response_title_sha256=sha256(title.encode("utf-8")).hexdigest(),
+            response_body_sha256=sha256(body.encode("utf-8")).hexdigest(),
+            state=state,
         )
 
     def update_issue(self, *, repo: str, number: int, title: str, body: str) -> IssueRef:

@@ -1803,46 +1803,6 @@ function isGatedIssue(value: unknown, repo: string): value is AcceptanceGatedIss
   );
 }
 
-type GatedGithubIssueMutationResponse =
-  | { kind: "reported" | "replayed"; current: boolean; issue: AcceptanceGatedIssue }
-  | { kind: "held" | "terminal"; binding: AcceptanceGatedIssueCurrentProjection["binding"]; issue: AcceptanceGatedIssue }
-  | { kind: "held"; reason: "publication_outcome_not_persisted" };
-
-export function isGatedGithubIssueMutationResponse(
-  value: unknown,
-  expectedBinding: AcceptanceGatedIssueCurrentProjection["binding"],
-): value is GatedGithubIssueMutationResponse {
-  if (!isObject(value) || typeof value.kind !== "string") return false;
-  if (value.kind === "reported" || value.kind === "replayed") {
-    return hasExactKeys(value, ["kind", "current", "issue"])
-      && typeof value.current === "boolean"
-      && isGatedIssue(value.issue, expectedBinding.repo)
-      && value.issue.status !== "reserved";
-  }
-  if (value.kind === "held" && hasExactKeys(value, ["kind", "reason"])) {
-    return value.reason === "publication_outcome_not_persisted";
-  }
-  if ((value.kind !== "held" && value.kind !== "terminal")
-    || !hasExactKeys(value, ["kind", "binding", "issue"])
-    || !isGatedIssueBinding(value.binding)
-    || !exactJsonEqual(value.binding, expectedBinding)
-    || !isGatedIssue(value.issue, expectedBinding.repo)) return false;
-  return value.kind === "held"
-    ? value.issue.status === "reserved"
-    : value.issue.status !== "reserved";
-}
-
-export function gatedGithubIssueMutationStatusMatches(
-  status: number,
-  result: GatedGithubIssueMutationResponse,
-): boolean {
-  if (result.kind === "held" && "reason" in result) return status === 503;
-  if (result.kind === "held" || result.kind === "terminal" || result.kind === "replayed") {
-    return status === 200;
-  }
-  return status === (result.issue.status === "published" ? 201 : 200);
-}
-
 function isGatedIssueProjection(
   value: unknown,
 ): value is AcceptanceRecordDetailRecord["gatedIssue"] {
@@ -3295,14 +3255,6 @@ export function changeRecordApiPath(workspaceId: string, recordId: string): stri
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/change-records/${encodeURIComponent(recordId)}`;
 }
 
-export function gatedGithubIssueApiPath(workspaceId: string, recordId: string): string {
-  return `${changeRecordApiPath(workspaceId, recordId)}/gated-issue`;
-}
-
-export function gatedGithubIssuePostBody(bindingId: string): { bindingId: string } {
-  return { bindingId };
-}
-
 export function dependencyObservationApprovalPatchBody(observationEventId: string): {
   action: "approve_dependency_observation";
   observationEventId: string;
@@ -3643,19 +3595,11 @@ export function AcceptanceRecordDetailPanel({
   criterionOutcomes,
   workspaceId,
   recordId,
-  canCreateGatedGithubIssue,
-  onCreateGatedGithubIssue,
-  creatingGatedGithubIssue,
-  gatedGithubIssueError,
 }: {
   acceptanceDetail: AcceptanceRecordDetailEnvelope;
   criterionOutcomes: AcceptanceCriterionOutcomesEnvelope;
   workspaceId: string;
   recordId: string;
-  canCreateGatedGithubIssue: boolean;
-  onCreateGatedGithubIssue: (bindingId: string) => void;
-  creatingGatedGithubIssue: boolean;
-  gatedGithubIssueError: string | null;
 }) {
   if (acceptanceDetail.kind !== "record") {
     return (
@@ -3678,10 +3622,6 @@ export function AcceptanceRecordDetailPanel({
   const currentArtifactCount = currentBundle?.outcomes.filter((outcome) =>
     outcome.evidence.kind === "execution_receipt" && outcome.evidence.artifact !== null
   ).length ?? 0;
-  const gatedIssueMatchesCurrentBundle = gatedIssueMatchesCriterionBundle(
-    detail.gatedIssue,
-    criterionOutcomes,
-  );
   return (
     <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
       <div className="border-b border-[var(--gray-05)] px-4 py-3">
@@ -3959,52 +3899,17 @@ export function AcceptanceRecordDetailPanel({
                 : "Artifact access is unavailable; no artifact receipt is inferred."}
             </p>
           </div>
-          <GatedGithubIssueCard
-            gatedIssue={detail.gatedIssue}
-            canCreate={canCreateGatedGithubIssue && gatedIssueMatchesCurrentBundle}
-            onCreate={onCreateGatedGithubIssue}
-            creating={creatingGatedGithubIssue}
-            error={gatedGithubIssueError}
-          />
+          <GatedGithubIssueCard gatedIssue={detail.gatedIssue} />
         </div>
       </div>
     </section>
   );
 }
 
-function gatedIssueMatchesCriterionBundle(
-  gatedIssue: AcceptanceRecordDetailRecord["gatedIssue"],
-  criterionOutcomes: AcceptanceCriterionOutcomesEnvelope,
-): gatedIssue is Extract<AcceptanceRecordDetailRecord["gatedIssue"], { kind: "current" }> {
-  if (gatedIssue.kind !== "current" || criterionOutcomes.kind !== "current") return false;
-  const { binding } = gatedIssue;
-  const { bundle } = criterionOutcomes;
-  return binding.workspaceId === bundle.binding.workspaceId
-    && binding.recordId === bundle.binding.recordId
-    && binding.repo === bundle.binding.repo
-    && binding.prNumber === bundle.binding.prNumber
-    && binding.headSha === bundle.binding.headSha
-    && binding.headCycleId === bundle.binding.headCycleId
-    && binding.reviewJobId === bundle.binding.reviewJobId
-    && binding.criterionOutcomeBundle.id === bundle.id
-    && binding.criterionOutcomeBundle.eventId === bundle.eventId
-    && binding.criterionOutcomeBundle.sha256 === bundle.sha256
-    && binding.criterionOutcomeBundle.postedAttestationEventId
-      === bundle.binding.postedAttestationEventId;
-}
-
 export function GatedGithubIssueCard({
   gatedIssue,
-  canCreate,
-  onCreate,
-  creating,
-  error,
 }: {
   gatedIssue: AcceptanceRecordDetailRecord["gatedIssue"];
-  canCreate: boolean;
-  onCreate: (bindingId: string) => void;
-  creating: boolean;
-  error: string | null;
 }) {
   let title = "Gated issue custody: Unknown";
   let message = "No gated-issue custody is available; no issue state is inferred.";
@@ -4016,7 +3921,7 @@ export function GatedGithubIssueCard({
     message = `Current gated-issue custody is unavailable: ${gatedIssue.reason.replaceAll("_", " ")}.`;
   } else if (gatedIssue.kind === "current" && gatedIssue.issue === null) {
     title = "Gated issue: Not recorded";
-    message = "The exact posted outcome bundle and correction packet set are eligible, but no issue publication is recorded.";
+    message = "The exact posted outcome bundle and correction packet set are eligible, but no Jace-approved GitHub publication is recorded.";
   } else if (gatedIssue.kind === "current" && gatedIssue.issue?.status === "reserved") {
     title = "Gated issue publication: Held";
     message = "A one-shot reservation exists without a verified GitHub result. It will not be retried automatically.";
@@ -4051,26 +3956,16 @@ export function GatedGithubIssueCard({
         </a>
       ) : null}
       {gatedIssue.kind === "current" && gatedIssue.issue === null ? (
-        canCreate ? (
-          <button
-            type="button"
-            disabled={creating}
-            onClick={() => onCreate(gatedIssue.binding.bindingId)}
-            className="mt-3 rounded bg-[var(--gray-12)] px-3 py-1.5 text-xs font-medium text-[var(--gray-01)] disabled:opacity-50"
-          >
-            {creating ? "Creating gated issue…" : "Create unlabeled GitHub issue"}
-          </button>
-        ) : (
-          <p className="mt-2 text-xs text-[var(--gray-09)]">
-            Creation requires this exact current bundle and a current workspace owner or admin.
-          </p>
-        )
+        <p className="mt-2 text-xs text-[var(--gray-09)]">
+          Ask Jace to create the current correction issue for Acceptance Record{" "}
+          <code>{gatedIssue.binding.recordId}</code>. Jace will mint the exact full-packet draft
+          and request human approval before GitHub is called.
+        </p>
       ) : null}
       <p className="mt-2 text-xs text-[var(--gray-09)]">
-        This creation sends no trigger label and does not enqueue factory work, activate an agent,
+        Jace&apos;s gated path sends no trigger label and does not enqueue factory work, activate an agent,
         merge, or prove delivery. A later label would be a separate human action.
       </p>
-      {error ? <p className="mt-2 text-xs text-[var(--red-11)]">{error}</p> : null}
     </div>
   );
 }
@@ -4825,8 +4720,6 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
   const [effortMinutes, setEffortMinutes] = useState("");
   const [approvingObservationEventId, setApprovingObservationEventId] = useState<string | null>(null);
   const [dependencyApprovalError, setDependencyApprovalError] = useState<string | null>(null);
-  const [creatingGatedGithubIssue, setCreatingGatedGithubIssue] = useState(false);
-  const [gatedGithubIssueError, setGatedGithubIssueError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -4975,52 +4868,6 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
     }
   }
 
-  async function createGatedGithubIssue(bindingId: string) {
-    const gatedIssue = data?.acceptanceDetail.kind === "record"
-      ? data.acceptanceDetail.detail.gatedIssue : null;
-    if (!data || !gatedIssue
-      || !gatedIssueMatchesCriterionBundle(
-        gatedIssue,
-        data.criterionOutcomes,
-      )
-      || gatedIssue.issue !== null || gatedIssue.binding.bindingId !== bindingId) {
-      setGatedGithubIssueError("The current exact gated-issue binding is no longer available");
-      return;
-    }
-    const expectedBinding = gatedIssue.binding;
-    setCreatingGatedGithubIssue(true);
-    setGatedGithubIssueError(null);
-    try {
-      const response = await fetch(gatedGithubIssueApiPath(workspaceId, recordId), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(gatedGithubIssuePostBody(bindingId)),
-      });
-      const body = (await response.json().catch(() => null)) as unknown;
-      if (isGatedGithubIssueMutationResponse(body, expectedBinding)) {
-        if (!gatedGithubIssueMutationStatusMatches(response.status, body)) {
-          throw new Error("Gated issue publication returned an invalid status");
-        }
-        if (body.kind === "held" && "reason" in body) {
-          setGatedGithubIssueError(
-            "Issue publication is held because its terminal outcome was not durably recorded",
-          );
-        }
-        setReloadVersion((current) => current + 1);
-        return;
-      }
-      throw new Error("Gated issue publication was not accepted for the current binding");
-    } catch (caught) {
-      setGatedGithubIssueError(
-        caught instanceof Error
-          ? caught.message
-          : "Gated issue publication was unavailable",
-      );
-    } finally {
-      setCreatingGatedGithubIssue(false);
-    }
-  }
-
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
@@ -5058,10 +4905,6 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         criterionOutcomes={data.criterionOutcomes}
         workspaceId={workspaceId}
         recordId={recordId}
-        canCreateGatedGithubIssue={data.canCreateGatedGithubIssue}
-        onCreateGatedGithubIssue={createGatedGithubIssue}
-        creatingGatedGithubIssue={creatingGatedGithubIssue}
-        gatedGithubIssueError={gatedGithubIssueError}
       />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel

@@ -15,6 +15,7 @@ import {
   acceptanceCorrectionDispatchGithubActivations,
   acceptanceCorrectionDispatchGithubClaudeAckReceipts,
   acceptanceCorrectionDispatchGithubClaudeRepairObservations,
+  acceptanceGatedGithubIssueRequests,
   acceptanceGatedGithubIssuePublications,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
@@ -31,6 +32,7 @@ import {
   type AcceptanceCorrectionDispatchGithubActivationRow,
   type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow,
   type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow,
+  type AcceptanceGatedGithubIssueRequestRow,
   type AcceptanceGatedGithubIssuePublicationRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
@@ -39,6 +41,9 @@ import {
   type ChangeRecordRow,
 } from "../schema/change_records.js";
 import { workspaces } from "../schema/workspaces.js";
+import { workspaceMemberships } from "../schema/workspace_memberships.js";
+import { chatIdentities } from "../schema/chat_identities.js";
+import { jaceApprovals, jaceSessions } from "../schema/jace_sessions.js";
 import { reviewJobs, type ReviewJobRow } from "../schema/review_jobs.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
@@ -19751,7 +19756,12 @@ export type AcceptanceGatedGithubIssueBoundedFailureReceipt = {
 
 export type AcceptanceGatedGithubIssueAmbiguousHoldReceipt = {
   kind: "ambiguous_hold";
-  reason: "github_unavailable" | "ambiguous_response";
+  reason:
+    | "github_unavailable"
+    | "ambiguous_response"
+    | "external_write_indeterminate"
+    | "publication_receipt_failed"
+    | "external_issue_wrong_repo";
 };
 
 export type AcceptanceGatedGithubIssueReceipt =
@@ -19837,6 +19847,7 @@ export class AcceptanceGatedGithubIssueConflictError extends Error {
 }
 
 const ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION = 1 as const;
+const ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION = 2 as const;
 const ACCEPTANCE_GATED_GITHUB_ISSUE_STAGE = "gated_issue";
 const ACCEPTANCE_GATED_GITHUB_ISSUE_RESULT_ACTOR = "server:github-gated-issue";
 const CANONICAL_USER_ACTOR = /^user:([a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/u;
@@ -19910,7 +19921,10 @@ function isAcceptanceGatedGithubIssueReceipt(
       && (value["reason"] === "github_rejected" || value["reason"] === "invalid_db_issued_request");
   }
   return value["kind"] === "ambiguous_hold" && hasExactKeys(value, ["kind", "reason"])
-    && (value["reason"] === "github_unavailable" || value["reason"] === "ambiguous_response");
+    && [
+      "github_unavailable", "ambiguous_response", "external_write_indeterminate",
+      "publication_receipt_failed", "external_issue_wrong_repo",
+    ].includes(String(value["reason"]));
 }
 
 function assertExactAcceptanceGatedGithubIssueReportInput(
@@ -20073,6 +20087,8 @@ function gatedGithubIssueReceiptFromRow(
   }
   if (!(row.completedAt instanceof Date) || Number.isNaN(row.completedAt.valueOf())) return "invalid";
   if (row.status === "published") {
+    const receiptRepo = row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION
+      ? row.repoNormalized : row.repo;
     const receipt: AcceptanceGatedGithubIssuePublishedReceipt = {
       kind: "github_201",
       httpStatus: 201,
@@ -20086,8 +20102,8 @@ function gatedGithubIssueReceiptFromRow(
       state: "open",
     };
     return row.httpStatus === 201 && row.githubState === "open" && row.resultReason === null
-      && row.githubApiUrl === `https://api.github.com/repos/${row.repo}/issues/${row.githubIssueNumber}`
-      && row.githubIssueUrl === `https://github.com/${row.repo}/issues/${row.githubIssueNumber}`
+      && row.githubApiUrl === `https://api.github.com/repos/${receiptRepo}/issues/${row.githubIssueNumber}`
+      && row.githubIssueUrl === `https://github.com/${receiptRepo}/issues/${row.githubIssueNumber}`
       && row.responseTitleSha256 === row.titleSha256
       && row.responseBodySha256 === row.bodySha256
       && isAcceptanceGatedGithubIssueReceipt(receipt) ? receipt : "invalid";
@@ -20129,7 +20145,14 @@ function gatedGithubIssueRowHasSelfConsistentBinding(
 ): boolean {
   if (row.id !== acceptanceGatedGithubIssuePublicationId({
     recordId: row.recordId, headCycleId: row.headCycleId,
-  }) || row.requestProtocolVersion !== ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION
+  }) || (row.requestProtocolVersion !== ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION
+      && row.requestProtocolVersion !== ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION)
+    || row.repoNormalized !== row.repo.toLowerCase()
+    || (row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION
+      ? row.approvalRequestId !== null || row.approvalId !== null || row.eveSessionId !== null
+      : !isUuid(row.approvalRequestId ?? "") || !isUuid(row.approvalId ?? "")
+        || typeof row.eveSessionId !== "string" || row.eveSessionId.length === 0
+        || Buffer.byteLength(row.eveSessionId, "utf8") > 512)
     || !(row.reservedAt instanceof Date) || Number.isNaN(row.reservedAt.valueOf())
     || !CANONICAL_USER_ACTOR.test(row.reservedBy)
     || (row.reservedRole !== "owner" && row.reservedRole !== "admin")
@@ -20185,6 +20208,13 @@ function gatedGithubIssueReservationEventPayload(
       fields: ["title", "body"],
       labels: "none",
     },
+    ...(row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION ? {
+      approval: {
+        requestId: row.approvalRequestId,
+        approvalId: row.approvalId,
+        eveSessionId: row.eveSessionId,
+      },
+    } : {}),
     reservedBy: row.reservedBy,
     reservedRole: row.reservedRole,
     reservedAt: row.reservedAt.toISOString(),
@@ -20207,6 +20237,11 @@ function gatedGithubIssueResultEventPayload(
     publicationId: row.id,
     bindingId: row.bindingId,
     requestIdentitySha256: row.requestIdentitySha256,
+    ...(row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION ? {
+      approvalRequestId: row.approvalRequestId,
+      approvalId: row.approvalId,
+      observedIssueUrl: row.observedIssueUrl,
+    } : {}),
     receipt,
     reportedAt: row.completedAt.toISOString(),
     truthBoundary: {
@@ -20275,7 +20310,8 @@ async function readCurrentAcceptanceGatedGithubIssueInTransaction(input: {
   const row = rows[0]!;
   if (rows.length !== 1 || row.workspaceId !== input.workspaceId
     || !gatedGithubIssueRowMatchesCurrent({ row, current: resolved })
-    || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(input.tx, row)) {
+    || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(input.tx, row)
+    || !await verifiedApprovalCustodyForPublicationInTransaction(input.tx, row)) {
     return { kind: "not_ready", reason: "invalid_gated_issue_custody" };
   }
   const issue = projectAcceptanceGatedGithubIssue(row);
@@ -20373,6 +20409,7 @@ export async function reserveCurrentAcceptanceGatedGithubIssue(
       workspaceId: input.workspaceId,
       recordId: input.recordId,
       repo: resolved.binding.repo,
+      repoNormalized: resolved.binding.repo.toLowerCase(),
       prNumber: resolved.binding.prNumber,
       headSha: resolved.binding.headSha,
       headCycleId: resolved.binding.headCycleId,
@@ -20390,6 +20427,9 @@ export async function reserveCurrentAcceptanceGatedGithubIssue(
       packetSetSha256: resolved.binding.packetSetSha256,
       correctionPacketPayloadSetSha256: resolved.binding.correctionPacketPayloadSetSha256,
       requestProtocolVersion: ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION,
+      approvalRequestId: null,
+      approvalId: null,
+      eveSessionId: null,
       requestIdentitySha256: resolved.rendering.requestIdentitySha256,
       title: resolved.rendering.title,
       titleSha256: resolved.rendering.titleSha256,
@@ -20408,6 +20448,7 @@ export async function reserveCurrentAcceptanceGatedGithubIssue(
       responseBodySha256: null,
       githubState: null,
       resultReason: null,
+      observedIssueUrl: null,
       reservedAt: now,
       completedAt: null,
       createdAt: now,
@@ -20505,8 +20546,10 @@ export async function reportAcceptanceGatedGithubIssuePublication(
       };
     }
     if (input.outcome.kind === "github_201") {
-      const expectedApiUrl = `https://api.github.com/repos/${row.repo}/issues/${input.outcome.githubIssueNumber}`;
-      const expectedIssueUrl = `https://github.com/${row.repo}/issues/${input.outcome.githubIssueNumber}`;
+      const receiptRepo = row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION
+        ? row.repoNormalized : row.repo;
+      const expectedApiUrl = `https://api.github.com/repos/${receiptRepo}/issues/${input.outcome.githubIssueNumber}`;
+      const expectedIssueUrl = `https://github.com/${receiptRepo}/issues/${input.outcome.githubIssueNumber}`;
       if (input.outcome.githubApiUrl !== expectedApiUrl
         || input.outcome.githubIssueUrl !== expectedIssueUrl
         || input.outcome.responseTitleSha256 !== row.titleSha256
@@ -20517,7 +20560,7 @@ export async function reportAcceptanceGatedGithubIssuePublication(
         .from(acceptanceGatedGithubIssuePublications).where(sql`
           ${acceptanceGatedGithubIssuePublications.id} <> ${row.id}
           AND (${acceptanceGatedGithubIssuePublications.githubIssueId} = ${input.outcome.githubIssueId}
-            OR (${acceptanceGatedGithubIssuePublications.repo} = ${row.repo}
+            OR (${acceptanceGatedGithubIssuePublications.repoNormalized} = ${row.repoNormalized}
               AND ${acceptanceGatedGithubIssuePublications.githubIssueNumber} = ${input.outcome.githubIssueNumber}))
         `).limit(1);
       if (collisions.length > 0) throw new AcceptanceGatedGithubIssueConflictError();
@@ -20538,6 +20581,7 @@ export async function reportAcceptanceGatedGithubIssuePublication(
       responseBodySha256: input.outcome.kind === "github_201" ? input.outcome.responseBodySha256 : null,
       githubState: input.outcome.kind === "github_201" ? input.outcome.state : null,
       resultReason: input.outcome.kind === "github_201" ? null : input.outcome.reason,
+      observedIssueUrl: null,
       completedAt: now,
       updatedAt: now,
     } as AcceptanceGatedGithubIssuePublicationRow;
@@ -20564,6 +20608,7 @@ export async function reportAcceptanceGatedGithubIssuePublication(
       responseBodySha256: projected.responseBodySha256,
       githubState: projected.githubState,
       resultReason: projected.resultReason,
+      observedIssueUrl: projected.observedIssueUrl,
       completedAt: now,
       updatedAt: now,
     }).where(and(
@@ -20581,5 +20626,1282 @@ export async function reportAcceptanceGatedGithubIssuePublication(
       current: await gatedGithubIssueRowIsCurrentInTransaction(tx, updated[0]!),
       issue,
     };
+  });
+}
+
+// R11.2c approval bridge for #1704's gated GitHub issue custody ------------
+
+export type AcceptanceGatedGithubIssueApprovalRequestStatus =
+  | "draft"
+  | "reserved"
+  | "published"
+  | "manual_reconciliation";
+
+export type AcceptanceGatedGithubIssueApprovalRequest = {
+  id: string;
+  status: AcceptanceGatedGithubIssueApprovalRequestStatus;
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  repoNormalized: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  bindingId: string;
+  acceptanceContract: { id: string; version: number; sha256: string };
+  criterionOutcomeBundle: {
+    id: string;
+    eventId: string;
+    sha256: string;
+    postedAttestationEventId: string;
+  };
+  packets: Array<{ packetId: string; sha256: string }>;
+  packetSetSha256: string;
+  correctionPacketPayloadSetSha256: string;
+  requestIdentitySha256: string;
+  title: string;
+  titleSha256: string;
+  body: string;
+  bodySha256: string;
+};
+
+export type AcceptanceGatedGithubIssueApprovalToolInput = {
+  acceptanceGatedIssueRequestId: string;
+  _acceptanceGatedIssue: {
+    version: 1;
+    requestIdentitySha256: string;
+    bindingId: string;
+    workspaceId: string;
+    recordId: string;
+    repo: string;
+    prNumber: number;
+    headSha: string;
+    headCycleId: string;
+    authorityGeneration: number;
+    acceptanceContract: { id: string; version: number; sha256: string };
+    criterionOutcomeBundle: {
+      id: string;
+      eventId: string;
+      sha256: string;
+      postedAttestationEventId: string;
+    };
+    packets: Array<{ packetId: string; sha256: string }>;
+    packetSetSha256: string;
+    correctionPacketPayloadSetSha256: string;
+    title: string;
+    titleSha256: string;
+    body: string;
+    bodySha256: string;
+  };
+};
+
+export type MintAcceptanceGatedGithubIssueApprovalRequestResult =
+  | { kind: "ready"; request: AcceptanceGatedGithubIssueApprovalRequest }
+  | { kind: "not_found" | "not_current" | "not_authorized" | "conflict" }
+  | { kind: "not_ready"; reason: AcceptanceGatedGithubIssueNotReadyReason };
+
+export type ResolveAcceptanceGatedGithubIssueApprovalRequestResult =
+  MintAcceptanceGatedGithubIssueApprovalRequestResult;
+
+export type ReserveAcceptanceGatedGithubIssueApprovalRequestResult =
+  | { kind: "reserved"; request: AcceptanceGatedGithubIssueApprovalRequest }
+  | { kind: "already_reserved" | "published" | "manual_reconciliation" }
+  | { kind: "not_found" | "not_current" | "not_authorized" | "not_approved" | "conflict" }
+  | { kind: "not_ready"; reason: AcceptanceGatedGithubIssueNotReadyReason };
+
+export type ReportAcceptanceGatedGithubIssueApprovalPublicationResult =
+  | { kind: "published" | "replayed"; issue: AcceptanceGatedGithubIssue }
+  | { kind: "not_found" | "not_authorized" | "conflict" };
+
+export type AcceptanceGatedGithubIssueManualReconciliationReason =
+  | "external_write_indeterminate"
+  | "publication_receipt_failed"
+  | "external_issue_wrong_repo";
+
+export type ReportAcceptanceGatedGithubIssueManualReconciliationResult =
+  | { kind: "recorded" | "replayed" }
+  | { kind: "not_found" | "not_authorized" | "conflict" };
+
+type AuthorizedGatedIssueSession = {
+  sessionId: string;
+  eveSessionId: string;
+  workspaceId: string;
+  userId: string;
+  role: AcceptanceGatedGithubIssueRole;
+};
+
+// Jace's approval poll has a fixed 30-minute ceiling. Give an in-flight
+// poller five minutes of clock/transport grace, then allow a different
+// current owner/admin to reclaim the still-immutable draft. A pending row is
+// first transitioned to `expired` while locked; approved custody is never
+// reclaimed, regardless of age.
+const ACCEPTANCE_GATED_GITHUB_ISSUE_DRAFT_LEASE_MS = 35 * 60 * 1000;
+const ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_SCAN_LIMIT = 100;
+
+function acceptanceGatedGithubIssueApprovalRequestId(input: {
+  recordId: string;
+  headCycleId: string;
+  bindingId: string;
+}): string {
+  return uuid5Url(
+    `acceptance-gated-github-issue-approval-request:${input.recordId}:${input.headCycleId}:${input.bindingId}`,
+  );
+}
+
+function assertExactGatedIssueApprovalRequestIdentity(input: unknown): asserts input is {
+  eveSessionId: string;
+  requestId: string;
+} {
+  if (!isRecord(input) || !hasExactKeys(input, ["eveSessionId", "requestId"])
+    || typeof input["eveSessionId"] !== "string" || input["eveSessionId"].length === 0
+    || Buffer.byteLength(input["eveSessionId"], "utf8") > 512
+    || !isUuid(input["requestId"])) {
+    throw new Error("Gated issue request identity requires only Eve session and opaque request id");
+  }
+}
+
+async function authorizedGatedIssueSessionInTransaction(
+  tx: DbTransaction,
+  eveSessionId: string,
+): Promise<AuthorizedGatedIssueSession | null> {
+  if (!eveSessionId || Buffer.byteLength(eveSessionId, "utf8") > 512) return null;
+  const rows = await tx.select({
+    sessionId: jaceSessions.id,
+    eveSessionId: jaceSessions.eveSessionId,
+    status: jaceSessions.status,
+    workspaceId: jaceSessions.workspaceId,
+    identityWorkspaceId: chatIdentities.workspaceId,
+    userId: chatIdentities.userId,
+    role: workspaceMemberships.role,
+  }).from(jaceSessions)
+    .leftJoin(chatIdentities, eq(chatIdentities.id, jaceSessions.chatIdentityId))
+    .leftJoin(workspaceMemberships, and(
+      eq(workspaceMemberships.userId, chatIdentities.userId),
+      eq(workspaceMemberships.workspaceId, jaceSessions.workspaceId),
+    ))
+    .where(eq(jaceSessions.eveSessionId, eveSessionId))
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(2);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (!row || row.eveSessionId !== eveSessionId
+    || (row.status !== "active" && row.status !== "waiting")
+    || !row.workspaceId || !row.userId
+    || (row.role !== "owner" && row.role !== "admin")
+    || (row.identityWorkspaceId !== null && row.identityWorkspaceId !== row.workspaceId)) return null;
+  return {
+    sessionId: row.sessionId,
+    eveSessionId,
+    workspaceId: row.workspaceId,
+    userId: row.userId,
+    role: row.role,
+  };
+}
+
+type GatedIssueDraftReclaimResult =
+  | { kind: "reclaimed"; row: AcceptanceGatedGithubIssueRequestRow }
+  | { kind: "conflict" };
+
+async function reclaimAcceptanceGatedGithubIssueDraftInTransaction(input: {
+  tx: DbTransaction;
+  row: AcceptanceGatedGithubIssueRequestRow;
+  current: CurrentAcceptanceGatedGithubIssueResolution;
+  session: AuthorizedGatedIssueSession;
+  now: Date;
+}): Promise<GatedIssueDraftReclaimResult> {
+  const { tx, row, current, session, now } = input;
+  if (row.status !== "draft" || !gatedGithubIssueRequestMatchesCurrent({ row, current })) {
+    return { kind: "conflict" };
+  }
+
+  // The approval callback does not take the Acceptance PR advisory lock, so
+  // lock every approval that names this request before deciding whether the
+  // draft is abandoned. This makes pending -> expired and human approval
+  // mutually exclusive for the rows we inspect.
+  await tx.execute(sql`
+    SELECT 1
+    FROM jace_approvals
+    WHERE workspace_id = ${row.workspaceId}
+      AND session_id = ${row.jaceSessionId}
+      AND eve_session_id = ${row.eveSessionId}
+      AND tool_name = 'create_issue'
+      AND tool_input ->> 'acceptanceGatedIssueRequestId' = ${row.id}
+    ORDER BY created_at DESC
+    LIMIT ${ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_SCAN_LIMIT + 1}
+    FOR UPDATE
+  `);
+  const approvals = await tx.select({
+    id: jaceApprovals.id,
+    workspaceId: jaceApprovals.workspaceId,
+    sessionId: jaceApprovals.sessionId,
+    eveSessionId: jaceApprovals.eveSessionId,
+    toolName: jaceApprovals.toolName,
+    toolInput: jaceApprovals.toolInput,
+    status: jaceApprovals.status,
+    publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+    createdAt: jaceApprovals.createdAt,
+    resolvedAt: jaceApprovals.resolvedAt,
+  }).from(jaceApprovals).where(and(
+    eq(jaceApprovals.workspaceId, row.workspaceId),
+    eq(jaceApprovals.sessionId, row.jaceSessionId),
+    eq(jaceApprovals.eveSessionId, row.eveSessionId),
+    eq(jaceApprovals.toolName, "create_issue"),
+    sql`${jaceApprovals.toolInput} ->> 'acceptanceGatedIssueRequestId' = ${row.id}`,
+  )).orderBy(desc(jaceApprovals.createdAt))
+    .limit(ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_SCAN_LIMIT + 1);
+  if (approvals.length > ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_SCAN_LIMIT) {
+    return { kind: "conflict" };
+  }
+
+  const expectedToolInput = acceptanceGatedGithubIssueApprovalToolInput(
+    projectAcceptanceGatedGithubIssueApprovalRequest(row),
+  );
+  const leaseCutoff = new Date(now.valueOf() - ACCEPTANCE_GATED_GITHUB_ISSUE_DRAFT_LEASE_MS);
+  const incumbent = await authorizedGatedIssueSessionInTransaction(tx, row.eveSessionId);
+  const incumbentStillOwnsDraft = incumbent !== null
+    && incumbent.sessionId === row.jaceSessionId
+    && incumbent.workspaceId === row.workspaceId
+    && incumbent.userId === row.requestedByUserId
+    && incumbent.role === row.requestedRole;
+  const stalePendingApprovalIds: string[] = [];
+  let hasReclaimableApprovalCustody = false;
+  for (const approval of approvals) {
+    if (approval.workspaceId !== row.workspaceId
+      || approval.sessionId !== row.jaceSessionId
+      || approval.eveSessionId !== row.eveSessionId
+      || approval.toolName !== "create_issue"
+      || !isDeepStrictEqual(approval.toolInput, expectedToolInput)
+      || !(approval.createdAt instanceof Date)
+      || Number.isNaN(approval.createdAt.valueOf())
+      || approval.publishedIssueUrl !== null) {
+      return { kind: "conflict" };
+    }
+    if (approval.status === "approved") {
+      // A still-authorized incumbent owns this approval indefinitely. Once
+      // that exact user/session loses authority, however, reserve fails
+      // closed; retain the approval as audit history and require the
+      // successor to obtain a fresh approval after ownership transfer.
+      if (incumbentStillOwnsDraft) return { kind: "conflict" };
+      hasReclaimableApprovalCustody = true;
+      continue;
+    }
+    if (approval.status === "pending") {
+      if (approval.resolvedAt !== null) return { kind: "conflict" };
+      if (approval.createdAt > leaseCutoff) return { kind: "conflict" };
+      stalePendingApprovalIds.push(approval.id);
+      continue;
+    }
+    if ((approval.status !== "denied" && approval.status !== "expired")
+      || !(approval.resolvedAt instanceof Date)
+      || Number.isNaN(approval.resolvedAt.valueOf())) {
+      return { kind: "conflict" };
+    }
+    hasReclaimableApprovalCustody = true;
+  }
+
+  if (stalePendingApprovalIds.length > 0) {
+    const expired = await tx.update(jaceApprovals).set({
+      status: "expired",
+      resolvedAt: now,
+    }).where(and(
+      inArray(jaceApprovals.id, stalePendingApprovalIds),
+      eq(jaceApprovals.status, "pending"),
+      isNull(jaceApprovals.resolvedAt),
+    )).returning({ id: jaceApprovals.id });
+    if (expired.length !== stalePendingApprovalIds.length) return { kind: "conflict" };
+    hasReclaimableApprovalCustody = true;
+  }
+
+  if (!hasReclaimableApprovalCustody && incumbentStillOwnsDraft && row.requestedAt > leaseCutoff) {
+    return { kind: "conflict" };
+  }
+
+  const reclaimed = await tx.update(acceptanceGatedGithubIssueRequests).set({
+    jaceSessionId: session.sessionId,
+    eveSessionId: session.eveSessionId,
+    requestedByUserId: session.userId,
+    requestedRole: session.role,
+    requestedAt: now,
+    updatedAt: now,
+  }).where(and(
+    eq(acceptanceGatedGithubIssueRequests.id, row.id),
+    eq(acceptanceGatedGithubIssueRequests.status, "draft"),
+    isNull(acceptanceGatedGithubIssueRequests.approvalId),
+    eq(acceptanceGatedGithubIssueRequests.jaceSessionId, row.jaceSessionId),
+    eq(acceptanceGatedGithubIssueRequests.eveSessionId, row.eveSessionId),
+    eq(acceptanceGatedGithubIssueRequests.requestedByUserId, row.requestedByUserId),
+    eq(acceptanceGatedGithubIssueRequests.requestedRole, row.requestedRole),
+    eq(acceptanceGatedGithubIssueRequests.requestedAt, row.requestedAt),
+  )).returning();
+  return reclaimed.length === 1
+    && gatedGithubIssueRequestMatchesCurrent({ row: reclaimed[0]!, current })
+    ? { kind: "reclaimed", row: reclaimed[0]! }
+    : { kind: "conflict" };
+}
+
+function gatedGithubIssueRequestBindingFromRow(
+  row: AcceptanceGatedGithubIssueRequestRow,
+): AcceptanceGatedGithubIssueRenderBinding {
+  return {
+    workspaceId: row.workspaceId,
+    recordId: row.recordId,
+    repo: row.repo,
+    prNumber: row.prNumber,
+    headSha: row.headSha,
+    headCycleId: row.headCycleId,
+    reviewJobId: row.reviewJobId,
+    authorityGeneration: row.authorityGeneration,
+    acceptanceContract: {
+      id: row.acceptanceContractId,
+      version: row.acceptanceContractVersion,
+      sha256: row.acceptanceContractSha256,
+    },
+    criterionOutcomeBundle: {
+      id: row.criterionOutcomeBundleId,
+      eventId: row.criterionOutcomeBundleEventId,
+      sha256: row.criterionOutcomeBundleSha256,
+      postedAttestationEventId: row.postedAttestationEventId,
+    },
+    packets: row.packets,
+    packetSetSha256: row.packetSetSha256,
+    correctionPacketPayloadSetSha256: row.correctionPacketPayloadSetSha256,
+  };
+}
+
+function projectAcceptanceGatedGithubIssueApprovalRequest(
+  row: AcceptanceGatedGithubIssueRequestRow,
+): AcceptanceGatedGithubIssueApprovalRequest {
+  return {
+    id: row.id,
+    status: row.status as AcceptanceGatedGithubIssueApprovalRequestStatus,
+    workspaceId: row.workspaceId,
+    recordId: row.recordId,
+    repo: row.repo,
+    repoNormalized: row.repoNormalized,
+    prNumber: row.prNumber,
+    headSha: row.headSha,
+    headCycleId: row.headCycleId,
+    authorityGeneration: row.authorityGeneration,
+    bindingId: row.bindingId,
+    acceptanceContract: {
+      id: row.acceptanceContractId,
+      version: row.acceptanceContractVersion,
+      sha256: row.acceptanceContractSha256,
+    },
+    criterionOutcomeBundle: {
+      id: row.criterionOutcomeBundleId,
+      eventId: row.criterionOutcomeBundleEventId,
+      sha256: row.criterionOutcomeBundleSha256,
+      postedAttestationEventId: row.postedAttestationEventId,
+    },
+    packets: row.packets,
+    packetSetSha256: row.packetSetSha256,
+    correctionPacketPayloadSetSha256: row.correctionPacketPayloadSetSha256,
+    requestIdentitySha256: row.requestIdentitySha256,
+    title: row.title,
+    titleSha256: row.titleSha256,
+    body: row.body,
+    bodySha256: row.bodySha256,
+  };
+}
+
+export function acceptanceGatedGithubIssueApprovalToolInput(
+  request: AcceptanceGatedGithubIssueApprovalRequest,
+): AcceptanceGatedGithubIssueApprovalToolInput {
+  return {
+    acceptanceGatedIssueRequestId: request.id,
+    _acceptanceGatedIssue: {
+      version: 1,
+      requestIdentitySha256: request.requestIdentitySha256,
+      bindingId: request.bindingId,
+      workspaceId: request.workspaceId,
+      recordId: request.recordId,
+      repo: request.repoNormalized,
+      prNumber: request.prNumber,
+      headSha: request.headSha,
+      headCycleId: request.headCycleId,
+      authorityGeneration: request.authorityGeneration,
+      acceptanceContract: request.acceptanceContract,
+      criterionOutcomeBundle: request.criterionOutcomeBundle,
+      packets: request.packets,
+      packetSetSha256: request.packetSetSha256,
+      correctionPacketPayloadSetSha256: request.correctionPacketPayloadSetSha256,
+      title: request.title,
+      titleSha256: request.titleSha256,
+      body: request.body,
+      bodySha256: request.bodySha256,
+    },
+  };
+}
+
+function gatedGithubIssueRequestStatusIsSelfConsistent(
+  row: AcceptanceGatedGithubIssueRequestRow,
+): boolean {
+  if (row.status === "draft") {
+    return row.approvalId === null && row.reservedAt === null && row.publishedAt === null
+      && row.reconciliationAt === null && row.publishedIssueUrl === null
+      && row.observedIssueUrl === null && row.reconciliationReason === null;
+  }
+  if (!isUuid(row.approvalId ?? "") || !(row.reservedAt instanceof Date)
+    || Number.isNaN(row.reservedAt.valueOf())) return false;
+  if (row.status === "reserved") {
+    return row.publishedAt === null && row.reconciliationAt === null
+      && row.publishedIssueUrl === null && row.observedIssueUrl === null
+      && row.reconciliationReason === null;
+  }
+  if (row.status === "published") {
+    const published = row.publishedIssueUrl === null
+      ? null : canonicalGithubIssueUrlForRepo(row.publishedIssueUrl, row.repoNormalized);
+    return published !== null && published.url === row.publishedIssueUrl
+      && row.publishedAt instanceof Date
+      && !Number.isNaN(row.publishedAt.valueOf()) && row.reconciliationAt === null
+      && row.observedIssueUrl === null && row.reconciliationReason === null;
+  }
+  return row.status === "manual_reconciliation" && row.publishedAt === null
+    && row.publishedIssueUrl === null && row.reconciliationAt instanceof Date
+    && !Number.isNaN(row.reconciliationAt.valueOf())
+    && [
+      "external_write_indeterminate", "publication_receipt_failed", "external_issue_wrong_repo",
+    ].includes(row.reconciliationReason ?? "");
+}
+
+function gatedGithubIssueRequestRowIsSelfConsistent(
+  row: AcceptanceGatedGithubIssueRequestRow,
+): boolean {
+  const binding = gatedGithubIssueRequestBindingFromRow(row);
+  return row.id === acceptanceGatedGithubIssueApprovalRequestId({
+    recordId: row.recordId,
+    headCycleId: row.headCycleId,
+    bindingId: row.bindingId,
+  })
+    && row.repoNormalized === row.repo.toLowerCase()
+    && row.bindingId === acceptanceGatedGithubIssueBindingId(binding)
+    && row.requestIdentitySha256 === acceptanceGatedGithubIssueRequestIdentitySha256({
+      binding,
+      titleSha256: row.titleSha256,
+      bodySha256: row.bodySha256,
+    })
+    && createHash("sha256").update(row.title, "utf8").digest("hex") === row.titleSha256
+    && createHash("sha256").update(row.body, "utf8").digest("hex") === row.bodySha256
+    && Array.isArray(row.packets) && row.packets.length > 0 && row.packets.length <= 100
+    && row.packets.every((packet, index) => isRecord(packet)
+      && hasExactKeys(packet, ["packetId", "sha256"])
+      && typeof packet.packetId === "string" && CORRECTION_PACKET_ID.test(packet.packetId)
+      && typeof packet.sha256 === "string" && LOWER_SHA256.test(packet.sha256)
+      && (index === 0 || row.packets[index - 1]!.packetId < packet.packetId))
+    && row.requestedAt instanceof Date && !Number.isNaN(row.requestedAt.valueOf())
+    && gatedGithubIssueRequestStatusIsSelfConsistent(row);
+}
+
+function gatedGithubIssueRequestMatchesCurrent(input: {
+  row: AcceptanceGatedGithubIssueRequestRow;
+  current: CurrentAcceptanceGatedGithubIssueResolution;
+}): boolean {
+  const { bindingId: _bindingId, ...currentBinding } = input.current.binding;
+  return gatedGithubIssueRequestRowIsSelfConsistent(input.row)
+    && input.row.bindingId === input.current.binding.bindingId
+    && isDeepStrictEqual(gatedGithubIssueRequestBindingFromRow(input.row), currentBinding)
+    && input.row.title === input.current.rendering.title
+    && input.row.body === input.current.rendering.body
+    && input.row.titleSha256 === input.current.rendering.titleSha256
+    && input.row.bodySha256 === input.current.rendering.bodySha256
+    && input.row.requestIdentitySha256 === input.current.rendering.requestIdentitySha256;
+}
+
+async function loadGatedIssueRequest(
+  requestId: string,
+  eveSessionId: string,
+): Promise<AcceptanceGatedGithubIssueRequestRow | null> {
+  return (await db.select().from(acceptanceGatedGithubIssueRequests).where(and(
+    eq(acceptanceGatedGithubIssueRequests.id, requestId),
+    eq(acceptanceGatedGithubIssueRequests.eveSessionId, eveSessionId),
+  )).limit(1))[0] ?? null;
+}
+
+export async function mintAcceptanceGatedGithubIssueApprovalRequest(input: {
+  eveSessionId: string;
+  recordId: string;
+}): Promise<MintAcceptanceGatedGithubIssueApprovalRequestResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["eveSessionId", "recordId"])
+    || typeof input.eveSessionId !== "string" || !input.eveSessionId
+    || Buffer.byteLength(input.eveSessionId, "utf8") > 512 || !isUuid(input.recordId)) {
+    throw new Error("Gated issue mint requires only Eve session and Acceptance Record");
+  }
+  const outerSession = await db.transaction((tx) =>
+    authorizedGatedIssueSessionInTransaction(tx, input.eveSessionId));
+  if (!outerSession) return { kind: "not_authorized" };
+  const candidate = await currentAcceptanceCorrectionPacketsCandidate({
+    workspaceId: outerSession.workspaceId,
+    recordId: input.recordId,
+  });
+  if (candidate === null) return { kind: "not_found" };
+  if (candidate === "not_current") return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: outerSession.workspaceId,
+    recordId: input.recordId,
+    ...candidate,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const session = await authorizedGatedIssueSessionInTransaction(tx, input.eveSessionId);
+    if (!session || session.workspaceId !== outerSession.workspaceId
+      || session.sessionId !== outerSession.sessionId || session.userId !== outerSession.userId) {
+      return { kind: "not_authorized" } as const;
+    }
+    const current = await resolveCurrentAcceptanceGatedGithubIssueInTransaction({
+      tx,
+      workspaceId: session.workspaceId,
+      recordId: input.recordId,
+      candidate,
+    });
+    if (current.kind !== "current") return current;
+    const publication = await tx.select({ id: acceptanceGatedGithubIssuePublications.id })
+      .from(acceptanceGatedGithubIssuePublications).where(and(
+        eq(acceptanceGatedGithubIssuePublications.recordId, input.recordId),
+        eq(acceptanceGatedGithubIssuePublications.headCycleId, current.binding.headCycleId),
+      )).limit(1);
+    if (publication.length > 0) return { kind: "conflict" } as const;
+    const id = acceptanceGatedGithubIssueApprovalRequestId({
+      recordId: input.recordId,
+      headCycleId: current.binding.headCycleId,
+      bindingId: current.binding.bindingId,
+    });
+    const existing = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+      eq(acceptanceGatedGithubIssueRequests.recordId, input.recordId),
+      eq(acceptanceGatedGithubIssueRequests.headCycleId, current.binding.headCycleId),
+    )).limit(2));
+    if (existing.length > 0) {
+      const row = existing[0]!;
+      if (existing.length !== 1 || row.id !== id
+        || !gatedGithubIssueRequestMatchesCurrent({ row, current })) {
+        return { kind: "conflict" } as const;
+      }
+      if (row.eveSessionId === input.eveSessionId && row.jaceSessionId === session.sessionId
+        && row.requestedByUserId === session.userId && row.requestedRole === session.role) {
+        return { kind: "ready", request: projectAcceptanceGatedGithubIssueApprovalRequest(row) };
+      }
+      const reclaimed = await reclaimAcceptanceGatedGithubIssueDraftInTransaction({
+        tx,
+        row,
+        current,
+        session,
+        now: new Date(),
+      });
+      return reclaimed.kind === "reclaimed"
+        ? { kind: "ready", request: projectAcceptanceGatedGithubIssueApprovalRequest(reclaimed.row) }
+        : { kind: "conflict" };
+    }
+    const now = new Date();
+    const { bindingId, ...binding } = current.binding;
+    const values = {
+      id,
+      workspaceId: session.workspaceId,
+      recordId: input.recordId,
+      jaceSessionId: session.sessionId,
+      eveSessionId: input.eveSessionId,
+      requestedByUserId: session.userId,
+      requestedRole: session.role,
+      repo: binding.repo,
+      repoNormalized: binding.repo.toLowerCase(),
+      prNumber: binding.prNumber,
+      headSha: binding.headSha,
+      headCycleId: binding.headCycleId,
+      authorityGeneration: binding.authorityGeneration,
+      reviewJobId: binding.reviewJobId,
+      bindingId,
+      acceptanceContractId: binding.acceptanceContract.id,
+      acceptanceContractVersion: binding.acceptanceContract.version,
+      acceptanceContractSha256: binding.acceptanceContract.sha256,
+      criterionOutcomeBundleId: binding.criterionOutcomeBundle.id,
+      criterionOutcomeBundleEventId: binding.criterionOutcomeBundle.eventId,
+      criterionOutcomeBundleSha256: binding.criterionOutcomeBundle.sha256,
+      postedAttestationEventId: binding.criterionOutcomeBundle.postedAttestationEventId,
+      packets: binding.packets,
+      packetSetSha256: binding.packetSetSha256,
+      correctionPacketPayloadSetSha256: binding.correctionPacketPayloadSetSha256,
+      requestIdentitySha256: current.rendering.requestIdentitySha256,
+      title: current.rendering.title,
+      titleSha256: current.rendering.titleSha256,
+      body: current.rendering.body,
+      bodySha256: current.rendering.bodySha256,
+      status: "draft" as const,
+      approvalId: null,
+      publishedIssueUrl: null,
+      observedIssueUrl: null,
+      reconciliationReason: null,
+      requestedAt: now,
+      reservedAt: null,
+      publishedAt: null,
+      reconciliationAt: null,
+      updatedAt: now,
+    };
+    const inserted = await tx.insert(acceptanceGatedGithubIssueRequests).values(values)
+      .onConflictDoNothing().returning();
+    if (inserted.length !== 1 || !gatedGithubIssueRequestMatchesCurrent({
+      row: inserted[0]!, current,
+    })) return { kind: "conflict" };
+    return {
+      kind: "ready",
+      request: projectAcceptanceGatedGithubIssueApprovalRequest(inserted[0]!),
+    };
+  });
+}
+
+export async function resolveAcceptanceGatedGithubIssueApprovalRequest(input: {
+  eveSessionId: string;
+  requestId: string;
+}): Promise<ResolveAcceptanceGatedGithubIssueApprovalRequestResult> {
+  assertExactGatedIssueApprovalRequestIdentity(input);
+  const candidate = await loadGatedIssueRequest(input.requestId, input.eveSessionId);
+  if (!candidate) return { kind: "not_found" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const row = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, input.requestId),
+      eq(acceptanceGatedGithubIssueRequests.eveSessionId, input.eveSessionId),
+    )).limit(1))[0];
+    if (!row) return { kind: "not_found" } as const;
+    const session = await authorizedGatedIssueSessionInTransaction(tx, input.eveSessionId);
+    if (!session || session.workspaceId !== row.workspaceId || session.sessionId !== row.jaceSessionId
+      || session.userId !== row.requestedByUserId || session.role !== row.requestedRole) {
+      return { kind: "not_authorized" } as const;
+    }
+    if (!gatedGithubIssueRequestRowIsSelfConsistent(row)) return { kind: "conflict" } as const;
+    if (row.status !== "draft") {
+      return { kind: "ready", request: projectAcceptanceGatedGithubIssueApprovalRequest(row) };
+    }
+    const current = await resolveCurrentAcceptanceGatedGithubIssueInTransaction({
+      tx,
+      workspaceId: row.workspaceId,
+      recordId: row.recordId,
+      candidate: { repo: row.repo, prNumber: row.prNumber },
+    });
+    if (current.kind !== "current") return current;
+    return gatedGithubIssueRequestMatchesCurrent({ row, current })
+      ? { kind: "ready", request: projectAcceptanceGatedGithubIssueApprovalRequest(row) }
+      : { kind: "not_current" };
+  });
+}
+
+function approvalExactlyBindsGatedIssueRequest(input: {
+  approval: {
+    id: string;
+    workspaceId: string | null;
+    sessionId: string;
+    eveSessionId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    status: string;
+    publishedIssueUrl: string | null;
+  };
+  request: AcceptanceGatedGithubIssueRequestRow;
+}): boolean {
+  const projected = projectAcceptanceGatedGithubIssueApprovalRequest(input.request);
+  return (input.approval.id === input.request.approvalId || input.request.approvalId === null)
+    ? input.approval.workspaceId === input.request.workspaceId
+      && input.approval.sessionId === input.request.jaceSessionId
+      && input.approval.eveSessionId === input.request.eveSessionId
+      && input.approval.toolName === "create_issue"
+      && input.approval.status === "approved"
+      && (input.request.status === "published"
+        ? input.approval.publishedIssueUrl === input.request.publishedIssueUrl
+        : input.approval.publishedIssueUrl === null)
+      && isDeepStrictEqual(
+        input.approval.toolInput,
+        acceptanceGatedGithubIssueApprovalToolInput(projected),
+      )
+    : false;
+}
+
+function publicationExactlyBindsGatedIssueRequest(input: {
+  publication: AcceptanceGatedGithubIssuePublicationRow;
+  request: AcceptanceGatedGithubIssueRequestRow;
+}): boolean {
+  const row = input.publication;
+  const request = input.request;
+  return row.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION
+    && row.approvalRequestId === request.id
+    && row.approvalId === request.approvalId
+    && row.eveSessionId === request.eveSessionId
+    && row.workspaceId === request.workspaceId
+    && row.recordId === request.recordId
+    && row.repo === request.repo
+    && row.repoNormalized === request.repoNormalized
+    && row.prNumber === request.prNumber
+    && row.headSha === request.headSha
+    && row.headCycleId === request.headCycleId
+    && row.authorityGeneration === request.authorityGeneration
+    && row.reviewJobId === request.reviewJobId
+    && row.bindingId === request.bindingId
+    && row.acceptanceContractId === request.acceptanceContractId
+    && row.acceptanceContractVersion === request.acceptanceContractVersion
+    && row.acceptanceContractSha256 === request.acceptanceContractSha256
+    && row.criterionOutcomeBundleId === request.criterionOutcomeBundleId
+    && row.criterionOutcomeBundleEventId === request.criterionOutcomeBundleEventId
+    && row.criterionOutcomeBundleSha256 === request.criterionOutcomeBundleSha256
+    && row.postedAttestationEventId === request.postedAttestationEventId
+    && isDeepStrictEqual(row.packets, request.packets)
+    && row.packetSetSha256 === request.packetSetSha256
+    && row.correctionPacketPayloadSetSha256 === request.correctionPacketPayloadSetSha256
+    && row.requestIdentitySha256 === request.requestIdentitySha256
+    && row.title === request.title && row.titleSha256 === request.titleSha256
+    && row.body === request.body && row.bodySha256 === request.bodySha256
+    && row.reservedBy === `user:${request.requestedByUserId}`
+    && row.reservedRole === request.requestedRole
+    && gatedGithubIssueRowHasSelfConsistentBinding(row);
+}
+
+async function verifiedApprovalCustodyForPublicationInTransaction(
+  tx: DbTransaction,
+  publication: AcceptanceGatedGithubIssuePublicationRow,
+): Promise<boolean> {
+  if (publication.requestProtocolVersion === ACCEPTANCE_GATED_GITHUB_ISSUE_REQUEST_VERSION) {
+    return true;
+  }
+  if (!publication.approvalRequestId || !publication.approvalId || !publication.eveSessionId) {
+    return false;
+  }
+  const request = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+    eq(acceptanceGatedGithubIssueRequests.id, publication.approvalRequestId),
+    eq(acceptanceGatedGithubIssueRequests.workspaceId, publication.workspaceId),
+  )).limit(1))[0];
+  const approval = (await tx.select({
+    id: jaceApprovals.id,
+    workspaceId: jaceApprovals.workspaceId,
+    sessionId: jaceApprovals.sessionId,
+    eveSessionId: jaceApprovals.eveSessionId,
+    toolName: jaceApprovals.toolName,
+    toolInput: jaceApprovals.toolInput,
+    status: jaceApprovals.status,
+    publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+  }).from(jaceApprovals).where(eq(jaceApprovals.id, publication.approvalId)).limit(1))[0];
+  if (!request || !approval || request.approvalId !== approval.id
+    || !gatedGithubIssueRequestRowIsSelfConsistent(request)
+    || !publicationExactlyBindsGatedIssueRequest({ publication, request })) return false;
+  const expectedInput = acceptanceGatedGithubIssueApprovalToolInput(
+    projectAcceptanceGatedGithubIssueApprovalRequest(request),
+  );
+  const expectedRequestStatus = publication.status === "reserved" ? "reserved"
+    : publication.status === "published" ? "published" : "manual_reconciliation";
+  return request.status === expectedRequestStatus
+    && approval.workspaceId === request.workspaceId
+    && approval.sessionId === request.jaceSessionId
+    && approval.eveSessionId === request.eveSessionId
+    && approval.toolName === "create_issue" && approval.status === "approved"
+    && isDeepStrictEqual(approval.toolInput, expectedInput)
+    && (publication.status === "published"
+      ? approval.publishedIssueUrl === publication.githubIssueUrl
+      : approval.publishedIssueUrl === null);
+}
+
+export async function reserveAcceptanceGatedGithubIssueApprovalRequest(input: {
+  eveSessionId: string;
+  requestId: string;
+  approvalId: string;
+}): Promise<ReserveAcceptanceGatedGithubIssueApprovalRequestResult> {
+  if (!isRecord(input) || !hasExactKeys(input, ["eveSessionId", "requestId", "approvalId"])
+    || typeof input.eveSessionId !== "string" || !input.eveSessionId
+    || !isUuid(input.requestId) || !isUuid(input.approvalId)) {
+    throw new Error("Gated issue reservation requires only Eve session, request, and approval");
+  }
+  const candidate = await loadGatedIssueRequest(input.requestId, input.eveSessionId);
+  if (!candidate) return { kind: "not_found" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const request = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, input.requestId),
+      eq(acceptanceGatedGithubIssueRequests.eveSessionId, input.eveSessionId),
+    )).limit(1))[0];
+    if (!request) return { kind: "not_found" } as const;
+    if (!gatedGithubIssueRequestRowIsSelfConsistent(request)) return { kind: "conflict" } as const;
+    const session = await authorizedGatedIssueSessionInTransaction(tx, input.eveSessionId);
+    if (!session || session.workspaceId !== request.workspaceId
+      || session.sessionId !== request.jaceSessionId || session.userId !== request.requestedByUserId
+      || session.role !== request.requestedRole) return { kind: "not_authorized" } as const;
+    if (request.status !== "draft" && request.approvalId !== input.approvalId) {
+      return { kind: "conflict" } as const;
+    }
+    if (request.status === "reserved") return { kind: "already_reserved" } as const;
+    if (request.status === "published") return { kind: "published" } as const;
+    if (request.status === "manual_reconciliation") return { kind: "manual_reconciliation" } as const;
+
+    const approval = (await tx.select({
+      id: jaceApprovals.id,
+      workspaceId: jaceApprovals.workspaceId,
+      sessionId: jaceApprovals.sessionId,
+      eveSessionId: jaceApprovals.eveSessionId,
+      toolName: jaceApprovals.toolName,
+      toolInput: jaceApprovals.toolInput,
+      status: jaceApprovals.status,
+      publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+    }).from(jaceApprovals).where(eq(jaceApprovals.id, input.approvalId)).limit(1))[0];
+    if (!approval || approval.status !== "approved") return { kind: "not_approved" } as const;
+    if (!approvalExactlyBindsGatedIssueRequest({ approval, request })) {
+      return { kind: "not_authorized" } as const;
+    }
+    const current = await resolveCurrentAcceptanceGatedGithubIssueInTransaction({
+      tx,
+      workspaceId: request.workspaceId,
+      recordId: request.recordId,
+      candidate: { repo: request.repo, prNumber: request.prNumber },
+    });
+    if (current.kind !== "current") return current;
+    if (!gatedGithubIssueRequestMatchesCurrent({ row: request, current })) {
+      return { kind: "not_current" } as const;
+    }
+    const existing = await tx.select().from(acceptanceGatedGithubIssuePublications).where(and(
+      eq(acceptanceGatedGithubIssuePublications.recordId, request.recordId),
+      eq(acceptanceGatedGithubIssuePublications.headCycleId, request.headCycleId),
+    )).limit(2);
+    if (existing.length > 0) return { kind: "conflict" } as const;
+
+    const now = new Date();
+    const values = {
+      id: acceptanceGatedGithubIssuePublicationId({
+        recordId: request.recordId,
+        headCycleId: request.headCycleId,
+      }),
+      workspaceId: request.workspaceId,
+      recordId: request.recordId,
+      repo: request.repo,
+      repoNormalized: request.repoNormalized,
+      prNumber: request.prNumber,
+      headSha: request.headSha,
+      headCycleId: request.headCycleId,
+      authorityGeneration: request.authorityGeneration,
+      reviewJobId: request.reviewJobId,
+      bindingId: request.bindingId,
+      acceptanceContractId: request.acceptanceContractId,
+      acceptanceContractVersion: request.acceptanceContractVersion,
+      acceptanceContractSha256: request.acceptanceContractSha256,
+      criterionOutcomeBundleId: request.criterionOutcomeBundleId,
+      criterionOutcomeBundleEventId: request.criterionOutcomeBundleEventId,
+      criterionOutcomeBundleSha256: request.criterionOutcomeBundleSha256,
+      postedAttestationEventId: request.postedAttestationEventId,
+      packets: request.packets,
+      packetSetSha256: request.packetSetSha256,
+      correctionPacketPayloadSetSha256: request.correctionPacketPayloadSetSha256,
+      requestProtocolVersion: ACCEPTANCE_GATED_GITHUB_ISSUE_APPROVAL_REQUEST_VERSION,
+      approvalRequestId: request.id,
+      approvalId: approval.id,
+      eveSessionId: input.eveSessionId,
+      requestIdentitySha256: request.requestIdentitySha256,
+      title: request.title,
+      titleSha256: request.titleSha256,
+      body: request.body,
+      bodySha256: request.bodySha256,
+      reservedBy: `user:${request.requestedByUserId}`,
+      reservedRole: request.requestedRole,
+      status: "reserved" as const,
+      httpStatus: null,
+      githubIssueId: null,
+      githubIssueNumber: null,
+      githubApiUrl: null,
+      githubIssueUrl: null,
+      githubRequestId: null,
+      responseTitleSha256: null,
+      responseBodySha256: null,
+      githubState: null,
+      resultReason: null,
+      observedIssueUrl: null,
+      reservedAt: now,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const projected = values as AcceptanceGatedGithubIssuePublicationRow;
+    const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: request.recordId,
+      eventKey: gatedGithubIssueReservationEventKey(request.headCycleId),
+      stage: ACCEPTANCE_GATED_GITHUB_ISSUE_STAGE,
+      actor: values.reservedBy,
+      payloadRef: gatedGithubIssueReservationEventPayload(projected),
+      at: now,
+    }]);
+    if (!appended.events[0]?.inserted) return { kind: "conflict" } as const;
+    const inserted = await tx.insert(acceptanceGatedGithubIssuePublications).values(values)
+      .onConflictDoNothing().returning();
+    if (inserted.length !== 1 || !publicationExactlyBindsGatedIssueRequest({
+      publication: inserted[0]!, request: { ...request, approvalId: approval.id },
+    }) || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(tx, inserted[0]!)) {
+      throw new AcceptanceGatedGithubIssueConflictError();
+    }
+    const updatedRequest = await tx.update(acceptanceGatedGithubIssueRequests).set({
+      status: "reserved",
+      approvalId: approval.id,
+      reservedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, request.id),
+      eq(acceptanceGatedGithubIssueRequests.status, "draft"),
+      isNull(acceptanceGatedGithubIssueRequests.approvalId),
+    )).returning();
+    if (updatedRequest.length !== 1 || !gatedGithubIssueRequestRowIsSelfConsistent(updatedRequest[0]!)) {
+      throw new AcceptanceGatedGithubIssueConflictError();
+    }
+    return {
+      kind: "reserved",
+      request: projectAcceptanceGatedGithubIssueApprovalRequest(updatedRequest[0]!),
+    };
+  });
+}
+
+function canonicalGithubIssueUrlForRepo(value: string, repoNormalized?: string): {
+  url: string;
+  repo: string;
+  issueNumber: number;
+} | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com"
+      || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    const match = parsed.pathname.match(/^\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/issues\/([1-9][0-9]*)$/u);
+    if (!match) return null;
+    const repo = `${match[1]}/${match[2]}`.toLowerCase();
+    if (repoNormalized && repo !== repoNormalized) return null;
+    const issueNumber = Number(match[3]);
+    if (!Number.isSafeInteger(issueNumber)) return null;
+    return { url: `https://github.com/${repo}/issues/${issueNumber}`, repo, issueNumber };
+  } catch {
+    return null;
+  }
+}
+
+function canonicalGithubApiIssueUrl(value: string, repoNormalized: string, issueNumber: number): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "api.github.com"
+      || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    const match = parsed.pathname.match(/^\/repos\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/issues\/([1-9][0-9]*)$/u);
+    if (!match || `${match[1]}/${match[2]}`.toLowerCase() !== repoNormalized
+      || Number(match[3]) !== issueNumber) return null;
+    return `https://api.github.com/repos/${repoNormalized}/issues/${issueNumber}`;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeAcceptanceGatedGithubIssueReceipt(input: {
+  receipt: AcceptanceGatedGithubIssuePublishedReceipt;
+  repoNormalized: string;
+  titleSha256: string;
+  bodySha256: string;
+}): AcceptanceGatedGithubIssuePublishedReceipt | null {
+  if (!isAcceptanceGatedGithubIssueReceipt(input.receipt) || input.receipt.kind !== "github_201") {
+    return null;
+  }
+  const issue = canonicalGithubIssueUrlForRepo(input.receipt.githubIssueUrl, input.repoNormalized);
+  if (!issue || issue.issueNumber !== input.receipt.githubIssueNumber
+    || input.receipt.responseTitleSha256 !== input.titleSha256
+    || input.receipt.responseBodySha256 !== input.bodySha256) return null;
+  const apiUrl = canonicalGithubApiIssueUrl(
+    input.receipt.githubApiUrl,
+    input.repoNormalized,
+    issue.issueNumber,
+  );
+  if (!apiUrl) return null;
+  return {
+    ...input.receipt,
+    githubApiUrl: apiUrl,
+    githubIssueUrl: issue.url,
+  };
+}
+
+export async function reportAcceptanceGatedGithubIssueApprovalPublication(input: {
+  eveSessionId: string;
+  requestId: string;
+  approvalId: string;
+  receipt: AcceptanceGatedGithubIssuePublishedReceipt;
+}): Promise<ReportAcceptanceGatedGithubIssueApprovalPublicationResult> {
+  if (!isRecord(input)
+    || !hasExactKeys(input, ["eveSessionId", "requestId", "approvalId", "receipt"])
+    || typeof input.eveSessionId !== "string" || !input.eveSessionId
+    || !isUuid(input.requestId) || !isUuid(input.approvalId)
+    || !isAcceptanceGatedGithubIssueReceipt(input.receipt)
+    || input.receipt.kind !== "github_201") {
+    throw new Error("Gated issue publication requires only Eve session, request, approval, and exact receipt");
+  }
+  const candidate = await loadGatedIssueRequest(input.requestId, input.eveSessionId);
+  if (!candidate) return { kind: "not_found" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const request = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, input.requestId),
+      eq(acceptanceGatedGithubIssueRequests.eveSessionId, input.eveSessionId),
+    )).limit(1))[0];
+    const publications = await tx.select().from(acceptanceGatedGithubIssuePublications).where(
+      eq(acceptanceGatedGithubIssuePublications.approvalRequestId, input.requestId),
+    ).limit(2);
+    const publication = publications[0];
+    if (request && (publications.length !== 1 || request.approvalId !== input.approvalId
+      || publication?.approvalId !== input.approvalId)) return { kind: "conflict" } as const;
+    const approval = (await tx.select({
+      id: jaceApprovals.id,
+      workspaceId: jaceApprovals.workspaceId,
+      sessionId: jaceApprovals.sessionId,
+      eveSessionId: jaceApprovals.eveSessionId,
+      toolName: jaceApprovals.toolName,
+      toolInput: jaceApprovals.toolInput,
+      status: jaceApprovals.status,
+      publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+    }).from(jaceApprovals).where(eq(jaceApprovals.id, input.approvalId)).limit(1))[0];
+    if (!request || !publication || !approval) return { kind: "not_found" } as const;
+    if (!gatedGithubIssueRequestRowIsSelfConsistent(request)
+      || !publicationExactlyBindsGatedIssueRequest({ publication, request })
+      || !approvalExactlyBindsGatedIssueRequest({ approval, request })
+      || request.approvalId !== input.approvalId
+      || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(tx, publication)) {
+      return { kind: "not_authorized" } as const;
+    }
+    const receipt = normalizeAcceptanceGatedGithubIssueReceipt({
+      receipt: input.receipt,
+      repoNormalized: request.repoNormalized,
+      titleSha256: request.titleSha256,
+      bodySha256: request.bodySha256,
+    });
+    if (!receipt) return { kind: "conflict" } as const;
+
+    // Terminal replay is deliberately resolved before any current-head read.
+    if (request.status === "published" || publication.status === "published") {
+      const issue = projectAcceptanceGatedGithubIssue(publication);
+      return request.status === "published" && publication.status === "published"
+        && request.publishedIssueUrl === receipt.githubIssueUrl
+        && approval.publishedIssueUrl === receipt.githubIssueUrl
+        && gatedGithubIssueOutcomeMatchesRow(publication, receipt) && issue
+        ? { kind: "replayed", issue }
+        : { kind: "conflict" };
+    }
+    if (request.status !== "reserved" || publication.status !== "reserved"
+      || approval.publishedIssueUrl !== null) return { kind: "conflict" } as const;
+
+    const collisions = await tx.select({ id: acceptanceGatedGithubIssuePublications.id })
+      .from(acceptanceGatedGithubIssuePublications).where(sql`
+        ${acceptanceGatedGithubIssuePublications.id} <> ${publication.id}
+        AND (${acceptanceGatedGithubIssuePublications.githubIssueId} = ${receipt.githubIssueId}
+          OR (${acceptanceGatedGithubIssuePublications.repoNormalized} = ${request.repoNormalized}
+            AND ${acceptanceGatedGithubIssuePublications.githubIssueNumber} = ${receipt.githubIssueNumber}))
+      `).limit(1);
+    if (collisions.length > 0) return { kind: "conflict" } as const;
+
+    const now = new Date();
+    const projected = {
+      ...publication,
+      status: "published" as const,
+      httpStatus: 201,
+      githubIssueId: receipt.githubIssueId,
+      githubIssueNumber: receipt.githubIssueNumber,
+      githubApiUrl: receipt.githubApiUrl,
+      githubIssueUrl: receipt.githubIssueUrl,
+      githubRequestId: receipt.githubRequestId,
+      responseTitleSha256: receipt.responseTitleSha256,
+      responseBodySha256: receipt.responseBodySha256,
+      githubState: "open",
+      resultReason: null,
+      observedIssueUrl: null,
+      completedAt: now,
+      updatedAt: now,
+    } as AcceptanceGatedGithubIssuePublicationRow;
+    const resultPayload = gatedGithubIssueResultEventPayload(projected);
+    if (!resultPayload) throw new AcceptanceGatedGithubIssueConflictError();
+    const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: publication.recordId,
+      eventKey: gatedGithubIssueResultEventKey(publication.headCycleId),
+      stage: ACCEPTANCE_GATED_GITHUB_ISSUE_STAGE,
+      actor: ACCEPTANCE_GATED_GITHUB_ISSUE_RESULT_ACTOR,
+      payloadRef: resultPayload,
+      at: now,
+    }]);
+    if (!appended.events[0]?.inserted) return { kind: "conflict" } as const;
+    const updatedPublication = await tx.update(acceptanceGatedGithubIssuePublications).set({
+      status: "published",
+      httpStatus: 201,
+      githubIssueId: receipt.githubIssueId,
+      githubIssueNumber: receipt.githubIssueNumber,
+      githubApiUrl: receipt.githubApiUrl,
+      githubIssueUrl: receipt.githubIssueUrl,
+      githubRequestId: receipt.githubRequestId,
+      responseTitleSha256: receipt.responseTitleSha256,
+      responseBodySha256: receipt.responseBodySha256,
+      githubState: "open",
+      resultReason: null,
+      observedIssueUrl: null,
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceGatedGithubIssuePublications.id, publication.id),
+      eq(acceptanceGatedGithubIssuePublications.status, "reserved"),
+    )).returning();
+    const updatedRequest = await tx.update(acceptanceGatedGithubIssueRequests).set({
+      status: "published",
+      publishedIssueUrl: receipt.githubIssueUrl,
+      publishedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, request.id),
+      eq(acceptanceGatedGithubIssueRequests.status, "reserved"),
+      eq(acceptanceGatedGithubIssueRequests.approvalId, input.approvalId),
+    )).returning();
+    const updatedApproval = await tx.update(jaceApprovals).set({
+      publishedIssueUrl: receipt.githubIssueUrl,
+    }).where(and(
+      eq(jaceApprovals.id, input.approvalId),
+      eq(jaceApprovals.status, "approved"),
+      isNull(jaceApprovals.publishedIssueUrl),
+    )).returning({ id: jaceApprovals.id });
+    if (updatedPublication.length !== 1 || updatedRequest.length !== 1 || updatedApproval.length !== 1
+      || !gatedGithubIssueRequestRowIsSelfConsistent(updatedRequest[0]!)
+      || !publicationExactlyBindsGatedIssueRequest({
+        publication: updatedPublication[0]!, request: updatedRequest[0]!,
+      })
+      || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(tx, updatedPublication[0]!)) {
+      throw new AcceptanceGatedGithubIssueConflictError();
+    }
+    const issue = projectAcceptanceGatedGithubIssue(updatedPublication[0]!);
+    if (!issue) throw new AcceptanceGatedGithubIssueConflictError();
+    return { kind: "published", issue };
+  });
+}
+
+export async function reportAcceptanceGatedGithubIssueManualReconciliation(input: {
+  eveSessionId: string;
+  requestId: string;
+  approvalId: string;
+  reason: AcceptanceGatedGithubIssueManualReconciliationReason;
+  observedIssueUrl?: string;
+}): Promise<ReportAcceptanceGatedGithubIssueManualReconciliationResult> {
+  const keys = input.observedIssueUrl === undefined
+    ? ["eveSessionId", "requestId", "approvalId", "reason"]
+    : ["eveSessionId", "requestId", "approvalId", "reason", "observedIssueUrl"];
+  if (!isRecord(input) || !hasExactKeys(input, keys)
+    || typeof input.eveSessionId !== "string" || !input.eveSessionId
+    || !isUuid(input.requestId) || !isUuid(input.approvalId)
+    || ![
+      "external_write_indeterminate", "publication_receipt_failed", "external_issue_wrong_repo",
+    ].includes(input.reason)) {
+    throw new Error("Gated issue reconciliation requires a closed server reason");
+  }
+  const observed = input.observedIssueUrl === undefined
+    ? null : canonicalGithubIssueUrlForRepo(input.observedIssueUrl);
+  if (input.observedIssueUrl !== undefined && !observed) {
+    throw new Error("Gated issue reconciliation observed URL is not canonical GitHub issue custody");
+  }
+  const candidate = await loadGatedIssueRequest(input.requestId, input.eveSessionId);
+  if (!candidate) return { kind: "not_found" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const request = (await tx.select().from(acceptanceGatedGithubIssueRequests).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, input.requestId),
+      eq(acceptanceGatedGithubIssueRequests.eveSessionId, input.eveSessionId),
+    )).limit(1))[0];
+    const publications = await tx.select().from(acceptanceGatedGithubIssuePublications).where(
+      eq(acceptanceGatedGithubIssuePublications.approvalRequestId, input.requestId),
+    ).limit(2);
+    const publication = publications[0];
+    if (request && (publications.length !== 1 || request.approvalId !== input.approvalId
+      || publication?.approvalId !== input.approvalId)) return { kind: "conflict" } as const;
+    const approval = (await tx.select({
+      id: jaceApprovals.id,
+      workspaceId: jaceApprovals.workspaceId,
+      sessionId: jaceApprovals.sessionId,
+      eveSessionId: jaceApprovals.eveSessionId,
+      toolName: jaceApprovals.toolName,
+      toolInput: jaceApprovals.toolInput,
+      status: jaceApprovals.status,
+      publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+    }).from(jaceApprovals).where(eq(jaceApprovals.id, input.approvalId)).limit(1))[0];
+    if (!request || !publication || !approval) return { kind: "not_found" } as const;
+    if (!gatedGithubIssueRequestRowIsSelfConsistent(request)
+      || !publicationExactlyBindsGatedIssueRequest({ publication, request })
+      || !approvalExactlyBindsGatedIssueRequest({ approval, request })
+      || request.approvalId !== input.approvalId || approval.publishedIssueUrl !== null
+      || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(tx, publication)) {
+      return { kind: "not_authorized" } as const;
+    }
+    if (request.status === "manual_reconciliation" || publication.status === "ambiguous_hold") {
+      return request.status === "manual_reconciliation" && publication.status === "ambiguous_hold"
+        && request.reconciliationReason === input.reason
+        && request.observedIssueUrl === (observed?.url ?? null)
+        && publication.resultReason === input.reason
+        && publication.observedIssueUrl === (observed?.url ?? null)
+        ? { kind: "replayed" } : { kind: "conflict" };
+    }
+    if (request.status !== "reserved" || publication.status !== "reserved") {
+      return { kind: "conflict" } as const;
+    }
+    const now = new Date();
+    const projected = {
+      ...publication,
+      status: "ambiguous_hold" as const,
+      resultReason: input.reason,
+      observedIssueUrl: observed?.url ?? null,
+      completedAt: now,
+      updatedAt: now,
+    } as AcceptanceGatedGithubIssuePublicationRow;
+    const resultPayload = gatedGithubIssueResultEventPayload(projected);
+    if (!resultPayload) throw new AcceptanceGatedGithubIssueConflictError();
+    const appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: publication.recordId,
+      eventKey: gatedGithubIssueResultEventKey(publication.headCycleId),
+      stage: ACCEPTANCE_GATED_GITHUB_ISSUE_STAGE,
+      actor: ACCEPTANCE_GATED_GITHUB_ISSUE_RESULT_ACTOR,
+      payloadRef: resultPayload,
+      at: now,
+    }]);
+    if (!appended.events[0]?.inserted) return { kind: "conflict" } as const;
+    const updatedPublication = await tx.update(acceptanceGatedGithubIssuePublications).set({
+      status: "ambiguous_hold",
+      resultReason: input.reason,
+      observedIssueUrl: observed?.url ?? null,
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceGatedGithubIssuePublications.id, publication.id),
+      eq(acceptanceGatedGithubIssuePublications.status, "reserved"),
+    )).returning();
+    const updatedRequest = await tx.update(acceptanceGatedGithubIssueRequests).set({
+      status: "manual_reconciliation",
+      observedIssueUrl: observed?.url ?? null,
+      reconciliationReason: input.reason,
+      reconciliationAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(acceptanceGatedGithubIssueRequests.id, request.id),
+      eq(acceptanceGatedGithubIssueRequests.status, "reserved"),
+      eq(acceptanceGatedGithubIssueRequests.approvalId, input.approvalId),
+    )).returning();
+    if (updatedPublication.length !== 1 || updatedRequest.length !== 1
+      || !gatedGithubIssueRequestRowIsSelfConsistent(updatedRequest[0]!)
+      || !publicationExactlyBindsGatedIssueRequest({
+        publication: updatedPublication[0]!, request: updatedRequest[0]!,
+      })
+      || !await hasVerifiedAcceptanceGatedGithubIssueEventsInTransaction(tx, updatedPublication[0]!)) {
+      throw new AcceptanceGatedGithubIssueConflictError();
+    }
+    return { kind: "recorded" };
   });
 }

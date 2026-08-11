@@ -106,7 +106,7 @@ describe("dependency observation draft boundary", () => {
       evidence: {
         status: "unresolved",
         message:
-          "This draft records proposal custody only. Release, usage, runtime, target-lock, security, human confirmation, approval and builder handoff remain unproven.",
+          "This draft records observation-proposal custody only. Release, usage, runtime, target-lock, security, human confirmation, approval, Context Pack, builder handoff, delivery, pull request and merge remain unproven.",
       },
     });
     for (const forbiddenKey of [
@@ -119,6 +119,33 @@ describe("dependency observation draft boundary", () => {
     ]) {
       expect(payload).not.toHaveProperty(forbiddenKey);
     }
+  });
+
+  it("returns the server-derived npm profile without accepting profile input", async () => {
+    vi.mocked(createDraftAcceptanceRecordFromDependencyObservation).mockResolvedValue({
+      ...draftResult,
+      profile: {
+        ecosystem: "node",
+        manager: "npm",
+        profile: "npm_package_lock_only_v1",
+        capability: "proposal_observation_only",
+      },
+      created: true,
+    } as never);
+
+    const response = await POST(request(locator));
+    const payload = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(createDraftAcceptanceRecordFromDependencyObservation).toHaveBeenCalledWith(locator);
+    expect(payload.profile).toEqual({
+      ecosystem: "node",
+      manager: "npm",
+      profile: "npm_package_lock_only_v1",
+      capability: "proposal_observation_only",
+    });
+    expect(payload).not.toHaveProperty("candidate");
+    expect(payload).not.toHaveProperty("commands");
   });
 
   it("returns 200 for an exact immutable replay", async () => {

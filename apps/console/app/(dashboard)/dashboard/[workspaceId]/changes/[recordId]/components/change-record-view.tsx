@@ -516,18 +516,25 @@ export type AcceptanceDependencyDraftProposal =
           package: string;
           currentVersion: string;
           targetVersion: string;
-          dependencyKind: "dependencies" | "devDependencies";
+          dependencyKind: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
         };
         files: {
           manifest: { path: "package.json"; sha256: string };
-          lockfile: { path: "pnpm-lock.yaml"; sha256: string };
+          lockfile: { path: "pnpm-lock.yaml" | "package-lock.json"; sha256: string };
         };
-        profile: {
-          ecosystem: "node";
-          manager: "pnpm";
-          profile: "pnpm_lockfile_only_v1";
-          capability: "proposal_observation_only";
-        };
+        profile:
+          | {
+              ecosystem: "node";
+              manager: "pnpm";
+              profile: "pnpm_lockfile_only_v1";
+              capability: "proposal_observation_only";
+            }
+          | {
+              ecosystem: "node";
+              manager: "npm";
+              profile: "npm_package_lock_only_v1";
+              capability: "proposal_observation_only";
+            };
         repositorySourceVerification: "watch_observation_only";
         independentSourceProof: "not_proven";
         evidenceAdmission: "unresolved";
@@ -3227,22 +3234,34 @@ export function isDependencyDraftProposal(value: unknown): value is AcceptanceDe
     || !isSafeText(value.proposal.candidate.currentVersion, 128)
     || !isSafeText(value.proposal.candidate.targetVersion, 128)
     || value.proposal.candidate.currentVersion === value.proposal.candidate.targetVersion
-    || (value.proposal.candidate.dependencyKind !== "dependencies" && value.proposal.candidate.dependencyKind !== "devDependencies")
+    || !["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
+      .includes(value.proposal.candidate.dependencyKind as string)
     || !isObject(value.proposal.files) || !hasExactKeys(value.proposal.files, ["manifest", "lockfile"])
     || !isObject(value.proposal.files.manifest) || !hasExactKeys(value.proposal.files.manifest, ["path", "sha256"])
     || value.proposal.files.manifest.path !== "package.json" || typeof value.proposal.files.manifest.sha256 !== "string"
     || !SHA256.test(value.proposal.files.manifest.sha256)
     || !isObject(value.proposal.files.lockfile) || !hasExactKeys(value.proposal.files.lockfile, ["path", "sha256"])
-    || value.proposal.files.lockfile.path !== "pnpm-lock.yaml" || typeof value.proposal.files.lockfile.sha256 !== "string"
+    || (value.proposal.files.lockfile.path !== "pnpm-lock.yaml"
+      && value.proposal.files.lockfile.path !== "package-lock.json")
+    || typeof value.proposal.files.lockfile.sha256 !== "string"
     || !SHA256.test(value.proposal.files.lockfile.sha256)
     || !isObject(value.proposal.profile) || !hasExactKeys(value.proposal.profile, ["ecosystem", "manager", "profile", "capability"])
-    || value.proposal.profile.ecosystem !== "node" || value.proposal.profile.manager !== "pnpm"
-    || value.proposal.profile.profile !== "pnpm_lockfile_only_v1" || value.proposal.profile.capability !== "proposal_observation_only"
+    || value.proposal.profile.ecosystem !== "node"
+    || value.proposal.profile.capability !== "proposal_observation_only"
     || value.proposal.repositorySourceVerification !== "watch_observation_only"
     || value.proposal.independentSourceProof !== "not_proven" || value.proposal.evidenceAdmission !== "unresolved"
     || !isObject(value.proposal.laterEvidence) || !hasExactKeys(value.proposal.laterEvidence, [
       "confirmation", "contextPack", "builderHandoff", "delivery", "result",
     ])) return false;
+  const pnpmProfile = value.proposal.profile.manager === "pnpm"
+    && value.proposal.profile.profile === "pnpm_lockfile_only_v1";
+  const npmProfile = value.proposal.profile.manager === "npm"
+    && value.proposal.profile.profile === "npm_package_lock_only_v1";
+  if ((!pnpmProfile && !npmProfile)
+    || (pnpmProfile && value.proposal.files.lockfile.path !== "pnpm-lock.yaml")
+    || (pnpmProfile && value.proposal.candidate.dependencyKind !== "dependencies"
+      && value.proposal.candidate.dependencyKind !== "devDependencies")
+    || (npmProfile && value.proposal.files.lockfile.path !== "package-lock.json")) return false;
   return value.proposal.laterEvidence.confirmation === "not_recorded"
     && value.proposal.laterEvidence.contextPack === "not_recorded"
     && value.proposal.laterEvidence.builderHandoff === "not_recorded"

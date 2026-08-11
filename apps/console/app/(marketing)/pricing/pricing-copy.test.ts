@@ -64,14 +64,18 @@ describe("R12.1 landing truth boundary", () => {
     expect(landingSource).toContain("{step.line}");
 
     const flowMarkers = [
+      "Define the work",
       "planned checks",
-      "A human confirms those criteria before work starts.",
-      "MCP handoff",
-      "selected external coding agent",
-      "against its confirmed intent",
-      "criterion evidence",
-      "Jace refuses success and sends a correction path",
-      "a human accepts, reworks, or rejects it.",
+      "You confirm it before work starts.",
+      "Give the coding agent focused context",
+      "external coding agent",
+      "The coding agent writes the code.",
+      "Verify and correct",
+      "exact change",
+      "agreed criteria",
+      "correction path",
+      "Human decides",
+      "accepts, reworks, or rejects it.",
     ];
 
     let previousIndex = -1;
@@ -93,10 +97,34 @@ describe("R12.1 landing truth boundary", () => {
     }
   });
 
-  it("does not describe dependency work as Jace preparing or executing an upgrade", () => {
-    expect(useCasesSource).toContain("Review dependency proposals");
-    expect(useCasesSource).toContain("refuses to present an unproven proposal as safe");
-    expect(useCasesSource).not.toContain("prepares upgrade work");
+  it("describes Jace as the dependency-upgrade control layer, not the code executor", () => {
+    const dependencyStart = landingSource.indexOf("Keep dependency upgrades moving safely");
+    const dependencyEnd = landingSource.indexOf("</section>", dependencyStart);
+    expect(dependencyStart).toBeGreaterThan(-1);
+    expect(dependencyEnd).toBeGreaterThan(dependencyStart);
+    const dependencyUseCase = landingSource.slice(dependencyStart, dependencyEnd);
+    const dependencyFlow = [
+      "dependencies your team selects",
+      "available updates",
+      "compatibility evidence",
+      "prepares a proposal",
+      "human approval",
+      "selected external coding agent",
+      "bounded dependency-upgrade Pack",
+      "The coding agent makes the code change",
+      "verifies the evidence or refuses success",
+    ];
+
+    let previousIndex = -1;
+    for (const marker of dependencyFlow) {
+      const markerIndex = dependencyUseCase.indexOf(marker);
+      expect(markerIndex, `missing dependency-flow marker: ${marker}`).toBeGreaterThan(previousIndex);
+      previousIndex = markerIndex;
+    }
+
+    expect(useCasesSource).not.toContain("dependency");
+    expect(dependencyUseCase).not.toContain("Jace makes the code change");
+    expect(dependencyUseCase).not.toContain("Jace executes the upgrade");
   });
 });
 

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from agentrail.dependencies.manager import (
+    AdapterCapability,
     CommandPlan,
     DetectionStatus,
     Ecosystem,
@@ -13,6 +14,9 @@ from agentrail.dependencies.manager import (
     SupportedDetection,
     UnsupportedDetection,
     detect_dependency_manager,
+    node_adapter_can_observe,
+    node_adapter_capability,
+    node_adapter_has_managed_execution,
 )
 
 
@@ -38,8 +42,6 @@ def _detect(*paths: str) -> SupportedDetection | UnsupportedDetection:
     [
         ({"package.json", "package-lock.json"}, Ecosystem.NODE, ManagerId.NPM, "package.json", "package-lock.json"),
         ({"package.json", "pnpm-lock.yaml"}, Ecosystem.NODE, ManagerId.PNPM, "package.json", "pnpm-lock.yaml"),
-        ({"package.json", "yarn.lock"}, Ecosystem.NODE, ManagerId.YARN, "package.json", "yarn.lock"),
-        ({"package.json", "bun.lock"}, Ecosystem.NODE, ManagerId.BUN, "package.json", "bun.lock"),
         ({"pyproject.toml", "poetry.lock"}, Ecosystem.PYTHON, ManagerId.POETRY, "pyproject.toml", "poetry.lock"),
         ({"pyproject.toml", "uv.lock"}, Ecosystem.PYTHON, ManagerId.UV, "pyproject.toml", "uv.lock"),
         ({"requirements.txt"}, Ecosystem.PYTHON, ManagerId.PIP, "requirements.txt", None),
@@ -70,13 +72,12 @@ def test_detects_supported_ecosystems(files, ecosystem, manager, manifest, lockf
     assert result.command_plan.verify
 
 
-def test_node_package_manager_field_selects_manager_without_lockfile() -> None:
+def test_detected_node_extension_without_lockfile_is_not_reported_as_supported() -> None:
     package_json = json.dumps({"name": "app", "packageManager": "yarn@4.2.0"})
     result = detect_dependency_manager({"package.json": package_json})
 
-    assert isinstance(result, SupportedDetection)
-    assert result.manager_id is ManagerId.YARN
-    assert result.lockfile_path is None
+    assert isinstance(result, UnsupportedDetection)
+    assert "detected" in result.reason
 
 
 def test_node_package_manager_conflict_is_unsupported() -> None:
@@ -87,6 +88,21 @@ def test_node_package_manager_conflict_is_unsupported() -> None:
     assert result.status is DetectionStatus.UNSUPPORTED
     assert "conflicting lockfile" in result.reason
     assert result.command_plan is None
+
+
+@pytest.mark.parametrize(
+    ("package_manager", "lockfile"),
+    [("yarn@4.2.0", "yarn.lock"), ("bun@1.1.0", "bun.lock")],
+)
+def test_detected_node_extension_is_not_reported_as_supported(package_manager: str, lockfile: str) -> None:
+    result = detect_dependency_manager(
+        {"package.json": json.dumps({"packageManager": package_manager}), lockfile: ""}
+    )
+
+    assert isinstance(result, UnsupportedDetection)
+    assert result.status is DetectionStatus.UNSUPPORTED
+    assert "detected" in result.reason
+    assert "unsupported" in result.reason
 
 
 def test_ambiguous_or_unknown_snapshot_is_unsupported() -> None:
@@ -115,12 +131,57 @@ def test_snapshot_is_normalized_without_filesystem_access() -> None:
     assert result.lockfile_path == "package-lock.json"
 
 
+def test_detector_rejects_normalized_alias_collision_in_both_input_orders() -> None:
+    yarn = json.dumps({"packageManager": "yarn@4.2.0"})
+    npm = json.dumps({"packageManager": "npm@10.8.2"})
+    entries = (
+        ("package.json", yarn),
+        ("./package.json", npm),
+        ("package-lock.json", "{}"),
+    )
+
+    for ordered in (entries, tuple(reversed(entries))):
+        result = detect_dependency_manager(dict(ordered))
+
+        assert isinstance(result, UnsupportedDetection)
+        assert "path collision after normalization" in result.reason
+
+
+def test_detector_rejects_absolute_and_traversal_paths() -> None:
+    manifest = json.dumps({"packageManager": "npm@10.8.2"})
+    for path in ("../package.json", "/package.json", "C:\\package.json"):
+        result = detect_dependency_manager(
+            {path: manifest, "package-lock.json": "{}"}
+        )
+
+        assert isinstance(result, UnsupportedDetection)
+        assert "unsafe path" in result.reason
+
+
 def test_invalid_snapshot_entry_is_typed_unsupported() -> None:
     result = detect_dependency_manager({"package.json": b"not text"})
 
     assert isinstance(result, UnsupportedDetection)
     assert result.status is DetectionStatus.UNSUPPORTED
     assert "not text" in result.reason
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    (
+        '{"packageManager":"yarn@4.2.0","packageManager":"npm@10.8.2"}',
+        '{"packageManager":"npm@10.8.2","scripts":{"test":"a","test":"b"}}',
+    ),
+)
+def test_node_detection_rejects_duplicate_json_keys_at_any_depth(
+    manifest: str,
+) -> None:
+    result = detect_dependency_manager(
+        {"package.json": manifest, "package-lock.json": "{}"}
+    )
+
+    assert isinstance(result, UnsupportedDetection)
+    assert "duplicate JSON key" in result.reason
 
 
 def test_pnpm_plan_preserves_existing_frozen_lockfile_concept() -> None:
@@ -130,6 +191,48 @@ def test_pnpm_plan_preserves_existing_frozen_lockfile_concept() -> None:
     assert result.manager_id is ManagerId.PNPM
     assert result.command_plan.install == ("pnpm", "install", "--frozen-lockfile")
     assert "{dependency}@{version}" in result.command_plan.upgrade
+def test_npm_plan_disables_lifecycle_scripts_for_every_install_path() -> None:
+    result = _detect("package.json", "package-lock.json")
+
+    assert isinstance(result, SupportedDetection)
+    assert result.manager_id is ManagerId.NPM
+    assert result.command_plan.install == ("npm", "ci", "--ignore-scripts")
+    assert result.command_plan.upgrade == (
+        "npm",
+        "install",
+        "{dependency}@{version}",
+        "--package-lock-only",
+        "--ignore-scripts",
+        "--no-audit",
+        "{save_flag}",
+    )
+
+
+def test_node_capability_taxonomy_separates_observation_from_execution() -> None:
+    assert node_adapter_capability(ManagerId.PNPM) is AdapterCapability.MANAGED_EXECUTION
+    assert node_adapter_can_observe(ManagerId.PNPM) is True
+    assert node_adapter_has_managed_execution(ManagerId.PNPM) is True
+
+    assert node_adapter_capability(ManagerId.NPM) is AdapterCapability.OBSERVATION_PROPOSAL
+    assert node_adapter_can_observe(ManagerId.NPM) is True
+    assert node_adapter_has_managed_execution(ManagerId.NPM) is False
+
+    assert node_adapter_capability(ManagerId.YARN) is AdapterCapability.UNSUPPORTED
+    assert node_adapter_can_observe(ManagerId.YARN) is False
+    assert node_adapter_has_managed_execution(ManagerId.YARN) is False
+
+
+def test_npm_shrinkwrap_is_detected_but_explicitly_unsupported() -> None:
+    result = detect_dependency_manager(
+        {
+            "package.json": json.dumps({"packageManager": "npm@10.8.2"}),
+            "npm-shrinkwrap.json": json.dumps({"lockfileVersion": 3}),
+        }
+    )
+
+    assert isinstance(result, UnsupportedDetection)
+    assert "npm-shrinkwrap.json" in result.reason
+    assert "package-lock.json v3 only" in result.reason
 
 
 def test_uv_plan_is_lock_only_and_suppresses_ambient_execution_inputs() -> None:

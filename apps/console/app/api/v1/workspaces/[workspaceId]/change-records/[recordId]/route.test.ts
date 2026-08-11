@@ -12,6 +12,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   readAcceptancePrReviewMetrics: vi.fn(),
+  readAcceptanceRecordDetail: vi.fn(),
   readCurrentAcceptanceDependencyObservations: vi.fn(),
   readCurrentAcceptancePrDecision: vi.fn(),
   readCurrentAcceptanceCorrectionPackets: vi.fn(),
@@ -28,6 +29,7 @@ import {
   approveAcceptanceDependencyObservationAndMintExternalBuilderPack,
   getWorkspaceMembership,
   readAcceptancePrReviewMetrics,
+  readAcceptanceRecordDetail,
   readCurrentAcceptanceDependencyObservations,
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
@@ -389,6 +391,87 @@ const timeline = {
   ],
 };
 
+const currentAcceptanceDetail = {
+  kind: "record" as const,
+  detail: {
+    summary: {
+      recordId: RECORD,
+      workspaceId: WS,
+      repo: "ada/widgets",
+      issueNumber: 42,
+      createdAt: CREATED,
+      updatedAt: UPDATED,
+      requestedWork: {
+        kind: "confirmed" as const,
+        originalRequest: "Make the saved page visible.",
+        acceptanceContract: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      },
+      suppliedContext: { kind: "unknown" as const },
+      pullRequest: {
+        kind: "attached" as const,
+        prNumber: 98,
+        head: { kind: "current" as const, sha: HEAD, headCycleId: CYCLE, authorityGeneration: 1 },
+      },
+      proof: { kind: "unknown" as const },
+      unknownReasons: ["context_not_recorded", "proof_not_recorded"] as const,
+      neededDecision: { kind: "unknown" as const },
+      outcome: { kind: "not_recorded" as const },
+    },
+    contract: {
+      identity: { id: CONTRACT, version: 1, sha256: "a".repeat(64) },
+      confirmedBy: `user:${USER}`,
+      confirmedAt: CREATED,
+      contract: {
+        originalRequest: "Make the saved page visible.",
+        normalizedRequirements: ["The saved page is visible."],
+        acceptanceCriteria: [{
+          id: "criterion-1",
+          text: "The saved page is visible.",
+          userVisible: true,
+          modality: "ui" as const,
+        }],
+        nonGoals: [], risks: [], stops: [],
+        environment: { preview: true },
+        unresolvedQuestions: [],
+      },
+    },
+    pullRequest: {
+      kind: "attached" as const,
+      prNumber: 98,
+      current: {
+        kind: "current" as const,
+        repo: "ada/widgets",
+        prNumber: 98,
+        headSha: HEAD,
+        headCycleId: CYCLE,
+        authorityGeneration: 1,
+        reviewJob: { kind: "not_recorded" as const },
+      },
+      merged: null,
+      occurrences: [{
+        kind: "current" as const,
+        repo: "ada/widgets",
+        prNumber: 98,
+        headSha: HEAD,
+        headCycleId: CYCLE,
+        authorityGeneration: 1,
+        reviewJob: { kind: "not_recorded" as const },
+      }],
+    },
+    contextPacks: [],
+    proofMatrix: [{
+      occurrence: { kind: "current" as const, repo: "ada/widgets", prNumber: 98, headSha: HEAD, headCycleId: CYCLE },
+      review: { kind: "not_recorded" as const },
+      criteria: [{
+        criterion: { id: "criterion-1", text: "The saved page is visible.", userVisible: true, modality: "ui" as const },
+        proof: { kind: "unknown" as const, reason: "review_not_recorded" as const },
+      }],
+    }],
+    artifactCustody: { kind: "unknown" as const, reason: "artifact_custody_not_available" as const },
+    gatedIssue: { kind: "unknown" as const, reason: "gated_issue_custody_not_available" as const },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
@@ -400,6 +483,7 @@ beforeEach(() => {
   vi.mocked(readCurrentAcceptanceDependencyObservations).mockResolvedValue(
     currentDependencyObservations as never,
   );
+  vi.mocked(readAcceptanceRecordDetail).mockResolvedValue(currentAcceptanceDetail as never);
   vi.mocked(recordAcceptancePrDecision).mockResolvedValue({
     kind: "recorded",
     binding: currentFinalDecision.binding,
@@ -448,6 +532,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
+    expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
   });
 
   it("403 when the user is not a workspace member, before reading the timeline", async () => {
@@ -462,6 +547,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
+    expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
   });
 
   it("404 when no change record exists in the caller workspace", async () => {
@@ -478,6 +564,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(readCurrentAcceptancePrDecision).not.toHaveBeenCalled();
     expect(readAcceptancePrReviewMetrics).not.toHaveBeenCalled();
     expect(readCurrentAcceptanceDependencyObservations).not.toHaveBeenCalled();
+    expect(readAcceptanceRecordDetail).not.toHaveBeenCalled();
   });
 
   it("keeps cross-tenant isolation by passing the path workspace to the scoped query", async () => {
@@ -558,6 +645,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
           },
         }],
       },
+      acceptanceDetail: JSON.parse(JSON.stringify(currentAcceptanceDetail)),
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
@@ -575,6 +663,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       recordId: RECORD,
     });
     expect(readCurrentAcceptanceDependencyObservations).toHaveBeenCalledWith({
+      workspaceId: WS,
+      recordId: RECORD,
+    });
+    expect(readAcceptanceRecordDetail).toHaveBeenCalledWith({
       workspaceId: WS,
       recordId: RECORD,
     });
@@ -672,6 +764,63 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
     expect(response.status).toBe(200);
     expect((await response.json()).dependencyObservations).toEqual({ kind: "not_current" });
+  });
+
+  it("downgrades strict Acceptance detail when its current head occurrence races the timeline", async () => {
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue({
+      ...currentAcceptanceDetail,
+      detail: {
+        ...currentAcceptanceDetail.detail,
+        pullRequest: {
+          ...currentAcceptanceDetail.detail.pullRequest,
+          current: {
+            ...currentAcceptanceDetail.detail.pullRequest.current,
+            headSha: "e".repeat(40),
+          },
+          occurrences: [{
+            ...currentAcceptanceDetail.detail.pullRequest.occurrences[0],
+            headSha: "e".repeat(40),
+          }],
+        },
+      },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).acceptanceDetail).toEqual({
+      kind: "unavailable",
+      reason: "invalid_record_custody",
+    });
+  });
+
+  it("does not combine a non-authoritative timeline with a current detail occurrence", async () => {
+    vi.mocked(readChangeRecordTimeline).mockResolvedValue({
+      ...timeline,
+      record: { ...timeline.record, currentPrHeadAuthoritative: false },
+    } as never);
+
+    const response = await GET(req(), { params: params() });
+
+    expect((await response.json()).acceptanceDetail).toEqual({
+      kind: "unavailable",
+      reason: "invalid_record_custody",
+    });
+  });
+
+  it("passes closed detail unavailability through without exposing internals", async () => {
+    vi.mocked(readAcceptanceRecordDetail).mockResolvedValue({
+      kind: "unavailable",
+      reason: "invalid_context_custody",
+    });
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).acceptanceDetail).toEqual({
+      kind: "unavailable",
+      reason: "invalid_context_custody",
+    });
   });
 
   it("serializes immutable dependency approval and Pack timestamps", async () => {
@@ -886,6 +1035,15 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
 
   it("500 when current dependency observation storage fails", async () => {
     vi.mocked(readCurrentAcceptanceDependencyObservations).mockRejectedValue(new Error("db down"));
+
+    const response = await GET(req(), { params: params() });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Failed to load change record detail" });
+  });
+
+  it("500 with a sanitized response when strict detail storage fails", async () => {
+    vi.mocked(readAcceptanceRecordDetail).mockRejectedValue(new Error("raw storage detail"));
 
     const response = await GET(req(), { params: params() });
 

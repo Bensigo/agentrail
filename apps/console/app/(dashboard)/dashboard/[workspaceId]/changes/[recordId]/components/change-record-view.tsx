@@ -4,6 +4,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ArrowLeft } from "lucide-react";
 import { CopyId } from "../../../../../../components/copy-id";
 import { PageHeader } from "../../../../../../components/page-header";
+import type {
+  AcceptanceRecordDetailOccurrence as DbAcceptanceRecordDetailOccurrence,
+  ReadAcceptanceRecordDetailResult,
+} from "@agentrail/db-postgres";
 
 export type ChangeRecord = {
   id: string;
@@ -488,6 +492,16 @@ export type AcceptanceDependencyObservationsEnvelope =
         | "invalid_approval_pack_custody";
     };
 
+type SerializedDates<T> = T extends Date
+  ? string
+  : T extends readonly (infer Item)[]
+    ? SerializedDates<Item>[]
+    : T extends object
+      ? { [Key in keyof T]: SerializedDates<T[Key]> }
+      : T;
+
+export type AcceptanceRecordDetailEnvelope = SerializedDates<ReadAcceptanceRecordDetailResult>;
+
 export type ChangeRecordResponse = {
   record: ChangeRecord;
   events: ChangeRecordEvent[];
@@ -495,6 +509,7 @@ export type ChangeRecordResponse = {
   finalDecision: AcceptanceFinalDecisionEnvelope;
   reviewMetrics: AcceptancePrReviewMetricsEnvelope;
   dependencyObservations: AcceptanceDependencyObservationsEnvelope;
+  acceptanceDetail: AcceptanceRecordDetailEnvelope;
   canRecordFinalDecision: boolean;
   canRecordReviewEffort: boolean;
   canApproveDependencyObservation: boolean;
@@ -661,6 +676,993 @@ function isAcceptanceCorrectionPacket(value: unknown): value is AcceptanceCorrec
     && isSafeText(value.impact, 2_000)
     && isSafeText(value.requiredCorrection, 2_000)
     && isSafeText(value.reverification, 2_000);
+}
+
+type AcceptanceRecordDetailRecord = Extract<AcceptanceRecordDetailEnvelope, { kind: "record" }>["detail"];
+type AcceptanceRecordDetailOccurrence = SerializedDates<DbAcceptanceRecordDetailOccurrence>;
+type AcceptanceRecordDetailCorrectionProof = Extract<
+  AcceptanceRecordDetailRecord["proofMatrix"][number]["criteria"][number]["proof"],
+  { kind: "correction_packet" }
+>;
+type AcceptanceRecordDetailCorrectionPacket = AcceptanceRecordDetailCorrectionProof["packet"];
+
+const DETAIL_UNAVAILABLE_REASONS = new Set([
+  "invalid_record_custody",
+  "confirmed_contract_unavailable",
+  "event_custody_limit",
+  "snapshot_custody_limit",
+  "compiled_pack_custody_limit",
+  "invalid_occurrence_custody",
+  "invalid_review_custody",
+  "invalid_context_custody",
+  "invalid_compiled_pack_custody",
+  "detail_output_limit",
+]);
+
+const SUMMARY_UNKNOWN_REASONS = new Set([
+  "requested_work_not_confirmed", "invalid_contract_custody",
+  "head_occurrence_not_authoritative", "invalid_head_custody",
+  "context_not_recorded", "ambiguous_context_custody", "invalid_context_custody",
+  "proof_not_recorded", "invalid_review_custody",
+  "decision_not_recorded", "invalid_decision_custody",
+  "outcome_not_recorded", "invalid_merge_custody", "invalid_post_merge_custody",
+  "summary_custody_limit",
+]);
+const DETAIL_MAX_COMPARE_FILES = 299;
+const DETAIL_MAX_HEAD_RANGES = 128;
+const DETAIL_MAX_HEAD_LINE = 1_000_000;
+const DETAIL_MAX_PATCH_BYTES = 2 * 1024 * 1024;
+const DETAIL_MAX_PACK_SOURCES = 64;
+const DETAIL_MAX_SOURCE_RECORDS = 128;
+const DETAIL_MAX_SOURCE_FILE_BYTES = 256 * 1024;
+const DETAIL_MAX_SOURCE_RECORD_BYTES = 1024 * 1024;
+const DETAIL_MAX_DIRECT_READS = 16;
+const DETAIL_MAX_DIRECT_BYTES = 512 * 1024;
+const DETAIL_MAX_SELECTED_RANGES = 64;
+
+function isManifestExclusionReason(value: unknown): value is string {
+  return value === "removed_at_exact_head" || value === "missing_patch_ranges"
+    || value === "range_byte_limit" || value === "range_byte_or_secret_limit"
+    || value === "unsupported_dependency_expression" || value === "dependency_limit"
+    || value === "dependency_not_found" || value === "base_index_gap"
+    || value === "base_index_stale" || value === "base_index_content_limit"
+    || value === "base_index_secret_policy" || value === "base_index_page_limit"
+    || value === "pack_budget"
+    || (typeof value === "string" && /^dependency_(?:invalid_input|github_unavailable|github_rejected|invalid_tree|tree_limit|call_limit|invalid_blob|path_not_found|content_limit|unsafe_content|unsafe_path)$/u.test(value));
+}
+
+function isDirectReadNotProvenReason(value: unknown): value is string {
+  return value === "invalid_input" || value === "github_unavailable" || value === "github_rejected"
+    || value === "invalid_tree" || value === "tree_limit" || value === "call_limit"
+    || value === "invalid_blob" || value === "path_not_found" || value === "content_limit"
+    || value === "unsafe_content" || value === "unsafe_path";
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID.test(value);
+}
+
+function isSha1(value: unknown): value is string {
+  return typeof value === "string" && SHA1.test(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && SHA256.test(value);
+}
+
+function isSafePath(value: unknown): value is string {
+  return isSafeText(value, 512) && !value.startsWith("/") && !value.includes("\\")
+    && value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function isNullableSafePath(value: unknown): value is string | null {
+  return value === null || isSafePath(value);
+}
+
+function isStringList(value: unknown, maxItems = 100, maxChars = 2_000): value is string[] {
+  return Array.isArray(value) && value.length <= maxItems
+    && value.every((item) => isSafeText(item, maxChars));
+}
+
+function isSortedUniqueStringList(value: unknown, maxItems = 100, maxChars = 2_000): value is string[] {
+  return isStringList(value, maxItems, maxChars)
+    && value.every((item, index) => index === 0 || value[index - 1]! < item);
+}
+
+function isContractIdentity(value: unknown): value is { id: string; version: number; sha256: string } {
+  return isObject(value) && hasExactKeys(value, ["id", "version", "sha256"])
+    && isUuid(value.id) && isPositiveInteger(value.version) && isSha256(value.sha256);
+}
+
+function isContractCriterion(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  const keys = Object.prototype.hasOwnProperty.call(value, "modality")
+    ? ["id", "text", "userVisible", "modality"]
+    : ["id", "text", "userVisible"];
+  return hasExactKeys(value, keys)
+    && isSafeText(value.id, 512) && isSafeText(value.text, 2_000)
+    && typeof value.userVisible === "boolean"
+    && (!Object.prototype.hasOwnProperty.call(value, "modality")
+      || value.modality === "ui" || value.modality === "api"
+      || value.modality === "data" || value.modality === "job");
+}
+
+function isSafeContractValue(value: unknown, depth = 0): boolean {
+  if (depth > 4) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return isSafeText(value, 2_000);
+  if (Array.isArray(value)) return value.length <= 64
+    && value.every((item) => isSafeContractValue(item, depth + 1));
+  if (!isObject(value) || Object.keys(value).length > 32) return false;
+  return Object.entries(value).every(([key, nested]) => isSafeText(key, 128)
+    && isSafeContractValue(nested, depth + 1));
+}
+
+function isConfirmedContractProjection(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "originalRequest", "normalizedRequirements", "acceptanceCriteria", "nonGoals",
+    "risks", "stops", "environment", "unresolvedQuestions",
+  ]) || !isSafeText(value.originalRequest, 4_000)
+    || !isStringList(value.normalizedRequirements)
+    || !Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.length === 0
+    || value.acceptanceCriteria.length > 100
+    || !isStringList(value.nonGoals) || !isStringList(value.risks) || !isStringList(value.stops)
+    || !isObject(value.environment) || !isSafeContractValue(value.environment)
+    || !Array.isArray(value.unresolvedQuestions) || value.unresolvedQuestions.length > 100) return false;
+  const criterionIds = new Set<string>();
+  for (const criterion of value.acceptanceCriteria) {
+    if (!isContractCriterion(criterion) || !isObject(criterion)
+      || typeof criterion.id !== "string" || criterionIds.has(criterion.id)) return false;
+    criterionIds.add(criterion.id);
+  }
+  const questionIds = new Set<string>();
+  return value.unresolvedQuestions.every((question) => {
+    if (!isObject(question) || !hasExactKeys(question, ["id", "text"])
+      || !isSafeText(question.id, 512) || !isSafeText(question.text, 2_000)
+      || questionIds.has(question.id)) return false;
+    questionIds.add(question.id);
+    return true;
+  });
+}
+
+function isSummarySourceSnapshot(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, [
+    "id", "headSha", "headCycleId", "compilerVersion", "packetSetSha256",
+  ]) && isUuid(value.id) && isSha1(value.headSha) && isUuid(value.headCycleId)
+    && isSafeText(value.compilerVersion, 256) && isSha256(value.packetSetSha256);
+}
+
+function isSummaryCompiledPack(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, [
+    "id", "sha256", "sourceCustodyIdentitySha256", "compilerVersion", "policyVersion",
+  ]) && isUuid(value.id) && isSha256(value.sha256)
+    && isSha256(value.sourceCustodyIdentitySha256)
+    && isSafeText(value.compilerVersion, 256) && isSafeText(value.policyVersion, 256);
+}
+
+function isSummaryPullRequest(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_attached") return hasExactKeys(value, ["kind"]);
+  if (value.kind !== "attached" || !hasExactKeys(value, ["kind", "prNumber", "head"])
+    || !isPositiveInteger(value.prNumber) || !isObject(value.head)) return false;
+  if (value.head.kind === "unknown") return hasExactKeys(value.head, ["kind"]);
+  return (value.head.kind === "current" || value.head.kind === "merged")
+    && hasExactKeys(value.head, ["kind", "sha", "headCycleId", "authorityGeneration"])
+    && isSha1(value.head.sha) && isUuid(value.head.headCycleId)
+    && isNonNegativeInteger(value.head.authorityGeneration);
+}
+
+function isSummaryProof(value: unknown, repo: string, prNumber: number | null): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  return value.kind === "recorded" && prNumber !== null
+    && hasExactKeys(value, [
+      "kind", "reviewJobId", "verdict", "postedReviewUrl", "postedAttestationEventId",
+    ]) && isUuid(value.reviewJobId)
+    && (value.verdict === "proven" || value.verdict === "failed"
+      || value.verdict === "not_proven" || value.verdict === "not_testable")
+    && isGithubReviewUrl(value.postedReviewUrl, repo, prNumber)
+    && isUuid(value.postedAttestationEventId);
+}
+
+function isSummaryNeededDecision(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown") return hasExactKeys(value, ["kind"]);
+  if (value.kind === "required") {
+    return hasExactKeys(value, ["kind", "choices"]) && Array.isArray(value.choices)
+      && value.choices.length > 0 && value.choices.length <= 4
+      && new Set(value.choices).size === value.choices.length
+      && value.choices.every(isAcceptancePrDecision);
+  }
+  if (value.kind === "recorded") {
+    return hasExactKeys(value, ["kind", "eventId", "decision", "decidedAt"])
+      && isUuid(value.eventId) && isAcceptancePrDecision(value.decision)
+      && isIsoTimestamp(value.decidedAt);
+  }
+  return value.kind === "not_required" && hasExactKeys(value, ["kind", "reason"])
+    && (value.reason === "pr_not_attached" || value.reason === "merged" || value.reason === "reverted");
+}
+
+function isSummaryOutcome(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "unknown" || value.kind === "not_recorded") {
+    return hasExactKeys(value, ["kind"]);
+  }
+  return value.kind === "signed_merge" && hasExactKeys(value, [
+    "kind", "mergeEventId", "mergeSha", "mergedAt", "decisionAlignment", "postMerge",
+  ]) && isUuid(value.mergeEventId) && isSha1(value.mergeSha) && isIsoTimestamp(value.mergedAt)
+    && (value.decisionAlignment === "aligned"
+      || value.decisionAlignment === "decision_conflicts_merge"
+      || value.decisionAlignment === "not_recorded"
+      || value.decisionAlignment === "not_current"
+      || value.decisionAlignment === "custody_unavailable")
+    && isObject(value.postMerge)
+    && hasExactKeys(value.postMerge, ["deployment", "incident", "revert"])
+    && [value.postMerge.deployment, value.postMerge.incident, value.postMerge.revert]
+      .every((item) => item === "recorded" || item === "not_recorded");
+}
+
+function isAcceptanceRecordSummary(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "recordId", "workspaceId", "repo", "issueNumber", "createdAt", "updatedAt",
+    "requestedWork", "suppliedContext", "pullRequest", "proof", "unknownReasons",
+    "neededDecision", "outcome",
+  ]) || !isUuid(value.recordId) || !isUuid(value.workspaceId) || !isSafeRepo(value.repo)
+    || (value.issueNumber !== null && !isPositiveInteger(value.issueNumber))
+    || !isIsoTimestamp(value.createdAt) || !isIsoTimestamp(value.updatedAt)
+    || !isObject(value.requestedWork) || !isObject(value.suppliedContext)
+    || !isSummaryPullRequest(value.pullRequest)
+    || !Array.isArray(value.unknownReasons) || value.unknownReasons.length > SUMMARY_UNKNOWN_REASONS.size
+    || !value.unknownReasons.every((reason) => typeof reason === "string" && SUMMARY_UNKNOWN_REASONS.has(reason))
+    || new Set(value.unknownReasons).size !== value.unknownReasons.length
+    || !isSummaryNeededDecision(value.neededDecision) || !isSummaryOutcome(value.outcome)) return false;
+  if (value.requestedWork.kind === "unknown") {
+    if (!hasExactKeys(value.requestedWork, ["kind"])) return false;
+  } else if (value.requestedWork.kind !== "confirmed"
+    || !hasExactKeys(value.requestedWork, ["kind", "originalRequest", "acceptanceContract"])
+    || !isSafeText(value.requestedWork.originalRequest, 4_000)
+    || !isContractIdentity(value.requestedWork.acceptanceContract)) return false;
+  if (value.suppliedContext.kind === "unknown") {
+    if (!hasExactKeys(value.suppliedContext, ["kind"])) return false;
+  } else if (value.suppliedContext.kind === "compiled") {
+    if (!hasExactKeys(value.suppliedContext, ["kind", "sourceSnapshot", "compiledPack"])
+      || !isSummarySourceSnapshot(value.suppliedContext.sourceSnapshot)
+      || !isSummaryCompiledPack(value.suppliedContext.compiledPack)) return false;
+  } else if ((value.suppliedContext.kind !== "admitted" && value.suppliedContext.kind !== "not_proven")
+    || !hasExactKeys(value.suppliedContext, ["kind", "sourceSnapshot"])
+    || !isSummarySourceSnapshot(value.suppliedContext.sourceSnapshot)) return false;
+  const summaryPrNumber = isObject(value.pullRequest) && value.pullRequest.kind === "attached"
+    && typeof value.pullRequest.prNumber === "number" ? value.pullRequest.prNumber : null;
+  return isSummaryProof(value.proof, value.repo, summaryPrNumber);
+}
+
+function isDetailReviewJob(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_recorded") return hasExactKeys(value, ["kind"]);
+  return value.kind === "recorded" && hasExactKeys(value, [
+    "kind", "id", "state", "createdAt", "updatedAt",
+  ]) && isUuid(value.id)
+    && (value.state === "queued" || value.state === "running" || value.state === "posted"
+      || value.state === "failed" || value.state === "superseded" || value.state === "skipped")
+    && isIsoTimestamp(value.createdAt) && isIsoTimestamp(value.updatedAt);
+}
+
+function isOccurrenceIdentity(value: unknown): boolean {
+  return isObject(value) && isSafeRepo(value.repo) && isPositiveInteger(value.prNumber)
+    && isSha1(value.headSha) && isUuid(value.headCycleId);
+}
+
+function isDetailOccurrence(value: unknown): value is AcceptanceRecordDetailOccurrence {
+  if (!isObject(value) || !isOccurrenceIdentity(value) || !isDetailReviewJob(value.reviewJob)) return false;
+  if (value.kind === "historical") {
+    return hasExactKeys(value, ["repo", "prNumber", "headSha", "headCycleId", "kind", "reviewJob"]);
+  }
+  if (value.kind === "current") {
+    return hasExactKeys(value, [
+      "repo", "prNumber", "headSha", "headCycleId", "kind", "authorityGeneration", "reviewJob",
+    ]) && isNonNegativeInteger(value.authorityGeneration);
+  }
+  return value.kind === "merged" && hasExactKeys(value, [
+    "repo", "prNumber", "headSha", "headCycleId", "kind", "authorityGeneration",
+    "mergeEventId", "mergeSha", "mergedAt", "reviewJob",
+  ]) && isNonNegativeInteger(value.authorityGeneration) && isUuid(value.mergeEventId)
+    && isSha1(value.mergeSha) && isIsoTimestamp(value.mergedAt);
+}
+
+function isDetailPullRequest(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_attached") {
+    return hasExactKeys(value, ["kind", "occurrences"])
+      && Array.isArray(value.occurrences) && value.occurrences.length === 0;
+  }
+  if (value.kind !== "attached" || !hasExactKeys(value, [
+    "kind", "prNumber", "current", "merged", "occurrences",
+  ]) || !isPositiveInteger(value.prNumber)
+    || (value.current !== null && (!isDetailOccurrence(value.current) || value.current.kind !== "current"))
+    || (value.merged !== null && (!isDetailOccurrence(value.merged) || value.merged.kind !== "merged"))
+    || !Array.isArray(value.occurrences) || value.occurrences.length > 128) return false;
+  const ids = new Set<string>();
+  let previousRank = -1;
+  for (const occurrence of value.occurrences) {
+    if (!isDetailOccurrence(occurrence) || occurrence.prNumber !== value.prNumber
+      || ids.has(occurrence.headCycleId)) return false;
+    const rank = occurrence.kind === "current" ? 0 : occurrence.kind === "merged" ? 1 : 2;
+    if (rank < previousRank) return false;
+    ids.add(occurrence.headCycleId);
+    previousRank = rank;
+  }
+  const currentMatches = value.current === null
+    ? value.occurrences.every((item) => item.kind !== "current")
+    : value.occurrences.some((item) => exactJsonEqual(item, value.current));
+  const mergedMatches = value.merged === null
+    ? value.occurrences.every((item) => item.kind !== "merged")
+    : value.occurrences.some((item) => exactJsonEqual(item, value.merged));
+  return currentMatches && mergedMatches;
+}
+
+function isBaseIndexIdentity(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "schemaVersion", "revisionSha256", "backgroundOnly", "pages", "gaps",
+  ]) || value.schemaVersion !== 2 || value.backgroundOnly !== true
+    || !isSha256(value.revisionSha256) || !Array.isArray(value.pages)
+    || value.pages.length > 100 || !isStringList(value.gaps, 100, 1_024)
+    || (value.pages.length === 0 && value.gaps.length === 0)
+    || new Set(value.gaps).size !== value.gaps.length
+    || !value.gaps.every((gap, index, gaps) => index === 0 || gaps[index - 1]! < gap)) return false;
+  const pages = value.pages;
+  const pageIds = new Set<string>();
+  return pages.every((page, index) => {
+    if (!isObject(page) || !hasExactKeys(page, [
+      "id", "repositoryId", "slug", "commitSha", "inputsHashSha256", "pageBodySha256", "stale",
+    ]) || !isUuid(page.id) || !isUuid(page.repositoryId)
+      || !isSafePath(page.slug) || !isSha1(page.commitSha)
+      || !isSha256(page.inputsHashSha256) || !isSha256(page.pageBodySha256)
+      || typeof page.stale !== "boolean" || pageIds.has(page.id)
+      || (index > 0 && isObject(pages[index - 1])
+        && `${pages[index - 1].slug}\u0000${pages[index - 1].id}` >= `${page.slug}\u0000${page.id}`)) return false;
+    pageIds.add(page.id);
+    return true;
+  });
+}
+
+function isLineRange(value: unknown, coordinate = false): boolean {
+  return isObject(value)
+    && hasExactKeys(value, coordinate ? ["startLine", "endLine", "coordinateSha256"] : ["startLine", "endLine"])
+    && isPositiveInteger(value.startLine) && isPositiveInteger(value.endLine)
+    && (value.startLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.endLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.startLine as number) <= (value.endLine as number)
+    && (!coordinate || isSha256(value.coordinateSha256));
+}
+
+function isOrderedLineRanges(value: unknown, coordinate = false): value is Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length > DETAIL_MAX_HEAD_RANGES) return false;
+  let previousEnd = 0;
+  for (const range of value) {
+    if (!isLineRange(range, coordinate) || !isObject(range)
+      || typeof range.startLine !== "number" || typeof range.endLine !== "number"
+      || range.startLine <= previousEnd) return false;
+    previousEnd = range.endLine;
+  }
+  return true;
+}
+
+function isOverlayIdentity(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "schemaVersion", "manifestSha256", "baseSha", "mergeBaseSha", "headSha", "files",
+  ]) || value.schemaVersion !== 2 || !isSha256(value.manifestSha256)
+    || !isSha1(value.baseSha) || !isSha1(value.mergeBaseSha) || !isSha1(value.headSha)
+    || !Array.isArray(value.files) || value.files.length === 0
+    || value.files.length > DETAIL_MAX_COMPARE_FILES) return false;
+  const files = value.files;
+  const paths = new Set<string>();
+  return files.every((file, index) => {
+    if (!isObject(file) || !hasExactKeys(file, [
+      "path", "status", "blobSha", "previousPath", "patchSha256", "patchByteCount", "headRanges",
+    ]) || !isSafePath(file.path)
+      || (file.status !== "added" && file.status !== "modified" && file.status !== "removed"
+        && file.status !== "renamed" && file.status !== "copied" && file.status !== "changed")
+      || (file.status === "removed"
+        ? file.blobSha !== null && !isSha1(file.blobSha)
+        : !isSha1(file.blobSha))
+      || (file.status === "renamed"
+        ? !isSafePath(file.previousPath) || file.previousPath === file.path
+        : file.previousPath !== null)
+      || (file.patchSha256 !== null && !isSha256(file.patchSha256))
+      || (file.patchByteCount !== null && (!isPositiveInteger(file.patchByteCount)
+        || (file.patchByteCount as number) > DETAIL_MAX_PATCH_BYTES))
+      || (file.patchSha256 === null) !== (file.patchByteCount === null)
+      || !isOrderedLineRanges(file.headRanges, true)
+      || (file.patchSha256 === null ? file.headRanges.length !== 0 : file.headRanges.length === 0)
+      || paths.has(file.path)
+      || (index > 0 && isObject(files[index - 1])
+        && String(files[index - 1].path) >= file.path)) return false;
+    paths.add(file.path);
+    return true;
+  });
+}
+
+function isContextProvenance(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, ["schemaVersion", "included", "excluded"])
+    || value.schemaVersion !== 1 || !Array.isArray(value.included) || !Array.isArray(value.excluded)
+    || value.included.length > 1_000 || value.excluded.length > 1_000) return false;
+  return value.included.every((item) => isObject(item)
+    && hasExactKeys(item, ["path", "source", "reason"]) && isSafePath(item.path)
+    && (item.source === "base_index" || item.source === "overlay") && isSafeText(item.reason, 2_000))
+    && value.excluded.every((item) => isObject(item)
+      && hasExactKeys(item, ["path", "source", "reason"])
+      && (item.path === null || isSafePath(item.path))
+      && (item.source === "base_index" || item.source === "overlay") && isSafeText(item.reason, 2_000));
+}
+
+function occurrenceCoreMatches(left: unknown, right: AcceptanceRecordDetailOccurrence): boolean {
+  return isObject(left) && left.repo === right.repo && left.prNumber === right.prNumber
+    && left.headSha === right.headSha && left.headCycleId === right.headCycleId
+    && left.kind === right.kind;
+}
+
+function isDetailSourceSnapshot(
+  value: unknown,
+  occurrence: AcceptanceRecordDetailOccurrence,
+  workspaceId: string,
+  recordId: string,
+  contract: { id: string; version: number; sha256: string },
+): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "id", "occurrence", "binding", "baseSha", "mergeBaseSha", "headTreeSha", "packetIds",
+    "packetSetSha256", "correctionPacketPayloadSetSha256", "compilerVersion", "baseIndex",
+    "overlay", "provenance", "status", "reason", "createdAt", "updatedAt",
+  ]) || !isUuid(value.id) || !occurrenceCoreMatches(value.occurrence, occurrence)
+    || !isObject(value.binding) || !hasExactKeys(value.binding, [
+      "workspaceId", "recordId", "reviewJobId", "acceptanceContract", "repo", "prNumber", "expectedHeadSha",
+    ]) || value.binding.workspaceId !== workspaceId || value.binding.recordId !== recordId
+    || !isUuid(value.binding.reviewJobId) || value.binding.reviewJobId !== occurrence.headCycleId
+    || !isContractIdentity(value.binding.acceptanceContract)
+    || !exactJsonEqual(value.binding.acceptanceContract, contract)
+    || value.binding.repo !== occurrence.repo || value.binding.prNumber !== occurrence.prNumber
+    || value.binding.expectedHeadSha !== occurrence.headSha
+    || (value.baseSha !== null && !isSha1(value.baseSha))
+    || (value.mergeBaseSha !== null && !isSha1(value.mergeBaseSha))
+    || (value.headTreeSha !== null && !isSha1(value.headTreeSha))
+    || !Array.isArray(value.packetIds) || value.packetIds.length === 0 || value.packetIds.length > 100
+    || !value.packetIds.every((id) => typeof id === "string" && CORRECTION_PACKET_ID.test(id))
+    || !value.packetIds.every((id, index, ids) => index === 0 || ids[index - 1]! < id)
+    || !isSha256(value.packetSetSha256) || !isSha256(value.correctionPacketPayloadSetSha256)
+    || !isSafeText(value.compilerVersion, 256)
+    || (value.baseIndex !== null && !isBaseIndexIdentity(value.baseIndex))
+    || (value.overlay !== null && !isOverlayIdentity(value.overlay))
+    || !isContextProvenance(value.provenance)
+    || (value.status !== "admitted" && value.status !== "not_proven")
+    || (value.reason !== null && !isSafeText(value.reason, 2_000))
+    || !isIsoTimestamp(value.createdAt) || !isIsoTimestamp(value.updatedAt)) return false;
+  return value.status === "not_proven"
+    ? value.reason !== null
+    : value.reason === null && value.baseSha !== null && value.mergeBaseSha !== null
+      && value.headTreeSha !== null && value.baseIndex !== null && value.overlay !== null;
+}
+
+function isCompiledPackSource(value: unknown): boolean {
+  if (!isObject(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "base_index_background") {
+    return hasExactKeys(value, [
+      "kind", "pageId", "slug", "commitSha", "inputsHashSha256", "pageBodySha256", "stale",
+      "startLine", "endLine", "rangeSha256", "byteCount", "reason", "citation",
+    ]) && isUuid(value.pageId) && isSafePath(value.slug)
+      && isSha1(value.commitSha) && isSha256(value.inputsHashSha256) && isSha256(value.pageBodySha256)
+      && value.stale === false && isPositiveInteger(value.startLine) && isPositiveInteger(value.endLine)
+      && (value.startLine as number) <= DETAIL_MAX_HEAD_LINE
+      && (value.endLine as number) <= DETAIL_MAX_HEAD_LINE
+      && (value.startLine as number) <= (value.endLine as number)
+      && isSha256(value.rangeSha256) && isPositiveInteger(value.byteCount)
+      && (value.byteCount as number) <= 12 * 1024
+      && value.reason === "background_only"
+      && value.citation === `wiki:${value.slug}@${value.commitSha}#L${value.startLine}-L${value.endLine}`;
+  }
+  return (value.kind === "exact_head_overlay" || value.kind === "exact_head_dependency")
+    && hasExactKeys(value, [
+      "kind", "path", "blobSha", "fullContentSha256", "startLine", "endLine", "rangeSha256",
+      "byteCount", "reason", "citation",
+    ]) && isSafePath(value.path) && isSha1(value.blobSha) && isSha256(value.fullContentSha256)
+    && isPositiveInteger(value.startLine) && isPositiveInteger(value.endLine)
+    && (value.startLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.endLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.startLine as number) <= (value.endLine as number)
+    && isSha256(value.rangeSha256) && isPositiveInteger(value.byteCount)
+    && (value.byteCount as number) <= 12 * 1024
+    && (value.kind === "exact_head_overlay"
+      ? value.reason === "exact_patch_head_range"
+      : value.reason === "static_relative_import" || value.reason === "static_python_import"
+        || value.reason === "static_shell_source")
+    && value.citation === `${value.path}@${value.blobSha}#L${value.startLine}-L${value.endLine}`;
+}
+
+function compiledPackSourceKey(value: unknown): string | null {
+  if (!isObject(value) || typeof value.kind !== "string") return null;
+  const identity = value.kind === "base_index_background" ? value.slug : value.path;
+  return typeof identity === "string" && typeof value.startLine === "number" && typeof value.endLine === "number"
+    ? `${value.kind}\u0000${identity}\u0000${String(value.startLine).padStart(10, "0")}\u0000${String(value.endLine).padStart(10, "0")}`
+    : null;
+}
+
+function compiledPackExclusionKey(value: unknown): string | null {
+  return isObject(value) && typeof value.source === "string" && typeof value.reason === "string"
+    ? `${value.source}\u0000${value.path ?? ""}\u0000${value.reason}\u0000${value.identitySha256 ?? ""}`
+    : null;
+}
+
+function isCompiledPackExclusion(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  const hasIdentity = Object.prototype.hasOwnProperty.call(value, "identitySha256");
+  return hasExactKeys(value, hasIdentity
+    ? ["source", "path", "reason", "identitySha256"] : ["source", "path", "reason"])
+    && (value.source === "exact_head_overlay" || value.source === "exact_head_dependency"
+      || value.source === "base_index_background")
+    && (value.path === null || isSafePath(value.path)) && isManifestExclusionReason(value.reason)
+    && (!hasIdentity || isSha256(value.identitySha256));
+}
+
+function isSourceCustodyFile(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, [
+    "path", "blobSha", "previousPath", "contentSha256", "byteCount", "lineCount", "source", "reason",
+  ]) && isSafePath(value.path) && isSha1(value.blobSha) && value.previousPath === null
+    && isSha256(value.contentSha256) && isNonNegativeInteger(value.byteCount)
+    && (value.byteCount as number) <= DETAIL_MAX_SOURCE_FILE_BYTES
+    && isPositiveInteger(value.lineCount) && (value.lineCount as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.source === "exact_head_overlay" || value.source === "exact_head_tree_fallback")
+    && (value.reason === "exact_base_to_head_compare" || value.reason === "exact_head_tree_path");
+}
+
+function isSourceCustodyExclusion(value: unknown): boolean {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "path", "source", "blobSha", "byteCount", "reason", "secretKinds", "findingCount",
+  ]) || !isSafePath(value.path)
+    || (value.source !== "exact_head_overlay" && value.source !== "exact_head_tree_fallback")
+    || (value.blobSha !== null && !isSha1(value.blobSha))
+    || (value.byteCount !== null && (!isNonNegativeInteger(value.byteCount)
+      || (value.byteCount as number) > DETAIL_MAX_SOURCE_FILE_BYTES))
+    || (value.reason !== "removed_at_exact_head" && value.reason !== "secret_path_policy"
+      && value.reason !== "secret_content_policy")
+    || !isStringList(value.secretKinds, 16, 128)
+    || new Set(value.secretKinds).size !== value.secretKinds.length
+    || !value.secretKinds.every((kind, index, kinds) => index === 0 || kinds[index - 1]! < kind)
+    || !isNonNegativeInteger(value.findingCount) || (value.findingCount as number) > 1_024) return false;
+  if (value.reason === "removed_at_exact_head") {
+    return value.source === "exact_head_overlay" && value.blobSha === null && value.byteCount === null
+      && value.secretKinds.length === 0 && value.findingCount === 0;
+  }
+  if (value.reason === "secret_path_policy") {
+    return value.byteCount === null && value.secretKinds.length === 0 && value.findingCount === 0;
+  }
+  return value.blobSha !== null && value.byteCount !== null
+    && value.secretKinds.length > 0 && (value.findingCount as number) > 0;
+}
+
+function isSelectedExactRange(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, [
+    "kind", "path", "blobSha", "fullContentSha256", "startLine", "endLine", "rangeSha256", "byteCount",
+  ]) && (value.kind === "exact_head_overlay" || value.kind === "exact_head_dependency")
+    && isSafePath(value.path) && isSha1(value.blobSha) && isSha256(value.fullContentSha256)
+    && isPositiveInteger(value.startLine) && isPositiveInteger(value.endLine)
+    && (value.startLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.endLine as number) <= DETAIL_MAX_HEAD_LINE
+    && (value.startLine as number) <= (value.endLine as number)
+    && isSha256(value.rangeSha256) && isPositiveInteger(value.byteCount)
+    && (value.byteCount as number) <= 12 * 1024;
+}
+
+function isDirectReadReceipt(value: unknown, headSha: string, headTreeSha: string): boolean {
+  if (!isObject(value) || !isSafePath(value.requestedPath)
+    || value.headSha !== headSha || value.headTreeSha !== headTreeSha) return false;
+  if (value.outcome === "record") {
+    return hasExactKeys(value, ["requestedPath", "headSha", "headTreeSha", "outcome", "record"])
+      && isSourceCustodyFile(value.record) && isObject(value.record)
+      && value.record.path === value.requestedPath
+      && value.record.source === "exact_head_tree_fallback"
+      && value.record.reason === "exact_head_tree_path";
+  }
+  const hasExclusion = Object.prototype.hasOwnProperty.call(value, "exclusion");
+  return value.outcome === "not_proven"
+    && hasExactKeys(value, hasExclusion
+      ? ["requestedPath", "headSha", "headTreeSha", "outcome", "reason", "exclusion"]
+      : ["requestedPath", "headSha", "headTreeSha", "outcome", "reason"])
+    && isDirectReadNotProvenReason(value.reason)
+    && (!hasExclusion || (isSourceCustodyExclusion(value.exclusion)
+      && isObject(value.exclusion) && value.exclusion.source === "exact_head_tree_fallback"));
+}
+
+function isChangedManifestEntry(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, [
+    "path", "status", "blobSha", "previousPath", "headRanges", "patchSha256", "patchByteCount",
+  ]) && isSafePath(value.path)
+    && (value.status === "added" || value.status === "modified" || value.status === "removed"
+      || value.status === "renamed" || value.status === "copied" || value.status === "changed")
+    && (value.blobSha === null || isSha1(value.blobSha)) && isNullableSafePath(value.previousPath)
+    && Array.isArray(value.headRanges) && value.headRanges.length <= DETAIL_MAX_HEAD_RANGES
+    && value.headRanges.every((range) => isLineRange(range))
+    && (value.patchSha256 === null || isSha256(value.patchSha256))
+    && (value.patchByteCount === null || (isPositiveInteger(value.patchByteCount)
+      && (value.patchByteCount as number) <= DETAIL_MAX_PATCH_BYTES))
+    && (value.patchSha256 === null) === (value.patchByteCount === null)
+    && (value.patchSha256 === null ? value.headRanges.length === 0 : value.headRanges.length > 0);
+}
+
+function isDependencyTreeProof(value: unknown): boolean {
+  return isObject(value) && hasExactKeys(value, ["path", "blobSha", "proofIdentitySha256"])
+    && isSafePath(value.path) && isSha1(value.blobSha) && isSha256(value.proofIdentitySha256);
+}
+
+function isDetailCompiledPack(
+  value: unknown,
+  snapshot: Record<string, unknown>,
+  occurrence: AcceptanceRecordDetailOccurrence,
+  contract: Record<string, unknown>,
+): boolean {
+  if (!isObject(contract.identity) || !isContractIdentity(contract.identity)) return false;
+  const contractIdentity = contract.identity;
+  if (!isObject(value) || !hasExactKeys(value, [
+    "id", "sourceSnapshotId", "compilerVersion", "policyVersion", "packSha256",
+    "sourceCustodyIdentitySha256", "representations", "binding", "manifest", "sourceCustody",
+    "exactHeadDependencyTreeProofs", "createdAt",
+  ]) || !isUuid(value.id) || value.sourceSnapshotId !== snapshot.id
+    || !isSafeText(value.compilerVersion, 256) || !isSafeText(value.policyVersion, 256)
+    || !isSha256(value.packSha256) || !isSha256(value.sourceCustodyIdentitySha256)
+    || !isObject(value.representations) || !hasExactKeys(value.representations, [
+      "jsonSha256", "markdownSha256", "renderedByteCount",
+    ]) || !isSha256(value.representations.jsonSha256) || !isSha256(value.representations.markdownSha256)
+    || !isPositiveInteger(value.representations.renderedByteCount)
+    || !isObject(value.binding) || !hasExactKeys(value.binding, [
+      "sourceSnapshotId", "workspaceId", "recordId", "reviewJobId", "acceptanceContractId",
+      "acceptanceContractVersion", "acceptanceContractSha256", "repo", "prNumber", "baseSha",
+      "mergeBaseSha", "headSha", "headTreeSha", "packetSetSha256",
+      "correctionPacketPayloadSetSha256", "sourceSnapshotCompilerVersion",
+      "baseIndexRevisionSha256", "overlayManifestSha256",
+    ]) || !isObject(snapshot.binding) || !isObject(snapshot.baseIndex)
+    || !isObject(snapshot.overlay)) return false;
+  const binding = value.binding;
+  const snapshotBinding = snapshot.binding;
+  const snapshotBaseIndex = snapshot.baseIndex;
+  const snapshotOverlay = snapshot.overlay;
+  if (binding.sourceSnapshotId !== snapshot.id || binding.workspaceId !== snapshotBinding.workspaceId
+    || binding.recordId !== snapshotBinding.recordId || binding.reviewJobId !== snapshotBinding.reviewJobId
+    || binding.acceptanceContractId !== contractIdentity.id
+    || binding.acceptanceContractVersion !== contractIdentity.version
+    || binding.acceptanceContractSha256 !== contractIdentity.sha256 || binding.repo !== occurrence.repo
+    || binding.prNumber !== occurrence.prNumber || binding.baseSha !== snapshot.baseSha
+    || binding.mergeBaseSha !== snapshot.mergeBaseSha || binding.headSha !== occurrence.headSha
+    || binding.headTreeSha !== snapshot.headTreeSha || binding.packetSetSha256 !== snapshot.packetSetSha256
+    || binding.correctionPacketPayloadSetSha256 !== snapshot.correctionPacketPayloadSetSha256
+    || binding.sourceSnapshotCompilerVersion !== snapshot.compilerVersion
+    || binding.baseIndexRevisionSha256 !== snapshotBaseIndex.revisionSha256
+    || binding.overlayManifestSha256 !== snapshotOverlay.manifestSha256) return false;
+
+  if (!isObject(value.manifest) || !hasExactKeys(value.manifest, [
+    "acceptanceCriterionIds", "unresolvedQuestionIds", "packetIds", "sources", "exclusions",
+    "sourceCount", "exclusionCount", "architectureBoundaries", "tests", "decisions", "custody",
+  ]) || !isStringList(value.manifest.acceptanceCriterionIds, 100, 512)
+    || !isStringList(value.manifest.unresolvedQuestionIds, 100, 512)
+    || !Array.isArray(value.manifest.packetIds)
+    || !value.manifest.packetIds.every((id) => typeof id === "string" && CORRECTION_PACKET_ID.test(id))
+    || !exactJsonEqual(value.manifest.packetIds, snapshot.packetIds)
+    || !Array.isArray(value.manifest.sources) || value.manifest.sources.length === 0
+    || value.manifest.sources.length > DETAIL_MAX_PACK_SOURCES
+    || !value.manifest.sources.every(isCompiledPackSource)
+    || !value.manifest.sources.every((source, index, sources) => index === 0
+      || (compiledPackSourceKey(sources[index - 1]) ?? "") < (compiledPackSourceKey(source) ?? ""))
+    || !Array.isArray(value.manifest.exclusions)
+    || value.manifest.exclusions.length > DETAIL_MAX_PACK_SOURCES
+    || !value.manifest.exclusions.every(isCompiledPackExclusion)
+    || !value.manifest.exclusions.every((exclusion, index, exclusions) => index === 0
+      || (compiledPackExclusionKey(exclusions[index - 1]) ?? "") < (compiledPackExclusionKey(exclusion) ?? ""))
+    || value.manifest.sourceCount !== value.manifest.sources.length
+    || value.manifest.exclusionCount !== value.manifest.exclusions.length
+    || !isSortedUniqueStringList(value.manifest.architectureBoundaries)
+    || !isSortedUniqueStringList(value.manifest.tests)
+    || !isSortedUniqueStringList(value.manifest.decisions)
+    || !isObject(value.manifest.custody)
+    || !hasExactKeys(value.manifest.custody, [
+      "fullSourceUploadAllowed", "rawSourcePersisted", "snippetsPersisted",
+    ]) || value.manifest.custody.fullSourceUploadAllowed !== false
+    || value.manifest.custody.rawSourcePersisted !== false
+    || value.manifest.custody.snippetsPersisted !== false) return false;
+  if (!isObject(contract.contract)) return false;
+  const contractProjection = contract.contract;
+  if (!Array.isArray(contractProjection.acceptanceCriteria)
+    || !Array.isArray(contractProjection.unresolvedQuestions)) return false;
+  const acceptanceCriteria = contractProjection.acceptanceCriteria;
+  const unresolvedQuestions = contractProjection.unresolvedQuestions;
+  const criterionIds = acceptanceCriteria.map((item) => isObject(item) ? item.id : null);
+  const questionIds = unresolvedQuestions.map((item) => isObject(item) ? item.id : null);
+  if (!exactJsonEqual(value.manifest.acceptanceCriterionIds, criterionIds)
+    || !exactJsonEqual(value.manifest.unresolvedQuestionIds, questionIds)) return false;
+
+  if (!isObject(value.sourceCustody)) return false;
+  const sourceCustody = value.sourceCustody;
+  if (!isSha1(sourceCustody.headSha) || !isSha1(sourceCustody.headTreeSha)) return false;
+  const custodyHeadSha = sourceCustody.headSha;
+  const custodyHeadTreeSha = sourceCustody.headTreeSha;
+  if (!hasExactKeys(sourceCustody, [
+    "kind", "schemaVersion", "repo", "prNumber", "baseSha", "mergeBaseSha", "headSha",
+    "headTreeSha", "manifestSha256", "identitySha256", "changedManifest", "records", "exclusions",
+    "directReadReceipts", "selectedExactRanges", "changedFileCount", "recordCount", "exclusionCount",
+    "directReadReceiptCount", "selectedExactRangeCount",
+  ]) || sourceCustody.kind !== "exact_head_source_custody"
+    || sourceCustody.schemaVersion !== 2 || sourceCustody.repo !== occurrence.repo
+    || sourceCustody.prNumber !== occurrence.prNumber || sourceCustody.baseSha !== binding.baseSha
+    || sourceCustody.mergeBaseSha !== binding.mergeBaseSha
+    || sourceCustody.headSha !== occurrence.headSha || sourceCustody.headTreeSha !== binding.headTreeSha
+    || !isSha256(sourceCustody.manifestSha256)
+    || sourceCustody.identitySha256 !== value.sourceCustodyIdentitySha256
+    || !Array.isArray(sourceCustody.changedManifest) || sourceCustody.changedManifest.length === 0
+    || sourceCustody.changedManifest.length > DETAIL_MAX_COMPARE_FILES
+    || !sourceCustody.changedManifest.every(isChangedManifestEntry)
+    || !sourceCustody.changedManifest.every((item, index, items) => index === 0
+      || (isObject(items[index - 1]) && isObject(item)
+        && String(items[index - 1].path) < String(item.path)))
+    || !Array.isArray(sourceCustody.records) || sourceCustody.records.length > DETAIL_MAX_SOURCE_RECORDS
+    || !sourceCustody.records.every((record) => isSourceCustodyFile(record) && isObject(record)
+      && record.source === "exact_head_overlay" && record.reason === "exact_base_to_head_compare")
+    || !sourceCustody.records.every((record, index, records) => index === 0
+      || (isObject(records[index - 1]) && isObject(record)
+        && String(records[index - 1].path) < String(record.path)))
+    || sourceCustody.records.reduce((total, record) => total + (
+      isObject(record) && typeof record.byteCount === "number" ? record.byteCount : 0
+    ), 0) > DETAIL_MAX_SOURCE_RECORD_BYTES
+    || !Array.isArray(sourceCustody.exclusions)
+    || sourceCustody.exclusions.length > DETAIL_MAX_COMPARE_FILES
+    || !sourceCustody.exclusions.every((exclusion) => isSourceCustodyExclusion(exclusion)
+      && isObject(exclusion) && exclusion.source === "exact_head_overlay")
+    || !Array.isArray(sourceCustody.directReadReceipts)
+    || sourceCustody.directReadReceipts.length > DETAIL_MAX_DIRECT_READS
+    || !sourceCustody.directReadReceipts.every((receipt) =>
+      isDirectReadReceipt(receipt, custodyHeadSha, custodyHeadTreeSha))
+    || new Set(sourceCustody.directReadReceipts.map((receipt) =>
+      isObject(receipt) ? receipt.requestedPath : null)).size !== sourceCustody.directReadReceipts.length
+    || sourceCustody.directReadReceipts.reduce((total, receipt) => {
+      if (!isObject(receipt) || !isObject(receipt.record) || typeof receipt.record.byteCount !== "number") return total;
+      return total + receipt.record.byteCount;
+    }, 0) > DETAIL_MAX_DIRECT_BYTES
+    || !Array.isArray(sourceCustody.selectedExactRanges)
+    || sourceCustody.selectedExactRanges.length > DETAIL_MAX_SELECTED_RANGES
+    || !sourceCustody.selectedExactRanges.every(isSelectedExactRange)
+    || !sourceCustody.selectedExactRanges.some((range) => isObject(range)
+      && range.kind === "exact_head_overlay")
+    || sourceCustody.changedFileCount !== sourceCustody.changedManifest.length
+    || sourceCustody.recordCount !== sourceCustody.records.length
+    || sourceCustody.exclusionCount !== sourceCustody.exclusions.length
+    || sourceCustody.directReadReceiptCount !== sourceCustody.directReadReceipts.length
+    || sourceCustody.selectedExactRangeCount !== sourceCustody.selectedExactRanges.length) return false;
+
+  return Array.isArray(value.exactHeadDependencyTreeProofs)
+    && value.exactHeadDependencyTreeProofs.length <= DETAIL_MAX_DIRECT_READS
+    && value.exactHeadDependencyTreeProofs.every(isDependencyTreeProof)
+    && value.exactHeadDependencyTreeProofs.every((proof, index, proofs) => {
+      if (index === 0 || !isObject(proof) || !isObject(proofs[index - 1])) return index === 0;
+      return `${proofs[index - 1].path}\u0000${proofs[index - 1].blobSha}`
+        < `${proof.path}\u0000${proof.blobSha}`;
+    })
+    && isIsoTimestamp(value.createdAt);
+}
+
+function isDetailReview(value: unknown, occurrence: AcceptanceRecordDetailOccurrence): boolean {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_recorded") return hasExactKeys(value, ["kind"]);
+  if (value.kind === "not_posted") {
+    return hasExactKeys(value, ["kind", "reviewJobId", "state"])
+      && isUuid(value.reviewJobId) && value.reviewJobId === occurrence.headCycleId
+      && (value.state === "queued" || value.state === "running" || value.state === "failed"
+        || value.state === "superseded" || value.state === "skipped");
+  }
+  return value.kind === "posted" && hasExactKeys(value, [
+    "kind", "reviewJobId", "verdict", "postedReviewUrl", "postedAttestationEventId", "reviewedAt",
+  ]) && isUuid(value.reviewJobId) && value.reviewJobId === occurrence.headCycleId
+    && (value.verdict === "proven" || value.verdict === "failed"
+      || value.verdict === "not_proven" || value.verdict === "not_testable")
+    && isGithubReviewUrl(value.postedReviewUrl, occurrence.repo, occurrence.prNumber)
+    && isUuid(value.postedAttestationEventId) && isIsoTimestamp(value.reviewedAt);
+}
+
+function isDetailProofCycle(
+  value: unknown,
+  occurrence: AcceptanceRecordDetailOccurrence,
+  contract: Record<string, unknown>,
+  workspaceId: string,
+  recordId: string,
+): boolean {
+  if (!isObject(value) || !hasExactKeys(value, ["occurrence", "review", "criteria"])
+    || !occurrenceCoreMatches(value.occurrence, occurrence)
+    || !isDetailReview(value.review, occurrence) || !Array.isArray(value.criteria)
+    || !isObject(contract.contract)) return false;
+  const contractProjection = contract.contract;
+  if (!Array.isArray(contractProjection.acceptanceCriteria)
+    || value.criteria.length !== contractProjection.acceptanceCriteria.length) return false;
+  const acceptanceCriteria = contractProjection.acceptanceCriteria;
+  const reviewKind = isObject(value.review) ? value.review.kind : null;
+  return value.criteria.every((item, index) => {
+    const expectedCriterion = acceptanceCriteria[index];
+    if (!isObject(item) || !hasExactKeys(item, ["criterion", "proof"])
+      || !isContractCriterion(item.criterion) || !exactJsonEqual(item.criterion, expectedCriterion)
+      || !isObject(item.proof)) return false;
+    if (item.proof.kind === "unknown") {
+      if (!hasExactKeys(item.proof, ["kind", "reason"])) return false;
+      return reviewKind === "not_recorded"
+        ? item.proof.reason === "review_not_recorded"
+        : reviewKind === "not_posted"
+          ? item.proof.reason === "review_not_posted"
+          : item.proof.reason === "criterion_result_not_durably_rederivable";
+    }
+    if (item.proof.kind !== "correction_packet"
+      || !hasExactKeys(item.proof, ["kind", "state", "packet"])
+      || (item.proof.state !== "failed" && item.proof.state !== "not_proven")
+      || !isAcceptanceCorrectionPacket(item.proof.packet) || !isObject(item.criterion)
+      || item.proof.packet.state !== item.proof.state
+      || item.proof.packet.workspaceId !== workspaceId || item.proof.packet.recordId !== recordId
+      || item.proof.packet.repo !== occurrence.repo || item.proof.packet.prNumber !== occurrence.prNumber
+      || item.proof.packet.headSha !== occurrence.headSha || item.proof.packet.jobId !== occurrence.headCycleId
+      || item.proof.packet.criterion.id !== item.criterion.id
+      || item.proof.packet.criterion.snapshot !== item.criterion.text) return false;
+    return isObject(contract.identity)
+      && item.proof.packet.acceptanceContract.id === contract.identity.id
+      && item.proof.packet.acceptanceContract.version === contract.identity.version;
+  });
+}
+
+export function isAcceptanceRecordDetailEnvelope(
+  value: unknown,
+): value is AcceptanceRecordDetailEnvelope {
+  if (!isObject(value)) return false;
+  if (value.kind === "not_found") return hasExactKeys(value, ["kind"]);
+  if (value.kind === "unavailable") {
+    return hasExactKeys(value, ["kind", "reason"])
+      && typeof value.reason === "string" && DETAIL_UNAVAILABLE_REASONS.has(value.reason);
+  }
+  if (value.kind !== "record" || !hasExactKeys(value, ["kind", "detail"])
+    || !isObject(value.detail) || !hasExactKeys(value.detail, [
+      "summary", "contract", "pullRequest", "contextPacks", "proofMatrix", "artifactCustody", "gatedIssue",
+    ]) || !isAcceptanceRecordSummary(value.detail.summary)
+    || !isObject(value.detail.contract) || !hasExactKeys(value.detail.contract, [
+      "identity", "confirmedBy", "confirmedAt", "contract",
+    ]) || !isContractIdentity(value.detail.contract.identity)
+    || !isSafeText(value.detail.contract.confirmedBy, 512)
+    || !isIsoTimestamp(value.detail.contract.confirmedAt)
+    || !isConfirmedContractProjection(value.detail.contract.contract)
+    || !isDetailPullRequest(value.detail.pullRequest)
+    || !Array.isArray(value.detail.contextPacks) || value.detail.contextPacks.length > 128
+    || !Array.isArray(value.detail.proofMatrix)
+    || !isObject(value.detail.artifactCustody)
+    || !hasExactKeys(value.detail.artifactCustody, ["kind", "reason"])
+    || value.detail.artifactCustody.kind !== "unknown"
+    || value.detail.artifactCustody.reason !== "artifact_custody_not_available"
+    || !isObject(value.detail.gatedIssue)
+    || !hasExactKeys(value.detail.gatedIssue, ["kind", "reason"])
+    || value.detail.gatedIssue.kind !== "unknown"
+    || value.detail.gatedIssue.reason !== "gated_issue_custody_not_available") return false;
+
+  const { summary, contract, pullRequest, contextPacks, proofMatrix } = value.detail;
+  if (!isObject(summary) || !isObject(contract) || !isObject(contract.identity)
+    || !isObject(contract.contract) || summary.workspaceId === undefined || summary.recordId === undefined
+    || summary.requestedWork === undefined || !isObject(summary.requestedWork)
+    || summary.requestedWork.kind !== "confirmed"
+    || summary.requestedWork.originalRequest !== contract.contract.originalRequest
+    || !exactJsonEqual(summary.requestedWork.acceptanceContract, contract.identity)) return false;
+
+  const occurrences: AcceptanceRecordDetailOccurrence[] = isObject(pullRequest)
+    && pullRequest.kind === "attached" && Array.isArray(pullRequest.occurrences)
+    ? pullRequest.occurrences.filter(isDetailOccurrence) : [];
+  if (isObject(summary.pullRequest) && summary.pullRequest.kind === "not_attached") {
+    if (!isObject(pullRequest) || pullRequest.kind !== "not_attached") return false;
+  } else if (!isObject(summary.pullRequest) || summary.pullRequest.kind !== "attached"
+    || !isObject(pullRequest) || pullRequest.kind !== "attached"
+    || summary.pullRequest.prNumber !== pullRequest.prNumber) return false;
+  if (isObject(summary.pullRequest) && summary.pullRequest.kind === "attached"
+    && isObject(pullRequest) && pullRequest.kind === "attached") {
+    const summaryHead = summary.pullRequest.head;
+    if (!isObject(summaryHead)) return false;
+    if (summaryHead.kind === "current") {
+      if (!isObject(pullRequest.current) || pullRequest.current.kind !== "current"
+        || pullRequest.current.headSha !== summaryHead.sha
+        || pullRequest.current.headCycleId !== summaryHead.headCycleId
+        || pullRequest.current.authorityGeneration !== summaryHead.authorityGeneration) return false;
+    } else if (summaryHead.kind === "merged") {
+      if (!isObject(pullRequest.merged) || pullRequest.merged.kind !== "merged"
+        || pullRequest.merged.headSha !== summaryHead.sha
+        || pullRequest.merged.headCycleId !== summaryHead.headCycleId
+        || pullRequest.merged.authorityGeneration !== summaryHead.authorityGeneration) return false;
+    } else if (summaryHead.kind !== "unknown"
+      || pullRequest.current !== null || pullRequest.merged !== null) return false;
+  }
+
+  const occurrenceByCycle = new Map(occurrences.map((occurrence) => [occurrence.headCycleId, occurrence]));
+  const snapshotIds = new Set<string>();
+  let compiledPackCount = 0;
+  let priorSnapshotSortKey: string | null = null;
+  for (const contextPack of contextPacks) {
+    if (!isObject(contextPack) || !hasExactKeys(contextPack, ["occurrence", "sourceSnapshot", "compiledPacks"])
+      || !isObject(contextPack.occurrence) || !isUuid(contextPack.occurrence.headCycleId)) return false;
+    const occurrence = occurrenceByCycle.get(contextPack.occurrence.headCycleId);
+    if (!occurrence || !occurrenceCoreMatches(contextPack.occurrence, occurrence)
+      || !isDetailSourceSnapshot(contextPack.sourceSnapshot, occurrence,
+        summary.workspaceId as string, summary.recordId as string,
+        contract.identity as { id: string; version: number; sha256: string })
+      || !isObject(contextPack.sourceSnapshot) || !isUuid(contextPack.sourceSnapshot.id)
+      || snapshotIds.has(contextPack.sourceSnapshot.id)
+      || !Array.isArray(contextPack.compiledPacks) || contextPack.compiledPacks.length > 8
+      || (contextPack.sourceSnapshot.status === "not_proven" && contextPack.compiledPacks.length !== 0)
+      || !contextPack.compiledPacks.every((pack) => isDetailCompiledPack(
+        pack, contextPack.sourceSnapshot as Record<string, unknown>, occurrence, contract,
+      )) || !contextPack.compiledPacks.every((pack, index, packs) => {
+        if (!isObject(pack) || typeof pack.createdAt !== "string" || typeof pack.id !== "string") return false;
+        if (index === 0 || !isObject(packs[index - 1])) return index === 0;
+        return `${packs[index - 1].createdAt}\u0000${packs[index - 1].id}`
+          < `${pack.createdAt}\u0000${pack.id}`;
+      })) return false;
+    const snapshotSortKey = `${contextPack.sourceSnapshot.createdAt}\u0000${contextPack.sourceSnapshot.id}`;
+    if (priorSnapshotSortKey !== null && priorSnapshotSortKey >= snapshotSortKey) return false;
+    priorSnapshotSortKey = snapshotSortKey;
+    compiledPackCount += contextPack.compiledPacks.length;
+    if (compiledPackCount > 64) return false;
+    snapshotIds.add(contextPack.sourceSnapshot.id);
+  }
+  const suppliedContext = summary.suppliedContext;
+  if (isObject(suppliedContext) && suppliedContext.kind !== "unknown") {
+    if (!isObject(suppliedContext.sourceSnapshot)) return false;
+    const summarySnapshot = suppliedContext.sourceSnapshot;
+    const contextPack = contextPacks.find((candidate) => isObject(candidate)
+      && isObject(candidate.sourceSnapshot) && candidate.sourceSnapshot.id === summarySnapshot.id);
+    if (!isObject(contextPack) || !isObject(contextPack.sourceSnapshot)
+      || contextPack.sourceSnapshot.occurrence === undefined
+      || contextPack.sourceSnapshot.id !== summarySnapshot.id
+      || contextPack.sourceSnapshot.binding === undefined
+      || contextPack.sourceSnapshot.compilerVersion !== summarySnapshot.compilerVersion
+      || contextPack.sourceSnapshot.packetSetSha256 !== summarySnapshot.packetSetSha256
+      || !isObject(contextPack.occurrence)
+      || contextPack.occurrence.headSha !== summarySnapshot.headSha
+      || contextPack.occurrence.headCycleId !== summarySnapshot.headCycleId) return false;
+    if (suppliedContext.kind === "compiled") {
+      if (!isObject(suppliedContext.compiledPack)) return false;
+      const summaryPack = suppliedContext.compiledPack;
+      if (!Array.isArray(contextPack.compiledPacks)
+        || !contextPack.compiledPacks.some((pack) => isObject(pack)
+          && pack.id === summaryPack.id
+          && pack.packSha256 === summaryPack.sha256
+          && pack.sourceCustodyIdentitySha256 === summaryPack.sourceCustodyIdentitySha256
+          && pack.compilerVersion === summaryPack.compilerVersion
+          && pack.policyVersion === summaryPack.policyVersion)) return false;
+    } else if (contextPack.sourceSnapshot.status !== suppliedContext.kind) return false;
+  }
+
+  if (proofMatrix.length !== occurrences.length) return false;
+  const proofCycles = new Set<string>();
+  for (const [index, proofCycle] of proofMatrix.entries()) {
+    if (!isObject(proofCycle) || !isObject(proofCycle.occurrence)
+      || !isUuid(proofCycle.occurrence.headCycleId)) return false;
+    const occurrence = occurrenceByCycle.get(proofCycle.occurrence.headCycleId);
+    if (!occurrence || occurrence !== occurrences[index] || proofCycles.has(occurrence.headCycleId)
+      || !isDetailProofCycle(proofCycle, occurrence, contract,
+        summary.workspaceId as string, summary.recordId as string)) return false;
+    proofCycles.add(occurrence.headCycleId);
+  }
+  const summaryProof = summary.proof;
+  if (isObject(summaryProof) && summaryProof.kind === "recorded") {
+    if (typeof summaryProof.reviewJobId !== "string" || typeof summaryProof.verdict !== "string"
+      || typeof summaryProof.postedReviewUrl !== "string"
+      || typeof summaryProof.postedAttestationEventId !== "string") return false;
+    const { reviewJobId, verdict, postedReviewUrl, postedAttestationEventId } = summaryProof;
+    const posted = proofMatrix.some((cycle) => isObject(cycle) && isObject(cycle.review)
+      && cycle.review.kind === "posted"
+      && cycle.review.reviewJobId === reviewJobId
+      && cycle.review.verdict === verdict
+      && cycle.review.postedReviewUrl === postedReviewUrl
+      && cycle.review.postedAttestationEventId === postedAttestationEventId);
+    if (!posted) return false;
+  }
+  if (isObject(summary.outcome) && summary.outcome.kind === "signed_merge") {
+    if (!isObject(pullRequest) || pullRequest.kind !== "attached" || !isObject(pullRequest.merged)
+      || pullRequest.merged.mergeEventId !== summary.outcome.mergeEventId
+      || pullRequest.merged.mergeSha !== summary.outcome.mergeSha
+      || pullRequest.merged.mergedAt !== summary.outcome.mergedAt) return false;
+  }
+  return true;
 }
 
 export function isCorrectionPacketsEnvelope(value: unknown): value is AcceptanceCorrectionPacketsEnvelope {
@@ -1439,13 +2441,14 @@ export function isDependencyObservationsEnvelope(
 export function isChangeRecordResponse(value: unknown): value is ChangeRecordResponse {
   return isObject(value) && hasExactKeys(value, [
     "record", "events", "correctionPackets", "finalDecision", "reviewMetrics",
-    "dependencyObservations", "canRecordFinalDecision", "canRecordReviewEffort",
+    "dependencyObservations", "acceptanceDetail", "canRecordFinalDecision", "canRecordReviewEffort",
     "canApproveDependencyObservation",
   ]) && isObject(value.record) && Array.isArray(value.events)
     && isCorrectionPacketsEnvelope(value.correctionPackets)
     && isFinalDecisionEnvelope(value.finalDecision)
     && isReviewMetricsEnvelope(value.reviewMetrics)
     && isDependencyObservationsEnvelope(value.dependencyObservations)
+    && isAcceptanceRecordDetailEnvelope(value.acceptanceDetail)
     && typeof value.canRecordFinalDecision === "boolean"
     && typeof value.canRecordReviewEffort === "boolean"
     && typeof value.canApproveDependencyObservation === "boolean";
@@ -1693,6 +2696,314 @@ function CorrectionPacketCard({ packet }: { packet: AcceptanceCorrectionPacket }
         </dl>
       </details>
     </article>
+  );
+}
+
+function DetailCorrectionPacketCard({
+  packet,
+}: {
+  packet: AcceptanceRecordDetailCorrectionPacket;
+}) {
+  if (!isAcceptanceCorrectionPacket(packet)) {
+    return <p className="text-xs text-[var(--red-11)]">Correction packet custody is invalid.</p>;
+  }
+  return <CorrectionPacketCard packet={packet} />;
+}
+
+function detailUnavailableCopy(
+  value: Exclude<AcceptanceRecordDetailEnvelope, { kind: "record" }>,
+): string {
+  if (value.kind === "not_found") return "Canonical Acceptance detail was not found for this Record.";
+  return `Canonical Acceptance detail is unavailable: ${value.reason.replaceAll("_", " ")}. No detail is inferred from the raw timeline.`;
+}
+
+function DetailStringList({ values, empty }: { values: string[]; empty: string }) {
+  if (values.length === 0) return <p className="mt-2 text-xs text-[var(--gray-09)]">{empty}</p>;
+  return (
+    <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[var(--gray-11)]">
+      {values.map((value, index) => <li key={`${index}:${value}`}>{value}</li>)}
+    </ul>
+  );
+}
+
+function occurrenceLabel(kind: "current" | "merged" | "historical"): string {
+  return kind === "current" ? "Current authoritative occurrence"
+    : kind === "merged" ? "Signed merged occurrence" : "Historical occurrence";
+}
+
+export function AcceptanceRecordDetailPanel({
+  acceptanceDetail,
+}: {
+  acceptanceDetail: AcceptanceRecordDetailEnvelope;
+}) {
+  if (acceptanceDetail.kind !== "record") {
+    return (
+      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Acceptance detail
+        </h2>
+        <p className="mt-3 text-sm text-[var(--gray-11)]">{detailUnavailableCopy(acceptanceDetail)}</p>
+      </section>
+    );
+  }
+
+  const { detail } = acceptanceDetail;
+  const contract = detail.contract.contract;
+  const occurrences = detail.pullRequest.kind === "attached" ? detail.pullRequest.occurrences : [];
+  return (
+    <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+      <div className="border-b border-[var(--gray-05)] px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
+          Acceptance Contract, Context, and proof
+        </h2>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          Server-validated Record custody. Raw lifecycle payloads below remain audit-only.
+        </p>
+      </div>
+
+      <div className="space-y-6 p-4">
+        <article>
+          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Confirmed Acceptance Contract</h3>
+          <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+            <CorrectionDatum label="Contract identity" mono>
+              {detail.contract.identity.id} v{detail.contract.identity.version}
+            </CorrectionDatum>
+            <CorrectionDatum label="Contract SHA-256" mono>{detail.contract.identity.sha256}</CorrectionDatum>
+            <CorrectionDatum label="Confirmed by" mono>{detail.contract.confirmedBy}</CorrectionDatum>
+            <CorrectionDatum label="Confirmed at">{formatChangeRecordDate(detail.contract.confirmedAt)}</CorrectionDatum>
+            <CorrectionDatum label="Original request">{contract.originalRequest}</CorrectionDatum>
+          </dl>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Normalized requirements</h4>
+              <DetailStringList values={contract.normalizedRequirements} empty="No normalized requirements recorded." />
+            </div>
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Non-goals</h4>
+              <DetailStringList values={contract.nonGoals} empty="No non-goals recorded." />
+            </div>
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Risks</h4>
+              <DetailStringList values={contract.risks} empty="No risks recorded." />
+            </div>
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Stops</h4>
+              <DetailStringList values={contract.stops} empty="No stop conditions recorded." />
+            </div>
+          </div>
+          <div className="mt-4">
+            <h4 className="text-xs font-medium text-[var(--gray-12)]">Acceptance criteria</h4>
+            <ol className="mt-2 space-y-2">
+              {contract.acceptanceCriteria.map((criterion) => (
+                <li key={criterion.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-xs">
+                  <p className="font-mono text-[var(--gray-09)]">{criterion.id}</p>
+                  <p className="mt-1 text-[var(--gray-12)]">{criterion.text}</p>
+                  <p className="mt-1 text-[var(--gray-09)]">
+                    {criterion.userVisible ? "User-visible" : "Internal"} · {criterion.modality ?? "Modality not recorded"}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Environment</h4>
+              <pre className="mt-2 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 font-mono text-xs text-[var(--gray-11)]">
+                {JSON.stringify(contract.environment, null, 2)}
+              </pre>
+            </div>
+            <div>
+              <h4 className="text-xs font-medium text-[var(--gray-12)]">Unresolved questions</h4>
+              {contract.unresolvedQuestions.length === 0 ? (
+                <p className="mt-2 text-xs text-[var(--gray-09)]">No unresolved questions recorded.</p>
+              ) : (
+                <ul className="mt-2 space-y-2 text-xs text-[var(--gray-11)]">
+                  {contract.unresolvedQuestions.map((question) => (
+                    <li key={question.id}><code>{question.id}</code>: {question.text}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </article>
+
+        <article className="border-t border-[var(--gray-05)] pt-5">
+          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Exact PR head occurrences</h3>
+          {occurrences.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--gray-09)]">No PR head occurrence is attached.</p>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {occurrences.map((occurrence) => (
+                <div key={occurrence.headCycleId} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+                  <p className="text-xs font-medium text-[var(--gray-12)]">{occurrenceLabel(occurrence.kind)}</p>
+                  <dl className="mt-2 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+                    <CorrectionDatum label="Exact head SHA" mono>{occurrence.headSha}</CorrectionDatum>
+                    <CorrectionDatum label="Head-cycle ID" mono>{occurrence.headCycleId}</CorrectionDatum>
+                    {occurrence.kind !== "historical" ? (
+                      <CorrectionDatum label="Authority generation" mono>{occurrence.authorityGeneration}</CorrectionDatum>
+                    ) : (
+                      <CorrectionDatum label="Authority generation">Not durably recorded for this historical cycle</CorrectionDatum>
+                    )}
+                    <CorrectionDatum label="Review job">
+                      {occurrence.reviewJob.kind === "recorded"
+                        ? `${occurrence.reviewJob.state} · ${occurrence.reviewJob.id}`
+                        : "Not recorded"}
+                    </CorrectionDatum>
+                    {occurrence.kind === "merged" ? (
+                      <>
+                        <CorrectionDatum label="Merge SHA" mono>{occurrence.mergeSha}</CorrectionDatum>
+                        <CorrectionDatum label="Merged at">{formatChangeRecordDate(occurrence.mergedAt)}</CorrectionDatum>
+                      </>
+                    ) : null}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="border-t border-[var(--gray-05)] pt-5">
+          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Context Pack custody</h3>
+          {detail.contextPacks.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--gray-09)]">No validated Context Pack metadata is recorded.</p>
+          ) : (
+            <div className="mt-3 space-y-4">
+              {detail.contextPacks.map((contextPack) => (
+                <div key={contextPack.sourceSnapshot.id} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
+                  <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+                    <CorrectionDatum label="Source snapshot" mono>{contextPack.sourceSnapshot.id}</CorrectionDatum>
+                    <CorrectionDatum label="Occurrence" mono>
+                      {contextPack.occurrence.headSha} · {contextPack.occurrence.headCycleId}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Snapshot status">
+                      {contextPack.sourceSnapshot.status === "admitted" ? "Admitted" : `Not proven · ${contextPack.sourceSnapshot.reason}`}
+                    </CorrectionDatum>
+                    <CorrectionDatum label="Packet-set SHA-256" mono>{contextPack.sourceSnapshot.packetSetSha256}</CorrectionDatum>
+                    <CorrectionDatum label="Compiler" mono>{contextPack.sourceSnapshot.compilerVersion}</CorrectionDatum>
+                    <CorrectionDatum label="Compiled variants">{contextPack.compiledPacks.length}</CorrectionDatum>
+                  </dl>
+                  {contextPack.compiledPacks.map((pack) => (
+                    <div key={pack.id} className="mt-4 border-t border-[var(--gray-05)] pt-4">
+                      <h4 className="text-xs font-medium text-[var(--gray-12)]">Compiled Pack receipt</h4>
+                      <dl className="mt-3 grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+                        <CorrectionDatum label="Pack ID" mono>{pack.id}</CorrectionDatum>
+                        <CorrectionDatum label="Pack SHA-256" mono>{pack.packSha256}</CorrectionDatum>
+                        <CorrectionDatum label="Source-custody identity" mono>{pack.sourceCustodyIdentitySha256}</CorrectionDatum>
+                        <CorrectionDatum label="Compiler / policy" mono>{pack.compilerVersion} · {pack.policyVersion}</CorrectionDatum>
+                        <CorrectionDatum label="Base / merge base" mono>{pack.binding.baseSha} · {pack.binding.mergeBaseSha}</CorrectionDatum>
+                        <CorrectionDatum label="Head / tree" mono>{pack.binding.headSha} · {pack.binding.headTreeSha}</CorrectionDatum>
+                        <CorrectionDatum label="Persisted source bodies">
+                          None — raw source and snippets are not persisted
+                        </CorrectionDatum>
+                        <CorrectionDatum label="Source / exclusion counts">
+                          {pack.manifest.sourceCount} selected · {pack.manifest.exclusionCount} excluded
+                        </CorrectionDatum>
+                      </dl>
+                      <div className="mt-4">
+                        <h5 className="text-xs font-medium text-[var(--gray-12)]">Selected context citations</h5>
+                        {pack.manifest.sources.length === 0 ? (
+                          <p className="mt-2 text-xs text-[var(--gray-09)]">No selected citation metadata recorded.</p>
+                        ) : (
+                          <ul className="mt-2 space-y-2 text-xs text-[var(--gray-11)]">
+                            {pack.manifest.sources.map((source, index) => (
+                              <li key={`${source.rangeSha256}:${index}`} className="rounded bg-[var(--gray-02)] p-2">
+                                <code>{source.kind === "base_index_background" ? source.slug : source.path}</code>
+                                {` · lines ${source.startLine}-${source.endLine} · ${source.reason} · ${source.citation}`}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <div>
+                          <h5 className="text-xs font-medium text-[var(--gray-12)]">Excluded context</h5>
+                          {pack.manifest.exclusions.length === 0 ? (
+                            <p className="mt-2 text-xs text-[var(--gray-09)]">No exclusions recorded.</p>
+                          ) : (
+                            <ul className="mt-2 space-y-1 text-xs text-[var(--gray-11)]">
+                              {pack.manifest.exclusions.map((exclusion, index) => (
+                                <li key={`${index}:${exclusion.identitySha256 ?? exclusion.reason}`}>
+                                  <code>{exclusion.path ?? exclusion.source}</code> · {exclusion.reason}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <div>
+                          <h5 className="text-xs font-medium text-[var(--gray-12)]">Exact-head source custody</h5>
+                          <p className="mt-2 text-xs text-[var(--gray-11)]">
+                            {pack.sourceCustody.changedFileCount} changed · {pack.sourceCustody.recordCount} records · {pack.sourceCustody.exclusionCount} exclusions · {pack.sourceCustody.directReadReceiptCount} direct reads · {pack.sourceCustody.selectedExactRangeCount} selected ranges
+                          </p>
+                          <DetailStringList
+                            values={pack.sourceCustody.changedManifest.map((file) => `${file.path} (${file.status})`)}
+                            empty="No changed-file metadata recorded."
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="border-t border-[var(--gray-05)] pt-5">
+          <h3 className="text-sm font-semibold text-[var(--gray-12)]">Criterion proof matrix</h3>
+          {detail.proofMatrix.length === 0 ? (
+            <p className="mt-2 text-xs text-[var(--gray-09)]">No PR occurrence exists for criterion proof.</p>
+          ) : (
+            <div className="mt-3 space-y-4">
+              {detail.proofMatrix.map((cycle) => (
+                <div key={cycle.occurrence.headCycleId} className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
+                  <p className="font-mono text-xs text-[var(--gray-09)]">
+                    {cycle.occurrence.headSha} · {cycle.occurrence.headCycleId}
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--gray-11)]">
+                    Review: {cycle.review.kind === "posted"
+                      ? `${cycle.review.verdict} · posted receipt ${cycle.review.postedAttestationEventId}`
+                      : cycle.review.kind === "not_posted"
+                        ? `${cycle.review.state} · not posted`
+                        : "not recorded"}
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {cycle.criteria.map(({ criterion, proof }) => (
+                      <div key={criterion.id} className="rounded border border-[var(--gray-05)] p-3">
+                        <p className="font-mono text-xs text-[var(--gray-09)]">{criterion.id}</p>
+                        <p className="mt-1 text-sm text-[var(--gray-12)]">{criterion.text}</p>
+                        {proof.kind === "unknown" ? (
+                          <p className="mt-2 text-xs font-medium text-[var(--gray-11)]">
+                            Criterion evidence unknown: {proof.reason.replaceAll("_", " ")}. Aggregate review verdicts are not treated as criterion proof.
+                          </p>
+                        ) : (
+                          <div className="mt-3">
+                            <p className="mb-2 text-xs font-medium text-[var(--gray-11)]">
+                              Correction-backed {proof.state === "failed" ? "failed" : "not proven"} evidence
+                            </p>
+                            <DetailCorrectionPacketCard packet={proof.packet} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <div className="grid gap-3 border-t border-[var(--gray-05)] pt-5 sm:grid-cols-2">
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+            <p className="text-xs font-medium text-[var(--gray-12)]">Artifact custody: Unknown</p>
+            <p className="mt-1 text-xs text-[var(--gray-09)]">Artifact access is unavailable; no artifact receipt is inferred.</p>
+          </div>
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3">
+            <p className="text-xs font-medium text-[var(--gray-12)]">Gated issue custody: Unknown</p>
+            <p className="mt-1 text-xs text-[var(--gray-09)]">No gated-issue custody is available; no issue state is inferred.</p>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2559,6 +3870,7 @@ export function ChangeRecordView({ workspaceId, recordId }: { workspaceId: strin
         </p>
       </div>
       <ChangeRecordAnchors record={data.record} />
+      <AcceptanceRecordDetailPanel acceptanceDetail={data.acceptanceDetail} />
       <CorrectionsSection correctionPackets={data.correctionPackets} />
       <FinalDecisionPanel
         finalDecision={data.finalDecision}

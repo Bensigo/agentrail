@@ -3802,6 +3802,590 @@ export async function readCurrentAcceptanceCorrectionPackets(
   });
 }
 
+/** The human decision never rewrites Jace's independently posted verdict. */
+export type AcceptancePrDecision =
+  | "approved"
+  | "changes_requested"
+  | "rejected"
+  | "approved_with_exception";
+
+export type AcceptancePrDecisionRole = "owner" | "admin";
+
+export type CurrentAcceptancePrDecisionBinding = {
+  /** Opaque optimistic-concurrency binding issued by the current-cycle read. */
+  bindingId: string;
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  headCycleId: string;
+  authorityGeneration: number;
+  reviewJobId: string;
+  reviewVerdict: "proven" | "failed" | "not_proven" | "not_testable";
+  postedReviewUrl: string;
+  postedAttestationEventId: string;
+  acceptanceContract: {
+    id: string;
+    version: number;
+    sha256: string;
+  };
+};
+
+export type CurrentAcceptancePrDecision = {
+  eventId: string;
+  eventKey: string;
+  decision: AcceptancePrDecision;
+  rationale: string | null;
+  decidedBy: string;
+  decidedRole: AcceptancePrDecisionRole;
+  decidedAt: Date;
+};
+
+export type ReadCurrentAcceptancePrDecisionInput = {
+  workspaceId: string;
+  recordId: string;
+};
+
+export type ReadCurrentAcceptancePrDecisionNotReadyReason =
+  | "review_job_unavailable"
+  | "confirmed_contract_unavailable"
+  | "posted_attestation_unavailable"
+  | "invalid_review_custody"
+  | "invalid_decision_custody";
+
+export type CurrentAcceptancePrDecisionState = {
+  binding: CurrentAcceptancePrDecisionBinding;
+  decision: CurrentAcceptancePrDecision | null;
+};
+
+export type ReadCurrentAcceptancePrDecisionResult =
+  | ({ kind: "current" } & CurrentAcceptancePrDecisionState)
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "not_ready"; reason: ReadCurrentAcceptancePrDecisionNotReadyReason };
+
+export type RecordAcceptancePrDecisionInput = {
+  workspaceId: string;
+  recordId: string;
+  bindingId: string;
+  decision: AcceptancePrDecision;
+  rationale?: string;
+  decidedBy: string;
+};
+
+export type RecordAcceptancePrDecisionResult =
+  | ({ kind: "recorded" | "replayed" } & {
+      binding: CurrentAcceptancePrDecisionBinding;
+      decision: CurrentAcceptancePrDecision;
+    })
+  | { kind: "not_found" }
+  | { kind: "not_current" }
+  | { kind: "not_authorized" }
+  | { kind: "not_ready"; reason: ReadCurrentAcceptancePrDecisionNotReadyReason }
+  | { kind: "decision_not_allowed"; reason: "approval_requires_proven" };
+
+/** Stable business conflict; database/storage failures remain ordinary errors. */
+export class AcceptancePrDecisionConflictError extends Error {
+  readonly code = "ACCEPTANCE_PR_DECISION_CONFLICT" as const;
+
+  constructor() {
+    super("The current PR head cycle already has a different human decision");
+    this.name = "AcceptancePrDecisionConflictError";
+  }
+}
+
+const ACCEPTANCE_PR_DECISION_KIND = "acceptance_pr_decision";
+const ACCEPTANCE_PR_DECISION_VERSION = 1;
+const ACCEPTANCE_PR_DECISION_STAGE = "human_pr_decision";
+const REVIEW_JOB_POSTED_ATTESTATION_KIND = "review_job_github_posted";
+const REVIEW_JOB_POSTED_ATTESTATION_STAGE = "review";
+const REVIEW_JOB_POSTED_ATTESTATION_ACTOR = "reviewer-of-record";
+const ACCEPTANCE_PR_DECISION_RATIONALE_LIMIT = 4_000;
+const LOWER_SHA256 = /^[a-f0-9]{64}$/;
+const HUMAN_DECISION_ACTOR = /^user:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
+function acceptancePrDecisionEventKey(headCycleId: string): string {
+  return `acceptance-pr-decision:${headCycleId}`;
+}
+
+function reviewJobPostedAttestationEventKey(reviewJobId: string): string {
+  return `review:github-posted:${reviewJobId}`;
+}
+
+function isAcceptancePrDecision(value: unknown): value is AcceptancePrDecision {
+  return value === "approved" || value === "changes_requested"
+    || value === "rejected" || value === "approved_with_exception";
+}
+
+function canonicalAcceptancePrDecisionRationale(value: unknown): string | null | undefined {
+  if (value === undefined) return null;
+  if (typeof value !== "string") return undefined;
+  const rationale = value.trim();
+  if (!rationale) return null;
+  return safeSnapshotText(rationale, ACCEPTANCE_PR_DECISION_RATIONALE_LIMIT)
+    ? rationale
+    : undefined;
+}
+
+function parseAcceptancePrDecisionInput(input: unknown): {
+  workspaceId: string;
+  recordId: string;
+  bindingId: string;
+  decision: AcceptancePrDecision;
+  rationale: string | null;
+  decidedBy: string;
+  decidedByUserId: string;
+} | null {
+  if (!isRecord(input)) return null;
+  const keys = hasOwn(input, "rationale")
+    ? ["workspaceId", "recordId", "bindingId", "decision", "rationale", "decidedBy"]
+    : ["workspaceId", "recordId", "bindingId", "decision", "decidedBy"];
+  if (!hasExactKeys(input, keys) || !isUuid(input["workspaceId"])
+    || !isUuid(input["recordId"]) || !isUuid(input["bindingId"])
+    || !isAcceptancePrDecision(input["decision"])
+    || typeof input["decidedBy"] !== "string") return null;
+  const actorMatch = HUMAN_DECISION_ACTOR.exec(input["decidedBy"]);
+  const rationale = canonicalAcceptancePrDecisionRationale(input["rationale"]);
+  if (!actorMatch || rationale === undefined
+    || (input["decision"] === "approved_with_exception" && rationale === null)) return null;
+  return {
+    workspaceId: input["workspaceId"], recordId: input["recordId"],
+    bindingId: input["bindingId"],
+    decision: input["decision"], rationale,
+    decidedBy: `user:${actorMatch[1]!.toLowerCase()}`,
+    decidedByUserId: actorMatch[1]!.toLowerCase(),
+  };
+}
+
+function isAcceptanceReviewVerdict(
+  value: unknown
+): value is CurrentAcceptancePrDecisionBinding["reviewVerdict"] {
+  return value === "proven" || value === "failed"
+    || value === "not_proven" || value === "not_testable";
+}
+
+function acceptancePrDecisionBindingId(
+  input: Omit<CurrentAcceptancePrDecisionBinding, "bindingId">
+): string {
+  return uuid5Url([
+    "acceptance-pr-decision-binding",
+    input.workspaceId,
+    input.recordId,
+    input.repo,
+    input.prNumber,
+    input.headSha,
+    input.headCycleId,
+    input.authorityGeneration,
+    input.reviewJobId,
+    input.reviewVerdict,
+    input.postedReviewUrl,
+    input.postedAttestationEventId,
+    input.acceptanceContract.id,
+    input.acceptanceContract.version,
+    input.acceptanceContract.sha256,
+  ].join(":"));
+}
+
+function isCanonicalGithubReviewUrl(value: unknown, repo: string, prNumber: number): value is string {
+  if (typeof value !== "string" || value.length > 2_048 || value !== value.trim()
+    || /[\u0000-\u001f\u007f]/u.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "github.com"
+      && url.username === "" && url.password === "" && url.port === ""
+      && url.pathname === `/${repo}/pull/${prNumber}` && url.search === ""
+      && /^#pullrequestreview-[1-9][0-9]*$/.test(url.hash);
+  } catch {
+    return false;
+  }
+}
+
+function matchesCanonicalPostedReviewAttestation(input: {
+  event: ChangeRecordEventRow;
+  binding: Omit<CurrentAcceptancePrDecisionBinding,
+    "bindingId" | "reviewVerdict" | "postedReviewUrl" | "postedAttestationEventId">;
+  postedReviewUrl: string;
+}): boolean {
+  const { event, binding } = input;
+  const payload = event.payloadRef;
+  const requiredKeys = [
+    "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
+    "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest",
+    "postPayloadDigest", "postedReviewUrl",
+  ];
+  const allowedShape = hasExactKeys(payload, requiredKeys)
+    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted"])
+    || hasExactKeys(payload, [...requiredKeys, "commentsFolded"])
+    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted", "commentsFolded"]);
+  const expectedEventKey = reviewJobPostedAttestationEventKey(binding.reviewJobId);
+  return allowedShape
+    && event.id === changeRecordEventId({ recordId: binding.recordId, eventKey: expectedEventKey })
+    && event.recordId === binding.recordId && event.eventKey === expectedEventKey
+    && event.stage === REVIEW_JOB_POSTED_ATTESTATION_STAGE
+    && event.actor === REVIEW_JOB_POSTED_ATTESTATION_ACTOR
+    && payload["kind"] === REVIEW_JOB_POSTED_ATTESTATION_KIND
+    && payload["jobId"] === binding.reviewJobId
+    && payload["workspaceId"] === binding.workspaceId
+    && payload["repo"] === binding.repo && payload["prNumber"] === binding.prNumber
+    && payload["headSha"] === binding.headSha && payload["recordId"] === binding.recordId
+    && payload["acceptanceContractId"] === binding.acceptanceContract.id
+    && payload["acceptanceContractVersion"] === binding.acceptanceContract.version
+    && typeof payload["outcomeDigest"] === "string" && LOWER_SHA256.test(payload["outcomeDigest"])
+    && typeof payload["postPayloadDigest"] === "string" && LOWER_SHA256.test(payload["postPayloadDigest"])
+    && payload["postedReviewUrl"] === input.postedReviewUrl
+    && isCanonicalGithubReviewUrl(payload["postedReviewUrl"], binding.repo, binding.prNumber)
+    && (!hasOwn(payload, "inlineCommentsPosted")
+      || (Number.isInteger(payload["inlineCommentsPosted"])
+        && (payload["inlineCommentsPosted"] as number) >= 0
+        && (payload["inlineCommentsPosted"] as number) <= 100))
+    && (!hasOwn(payload, "commentsFolded") || typeof payload["commentsFolded"] === "boolean");
+}
+
+function acceptancePrDecisionPayload(input: {
+  binding: CurrentAcceptancePrDecisionBinding;
+  decision: AcceptancePrDecision;
+  rationale: string | null;
+  decidedBy: string;
+  decidedRole: AcceptancePrDecisionRole;
+}): Record<string, unknown> {
+  return {
+    kind: ACCEPTANCE_PR_DECISION_KIND,
+    version: ACCEPTANCE_PR_DECISION_VERSION,
+    bindingId: input.binding.bindingId,
+    workspaceId: input.binding.workspaceId,
+    recordId: input.binding.recordId,
+    repo: input.binding.repo,
+    prNumber: input.binding.prNumber,
+    headSha: input.binding.headSha,
+    headCycleId: input.binding.headCycleId,
+    authorityGeneration: input.binding.authorityGeneration,
+    reviewJobId: input.binding.reviewJobId,
+    reviewVerdict: input.binding.reviewVerdict,
+    postedReviewUrl: input.binding.postedReviewUrl,
+    postedAttestationEventId: input.binding.postedAttestationEventId,
+    acceptanceContract: { ...input.binding.acceptanceContract },
+    decision: input.decision,
+    rationale: input.rationale,
+    decidedBy: input.decidedBy,
+    decidedRole: input.decidedRole,
+  };
+}
+
+function parseCurrentAcceptancePrDecisionEvent(input: {
+  event: ChangeRecordEventRow;
+  binding: CurrentAcceptancePrDecisionBinding;
+}): CurrentAcceptancePrDecision | null {
+  const { event, binding } = input;
+  const payload = event.payloadRef;
+  const eventKey = acceptancePrDecisionEventKey(binding.headCycleId);
+  if (event.id !== changeRecordEventId({ recordId: binding.recordId, eventKey })
+    || event.recordId !== binding.recordId || event.eventKey !== eventKey
+    || event.stage !== ACCEPTANCE_PR_DECISION_STAGE
+    || !hasExactKeys(payload, [
+      "kind", "version", "bindingId", "workspaceId", "recordId", "repo", "prNumber", "headSha",
+      "headCycleId", "authorityGeneration", "reviewJobId", "reviewVerdict",
+      "postedReviewUrl", "postedAttestationEventId", "acceptanceContract", "decision",
+      "rationale", "decidedBy", "decidedRole",
+    ])
+    || payload["kind"] !== ACCEPTANCE_PR_DECISION_KIND
+    || payload["version"] !== ACCEPTANCE_PR_DECISION_VERSION
+    || payload["bindingId"] !== binding.bindingId
+    || payload["workspaceId"] !== binding.workspaceId || payload["recordId"] !== binding.recordId
+    || payload["repo"] !== binding.repo || payload["prNumber"] !== binding.prNumber
+    || payload["headSha"] !== binding.headSha || payload["headCycleId"] !== binding.headCycleId
+    || payload["authorityGeneration"] !== binding.authorityGeneration
+    || payload["reviewJobId"] !== binding.reviewJobId
+    || payload["reviewVerdict"] !== binding.reviewVerdict
+    || payload["postedReviewUrl"] !== binding.postedReviewUrl
+    || payload["postedAttestationEventId"] !== binding.postedAttestationEventId
+    || !isRecord(payload["acceptanceContract"])
+    || !hasExactKeys(payload["acceptanceContract"], ["id", "version", "sha256"])
+    || payload["acceptanceContract"]["id"] !== binding.acceptanceContract.id
+    || payload["acceptanceContract"]["version"] !== binding.acceptanceContract.version
+    || payload["acceptanceContract"]["sha256"] !== binding.acceptanceContract.sha256
+    || !isAcceptancePrDecision(payload["decision"])
+    || (payload["rationale"] !== null && canonicalAcceptancePrDecisionRationale(payload["rationale"]) !== payload["rationale"])
+    || (payload["decision"] === "approved_with_exception" && payload["rationale"] === null)
+    || (payload["decision"] === "approved" && binding.reviewVerdict !== "proven")
+    || typeof payload["decidedBy"] !== "string" || !HUMAN_DECISION_ACTOR.test(payload["decidedBy"])
+    || event.actor !== payload["decidedBy"]
+    || (payload["decidedRole"] !== "owner" && payload["decidedRole"] !== "admin")
+    || !(event.at instanceof Date) || Number.isNaN(event.at.valueOf())) return null;
+  return {
+    eventId: event.id,
+    eventKey: event.eventKey,
+    decision: payload["decision"],
+    rationale: payload["rationale"] as string | null,
+    decidedBy: payload["decidedBy"],
+    decidedRole: payload["decidedRole"],
+    decidedAt: event.at,
+  };
+}
+
+type ResolveCurrentAcceptancePrDecisionResult = ReadCurrentAcceptancePrDecisionResult & {
+  rawDecisionEvent?: ChangeRecordEventRow | null;
+};
+
+async function resolveCurrentAcceptancePrDecisionInTransaction(
+  tx: DbTransaction,
+  input: ReadCurrentAcceptancePrDecisionInput,
+  candidate: { repo: string; prNumber: number }
+): Promise<ResolveCurrentAcceptancePrDecisionResult> {
+  const record = (await tx.select().from(changeRecords).where(and(
+    eq(changeRecords.id, input.recordId),
+    eq(changeRecords.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!record) return { kind: "not_found" };
+  if (record.repo !== candidate.repo || record.prNumber !== candidate.prNumber
+    || record.prNumber == null || record.state !== "open" || record.mergedSha !== null
+    || !record.currentPrHeadAuthoritative
+    || typeof record.currentPrHeadSha !== "string" || !EXACT_SHA1.test(record.currentPrHeadSha)
+    || !isUuid(record.currentPrHeadCycleId) || !record.headShas.includes(record.currentPrHeadSha)
+    || !Number.isInteger(record.currentPrHeadAuthorityGeneration)
+    || record.currentPrHeadAuthorityGeneration < 0) return { kind: "not_current" };
+
+  const headSha = record.currentPrHeadSha;
+  const headCycleId = record.currentPrHeadCycleId;
+  const job = (await tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, headCycleId), eq(reviewJobs.workspaceId, input.workspaceId),
+    eq(reviewJobs.repo, record.repo), eq(reviewJobs.prNumber, record.prNumber),
+    eq(reviewJobs.headSha, headSha),
+  )).limit(1))[0];
+  if (!job || job.state !== "posted") {
+    return { kind: "not_ready", reason: "review_job_unavailable" };
+  }
+
+  const confirmedRows = await tx.select().from(acceptanceContracts).where(and(
+    eq(acceptanceContracts.recordId, record.id),
+    eq(acceptanceContracts.status, "confirmed"),
+  )).orderBy(asc(acceptanceContracts.version));
+  if (confirmedRows.length !== 1) {
+    return { kind: "not_ready", reason: "confirmed_contract_unavailable" };
+  }
+  const confirmed = confirmedRows[0]!;
+  if (!isNonBlankString(confirmed.confirmedBy) || !(confirmed.confirmedAt instanceof Date)
+    || Number.isNaN(confirmed.confirmedAt.valueOf())
+    || !projectConfirmedAcceptanceContract(confirmed.contract)) {
+    return { kind: "not_ready", reason: "invalid_review_custody" };
+  }
+  let contractSha256: string;
+  try {
+    contractSha256 = acceptanceContractSha256({
+      acceptanceContractId: confirmed.id,
+      acceptanceContractVersion: confirmed.version,
+      contract: confirmed.contract,
+    });
+  } catch {
+    return { kind: "not_ready", reason: "invalid_review_custody" };
+  }
+
+  if (!isAcceptanceReviewVerdict(job.verdict)
+    || !isCanonicalGithubReviewUrl(job.postedReviewUrl, record.repo, record.prNumber)) {
+    return { kind: "not_ready", reason: "invalid_review_custody" };
+  }
+  const acceptanceContract = { id: confirmed.id, version: confirmed.version, sha256: contractSha256 };
+  const attestationEventKey = reviewJobPostedAttestationEventKey(job.id);
+  const attestation = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, record.id),
+    eq(changeRecordEvents.eventKey, attestationEventKey),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  if (!attestation) return { kind: "not_ready", reason: "posted_attestation_unavailable" };
+
+  const baseBinding: Omit<CurrentAcceptancePrDecisionBinding, "bindingId"> = {
+    workspaceId: record.workspaceId,
+    recordId: record.id,
+    repo: record.repo,
+    prNumber: record.prNumber,
+    headSha,
+    headCycleId,
+    authorityGeneration: record.currentPrHeadAuthorityGeneration,
+    reviewJobId: job.id,
+    reviewVerdict: job.verdict,
+    postedReviewUrl: job.postedReviewUrl,
+    postedAttestationEventId: attestation.id,
+    acceptanceContract,
+  };
+  const binding: CurrentAcceptancePrDecisionBinding = {
+    bindingId: acceptancePrDecisionBindingId(baseBinding),
+    ...baseBinding,
+  };
+  if (!matchesCanonicalPostedReviewAttestation({
+    event: attestation,
+    binding: {
+      workspaceId: binding.workspaceId, recordId: binding.recordId, repo: binding.repo,
+      prNumber: binding.prNumber, headSha: binding.headSha, headCycleId: binding.headCycleId,
+      authorityGeneration: binding.authorityGeneration, reviewJobId: binding.reviewJobId,
+      acceptanceContract: binding.acceptanceContract,
+    },
+    postedReviewUrl: binding.postedReviewUrl,
+  })) return { kind: "not_ready", reason: "invalid_review_custody" };
+
+  const decisionEventKey = acceptancePrDecisionEventKey(headCycleId);
+  const rawDecisionEvent = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, record.id),
+    eq(changeRecordEvents.eventKey, decisionEventKey),
+  )).limit(1))[0] as ChangeRecordEventRow | undefined;
+  if (!rawDecisionEvent) {
+    return { kind: "current", binding, decision: null, rawDecisionEvent: null };
+  }
+  const decision = parseCurrentAcceptancePrDecisionEvent({ event: rawDecisionEvent, binding });
+  if (!decision) return {
+    kind: "not_ready", reason: "invalid_decision_custody", rawDecisionEvent,
+  };
+  return { kind: "current", binding, decision, rawDecisionEvent };
+}
+
+function assertReadCurrentAcceptancePrDecisionInput(
+  input: unknown
+): asserts input is ReadCurrentAcceptancePrDecisionInput {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "recordId"])
+    || !isUuid(input["workspaceId"]) || !isUuid(input["recordId"])) {
+    throw new Error("Current Acceptance PR decision read requires only workspace and Record");
+  }
+}
+
+async function currentAcceptancePrDecisionCandidate(
+  input: ReadCurrentAcceptancePrDecisionInput
+): Promise<{ repo: string; prNumber: number } | null | "not_current"> {
+  const candidate = (await db.select({
+    repo: changeRecords.repo,
+    prNumber: changeRecords.prNumber,
+  }).from(changeRecords).where(and(
+    eq(changeRecords.id, input.recordId),
+    eq(changeRecords.workspaceId, input.workspaceId),
+  )).limit(1))[0];
+  if (!candidate) return null;
+  return candidate.prNumber == null
+    ? "not_current"
+    : { repo: candidate.repo, prNumber: candidate.prNumber };
+}
+
+/** Derives `decision: null` for the current proven custody; it never persists `not_recorded`. */
+export async function readCurrentAcceptancePrDecision(
+  input: ReadCurrentAcceptancePrDecisionInput
+): Promise<ReadCurrentAcceptancePrDecisionResult> {
+  assertReadCurrentAcceptancePrDecisionInput(input);
+  const candidate = await currentAcceptancePrDecisionCandidate(input);
+  if (candidate === null) return { kind: "not_found" };
+  if (candidate === "not_current") return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({ ...input, ...candidate });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    const resolved = await resolveCurrentAcceptancePrDecisionInTransaction(tx, input, candidate);
+    // Project the internal resolver onto the closed public result union. In
+    // particular, never expose the raw malformed event retained only so the
+    // writer can distinguish an immutable-custody conflict.
+    if (resolved.kind === "not_found") return { kind: "not_found" };
+    if (resolved.kind === "not_current") return { kind: "not_current" };
+    if (resolved.kind === "not_ready") {
+      return { kind: "not_ready", reason: resolved.reason };
+    }
+    return { kind: "current", binding: resolved.binding, decision: resolved.decision };
+  });
+}
+
+/**
+ * Appends one human final decision for the exact current posted review. This
+ * never merges the PR, mutates the review verdict, or projects a Record state.
+ */
+export async function recordAcceptancePrDecision(
+  input: RecordAcceptancePrDecisionInput
+): Promise<RecordAcceptancePrDecisionResult> {
+  const parsed = parseAcceptancePrDecisionInput(input);
+  if (!parsed) throw new Error("Invalid Acceptance Record PR decision input");
+  const candidate = await currentAcceptancePrDecisionCandidate(parsed);
+  if (candidate === null) return { kind: "not_found" };
+  if (candidate === "not_current") return { kind: "not_current" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: parsed.workspaceId,
+    recordId: parsed.recordId,
+    ...candidate,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    // Serialize a role change/revocation with this write so `decidedRole` is
+    // an authoritative commit-time snapshot, not a stale authorization read.
+    const membership = (Array.from(await tx.execute(sql`
+      SELECT role
+      FROM workspace_memberships
+      WHERE user_id = ${parsed.decidedByUserId}
+        AND workspace_id = ${parsed.workspaceId}
+      FOR SHARE
+    `)) as Array<{ role: string }>)[0];
+    if (!membership || (membership.role !== "owner" && membership.role !== "admin")) {
+      return { kind: "not_authorized" };
+    }
+
+    const resolved = await resolveCurrentAcceptancePrDecisionInTransaction(tx, parsed, candidate);
+    if (resolved.kind !== "current") {
+      if (resolved.kind === "not_ready" && resolved.reason === "invalid_decision_custody") {
+        throw new AcceptancePrDecisionConflictError();
+      }
+      if (resolved.kind === "not_found") return { kind: "not_found" };
+      if (resolved.kind === "not_current") return { kind: "not_current" };
+      // A binding is issued only after the current cycle's review job is
+      // posted. If the locked current cycle has no posted job, the caller's
+      // binding necessarily belongs to an earlier cycle (or was forged).
+      if (resolved.reason === "review_job_unavailable") return { kind: "not_current" };
+      return { kind: "not_ready", reason: resolved.reason };
+    }
+
+    // The user action must target the exact cycle that the UI read. A stale
+    // click may never be silently reinterpreted as a decision for a successor
+    // head, including an A→B→A SHA revisit with a new cycle UUID.
+    if (parsed.bindingId !== resolved.binding.bindingId) {
+      return { kind: "not_current" };
+    }
+
+    if (resolved.decision) {
+      if (resolved.decision.decision !== parsed.decision
+        || resolved.decision.rationale !== parsed.rationale
+        || resolved.decision.decidedBy !== parsed.decidedBy) {
+        throw new AcceptancePrDecisionConflictError();
+      }
+      return { kind: "replayed", binding: resolved.binding, decision: resolved.decision };
+    }
+    if (parsed.decision === "approved" && resolved.binding.reviewVerdict !== "proven") {
+      return { kind: "decision_not_allowed", reason: "approval_requires_proven" };
+    }
+
+    const eventKey = acceptancePrDecisionEventKey(resolved.binding.headCycleId);
+    let appended: AppendChangeRecordEventsAtomicallyResult;
+    try {
+      appended = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+        recordId: parsed.recordId,
+        eventKey,
+        stage: ACCEPTANCE_PR_DECISION_STAGE,
+        actor: parsed.decidedBy,
+        payloadRef: acceptancePrDecisionPayload({
+          binding: resolved.binding,
+          decision: parsed.decision,
+          rationale: parsed.rationale,
+          decidedBy: parsed.decidedBy,
+          decidedRole: membership.role,
+        }),
+      }]);
+    } catch (error) {
+      if (error instanceof Error
+        && error.message.includes("event key is already bound to different")) {
+        throw new AcceptancePrDecisionConflictError();
+      }
+      throw error;
+    }
+    const recorded = parseCurrentAcceptancePrDecisionEvent({
+      event: appended.events[0]!.event,
+      binding: resolved.binding,
+    });
+    if (!recorded) throw new Error("Acceptance Record PR decision custody could not be revalidated");
+    return {
+      kind: appended.events[0]!.inserted ? "recorded" : "replayed",
+      binding: resolved.binding,
+      decision: recorded,
+    };
+  });
+}
+
 async function recheckWikiBaseIndex(
   tx: DbTransaction,
   input: Pick<AcceptanceContextPackSnapshotInput, "workspaceId" | "repo" | "baseIndex">

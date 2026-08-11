@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   ChangeRecordAnchors,
   CorrectionsSection,
+  FinalDecisionPanel,
   LifecycleTimeline,
   changeRecordApiPath,
+  finalDecisionPatchBody,
   formatChangeRecordDate,
   isCorrectionPacketsEnvelope,
+  isFinalDecisionEnvelope,
   type AcceptanceCorrectionPacketsEnvelope,
+  type AcceptanceFinalDecisionEnvelope,
   type ChangeRecord,
   type ChangeRecordEvent,
 } from "./change-record-view";
@@ -47,6 +51,24 @@ function elementTypes(node: unknown): string[] {
   }
   const own = typeof element.type === "string" ? [element.type] : [];
   return [...own, ...elementTypes(element.props?.children)];
+}
+
+function elementsOfType(node: unknown, type: string): ElementLike[] {
+  if (node == null || typeof node !== "object") return [];
+  if (Array.isArray(node)) return node.flatMap((child) => elementsOfType(child, type));
+  const element = node as ElementLike;
+  if (typeof element.type === "function") {
+    return elementsOfType(
+      (element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {}),
+      type,
+    );
+  }
+  const own = element.type === type ? [element] : [];
+  return [...own, ...elementsOfType(element.props?.children, type)];
+}
+
+function buttonLabels(node: unknown): string[] {
+  return elementsOfType(node, "button").map((button) => textContent(button.props?.children));
 }
 
 const record: ChangeRecord = {
@@ -159,6 +181,30 @@ const currentCorrections: AcceptanceCorrectionPacketsEnvelope = {
   ],
 };
 
+const currentFinalDecision: AcceptanceFinalDecisionEnvelope = {
+  kind: "current",
+  binding: {
+    bindingId: "00000000-0000-4000-8000-000000000055",
+    workspaceId: record.workspaceId,
+    recordId: record.id,
+    repo: record.repo,
+    prNumber: 98,
+    headSha: "0123456789abcdef0123456789abcdef01234567",
+    headCycleId: "00000000-0000-4000-8000-000000000099",
+    authorityGeneration: 7,
+    reviewJobId: "00000000-0000-4000-8000-000000000099",
+    reviewVerdict: "failed",
+    postedReviewUrl: "https://github.com/ada/widgets/pull/98#pullrequestreview-5",
+    postedAttestationEventId: "00000000-0000-4000-8000-000000000077",
+    acceptanceContract: {
+      id: "00000000-0000-4000-8000-000000000088",
+      version: 3,
+      sha256: CONTRACT_SHA256,
+    },
+  },
+  decision: null,
+};
+
 describe("Change Record detail view", () => {
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
@@ -186,6 +232,193 @@ describe("Change Record detail view", () => {
     expect(content.indexOf("run-1")).toBeLessThan(content.indexOf("review-1"));
     expect(content).toContain('"postedReviewUrl"');
     expect(content).toContain("Lifecycle events(2)");
+  });
+
+  it("labels historical human decisions as audit-only timeline evidence", () => {
+    const historicalDecision: ChangeRecordEvent = {
+      ...events[0]!,
+      id: "event-decision",
+      eventKey: "acceptance-pr-decision:old-cycle",
+      stage: "human_pr_decision",
+      actor: "user:00000000-0000-4000-8000-000000000002",
+    };
+
+    expect(textContent(LifecycleTimeline({ events: [historicalDecision] }))).toContain(
+      "Audit history only",
+    );
+  });
+
+  it("renders bounded non-proven decision controls without a merge control or claim", () => {
+    const rendered = FinalDecisionPanel({
+      finalDecision: currentFinalDecision,
+      canRecordFinalDecision: true,
+      onDecide: () => undefined,
+      deciding: false,
+      decisionError: null,
+      exceptionRationale: "",
+      onExceptionRationaleChange: () => undefined,
+    });
+    const content = textContent(rendered);
+    const labels = buttonLabels(rendered);
+
+    expect(content).toContain("This records the human decision. Jace does not merge.");
+    expect(content).toContain("Review verdict failed");
+    expect(content).toContain("Explicit exception rationale");
+    expect(links(rendered)).toContain(currentFinalDecision.binding.postedReviewUrl);
+    expect(labels).toEqual([
+      "Request changes",
+      "Reject PR",
+      "Record approval with exception",
+    ]);
+    expect(labels).not.toContain("Approve PR");
+    expect(labels.some((label) => /merge/iu.test(label))).toBe(false);
+  });
+
+  it("offers ordinary approval only for a proven review and hides exception approval", () => {
+    const proven: AcceptanceFinalDecisionEnvelope = {
+      ...currentFinalDecision,
+      binding: { ...currentFinalDecision.binding, reviewVerdict: "proven" },
+    };
+    const rendered = FinalDecisionPanel({
+      finalDecision: proven,
+      canRecordFinalDecision: true,
+      onDecide: () => undefined,
+      deciding: false,
+      decisionError: null,
+      exceptionRationale: "",
+      onExceptionRationaleChange: () => undefined,
+    });
+
+    expect(buttonLabels(rendered)).toEqual(["Approve PR", "Request changes", "Reject PR"]);
+    expect(textContent(rendered)).not.toContain("Explicit exception rationale");
+  });
+
+  it("keeps controls owner/admin-only and renders a recorded current decision as immutable", () => {
+    const memberView = FinalDecisionPanel({
+      finalDecision: currentFinalDecision,
+      canRecordFinalDecision: false,
+      onDecide: () => undefined,
+      deciding: false,
+      decisionError: null,
+      exceptionRationale: "",
+      onExceptionRationaleChange: () => undefined,
+    });
+    expect(buttonLabels(memberView)).toEqual([]);
+    expect(textContent(memberView)).toContain("workspace owner or admin");
+
+    const recorded: AcceptanceFinalDecisionEnvelope = {
+      ...currentFinalDecision,
+      decision: {
+        eventId: "00000000-0000-4000-8000-000000000066",
+        eventKey: "acceptance-pr-decision:00000000-0000-4000-8000-000000000099",
+        decision: "changes_requested",
+        rationale: "The current evidence still fails the required flow.",
+        decidedBy: "user:00000000-0000-4000-8000-000000000002",
+        decidedRole: "admin",
+        decidedAt: "2026-08-11T09:30:00.000Z",
+      },
+    };
+    const recordedView = FinalDecisionPanel({
+      finalDecision: recorded,
+      canRecordFinalDecision: true,
+      onDecide: () => undefined,
+      deciding: false,
+      decisionError: null,
+      exceptionRationale: "",
+      onExceptionRationaleChange: () => undefined,
+    });
+    const recordedContent = textContent(recordedView);
+
+    expect(recordedContent).toContain("Recorded current decision: Changes requested");
+    expect(recordedContent).toContain("admin");
+    expect(recordedContent).toContain("The current evidence still fails the required flow.");
+    expect(buttonLabels(recordedView)).toEqual([]);
+  });
+
+  it("keeps non-current decisions unavailable and historical decisions audit-only", () => {
+    const rendered = FinalDecisionPanel({
+      finalDecision: { kind: "not_current" },
+      canRecordFinalDecision: true,
+      onDecide: () => undefined,
+      deciding: false,
+      decisionError: null,
+      exceptionRationale: "",
+      onExceptionRationaleChange: () => undefined,
+    });
+
+    expect(textContent(rendered)).toContain("Historical decision events remain audit-only");
+    expect(buttonLabels(rendered)).toEqual([]);
+  });
+
+  it("builds an exact server-authority-free decision body", () => {
+    expect(finalDecisionPatchBody(
+      currentFinalDecision.binding.bindingId,
+      "approved",
+    )).toEqual({
+      action: "record_pr_decision",
+      bindingId: currentFinalDecision.binding.bindingId,
+      decision: "approved",
+    });
+    expect(finalDecisionPatchBody(
+      currentFinalDecision.binding.bindingId,
+      "approved_with_exception",
+      "  Explicit risk acceptance.  ",
+    )).toEqual({
+      action: "record_pr_decision",
+      bindingId: currentFinalDecision.binding.bindingId,
+      decision: "approved_with_exception",
+      rationale: "Explicit risk acceptance.",
+    });
+  });
+
+  it("strictly validates current decision custody and closed failure reasons", () => {
+    expect(isFinalDecisionEnvelope(currentFinalDecision)).toBe(true);
+    expect(isFinalDecisionEnvelope({ kind: "not_ready", reason: "invalid_decision_custody" })).toBe(true);
+    expect(isFinalDecisionEnvelope({ kind: "not_ready", reason: "anything" })).toBe(false);
+
+    const missingBindingId = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    delete (missingBindingId.binding as Record<string, unknown>).bindingId;
+    expect(isFinalDecisionEnvelope(missingBindingId)).toBe(false);
+
+    const unsafeUrl = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    const unsafeBinding = unsafeUrl.binding as Record<string, unknown>;
+    unsafeBinding.postedReviewUrl = "https://github.com.evil.test/ada/widgets/pull/98#pullrequestreview-5";
+    expect(isFinalDecisionEnvelope(unsafeUrl)).toBe(false);
+
+    const queryUrl = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    (queryUrl.binding as Record<string, unknown>).postedReviewUrl =
+      "https://github.com/ada/widgets/pull/98?token=x#pullrequestreview-5";
+    expect(isFinalDecisionEnvelope(queryUrl)).toBe(false);
+
+    const wrongReviewId = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    (wrongReviewId.binding as Record<string, unknown>).postedReviewUrl =
+      "https://github.com/ada/widgets/pull/98#pullrequestreview-0";
+    expect(isFinalDecisionEnvelope(wrongReviewId)).toBe(false);
+
+    const unprovenApproval = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    unprovenApproval.decision = {
+      eventId: "00000000-0000-4000-8000-000000000066",
+      eventKey: "acceptance-pr-decision:00000000-0000-4000-8000-000000000099",
+      decision: "approved",
+      rationale: null,
+      decidedBy: "user:00000000-0000-4000-8000-000000000002",
+      decidedRole: "owner",
+      decidedAt: "2026-08-11T09:30:00.000Z",
+    };
+    expect(isFinalDecisionEnvelope(unprovenApproval)).toBe(false);
+
+    const missingExceptionRationale = structuredClone(unprovenApproval) as Record<string, unknown>;
+    const exceptionDecision = missingExceptionRationale.decision as Record<string, unknown>;
+    exceptionDecision.decision = "approved_with_exception";
+    expect(isFinalDecisionEnvelope(missingExceptionRationale)).toBe(false);
+
+    const unsafeRationale = structuredClone(missingExceptionRationale) as Record<string, unknown>;
+    (unsafeRationale.decision as Record<string, unknown>).rationale = "bearer secret-value";
+    expect(isFinalDecisionEnvelope(unsafeRationale)).toBe(false);
+
+    const extraClaim = structuredClone(currentFinalDecision) as Record<string, unknown>;
+    (extraClaim.binding as Record<string, unknown>).merged = true;
+    expect(isFinalDecisionEnvelope(extraClaim)).toBe(false);
   });
 
   it("renders every validated packet field under an explicit current exact-head cycle", () => {

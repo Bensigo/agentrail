@@ -9,9 +9,11 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start",
+    "start:r11-browser": "next start --hostname 127.0.0.1 --port 3100",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:r11-browser": "playwright test e2e/r11-acceptance-record-detail.spec.ts"
   },
   "dependencies": {
     "@agentrail/auth": "workspace:*",
@@ -40,6 +42,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",
+    "@playwright/test": "1.57.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@types/mdx": "^2.0.14",
     "@types/node": "^22.0.0",

@@ -184,3 +184,62 @@ jobs:
           lib/review-job-data-execution.test.ts
           lib/review-job-job-execution.test.ts
           lib/review-job-ui-execution.test.ts
+
+  # R11.2 runtime proof is deliberately separate from component and route
+  # Vitest. It drives the production Console with a real Auth.js database
+  # session, migrated PostgreSQL, and an S3-compatible MinIO object. It never
+  # supplies GitHub credentials and the only browser publication attempt must
+  # retain the Jace-approval refusal boundary.
+  r11-browser:
+    name: R11.2 authenticated Record detail
+    needs: node
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: postgres://agentrail:agentrail@127.0.0.1:5434/agentrail
+      AUTH_SECRET: r112-browser-proof-ci-only-9fd3b7c9d13f42528f71d0a8587ac12f
+      AUTH_TRUST_HOST: "true"
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY: agentrail
+      S3_SECRET_KEY: agentrail123
+      S3_BUCKET: agentrail-artifacts
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: workspace — install
+        run: pnpm install --frozen-lockfile
+      - name: proof services — PostgreSQL and MinIO
+        run: |
+          docker compose -p agentrail-r112-browser-proof up -d --wait postgres minio
+          docker compose -p agentrail-r112-browser-proof run --rm --no-TTY minio-init
+      - name: proof packages — build and migrate
+        run: |
+          pnpm --filter @agentrail/github-app build
+          pnpm --filter @agentrail/db-postgres build
+          pnpm --filter @agentrail/db-postgres exec tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022 --strict --esModuleInterop --skipLibCheck --resolveJsonModule --types node scripts/proof-r112-console-record.ts
+          pnpm --filter @agentrail/db-postgres migrate
+          pnpm --filter @agentrail/console build
+      - name: browser — install Chromium
+        run: pnpm --filter @agentrail/console exec playwright install --with-deps chromium
+      - name: R11.2 — authenticated browser proof
+        run: pnpm --filter @agentrail/console test:r11-browser
+      - name: browser proof artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r11-browser-proof-${{ github.sha }}
+          path: apps/console/test-results/r11-acceptance-record-detail
+          if-no-files-found: warn
+          retention-days: 7
+      - name: proof services — exact teardown
+        if: always()
+        run: docker compose -p agentrail-r112-browser-proof down --volumes --remove-orphans

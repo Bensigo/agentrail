@@ -39,16 +39,16 @@ const HOW_WE_WORK = [
     line: "Keep Codex, Claude Code, and the normal environment your team already uses.",
   },
   {
-    name: "Set the bar",
-    line: "Turn the request into clear scope, acceptance criteria, boundaries, and planned checks. Confirm it before work starts.",
+    name: "Plan and confirm",
+    line: "Turn the request into scope, planned checks, and acceptance criteria. A human confirms those criteria before work starts.",
   },
   {
-    name: "Let the agent work",
-    line: "Jace gives the selected coding agent a bounded Context Pack for the confirmed task.",
+    name: "Make the MCP handoff",
+    line: "The confirmed Contract and bounded Context Pack are handed to the selected external coding agent through MCP.",
   },
   {
-    name: "Decide with confidence",
-    line: "See the exact change and criterion-specific evidence. If it cannot be proven, Jace stops and sends a correction path.",
+    name: "Review intent and decide",
+    line: "Review the pull request against its confirmed intent and criterion evidence. If evidence is unproven, Jace refuses success and sends a correction path; a human accepts, reworks, or rejects it.",
   },
 ];
 
@@ -150,7 +150,7 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
-              Before work starts, a request becomes clear scope, acceptance criteria, and planned checks.
+              Before work starts, a request becomes planned scope and criteria for human confirmation.
             </p>
           </Reveal>
         </div>
@@ -280,21 +280,21 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[560px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">
-              One subscription for your whole team
+              A team commercial experiment
             </h2>
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              Plans are priced by team size — Starter for small teams, Growth
-              for bigger ones. Every plan includes monthly engineering
-              capacity, measured in tasks.
+              These team-size terms are being evaluated commercially. They do
+              not claim that Jace will generate code, deliver a pull request,
+              or reduce review time.
             </p>
           </Reveal>
           <ol className="mt-10 flex flex-col gap-6">
             {[
-              "Pick a plan for your team size.",
-              "Talk to Jace where your team works: Telegram, Slack, or Discord.",
-              "Approve the work. It ships as a pull request.",
+              "Choose the team-size terms you want to discuss.",
+              "Check the stated payment-availability status.",
+              "Keep acceptance and delivery decisions with a human.",
             ].map((line, i) => (
               <Reveal key={i} delay={i * 70}>
                 <li className="flex items-baseline gap-4">
@@ -309,7 +309,7 @@ export default async function LandingPage() {
           </ol>
           <Reveal delay={240}>
             <p className="mt-10 text-center text-[var(--gray-11)]">
-            The point is fewer review hours, not more generated code.
+              The point is to test a team commercial model, not to promise a product outcome.
             </p>
           </Reveal>
         </div>

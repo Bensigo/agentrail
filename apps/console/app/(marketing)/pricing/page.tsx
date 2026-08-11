@@ -12,36 +12,22 @@ import { TierCards } from "./tier-cards";
 export const metadata = {
   title: "Pricing — Jace",
   description:
-    "Plans priced by team size for reviewable engineering work with proof attached.",
+    "A team commercial experiment with terms priced by team size.",
 };
 
 const STEPS = [
-  "Pick a plan: Starter, Growth, or Enterprise.",
-  "Talk to Jace on Telegram, Slack, or Discord.",
-  "Approve the work. It ships as a pull request.",
+  "Choose the team-size terms you want to discuss.",
+  "Check the stated payment-availability status.",
+  "Keep acceptance and delivery decisions with a human.",
 ];
 
 /**
  * Subscription-platform slice 7 (`docs/superpowers/plans/
  * 2026-07-31-subscription-marketing-slice7.md`, Task 1) — this page's
- * second rewrite. Slice 3 Task 7 (the prior doc-comment here) truthed the
- * copy up from the retired usage-based pricing model to a bare three-tier
- * summary: names, prices, seats, one capacity number, nothing else. That
- * was a minimum-honest page, not a real one — no feature differentiation
- * between tiers, no working CTA (Enterprise's "Contact us" was plain text,
- * not a link; Starter/Growth had no CTA at all), no vocabulary explaining
- * what the capacity number means. This rewrite adds all three: per-tier
- * feature lists (`TIERS[].features`, spec §10 vocabulary), working CTAs
- * (`/login` for Starter/Growth, `ENTERPRISE_CONTACT_EMAIL` for Enterprise —
- * see `TIER_CTA_PRIMARY`'s doc-comment for the sign-in route trace), and a
- * capacity explainer paragraph below the grid.
- *
- * The explainer deliberately reads "comes with included monthly
- * engineering capacity" rather than the more natural "includes monthly
- * engineering capacity": `pricing-copy.test.ts` pins the exact phrase
- * "included monthly engineering capacity" (spec §7 — this is the wording
- * customers actually see in-product), and the participle form is the one
- * that makes that phrase a real substring instead of a near-miss.
+ * second rewrite. R12.2 now keeps the tier names, prices, seats, CTAs, and
+ * explicit payment-status boundary as a team commercial experiment. It does
+ * not publish a delivery-capacity number or turn package terms into a claim
+ * about generated, reviewed, or delivered work.
  *
  * Landing honesty rule (unchanged by this edit): this page is reachable at
  * all times (nothing to hide about the intended model), but it never
@@ -86,12 +72,15 @@ export default function PricingPage() {
               : "border-[var(--gray-06)] bg-[var(--gray-03)] text-[var(--gray-10)]"
           }`}
         >
-          {live ? "Live" : "Preview: not charging real payments yet"}
+          {live
+            ? "Experiment: payment availability has been independently verified"
+            : "Experiment: payment availability has not been independently verified"}
         </p>
 
         <p className="mt-6 text-[var(--gray-11)]">
-          One subscription covers your team. Plans are priced by team size and
-          built around approved, reviewable engineering work.
+          These are team-size terms for a commercial experiment. They do not
+          claim product value, delivery outcomes, or payment availability
+          beyond the status shown above.
         </p>
       </div>
 
@@ -101,10 +90,9 @@ export default function PricingPage() {
 
       <div className="mx-auto max-w-[560px] px-6 pb-24">
         <p className="mt-10 text-[var(--gray-11)]">
-          Every plan comes with included monthly engineering capacity —
-          measured in tasks, not dollars. Starter includes ≈34 tasks a
-          month; Growth includes ≈74. Jace asks before anything runs, and
-          finished work ships as a pull request with evidence attached.
+          The listed prices and seat bands are commercial terms under
+          evaluation. They do not promise that work will be generated,
+          reviewed, or delivered.
         </p>
 
         <ol className="mt-8 flex flex-col gap-4">

@@ -14,34 +14,22 @@ export type Tier = {
   name: string;
   price: string;
   seats: string;
-  included: string;
-  /** Feature-line vocabulary — spec §10, byte-exact per subscription-
-   *  platform slice 7's Global Constraints (see the doc-comment below). */
+  commercialStatus: string;
+  /** Commercial-experiment terms, not product outcomes or capacity. */
   features: string[];
   ctaLabel: string;
 };
 
 /**
- * Subscription-platform spec §2 commercial packaging (`docs/superpowers/
- * specs/2026-07-29-subscription-platform-design.md`). Seats and capacity
- * match `lib/policy/plan-policies.ts`'s `PLAN_POLICIES` as of this write
- * (starter: 4 seats / 34 capacity; growth: 10 seats / 74 capacity) —
- * spec §2 calls these "launch priors, calibrated monthly", so keep this
- * table in sync by hand if that file's numbers move. Dollar prices are NOT
- * a shared code constant: Stripe owns the actual recurring Price objects
- * (`lib/billing/stripe-plans.ts` maps plan -> Price id only, never a
- * dollar amount), so $199/$399 are hand-set here to match the current
- * commercial decision. Enterprise has no public price or
- * checkout (spec §2: "no public pricing and no checkout flow — it is a
- * conversation") — its CTA below is a `mailto:` link, never a checkout
- * link; see `ENTERPRISE_CONTACT_EMAIL` in `./page.tsx`.
+ * R12.2 commercial-experiment packaging. The dollar prices and seat bands
+ * are terms being tested, not delivery-capacity or product-value claims.
+ * Stripe owns any actual recurring Price objects; these public terms do not
+ * establish payment availability. Enterprise has no public price or checkout
+ * and remains a contact-first conversation.
  *
- * `features` is the tier feature-line vocabulary (subscription-platform
- * slice 7 Global Constraints, spec §10: "verbatim vocabulary") — copied
- * byte-exact, including "everything in Starter" as Growth's first line and
- * the deliberate lowercase-led phrasing of the rest (these read as list
- * items, not sentence openers). `ctaLabel` is spelled out per tier rather
- * than built from `` `Start with ${tier.name}` `` at render time, so the
+ * `features` stays limited to the terms and boundaries of the commercial
+ * experiment. `ctaLabel` is spelled out per tier rather than built from
+ * `` `Start with ${tier.name}` `` at render time, so the
  * literal strings "Start with Starter" / "Start with Growth" exist in this
  * file's own source text, not just in the rendered DOM —
  * `pricing-copy.test.ts` pins them as raw source text (see that file's own
@@ -52,12 +40,12 @@ export const TIERS: Tier[] = [
     name: "Starter",
     price: "$199/mo",
     seats: "Up to 4",
-    included: "≈34 engineering tasks/mo",
+    commercialStatus: "Terms under evaluation",
     features: [
-      "acceptance contracts",
-      "verification evidence",
-      "reviewable changes",
-      "team approvals",
+      "team commercial experiment",
+      "team-size terms",
+      "payment availability stated separately",
+      "human decision retained",
     ],
     ctaLabel: "Start with Starter",
   },
@@ -65,12 +53,12 @@ export const TIERS: Tier[] = [
     name: "Growth",
     price: "$399/mo",
     seats: "Up to 10",
-    included: "≈74 engineering tasks/mo",
+    commercialStatus: "Terms under evaluation",
     features: [
-      "everything in Starter",
-      "dependency upgrade workflow",
-      "compatibility evidence",
-      "calibrated refusal",
+      "team commercial experiment",
+      "team-size terms",
+      "payment availability stated separately",
+      "no delivery commitment",
     ],
     ctaLabel: "Start with Growth",
   },
@@ -78,13 +66,12 @@ export const TIERS: Tier[] = [
     name: "Enterprise",
     price: "Contact us",
     seats: "Custom",
-    included: "Custom",
+    commercialStatus: "Discuss terms first",
     features: [
-      "custom acceptance policies",
-      "review-cost reporting",
-      "environment fidelity",
-      "SLA",
-      "dedicated support",
+      "custom commercial experiment",
+      "custom team terms",
+      "no delivery commitment",
+      "contact before any commitment",
     ],
     ctaLabel: "Contact us",
   },

@@ -261,6 +261,39 @@ function custodyIdentity(custody: Custody): string {
   });
 }
 
+/**
+ * Recompute the immutable proposal identity from persisted source custody.
+ * Readers use this instead of trusting the stored digest to be self-authenticating.
+ */
+export function dependencyObservationProposalCustodyIdentity(input: {
+  repositoryId: string;
+  repositoryName: string;
+  watchId: string;
+  observationId: string;
+  observationKey: string;
+  baselineSha: string;
+  selectedFileHashes: { "package.json": string; "pnpm-lock.yaml": string };
+  candidate: unknown;
+}): string | null {
+  const candidate = validatePnpmObservationProposalCandidate(input.candidate);
+  const hashes = selectedHashes(input.selectedFileHashes);
+  if (!candidate || !hashes || Object.keys(input.selectedFileHashes).length !== 2
+    || !UUID.test(input.repositoryId) || !safeText(input.repositoryName)
+    || !UUID.test(input.watchId) || !UUID.test(input.observationId)
+    || !safeText(input.observationKey) || !GIT_SHA.test(input.baselineSha)
+    || candidate.baseline_sha !== input.baselineSha) return null;
+  return custodyIdentity({
+    repositoryId: input.repositoryId,
+    repositoryName: input.repositoryName,
+    watchId: input.watchId,
+    observationId: input.observationId,
+    observationKey: input.observationKey,
+    baselineSha: input.baselineSha,
+    selectedFileHashes: hashes,
+    candidate,
+  });
+}
+
 function sourceReferences(custody: Custody, proposalCustodyIdentity: string): Record<string, unknown>[] {
   return [{
     kind: "dependency_watch_observation_proposal", version: 1,

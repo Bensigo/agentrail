@@ -4,40 +4,35 @@
  * offsets): no scroll listeners, nothing to degrade — reduced-motion and
  * mobile get the same markup, which simply reads as stacked cards.
  *
- * The deck is outcome-led. It names the acceptance mechanics from the market
- * research and the dependency workflow that is now available.
+ * The deck is outcome-led. It names what an engineering team gets from Jace;
+ * the acceptance mechanics stay in the supporting detail.
  */
 
 interface UseCase {
   title: string;
   line: string;
-  visual: "dependency" | "contract" | "reviewable" | "regression" | "proof";
+  visual: "contract" | "reviewable" | "regression" | "proof";
 }
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Review dependency proposals",
-    line: "Jace records bounded dependency observations and compatibility evidence, and refuses to present an unproven proposal as safe.",
-    visual: "dependency",
-  },
-  {
-    title: "Start with an acceptance contract",
-    line: "Define the goal, non-goals, acceptance criteria, blast radius, and stop conditions before implementation begins.",
+    title: "Start with a clear definition of done",
+    line: "Jace turns the request into an acceptance contract: the goal, non-goals, criteria, boundaries, and stop conditions your team confirms before work starts.",
     visual: "contract",
   },
   {
-    title: "Keep changes reviewable",
+    title: "Review a focused change",
     line: "Work should arrive as a small, focused pull request your team can understand and accept without reconstructing the whole run.",
     visual: "reviewable",
   },
   {
-    title: "Verify non-regression",
-    line: "The change earns its way through tests and independent verification. A green diff is not enough on its own.",
+    title: "See what was checked",
+    line: "Jace connects tests and independent verification to the agreed criteria. A green diff is not enough on its own.",
     visual: "regression",
   },
   {
-    title: "Show proof — or stop",
-    line: "The pull request carries the evidence behind the result. If the acceptance contract cannot be proven, Jace refuses to present success.",
+    title: "Decide from proof, not a green diff",
+    line: "The pull request carries the evidence behind each result. If a criterion cannot be proven, Jace sends a correction path instead of presenting success.",
     visual: "proof",
   },
 ];
@@ -69,15 +64,6 @@ export function UseCases() {
  *  panel showing the card's mechanic. The mascot renders live outside the
  *  stack — hero-adjacent phone, channels background, closing wave. */
 function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
-  if (visual === "dependency") {
-    return (
-      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
-        <span>dependency candidate</span>
-        <span className="text-[var(--gray-12)]">→ inspect changelog</span>
-        <span className="text-[var(--gray-12)]">→ compatibility evidence</span>
-      </div>
-    );
-  }
   if (visual === "contract") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">

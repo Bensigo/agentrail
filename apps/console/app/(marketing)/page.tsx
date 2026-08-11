@@ -24,31 +24,31 @@ import { TierCards } from "./pricing/tier-cards";
 
 
 /**
- * How we work together — the real loop, in order (controller ruling, #1279
- * PR ②: "issue→brief→approve→PR→you merge; merge-permission opt-in is now
- * TRUE and worth saying"), now as landing v2's NAMED steps. Merge permission
- * is a real, live, owner-only toggle (Settings → Permissions), off by
- * default — so "you merge" stays the honest default step, and the Merge
- * step states the opt-in without overclaiming it as automatic. See
- * apps/console/app/api/v1/runner/result/route.ts for the actual enforcement
- * this line describes.
+ * The role split that makes Jace a trust layer rather than a coding agent.
+ * The team owns intent and the decision; the external coding agent writes
+ * code; Jace keeps the agreement, context, evidence, and correction path
+ * connected between them.
  */
 const HOW_WE_WORK = [
   {
-    name: "Keep your coding agent",
-    line: "Keep Codex, Claude Code, and the normal environment your team already uses.",
+    role: "YOUR TEAM",
+    name: "Define the work",
+    line: "Your team turns a request into scope, planned checks, and acceptance criteria. You confirm it before work starts.",
   },
   {
-    name: "Plan and confirm",
-    line: "Turn the request into scope, planned checks, and acceptance criteria. A human confirms those criteria before work starts.",
+    role: "JACE + CODING AGENT",
+    name: "Give the coding agent focused context",
+    line: "Jace connects the confirmed agreement and relevant repository context to the external coding agent. The coding agent writes the code.",
   },
   {
-    name: "Make the MCP handoff",
-    line: "The confirmed Contract and bounded Context Pack are handed to the selected external coding agent through MCP.",
+    role: "JACE",
+    name: "Verify and correct",
+    line: "Jace checks the exact change against the agreed criteria, keeps the evidence, and sends a correction path when a claim is not proven.",
   },
   {
-    name: "Review intent and decide",
-    line: "Review the pull request against its confirmed intent and criterion evidence. If evidence is unproven, Jace refuses success and sends a correction path; a human accepts, reworks, or rejects it.",
+    role: "YOUR TEAM",
+    name: "Human decides",
+    line: "Your team reviews the change and criterion-specific evidence, then accepts, reworks, or rejects it.",
   },
 ];
 
@@ -156,13 +156,18 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — Use cases: sticky cards that deck over each other as the
-          visitor scrolls (landing v2 §3, heading per owner 2026-07-22).
-          Every card maps to a real product surface — see _use-cases.tsx. */}
+      {/* 3 — Outcomes: sticky cards that deck over each other as the visitor
+          scrolls. Each card names the team outcome first and shows the
+          mechanism only in its supporting detail. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">What makes agent work reviewable</h2>
+            <h2 className="text-heading-2 text-center">What your team gets from Jace</h2>
+          </Reveal>
+          <Reveal delay={70}>
+            <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
+              Clearer work, focused changes, and the evidence to make the call.
+            </p>
           </Reveal>
         </div>
         <div className="mt-12">
@@ -170,40 +175,30 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 5 — ACT 2: how I work, as one loud full-bleed lemon scene — the
-          page's one moment of scale, restyled per owner feedback 2026-07-22
-          ("boring") into an editorial rail: five columns under ink top-bars,
-          numerals at poster size. Content is the exact same 5-step loop;
-          see HOW_WE_WORK's own comment above for why the Merge step phrases
-          merge permission as an opt-in rather than the default. */}
-      {/* The lemon band is the stack's NEXT CARD (owner feedback 2026-07-22:
-          sections must blend, one fabric): it slides OVER the pinned
-          use-case cards — rounded top, ink edge, later in flow so it paints
-          above the sticky deck. The whole page reads as sheets riding over
-          sheets from here on. */}
+      {/* 4 — The lemon band is the stack's next sheet. It makes the role
+          split explicit without turning the handoff into a product diagram. */}
       <section className="relative -mt-16 w-full rounded-t-[2.5rem] border-t-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-6 py-24 sm:py-32">
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-[var(--accent-fill-text)]">
-              What has to be true before a PR reaches your team
+              How Jace works with your team and coding agents
             </h2>
           </Reveal>
-          {/* Comic-panel bento (owner personality pass 2026-07-22 — "make
-              use of grid"): paper panels with ink borders and hard offset
-              shadows on the lemon, 2-2-2 / 3-3 spans. All panel text uses
-              --accent-fill-text — the scene's ink token. */}
-          <ol className="mt-14 grid grid-cols-1 gap-6 sm:mt-20 sm:grid-cols-2 lg:grid-cols-6">
+          <Reveal delay={70}>
+            <p className="mt-4 max-w-[56ch] text-[var(--accent-fill-text)]">
+              Your coding agent writes the code. Jace keeps the agreement, context, evidence, and corrections connected around it.
+            </p>
+          </Reveal>
+          <ol className="mt-14 grid grid-cols-1 sm:mt-20 sm:grid-cols-2">
             {HOW_WE_WORK.map((step, i) => (
               <Reveal
                 key={step.name}
                 delay={i * 70}
-                className={i < 3 ? "lg:col-span-2" : "lg:col-span-3"}
+                className="border-t-2 border-[var(--accent-fill-text)] py-8 first:border-t-0 first:pt-0 sm:odd:border-r-2 sm:odd:pr-10 sm:even:pl-10 sm:[&:nth-child(-n+2)]:border-t-0 sm:[&:nth-child(-n+2)]:pb-10 sm:[&:nth-child(n+3)]:pt-10 sm:[&:nth-child(n+3)]:pb-0"
               >
-                {/* No decorative numerals (owner ruling 2026-07-22 — they
-                    read as slop-catalog LS-5): the serif step NAME is the
-                    panel's anchor; the grid order carries the sequence. */}
-                <li className="flex h-full flex-col rounded-xl border-2 border-[var(--accent-fill-text)] bg-[var(--paper)] p-6 shadow-[5px_5px_0_0_var(--accent-fill-text)] sm:p-8">
-                  <h3 className="text-heading-2 text-[var(--accent-fill-text)]">
+                <li>
+                  <p className="text-mono-data text-[var(--accent-fill-text)]">{step.role}</p>
+                  <h3 className="mt-4 text-heading-2 text-[var(--accent-fill-text)]">
                     {step.name}
                   </h3>
                   <p className="mt-3 leading-relaxed text-[var(--accent-fill-text)]">
@@ -252,6 +247,15 @@ export default async function LandingPage() {
             Review the agreed criteria, the exact change, and the evidence for each claim before deciding what happens next.
           </p>
         </div>
+        <Reveal delay={100}>
+          <div className="mx-auto mt-12 max-w-[860px] border-t-2 border-[var(--gray-13)] pt-8 sm:pt-10">
+            <p className="text-mono-data text-[var(--gray-11)]">ONE USE CASE</p>
+            <h3 className="mt-3 text-heading-2">Review dependency upgrades with the evidence attached</h3>
+            <p className="mt-3 max-w-[58ch] text-[var(--gray-11)]">
+              Jace records what it observed and the compatibility evidence. If it cannot prove the upgrade is safe, it does not present the proposal as safe.
+            </p>
+          </div>
+        </Reveal>
       </section>
 
       {/* 6b — Billing: company subscriptions (subscription-platform slice

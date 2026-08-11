@@ -64,14 +64,18 @@ describe("R12.1 landing truth boundary", () => {
     expect(landingSource).toContain("{step.line}");
 
     const flowMarkers = [
+      "Define the work",
       "planned checks",
-      "A human confirms those criteria before work starts.",
-      "MCP handoff",
-      "selected external coding agent",
-      "against its confirmed intent",
-      "criterion evidence",
-      "Jace refuses success and sends a correction path",
-      "a human accepts, reworks, or rejects it.",
+      "You confirm it before work starts.",
+      "Give the coding agent focused context",
+      "external coding agent",
+      "The coding agent writes the code.",
+      "Verify and correct",
+      "exact change",
+      "agreed criteria",
+      "correction path",
+      "Human decides",
+      "accepts, reworks, or rejects it.",
     ];
 
     let previousIndex = -1;
@@ -94,8 +98,9 @@ describe("R12.1 landing truth boundary", () => {
   });
 
   it("does not describe dependency work as Jace preparing or executing an upgrade", () => {
-    expect(useCasesSource).toContain("Review dependency proposals");
-    expect(useCasesSource).toContain("refuses to present an unproven proposal as safe");
+    expect(landingSource).toContain("Review dependency upgrades with the evidence attached");
+    expect(landingSource).toContain("does not present the proposal as safe");
+    expect(useCasesSource).not.toContain("dependency");
     expect(useCasesSource).not.toContain("prepares upgrade work");
   });
 });

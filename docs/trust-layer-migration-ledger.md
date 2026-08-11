@@ -239,8 +239,8 @@ and rustc 1.97.1 evidence, root `Cargo.toml` and `Cargo.lock` exact-head
 custody, a candidate from a canonical crates.io direct dependency with an
 exact stable caret constraint, an upward compatible stable target, and the
 exact OSV `crates.io` package-and-target identity. The bounded Python parser
-accepts only the root
-package and ordinary dependency tables plus a single unambiguous, reachable
+accepts only the root package and ordinary dependency tables plus a single
+unambiguous, reachable
 crates.io lock graph; ignored tables, replacement or qualified lock edges,
 noncanonical or colliding crate names, unsafe integer ranges, custom sources,
 and yanked current or target versions fail closed before proposal authority.
@@ -346,12 +346,16 @@ are green. No uv or OSV command was run, no live canonical runner called the
 ingestion route, no external builder received the Pack, and no deployed, live,
 or customer path was observed.
 
-The rebased Cargo source gate covers 110 focused Python manager/observer tests,
-242 focused Console compiler, parser, route, dispatch-consumer, and
-Record-detail tests, and seven DB boundary tests. Fresh-migrated PostgreSQL
-proof and complete-suite counts will be recorded after the rebased tree is
-executed. Package typechecks/builds, scoped lint, and diff checks are green.
-The slice also carries a
+The rebased Cargo compatibility gate covers 110 focused Python
+manager/observer tests, 242 focused Console compiler, parser, route,
+dispatch-consumer, and Record-detail tests, seven DB boundary tests, and three
+focused fresh-migrated PostgreSQL cases covering exact profile admission,
+dual-config and root-source refusal truth, immutable historical replay, and
+R10.2 Pack propagation. The complete 94-case Change Record file and full
+143-file / 1,898-test database suite pass on fresh migrated PostgreSQL. The
+broader local non-integration Python lane passed 5,715 tests plus 101 subtests.
+Package typechecks/builds, scoped lint, and diff checks are green. The slice
+also carries a
 [browser-rendered component screenshot](screenshots/r101-cargo-receipt.png) of
 the exact Cargo receipt and no-authority Pack; it is component proof, not an
 authenticated Record-detail flow. No Cargo or rustc command was run, no

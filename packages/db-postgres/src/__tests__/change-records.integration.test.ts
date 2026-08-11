@@ -444,6 +444,14 @@ async function createAcceptanceDependencyObservationFixture(input: {
   lockfileReadReason?: "path_not_found" | "github_unavailable";
   yarnConfigurationRead?: "path_not_found" | "github_unavailable" | "record" | "unsafe_content";
   yarnConfigurationChangedContent?: string;
+  cargoConfigurationReads?: Partial<Record<
+    ".cargo/config.toml" | ".cargo/config",
+    "path_not_found" | "github_unavailable" | "record" | "unsafe_content"
+  >>;
+  cargoConfigurationChanged?: Partial<Record<
+    ".cargo/config.toml" | ".cargo/config",
+    string
+  >>;
   manifestPath?: string;
   manifestContent?: string;
   lockfilePath?: string;
@@ -544,6 +552,10 @@ async function createAcceptanceDependencyObservationFixture(input: {
       path: ".yarnrc.yml",
       content: input.yarnConfigurationChangedContent,
     }]),
+    ...Object.entries(input.cargoConfigurationChanged ?? {}).map(([path, content]) => ({
+      path,
+      content,
+    })),
   ];
   const fileProofs = fileInput.map(({ path, content }, index) => {
     const bytes = Buffer.from(content, "utf8");
@@ -639,7 +651,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
     reason: null,
   });
 
-  const exactSources = fileProofs.filter((file) => file.path !== ".yarnrc.yml").map((file) => ({
+  const configurationPaths = new Set([".yarnrc.yml", ".cargo/config.toml", ".cargo/config"]);
+  const exactSources = fileProofs.filter((file) => !configurationPaths.has(file.path)).map((file) => ({
     kind: "exact_head_overlay" as const,
     path: file.path,
     blobSha: file.blobSha,
@@ -707,6 +720,54 @@ async function createAcceptanceDependencyObservationFixture(input: {
         headTreeSha,
         outcome: "not_proven",
         reason: input.yarnConfigurationRead,
+      });
+    }
+  }
+  for (const [requestedPath, outcome] of Object.entries(input.cargoConfigurationReads ?? {})) {
+    if (outcome === "record") {
+      const content = "[net]\noffline = false\n";
+      const bytes = Buffer.from(content, "utf8");
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "record",
+        record: {
+          path: requestedPath,
+          blobSha: createHash("sha1")
+            .update(`blob ${bytes.length}\0`, "utf8").update(bytes).digest("hex"),
+          previousPath: null,
+          contentSha256: createHash("sha256").update(bytes).digest("hex"),
+          byteCount: bytes.length,
+          lineCount: content.split("\n").length,
+          source: "exact_head_tree_fallback",
+          reason: "exact_head_tree_path",
+        },
+      });
+    } else if (outcome === "unsafe_content") {
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "not_proven",
+        reason: "unsafe_content",
+        exclusion: {
+          path: requestedPath,
+          source: "exact_head_tree_fallback",
+          blobSha: "6".repeat(40),
+          byteCount: 64,
+          reason: "secret_content_policy",
+          secretKinds: ["credential"],
+          findingCount: 1,
+        },
+      });
+    } else {
+      directReadReceipts.push({
+        requestedPath,
+        headSha: input.headSha,
+        headTreeSha,
+        outcome: "not_proven",
+        reason: outcome,
       });
     }
   }
@@ -841,7 +902,7 @@ async function createAcceptanceDependencyObservationFixture(input: {
     workspaceId: input.workspaceId,
     sourceSnapshotId: snapshot.snapshot.id,
     compiled,
-    exactSourceProofs: fileProofs.filter((file) => file.path !== ".yarnrc.yml").map((file) => ({
+    exactSourceProofs: fileProofs.filter((file) => !configurationPaths.has(file.path)).map((file) => ({
       kind: "exact_head_overlay" as const,
       path: file.path,
       content: file.content,

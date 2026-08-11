@@ -35,6 +35,10 @@ vi.mock("./components/review-metrics-panel", () => ({
   ReviewMetricsPanel: () => null,
 }));
 
+vi.mock("./components/acceptance-outcome-metrics-panel", () => ({
+  AcceptanceOutcomeMetricsPanel: () => null,
+}));
+
 vi.mock("./components/human-false-green-panel", () => ({
   HumanFalseGreenPanel: () => null,
 }));
@@ -48,6 +52,7 @@ import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
 import { HealthRatesPanel } from "./components/health-rates-panel";
 import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
+import { AcceptanceOutcomeMetricsPanel } from "./components/acceptance-outcome-metrics-panel";
 
 // This repo's vitest config runs with `environment: "node"` — there is no
 // DOM/render harness (no @testing-library/react, no jsdom) anywhere in the
@@ -261,7 +266,7 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     expect(findElementsByType(root, HealthRatesPanel)).toHaveLength(0);
   });
 
-  it("planCard present: mounts HealthRatesPanel as the sibling after DigestPanel inside the gap-6 stack, with the workspaceId prop", async () => {
+  it("planCard present: mounts HealthRatesPanel in the dashboard stack with the workspaceId prop", async () => {
     const planCard: PlanCardData = {
       hasPlan: true,
       planLabel: "Growth",
@@ -280,9 +285,11 @@ describe("WorkspaceDashboardPage HealthRatesPanel mount (subscription slice 6 Ta
     const element = asElement(root);
     const [, wrapper] = element.props.children as ReactElementLike[];
     const wrapperChildren = asElement(wrapper).props.children as ReactElementLike[];
-    const [, digestPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
+    const [, digestPanel, acceptanceOutcomeMetricsPanel, reviewMetricsPanel, humanFalseGreenPanel, healthRatesPanel] = wrapperChildren;
 
     expect(asElement(digestPanel).type).toBe(DigestPanel);
+    expect(asElement(acceptanceOutcomeMetricsPanel).type).toBe(AcceptanceOutcomeMetricsPanel);
+    expect(asElement(acceptanceOutcomeMetricsPanel).props.workspaceId).toBe(WORKSPACE_ID);
     expect(reviewMetricsPanel).toBeDefined();
     expect(asElement(humanFalseGreenPanel).type).toBe(HumanFalseGreenPanel);
     expect(asElement(healthRatesPanel).type).toBe(HealthRatesPanel);

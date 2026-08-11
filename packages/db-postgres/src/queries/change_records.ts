@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 import { isDeepStrictEqual } from "util";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   changeRecordEvents,
@@ -37,7 +37,7 @@ import {
   type ChangeRecordRow,
 } from "../schema/change_records.js";
 import { workspaces } from "../schema/workspaces.js";
-import { reviewJobs } from "../schema/review_jobs.js";
+import { reviewJobs, type ReviewJobRow } from "../schema/review_jobs.js";
 import { previewBoots } from "../schema/preview_boots.js";
 import { previewBootId, type EnqueuePreviewBootResult } from "./preview_boots.js";
 import { repositories } from "../schema/repositories.js";
@@ -3963,7 +3963,7 @@ function parseAcceptancePrDecisionInput(input: unknown): {
     || (input["decision"] === "approved_with_exception" && rationale === null)) return null;
   return {
     workspaceId: input["workspaceId"], recordId: input["recordId"],
-    bindingId: input["bindingId"],
+    bindingId: input["bindingId"] as string,
     decision: input["decision"], rationale,
     decidedBy: `user:${actorMatch[1]!.toLowerCase()}`,
     decidedByUserId: actorMatch[1]!.toLowerCase(),
@@ -5239,6 +5239,505 @@ async function resolveStoredSignedAcceptanceRecordMergeInTransaction(
     return null;
   }
   return { event, payload };
+}
+
+/**
+ * A bounded historical projection of exact Acceptance Record reviews. This is
+ * deliberately separate from the current-head resolver: a later B head (or a
+ * later return to A) must not erase the immutable evidence for an earlier
+ * head-cycle.
+ */
+export type ReadAcceptanceOutcomeHistoryInput = {
+  workspaceId: string;
+  from: Date;
+  to: Date;
+  observedUntil: Date;
+};
+
+export type AcceptanceOutcomeHistoryClassification =
+  | "approved"
+  | "approved_with_exception"
+  | "changes_requested"
+  | "rejected"
+  | "not_recorded"
+  | "excluded_unknown";
+
+export type AcceptanceOutcomeHistorySample = {
+  recordId: string;
+  reviewJobId: string;
+  repo: string;
+  prNumber: number;
+  headSha: string | null;
+  reviewedAt: Date;
+  classification: AcceptanceOutcomeHistoryClassification;
+  decision: CurrentAcceptancePrDecision | null;
+  exclusionReason: "invalid_posted_review_custody" | "ambiguous_review_custody"
+    | "invalid_decision_custody" | "invalid_lineage_custody" | null;
+  lineage: {
+    signedMerged: boolean;
+    deploymentObserved: boolean;
+    incidentObserved: boolean;
+    reverted: boolean;
+  };
+};
+
+export type AcceptanceOutcomeHistory = {
+  cohort: { from: Date; to: Date; observedUntil: Date };
+  counts: {
+    eligible: number;
+    approved: number;
+    approvedWithException: number;
+    changesRequested: number;
+    rejected: number;
+    notRecorded: number;
+    excludedUnknown: number;
+    signedMerged: number;
+    deploymentObserved: number;
+    incidentObserved: number;
+    reverted: number;
+  };
+  samples: AcceptanceOutcomeHistorySample[];
+};
+
+const ACCEPTANCE_OUTCOME_HISTORY_MAX_WINDOW_MS = 366 * 24 * 60 * 60 * 1_000;
+
+function assertReadAcceptanceOutcomeHistoryInput(
+  input: unknown
+): asserts input is ReadAcceptanceOutcomeHistoryInput {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "from", "to", "observedUntil"])
+    || !isUuid(input["workspaceId"]) || !(input["from"] instanceof Date)
+    || !(input["to"] instanceof Date) || !(input["observedUntil"] instanceof Date)) {
+    throw new Error("Acceptance outcome history requires a workspace and bounded UTC Date window");
+  }
+  const from = input["from"].valueOf();
+  const to = input["to"].valueOf();
+  const observedUntil = input["observedUntil"].valueOf();
+  if (!Number.isFinite(from) || !Number.isFinite(to) || !Number.isFinite(observedUntil)
+    || from >= to || to > observedUntil
+    || to - from > ACCEPTANCE_OUTCOME_HISTORY_MAX_WINDOW_MS
+    || observedUntil - to > ACCEPTANCE_OUTCOME_HISTORY_MAX_WINDOW_MS) {
+    throw new Error("Acceptance outcome history requires a workspace and bounded UTC Date window");
+  }
+}
+
+function acceptanceOutcomeReviewJobId(eventKey: string): string | null {
+  const match = /^review:github-posted:([0-9a-f-]{36})$/i.exec(eventKey);
+  return match && isUuid(match[1]) ? match[1].toLowerCase() : null;
+}
+
+type HistoricalPostedReviewAttestation = {
+  reviewJobId: string;
+  headSha: string;
+  acceptanceContractId: string;
+  acceptanceContractVersion: number;
+  postedReviewUrl: string;
+  eventId: string;
+  reviewedAt: Date;
+};
+
+/** Validate the standalone immutable review receipt without consulting mutable job/current-head state. */
+function parseHistoricalPostedReviewAttestation(
+  event: ChangeRecordEventRow,
+  record: ChangeRecordRow,
+  reviewJobId: string
+): HistoricalPostedReviewAttestation | null {
+  const payload = event.payloadRef;
+  const requiredKeys = [
+    "kind", "jobId", "workspaceId", "repo", "prNumber", "headSha", "recordId",
+    "acceptanceContractId", "acceptanceContractVersion", "outcomeDigest",
+    "postPayloadDigest", "postedReviewUrl",
+  ];
+  const allowedShape = hasExactKeys(payload, requiredKeys)
+    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted"])
+    || hasExactKeys(payload, [...requiredKeys, "commentsFolded"])
+    || hasExactKeys(payload, [...requiredKeys, "inlineCommentsPosted", "commentsFolded"]);
+  if (!allowedShape || event.id !== changeRecordEventId({ recordId: record.id, eventKey: event.eventKey })
+    || event.recordId !== record.id || event.eventKey !== reviewJobPostedAttestationEventKey(reviewJobId)
+    || event.stage !== REVIEW_JOB_POSTED_ATTESTATION_STAGE
+    || event.actor !== REVIEW_JOB_POSTED_ATTESTATION_ACTOR
+    || payload["kind"] !== REVIEW_JOB_POSTED_ATTESTATION_KIND
+    || payload["jobId"] !== reviewJobId || payload["workspaceId"] !== record.workspaceId
+    || payload["recordId"] !== record.id || payload["repo"] !== record.repo
+    || payload["prNumber"] !== record.prNumber
+    || typeof payload["headSha"] !== "string" || !EXACT_SHA1.test(payload["headSha"])
+    || !isUuid(payload["acceptanceContractId"])
+    || !Number.isInteger(payload["acceptanceContractVersion"])
+    || (payload["acceptanceContractVersion"] as number) <= 0
+    || typeof payload["outcomeDigest"] !== "string" || !LOWER_SHA256.test(payload["outcomeDigest"])
+    || typeof payload["postPayloadDigest"] !== "string" || !LOWER_SHA256.test(payload["postPayloadDigest"])
+    || !isCanonicalGithubReviewUrl(payload["postedReviewUrl"], record.repo, record.prNumber!)
+    || (!hasOwn(payload, "inlineCommentsPosted")
+      || (Number.isInteger(payload["inlineCommentsPosted"])
+        && (payload["inlineCommentsPosted"] as number) >= 0
+        && (payload["inlineCommentsPosted"] as number) <= 100)) === false
+    || (!hasOwn(payload, "commentsFolded") || typeof payload["commentsFolded"] === "boolean") === false) {
+    return null;
+  }
+  return {
+    reviewJobId,
+    headSha: (payload["headSha"] as string).toLowerCase(),
+    acceptanceContractId: payload["acceptanceContractId"],
+    acceptanceContractVersion: payload["acceptanceContractVersion"] as number,
+    postedReviewUrl: payload["postedReviewUrl"],
+    eventId: event.id,
+    reviewedAt: event.at,
+  };
+}
+
+function historicalReviewServerCustody(input: {
+  record: ChangeRecordRow;
+  attestation: HistoricalPostedReviewAttestation;
+  job: ReviewJobRow | undefined;
+  contract: AcceptanceContractRow | undefined;
+}): { contractSha256: string; reviewVerdict: CurrentAcceptancePrDecisionBinding["reviewVerdict"] } | null {
+  const { record, attestation, job, contract } = input;
+  if (!job || job.workspaceId !== record.workspaceId || job.id !== attestation.reviewJobId
+    || job.repo !== record.repo || job.prNumber !== record.prNumber
+    || job.headSha.toLowerCase() !== attestation.headSha || job.state !== "posted"
+    || !(job.createdAt instanceof Date) || Number.isNaN(job.createdAt.valueOf())
+    || job.createdAt > attestation.reviewedAt
+    || !isAcceptanceReviewVerdict(job.verdict) || job.postedReviewUrl !== attestation.postedReviewUrl
+    || !contract || contract.recordId !== record.id || contract.id !== attestation.acceptanceContractId
+    || contract.version !== attestation.acceptanceContractVersion || contract.status !== "confirmed"
+    || !isNonBlankString(contract.confirmedBy) || !(contract.confirmedAt instanceof Date)
+    || Number.isNaN(contract.confirmedAt.valueOf()) || contract.confirmedAt > attestation.reviewedAt
+    || !projectConfirmedAcceptanceContract(contract.contract)) {
+    return null;
+  }
+  try {
+    return { contractSha256: acceptanceContractSha256({
+      acceptanceContractId: contract.id,
+      acceptanceContractVersion: contract.version,
+      contract: contract.contract,
+    }), reviewVerdict: job.verdict };
+  } catch {
+    return null;
+  }
+}
+
+function historicalDecisionBinding(
+  event: ChangeRecordEventRow,
+  record: ChangeRecordRow,
+  attestation: HistoricalPostedReviewAttestation
+): CurrentAcceptancePrDecisionBinding | null {
+  const payload = event.payloadRef;
+  const binding = parseSignedMergeDecisionBinding({
+    bindingId: payload["bindingId"], workspaceId: payload["workspaceId"], recordId: payload["recordId"],
+    repo: payload["repo"], prNumber: payload["prNumber"], headSha: payload["headSha"],
+    headCycleId: payload["headCycleId"], authorityGeneration: payload["authorityGeneration"],
+    reviewJobId: payload["reviewJobId"], reviewVerdict: payload["reviewVerdict"],
+    postedReviewUrl: payload["postedReviewUrl"], postedAttestationEventId: payload["postedAttestationEventId"],
+    acceptanceContract: payload["acceptanceContract"],
+  });
+  return event.at >= attestation.reviewedAt
+    && binding && binding.workspaceId === record.workspaceId && binding.recordId === record.id
+    && binding.repo === record.repo && binding.prNumber === record.prNumber
+    && binding.reviewJobId === attestation.reviewJobId
+    && binding.headCycleId === attestation.reviewJobId
+    && binding.headSha === attestation.headSha
+    && binding.acceptanceContract.id === attestation.acceptanceContractId
+    && binding.acceptanceContract.version === attestation.acceptanceContractVersion
+    && binding.postedReviewUrl === attestation.postedReviewUrl
+    && binding.postedAttestationEventId === attestation.eventId
+    ? binding : null;
+}
+
+function historicalSignedMergeMatchesReview(
+  payload: SignedAcceptanceRecordMergePayload,
+  record: ChangeRecordRow,
+  attestation: HistoricalPostedReviewAttestation,
+  contractSha256: string,
+  reviewVerdict: CurrentAcceptancePrDecisionBinding["reviewVerdict"]
+): boolean {
+  const alignment = payload.decisionAlignment;
+  if (alignment.kind === "not_current" || alignment.kind === "custody_unavailable") return false;
+  return alignment.binding.workspaceId === record.workspaceId && alignment.binding.recordId === record.id
+    && alignment.binding.repo === record.repo && alignment.binding.prNumber === record.prNumber
+    && alignment.binding.reviewJobId === attestation.reviewJobId
+    && alignment.binding.headCycleId === attestation.reviewJobId
+    && alignment.binding.headSha === attestation.headSha
+    && alignment.binding.reviewVerdict === reviewVerdict
+    && alignment.binding.postedReviewUrl === attestation.postedReviewUrl
+    && alignment.binding.postedAttestationEventId === attestation.eventId
+    && alignment.binding.acceptanceContract.id === attestation.acceptanceContractId
+    && alignment.binding.acceptanceContract.version === attestation.acceptanceContractVersion
+    && alignment.binding.acceptanceContract.sha256 === contractSha256;
+}
+
+function historicalPostMergeOutcome(
+  event: ChangeRecordEventRow,
+  record: ChangeRecordRow,
+  signedMerge: { event: ChangeRecordEventRow; payload: SignedAcceptanceRecordMergePayload }
+): HumanAcceptancePostMergeOutcome | null {
+  const payload = event.payloadRef;
+  if (event.at < signedMerge.event.at
+    || event.id !== changeRecordEventId({ recordId: record.id, eventKey: event.eventKey })
+    || event.stage !== "post_merge_outcome" || !HUMAN_DECISION_ACTOR.test(event.actor)
+    || !hasExactKeys(payload, [
+      "kind", "repository", "signedMergeEventId", "signedMergeDeliveryEventId", "signedMergeSha", "outcome",
+    ]) || payload["kind"] !== "acceptance_post_merge_outcome"
+    || payload["repository"] !== record.repo || payload["signedMergeEventId"] !== signedMerge.event.id
+    || payload["signedMergeDeliveryEventId"] !== signedMerge.payload.deliveryEventId
+    || payload["signedMergeSha"] !== signedMerge.payload.mergeSha
+    || !validateAcceptancePostMergeOutcome(payload["outcome"])) return null;
+  const outcome = payload["outcome"];
+  return event.eventKey === outcomeEventKey(outcome) ? outcome : null;
+}
+
+function historicalSignedMergeCustody(input: {
+  event: ChangeRecordEventRow;
+  record: ChangeRecordRow;
+  evidence: Array<{ event: ChangeRecordEventRow; record: ChangeRecordRow }>;
+  attestation: HistoricalPostedReviewAttestation;
+  decision: CurrentAcceptancePrDecision | null;
+  contractSha256: string;
+  reviewVerdict: CurrentAcceptancePrDecisionBinding["reviewVerdict"];
+}): { event: ChangeRecordEventRow; payload: SignedAcceptanceRecordMergePayload } | null {
+  if (input.event.at < input.attestation.reviewedAt) return null;
+  const payload = parseSignedAcceptanceRecordMergePayload(input.event, input.record);
+  if (!payload) return null;
+  const expectedEventKey = signedAcceptanceRecordMergeEventKey(payload.mergeSha);
+  if (input.event.eventKey !== expectedEventKey
+    || input.event.id !== changeRecordEventId({ recordId: input.record.id, eventKey: expectedEventKey })
+    || !historicalSignedMergeMatchesReview(
+    payload, input.record, input.attestation, input.contractSha256, input.reviewVerdict
+  )) return null;
+  const deliveryKey = signedAcceptanceRecordMergeDeliveryEventKey({
+    prNumber: payload.prNumber, deliveryId: payload.deliveryId,
+  });
+  const delivery = input.evidence.find(({ event }) => event.id === payload.deliveryEventId
+    && event.eventKey === deliveryKey);
+  if (!delivery || delivery.event.id !== changeRecordEventId({
+    recordId: input.record.id, eventKey: deliveryKey,
+  }) || delivery.event.stage !== SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE
+    || delivery.event.actor !== SIGNED_ACCEPTANCE_RECORD_MERGE_ACTOR
+    || !isDeepStrictEqual(delivery.event.payloadRef, signedAcceptanceRecordMergeDeliveryPayload({
+      workspaceId: payload.workspaceId, recordId: payload.recordId, repo: payload.repo,
+      prNumber: payload.prNumber, deliveryId: payload.deliveryId, headSha: payload.headSha,
+      baseSha: payload.baseSha, mergeSha: payload.mergeSha, mergedAt: payload.mergedAt,
+      prUrl: payload.prUrl, githubActor: payload.githubActor, source: payload.source,
+    }))) return null;
+  const alignment = payload.decisionAlignment;
+  if (alignment.kind === "not_recorded") {
+    if (input.decision !== null) return null;
+  } else if (alignment.kind === "aligned" || alignment.kind === "decision_conflicts_merge") {
+    if (!input.decision || alignment.decisionEventId !== input.decision.eventId
+      || alignment.decision !== input.decision.decision) return null;
+  } else return null;
+  return { event: input.event, payload };
+}
+
+/** A same-SHA later cycle is not evidence about an earlier A occurrence. */
+function signedMergeClaimsHistoricalReview(
+  event: ChangeRecordEventRow,
+  attestation: HistoricalPostedReviewAttestation
+): boolean {
+  const payload = event.payloadRef;
+  if (payload["headSha"] !== attestation.headSha || !isRecord(payload["decisionAlignment"])) return false;
+  const alignment = payload["decisionAlignment"];
+  if (!isRecord(alignment["binding"])) return false;
+  const binding = alignment["binding"];
+  return binding["reviewJobId"] === attestation.reviewJobId
+    || binding["headCycleId"] === attestation.reviewJobId;
+}
+
+/**
+ * Projects one immutable posted-review cohort as known decisions, explicit
+ * not-recorded decisions, or excluded/unknown custody. Current-head state is
+ * intentionally never consulted, preserving A->B->A review cycles.
+ */
+export async function readAcceptanceOutcomeHistory(
+  input: ReadAcceptanceOutcomeHistoryInput
+): Promise<AcceptanceOutcomeHistory> {
+  assertReadAcceptanceOutcomeHistoryInput(input);
+  const candidates = await db.select({ event: changeRecordEvents, record: changeRecords })
+    .from(changeRecordEvents)
+    .innerJoin(changeRecords, eq(changeRecordEvents.recordId, changeRecords.id))
+    .where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      gte(changeRecordEvents.at, input.from),
+      lt(changeRecordEvents.at, input.to),
+      sql`(${changeRecordEvents.eventKey} LIKE 'review:github-posted:%'
+        OR ${changeRecordEvents.payloadRef}->>'kind' = ${REVIEW_JOB_POSTED_ATTESTATION_KIND})`,
+    ));
+
+  const recordIds = [...new Set(candidates.map(({ record }) => record.id))];
+  const related = recordIds.length === 0 ? [] : await db.select({
+    event: changeRecordEvents, record: changeRecords,
+  }).from(changeRecordEvents).innerJoin(changeRecords, eq(changeRecordEvents.recordId, changeRecords.id))
+    .where(and(
+      eq(changeRecords.workspaceId, input.workspaceId),
+      inArray(changeRecordEvents.recordId, recordIds),
+      lte(changeRecordEvents.at, input.observedUntil),
+      sql`(${changeRecordEvents.eventKey} LIKE 'acceptance-pr-decision:%'
+        OR ${changeRecordEvents.eventKey} LIKE 'acceptance-pr:signed-merge:%'
+        OR ${changeRecordEvents.eventKey} LIKE 'external-pr:signed-merge:%'
+        OR ${changeRecordEvents.eventKey} LIKE 'acceptance-post-merge:%'
+        OR ${changeRecordEvents.stage} = ${ACCEPTANCE_PR_DECISION_STAGE}
+        OR ${changeRecordEvents.stage} = ${SIGNED_ACCEPTANCE_RECORD_MERGE_STAGE}
+        OR ${changeRecordEvents.stage} = 'post_merge_outcome'
+        OR ${changeRecordEvents.payloadRef}->>'kind' = ${ACCEPTANCE_PR_DECISION_KIND}
+        OR ${changeRecordEvents.payloadRef}->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_KIND}
+        OR ${changeRecordEvents.payloadRef}->>'kind' = ${SIGNED_ACCEPTANCE_RECORD_MERGE_DELIVERY_KIND}
+        OR ${changeRecordEvents.payloadRef}->>'kind' = 'acceptance_post_merge_outcome')`,
+    ));
+  const reviewJobIds = [...new Set(candidates.flatMap(({ event }) => {
+    const id = acceptanceOutcomeReviewJobId(event.eventKey);
+    return id ? [id] : [];
+  }))];
+  const jobs = reviewJobIds.length === 0 ? [] : await db.select().from(reviewJobs).where(and(
+    eq(reviewJobs.workspaceId, input.workspaceId), inArray(reviewJobs.id, reviewJobIds),
+  ));
+  const contracts = recordIds.length === 0 ? [] : await db.select().from(acceptanceContracts).where(and(
+    inArray(acceptanceContracts.recordId, recordIds),
+    eq(acceptanceContracts.status, "confirmed"),
+  ));
+  const jobsById = new Map(jobs.map((job) => [job.id, job]));
+  const contractsByIdentity = new Map(contracts.map((contract) => [
+    `${contract.recordId}:${contract.id}:${contract.version}`, contract,
+  ]));
+  const confirmedContractCounts = new Map<string, number>();
+  for (const contract of contracts) {
+    confirmedContractCounts.set(
+      contract.recordId, (confirmedContractCounts.get(contract.recordId) ?? 0) + 1
+    );
+  }
+
+  const relatedByRecord = new Map<string, Array<{ event: ChangeRecordEventRow; record: ChangeRecordRow }>>();
+  for (const row of related) {
+    const rows = relatedByRecord.get(row.record.id) ?? [];
+    rows.push(row);
+    relatedByRecord.set(row.record.id, rows);
+  }
+  const candidateCounts = new Map<string, number>();
+  for (const { event } of candidates) {
+    const jobId = acceptanceOutcomeReviewJobId(event.eventKey);
+    if (jobId) candidateCounts.set(jobId, (candidateCounts.get(jobId) ?? 0) + 1);
+  }
+
+  const samples = candidates.map(({ event, record }): AcceptanceOutcomeHistorySample => {
+    const reviewJobId = acceptanceOutcomeReviewJobId(event.eventKey);
+    const blankLineage = { signedMerged: false, deploymentObserved: false, incidentObserved: false, reverted: false };
+    if (!reviewJobId) return {
+      recordId: record.id, reviewJobId: "", repo: record.repo, prNumber: record.prNumber ?? 0,
+      headSha: null, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_posted_review_custody", lineage: blankLineage,
+    };
+    if ((candidateCounts.get(reviewJobId) ?? 0) !== 1) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber ?? 0,
+      headSha: null, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "ambiguous_review_custody", lineage: blankLineage,
+    };
+    const attestation = parseHistoricalPostedReviewAttestation(event, record, reviewJobId);
+    if (!attestation) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber ?? 0,
+      headSha: null, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_posted_review_custody", lineage: blankLineage,
+    };
+    const serverCustody = historicalReviewServerCustody({
+      record, attestation, job: jobsById.get(reviewJobId),
+      contract: contractsByIdentity.get(
+        `${record.id}:${attestation.acceptanceContractId}:${attestation.acceptanceContractVersion}`
+      ),
+    });
+    if (!serverCustody || confirmedContractCounts.get(record.id) !== 1) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+      headSha: attestation.headSha, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_posted_review_custody", lineage: blankLineage,
+    };
+    const evidence = relatedByRecord.get(record.id) ?? [];
+    const decisionEventKey = acceptancePrDecisionEventKey(reviewJobId);
+    const decisionEvents = evidence.filter(({ event: relatedEvent }) => {
+      const payload = relatedEvent.payloadRef;
+      const relevant = relatedEvent.eventKey.startsWith("acceptance-pr-decision:")
+        || relatedEvent.stage === ACCEPTANCE_PR_DECISION_STAGE
+        || payload["kind"] === ACCEPTANCE_PR_DECISION_KIND;
+      return relevant && (relatedEvent.eventKey === decisionEventKey
+        || payload["reviewJobId"] === reviewJobId || payload["headCycleId"] === reviewJobId);
+    });
+    if (decisionEvents.length > 1) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+      headSha: attestation.headSha, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_decision_custody", lineage: blankLineage,
+    };
+    const decisionEvent = decisionEvents[0];
+    let decision: CurrentAcceptancePrDecision | null = null;
+    if (decisionEvent) {
+      const binding = historicalDecisionBinding(decisionEvent.event, record, attestation);
+      decision = binding ? parseCurrentAcceptancePrDecisionEvent({ event: decisionEvent.event, binding }) : null;
+      if (!decision || binding!.acceptanceContract.sha256 !== serverCustody.contractSha256) return {
+        recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+        headSha: attestation.headSha, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+        exclusionReason: "invalid_decision_custody", lineage: blankLineage,
+      };
+    }
+    const mergeCandidates = evidence.filter(({ event: relatedEvent }) =>
+      (relatedEvent.eventKey.startsWith("acceptance-pr:signed-merge:")
+        || relatedEvent.payloadRef["kind"] === SIGNED_ACCEPTANCE_RECORD_MERGE_KIND)
+      && signedMergeClaimsHistoricalReview(relatedEvent, attestation));
+    const signedMerges = mergeCandidates.flatMap(({ event: relatedEvent, record: relatedRecord }) => {
+      const merge = historicalSignedMergeCustody({
+        event: relatedEvent, record: relatedRecord, evidence, attestation, decision,
+        contractSha256: serverCustody.contractSha256, reviewVerdict: serverCustody.reviewVerdict,
+      });
+      return merge ? [merge] : [];
+    });
+    if (mergeCandidates.length !== signedMerges.length) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+      headSha: attestation.headSha, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_lineage_custody", lineage: blankLineage,
+    };
+    const postMergeEvents = evidence.filter(({ event: relatedEvent }) =>
+      (relatedEvent.eventKey.startsWith("acceptance-post-merge:")
+        || relatedEvent.stage === "post_merge_outcome"
+        || relatedEvent.payloadRef["kind"] === "acceptance_post_merge_outcome")
+      && signedMerges.some((merge) => relatedEvent.payloadRef["signedMergeEventId"] === merge.event.id));
+    const postMergeOutcomes = signedMerges.flatMap((merge) => postMergeEvents.flatMap(({ event: relatedEvent, record: relatedRecord }) => {
+      const outcome = historicalPostMergeOutcome(relatedEvent, relatedRecord, merge);
+      return outcome ? [outcome] : [];
+    }));
+    if (postMergeOutcomes.length !== postMergeEvents.length) return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+      headSha: attestation.headSha, reviewedAt: event.at, classification: "excluded_unknown", decision: null,
+      exclusionReason: "invalid_lineage_custody", lineage: blankLineage,
+    };
+    const lineage = {
+      signedMerged: signedMerges.length > 0,
+      deploymentObserved: postMergeOutcomes.some((outcome) => outcome.kind === "deployed"),
+      incidentObserved: postMergeOutcomes.some((outcome) => outcome.kind === "incident"),
+      reverted: postMergeOutcomes.some((outcome) => outcome.kind === "reverted"),
+    };
+    const classification: AcceptanceOutcomeHistoryClassification = decision?.decision ?? "not_recorded";
+    return {
+      recordId: record.id, reviewJobId, repo: record.repo, prNumber: record.prNumber!,
+      headSha: attestation.headSha, reviewedAt: event.at, classification, decision,
+      exclusionReason: null, lineage,
+    };
+  }).sort((a, b) => a.reviewedAt.valueOf() - b.reviewedAt.valueOf()
+    || a.recordId.localeCompare(b.recordId) || a.reviewJobId.localeCompare(b.reviewJobId));
+
+  const counts = {
+    eligible: 0, approved: 0, approvedWithException: 0, changesRequested: 0, rejected: 0,
+    notRecorded: 0, excludedUnknown: 0, signedMerged: 0, deploymentObserved: 0,
+    incidentObserved: 0, reverted: 0,
+  };
+  for (const sample of samples) {
+    if (sample.classification === "excluded_unknown") {
+      counts.excludedUnknown++;
+      continue;
+    }
+    counts.eligible++;
+    if (sample.classification === "approved") counts.approved++;
+    else if (sample.classification === "approved_with_exception") counts.approvedWithException++;
+    else if (sample.classification === "changes_requested") counts.changesRequested++;
+    else if (sample.classification === "rejected") counts.rejected++;
+    else counts.notRecorded++;
+    if (sample.lineage.signedMerged) counts.signedMerged++;
+    if (sample.lineage.deploymentObserved) counts.deploymentObserved++;
+    if (sample.lineage.incidentObserved) counts.incidentObserved++;
+    if (sample.lineage.reverted) counts.reverted++;
+  }
+  return { cohort: { from: input.from, to: input.to, observedUntil: input.observedUntil }, counts, samples };
 }
 
 /**

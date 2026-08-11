@@ -149,7 +149,10 @@ jobs:
           app/api/v1/agent/acceptance-correction-packets/route.test.ts
           'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/route.test.ts'
           'app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/post-merge-outcomes/route.test.ts'
+          'app/api/v1/workspaces/[workspaceId]/acceptance-outcome-metrics/route.test.ts'
           'app/(dashboard)/dashboard/[workspaceId]/changes/[recordId]/components/change-record-view.test.tsx'
+          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel-helpers.test.ts'
+          'app/(dashboard)/dashboard/[workspaceId]/components/acceptance-outcome-metrics-panel.test.tsx'
           app/api/v1/runner/review-jobs
           app/api/v1/runner/preview-boots
           app/api/v1/workspaces/[workspaceId]/change-records/[recordId]/builder-route/route.test.ts

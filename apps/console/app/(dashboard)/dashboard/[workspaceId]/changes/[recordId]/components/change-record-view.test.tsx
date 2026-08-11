@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ChangeRecordAnchors,
+  ChangeRecordBackLink,
   CorrectionsSection,
   DependencyObservationsPanel,
   FinalDecisionPanel,
@@ -468,6 +469,15 @@ const dependencyExternalBuilderPack = {
 };
 
 describe("Change Record detail view", () => {
+  it("returns to the Acceptance/Changes list instead of factory Work", () => {
+    const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
+
+    expect(textContent(rendered)).toBe("Back to Changes");
+    expect(links(rendered)).toEqual([
+      `/dashboard/${record.workspaceId}/changes`,
+    ]);
+  });
+
   it("uses the authenticated workspace API path with encoded anchors", () => {
     expect(changeRecordApiPath("workspace/1", "record/2")).toBe(
       "/api/v1/workspaces/workspace%2F1/change-records/record%2F2"

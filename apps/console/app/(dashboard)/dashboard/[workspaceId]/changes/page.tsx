@@ -1,28 +1,35 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { History } from "lucide-react";
-import { listChangeRecords } from "@agentrail/db-postgres";
+import { readAcceptanceRecordSummaries } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { EmptyState } from "../../../../components/empty-state";
 import { PageHeader } from "../../../../components/page-header";
+import {
+  AcceptanceRecordSummaryList,
+  parseAcceptanceRecordRepoFilter,
+} from "../components/acceptance-record-summary-list";
 
 export default async function ChangesPage({
   params,
   searchParams,
 }: {
   params: Promise<{ workspaceId: string }>;
-  searchParams: Promise<{ repo?: string }>;
+  searchParams: Promise<{ repo?: string | string[] }>;
 }) {
   const { workspaceId } = await params;
   const { repo: rawRepo } = await searchParams;
-  const repo = rawRepo?.trim() || null;
 
   const session = await getSession();
   if (!session?.user?.id) return notFound();
   const membership = await getMembership(session.user.id, workspaceId);
   if (!membership) return notFound();
 
-  const records = await listChangeRecords({ workspaceId, repo });
+  const repoFilter = parseAcceptanceRecordRepoFilter(rawRepo);
+  const repo = repoFilter.kind === "valid" ? repoFilter.repo : null;
+  const summaries = repoFilter.kind === "invalid"
+    ? null
+    : await readAcceptanceRecordSummaries({ workspaceId, repo });
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -56,39 +63,23 @@ export default async function ChangesPage({
         )}
       </form>
 
-      {records.length === 0 ? (
+      {repoFilter.kind === "invalid" ? (
+        <EmptyState
+          icon={History}
+          title="Invalid repository filter"
+          description="Use the canonical owner/repository form. No Acceptance Records were read."
+        />
+      ) : summaries?.records.length === 0 ? (
         <EmptyState
           icon={History}
           title={repo ? "No changes for this repository" : "No change records yet"}
           description="Change records appear when a requirement, issue, or pull request enters the lifecycle."
         />
       ) : (
-        <div className="flex flex-col gap-2">
-          {records.map((record) => (
-            <Link
-              key={record.id}
-              href={`/dashboard/${workspaceId}/changes/${record.id}`}
-              className="flex items-center justify-between gap-4 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3 transition-colors hover:border-[var(--gray-08)]"
-            >
-              <div className="min-w-0">
-                <p className="truncate font-mono text-sm font-medium text-[var(--gray-12)]">
-                  {record.repo}
-                </p>
-                <p className="mt-1 text-xs text-[var(--gray-09)]">
-                  {record.issueNumber == null ? "No issue" : `Issue #${record.issueNumber}`} · {record.prNumber == null ? "No pull request" : `PR #${record.prNumber}`}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-3 text-xs">
-                <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 capitalize text-[var(--gray-11)]">
-                  {record.state}
-                </span>
-                <time dateTime={record.updatedAt.toISOString()} className="text-[var(--gray-09)]">
-                  {record.updatedAt.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })}
-                </time>
-              </div>
-            </Link>
-          ))}
-        </div>
+        <AcceptanceRecordSummaryList
+          workspaceId={workspaceId}
+          records={summaries?.records ?? []}
+        />
       )}
     </div>
   );

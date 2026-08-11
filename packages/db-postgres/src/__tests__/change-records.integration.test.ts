@@ -100,6 +100,7 @@ import {
   reportGithubCorrectionActivation,
   readDurableCorrectionDispatchFallback,
   recordDurableCorrectionDispatchFallback,
+  readAcceptanceRecordSummaries,
 } from "../queries/change_records.js";
 import { exactGitTreeInclusionProofIdentity, type ExactGitTreeInclusionProof } from "../exact-git-tree-path-proof.js";
 import { previewBootId } from "../queries/preview_boots.js";
@@ -972,6 +973,527 @@ describe.skipIf(!DB_AVAILABLE)(
 
     afterEach(async () => {
       await db.delete(workspaces).where(eq(workspaces.id, wsId));
+    });
+
+    it("returns a bounded stable tenant list with explicit draft and unattached unknowns", async () => {
+      await expect(readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .resolves.toEqual({ kind: "records", records: [] });
+      const older = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+        workKey: "acceptance-summary-order-older",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      const newer = await createDraftAcceptanceRecord({
+        workspaceId: wsId,
+        repo: "acme/gadgets",
+        workKey: "acceptance-summary-order-newer",
+        originChannel: "codex_mcp",
+        contract: completeContract(),
+        createdBy: "user:lead",
+      });
+      await db.update(changeRecords).set({
+        createdAt: new Date("2026-08-11T08:00:00.000Z"),
+        updatedAt: new Date("2026-08-11T08:00:00.000Z"),
+      }).where(eq(changeRecords.id, older.record.id));
+      await db.update(changeRecords).set({
+        createdAt: new Date("2026-08-11T09:00:00.000Z"),
+        updatedAt: new Date("2026-08-11T09:00:00.000Z"),
+      }).where(eq(changeRecords.id, newer.record.id));
+      await appendChangeRecordEvent({
+        recordId: newer.record.id,
+        eventKey: "legacy:unrelated-review-metric",
+        stage: "evidence",
+        actor: "legacy-worker",
+        payloadRef: { kind: "legacy_review_metric", elapsedSeconds: 0 },
+      });
+
+      const bounded = await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 });
+      expect(bounded.records.map((record) => record.recordId)).toEqual([newer.record.id]);
+      expect(bounded.records[0]).toMatchObject({
+        requestedWork: { kind: "unknown" },
+        suppliedContext: { kind: "unknown" },
+        pullRequest: { kind: "not_attached" },
+        proof: { kind: "unknown" },
+        neededDecision: { kind: "not_required", reason: "pr_not_attached" },
+        outcome: { kind: "not_recorded" },
+      });
+      expect(bounded.records[0]!.unknownReasons).toEqual([
+        "context_not_recorded",
+        "outcome_not_recorded",
+        "proof_not_recorded",
+        "requested_work_not_confirmed",
+      ]);
+      await expect(readAcceptanceRecordSummaries({
+        workspaceId: wsId,
+        repo: "acme/widgets",
+      })).resolves.toMatchObject({
+        kind: "records",
+        records: [{ recordId: older.record.id, repo: "acme/widgets" }],
+      });
+    });
+
+    it("projects one complete current Acceptance Record summary without crossing tenants", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-complete",
+        prNumber: 611,
+        headSha: "1".repeat(40),
+      });
+      const posted = await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        jobId: fixture.advanced.jobId,
+        repo: fixture.repo,
+        prNumber: 611,
+        headSha: "1".repeat(40),
+        acceptanceContractId: fixture.draft.contract.id,
+        verdict: "failed",
+      });
+
+      const result = await readAcceptanceRecordSummaries({
+        workspaceId: wsId,
+        repo: fixture.repo,
+        limit: 1,
+      });
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0]).toMatchObject({
+        recordId: fixture.draft.record.id,
+        workspaceId: wsId,
+        repo: fixture.repo,
+        requestedWork: {
+          kind: "confirmed",
+          originalRequest: "Add saved filters",
+          acceptanceContract: {
+            id: fixture.draft.contract.id,
+            version: 1,
+          },
+        },
+        suppliedContext: {
+          kind: "compiled",
+          sourceSnapshot: {
+            headSha: "1".repeat(40),
+            headCycleId: fixture.advanced.jobId,
+          },
+          compiledPack: { id: fixture.pack.id, sha256: fixture.pack.packSha256 },
+        },
+        pullRequest: {
+          kind: "attached",
+          prNumber: 611,
+          head: {
+            kind: "current",
+            sha: "1".repeat(40),
+            headCycleId: fixture.advanced.jobId,
+          },
+        },
+        proof: {
+          kind: "recorded",
+          reviewJobId: fixture.advanced.jobId,
+          verdict: "failed",
+          postedReviewUrl: posted.postedReviewUrl,
+          postedAttestationEventId: posted.event.id,
+        },
+        neededDecision: {
+          kind: "required",
+          choices: ["changes_requested", "rejected", "approved_with_exception"],
+        },
+        outcome: { kind: "not_recorded" },
+      });
+      expect(result.records[0]!.unknownReasons).toEqual([
+        "decision_not_recorded",
+        "outcome_not_recorded",
+      ]);
+
+      const actor = await addAcceptanceDecisionActor(wsId, "admin");
+      const currentDecision = await readCurrentAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      });
+      if (currentDecision.kind !== "current") throw new Error("expected current summary decision binding");
+      const recordedDecision = await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        bindingId: currentDecision.binding.bindingId,
+        decision: "changes_requested",
+        rationale: "Repair the failed criterion before approval.",
+        decidedBy: actor,
+      });
+      if (recordedDecision.kind !== "recorded") throw new Error("expected recorded summary decision");
+      const decided = (await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 })).records[0]!;
+      expect(decided.neededDecision).toMatchObject({
+        kind: "recorded",
+        eventId: recordedDecision.decision.eventId,
+        decision: "changes_requested",
+      });
+      expect(decided.unknownReasons).not.toContain("decision_not_recorded");
+
+      const otherWorkspace = (await db.insert(workspaces).values({
+        name: "acceptance summary tenant boundary",
+        slug: `acceptance-summary-tenant-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!;
+      try {
+        await expect(readAcceptanceRecordSummaries({
+          workspaceId: otherWorkspace.id,
+          repo: fixture.repo,
+        })).resolves.toEqual({ kind: "records", records: [] });
+      } finally {
+        await db.delete(workspaces).where(eq(workspaces.id, otherWorkspace.id));
+      }
+    });
+
+    it("keeps queued proof and each Context Pack custody state explicit", async () => {
+      const admitted = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-context-admitted",
+        prNumber: 616,
+        headSha: "9".repeat(40),
+      });
+      let summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === admitted.draft.record.id)!;
+      expect(summary.proof).toEqual({ kind: "unknown" });
+      expect(summary.unknownReasons).toContain("proof_not_recorded");
+
+      await db.delete(acceptanceCompiledContextPacks)
+        .where(eq(acceptanceCompiledContextPacks.id, admitted.pack.id));
+      summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === admitted.draft.record.id)!;
+      expect(summary.suppliedContext).toMatchObject({
+        kind: "admitted",
+        sourceSnapshot: { id: admitted.pack.sourceSnapshotId },
+      });
+
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: admitted.draft.record.id,
+        jobId: admitted.advanced.jobId,
+        repo: admitted.repo,
+        prNumber: 616,
+        headSha: "9".repeat(40),
+        acceptanceContractId: admitted.draft.contract.id,
+        verdict: "not_proven",
+      });
+      summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === admitted.draft.record.id)!;
+      expect(summary.proof).toMatchObject({
+        kind: "recorded",
+        reviewJobId: admitted.advanced.jobId,
+        verdict: "not_proven",
+      });
+
+      const unavailable = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-context-not-proven",
+        prNumber: 617,
+        headSha: "a".repeat(40),
+      });
+      await db.delete(acceptanceCompiledContextPacks)
+        .where(eq(acceptanceCompiledContextPacks.id, unavailable.pack.id));
+      const unavailableReason = "github exact-head source unavailable";
+      await db.update(acceptanceContextPackSnapshots).set({
+        status: "not_proven",
+        baseSha: null,
+        mergeBaseSha: null,
+        headTreeSha: null,
+        baseIndex: null,
+        overlay: null,
+        provenance: {
+          schemaVersion: 1,
+          included: [],
+          excluded: [{ path: null, source: "overlay", reason: unavailableReason }],
+        },
+        reason: unavailableReason,
+      }).where(eq(acceptanceContextPackSnapshots.id, unavailable.pack.sourceSnapshotId));
+      summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === unavailable.draft.record.id)!;
+      expect(summary.suppliedContext).toMatchObject({
+        kind: "not_proven",
+        sourceSnapshot: { id: unavailable.pack.sourceSnapshotId },
+      });
+
+      const tampered = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-context-tampered",
+        prNumber: 618,
+        headSha: "b".repeat(40),
+      });
+      await db.update(acceptanceContextPackSnapshots).set({
+        correctionPacketPayloadSetSha256: "0".repeat(64),
+      }).where(eq(acceptanceContextPackSnapshots.id, tampered.pack.sourceSnapshotId));
+      summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === tampered.draft.record.id)!;
+      expect(summary.suppliedContext).toEqual({ kind: "unknown" });
+      expect(summary.unknownReasons).toContain("invalid_context_custody");
+
+      const ambiguous = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-context-ambiguous",
+        prNumber: 619,
+        headSha: "c".repeat(40),
+      });
+      await db.delete(acceptanceCompiledContextPacks)
+        .where(eq(acceptanceCompiledContextPacks.id, ambiguous.pack.id));
+      const source = (await db.select().from(acceptanceContextPackSnapshots).where(
+        eq(acceptanceContextPackSnapshots.id, ambiguous.pack.sourceSnapshotId)
+      ).limit(1))[0]!;
+      await recordAcceptanceContextPackSnapshot({
+        workspaceId: source.workspaceId,
+        recordId: source.recordId,
+        reviewJobId: source.reviewJobId,
+        acceptanceContractId: source.acceptanceContractId,
+        acceptanceContractVersion: source.acceptanceContractVersion,
+        acceptanceContractSha256: source.acceptanceContractSha256!,
+        repo: source.repo,
+        prNumber: source.prNumber,
+        expectedHeadSha: source.expectedHeadSha,
+        baseSha: source.baseSha,
+        mergeBaseSha: source.mergeBaseSha,
+        headTreeSha: source.headTreeSha,
+        packetIds: source.packetIds,
+        packetSetSha256: source.packetSetSha256,
+        correctionPacketPayloadSetSha256: source.correctionPacketPayloadSetSha256!,
+        compilerVersion: "acceptance-summary-second-source-v1",
+        baseIndex: source.baseIndex as never,
+        overlay: source.overlay as never,
+        provenance: source.provenance as never,
+        status: source.status as "admitted",
+        reason: source.reason,
+      });
+      summary = (await readAcceptanceRecordSummaries({ workspaceId: wsId }))
+        .records.find((record) => record.recordId === ambiguous.draft.record.id)!;
+      expect(summary.suppliedContext).toEqual({ kind: "unknown" });
+      expect(summary.unknownReasons).toContain("ambiguous_context_custody");
+    });
+
+    it("projects signed merge and post-merge evidence without inventing negative outcomes", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-merged",
+        prNumber: 612,
+        headSha: "2".repeat(40),
+        verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        bindingId: ready.binding.bindingId,
+        decision: "approved",
+        decidedBy: owner,
+      });
+      const mergeSha = "3".repeat(40);
+      const merge = await recordSignedAcceptanceRecordMerge(signedMergeInput({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 612,
+        headSha: "2".repeat(40),
+        deliveryId: "acceptance-summary-merged:delivery",
+        mergeSha,
+      }));
+      if (merge.kind !== "recorded") throw new Error("expected signed merge summary fixture");
+      await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        recordedBy: owner,
+        occurredAt: new Date("2026-08-11T10:05:00.000Z"),
+        outcome: {
+          kind: "deployed",
+          revisionSha: mergeSha,
+          environment: "production",
+          deploymentReference: "deploy:acceptance-summary-merged",
+        },
+      });
+
+      const result = await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 });
+      const summary = result.records.find((record) => record.recordId === ready.draft.record.id);
+      expect(summary).toMatchObject({
+        pullRequest: {
+          kind: "attached",
+          prNumber: 612,
+          head: {
+            kind: "merged",
+            sha: "2".repeat(40),
+            headCycleId: ready.advanced.jobId,
+          },
+        },
+        proof: { kind: "recorded", reviewJobId: ready.advanced.jobId, verdict: "proven" },
+        neededDecision: { kind: "not_required", reason: "merged" },
+        outcome: {
+          kind: "signed_merge",
+          mergeEventId: merge.mergeEventId,
+          mergeSha,
+          decisionAlignment: "aligned",
+          postMerge: {
+            deployment: "recorded",
+            incident: "not_recorded",
+            revert: "not_recorded",
+          },
+        },
+      });
+      expect(summary?.unknownReasons).toContain("context_not_recorded");
+      expect(summary?.unknownReasons).not.toContain("outcome_not_recorded");
+    });
+
+    it("keeps same-SHA head occurrences distinct across A-to-B-to-A", async () => {
+      const headA = "4".repeat(40);
+      const headB = "5".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-a-b-a",
+        prNumber: 613,
+        headSha: headA,
+        verdict: "proven",
+      });
+      const advancedB = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 613,
+        headSha: headB,
+        event: "synchronize",
+        deliveryId: "acceptance-summary-a-b-a:b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+        source: "github_webhook",
+      });
+      if (advancedB.kind !== "advanced") throw new Error("expected B summary cycle");
+      const advancedA2 = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        repo: ready.repo,
+        prNumber: 613,
+        headSha: headA,
+        event: "synchronize",
+        deliveryId: "acceptance-summary-a-b-a:a2",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headB, afterHeadSha: headA },
+        source: "github_webhook",
+      });
+      if (advancedA2.kind !== "advanced") throw new Error("expected A2 summary cycle");
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: ready.draft.record.id,
+        jobId: advancedA2.jobId,
+        repo: ready.repo,
+        prNumber: 613,
+        headSha: headA,
+        acceptanceContractId: ready.draft.contract.id,
+        verdict: "failed",
+      });
+
+      const result = await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 });
+      expect(result.records[0]).toMatchObject({
+        recordId: ready.draft.record.id,
+        pullRequest: {
+          kind: "attached",
+          head: {
+            kind: "current",
+            sha: headA,
+            headCycleId: advancedA2.jobId,
+          },
+        },
+        proof: { kind: "recorded", reviewJobId: advancedA2.jobId, verdict: "failed" },
+      });
+      expect(advancedA2.jobId).not.toBe(ready.advanced.jobId);
+    });
+
+    it("serializes a summary read with head advance without mixing cycle custody", async () => {
+      const headA = "6".repeat(40);
+      const headB = "7".repeat(40);
+      const ready = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-head-race",
+        prNumber: 614,
+        headSha: headA,
+        verdict: "proven",
+      });
+      const [readResult, advanced] = await Promise.all([
+        readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 }),
+        advanceConfirmedAcceptanceRecordPullRequestHead({
+          workspaceId: wsId,
+          recordId: ready.draft.record.id,
+          repo: ready.repo,
+          prNumber: 614,
+          headSha: headB,
+          event: "synchronize",
+          deliveryId: "acceptance-summary-head-race:b",
+          admitReviewJob: true,
+          headTransition: { beforeHeadSha: headA, afterHeadSha: headB },
+          source: "github_webhook",
+        }),
+      ]);
+      if (advanced.kind !== "advanced") throw new Error("expected raced B summary cycle");
+      const summary = readResult.records[0]!;
+      expect(summary.recordId).toBe(ready.draft.record.id);
+      if (summary.pullRequest.kind !== "attached" || summary.pullRequest.head.kind === "unknown") {
+        throw new Error("summary race must resolve one exact authoritative occurrence");
+      }
+      if (summary.pullRequest.head.headCycleId === ready.advanced.jobId) {
+        expect(summary.pullRequest.head.sha).toBe(headA);
+        expect(summary.proof).toMatchObject({
+          kind: "recorded",
+          reviewJobId: ready.advanced.jobId,
+        });
+      } else {
+        expect(summary.pullRequest.head).toMatchObject({
+          sha: headB,
+          headCycleId: advanced.jobId,
+        });
+        expect(summary.proof).toEqual({ kind: "unknown" });
+      }
+    });
+
+    it("detects a 257th relevant event instead of returning a truncated custody projection", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "acceptance-summary-event-bound",
+        prNumber: 615,
+        headSha: "8".repeat(40),
+      });
+      await recordExactPostedReview({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        jobId: fixture.advanced.jobId,
+        repo: fixture.repo,
+        prNumber: 615,
+        headSha: "8".repeat(40),
+        acceptanceContractId: fixture.draft.contract.id,
+        verdict: "proven",
+      });
+      await db.insert(changeRecordEvents).values(Array.from({ length: 254 }, (_, index) => ({
+        id: randomUUID(),
+        recordId: fixture.draft.record.id,
+        eventKey: `review:correction:${fixture.advanced.jobId}:noise-${index}`,
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: { kind: "malformed_summary_noise", index },
+      })));
+
+      const atBound = (await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 })).records[0]!;
+      expect(atBound.unknownReasons).not.toContain("summary_custody_limit");
+      expect(atBound.proof).toMatchObject({
+        kind: "recorded",
+        reviewJobId: fixture.advanced.jobId,
+      });
+      expect(atBound.suppliedContext).toEqual({ kind: "unknown" });
+      expect(atBound.unknownReasons).toContain("invalid_context_custody");
+
+      await db.insert(changeRecordEvents).values({
+        id: randomUUID(),
+        recordId: fixture.draft.record.id,
+        eventKey: `review:correction:${fixture.advanced.jobId}:noise-254`,
+        stage: "review",
+        actor: "reviewer-of-record",
+        payloadRef: { kind: "malformed_summary_noise", index: 254 },
+      });
+      const overflow = (await readAcceptanceRecordSummaries({ workspaceId: wsId, limit: 1 })).records[0]!;
+      expect(overflow.unknownReasons).toContain("summary_custody_limit");
+      expect(overflow.proof).toEqual({ kind: "unknown" });
+      expect(overflow.suppliedContext).toEqual({ kind: "unknown" });
+      expect(overflow.neededDecision).toEqual({ kind: "unknown" });
+      expect(overflow.outcome).toEqual({ kind: "unknown" });
     });
 
     it("executes the exact 0088 legacy-preview teardown statement against Postgres", async () => {

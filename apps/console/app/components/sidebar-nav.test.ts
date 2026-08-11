@@ -28,8 +28,9 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.collapsible).toBe(false);
   });
 
-  it("Your engineer zone: Home (root href), Work (href renamed from queue, #1231), then Approvals (#1276)", () => {
+  it("puts Changes first, ahead of Home, Work, and Approvals", () => {
     expect(YOUR_ENGINEER_ZONE.items.map((i) => [i.label, i.href])).toEqual([
+      ["Changes", "changes"],
       ["Home", ""],
       ["Work", "work"],
       ["Approvals", "approvals"],
@@ -145,9 +146,10 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("repos");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, wallet, approvals, permissions, model-selection, briefs, investigations, wiki, and gateways (teams stays a redirect stub to /members; api-keys removed 2026-07-19; repos folded into wiki)", () => {
+  it("adds no new hrefs beyond the legacy set plus Changes and the established bounded additions", () => {
     const legacyHrefs = new Set([
       "",
+      "changes", // R11.1: Acceptance/Changes-first primary evidence surface
       "runs",
       "work", // #1231: renamed from "queue"
       "connectors",
@@ -212,6 +214,7 @@ describe("isEngineRoomRoute", () => {
 
   it("is false for Your engineer and Settings routes", () => {
     expect(isEngineRoomRoute(BASE, BASE)).toBe(false);
+    expect(isEngineRoomRoute(`${BASE}/changes`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/work`, BASE)).toBe(false);
     // /queue still exists as a redirect (#1231) — its pathname is likewise
     // not an engine-room route.

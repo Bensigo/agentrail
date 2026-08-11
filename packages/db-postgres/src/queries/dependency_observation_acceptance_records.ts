@@ -329,15 +329,30 @@ async function readCustody(
   tx: DbTransaction,
   input: CreateDraftAcceptanceRecordFromDependencyObservationInput,
 ): Promise<Custody> {
-  const watch = (await tx.select({ id: dependencyWatches.id, repositoryId: dependencyWatches.repositoryId, repositoryName: repositories.name })
+  const watch = (await tx.select({
+    id: dependencyWatches.id,
+    repositoryId: dependencyWatches.repositoryId,
+    repositoryName: repositories.name,
+    manifestPath: dependencyWatches.manifestPath,
+    lockfilePath: dependencyWatches.lockfilePath,
+  })
     .from(dependencyWatches)
     .innerJoin(repositories, eq(repositories.id, dependencyWatches.repositoryId))
     .where(and(
       eq(dependencyWatches.workspaceId, input.workspaceId),
       eq(dependencyWatches.id, input.watchId),
       eq(repositories.workspaceId, input.workspaceId),
-    )).limit(1))[0];
+  )).limit(1))[0];
   if (!watch) throw new DependencyObservationDraftError("not_found", "Dependency watch was not found in this workspace");
+  const exactRootPaths = watch.manifestPath === "package.json"
+    && watch.lockfilePath === "pnpm-lock.yaml";
+  const autoRootPaths = watch.manifestPath === "auto" && watch.lockfilePath === "auto";
+  if (!exactRootPaths && !autoRootPaths) {
+    throw new DependencyObservationDraftError(
+      "unsafe_custody",
+      "Dependency watch paths do not match the root pnpm proposal custody profile",
+    );
+  }
 
   // A newer failed, unchanged, or unsupported observation revokes older candidate custody.
   const observation = (await tx.select().from(dependencyWatchObservations).where(and(

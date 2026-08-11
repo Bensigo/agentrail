@@ -438,6 +438,10 @@ async function createAcceptanceDependencyObservationFixture(input: {
   prNumber: number;
   headSha: string;
   lockfileReadReason?: "path_not_found" | "github_unavailable";
+  manifestPath?: string;
+  manifestContent?: string;
+  lockfilePath?: string;
+  lockfileContent?: string;
 }) {
   const repoName = "acme/widgets";
   const draft = await createDraftAcceptanceRecord({
@@ -514,15 +518,17 @@ async function createAcceptanceDependencyObservationFixture(input: {
     gaps: [],
   };
 
+  const manifestPath = input.manifestPath ?? "package.json";
+  const lockfilePath = input.lockfilePath ?? "pnpm-lock.yaml";
   const fileInput = [
-    { path: "package.json", content: JSON.stringify({
+    { path: manifestPath, content: input.manifestContent ?? JSON.stringify({
       packageManager: "pnpm@10.14.0",
       engines: { node: "22.17.0" },
       dependencies: { lodash: "^4.17.20" },
     }) },
     ...(input.lockfileReadReason ? [] : [{
-      path: "pnpm-lock.yaml",
-      content: "lockfileVersion: '9.0'\n",
+      path: lockfilePath,
+      content: input.lockfileContent ?? "lockfileVersion: '9.0'\n",
     }]),
   ];
   const fileProofs = fileInput.map(({ path, content }, index) => {
@@ -553,8 +559,8 @@ async function createAcceptanceDependencyObservationFixture(input: {
       order: index,
     };
   }).sort((left, right) => left.path.localeCompare(right.path));
-  const manifestFile = fileProofs.find((file) => file.path === "package.json")!;
-  const lockfile = fileProofs.find((file) => file.path === "pnpm-lock.yaml") ?? null;
+  const manifestFile = fileProofs.find((file) => file.path === manifestPath)!;
+  const lockfile = fileProofs.find((file) => file.path === lockfilePath) ?? null;
   const baseSha = "b".repeat(40);
   const mergeBaseSha = "8".repeat(40);
   const headTreeSha = "c".repeat(40);
@@ -673,7 +679,7 @@ async function createAcceptanceDependencyObservationFixture(input: {
     })),
     exclusions: [],
     directReadReceipts: input.lockfileReadReason ? [{
-      requestedPath: "pnpm-lock.yaml",
+      requestedPath: lockfilePath,
       headSha: input.headSha,
       headTreeSha,
       outcome: "not_proven" as const,
@@ -792,13 +798,14 @@ function acceptanceDependencyObservationInput(input: {
     recordId: input.recordId,
     compiledPackId: input.compiledPackId,
     candidate: {
+      identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
       package: "lodash",
       dependencyKind: "dependencies" as const,
       specifier: "^4.17.20",
       currentVersion: "4.17.20",
       targetVersion,
     },
-    runtime: { disposition: "safe" as const, nodeVersion: "22.17.0", evidenceSha256: "1".repeat(64) },
+    runtime: { identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" }, disposition: "safe" as const, version: "22.17.0", evidenceSha256: "1".repeat(64) },
     packageManager: {
       disposition: "safe" as const,
       name: "pnpm",
@@ -816,6 +823,7 @@ function acceptanceDependencyObservationInput(input: {
     },
     baseline: { headSha: input.headSha },
     security: {
+      identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
       disposition: "clear" as const,
       provider: "osv",
       reference: `osv:npm:lodash@${targetVersion}`,
@@ -4833,7 +4841,7 @@ describe.skipIf(!DB_AVAILABLE)(
         },
         observation: {
           eventKey: expect.stringMatching(
-            new RegExp(`^acceptance-dependency-observation:${fixture.advanced.jobId}:[a-f0-9]{64}$`),
+            new RegExp(`^acceptance-dependency-observation:v2:${fixture.advanced.jobId}:[a-f0-9]{64}$`),
           ),
           status: "observed",
           reasons: [],
@@ -4855,7 +4863,7 @@ describe.skipIf(!DB_AVAILABLE)(
         actor: "server:dependency-observation",
         payloadRef: {
           kind: "acceptance_dependency_observation",
-          version: 1,
+          version: 2,
           status: "observed",
           reasons: [],
         },
@@ -4899,6 +4907,193 @@ describe.skipIf(!DB_AVAILABLE)(
         workspaceId: foreignWorkspace.id,
       })).resolves.toEqual({ kind: "not_found" });
       await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace.id));
+
+      await db.update(changeRecordEvents).set({ stage: "review" }).where(
+        eq(changeRecordEvents.id, recorded.observation.eventId),
+      );
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toEqual({
+        kind: "not_ready",
+        reason: "invalid_observation_custody",
+      });
+    });
+
+    it("replays one authentic legacy pnpm observation instead of appending a v2 duplicate", async () => {
+      const headSha = "5".repeat(40);
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-legacy-replay",
+        prNumber: 279,
+        headSha,
+      });
+      const input = acceptanceDependencyObservationInput({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+        compiledPackId: fixture.pack.id,
+        headSha,
+        manifestBlobSha: fixture.manifestBlobSha,
+        lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+      const record = (await db.select().from(changeRecords).where(
+        eq(changeRecords.id, fixture.draft.record.id),
+      ))[0]!;
+      const contractSha256 = acceptanceContractSha256({
+        acceptanceContractId: fixture.draft.contract.id,
+        acceptanceContractVersion: fixture.draft.contract.version,
+        contract: fixture.draft.contract.contract,
+      });
+      const candidateFingerprint = `sha256:${acceptanceContextPackCanonicalSha256({
+        ecosystem: "node",
+        manifestPath: input.manifest.path,
+        package: input.candidate.package,
+        dependencyKind: input.candidate.dependencyKind,
+        specifier: input.candidate.specifier,
+        currentVersion: input.candidate.currentVersion,
+        targetVersion: input.candidate.targetVersion,
+      })}`;
+      const eventKey = `acceptance-dependency-observation:${fixture.advanced.jobId}:${candidateFingerprint.slice("sha256:".length)}`;
+      const { identity: _candidateIdentity, ...legacyCandidate } = input.candidate;
+      const { identity: _runtimeIdentity, version, ...legacyRuntime } = input.runtime;
+      const { identity: _securityIdentity, ...legacySecurity } = input.security;
+      await appendChangeRecordEvent({
+        recordId: fixture.draft.record.id,
+        eventKey,
+        stage: "dependency_observation",
+        actor: "server:dependency-observation",
+        payloadRef: {
+          kind: "acceptance_dependency_observation",
+          version: 1,
+          binding: {
+            workspaceId: wsId,
+            recordId: fixture.draft.record.id,
+            repo: fixture.repo,
+            prNumber: 279,
+            headSha,
+            headCycleId: fixture.advanced.jobId,
+            authorityGeneration: record.currentPrHeadAuthorityGeneration,
+            reviewJobId: fixture.advanced.jobId,
+            acceptanceContract: {
+              id: fixture.draft.contract.id,
+              version: fixture.draft.contract.version,
+              sha256: contractSha256,
+            },
+            compiledPack: {
+              id: fixture.pack.id,
+              sha256: fixture.pack.packSha256,
+              sourceSnapshotId: fixture.pack.sourceSnapshotId,
+              sourceCustodyIdentitySha256: fixture.pack.sourceCustodyIdentitySha256,
+              compilerVersion: fixture.pack.compilerVersion,
+              policyVersion: fixture.pack.policyVersion,
+              exactHeadDependencyTreeProofsSha256: acceptanceContextPackCanonicalSha256({
+                kind: "acceptance_dependency_tree_proof_set",
+                version: 1,
+                proofs: fixture.pack.exactHeadDependencyTreeProofs,
+              }),
+            },
+          },
+          candidateFingerprint,
+          candidate: legacyCandidate,
+          runtime: { ...legacyRuntime, nodeVersion: version },
+          packageManager: input.packageManager,
+          manifest: input.manifest,
+          lockfile: input.lockfile,
+          baseline: input.baseline,
+          security: legacySecurity,
+          status: "observed",
+          reasons: [],
+        },
+      });
+
+      await expect(recordAcceptanceDependencyObservation(input)).resolves.toMatchObject({
+        kind: "replayed",
+        observation: { eventKey, candidateFingerprint, status: "observed" },
+      });
+      await expect(readCurrentAcceptanceDependencyObservations({
+        workspaceId: wsId,
+        recordId: fixture.draft.record.id,
+      })).resolves.toMatchObject({
+        kind: "current",
+        observations: [{
+          payloadVersion: 1,
+          observation: {
+            eventKey,
+            candidateFingerprint,
+            candidate: { identity: input.candidate.identity },
+            runtime: { identity: input.runtime.identity, version: input.runtime.version },
+            security: { identity: input.security.identity },
+          },
+        }],
+      });
+      const observationEvents = (await db.select().from(changeRecordEvents).where(
+        eq(changeRecordEvents.recordId, fixture.draft.record.id),
+      )).filter((event) => event.eventKey.startsWith("acceptance-dependency-observation:"));
+      expect(observationEvents).toHaveLength(1);
+    });
+
+    it("records and replays a bounded unsupported Poetry identity without pnpm coercion", async () => {
+      const fixture = await createAcceptanceDependencyObservationFixture({
+        workspaceId: wsId,
+        workKey: "dependency-observation-poetry-refusal",
+        prNumber: 280,
+        headSha: "6".repeat(40),
+        manifestPath: "pyproject.toml",
+        manifestContent: "[tool.poetry.dependencies]\nrequests = '^2.31'\n",
+        lockfilePath: "poetry.lock",
+        lockfileContent: "[[package]]\nname = 'requests'\nversion = '2.32.0'\n",
+      });
+      const input = acceptanceDependencyObservationInput({
+        workspaceId: wsId, recordId: fixture.draft.record.id, compiledPackId: fixture.pack.id,
+        headSha: "6".repeat(40), manifestBlobSha: fixture.manifestBlobSha, lockfileBlobSha: fixture.lockfileBlobSha,
+      });
+      const identity = { ecosystem: "python", manager: "poetry", profile: "poetry_lock_v1" };
+      const poetry = {
+        ...input,
+        candidate: {
+          ...input.candidate,
+          identity,
+          package: "requests",
+          specifier: "^2.31",
+          currentVersion: "2.31.0rc1",
+          targetVersion: "2.32.0rc1",
+        },
+        runtime: { ...input.runtime, identity, version: "cpython-3.13" },
+        packageManager: {
+          ...input.packageManager,
+          name: "poetry",
+          version: "2.1.4",
+          profile: "poetry_lock_v1",
+          updateArgv: ["poetry", "update", "requests", "--lock"],
+        },
+        manifest: { path: "pyproject.toml", blobSha: fixture.manifestBlobSha },
+        lockfile: { ...input.lockfile, path: "poetry.lock" },
+        security: { ...input.security, identity, provider: "opaque", reference: "opaque:poetry-observation" },
+      };
+      const recorded = await recordAcceptanceDependencyObservation(poetry);
+      expect(recorded).toMatchObject({
+        kind: "recorded",
+        observation: { status: "refused_unsupported_profile", reasons: ["unsupported_manager_profile"], candidate: poetry.candidate },
+      });
+      const replay = await recordAcceptanceDependencyObservation(poetry);
+      expect(replay).toMatchObject({ kind: "replayed", observation: { status: "refused_unsupported_profile" } });
+
+      const missingSource = {
+        ...poetry,
+        manifest: { ...poetry.manifest, path: "services/api/pyproject.toml" },
+        lockfile: { ...poetry.lockfile, path: "services/api/poetry.lock" },
+      };
+      await expect(recordAcceptanceDependencyObservation(missingSource)).resolves.toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsupported_profile",
+          reasons: [
+            "unsupported_manager_profile",
+            "manifest_source_not_proven",
+            "lockfile_source_not_proven",
+          ],
+        },
+      });
     });
 
     it("records fail-closed dependency refusals only when their exact source custody is proven", async () => {
@@ -4925,11 +5120,11 @@ describe.skipIf(!DB_AVAILABLE)(
         runtime: {
           ...unsafeRuntime.runtime,
           disposition: "unsafe",
-          nodeVersion: "0.1.0",
+          version: "0.1.0",
         },
       })).resolves.toMatchObject({
         kind: "recorded",
-        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_node_runtime"] },
+        observation: { status: "refused_unsafe_runtime", reasons: ["unsafe_runtime"] },
       });
 
       const unsafeProfile = base("4.17.23");
@@ -4938,6 +5133,52 @@ describe.skipIf(!DB_AVAILABLE)(
         packageManager: {
           ...unsafeProfile.packageManager,
           profile: "pnpm_lockfile_only_v2",
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsafe_runtime",
+          reasons: ["unsafe_package_manager_profile"],
+        },
+      });
+
+      const unsafeArgv = base("4.17.231");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeArgv,
+        packageManager: {
+          ...unsafeArgv.packageManager,
+          updateArgv: ["pnpm", "exec", "postinstall"],
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsafe_runtime",
+          reasons: ["unsafe_package_manager_argv"],
+        },
+      });
+
+      const unsafeManagerVersion = base("4.17.233");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeManagerVersion,
+        packageManager: {
+          ...unsafeManagerVersion.packageManager,
+          version: "pnpm-ten",
+        },
+      })).resolves.toMatchObject({
+        kind: "recorded",
+        observation: {
+          status: "refused_unsafe_runtime",
+          reasons: ["unsafe_package_manager_profile"],
+        },
+      });
+
+      const unsafeSecurityIdentity = base("4.17.232");
+      await expect(recordAcceptanceDependencyObservation({
+        ...unsafeSecurityIdentity,
+        security: {
+          ...unsafeSecurityIdentity.security,
+          provider: "github",
+          reference: "opaque:untrusted-security-result",
         },
       })).resolves.toMatchObject({
         kind: "recorded",
@@ -4977,7 +5218,7 @@ describe.skipIf(!DB_AVAILABLE)(
         runtime: {
           ...unknownRuntime.runtime,
           disposition: "unavailable",
-          nodeVersion: null,
+          version: null,
         },
       })).resolves.toMatchObject({
         kind: "recorded",
@@ -5317,6 +5558,7 @@ describe.skipIf(!DB_AVAILABLE)(
           acceptanceContract: { id: fixture.draft.contract.id },
         },
         observations: [{
+          payloadVersion: 2,
           observation: { eventId: observed.observation.eventId, status: "observed" },
           approval: null,
           externalBuilderPack: null,

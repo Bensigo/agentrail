@@ -12,6 +12,7 @@ import {
   readCurrentAcceptancePrDecision,
   readCurrentAcceptanceCorrectionPackets,
   readChangeRecordTimeline,
+  readDependencyDraftProposalDetail,
   recordAcceptancePrDecision,
   recordAcceptancePrReviewEffort,
 } from "@agentrail/db-postgres";
@@ -49,6 +50,42 @@ type ParsedPatchBody = ParsedDecisionBody
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_LIKE = /(?:\b(?:bearer|token|authorization)\s+|\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+))/i;
+const REDACTED_DEPENDENCY_PROPOSAL_PAYLOAD = {
+  kind: "redacted_dependency_observation_proposal",
+  version: 1,
+  disclosure: "bounded_projection_only",
+} as const;
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function containsDependencyCommandFields(value: unknown, depth = 0): boolean {
+  if (depth > 12) return true;
+  if (Array.isArray(value)) {
+    return value.some((item) => containsDependencyCommandFields(item, depth + 1));
+  }
+  if (!object(value)) return false;
+  return Object.entries(value).some(([key, nested]) =>
+    key === "manager_commands" || key === "verification_commands"
+      || containsDependencyCommandFields(nested, depth + 1));
+}
+
+function timelinePayloadRef(event: {
+  stage: string;
+  eventKey: string;
+  payloadRef: unknown;
+}): Record<string, unknown> {
+  const dependencyProposal = event.stage === "dependency_observation_proposal"
+    || event.eventKey.startsWith("dependency-observation-proposal:")
+    || (object(event.payloadRef)
+      && typeof event.payloadRef.kind === "string"
+      && event.payloadRef.kind.startsWith("dependency_observation_proposal"));
+  if (dependencyProposal || containsDependencyCommandFields(event.payloadRef)) {
+    return REDACTED_DEPENDENCY_PROPOSAL_PAYLOAD;
+  }
+  return object(event.payloadRef) ? event.payloadRef : { kind: "invalid_payload_reference" };
+}
 
 function json(body: Record<string, unknown>, status = 200): NextResponse {
   return NextResponse.json(body, {
@@ -308,12 +345,14 @@ export async function GET(
       resolvedReviewMetrics,
       resolvedDependencyObservations,
       resolvedAcceptanceDetail,
+      dependencyDraftProposal,
     ] = await Promise.all([
       readCurrentAcceptanceCorrectionPackets({ workspaceId, recordId }),
       readCurrentAcceptancePrDecision({ workspaceId, recordId }),
       readAcceptancePrReviewMetrics({ workspaceId, recordId }),
       readCurrentAcceptanceDependencyObservations({ workspaceId, recordId }),
       readAcceptanceRecordDetail({ workspaceId, recordId }),
+      readDependencyDraftProposalDetail({ workspaceId, recordId }),
     ]);
     const correctionPackets = resolvedCorrectionPackets.kind === "current" && (
       !timeline.record.currentPrHeadAuthoritative
@@ -368,7 +407,7 @@ export async function GET(
         eventKey: event.eventKey,
         stage: event.stage,
         actor: event.actor,
-        payloadRef: event.payloadRef,
+        payloadRef: timelinePayloadRef(event),
         at: event.at.toISOString(),
         createdAt: event.createdAt.toISOString(),
       })),
@@ -377,6 +416,7 @@ export async function GET(
       reviewMetrics,
       dependencyObservations,
       acceptanceDetail,
+      dependencyDraftProposal,
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,

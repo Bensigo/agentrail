@@ -8,6 +8,7 @@ import { DigestPanel } from "./components/digest-panel";
 import { HealthRatesPanel } from "./components/health-rates-panel";
 import { HumanFalseGreenPanel } from "./components/human-false-green-panel";
 import { OnboardingBanner } from "./components/onboarding-banner";
+import { AcceptanceOutcomeMetricsPanel } from "./components/acceptance-outcome-metrics-panel";
 import { ReviewMetricsPanel } from "./components/review-metrics-panel";
 
 export default async function WorkspaceDashboardPage({
@@ -54,6 +55,7 @@ export default async function WorkspaceDashboardPage({
       <div className="mt-2 flex flex-col gap-6">
         <OnboardingBanner workspaceId={workspaceId} />
         <DigestPanel workspaceId={workspaceId} planCard={planCard} />
+        <AcceptanceOutcomeMetricsPanel workspaceId={workspaceId} />
         <ReviewMetricsPanel workspaceId={workspaceId} />
         <HumanFalseGreenPanel workspaceId={workspaceId} />
         {/* Rides the same planCard value as the swap above: the health panel mounts together with the plan card as one coherent unit, not a separate toggle — both key off whether a real plan read resolved, no flag involved. */}

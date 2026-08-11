@@ -1,8 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `9f4f3e7f`, after merged PRs
-#1677 and #1678. PR #1679 carries the bounded R9.2 Record-scoped metrics
-slice described below.
+Last reconciled: 2026-08-11 at main commit `2a2cd79c`, after merged PRs
+#1677–#1679 and the R9.2 outcome slice in PR #1680.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -90,28 +89,39 @@ the exact decision aligned, and retains deploy, incident, and revert
 observations only against that immutable merge custody. It makes no GitHub
 merge request.
 
-PR #1679 makes R9.2 source/test complete in one bounded Record-scoped slice.
-It records one owner/admin-declared `human_input` effort total against the
-opaque current head-cycle binding and reads historical review, decision,
-signed-merge, and post-merge evidence only from the canonical Acceptance
-Record event ledger. Every metric keeps independent eligible, known, and
-unknown sample counts; absence is never converted to zero, and a signed merge
-without attributable review-cycle custody fails closed instead of being
-labelled unrecorded.
+The local proof includes focused route/query tests and a migrated PostgreSQL
+run covering approval, exception, conflicting or absent decisions, immutable
+replay, A→B→A isolation, transaction rollback, and decision/head races.
 
-The local proof includes focused route/query/component tests, a fresh migrated
-PostgreSQL run, the full database suite, package typechecks/builds, scoped
-lint, independent adversarial review, and a browser-rendered component
-screenshot at `docs/screenshots/r92-record-review-metrics.png`. The screenshot
-is component proof only, not an authenticated browser-to-server run. No
-deployed GitHub delivery, live human decision or effort receipt, or customer
-outcome has been observed. R9 remains **FAIL / not release-ready** until PR
-#1679 merges and the deployed/live and customer proof gates are satisfied.
+R9.2 is source/test complete. PR #1679 records one owner/admin-declared
+`human_input` effort total against the opaque current attested head-cycle
+binding. It does not infer effort from elapsed time, and its Record-scoped
+metrics keep eligible, known, and unknown samples separate.
+
+The outcome slice in PR #1680 projects a bounded historical cohort only from
+exact posted-review, review-job, confirmed
+Contract, decision, signed-merge delivery, and post-merge custody. Known human
+decisions, explicit `not_recorded`, and malformed or ambiguous
+`excluded_unknown` samples remain separate. Factual signed merge, deployment,
+incident, and revert observations are reported separately from the human
+decision. The projection and Console panel passed focused tests and a migrated
+PostgreSQL run, including malformed custody, observation cutoffs, and A→B→A
+cycle isolation. The combined local proof includes focused route, query, and
+component tests, the full database and exact Console CI suites, migrated
+PostgreSQL integration, package typechecks and builds, scoped lint, and
+independent adversarial review. PR #1679 also carries a browser-rendered
+component screenshot; it is component proof, not an authenticated
+browser-to-server run.
+
+This is source/test and local-runtime proof only. No deployed GitHub delivery,
+live human decision, authenticated browser run, or customer outcome has been
+observed. R9 remains **FAIL / not release-ready** because deployed/live proof
+and customer proof are still open.
 
 ## Remaining canonical order
 
-After PR #1679, the next implementation work is R10, R11, and R12. Their
-canonical requirements remain:
+The next implementation work is R10, then R11 and R12. Their canonical
+requirements remain:
 
 | AC | Required behavior |
 | --- | --- |
@@ -129,7 +139,7 @@ boundaries above. There is no remaining canonical R8 source blocker; deployed,
 live-provider, and customer proof remain separate release gates. R9.1 now
 records the current-head human decision and converges signed GitHub merge plus
 post-merge facts onto the same exact lineage without giving Jace merge
-authority. R9.2 adds explicit declared review effort and sample-honest
-Record-scoped outcome evidence without timers or merge authority. None of the
-remaining slices may reopen the bounded R8 implementation merely because
-deployed, live, or customer proof is missing.
+authority. R9.2 keeps explicit recorded effort, known outcomes, not-recorded
+samples, and excluded or unknown custody distinct. None of the remaining
+slices may reopen the bounded R8 implementation merely because deployed, live,
+or customer proof is missing.

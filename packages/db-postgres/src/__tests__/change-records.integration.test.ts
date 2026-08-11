@@ -72,6 +72,7 @@ import {
   GithubClaudeRepairObservationConflictError,
   readCurrentAcceptanceCorrectionPackets,
   readCurrentAcceptancePrDecision,
+  readAcceptanceOutcomeHistory,
   recordAcceptancePrDecision,
   AcceptancePrDecisionConflictError,
   recordAcceptancePrReviewEffort,
@@ -1818,6 +1819,405 @@ describe.skipIf(!DB_AVAILABLE)(
       }
     });
 
+    it("projects immutable exact-review outcomes without consulting the current head", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const approved = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-approved", prNumber: 170,
+        headSha: "a".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: approved.draft.record.id, bindingId: approved.binding.bindingId,
+        decision: "approved", decidedBy: owner,
+      });
+      const mergeAt = new Date();
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: approved.draft.record.id, repo: approved.repo,
+          prNumber: 170, headSha: "a".repeat(40), deliveryId: "outcome-history-approved:merge",
+          mergeSha: "b".repeat(40),
+        }),
+        mergedAt: mergeAt,
+      });
+      await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId, recordId: approved.draft.record.id, recordedBy: owner,
+        occurredAt: mergeAt,
+        outcome: {
+          kind: "deployed", revisionSha: "b".repeat(40), environment: "production",
+          deploymentReference: "deploy:outcome-history-approved",
+        },
+      });
+      const notRecorded = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-not-recorded", prNumber: 171,
+        headSha: "c".repeat(40), verdict: "proven",
+      });
+      const invalid = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-invalid", prNumber: 172,
+        headSha: "d".repeat(40), verdict: "proven",
+      });
+      await db.update(changeRecordEvents).set({ stage: "forged_review" }).where(and(
+        eq(changeRecordEvents.recordId, invalid.draft.record.id),
+        eq(changeRecordEvents.eventKey, `review:github-posted:${invalid.advanced.jobId}`),
+      ));
+
+      const observedUntil = new Date(Date.now() + 60_000);
+      const report = await readAcceptanceOutcomeHistory({
+        workspaceId: wsId, from: new Date(Date.now() - 60_000), to: observedUntil,
+        observedUntil,
+      });
+      expect(report.counts).toMatchObject({
+        eligible: 2, approved: 1, approvedWithException: 0, changesRequested: 0,
+        rejected: 0, notRecorded: 1, excludedUnknown: 1, signedMerged: 1,
+        deploymentObserved: 1, incidentObserved: 0, reverted: 0,
+      });
+      expect(report.counts.eligible).toBe(
+        report.counts.approved + report.counts.approvedWithException
+          + report.counts.changesRequested + report.counts.rejected + report.counts.notRecorded
+      );
+      expect(report.samples).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          recordId: approved.draft.record.id, classification: "approved",
+          lineage: { signedMerged: true, deploymentObserved: true, incidentObserved: false, reverted: false },
+        }),
+        expect.objectContaining({ recordId: notRecorded.draft.record.id, classification: "not_recorded" }),
+        expect.objectContaining({
+          recordId: invalid.draft.record.id, classification: "excluded_unknown",
+          exclusionReason: "invalid_posted_review_custody",
+        }),
+      ]));
+      await expect(readAcceptanceOutcomeHistory({
+        workspaceId: wsId, from: observedUntil, to: observedUntil, observedUntil,
+      })).rejects.toThrow("Acceptance outcome history requires a workspace and bounded UTC Date window");
+    });
+
+    it("excludes cross-workspace, cross-Contract, duplicate, and late-confirmed review custody", async () => {
+      const foreignWorkspace = (await db.insert(workspaces).values({
+        name: "foreign outcome-history workspace",
+        slug: `foreign-outcome-history-${randomUUID()}`,
+      }).returning({ id: workspaces.id }))[0]!.id;
+      let crossWorkspaceJobId: string | null = null;
+      try {
+        const crossWorkspaceJob = await createReadyAcceptanceDecisionRecord({
+          workspaceId: wsId, workKey: "outcome-history-cross-workspace-job", prNumber: 173,
+          headSha: "1".repeat(40), verdict: "proven",
+        });
+        crossWorkspaceJobId = crossWorkspaceJob.advanced.jobId;
+        await db.update(reviewJobs).set({ workspaceId: foreignWorkspace })
+          .where(eq(reviewJobs.id, crossWorkspaceJob.advanced.jobId));
+
+        const foreignDraft = await createDraftAcceptanceRecord({
+          workspaceId: foreignWorkspace, repo: "acme/widgets",
+          workKey: "outcome-history-foreign-contract", originChannel: "codex_mcp",
+          contract: completeContract(), createdBy: "user:foreign",
+        });
+        await db.update(acceptanceContracts).set({
+          status: "confirmed", confirmedBy: "console_user:foreign", confirmedAt: new Date(),
+        }).where(eq(acceptanceContracts.id, foreignDraft.contract.id));
+        const crossContract = await createReadyAcceptanceDecisionRecord({
+          workspaceId: wsId, workKey: "outcome-history-cross-contract", prNumber: 174,
+          headSha: "2".repeat(40), verdict: "proven",
+        });
+        await db.update(changeRecordEvents).set({
+          payloadRef: {
+            ...crossContract.posted.event.payloadRef,
+            acceptanceContractId: foreignDraft.contract.id,
+          },
+        }).where(eq(changeRecordEvents.id, crossContract.posted.event.id));
+
+        const lateContract = await createReadyAcceptanceDecisionRecord({
+          workspaceId: wsId, workKey: "outcome-history-late-contract", prNumber: 175,
+          headSha: "3".repeat(40), verdict: "proven",
+        });
+        await db.update(acceptanceContracts).set({
+          confirmedAt: new Date(lateContract.posted.event.at.valueOf() + 1_000),
+        }).where(eq(acceptanceContracts.id, lateContract.draft.contract.id));
+
+        const duplicateSource = await createReadyAcceptanceDecisionRecord({
+          workspaceId: wsId, workKey: "outcome-history-duplicate-source", prNumber: 176,
+          headSha: "4".repeat(40), verdict: "proven",
+        });
+        const duplicateRecord = await createDraftAcceptanceRecord({
+          workspaceId: wsId, repo: duplicateSource.repo,
+          workKey: "outcome-history-duplicate-target", originChannel: "codex_mcp",
+          contract: completeContract(), createdBy: "user:lead",
+        });
+        await appendChangeRecordEvent({
+          recordId: duplicateRecord.record.id,
+          eventKey: `review:github-posted:${duplicateSource.advanced.jobId}`,
+          stage: "review",
+          actor: "reviewer-of-record",
+          payloadRef: {
+            ...duplicateSource.posted.event.payloadRef,
+            recordId: duplicateRecord.record.id,
+          },
+        });
+
+        const observedUntil = new Date(Date.now() + 60_000);
+        const report = await readAcceptanceOutcomeHistory({
+          workspaceId: wsId,
+          from: new Date(Date.now() - 60_000),
+          to: observedUntil,
+          observedUntil,
+        });
+        const sampleFor = (recordId: string) => report.samples.find((sample) => sample.recordId === recordId);
+        expect(sampleFor(crossWorkspaceJob.draft.record.id)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "invalid_posted_review_custody",
+        });
+        expect(sampleFor(crossContract.draft.record.id)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "invalid_posted_review_custody",
+        });
+        expect(sampleFor(lateContract.draft.record.id)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "invalid_posted_review_custody",
+        });
+        expect(sampleFor(duplicateSource.draft.record.id)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "ambiguous_review_custody",
+        });
+        expect(sampleFor(duplicateRecord.record.id)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "ambiguous_review_custody",
+        });
+      } finally {
+        if (crossWorkspaceJobId) {
+          await db.update(reviewJobs).set({ workspaceId: wsId })
+            .where(eq(reviewJobs.id, crossWorkspaceJobId));
+        }
+        await db.delete(workspaces).where(eq(workspaces.id, foreignWorkspace));
+      }
+    });
+
+    it("excludes malformed and out-of-order decision, merge, and post-merge custody", async () => {
+      const owner = await addAcceptanceDecisionActor(wsId, "owner");
+      const malformedDecision = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-malformed-decision", prNumber: 177,
+        headSha: "5".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: malformedDecision.draft.record.id,
+        bindingId: malformedDecision.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      await db.update(changeRecordEvents).set({ stage: "forged_decision" }).where(and(
+        eq(changeRecordEvents.recordId, malformedDecision.draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-pr-decision:${malformedDecision.advanced.jobId}`),
+      ));
+
+      const malformedMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-malformed-merge", prNumber: 178,
+        headSha: "6".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: malformedMerge.draft.record.id,
+        bindingId: malformedMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      const malformedMergeSha = "7".repeat(40);
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: malformedMerge.draft.record.id, repo: malformedMerge.repo,
+          prNumber: 178, headSha: "6".repeat(40), deliveryId: "outcome-history-malformed-merge:merge",
+          mergeSha: malformedMergeSha,
+        }),
+        mergedAt: new Date(),
+      });
+      await db.update(changeRecordEvents).set({ stage: "forged_merge" }).where(and(
+        eq(changeRecordEvents.recordId, malformedMerge.draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-pr:signed-merge:${malformedMergeSha}`),
+      ));
+
+      const malformedPostMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-malformed-postmerge", prNumber: 179,
+        headSha: "8".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: malformedPostMerge.draft.record.id,
+        bindingId: malformedPostMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      const malformedPostMergeSha = "9".repeat(40);
+      const malformedPostMergeAt = new Date();
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: malformedPostMerge.draft.record.id, repo: malformedPostMerge.repo,
+          prNumber: 179, headSha: "8".repeat(40), deliveryId: "outcome-history-malformed-postmerge:merge",
+          mergeSha: malformedPostMergeSha,
+        }),
+        mergedAt: malformedPostMergeAt,
+      });
+      const malformedPostMergeEvent = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId, recordId: malformedPostMerge.draft.record.id, recordedBy: owner,
+        occurredAt: new Date(),
+        outcome: {
+          kind: "deployed", revisionSha: malformedPostMergeSha, environment: "production",
+          deploymentReference: "deploy:outcome-history-malformed-postmerge",
+        },
+      });
+      await db.update(changeRecordEvents).set({ stage: "forged_postmerge" })
+        .where(eq(changeRecordEvents.id, malformedPostMergeEvent.event.id));
+
+      const earlyDecision = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-early-decision", prNumber: 180,
+        headSha: "a".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: earlyDecision.draft.record.id,
+        bindingId: earlyDecision.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      await db.update(changeRecordEvents).set({
+        at: new Date(earlyDecision.posted.event.at.valueOf() - 1_000),
+      }).where(and(
+        eq(changeRecordEvents.recordId, earlyDecision.draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-pr-decision:${earlyDecision.advanced.jobId}`),
+      ));
+
+      const earlyMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-early-merge", prNumber: 181,
+        headSha: "b".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: earlyMerge.draft.record.id,
+        bindingId: earlyMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: earlyMerge.draft.record.id, repo: earlyMerge.repo,
+          prNumber: 181, headSha: "b".repeat(40), deliveryId: "outcome-history-early-merge:merge",
+          mergeSha: "c".repeat(40),
+        }),
+        mergedAt: new Date(earlyMerge.posted.event.at.valueOf() - 1_000),
+      });
+
+      const earlyPostMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-early-postmerge", prNumber: 182,
+        headSha: "d".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: earlyPostMerge.draft.record.id,
+        bindingId: earlyPostMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      const earlyPostMergeSha = "e".repeat(40);
+      const earlyPostMergeAt = new Date();
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: earlyPostMerge.draft.record.id, repo: earlyPostMerge.repo,
+          prNumber: 182, headSha: "d".repeat(40), deliveryId: "outcome-history-early-postmerge:merge",
+          mergeSha: earlyPostMergeSha,
+        }),
+        mergedAt: earlyPostMergeAt,
+      });
+      await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId, recordId: earlyPostMerge.draft.record.id, recordedBy: owner,
+        occurredAt: new Date(earlyPostMergeAt.valueOf() - 1_000),
+        outcome: {
+          kind: "deployed", revisionSha: earlyPostMergeSha, environment: "production",
+          deploymentReference: "deploy:outcome-history-early-postmerge",
+        },
+      });
+
+      const wrongKeyAttestation = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-wrong-attestation-key", prNumber: 183,
+        headSha: "f".repeat(40), verdict: "proven",
+      });
+      await db.update(changeRecordEvents).set({
+        eventKey: `forged-review-key:${wrongKeyAttestation.advanced.jobId}`,
+      }).where(eq(changeRecordEvents.id, wrongKeyAttestation.posted.event.id));
+
+      const wrongKeyDecision = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-wrong-decision-key", prNumber: 184,
+        headSha: "0".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: wrongKeyDecision.draft.record.id,
+        bindingId: wrongKeyDecision.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      await db.update(changeRecordEvents).set({
+        eventKey: `forged-decision-key:${wrongKeyDecision.advanced.jobId}`,
+      }).where(and(
+        eq(changeRecordEvents.recordId, wrongKeyDecision.draft.record.id),
+        eq(changeRecordEvents.eventKey, `acceptance-pr-decision:${wrongKeyDecision.advanced.jobId}`),
+      ));
+
+      const wrongKeyMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-wrong-merge-key", prNumber: 185,
+        headSha: "1".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: wrongKeyMerge.draft.record.id,
+        bindingId: wrongKeyMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      const wrongKeyMergeResult = await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: wrongKeyMerge.draft.record.id, repo: wrongKeyMerge.repo,
+          prNumber: 185, headSha: "1".repeat(40), deliveryId: "outcome-history-wrong-merge-key:merge",
+          mergeSha: "2".repeat(40),
+        }),
+        mergedAt: new Date(),
+      });
+      if (wrongKeyMergeResult.kind !== "recorded") throw new Error("expected wrong-key merge fixture");
+      await db.update(changeRecordEvents).set({ eventKey: "forged-merge-key" })
+        .where(eq(changeRecordEvents.id, wrongKeyMergeResult.mergeEventId));
+      await db.update(changeRecordEvents).set({ eventKey: "forged-merge-delivery-key" })
+        .where(eq(changeRecordEvents.id, wrongKeyMergeResult.deliveryEventId));
+
+      const wrongKeyPostMerge = await createReadyAcceptanceDecisionRecord({
+        workspaceId: wsId, workKey: "outcome-history-wrong-postmerge-key", prNumber: 186,
+        headSha: "3".repeat(40), verdict: "proven",
+      });
+      await recordAcceptancePrDecision({
+        workspaceId: wsId, recordId: wrongKeyPostMerge.draft.record.id,
+        bindingId: wrongKeyPostMerge.binding.bindingId, decision: "approved", decidedBy: owner,
+      });
+      const wrongKeyPostMergeSha = "4".repeat(40);
+      await recordSignedAcceptanceRecordMerge({
+        ...signedMergeInput({
+          workspaceId: wsId, recordId: wrongKeyPostMerge.draft.record.id, repo: wrongKeyPostMerge.repo,
+          prNumber: 186, headSha: "3".repeat(40), deliveryId: "outcome-history-wrong-postmerge-key:merge",
+          mergeSha: wrongKeyPostMergeSha,
+        }),
+        mergedAt: new Date(),
+      });
+      const wrongKeyPostMergeEvent = await recordAcceptancePostMergeOutcome({
+        workspaceId: wsId, recordId: wrongKeyPostMerge.draft.record.id, recordedBy: owner,
+        occurredAt: new Date(),
+        outcome: {
+          kind: "deployed", revisionSha: wrongKeyPostMergeSha, environment: "production",
+          deploymentReference: "deploy:outcome-history-wrong-postmerge-key",
+        },
+      });
+      await db.update(changeRecordEvents).set({ eventKey: "forged-postmerge-key" })
+        .where(eq(changeRecordEvents.id, wrongKeyPostMergeEvent.event.id));
+
+      const observedUntil = new Date(Date.now() + 60_000);
+      const report = await readAcceptanceOutcomeHistory({
+        workspaceId: wsId,
+        from: new Date(Date.now() - 60_000),
+        to: observedUntil,
+        observedUntil,
+      });
+      const sampleFor = (recordId: string) => report.samples.find((sample) => sample.recordId === recordId);
+      expect(sampleFor(malformedDecision.draft.record.id)).toMatchObject({
+        classification: "excluded_unknown", exclusionReason: "invalid_decision_custody",
+      });
+      for (const recordId of [
+        malformedMerge.draft.record.id,
+        malformedPostMerge.draft.record.id,
+        earlyMerge.draft.record.id,
+        earlyPostMerge.draft.record.id,
+      ]) {
+        expect(sampleFor(recordId)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "invalid_lineage_custody",
+        });
+      }
+      expect(sampleFor(earlyDecision.draft.record.id)).toMatchObject({
+        classification: "excluded_unknown", exclusionReason: "invalid_decision_custody",
+      });
+      expect(sampleFor(wrongKeyAttestation.draft.record.id)).toMatchObject({
+        classification: "excluded_unknown", exclusionReason: "invalid_posted_review_custody",
+      });
+      expect(sampleFor(wrongKeyDecision.draft.record.id)).toMatchObject({
+        classification: "excluded_unknown", exclusionReason: "invalid_decision_custody",
+      });
+      for (const recordId of [wrongKeyMerge.draft.record.id, wrongKeyPostMerge.draft.record.id]) {
+        expect(sampleFor(recordId)).toMatchObject({
+          classification: "excluded_unknown", exclusionReason: "invalid_lineage_custody",
+        });
+      }
+    });
+
     it("atomically terminalizes active work and replays an exact merge under a second signed delivery", async () => {
       const owner = await addAcceptanceDecisionActor(wsId, "owner");
       const headSha = "c".repeat(40);
@@ -2026,6 +2426,25 @@ describe.skipIf(!DB_AVAILABLE)(
         eq(changeRecordEvents.recordId, a1.draft.record.id),
         eq(changeRecordEvents.stage, "merge"),
       ))).toHaveLength(2);
+      // The signed-merge fixture uses a fixed 10:00Z receipt. Observe past
+      // that cutoff so this assertion tests cycle isolation, not future-fact
+      // filtering.
+      const observedUntil = new Date("2026-08-11T11:00:00.000Z");
+      const report = await readAcceptanceOutcomeHistory({
+        workspaceId: wsId, from: new Date(Date.now() - 60_000), to: new Date(Date.now() + 60_000),
+        observedUntil,
+      });
+      expect(report.samples.filter((sample) => sample.recordId === a1.draft.record.id))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            reviewJobId: a1.advanced.jobId, classification: "approved",
+            lineage: expect.objectContaining({ signedMerged: false }),
+          }),
+          expect.objectContaining({
+            reviewJobId: a2.jobId, classification: "not_recorded",
+            lineage: expect.objectContaining({ signedMerged: true }),
+          }),
+        ]));
     });
 
     it("rolls back signed merge receipt and state when immutable merge-event custody conflicts", async () => {

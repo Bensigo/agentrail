@@ -18415,12 +18415,16 @@ function parseCriterionVerificationPlan(input: {
   const byId = new Map<string, CriterionPlan>();
   for (const raw of payload["plans"]) {
     if (!isRecord(raw)) return null;
-    const allowedKeys = [
+    const requiredKeys = [
       "criterionId", "criterionTextSnapshot", "modality", "environmentKind", "flow",
-      "uiSteps", "apiRequest", "dataRequest", "status", "notTestableReason",
+      "status", "notTestableReason",
     ];
+    const allowedKeys = new Set([
+      ...requiredKeys, "uiSteps", "apiRequest", "dataRequest", "jobRequest",
+    ]);
     const hasJobRequest = hasOwn(raw, "jobRequest");
-    if (!hasExactKeys(raw, hasJobRequest ? [...allowedKeys, "jobRequest"] : allowedKeys)
+    if (!requiredKeys.every((key) => hasOwn(raw, key))
+      || !Object.keys(raw).every((key) => allowedKeys.has(key))
       || !boundedCriterionText(raw["criterionId"], 512)
       || !boundedCriterionText(raw["criterionTextSnapshot"])
       || (raw["modality"] !== "ui" && raw["modality"] !== "api"
@@ -18429,8 +18433,11 @@ function parseCriterionVerificationPlan(input: {
     const modality = raw["modality"] as CriterionPlanModality;
     let plan: CriterionPlan | null = null;
     if (raw["status"] === "not_testable" && raw["environmentKind"] === null
-      && raw["flow"] === null && raw["uiSteps"] === null && raw["apiRequest"] === null
-      && raw["dataRequest"] === null && (!hasJobRequest || raw["jobRequest"] === null)
+      && raw["flow"] === null
+      && (!hasOwn(raw, "uiSteps") || raw["uiSteps"] === null)
+      && (!hasOwn(raw, "apiRequest") || raw["apiRequest"] === null)
+      && (!hasOwn(raw, "dataRequest") || raw["dataRequest"] === null)
+      && (!hasJobRequest || raw["jobRequest"] === null)
       && boundedCriterionText(raw["notTestableReason"])) {
       plan = {
         criterionId: raw["criterionId"] as string,
@@ -18441,20 +18448,25 @@ function parseCriterionVerificationPlan(input: {
       };
     } else if (raw["status"] === "planned" && raw["environmentKind"] === "isolated_preview"
       && boundedCriterionText(raw["flow"]) && raw["notTestableReason"] === null) {
-      if (modality === "ui" && raw["apiRequest"] === null && raw["dataRequest"] === null
+      if (modality === "ui"
+        && (!hasOwn(raw, "apiRequest") || raw["apiRequest"] === null)
+        && (!hasOwn(raw, "dataRequest") || raw["dataRequest"] === null)
         && (!hasJobRequest || raw["jobRequest"] === null)) {
-        const uiSteps = raw["uiSteps"] === null ? null : parseCriterionUiSteps(raw["uiSteps"]);
-        if (raw["uiSteps"] === null || uiSteps) plan = {
+        const uiSteps = !hasOwn(raw, "uiSteps") || raw["uiSteps"] === null
+          ? null : parseCriterionUiSteps(raw["uiSteps"]);
+        if (!hasOwn(raw, "uiSteps") || raw["uiSteps"] === null || uiSteps) plan = {
           criterionId: raw["criterionId"] as string,
           criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
           modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
           uiSteps, apiRequest: null, dataRequest: null, jobRequest: null,
           status: "planned", notTestableReason: null,
         };
-      } else if (modality === "api" && raw["uiSteps"] === null && raw["dataRequest"] === null
+      } else if (modality === "api" && raw["uiSteps"] === null
+        && (!hasOwn(raw, "dataRequest") || raw["dataRequest"] === null)
         && (!hasJobRequest || raw["jobRequest"] === null)) {
-        const apiRequest = raw["apiRequest"] === null ? null : parseCriterionApiRequest(raw["apiRequest"]);
-        if (raw["apiRequest"] === null || apiRequest) plan = {
+        const apiRequest = !hasOwn(raw, "apiRequest") || raw["apiRequest"] === null
+          ? null : parseCriterionApiRequest(raw["apiRequest"]);
+        if (!hasOwn(raw, "apiRequest") || raw["apiRequest"] === null || apiRequest) plan = {
           criterionId: raw["criterionId"] as string,
           criterionTextSnapshot: raw["criterionTextSnapshot"] as string,
           modality, environmentKind: "isolated_preview", flow: raw["flow"] as string,
@@ -18652,6 +18664,7 @@ function parseCriterionExecutionReceipt(input: {
   record: ChangeRecordRow;
   job: ReviewJobRow;
   plan: CriterionPlan;
+  planAt: Date;
   boot: typeof previewBoots.$inferSelect | null;
   postedAttemptAt: Date;
   acceptanceContractId: string;
@@ -18721,7 +18734,7 @@ function parseCriterionExecutionReceipt(input: {
     || attempt["criterionTextSnapshot"] !== input.plan.criterionTextSnapshot
     || attempt["planDigest"] !== planDigest || !isDeepStrictEqual(attempt[planField], expectedPlanField)
     || attempt["previewBootId"] !== input.boot.id || attempt["executionId"] !== executionId
-    || input.boot.createdAt > attemptEvent.at
+    || input.planAt > attemptEvent.at || input.boot.createdAt > attemptEvent.at
     || previewUrl === null || previewUrl !== criterionHttpUrl(input.boot.url)) return "invalid";
   if (!hasExactKeys(payload, resultKeys)
     || attemptKeys.some((key) => key !== "kind" && !isDeepStrictEqual(payload[key], attempt[key]))) return "invalid";
@@ -19001,6 +19014,7 @@ function deriveCriterionOutcomeBundlePayload(input: {
     } else {
       const resolution = parseCriterionExecutionReceipt({
         events: input.events, record: input.record, job: input.job, plan, boot: preview,
+        planAt: planEvents[0]!.at,
         postedAttemptAt: input.postedAttempt.at,
         acceptanceContractId: input.confirmed.id,
         acceptanceContractVersion: input.confirmed.version,
@@ -19220,13 +19234,37 @@ async function criterionBundleSourceInTransaction(input: {
     reviewJobPostedAttestationEventKey(job.id),
     criterionOutcomeBundleEventKey(job.id),
   ];
-  const events = await input.tx.select().from(changeRecordEvents).where(and(
+  const eventPredicate = and(
     eq(changeRecordEvents.recordId, record.id),
     sql`(${inArray(changeRecordEvents.eventKey, exactKeys)}
       OR ${changeRecordEvents.eventKey} LIKE ${`verification:%:${job.id}:%`}
       OR ${changeRecordEvents.eventKey} LIKE ${`review:correction:${job.id}:%`})`,
-  )).orderBy(asc(changeRecordEvents.eventKey));
-  if (events.length > ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS) {
+  );
+  const eventBounds = await input.tx.select({
+    eventCount: sql<string>`count(*)::text`,
+    payloadBytes: sql<string>`coalesce(sum(octet_length(${changeRecordEvents.payloadRef}::text)), 0)::text`,
+  }).from(changeRecordEvents).where(eventPredicate);
+  let boundedEventCount: bigint;
+  let boundedPayloadBytes: bigint;
+  try {
+    if (eventBounds.length !== 1) throw new Error("missing criterion event bounds");
+    boundedEventCount = BigInt(eventBounds[0]!.eventCount);
+    boundedPayloadBytes = BigInt(eventBounds[0]!.payloadBytes);
+  } catch {
+    return { reason: "invalid_criterion_outcome_custody" };
+  }
+  if (boundedEventCount > BigInt(ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS)
+    || boundedPayloadBytes > BigInt(ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES)) {
+    return { reason: "invalid_criterion_outcome_custody" };
+  }
+  const events = await input.tx.select().from(changeRecordEvents).where(and(
+    eventPredicate,
+    sql`octet_length(${changeRecordEvents.payloadRef}::text)
+      <= ${ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES}`,
+  )).orderBy(asc(changeRecordEvents.eventKey))
+    .limit(ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS + 1);
+  if (BigInt(events.length) !== boundedEventCount
+    || events.length > ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENTS) {
     return { reason: "invalid_criterion_outcome_custody" };
   }
   try {

@@ -11,6 +11,7 @@ import {
 import { previewBoots } from "../schema/preview_boots.js";
 import { reviewJobs } from "../schema/review_jobs.js";
 import {
+  ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES,
   AcceptanceCriterionOutcomeBundleConflictError,
   acceptanceCriterionOutcomeBundleId,
   advanceConfirmedAcceptanceRecordPullRequestHead,
@@ -682,7 +683,11 @@ async function makeUiFailure(fixture: BundleFixture): Promise<void> {
   });
 }
 
-async function makePreviewFallback(fixture: BundleFixture): Promise<void> {
+async function makePreviewFallback(fixture: BundleFixture, input: {
+  modality?: "ui" | "api";
+  flow?: string;
+  reproduction?: Record<string, unknown>;
+} = {}): Promise<void> {
   await db.delete(changeRecordEvents).where(and(
     eq(changeRecordEvents.recordId, fixture.recordId),
     sql`${changeRecordEvents.eventKey} IN (
@@ -699,6 +704,16 @@ async function makePreviewFallback(fixture: BundleFixture): Promise<void> {
     eq(previewBoots.prNumber, fixture.prNumber),
     eq(previewBoots.headSha, fixture.headSha),
   )))[0]!;
+  const modality = input.modality ?? "ui";
+  const flow = input.flow ?? "Open saved filters and verify the retained entry.";
+  const reproduction = input.reproduction ?? {
+    modality: "ui",
+    steps: [
+      { action: "open", path: "/filters/../filters?state=saved#result" },
+      { action: "expect_text", text: "Saved filters" },
+      { action: "screenshot", label: "saved-filter-1" },
+    ],
+  };
   const observed = "The isolated exact-head preview became ready, but no server-custodied criterion execution receipt was recorded for this run; this criterion remains not proven.";
   await appendChangeRecordEvent({
     recordId: fixture.recordId,
@@ -708,18 +723,11 @@ async function makePreviewFallback(fixture: BundleFixture): Promise<void> {
     at: post.at,
     payloadRef: exactCorrectionPacket({
       fixture,
-      modality: "ui",
+      modality,
       state: "not_proven",
       observed,
-      flow: "Open saved filters and verify the retained entry.",
-      reproduction: {
-        modality: "ui",
-        steps: [
-          { action: "open", path: "/filters/../filters?state=saved#result" },
-          { action: "expect_text", text: "Saved filters" },
-          { action: "screenshot", label: "saved-filter-1" },
-        ],
-      },
+      flow,
+      reproduction,
       evidenceRef: `preview-boot:${boot.id}`,
       previewBootId: boot.id,
     }),
@@ -922,6 +930,70 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
       .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
   });
 
+  it("keeps legacy UI and API plans readable without admitting unknown plan fields", async () => {
+    const legacyUi = await createBundleFixture({
+      workspaceId, workKey: "legacy-ui-plan", prNumber: 225, headSha: "4".repeat(40),
+    });
+    await makePreviewFallback(legacyUi);
+    const legacyUiPlan = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, legacyUi.recordId),
+      eq(changeRecordEvents.eventKey, legacyUi.planEventKey),
+    )))[0]!;
+    const legacyUiPayload = structuredClone(legacyUiPlan.payloadRef);
+    delete (legacyUiPayload["plans"] as Record<string, unknown>[])[0]!["uiSteps"];
+    await db.update(changeRecordEvents).set({ payloadRef: legacyUiPayload })
+      .where(eq(changeRecordEvents.id, legacyUiPlan.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(legacyUi)))
+      .resolves.toMatchObject({
+        kind: "recorded",
+        bundle: { outcomes: [{ state: "not_proven", evidence: { kind: "preview_receipt" } }] },
+      });
+
+    const legacyApi = await replaceFixtureWithModality(await createBundleFixture({
+      workspaceId, workKey: "legacy-api-plan", prNumber: 226, headSha: "5".repeat(40),
+      contractModality: "api",
+    }), "api");
+    const apiFlow = "Run the exact api verification descriptor.";
+    await makePreviewFallback(legacyApi, {
+      modality: "api",
+      flow: apiFlow,
+      reproduction: {
+        modality: "api",
+        request: { method: "GET", path: "/health", expectedStatus: 200 },
+      },
+    });
+    const legacyApiPlan = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, legacyApi.recordId),
+      eq(changeRecordEvents.eventKey, legacyApi.planEventKey),
+    )))[0]!;
+    const legacyApiPayload = structuredClone(legacyApiPlan.payloadRef);
+    delete (legacyApiPayload["plans"] as Record<string, unknown>[])[0]!["apiRequest"];
+    await db.update(changeRecordEvents).set({ payloadRef: legacyApiPayload })
+      .where(eq(changeRecordEvents.id, legacyApiPlan.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(legacyApi)))
+      .resolves.toMatchObject({
+        kind: "recorded",
+        bundle: { outcomes: [{ state: "not_proven", evidence: { kind: "preview_receipt" } }] },
+      });
+
+    const unknownField = await createBundleFixture({
+      workspaceId, workKey: "legacy-plan-unknown-field", prNumber: 227, headSha: "6".repeat(40),
+    });
+    await makePreviewFallback(unknownField);
+    const unknownFieldPlan = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, unknownField.recordId),
+      eq(changeRecordEvents.eventKey, unknownField.planEventKey),
+    )))[0]!;
+    const unknownFieldPayload = structuredClone(unknownFieldPlan.payloadRef);
+    const unknownPlan = (unknownFieldPayload["plans"] as Record<string, unknown>[])[0]!;
+    delete unknownPlan["uiSteps"];
+    unknownPlan["unexpectedAuthority"] = true;
+    await db.update(changeRecordEvents).set({ payloadRef: unknownFieldPayload })
+      .where(eq(changeRecordEvents.id, unknownFieldPlan.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(unknownField)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
+  });
+
   it("fails closed for a partial pair, malformed plan/attempt/result, or altered attestation digest", async () => {
     const partial = await createBundleFixture({
       workspaceId, workKey: "partial-pair", prNumber: 202, headSha: "2".repeat(40),
@@ -1043,6 +1115,23 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
       eq(changeRecordEvents.eventKey, afterPost.resultEventKey!),
     ));
     await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(afterPost)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
+
+    const backdatedExecution = await createBundleFixture({
+      workspaceId, workKey: "execution-before-plan", prNumber: 224, headSha: "3".repeat(40),
+    });
+    const backdatedPlan = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, backdatedExecution.recordId),
+      eq(changeRecordEvents.eventKey, backdatedExecution.planEventKey),
+    )))[0]!;
+    const backdatedReservation = (await db.select().from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, backdatedExecution.recordId),
+      eq(changeRecordEvents.eventKey, backdatedExecution.reservationEventKey!),
+    )))[0]!;
+    await db.update(changeRecordEvents).set({
+      at: backdatedReservation.at,
+    }).where(eq(changeRecordEvents.id, backdatedPlan.id));
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(backdatedExecution)))
       .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
 
     const badDataPlan = await replaceFixtureWithModality(await createBundleFixture({
@@ -1197,5 +1286,49 @@ describe.skipIf(!DB_AVAILABLE)("R11.2b criterion outcome bundle custody", () => 
       recordId: fixture.recordId,
       headCycleId: fixture.jobId,
     }));
+  });
+
+  it("fails closed when exact-cycle event count or payload bytes exceed custody bounds", async () => {
+    const overCount = await createBundleFixture({
+      workspaceId, workKey: "event-count-bound", prNumber: 228, headSha: "7".repeat(40),
+      notTestable: true,
+    });
+    const noiseEvents = Array.from({ length: 511 }, (_, index) => {
+      const eventKey = `verification:noise:${overCount.jobId}:${index}`;
+      return {
+        id: changeRecordEventId({ recordId: overCount.recordId, eventKey }),
+        recordId: overCount.recordId,
+        eventKey,
+        stage: "verification",
+        actor: "server:r112b-bound-test",
+        payloadRef: { kind: "bounded_noise", index },
+      };
+    });
+    await db.insert(changeRecordEvents).values(noiseEvents);
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(overCount)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
+
+    const overBytes = await createBundleFixture({
+      workspaceId, workKey: "event-byte-bound", prNumber: 229, headSha: "8".repeat(40),
+      notTestable: true,
+    });
+    const oversizedEventKey = `verification:noise:${overBytes.jobId}:oversized`;
+    await db.execute(sql`
+      INSERT INTO change_record_events (
+        id, record_id, event_key, stage, actor, payload_ref
+      ) VALUES (
+        ${changeRecordEventId({ recordId: overBytes.recordId, eventKey: oversizedEventKey })},
+        ${overBytes.recordId},
+        ${oversizedEventKey},
+        'verification',
+        'server:r112b-bound-test',
+        jsonb_build_object(
+          'kind', 'oversized_noise',
+          'blob', repeat('x', ${ACCEPTANCE_CRITERION_OUTCOME_MAX_EVENT_BYTES + 1})
+        )
+      )
+    `);
+    await expect(recordPostedAcceptanceCriterionOutcomeBundle(writerInput(overBytes)))
+      .resolves.toEqual({ kind: "not_ready", reason: "invalid_criterion_outcome_custody" });
   });
 });

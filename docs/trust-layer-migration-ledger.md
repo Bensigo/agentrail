@@ -397,9 +397,9 @@ rejected before any proof lookup or GitHub side effect. The Record detail view
 renders the exact current outcomes and artifact receipts without adding an
 issue, queue, dispatch, delivery, pull-request mutation, or merge action.
 
-Local R11.2b proof includes three boundary tests, six fresh migrated PostgreSQL
-criterion-custody cases, the 89-case Change Record integration suite, 175
-focused Console route/proxy/component tests, the full 140-file / 1,772-test
+Local R11.2b proof includes three boundary tests, eight fresh migrated PostgreSQL
+criterion-custody cases, the 89-case Change Record integration suite, 178
+focused Console route/proxy/component tests, the full 140-file / 1,774-test
 fresh-migrated database suite, package typechecks/builds, scoped lint, diff
 checks, and independent adversarial review. This is source/test and local
 PostgreSQL/component proof only. No authenticated browser flow, real

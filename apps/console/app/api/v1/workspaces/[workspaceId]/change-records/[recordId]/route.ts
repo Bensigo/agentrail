@@ -547,7 +547,7 @@ export async function GET(
       canRecordFinalDecision: canRecordHumanEvidence,
       canRecordReviewEffort: canRecordHumanEvidence,
       canApproveDependencyObservation: canRecordHumanEvidence,
-      canCreateGatedGithubIssue: canRecordHumanEvidence,
+      canCreateGatedGithubIssue: false,
     }) as Record<string, unknown>);
   } catch (err) {
     console.error("[change-records] failed to load detail:", err);

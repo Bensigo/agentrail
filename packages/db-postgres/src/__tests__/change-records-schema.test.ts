@@ -108,15 +108,20 @@ describe("0097 Jace approval custody for gated GitHub issues", () => {
     expect(sqlText).not.toContain("refresh_token");
   });
 
-  it("is the sole next migration after #1704's 0096 packet custody", () => {
+  it("immediately follows #1704's 0096 packet custody", () => {
     const journal = JSON.parse(readFileSync(
       join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8",
     ));
-    expect(journal.entries.find(
+    const migrationIndex = journal.entries.findIndex(
       (entry: { tag: string }) => entry.tag === "0097_acceptance_gated_issue_approval_custody",
-    )).toMatchObject({ idx: 102, version: "7", breakpoints: true });
-    expect(journal.entries.at(-2)?.tag).toBe("0096_acceptance_gated_github_issues");
-    expect(journal.entries.at(-1)?.tag).toBe("0097_acceptance_gated_issue_approval_custody");
+    );
+    expect(journal.entries[migrationIndex]).toMatchObject({
+      idx: 102,
+      version: "7",
+      breakpoints: true,
+    });
+    expect(journal.entries[migrationIndex - 1]?.tag)
+      .toBe("0096_acceptance_gated_github_issues");
   });
 });
 

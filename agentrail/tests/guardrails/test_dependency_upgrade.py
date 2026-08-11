@@ -72,6 +72,11 @@ def test_dependency_upgrade_guardrail_states_exact_manager_authority_boundary():
     assert "source parsing alone is not Packagist, runtime, security" in description
     assert "Go Modules remains a bounded observation-only parser foundation" in description
     assert "excluded from evidence gates and Pack eligibility" in description
+    assert "source-free, append-only receipt for one exact commit tree" in description
+    assert "root go.mod and go.sum Git blob identities are locally recomputed" in description
+    assert "receipt proves only the bounded repository source inventory" in description
+    assert "no draft, accepted evidence, approval, Pack, builder, delivery, or execution authority" in description
     assert "go.sum checksums are syntax-checked provided baseline material" in description
     assert "not authenticated checksum-database or proxy receipts" in description
+    assert "no receipt proves ambient Go configuration absence" in description
     assert "Bun remains detected-only and unsupported" in description

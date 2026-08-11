@@ -25,6 +25,48 @@ export type DependencyWatchErrorCode =
   | "invalid_snapshot"
   | "authorization";
 
+export type GoDependencySourceInventoryEntry = {
+  path: string;
+  mode: "100644" | "100755" | "040000";
+  type: "blob" | "tree";
+  objectSha: string;
+};
+
+export type GoDependencySourceInventoryReceipt = {
+  kind: "github_exact_tree_dependency_source_inventory";
+  schemaVersion: 1;
+  identity: {
+    ecosystem: "go";
+    manager: "go-modules";
+    profile: "go_github_exact_tree_source_inventory_v1";
+  };
+  authority: {
+    provider: "github";
+    method: "github_app_installation_api";
+    apiOrigin: "https://api.github.com";
+    repository: string;
+    requestedRef: string;
+    commitSha: string;
+    rootTreeSha: string;
+  };
+  inventory: {
+    recursive: true;
+    truncated: false;
+    entryCount: number;
+    entries: GoDependencySourceInventoryEntry[];
+    entriesSha256: string;
+  };
+  requiredFiles: Array<{
+    path: "go.mod" | "go.sum";
+    mode: "100644";
+    blobSha: string;
+    byteCount: number;
+    contentSha256: string;
+  }>;
+  policy: { name: "go_root_source_inventory_v1"; result: "admitted" };
+  identitySha256: string;
+};
+
 /** Durable operator intent and observation cursor for one connected repo. */
 export const dependencyWatches = pgTable(
   "dependency_watches",
@@ -105,6 +147,9 @@ export const dependencyWatchObservations = pgTable(
     // Candidate fingerprint is stored separately from the observation key.
     observationKey: text("observation_key").notNull(),
     candidateFingerprint: text("candidate_fingerprint"),
+    sourceInventoryReceipt: jsonb("source_inventory_receipt")
+      .$type<GoDependencySourceInventoryReceipt>(),
+    sourceInventoryReceiptSha256: text("source_inventory_receipt_sha256"),
     status: text("status").$type<DependencyWatchStatus>().notNull(),
     candidates: jsonb("candidates").$type<unknown[]>().notNull().default([]),
     errorCode: text("error_code").$type<DependencyWatchErrorCode>(),

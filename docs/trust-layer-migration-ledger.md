@@ -330,6 +330,26 @@ accepted as `observed`. `go.sum` values are syntax-checked provided-baseline
 material only, not authenticated checksum-database or proxy receipts. No live
 builder, deployed, or customer proof is claimed.
 
+This bounded Go source-custody slice closes only the repository-inventory
+part of that gap. The authenticated GitHub App snapshot provider reads one
+exact commit, its recursive tree, and the root `go.mod` and `go.sum` Git blobs
+from `api.github.com`; redirects, cross-origin response URLs, oversized or
+duplicate-key JSON, truncated trees, unsafe entries, mixed object-hash
+families, and mismatched locally recomputed Git blob identities fail closed.
+The source-free canonical receipt binds the exact repository, requested ref,
+commit, root tree, sorted inventory, and root-file byte/content identities into
+the observation key and an append-only database row. Exact retries are
+idempotent; altered receipt identity cannot reuse the prior observation key.
+
+This receipt remains source inventory, not dependency evidence. It does not
+authenticate `go.sum` against the checksum database or module proxy, and it
+does not supply registry release, security, isolated-runtime, builder, or
+customer proof. Go remains absent from accepted Console/database profiles,
+legacy draft, canonical evidence, approval, external-builder Pack, and managed
+execution registries. The existing source-only observer and immutable audit
+history remain unchanged. Local source/test proof does not claim a live GitHub
+delivery, deployed runtime, or customer outcome.
+
 Poetry was audited rather than admitted. Its non-installing `update <package>
 --lock` command still has no exact-target argument and Poetry 2.4.1 can fall
 back from sdist metadata inspection to a PEP 517 isolated builder. There is no

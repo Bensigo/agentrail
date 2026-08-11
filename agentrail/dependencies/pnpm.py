@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
 from agentrail.dependencies.manager import PNPM_ADAPTER_PROFILE, _normalise_snapshot
+from agentrail.dependencies.source_inventory import DependencySourceInventoryReceipt
 
 
 class ObservationStatus(str, Enum):
@@ -31,6 +32,7 @@ class DependencySnapshot:
 
     files: Mapping[str, str]
     baseline_sha: str
+    source_inventory_receipt: Optional[DependencySourceInventoryReceipt] = None
 
 
 @dataclass(frozen=True)

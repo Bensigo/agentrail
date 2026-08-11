@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
 Last reconciled: 2026-08-11 at main commit `60715aac`, after merged PR
-#1677 and the following signed-merge convergence slice.
+#1677 and signed-merge convergence PR #1678.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -83,11 +83,10 @@ workflow, or customer run has been claimed.
 
 R9.1 is source/test complete. PR #1677 added one owner/admin decision bound
 to the current posted, attested review cycle without giving Jace merge
-authority. The signed-merge convergence slice makes the authenticated GitHub
-webhook the sole writer of merge state, records the factual merge separately
-from whether the exact decision aligned, and retains deploy, incident, and
-revert observations only against that immutable merge custody. It makes no
-GitHub merge request.
+authority. PR #1678 makes the authenticated GitHub webhook the sole writer
+of merge state, records the factual merge separately from whether the exact
+decision aligned, and retains deploy, incident, and revert observations only
+against that immutable merge custody. It makes no GitHub merge request.
 
 The local proof includes focused route/query tests and a migrated PostgreSQL
 run covering approval, exception, conflicting or absent decisions, immutable

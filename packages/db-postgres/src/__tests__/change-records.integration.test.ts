@@ -3956,7 +3956,7 @@ describe.skipIf(!DB_AVAILABLE)(
         source: "github_webhook",
       });
       if (a2.kind !== "advanced") throw new Error("expected signed merge A2 cycle");
-      await recordExactPostedReview({
+      const a2Posted = await recordExactPostedReview({
         workspaceId: wsId,
         recordId: a1.draft.record.id,
         jobId: a2.jobId,
@@ -3967,15 +3967,21 @@ describe.skipIf(!DB_AVAILABLE)(
         verdict: "proven",
       });
 
-      const input = signedMergeInput({
-        workspaceId: wsId,
-        recordId: a1.draft.record.id,
-        repo: a1.repo,
-        prNumber: 163,
-        headSha: headA,
-        deliveryId: "signed-merge-a-b-a:merged",
-        mergeSha: "3".repeat(40),
-      });
+      const input = {
+        ...signedMergeInput({
+          workspaceId: wsId,
+          recordId: a1.draft.record.id,
+          repo: a1.repo,
+          prNumber: 163,
+          headSha: headA,
+          deliveryId: "signed-merge-a-b-a:merged",
+          mergeSha: "3".repeat(40),
+        }),
+        // A factual merge cannot predate the exact posted-review attestation
+        // whose cycle it is being joined to. Anchor the fixture to that durable
+        // receipt instead of a wall-clock date that eventually becomes stale.
+        mergedAt: new Date(a2Posted.event.at.valueOf() + 1_000),
+      };
       const first = await recordSignedAcceptanceRecordMerge(input);
       expect(first).toMatchObject({
         kind: "recorded",
@@ -3999,12 +4005,11 @@ describe.skipIf(!DB_AVAILABLE)(
         eq(changeRecordEvents.recordId, a1.draft.record.id),
         eq(changeRecordEvents.stage, "merge"),
       ))).toHaveLength(2);
-      // The signed-merge fixture uses a fixed 10:00Z receipt. Observe past
-      // that cutoff so this assertion tests cycle isolation, not future-fact
-      // filtering.
-      const observedUntil = new Date("2026-08-11T11:00:00.000Z");
+      const observedUntil = new Date(input.mergedAt.valueOf() + 1_000);
       const report = await readAcceptanceOutcomeHistory({
-        workspaceId: wsId, from: new Date(Date.now() - 60_000), to: new Date(Date.now() + 60_000),
+        workspaceId: wsId,
+        from: new Date(a1.posted.event.at.valueOf() - 1_000),
+        to: observedUntil,
         observedUntil,
       });
       expect(report.samples.filter((sample) => sample.recordId === a1.draft.record.id))

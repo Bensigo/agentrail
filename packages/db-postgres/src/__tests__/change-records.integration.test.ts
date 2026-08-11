@@ -1972,8 +1972,8 @@ describe.skipIf(!DB_AVAILABLE)(
         reason: "artifact_custody_not_available",
       });
       expect(result.detail.gatedIssue).toEqual({
-        kind: "unknown",
-        reason: "gated_issue_custody_not_available",
+        kind: "unavailable",
+        reason: "verification_plan_unavailable",
       });
 
       const otherWorkspace = (await db.insert(workspaces).values({

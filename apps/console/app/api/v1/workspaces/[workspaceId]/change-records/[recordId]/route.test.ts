@@ -727,6 +727,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
       canRecordFinalDecision: false,
       canRecordReviewEffort: false,
       canApproveDependencyObservation: false,
+      canCreateGatedGithubIssue: false,
     });
     expect(readCurrentAcceptanceCorrectionPackets).toHaveBeenCalledWith({
       workspaceId: WS,
@@ -856,6 +857,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/change-records/[recordId]", () =>
     expect(body.canRecordFinalDecision).toBe(true);
     expect(body.canRecordReviewEffort).toBe(true);
     expect(body.canApproveDependencyObservation).toBe(true);
+    expect(body.canCreateGatedGithubIssue).toBe(true);
   });
 
   it("returns only the bounded draft dependency projection", async () => {

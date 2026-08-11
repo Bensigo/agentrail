@@ -33,7 +33,7 @@ never claims repair or resume without a receipt.
 | AC | Canonical requirement | Source/test | Local runtime | Deployed/live | Customer | Implementation exit |
 | --- | --- | --- | --- | --- | --- | --- |
 | R8.1 | Failed or unproven required criteria create evidence-bound correction packets with the original criterion, observed and expected behavior, reproduction, affected context, evidence, and scope boundary. | Complete. The immutable packet path landed in PR #1652. | Complete. Packet identity, validation, and PostgreSQL custody ran locally. | Missing. | Missing. | **Closed.** |
-| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | Complete. MCP, primary Jace chat, and Console resolve the same server-validated current packet custody; none can create a follow-up issue. | Partial. Persistence and current-cycle isolation ran against local PostgreSQL, and the adapters passed local tests/builds. No authenticated browser-to-server or external-provider run was performed. | Missing. | Missing. | **Source/test slice closed; release FAIL until deployed/live and customer proof exist.** |
+| R8.2 | Packets are retrievable through MCP/chat/Console; follow-up GitHub issue creation remains gated. | Complete. MCP, primary Jace chat, and Console resolve the same server-validated current packet custody. Those retrieval surfaces remain read-only; the later R11.2c path permits one separate owner/admin-gated issue for exact current custody. | Partial. Persistence and current-cycle isolation ran against local PostgreSQL, and the adapters passed local tests/builds. No authenticated browser-to-server or external-provider run was performed. | Missing. | Missing. | **Source/test slice closed; release FAIL until deployed/live and customer proof exist.** |
 
 The R8.2 extension is part of R8.2, not a new acceptance criterion:
 
@@ -376,7 +376,7 @@ delivery, execution, issue, pull-request, or merge authority, and it does not
 turn a draft proposal into a Context Pack. It preserves the existing
 fail-closed detail boundary and does not close the remaining R11.2 work.
 
-The current R11.2b slice adds one immutable, Contract-ordered criterion-outcome
+PR #1701 merged the R11.2b slice: one immutable, Contract-ordered criterion-outcome
 bundle for the exact posted review cycle. The database rederives every outcome
 from the stored verification plan, deterministic execution attempt,
 reservation, result, correction packet, preview, GitHub post attempt, and
@@ -406,8 +406,46 @@ PostgreSQL/component proof only. No authenticated browser flow, real
 artifact-store object, live GitHub write, deployed/live path, or customer
 outcome was observed.
 
-R11.2 remains open only for the packet-bound gated-issue path. R11 remains
-**FAIL / not release-ready**.
+The R11.2c slice adds one owner/admin-gated GitHub issue path for the exact
+current correction-packet set. Its opaque binding includes the authoritative
+head occurrence, confirmed Contract, posted R11.2b bundle and attestation, and
+ordered packet identities and digests. Reservation rederives that custody and
+membership under the PR lock. Only a freshly inserted reservation releases the
+server-rendered `{title, body}` request; existing reservations and terminal
+states withhold the request, so the route cannot automatically retry an
+uncertain external write.
+
+The connector makes exactly one bounded GitHub request with only `title` and
+`body`. It sends no labels, assignees, milestone, agent mention, queue entry,
+dispatch, pull-request mutation, or merge request, so the issue cannot satisfy
+the legacy factory intake trigger at creation. Definitive rejection and
+ambiguous transport outcomes become terminal database receipts. A verified
+GitHub `201` can be recorded after a head advance for historical audit, but it
+never reappears as current custody. The rendered body neutralizes untrusted
+Markdown and mentions and includes only a SHA-256 of the evidence reference;
+artifact keys and raw evidence, execution, preview, or storage coordinates are
+absent. Orphan table/event states fail closed rather than becoming “not
+recorded.”
+
+The existing Record detail projection is the only browser read model for this
+state. It exposes the exact current binding and immutable issue status, and
+shows the action only to an owner/admin when no issue exists. No parallel raw
+timeline inference or optimistic success state is used.
+
+Local R11.2c proof includes 57 focused database boundary/schema/renderer tests,
+16 fresh migrated PostgreSQL R11.2b/gated-issue cases after the final rendered
+evidence and orphan-custody hardening, the 89-case Change Record integration
+suite, 203 focused Console route/helper/component tests, and a full
+142-file / 1,789-test fresh-migrated database run before the final focused
+evidence-reference and orphan-custody hardening. Package typechecks/builds,
+scoped lint, diff checks, and independent adversarial review also passed. This
+is source/test and local PostgreSQL/component proof only. No authenticated
+browser flow, real GitHub issue write, deployed/live path, or customer outcome
+was observed.
+
+R11.2 source/test work is complete at this bounded boundary. R11 remains
+**FAIL / not release-ready** until authenticated browser, deployed/live, and
+customer proof exist.
 
 ## R12 progress
 
@@ -445,13 +483,14 @@ deployed/live and customer proof.
 ## Remaining canonical order
 
 The remaining source implementation follows a dependency DAG, not strict
-R-number order. The remaining R11.2 source work is its packet-bound gated-issue
-slice. Independent R10.1 v1 manager profiles may proceed in parallel with
-nonconflicting R11 slices; each R10.2 expansion waits for its safe R10.1
-profile. R12.1 remediation is held for the owner; R12.2 source/test remains
-closed. R10 source/test remains open. Lower-priority manager adapters remain
-explicit fail-closed extensions and must preserve R11.2a and R11.2b
-compatibility. The canonical requirements remain:
+R-number order. R11.2 source/test work is closed at the bounded member and
+human-gated surfaces above; its runtime and release proofs remain open.
+Independent R10.1 v1 manager profiles may proceed in parallel; each R10.2
+expansion waits for its safe R10.1 profile. R12.1 remediation is held for the
+owner; R12.2 source/test remains closed. R10 source/test remains open.
+Lower-priority manager adapters remain explicit fail-closed extensions and
+must preserve R11.2a, R11.2b, and R11.2c compatibility. The canonical
+requirements remain:
 
 | AC | Required behavior |
 | --- | --- |

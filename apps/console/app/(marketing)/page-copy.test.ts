@@ -9,11 +9,10 @@ const landingSource = readFileSync(resolve(MARKETING_DIR, "page.tsx"), "utf8");
 const useCasesSource = readFileSync(resolve(MARKETING_DIR, "_use-cases.tsx"), "utf8");
 
 describe("landing story", () => {
-  it("uses one bento grid for the concrete Jace use cases", () => {
+  it("keeps concrete Jace use cases in one sticky stacked deck", () => {
     expect(landingSource).toContain("What your team gets from Jace");
-    expect(useCasesSource).toContain("lg:grid-cols-6");
-    expect(useCasesSource).toContain("lg:col-span-2");
-    expect(useCasesSource).toContain("lg:col-span-3");
+    expect(useCasesSource).toContain("className=\"sticky rounded-xl");
+    expect(useCasesSource).toContain("top: 88 + i * 16");
 
     for (const outcome of [
       "Start with a clear definition of done",
@@ -27,6 +26,12 @@ describe("landing story", () => {
     expect(useCasesSource).toContain("Keep dependency upgrades moving safely");
     expect(landingSource).not.toContain("ONE USE CASE");
     expect(landingSource).not.toContain("Keep dependency upgrades moving safely");
+  });
+
+  it("uses bento cards instead of cross dividers for the Jace lifecycle", () => {
+    expect(landingSource).toContain("grid grid-cols-1 gap-6 sm:mt-20 sm:grid-cols-2");
+    expect(landingSource).toContain("rounded-xl border-2 border-[var(--accent-fill-text)] bg-[var(--paper)]");
+    expect(landingSource).not.toContain("sm:odd:border-r-2");
   });
 
   it("makes the team, coding agent, and Jace roles explicit in order", () => {

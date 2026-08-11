@@ -156,8 +156,8 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — Use cases: a paper-card bento of the concrete ways Jace gives a
-          team control over coding-agent work. */}
+      {/* 3 — Use cases: sticky cards deck over each other as the visitor
+          scrolls. Each card shows a concrete way a team uses Jace. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
@@ -183,14 +183,14 @@ export default async function LandingPage() {
               Your coding agent writes the code. Jace keeps the agreement, context, evidence, and corrections connected around it.
             </p>
           </Reveal>
-          <ol className="mt-14 grid grid-cols-1 sm:mt-20 sm:grid-cols-2">
+          <ol className="mt-14 grid grid-cols-1 gap-6 sm:mt-20 sm:grid-cols-2">
             {HOW_WE_WORK.map((step, i) => (
               <Reveal
                 key={step.name}
                 delay={i * 70}
-                className="border-t-2 border-[var(--accent-fill-text)] py-8 first:border-t-0 first:pt-0 sm:odd:border-r-2 sm:odd:pr-10 sm:even:pl-10 sm:[&:nth-child(-n+2)]:border-t-0 sm:[&:nth-child(-n+2)]:pb-10 sm:[&:nth-child(n+3)]:pt-10 sm:[&:nth-child(n+3)]:pb-0"
+                className="flex"
               >
-                <li>
+                <li className="flex h-full flex-col rounded-xl border-2 border-[var(--accent-fill-text)] bg-[var(--paper)] p-6 shadow-[5px_5px_0_0_var(--accent-fill-text)] sm:p-8">
                   <p className="text-mono-data text-[var(--accent-fill-text)]">{step.role}</p>
                   <h3 className="mt-4 text-heading-2 text-[var(--accent-fill-text)]">
                     {step.name}

@@ -1,8 +1,8 @@
 {
-  "name": "agentrail/composer-parser-fixture",
+  "name": "acme/demo-app",
   "type": "project",
   "require": {
-    "ralouphie/getallheaders": "^3.0.0"
+    "acme/root-package": "^2.0.0"
   },
   "config": {
     "allow-plugins": false

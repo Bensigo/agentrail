@@ -20,7 +20,6 @@ from agentrail.dependencies.composer import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "composer"
-SELECTED_PACKAGE = "ralouphie/getallheaders"
 
 
 def _manifest_text() -> str:
@@ -51,7 +50,7 @@ def _selected(lock: dict) -> dict:
     return next(
         package
         for package in lock["packages"] + lock["packages-dev"]
-        if package["name"] == SELECTED_PACKAGE
+        if package["name"] == "acme/root-package"
     )
 
 
@@ -64,28 +63,22 @@ def test_parses_bounded_v2_syntax_and_exact_file_custody_without_authority() -> 
     assert result.profile == COMPOSER_PROFILE
     assert COMPOSER_PROFILE == "php:composer:root_lock_v2_syntax_v1"
     assert result.lock_format == 2
-    assert result.root_name == "agentrail/composer-parser-fixture"
+    assert result.root_name == "acme/demo-app"
     assert result.root_type == "project"
     assert (
         result.direct_package.name,
         result.direct_package.lane,
         result.direct_package.constraint,
         result.direct_package.locked_version,
-    ) == (SELECTED_PACKAGE, "require", "^3.0.0", "3.0.3")
+    ) == ("acme/root-package", "require", "^2.0.0", "2.4.1")
     assert [(item.name, item.version, item.lane) for item in result.locked_packages] == [
-        (SELECTED_PACKAGE, "3.0.3", "require"),
+        ("acme/leaf-package", "1.3.0", "require"),
+        ("acme/root-package", "2.4.1", "require"),
     ]
-    assert result.locked_packages[0].source is not None
-    assert result.locked_packages[0].source.url == (
-        "https://github.com/ralouphie/getallheaders.git"
-    )
-    assert result.locked_packages[0].source.reference == (
-        result.locked_packages[0].distribution.reference
-    )
-    assert result.locked_packages[0].distribution.url.startswith(
+    assert result.locked_packages[1].distribution.url.startswith(
         "https://api.github.com/"
     )
-    assert result.content_hash_claim == "be83e6a9526ec50ff02af55805a62d09"
+    assert result.content_hash_claim == "f" * 32
     assert result.plugin_api_version == "2.9.0"
     assert [(item.path, item.sha256, item.byte_count) for item in result.file_custody] == [
         (
@@ -101,6 +94,8 @@ def test_parses_bounded_v2_syntax_and_exact_file_custody_without_authority() -> 
     ]
     assert result.graph_provenance.status == COMPOSER_GRAPH_STATUS_UNRESOLVED
     assert result.graph_provenance.reason == COMPOSER_GRAPH_REASON
+    assert "bounded opaque text" in result.graph_provenance.reason
+    assert "semantically unparsed" in result.graph_provenance.reason
     assert "not traversed" in result.graph_provenance.reason
     assert result.evidence_status == "syntax_and_custody_only"
     assert result.authority == "none"
@@ -122,7 +117,7 @@ def test_parses_bounded_v2_syntax_and_exact_file_custody_without_authority() -> 
     with pytest.raises(FrozenInstanceError):
         result.authority = "evidence"  # type: ignore[misc]
     with pytest.raises(TypeError):
-        result.locked_packages[0] = result.locked_packages[0]  # type: ignore[index]
+        result.locked_packages[0] = result.locked_packages[1]  # type: ignore[index]
 
 
 def test_require_dev_lane_is_explicit_and_opposite_lock_lane_is_empty() -> None:
@@ -142,22 +137,20 @@ def test_additional_lock_rows_remain_opaque_and_do_not_become_graph_proof() -> N
     lock = _lock()
     orphan = copy.deepcopy(lock["packages"][0])
     orphan["name"] = "acme/orphan-package"
-    orphan["source"]["url"] = "https://github.com/acme/orphan-package.git"
-    orphan["source"]["reference"] = "c" * 40
     orphan["dist"]["url"] = (
         "https://api.github.com/repos/acme/orphan-package/zipball/"
         + "c" * 40
     )
     orphan["dist"]["reference"] = "c" * 40
-    orphan.pop("require", None)
-    orphan.pop("require-dev", None)
-    lock["packages"].insert(0, orphan)
+    orphan.pop("require")
+    lock["packages"].insert(1, orphan)
 
     result = _parse_documents(_manifest(), lock)
 
     assert [package.name for package in result.locked_packages] == [
+        "acme/leaf-package",
         "acme/orphan-package",
-        SELECTED_PACKAGE,
+        "acme/root-package",
     ]
     assert result.graph_provenance.status == "unresolved"
     assert "orphan status" in result.graph_provenance.reason
@@ -188,8 +181,8 @@ def test_utf8_and_byte_limits_are_enforced(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_duplicate_keys_are_rejected_at_every_json_level() -> None:
     manifest = _manifest_text().replace(
-        '"name": "agentrail/composer-parser-fixture",',
-        '"name": "agentrail/composer-parser-fixture",\n  "name": "acme/other-app",',
+        '"name": "acme/demo-app",',
+        '"name": "acme/demo-app",\n  "name": "acme/other-app",',
         1,
     )
     with pytest.raises(ValueError, match="duplicate JSON key: name"):
@@ -204,11 +197,11 @@ def test_duplicate_keys_are_rejected_at_every_json_level() -> None:
         parse_composer_root_lock(_manifest_text(), lock)
 
     edge = _lock_text().replace(
-        '"php": ">=5.6"',
-        '"php": ">=5.6",\n                "php": "*"',
+        '"acme/leaf-package": "^1.0",',
+        '"acme/leaf-package": "^1.0",\n        "acme/leaf-package": "*",',
         1,
     )
-    with pytest.raises(ValueError, match="duplicate JSON key: php"):
+    with pytest.raises(ValueError, match="duplicate JSON key: acme/leaf-package"):
         parse_composer_root_lock(_manifest_text(), edge)
 
 
@@ -234,6 +227,19 @@ def test_pathologically_deep_and_nonfinite_json_refuse_as_value_errors() -> None
         parse_composer_root_lock(deep, _lock_text())
     with pytest.raises(ValueError, match="non-finite"):
         parse_composer_root_lock('{"value":NaN}', _lock_text())
+
+
+@pytest.mark.parametrize("number", ["1e400", "-1e400"])
+def test_exponent_overflow_nonfinite_numbers_refuse_recursively(number: str) -> None:
+    manifest = _manifest_text().replace('"type": "project"', f'"type": {number}')
+    with pytest.raises(ValueError, match="composer.json contains a non-finite JSON number"):
+        parse_composer_root_lock(manifest, _lock_text())
+
+    lock = _lock_text().replace(
+        '"prefer-lowest": false', f'"prefer-lowest": {number}'
+    )
+    with pytest.raises(ValueError, match="composer.lock contains a non-finite JSON number"):
+        parse_composer_root_lock(_manifest_text(), lock)
 
 
 @pytest.mark.parametrize(
@@ -296,7 +302,7 @@ def test_root_name_is_optional_but_canonical_and_cannot_self_require() -> None:
         _parse_documents(manifest, _lock())
 
     manifest = _manifest()
-    manifest["name"] = SELECTED_PACKAGE
+    manifest["name"] = "acme/root-package"
     with pytest.raises(ValueError, match="own root package"):
         _parse_documents(manifest, _lock())
 
@@ -326,7 +332,7 @@ def test_manifest_rejects_unsupported_alias_dev_prerelease_and_constraint_forms(
     constraint: object,
 ) -> None:
     manifest = _manifest()
-    manifest["require"][SELECTED_PACKAGE] = constraint
+    manifest["require"]["acme/root-package"] = constraint
     with pytest.raises(ValueError, match="constraint"):
         _parse_documents(manifest, _lock())
 
@@ -346,7 +352,7 @@ def test_exact_tilde_and_caret_stable_constraint_subset_matches(
 ) -> None:
     manifest = _manifest()
     lock = _lock()
-    manifest["require"][SELECTED_PACKAGE] = constraint
+    manifest["require"]["acme/root-package"] = constraint
     _selected(lock)["version"] = locked_version
     result = _parse_documents(manifest, lock)
     assert result.direct_package.locked_version == locked_version
@@ -367,7 +373,7 @@ def test_lock_version_must_satisfy_the_direct_constraint(
 ) -> None:
     manifest = _manifest()
     lock = _lock()
-    manifest["require"][SELECTED_PACKAGE] = constraint
+    manifest["require"]["acme/root-package"] = constraint
     _selected(lock)["version"] = locked_version
     with pytest.raises(ValueError, match="does not satisfy"):
         _parse_documents(manifest, lock)
@@ -565,26 +571,25 @@ def test_selected_package_must_exist_once_in_the_matching_lane() -> None:
 
 def test_lock_rejects_unsorted_case_colliding_and_duplicate_package_rows() -> None:
     lock = _lock()
-    earlier = copy.deepcopy(_selected(lock))
-    earlier["name"] = "acme/earlier-package"
-    earlier["source"]["url"] = "https://github.com/acme/earlier-package.git"
-    earlier["source"]["reference"] = "c" * 40
-    earlier["dist"]["url"] = (
-        "https://api.github.com/repos/acme/earlier-package/zipball/" + "c" * 40
-    )
-    earlier["dist"]["reference"] = "c" * 40
-    lock["packages"].append(earlier)
+    lock["packages"].reverse()
     with pytest.raises(ValueError, match="must be sorted"):
         _parse_documents(_manifest(), lock)
 
     lock = _lock()
-    lock["packages"][0]["name"] = "Ralouphie/GetAllHeaders"
+    lock["packages"][0]["name"] = "Acme/Leaf-Package"
     with pytest.raises(ValueError, match="canonical lowercase vendor/name"):
         _parse_documents(_manifest(), lock)
 
     lock = _lock()
-    lock["packages"].append(copy.deepcopy(_selected(lock)))
+    lock["packages"][0]["name"] = "acme/root-package"
     with pytest.raises(ValueError, match="duplicates"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_lock_package_identity_cannot_collide_with_the_named_root_package() -> None:
+    lock = _lock()
+    lock["packages"][0]["name"] = "acme/demo-app"
+    with pytest.raises(ValueError, match="collides with the root package"):
         _parse_documents(_manifest(), lock)
 
 
@@ -622,18 +627,49 @@ def test_lock_package_rejects_replace_provide_conflict_alias_and_command_ambigui
         _parse_documents(_manifest(), lock)
 
 
-def test_lock_admits_coherent_source_and_dist_but_keeps_dist_required() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("suggest", {}),
+        ("autoload", {"psr-4": {"Acme\\Root\\": "src/"}}),
+        ("autoload-dev", {"psr-4": {"Acme\\Tests\\": "tests/"}}),
+        ("notification-url", "https://packagist.org/downloads/"),
+        ("license", ["MIT"]),
+        ("authors", [{"name": "Example"}]),
+        ("description", "ignored metadata"),
+        ("homepage", "https://github.com/acme/root-package"),
+        ("keywords", ["example"]),
+        ("support", {"source": "https://github.com/acme/root-package"}),
+        ("funding", [{"type": "github", "url": "https://github.com/sponsors/acme"}]),
+        ("time", "2026-01-01T00:00:00+00:00"),
+        ("abandoned", False),
+        ("bin", ["bin/tool"]),
+    ],
+)
+def test_lock_package_rejects_every_optional_field_the_profile_does_not_parse(
+    field: str, value: object
+) -> None:
     lock = _lock()
-    result = _parse_documents(_manifest(), lock)
-    assert result.locked_packages[0].source is not None
-    assert (
-        result.locked_packages[0].source.reference
-        == result.locked_packages[0].distribution.reference
-    )
+    _selected(lock)[field] = value
+    with pytest.raises(ValueError, match=f"unsupported field: {field}"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_lock_requires_one_dist_only_transport_claim() -> None:
+    lock = _lock()
+    _selected(lock)["source"] = {
+        "type": "git",
+        "url": "https://github.com/acme/root-package.git",
+        "reference": "b" * 40,
+    }
+    with pytest.raises(ValueError, match="source/dist selection is ambiguous"):
+        _parse_documents(_manifest(), lock)
 
     lock = _lock()
-    _selected(lock).pop("source")
-    assert _parse_documents(_manifest(), lock).locked_packages[0].source is None
+    selected = _selected(lock)
+    selected["source"] = selected.pop("dist")
+    with pytest.raises(ValueError, match="source/dist selection is ambiguous"):
+        _parse_documents(_manifest(), lock)
 
     lock = _lock()
     _selected(lock).pop("dist")
@@ -642,43 +678,15 @@ def test_lock_admits_coherent_source_and_dist_but_keeps_dist_required() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("type", "hg", "HTTPS git"),
-        ("url", "git@github.com:ralouphie/getallheaders.git", "source URL"),
-        ("url", "https://github.com/ralouphie/getallheaders", "end in .git"),
-        ("reference", "A" * 40, "source reference"),
-    ],
-)
-def test_lock_rejects_malformed_source_fields(
-    field: str, value: object, message: str
-) -> None:
-    lock = _lock()
-    _selected(lock)["source"][field] = value
-    with pytest.raises(ValueError, match=message):
-        _parse_documents(_manifest(), lock)
-
-
-def test_source_shape_and_dist_reference_coherence_are_required() -> None:
-    lock = _lock()
-    _selected(lock)["source"]["branch"] = "main"
-    with pytest.raises(ValueError, match="exactly type, url, and reference"):
-        _parse_documents(_manifest(), lock)
-
-    lock = _lock()
-    _selected(lock)["source"]["reference"] = "c" * 40
-    with pytest.raises(ValueError, match="identify the same release"):
-        _parse_documents(_manifest(), lock)
-
-
-@pytest.mark.parametrize(
     "url",
     [
+        "HTTPS://api.github.com/repos/acme/root/zipball/ref",
         "http://api.github.com/repos/acme/root/zipball/ref",
         "git+https://github.com/acme/root.git",
         "file:///tmp/package.zip",
         "https://user@api.github.com/repos/acme/root/zipball/ref",
         "https://api.github.com:444/repos/acme/root/zipball/ref",
+        "https://api.github.com:0443/repos/acme/root/zipball/ref",
         "https://API.github.com/repos/acme/root/zipball/ref",
         "https://localhost/package.zip",
         "https://127.0.0.1/package.zip",
@@ -686,7 +694,9 @@ def test_source_shape_and_dist_reference_coherence_are_required() -> None:
         "https://cdn.example/package.zip",
         "https://packages.internal/package.zip",
         "https://api.github.com/package.zip?token=secret",
+        "https://api.github.com/package.zip?",
         "https://api.github.com/package.zip#fragment",
+        "https://api.github.com/package.zip#",
         "https://api.github.com/a/../package.zip",
         "https://api.github.com/a%2fpackage.zip",
         "https://api.github.com\\package.zip",
@@ -694,6 +704,7 @@ def test_source_shape_and_dist_reference_coherence_are_required() -> None:
         "https://münich.example.org/package.zip",
         " https://api.github.com/package.zip",
         "https://api.github.com:bad/package.zip",
+        "https://api.github.com/package.zip\x7f",
     ],
 )
 def test_lock_rejects_unsafe_or_ambiguous_dist_urls(url: str) -> None:
@@ -701,6 +712,45 @@ def test_lock_rejects_unsafe_or_ambiguous_dist_urls(url: str) -> None:
     _selected(lock)["dist"]["url"] = url
     with pytest.raises(ValueError, match="dist URL"):
         _parse_documents(_manifest(), lock)
+
+
+@pytest.mark.parametrize(
+    "character",
+    ["|", "{", "}", "[", "]", "^", "`", "<", ">", '"', "\x00", "\x1f", "\x7f"],
+)
+def test_dist_url_path_rejects_characters_outside_unescaped_rfc3986_pchar(
+    character: str,
+) -> None:
+    lock = _lock()
+    _selected(lock)["dist"]["url"] = (
+        "https://api.github.com/repos/acme/bad" + character + "path/package.zip"
+    )
+    with pytest.raises(ValueError, match="dist URL"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_dist_url_hostname_enforces_the_253_character_textual_limit() -> None:
+    admitted_host = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+    assert len(admitted_host) == 253
+    lock = _lock()
+    _selected(lock)["dist"]["url"] = f"https://{admitted_host}/package.zip"
+    assert _parse_documents(_manifest(), lock).authority == "none"
+
+    refused_host = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 62))
+    assert len(refused_host) == 254
+    lock = _lock()
+    _selected(lock)["dist"]["url"] = f"https://{refused_host}/package.zip"
+    with pytest.raises(ValueError, match="host is not admitted public DNS syntax"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_exact_explicit_https_default_port_remains_canonical() -> None:
+    lock = _lock()
+    _selected(lock)["dist"]["url"] = (
+        "https://api.github.com:443/repos/acme/root-package/zipball/" + "b" * 40
+    )
+    result = _parse_documents(_manifest(), lock)
+    assert result.direct_package.name == "acme/root-package"
 
 
 @pytest.mark.parametrize(
@@ -758,8 +808,42 @@ def test_opaque_requirement_metadata_still_has_bounded_canonical_syntax(
         _parse_documents(_manifest(), _lock())
 
 
+def test_requirement_cap_applies_across_combined_require_and_require_dev(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = _lock()
+    selected = _selected(lock)
+    selected["require"] = {"acme/leaf-package": "^1.0"}
+    selected["require-dev"] = {"acme/dev-package": "^1.0"}
+    monkeypatch.setattr(composer, "COMPOSER_LOCK_MAX_REQUIREMENTS_PER_PACKAGE", 1)
+
+    with pytest.raises(ValueError, match="combined requirement-count limit"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_both_requirement_map_types_are_checked_before_the_combined_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock = _lock()
+    _selected(lock)["require-dev"] = []
+    monkeypatch.setattr(composer, "COMPOSER_LOCK_MAX_REQUIREMENTS_PER_PACKAGE", 1)
+
+    with pytest.raises(ValueError, match="require-dev must be a JSON object"):
+        _parse_documents(_manifest(), lock)
+
+
+def test_transitive_constraint_text_is_explicitly_not_semantically_parsed() -> None:
+    lock = _lock()
+    _selected(lock)["require"]["acme/leaf-package"] = "not-composer-constraint-syntax"
+
+    result = _parse_documents(_manifest(), lock)
+
+    assert result.graph_provenance.status == "unresolved"
+    assert "semantically unparsed" in result.graph_provenance.reason
+
+
 def test_package_count_cap_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(composer, "COMPOSER_LOCK_MAX_PACKAGES", 0)
+    monkeypatch.setattr(composer, "COMPOSER_LOCK_MAX_PACKAGES", 1)
     with pytest.raises(ValueError, match="package-count limit"):
         parse_composer_root_lock(_manifest_text(), _lock_text())
 

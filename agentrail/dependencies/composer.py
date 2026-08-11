@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import ipaddress
+import math
 import re
 from typing import Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
@@ -38,9 +39,9 @@ COMPOSER_REFERENCE_MAX_BYTES = 128
 
 COMPOSER_GRAPH_STATUS_UNRESOLVED = "unresolved"
 COMPOSER_GRAPH_REASON = (
-    "lock package requirement metadata is syntax-checked but is not traversed; "
-    "reachability, completeness, duplicate-edge semantics, and orphan status "
-    "are therefore unresolved"
+    "lock package requirement constraints are bounded opaque text and are "
+    "semantically unparsed; dependency edges are not traversed, so reachability, "
+    "completeness, duplicate-edge semantics, and orphan status are unresolved"
 )
 COMPOSER_UNRESOLVED_LANES = (
     "committed_root_source_inventory",
@@ -75,6 +76,7 @@ _CONTENT_HASH = re.compile(r"^[0-9a-f]{32}$")
 _REFERENCE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHASUM = re.compile(r"^(?:|[0-9a-f]{40})$")
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_RFC3986_PATH = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@/\-]+$")
 _RESERVED_HOST_SUFFIXES = (
     ".example",
     ".internal",
@@ -110,27 +112,13 @@ _LOCK_KEYS = {
 _PACKAGE_KEYS = {
     "name",
     "version",
-    "source",
     "dist",
     "require",
     "require-dev",
-    "suggest",
     "type",
-    "autoload",
-    "autoload-dev",
-    "notification-url",
-    "license",
-    "authors",
-    "description",
-    "homepage",
-    "keywords",
-    "support",
-    "funding",
-    "time",
-    "abandoned",
-    "bin",
 }
 _AMBIGUOUS_PACKAGE_KEYS = {
+    "source",
     "replace",
     "provide",
     "conflict",
@@ -162,15 +150,6 @@ class ComposerDistributionClaim:
 
 
 @dataclass(frozen=True)
-class ComposerSourceClaim:
-    """Syntactically admitted VCS fields, not repository authenticity proof."""
-
-    kind: str
-    url: str
-    reference: str
-
-
-@dataclass(frozen=True)
 class ComposerLockedPackage:
     """One stable package row from a lock lane, without graph semantics."""
 
@@ -178,7 +157,6 @@ class ComposerLockedPackage:
     version: str
     lane: str
     package_type: str
-    source: Optional[ComposerSourceClaim]
     distribution: ComposerDistributionClaim
 
 
@@ -254,7 +232,7 @@ def parse_composer_root_lock(
         content_hash,
         plugin_api_version,
         locked_packages,
-    ) = _parse_lock(lock, selected_lane=lane)
+    ) = _parse_lock(lock, selected_lane=lane, root_name=root_name)
 
     matches = [package for package in locked_packages if package.name == direct_name]
     if len(matches) != 1:
@@ -342,6 +320,8 @@ def _validate_json_shape(
             pending.extend((child, depth + 1) for child in item.values())
         elif isinstance(item, list):
             pending.extend((child, depth + 1) for child in item)
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError(f"{document} contains a non-finite JSON number")
 
 
 def _require_object(value: object, *, document: str) -> Dict[str, Any]:
@@ -482,7 +462,7 @@ def _parse_config(value: object) -> None:
 
 
 def _parse_lock(
-    value: object, *, selected_lane: str
+    value: object, *, selected_lane: str, root_name: Optional[str]
 ) -> Tuple[str, str, Tuple[ComposerLockedPackage, ...]]:
     document = _require_object(value, document="composer.lock")
     unknown = sorted(set(document) - _LOCK_KEYS)
@@ -550,6 +530,11 @@ def _parse_lock(
         if order != sorted(order):
             raise ValueError(f"composer.lock {lane} package rows must be sorted")
         for package in lane_packages:
+            if root_name is not None and package.name == root_name:
+                raise ValueError(
+                    "composer.lock package identity collides with the root package: "
+                    + package.name
+                )
             previous = identities.get(package.name)
             if previous is not None:
                 raise ValueError(
@@ -569,6 +554,11 @@ def _parse_lock_package(value: object, *, lane: str) -> ComposerLockedPackage:
         raise ValueError("composer.lock contains a malformed package row")
     ambiguous = sorted(set(value) & _AMBIGUOUS_PACKAGE_KEYS)
     if ambiguous:
+        if ambiguous[0] == "source":
+            raise ValueError(
+                "composer.lock source/dist selection is ambiguous; the v1 profile "
+                "admits dist-only rows"
+            )
         raise ValueError(
             "composer.lock package contains unsupported resolution ambiguity: "
             + ambiguous[0]
@@ -589,30 +579,35 @@ def _parse_lock_package(value: object, *, lane: str) -> ComposerLockedPackage:
             "composer.lock package type must be library; plugins and custom "
             "installers are unsupported"
         )
+    requirement_maps = []
     for key in ("require", "require-dev"):
         if key in value:
-            _validate_opaque_requirements(value[key], context=f"composer.lock package {key}")
-    distribution = _parse_distribution(value["dist"])
-    source = _parse_source(value["source"]) if "source" in value else None
-    if source is not None and source.reference != distribution.reference:
+            requirements = value[key]
+            if not isinstance(requirements, dict):
+                raise ValueError(f"composer.lock package {key} must be a JSON object")
+            requirement_maps.append((key, requirements))
+    if sum(len(requirements) for _, requirements in requirement_maps) > (
+        COMPOSER_LOCK_MAX_REQUIREMENTS_PER_PACKAGE
+    ):
         raise ValueError(
-            "composer.lock source and dist references must identify the same release"
+            "composer.lock package exceeds the combined requirement-count limit"
+        )
+    for key, requirements in requirement_maps:
+        _validate_opaque_requirements(
+            requirements, context=f"composer.lock package {key}"
         )
     return ComposerLockedPackage(
         name=name,
         version=version_value,
         lane=lane,
         package_type="library",
-        source=source,
-        distribution=distribution,
+        distribution=_parse_distribution(value["dist"]),
     )
 
 
-def _validate_opaque_requirements(value: object, *, context: str) -> None:
-    if not isinstance(value, dict):
-        raise ValueError(f"{context} must be a JSON object")
-    if len(value) > COMPOSER_LOCK_MAX_REQUIREMENTS_PER_PACKAGE:
-        raise ValueError(f"{context} exceeds the requirement-count limit")
+def _validate_opaque_requirements(
+    value: Mapping[str, Any], *, context: str
+) -> None:
     seen: set[str] = set()
     for raw_name, raw_constraint in value.items():
         if not isinstance(raw_name, str) or not isinstance(raw_constraint, str):
@@ -640,7 +635,7 @@ def _parse_distribution(value: object) -> ComposerDistributionClaim:
         )
     if value["type"] != "zip":
         raise ValueError("composer.lock supports HTTPS zip distributions only")
-    url = _canonical_https_url(value["url"], context="composer.lock dist URL")
+    url = _canonical_https_url(value["url"])
     reference = value["reference"]
     if (
         not isinstance(reference, str)
@@ -659,49 +654,33 @@ def _parse_distribution(value: object) -> ComposerDistributionClaim:
     )
 
 
-def _parse_source(value: object) -> ComposerSourceClaim:
-    if not isinstance(value, dict):
-        raise ValueError("composer.lock source must be a JSON object")
-    if set(value) != {"type", "url", "reference"}:
-        raise ValueError(
-            "composer.lock source must contain exactly type, url, and reference"
-        )
-    if value["type"] != "git":
-        raise ValueError("composer.lock supports HTTPS git source claims only")
-    url = _canonical_https_url(value["url"], context="composer.lock source URL")
-    if not url.endswith(".git"):
-        raise ValueError("composer.lock git source URL must end in .git")
-    reference = value["reference"]
-    if (
-        not isinstance(reference, str)
-        or len(reference) > COMPOSER_REFERENCE_MAX_BYTES
-        or _REFERENCE.fullmatch(reference) is None
-    ):
-        raise ValueError("composer.lock source reference must be bounded lowercase hex")
-    return ComposerSourceClaim(kind="git", url=url, reference=reference)
-
-
-def _canonical_https_url(value: object, *, context: str) -> str:
+def _canonical_https_url(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"{context} is not text")
+        raise ValueError("composer.lock dist URL is not text")
     try:
         encoded = value.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise ValueError(f"{context} must use canonical ASCII") from exc
+        raise ValueError("composer.lock dist URL must use canonical ASCII") from exc
     if (
         not value
         or len(encoded) > COMPOSER_DIST_URL_MAX_BYTES
+        or not value.startswith("https://")
         or value != value.strip()
-        or any(character.isspace() or ord(character) < 0x20 for character in value)
+        or any(
+            character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+            for character in value
+        )
         or "\\" in value
         or "%" in value
+        or "?" in value
+        or "#" in value
     ):
-        raise ValueError(f"{context} is not canonical")
+        raise ValueError("composer.lock dist URL is not canonical")
     try:
         parsed = urlsplit(value)
         port = parsed.port
     except ValueError as exc:
-        raise ValueError(f"{context} is malformed") from exc
+        raise ValueError("composer.lock dist URL is malformed") from exc
     host = parsed.hostname
     if (
         parsed.scheme != "https"
@@ -714,25 +693,28 @@ def _canonical_https_url(value: object, *, context: str) -> str:
         or not parsed.path.startswith("/")
         or parsed.path in {"", "/"}
         or "//" in parsed.path
+        or _RFC3986_PATH.fullmatch(parsed.path) is None
     ):
-        raise ValueError(f"{context} must be one unambiguous HTTPS URL")
-    if host != host.lower() or parsed.netloc.split(":", 1)[0] != host:
-        raise ValueError(f"{context} host must be canonical lowercase DNS")
+        raise ValueError("composer.lock dist URL must be one unambiguous HTTPS URL")
+    canonical_netloc = host if port is None else f"{host}:{port}"
+    if host != host.lower() or parsed.netloc != canonical_netloc:
+        raise ValueError("composer.lock dist URL host must be canonical lowercase DNS")
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
-        raise ValueError(f"{context} must not use an IP address")
+        raise ValueError("composer.lock dist URL must not use an IP address")
     if (
         "." not in host
+        or len(host.encode("ascii")) > 253
         or host == "localhost"
         or host.endswith(_RESERVED_HOST_SUFFIXES)
         or any(_DNS_LABEL.fullmatch(label) is None for label in host.split("."))
     ):
-        raise ValueError(f"{context} host is not admitted public DNS syntax")
+        raise ValueError("composer.lock dist URL host is not admitted public DNS syntax")
     if any(segment in {".", ".."} for segment in parsed.path.split("/")):
-        raise ValueError(f"{context} path is not canonical")
+        raise ValueError("composer.lock dist URL path is not canonical")
     return value
 
 
@@ -746,7 +728,6 @@ __all__ = [
     "ComposerGraphProvenance",
     "ComposerLockedPackage",
     "ComposerRootLockProfile",
-    "ComposerSourceClaim",
     "ComposerSourceFileCustody",
     "parse_composer_root_lock",
 ]

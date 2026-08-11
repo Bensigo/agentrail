@@ -233,42 +233,29 @@ database/Console acceptance-observation profile, cannot pass the canonical
 R10.1 ingestion boundary as `observed`, and grants no approval, Pack, builder,
 delivery, pull-request, or merge authority.
 
-PR #1709 adds the closed `rust` / `cargo` /
-`cargo_lock_registry_only_v1` evidence profile. It accepts only exact Cargo
-and rustc 1.97.1 evidence, root `Cargo.toml` and `Cargo.lock` exact-head
-custody, a candidate from a canonical crates.io direct dependency with an
-exact stable caret constraint, an upward compatible stable target, and the
-exact OSV `crates.io` package-and-target identity. The bounded Python parser
-accepts only the root package and ordinary dependency tables plus a single
-unambiguous, reachable
-crates.io lock graph; ignored tables, replacement or qualified lock edges,
-noncanonical or colliding crate names, unsafe integer ranges, custom sources,
-and yanked current or target versions fail closed before proposal authority.
+PR #1709 temporarily admitted the `rust` / `cargo` /
+`cargo_lock_registry_only_v1` profile beyond the evidence the implementation
+could authenticate. Opaque caller-supplied digests did not prove a crates.io
+checksum response, registry response identity, a complete exact-head source
+inventory, security-report custody, or an isolated trusted runner. This
+correction therefore removes Cargo from the Console and database operational,
+strict-current, frozen-replay, receipt, approval, and external-builder Pack
+registries.
 
-The immutable future-builder instruction is `cargo update --manifest-path
-Cargo.toml registry+https://github.com/rust-lang/crates.io-index#<package>@<current>
---precise <target>`. It is not executed by this slice. The compiler is
-versioned to v6 with policy v4 because Cargo safety adds exact-head absence
-custody for both root `.cargo/config` and `.cargo/config.toml`. Those two probes
-run only after dependency reads, only for a Pack that already binds both root
-Cargo files, and only when the bounded 16-read budget can admit the needed
-receipts without a partial absence claim. Present or secret-bearing config is
-retained only as metadata and refuses the profile; missing or ambiguous
-custody remains `not_proven`. Configuration bytes are never selected,
-rendered, or persisted, and older v5 Packs cannot prove this new condition.
+The strict Python Cargo parser and source-only observation candidate remain.
+They can reject unsafe manifest and lockfile shapes, but Cargo.lock checksum
+strings are provided source material, not authenticated crates.io receipts.
+New bounded Cargo bodies record `refused_unsupported_profile`; they cannot
+become `observed`, approved, or minted into a Pack. Former `observed` events
+remain immutable audit rows, while current replay, receipt projection,
+approval, and Pack authority fail closed. Cargo remains outside legacy draft
+and managed execution, which stays pnpm-only.
 
-Trusted runner evidence remains responsible for attesting direct pinned
-binaries, an isolated scratch root and empty Cargo home, an allowlisted
-environment with no wrapper, credential, proxy, registry, rustup, or Git
-escape hatches, bounded crates.io-only resolution, and no child process other
-than the fixed rustc version probe. The database does not infer those facts.
-It validates the bounded evidence and independently rebinds the Record,
-current head cycle, confirmed Contract, compiled Pack, root source blobs, tree
-and dual-config custody, and OSV identity. A pre-support Cargo v2 refusal can
-replay only as the same immutable refusal; changed evidence conflicts and a
-new broad or malformed body creates no event. Cargo remains outside the
-legacy draft and managed-execution profiles. No install, issue, delivery,
-pull-request, or merge authority is added.
+The v6/v4 Context Pack compiler's bounded root `.cargo/config` and
+`.cargo/config.toml` absence probes remain generic exact-head source-custody
+metadata. They neither register a Cargo evidence profile nor authenticate
+registry, checksum, security, or runner evidence, and they grant no Cargo
+approval, Pack, delivery, or execution authority.
 
 PR #1695 reconciled the source/test conclusion then supported by these bounded
 profiles. It closed only the pnpm, npm, Yarn 4, and uv foundation; it did not
@@ -276,7 +263,7 @@ close canonical R10.1.
 
 Canonical R10.1 source/test remains open. The active v1 matrix requires safe,
 adapter-driven profiles across the named package-manager families. pnpm, npm,
-Yarn 4, uv, and Cargo are currently accepted profiles. pip/requirements,
+Yarn 4, and uv are currently accepted profiles. Cargo, pip/requirements,
 Poetry, Maven, Gradle, NuGet/dotnet, Composer, and Go Modules remain required
 R10 work; detected-only or source-only observer support is not operational
 support.
@@ -346,22 +333,16 @@ are green. No uv or OSV command was run, no live canonical runner called the
 ingestion route, no external builder received the Pack, and no deployed, live,
 or customer path was observed.
 
-The rebased Cargo compatibility gate covers 110 focused Python
-manager/observer tests, 241 focused Console compiler, parser, route,
-dispatch-consumer, and Record-detail tests, seven DB boundary tests, and three
-focused fresh-migrated PostgreSQL cases covering exact profile admission,
-dual-config and root-source refusal truth, immutable historical replay, and
-R10.2 Pack propagation. The complete 94-case Change Record file and full
-143-file / 1,911-test database suite pass on fresh migrated PostgreSQL. The
-broader local non-integration Python lane passed 5,718 tests plus 101 subtests.
-Package typechecks/builds, scoped lint, and diff checks are green. The slice
-also carries a
-[browser-rendered component screenshot](screenshots/r101-cargo-receipt.png) of
-the exact Cargo receipt and no-authority Pack; it is component proof, not an
-authenticated Record-detail flow. No Cargo or rustc command was run, no
-crates.io or OSV evidence was acquired, no authenticated canonical runner
-called the ingestion route, no external builder received a Pack, and no
-deployed, live, or customer path was observed.
+The Cargo authority correction carries focused Console parser, route, and
+Record-detail refusal regressions plus fresh-PostgreSQL cases for fake-digest
+refusal and immutable historical-row custody. Those cases require new Cargo
+bodies to remain unsupported, preserve former observed events as audit rows,
+and prove zero current replay, approval, or Pack authority even when an
+external-builder route is valid. The Python parser/source-only observation and
+the explicit no-Cargo-managed-execution regression remain in place. No Cargo
+or rustc command was run, no crates.io checksum or OSV response was
+authenticated, no canonical runner called the ingestion route, no external
+builder received a Pack, and no deployed, live, or customer path was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,

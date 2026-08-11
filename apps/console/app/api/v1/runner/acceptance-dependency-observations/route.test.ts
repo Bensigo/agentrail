@@ -312,67 +312,24 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(JSON.stringify(await response.json())).not.toMatch(/upgrade-package|security|approv|execute/iu);
   });
 
-  it("passes one exact Cargo registry lockfile-only observation to the same DB authority", async () => {
+  it("records an exact Cargo body only as an unsupported refusal", async () => {
     const cargo = cargoRequestBody();
-    const response = await POST(request(cargo));
-    expect(response.status).toBe(201);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(cargo);
-    expect(JSON.stringify(await response.json()))
-      .not.toMatch(/cargo update|crates\.io-index|security|approv|execute|deliver/iu);
-  });
-
-  it("passes bounded Cargo command drift once so the DB can persist refusal truth", async () => {
-    const cargo = cargoRequestBody();
-    cargo.packageManager.updateArgv = [
-      "cargo", "update", "--manifest-path", "Cargo.toml", "-p", "serde@1.0.203",
-      "--precise", "1.0.204",
-    ];
     vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
-      dbResult("recorded", "refused_unsafe_runtime", ["unsafe_package_manager_argv"]) as never
+      dbResult("recorded", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
     );
-
     const response = await POST(request(cargo));
 
     expect(response.status).toBe(201);
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(cargo);
-    await expect(response.json()).resolves.toMatchObject({
-      status: "refused_unsafe_runtime", reasons: ["unsafe_package_manager_argv"],
-    });
-  });
-
-  it("lets bounded formerly unsupported Cargo evidence reach only the exact DB replay seam", async () => {
-    const historical = cargoRequestBody();
-    historical.runtime.version = "1.97.0";
-    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
-      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
-    );
-
-    const response = await POST(request(historical));
-
-    expect(response.status).toBe(200);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
-    await expect(response.json()).resolves.toMatchObject({
-      kind: "replayed",
+    const body = await response.json();
+    expect(body).toEqual(expect.objectContaining({
+      kind: "recorded",
       status: "refused_unsupported_profile",
       reasons: ["unsupported_manager_profile"],
-    });
-  });
-
-  it("maps a new or altered historical Cargo candidate to sanitized invalid evidence", async () => {
-    const historical = cargoRequestBody();
-    historical.runtime.version = "1.97.0";
-    vi.mocked(recordAcceptanceDependencyObservation).mockRejectedValue(
-      new AcceptanceDependencyObservationInvalidEvidenceError()
-    );
-
-    const response = await POST(request(historical));
-
-    expect(response.status).toBe(400);
-    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
-    await expect(response.json()).resolves.toEqual({ error: "Invalid dependency observation" });
+    }));
+    expect(JSON.stringify(body))
+      .not.toMatch(/cargo update|crates\.io-index|security|approv|pack|execute|deliver/iu);
   });
   it("lets bounded formerly-supported uv evidence reach only the exact DB replay seam", async () => {
     const historical = uvRequestBody();

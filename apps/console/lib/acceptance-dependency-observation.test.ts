@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
-  ACCEPTANCE_DEPENDENCY_CARGO_PROFILE,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
   ACCEPTANCE_DEPENDENCY_UV_PROFILE,
   ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
@@ -150,7 +149,7 @@ function validUv(): Record<string, unknown> {
 
 function validCargo(): Record<string, unknown> {
   const value = cloneValid();
-  const identity = { ecosystem: "rust", manager: "cargo", profile: ACCEPTANCE_DEPENDENCY_CARGO_PROFILE };
+  const identity = { ecosystem: "rust", manager: "cargo", profile: "cargo_lock_registry_only_v1" };
   Object.assign(value.candidate as Record<string, unknown>, {
     identity,
     package: "serde",
@@ -166,7 +165,7 @@ function validCargo(): Record<string, unknown> {
   Object.assign(value.packageManager as Record<string, unknown>, {
     name: "cargo",
     version: "1.97.1",
-    profile: ACCEPTANCE_DEPENDENCY_CARGO_PROFILE,
+    profile: "cargo_lock_registry_only_v1",
     updateArgv: [
       "cargo", "update", "--manifest-path", "Cargo.toml",
       "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
@@ -243,113 +242,19 @@ describe("parseAcceptanceDependencyObservation", () => {
     expect(JSON.stringify(result)).not.toMatch(/install|execute|approv|deliver/iu);
   });
 
-  it("normalizes the bounded Cargo registry lockfile-only profile", () => {
+  it("stores the withdrawn Cargo profile only as an unsupported refusal", () => {
     const raw = validCargo();
     expect(parseAcceptanceDependencyObservation(raw)).toEqual({
       input: raw,
-      boundaryAssessment: "candidate_for_server_verification",
+      boundaryAssessment: "refused_unsupported_profile",
+    });
+    expect(parseAcceptanceDependencyObservationForStorage(raw)).toEqual({
+      kind: "current",
+      input: raw,
+      boundaryAssessment: "refused_unsupported_profile",
     });
     expect(JSON.stringify(parseAcceptanceDependencyObservation(raw)))
       .not.toMatch(/execute|approv|deliver|dispatch/iu);
-  });
-
-  it("accepts Cargo caret-compatible zero-major updates", () => {
-    const raw = validCargo();
-    Object.assign(raw.candidate as Record<string, unknown>, {
-      specifier: "^0.2.3",
-      currentVersion: "0.2.3",
-      targetVersion: "0.2.9",
-    });
-    (raw.packageManager as { updateArgv: string[] }).updateArgv = [
-      "cargo", "update", "--manifest-path", "Cargo.toml",
-      "registry+https://github.com/rust-lang/crates.io-index#serde@0.2.3",
-      "--precise", "0.2.9",
-    ];
-    (raw.security as { reference: string }).reference = "osv:crates.io:serde@0.2.9";
-    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
-      .toBe("candidate_for_server_verification");
-  });
-
-  it.each([
-    ["uppercase crate", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "Serde";
-    }],
-    ["digit-first crate", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "1serde";
-    }],
-    ["overlong crate", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = `s${"e".repeat(64)}`;
-    }],
-    ["reserved crate", (raw: Record<string, unknown>) => {
-      (raw.candidate as { package: string }).package = "com1";
-    }],
-    ["non-production dependency kind", (raw: Record<string, unknown>) => {
-      (raw.candidate as { dependencyKind: string }).dependencyKind = "devDependencies";
-    }],
-    ["non-caret specifier", (raw: Record<string, unknown>) => {
-      (raw.candidate as { specifier: string }).specifier = "1.0.203";
-    }],
-    ["prerelease target", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "1.0.204-rc.1";
-    }],
-    ["target below current", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "1.0.202";
-    }],
-    ["target outside caret range", (raw: Record<string, unknown>) => {
-      (raw.candidate as { targetVersion: string }).targetVersion = "2.0.0";
-    }],
-    ["zero-major target outside caret range", (raw: Record<string, unknown>) => {
-      Object.assign(raw.candidate as Record<string, unknown>, {
-        specifier: "^0.2.3", currentVersion: "0.2.3", targetVersion: "0.3.0",
-      });
-    }],
-    ["nested manifest", (raw: Record<string, unknown>) => {
-      (raw.manifest as { path: string }).path = "crates/widget/Cargo.toml";
-    }],
-    ["nested lockfile", (raw: Record<string, unknown>) => {
-      (raw.lockfile as { path: string }).path = "crates/widget/Cargo.lock";
-    }],
-    ["different rustc patch", (raw: Record<string, unknown>) => {
-      (raw.runtime as { version: string | null }).version = "1.97.0";
-    }],
-    ["different Cargo patch", (raw: Record<string, unknown>) => {
-      (raw.packageManager as { version: string | null }).version = "1.97.0";
-    }],
-    ["wrong OSV ecosystem", (raw: Record<string, unknown>) => {
-      (raw.security as { reference: string }).reference = "osv:npm:serde@1.0.204";
-    }],
-  ] as const)("keeps bounded invalid Cargo evidence only on the historical replay seam: %s", (_label, mutate) => {
-    const raw = validCargo();
-    mutate(raw);
-    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
-    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
-      .toBe("historical_replay_candidate");
-  });
-
-  it.each([
-    ["ambiguous -p selector", [
-      "cargo", "update", "--manifest-path", "Cargo.toml", "-p", "serde@1.0.203",
-      "--precise", "1.0.204",
-    ]],
-    ["missing manifest path", [
-      "cargo", "update",
-      "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
-      "--precise", "1.0.204",
-    ]],
-    ["offline expansion", [
-      "cargo", "update", "--manifest-path", "Cargo.toml",
-      "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
-      "--precise", "1.0.204", "--offline",
-    ]],
-    ["unqualified package id", [
-      "cargo", "update", "--manifest-path", "Cargo.toml", "serde@1.0.203",
-      "--precise", "1.0.204",
-    ]],
-  ] as const)("records bounded Cargo command drift as refused unsafe evidence: %s", (_label, argv) => {
-    const raw = validCargo();
-    (raw.packageManager as { updateArgv: string[] }).updateArgv = [...argv];
-    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
-      .toBe("refused_unsafe_runtime");
   });
 
   it.each([

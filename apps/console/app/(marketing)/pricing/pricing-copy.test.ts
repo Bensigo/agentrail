@@ -98,11 +98,11 @@ describe("R12.1 landing truth boundary", () => {
   });
 
   it("describes Jace as the dependency-upgrade control layer, not the code executor", () => {
-    const dependencyStart = landingSource.indexOf("Keep dependency upgrades moving safely");
-    const dependencyEnd = landingSource.indexOf("</section>", dependencyStart);
+    const dependencyStart = useCasesSource.indexOf("Keep dependency upgrades moving safely");
+    const dependencyEnd = useCasesSource.indexOf("\n  },", dependencyStart);
     expect(dependencyStart).toBeGreaterThan(-1);
     expect(dependencyEnd).toBeGreaterThan(dependencyStart);
-    const dependencyUseCase = landingSource.slice(dependencyStart, dependencyEnd);
+    const dependencyUseCase = useCasesSource.slice(dependencyStart, dependencyEnd);
     const dependencyFlow = [
       "dependencies your team selects",
       "available updates",
@@ -122,7 +122,8 @@ describe("R12.1 landing truth boundary", () => {
       previousIndex = markerIndex;
     }
 
-    expect(useCasesSource).not.toContain("dependency");
+    expect(useCasesSource).not.toContain("Jace makes the code change");
+    expect(useCasesSource).not.toContain("Jace executes the upgrade");
     expect(dependencyUseCase).not.toContain("Jace makes the code change");
     expect(dependencyUseCase).not.toContain("Jace executes the upgrade");
   });

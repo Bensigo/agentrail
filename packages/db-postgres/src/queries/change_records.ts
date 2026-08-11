@@ -8120,6 +8120,8 @@ export type AcceptanceDependencyObservationReason =
   | "unsafe_package_manager_argv"
   | "unsafe_yarn_configuration_present"
   | "yarn_configuration_absence_not_proven"
+  | "unsafe_cargo_configuration_present"
+  | "cargo_configuration_absence_not_proven"
   | "runtime_evidence_unavailable"
   | "runtime_evidence_ambiguous"
   | "package_manager_evidence_unavailable"
@@ -8279,6 +8281,7 @@ const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
+const ACCEPTANCE_DEPENDENCY_CARGO_PROFILE = "cargo_lock_registry_only_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
@@ -8291,8 +8294,13 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "rust", manager: "cargo", profile: ACCEPTANCE_DEPENDENCY_CARGO_PROFILE,
+};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const NORMALIZED_PYPI_PACKAGE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CARGO_CRATE_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+const CARGO_RESERVED_CRATE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
@@ -8375,6 +8383,29 @@ function uvCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
     && compareStableReleaseTuples(target, current) > 0;
 }
 
+function cargoCaretCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !CARGO_CRATE_NAME.test(candidate.package)
+    || CARGO_RESERVED_CRATE_NAME.test(candidate.package)) return false;
+  const lowerMatch = /^\^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u
+    .exec(candidate.specifier);
+  const current = stableSemverTuple(candidate.currentVersion);
+  const target = stableSemverTuple(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(1).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)) return false;
+  const upper: [number, number, number] = lower[0] > 0
+    ? [lower[0] + 1, 0, 0]
+    : lower[1] > 0
+      ? [0, lower[1] + 1, 0]
+      : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableReleaseTuples(current, lower) >= 0
+    && compareStableReleaseTuples(target, lower) >= 0
+    && compareStableReleaseTuples(current, upper) < 0
+    && compareStableReleaseTuples(target, upper) < 0
+    && compareStableReleaseTuples(target, current) > 0;
+}
 function yarnCandidateSpecifierIsValid(value: string): boolean {
   const exact = value.startsWith("^") || value.startsWith("~") ? value.slice(1) : value;
   return EXACT_SEMVER.test(exact);
@@ -8498,6 +8529,21 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       `${candidate.package}==${candidate.targetVersion}`,
     ],
   }],
+  ["rust:cargo:cargo_lock_registry_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY,
+    candidateIsValid: cargoCaretCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "1.97.1",
+    packageManagerVersionIsValid: (version) => version === "1.97.1",
+    manifestPathIsValid: (path) => path === "Cargo.toml",
+    lockfilePathIsValid: (path) => path === "Cargo.lock",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === `osv:crates.io:${candidate.package}@${candidate.targetVersion}`,
+    expectedArgv: (candidate) => [
+      "cargo", "update", "--manifest-path", "Cargo.toml",
+      `registry+https://github.com/rust-lang/crates.io-index#${candidate.package}@${candidate.currentVersion}`,
+      "--precise", candidate.targetVersion,
+    ],
+  }],
 ]);
 
 function isStrictCurrentAcceptanceDependencyProfile(
@@ -8505,7 +8551,8 @@ function isStrictCurrentAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY);
 }
 
 function isFrozenReplayEligibleAcceptanceDependencyProfile(
@@ -8513,7 +8560,8 @@ function isFrozenReplayEligibleAcceptanceDependencyProfile(
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
     || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY);
 }
 
 function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {
@@ -8776,15 +8824,15 @@ function compiledPackLockfilePathCustodyMatches(
     : true;
 }
 
-type AcceptanceDependencyYarnConfigurationCustody =
+type AcceptanceDependencyConfigurationCustody =
   | "absent"
   | "present"
   | "not_proven";
 
-function compiledPackYarnConfigurationCustody(
+function compiledPackConfigurationPathCustody(
   pack: ParsedCompiledPack,
-): AcceptanceDependencyYarnConfigurationCustody {
-  const requestedPath = ".yarnrc.yml";
+  requestedPath: string,
+): AcceptanceDependencyConfigurationCustody {
   const exactOverlayRecord = (pack.sourceCustodyReceipt["records"] as Record<string, unknown>[])
     .find((candidate) => candidate["path"] === requestedPath
       && candidate["source"] === "exact_head_overlay"
@@ -8812,12 +8860,32 @@ function compiledPackYarnConfigurationCustody(
   return "not_proven";
 }
 
+function compiledPackYarnConfigurationCustody(
+  pack: ParsedCompiledPack,
+): AcceptanceDependencyConfigurationCustody {
+  return compiledPackConfigurationPathCustody(pack, ".yarnrc.yml");
+}
+
+function compiledPackCargoConfigurationCustody(
+  pack: ParsedCompiledPack,
+): AcceptanceDependencyConfigurationCustody {
+  const paths = [".cargo/config.toml", ".cargo/config"] as const;
+  const custody = paths.map((path) => compiledPackConfigurationPathCustody(pack, path));
+  if (custody.includes("present")) return "present";
+  if (pack.compiler["version"] !== "exact-head-correction-pack-v6"
+    || pack.compiler["policyVersion"] !== "bounded-exact-ranges-v4") {
+    return "not_proven";
+  }
+  return custody.every((value) => value === "absent") ? "absent" : "not_proven";
+}
+
 function acceptanceDependencyObservationDisposition(input: {
   evidence: RecordAcceptanceDependencyObservationInput;
   currentHeadSha: string;
   manifestSourceProven: boolean;
   lockfileSourceProven: boolean;
-  yarnConfigurationCustody?: AcceptanceDependencyYarnConfigurationCustody;
+  yarnConfigurationCustody?: AcceptanceDependencyConfigurationCustody;
+  cargoConfigurationCustody?: AcceptanceDependencyConfigurationCustody;
   freezeUnsupportedProfile?: boolean;
 }): {
   status: AcceptanceDependencyObservationStatus;
@@ -8883,6 +8951,14 @@ function acceptanceDependencyObservationDisposition(input: {
       add("yarn_configuration_absence_not_proven");
     }
   }
+  if (supportedProfile
+    && sameAcceptanceDependencyProfile(profile.identity, ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY)) {
+    if (input.cargoConfigurationCustody === "present") {
+      add("unsafe_cargo_configuration_present");
+    } else if (input.cargoConfigurationCustody !== "absent") {
+      add("cargo_configuration_absence_not_proven");
+    }
+  }
 
   if (evidence.lockfile.disposition === "missing") add("lockfile_missing");
   if (evidence.lockfile.disposition === "uncommitted") add("lockfile_uncommitted");
@@ -8901,14 +8977,16 @@ function acceptanceDependencyObservationDisposition(input: {
   }
   if (reasons.includes("manifest_source_not_proven")
     || reasons.includes("lockfile_source_not_proven")
-    || reasons.includes("yarn_configuration_absence_not_proven")) {
+    || reasons.includes("yarn_configuration_absence_not_proven")
+    || reasons.includes("cargo_configuration_absence_not_proven")) {
     return { status: "not_proven", reasons };
   }
   if (reasons.some((reason) => reason === "unsafe_runtime"
     || reason === "unsafe_package_manager"
     || reason === "unsafe_package_manager_profile"
     || reason === "unsafe_package_manager_argv"
-    || reason === "unsafe_yarn_configuration_present")) {
+    || reason === "unsafe_yarn_configuration_present"
+    || reason === "unsafe_cargo_configuration_present")) {
     return { status: "refused_unsafe_runtime", reasons };
   }
   if (evidence.lockfile.disposition !== "present") {
@@ -9180,6 +9258,7 @@ export async function recordAcceptanceDependencyObservation(
       manifestSourceProven,
       lockfileSourceProven,
       yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
+      cargoConfigurationCustody: compiledPackCargoConfigurationCustody(reconstructed),
       freezeUnsupportedProfile: frozenUnsupportedReplayOnly,
     });
     const candidateFingerprint = acceptanceDependencyCandidateFingerprint(
@@ -9262,6 +9341,7 @@ export async function recordAcceptanceDependencyObservation(
         manifestSourceProven,
         lockfileSourceProven,
         yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
+        cargoConfigurationCustody: compiledPackCargoConfigurationCustody(reconstructed),
         freezeUnsupportedProfile: stored.observation.reasons.includes(
           "unsupported_manager_profile",
         ),
@@ -9483,6 +9563,8 @@ function isAcceptanceDependencyObservationReason(
     || value === "unsafe_package_manager_argv"
     || value === "unsafe_yarn_configuration_present"
     || value === "yarn_configuration_absence_not_proven"
+    || value === "unsafe_cargo_configuration_present"
+    || value === "cargo_configuration_absence_not_proven"
     || value === "runtime_evidence_unavailable"
     || value === "runtime_evidence_ambiguous"
     || value === "package_manager_evidence_unavailable"
@@ -9855,6 +9937,7 @@ async function revalidateStoredAcceptanceDependencyObservationInTransaction(
       stored.evidence.lockfile,
     ),
     yarnConfigurationCustody: compiledPackYarnConfigurationCustody(reconstructed),
+    cargoConfigurationCustody: compiledPackCargoConfigurationCustody(reconstructed),
     freezeUnsupportedProfile: stored.observation.reasons.includes(
       "unsupported_manager_profile",
     ),

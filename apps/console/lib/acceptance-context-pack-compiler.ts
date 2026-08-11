@@ -45,8 +45,8 @@ import { scanForSecrets } from "./secret-scan";
  * head. It consumes only server-resolved custody, retains source text only in
  * the returned delivery view, and performs no persistence or network writes.
  */
-export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v5";
-export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v3";
+export const ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION = "exact-head-correction-pack-v6";
+export const ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION = "bounded-exact-ranges-v4";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER = "utf8_byte_upper_bound_v1";
 export const ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET = 65_536;
 
@@ -62,6 +62,13 @@ const MAX_WIKI_PAGE_BYTES = 256 * 1024;
 const MAX_WIKI_TOTAL_BYTES = 512 * 1024;
 const MAX_PACK_SOURCES = 64;
 const YARN_CONFIGURATION_PATH = ".yarnrc.yml";
+const CARGO_MANIFEST_PATH = "Cargo.toml";
+const CARGO_LOCKFILE_PATH = "Cargo.lock";
+const CARGO_CONFIGURATION_PATHS = [".cargo/config", ".cargo/config.toml"] as const;
+const METADATA_ONLY_CONFIGURATION_PATHS = new Set<string>([
+  YARN_CONFIGURATION_PATH,
+  ...CARGO_CONFIGURATION_PATHS,
+]);
 const SHA1 = /^[a-f0-9]{40}$/iu;
 const SHA256 = /^[a-f0-9]{64}$/iu;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -460,7 +467,7 @@ function changedSources(input: {
     }
     const record = byPath.get(file.path);
     if (!record || record.source !== "exact_head_overlay" || record.blobSha.toLowerCase() !== file.blobSha?.toLowerCase()) return null;
-    if (record.path === YARN_CONFIGURATION_PATH) {
+    if (METADATA_ONLY_CONFIGURATION_PATHS.has(record.path)) {
       exclusions.push(exclusion(
         "exact_head_overlay",
         record.path,
@@ -632,7 +639,7 @@ async function dependencySources(input: {
     for (const candidate of item.candidates) {
       if (attempted >= MAX_DEPENDENCY_CANDIDATES) break;
       if (changedPaths.has(candidate) || resolvedPaths.has(candidate)) break;
-      if (candidate === YARN_CONFIGURATION_PATH) {
+      if (METADATA_ONLY_CONFIGURATION_PATHS.has(candidate)) {
         exclusions.push(exclusion(
           "exact_head_dependency",
           candidate,
@@ -1034,20 +1041,35 @@ async function compileAcceptanceContextPackInternal(
     readExactPath: reads.read,
     keywords,
   });
-  // Yarn's safe root profile requires independently derived proof that a
-  // repository-local configuration file is absent. A changed config is already
-  // present in exact overlay metadata and must not be re-read as a fallback.
-  // Otherwise probe only after dependencies have used their bounded budget; a
-  // full budget yields no receipt and remains `not_proven` rather than
-  // displacing context or invalidating the Pack with a seventeenth receipt. The
-  // custody projection persists only hashes/counts/outcome metadata, never the
-  // configuration body.
-  const yarnConfigurationIsChanged = input.materialization.content.records.some(
-    (record) => record.path === YARN_CONFIGURATION_PATH,
-  );
-  if (!yarnConfigurationIsChanged && (reads.hasReceipt(YARN_CONFIGURATION_PATH)
+  // Safe Yarn and Cargo root profiles require independently derived proof that
+  // repository-local configuration files are absent. A changed config is
+  // already present in exact overlay metadata and must not be re-read as a fallback.
+  // Otherwise probe only after dependencies have used their bounded budget. Cargo
+  // probes are admitted atomically only for exact root Cargo manifest+lockfile
+  // custody, so an unrelated Pack or a single remaining slot cannot gain a
+  // misleading half-proof. The custody projection persists only hashes/counts/
+  // outcome metadata, never the configuration body.
+  const changedConfigurationPaths = new Set(input.materialization.content.records
+    .filter((record) => METADATA_ONLY_CONFIGURATION_PATHS.has(record.path))
+    .map((record) => record.path));
+  if (!changedConfigurationPaths.has(YARN_CONFIGURATION_PATH) && (reads.hasReceipt(YARN_CONFIGURATION_PATH)
     || reads.receiptCount() < MAX_EXACT_HEAD_DIRECT_PATH_READS)) {
     await reads.read(YARN_CONFIGURATION_PATH);
+  }
+  const exactRootPathIsPresent = (requestedPath: string) =>
+    input.materialization.content.records.some((record) => record.path === requestedPath)
+    || reads.receipts().some((receipt) => receipt.requestedPath === requestedPath
+      && receipt.result.ok && receipt.result.record.path === requestedPath);
+  if (exactRootPathIsPresent(CARGO_MANIFEST_PATH) && exactRootPathIsPresent(CARGO_LOCKFILE_PATH)) {
+    const cargoConfigurationPathsToProbe = CARGO_CONFIGURATION_PATHS.filter(
+      (configurationPath) => !changedConfigurationPaths.has(configurationPath)
+        && !reads.hasReceipt(configurationPath),
+    );
+    if (reads.receiptCount() + cargoConfigurationPathsToProbe.length <= MAX_EXACT_HEAD_DIRECT_PATH_READS) {
+      for (const configurationPath of cargoConfigurationPathsToProbe) {
+        await reads.read(configurationPath);
+      }
+    }
   }
   const background = wikiSources({ baseIndex: source.baseIndex, wikiPages: input.custody.wikiPages, keywords });
   if (!background) return { ok: false, kind: "not_proven", reason: "source_snapshot_mismatch" };

@@ -111,6 +111,45 @@ const validUv = {
   },
 };
 
+const cargoIdentity = {
+  ecosystem: "rust",
+  manager: "cargo",
+  profile: "cargo_lock_registry_only_v1",
+};
+const validCargo = {
+  ...valid,
+  candidate: {
+    identity: cargoIdentity,
+    package: "serde",
+    dependencyKind: "dependencies" as const,
+    specifier: "^1.0.203",
+    currentVersion: "1.0.203",
+    targetVersion: "1.0.204",
+  },
+  runtime: {
+    ...valid.runtime,
+    identity: cargoIdentity,
+    version: "1.97.1",
+  },
+  packageManager: {
+    ...valid.packageManager,
+    name: "cargo",
+    version: "1.97.1",
+    profile: "cargo_lock_registry_only_v1",
+    updateArgv: [
+      "cargo", "update", "--manifest-path", "Cargo.toml",
+      "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.203",
+      "--precise", "1.0.204",
+    ],
+  },
+  manifest: { ...valid.manifest, path: "Cargo.toml" },
+  lockfile: { ...valid.lockfile, path: "Cargo.lock" },
+  security: {
+    ...valid.security,
+    identity: cargoIdentity,
+    reference: "osv:crates.io:serde@1.0.204",
+  },
+};
 describe("Acceptance dependency observation input boundary", () => {
   it("rejects caller-supplied authority, status, fingerprint, and execution side effects", async () => {
     for (const extra of [
@@ -217,6 +256,26 @@ describe("Acceptance dependency observation input boundary", () => {
     }
   });
 
+  it("rejects caller-supplied Cargo source grammar, configuration, and unsafe text", async () => {
+    for (const malformed of [
+      { ...validCargo, manifestContent: "[dependencies]" },
+      { ...validCargo, lockfileContent: "version = 4" },
+      { ...validCargo, cargoConfiguration: { absent: true } },
+      { ...validCargo, candidate: { ...validCargo.candidate, package: `serde\u202e` } },
+      {
+        ...validCargo,
+        packageManager: {
+          ...validCargo.packageManager,
+          updateArgv: [...validCargo.packageManager.updateArgv, `--config\u2066`],
+        },
+      },
+      { ...validCargo, manifest: { ...validCargo.manifest, path: "../Cargo.toml" } },
+      { ...validCargo, security: { ...validCargo.security, reportSha256: "not-a-digest" } },
+    ]) {
+      await expect(recordAcceptanceDependencyObservation(malformed as never))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+    }
+  });
   it("rejects legacy v1 runner bodies while durable v1 events remain replay-compatible", async () => {
     const { identity: _candidateIdentity, ...candidate } = valid.candidate;
     const { identity: _runtimeIdentity, version, ...runtime } = valid.runtime;

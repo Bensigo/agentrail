@@ -254,3 +254,17 @@ def test_uv_plan_is_lock_only_and_suppresses_ambient_execution_inputs() -> None:
     assert "add" not in result.command_plan.upgrade
     assert "sync" not in result.command_plan.install
     assert "run" not in result.command_plan.verify
+def test_cargo_plan_uses_one_fully_qualified_lockfile_update() -> None:
+    result = _detect("Cargo.toml", "Cargo.lock")
+
+    assert isinstance(result, SupportedDetection)
+    assert result.manager_id is ManagerId.CARGO
+    assert result.command_plan.upgrade == (
+        "cargo",
+        "update",
+        "--manifest-path",
+        "Cargo.toml",
+        "registry+https://github.com/rust-lang/crates.io-index#{dependency}@{current_version}",
+        "--precise",
+        "{version}",
+    )

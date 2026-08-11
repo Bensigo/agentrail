@@ -353,6 +353,55 @@ function materialization(exact = snapshot(), overrides: {
   };
 }
 
+const CARGO_MANIFEST = [
+  "[package]",
+  'name = "widgets"',
+  'version = "0.1.0"',
+  'edition = "2024"',
+  "",
+  "[dependencies]",
+  'serde = "^1.0.203"',
+].join("\n");
+const CARGO_LOCK = [
+  "version = 4",
+  "",
+  "[[package]]",
+  'name = "widgets"',
+  'version = "0.1.0"',
+  'dependencies = ["serde"]',
+  "",
+  "[[package]]",
+  'name = "serde"',
+  'version = "1.0.203"',
+  'source = "registry+https://github.com/rust-lang/crates.io-index"',
+  `checksum = "${"3".repeat(64)}"`,
+].join("\n");
+
+function cargoRootFixture(additional: Array<{ path: string; content: string }> = []) {
+  const records = [
+    contentRecord("Cargo.toml", CARGO_MANIFEST, "exact_head_overlay"),
+    contentRecord("Cargo.lock", CARGO_LOCK, "exact_head_overlay"),
+    ...additional.map(({ path: filePath, content }) => contentRecord(
+      filePath,
+      content,
+      "exact_head_overlay",
+    )),
+  ];
+  const exact = snapshot([
+    ...snapshot().changedFiles,
+    ...records.map((record) => ({
+      path: record.path,
+      status: "modified" as const,
+      blobSha: record.blobSha,
+      previousPath: null,
+      headRanges: [{ startLine: 1, endLine: record.lineCount }],
+      patchSha256: hash(`${record.path}\u0000${record.contentSha256}`),
+      patchByteCount: record.byteCount,
+    })),
+  ].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))));
+  return { exact, records };
+}
+
 function reverseObjectKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(reverseObjectKeys);
   if (!value || typeof value !== "object") return value;
@@ -430,9 +479,11 @@ describe("compileAcceptanceContextPack", () => {
     expect(JSON.stringify(result.compiled)).not.toContain(HELPER_TREE_PROOF.trees[0]!.bodyBase64);
     expect(result.compiled.compiler.byteCounter).toBe(ACCEPTANCE_CONTEXT_PACK_BYTE_COUNTER);
     expect(result.compiled.compiler).toMatchObject({
-      version: ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION,
-      policyVersion: ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION,
+      version: "exact-head-correction-pack-v6",
+      policyVersion: "bounded-exact-ranges-v4",
     });
+    expect(ACCEPTANCE_CONTEXT_PACK_COMPILER_VERSION).toBe("exact-head-correction-pack-v6");
+    expect(ACCEPTANCE_CONTEXT_PACK_POLICY_VERSION).toBe("bounded-exact-ranges-v4");
     expect(result.compiled.renderedByteCount).toBeLessThanOrEqual(ACCEPTANCE_CONTEXT_PACK_BYTE_BUDGET);
     expect(result.compiled.representations).toEqual({
       jsonSha256: hash(result.rendered.json),
@@ -474,6 +525,26 @@ describe("compileAcceptanceContextPack", () => {
     ]));
     expect(result).not.toHaveProperty("exactSourceProofs");
     expect(result).not.toHaveProperty("exactGitTreeInclusionProofs");
+  });
+
+  it("records both Cargo configuration absences only for exact root manifest and lockfile custody", async () => {
+    const { exact, records } = cargoRootFixture();
+    const source = materialization(exact, { additionalChangedRecords: records });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestedPath: ".cargo/config", outcome: "not_proven", reason: "path_not_found" }),
+      expect.objectContaining({ requestedPath: ".cargo/config.toml", outcome: "not_proven", reason: "path_not_found" }),
+    ]));
+    expect(result.compiled.sourceCustodyReceipt.directReadReceipts.filter(
+      (receipt) => receipt.requestedPath.startsWith(".cargo/"),
+    )).toHaveLength(2);
   });
 
   it("holds both public compilation and persistence when selected dependency tree proof is absent or forged", async () => {
@@ -629,6 +700,8 @@ describe("compileAcceptanceContextPack", () => {
     expect(result.ok).toBe(true);
     expect(source.readExactPath).toHaveBeenCalledTimes(1);
     expect(source.readExactPath).toHaveBeenCalledWith(".yarnrc.yml");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config.toml");
     if (result.ok) {
       expect(result.compiled.manifest.exclusions).toEqual(expect.arrayContaining([
         expect.objectContaining({ source: "exact_head_dependency", reason: "unsupported_dependency_expression" }),
@@ -846,6 +919,152 @@ describe("compileAcceptanceContextPack", () => {
     expect(result.rendered.markdown).not.toContain(secretConfiguration);
   });
 
+  it.each([".cargo/config", ".cargo/config.toml"])(
+    "records present Cargo configuration at %s as metadata without selecting its content",
+    async (configurationPath) => {
+      const { exact, records } = cargoRootFixture();
+      const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+      const cargoConfiguration = contentRecord(
+        configurationPath,
+        "[registries.crates-io]\nprotocol = \"sparse\"\n",
+        "exact_head_tree_fallback",
+      );
+      const source = materialization(exact, {
+        additionalChangedRecords: records,
+        read: async (candidate) => candidate === helper.path
+          ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+          : candidate === cargoConfiguration.path
+            ? { ok: true, record: cargoConfiguration }
+            : { ok: false, kind: "not_proven", reason: "path_not_found" },
+      });
+      const result = await compileAcceptanceContextPack({
+        custody: custody(exact),
+        snapshot: exact,
+        materialization: source,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requestedPath: configurationPath, outcome: "record" }),
+      ]));
+      expect(result.compiled.manifest.sources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: configurationPath }),
+      ]));
+      expect(JSON.stringify(result.compiled)).not.toContain(cargoConfiguration.content);
+      expect(result.rendered.json).not.toContain(cargoConfiguration.content);
+      expect(result.rendered.markdown).not.toContain(cargoConfiguration.content);
+    },
+  );
+
+  it.each([".cargo/config", ".cargo/config.toml"])(
+    "keeps changed Cargo configuration at %s metadata-only and skips its direct probe",
+    async (configurationPath) => {
+      const configurationContent = "[net]\noffline = true\n";
+      const { exact, records } = cargoRootFixture([{
+        path: configurationPath,
+        content: configurationContent,
+      }]);
+      const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+      const source = materialization(exact, {
+        additionalChangedRecords: records,
+        read: async (candidate) => candidate === helper.path
+          ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+          : { ok: false, kind: "not_proven", reason: "path_not_found" },
+      });
+      const result = await compileAcceptanceContextPack({
+        custody: custody(exact),
+        snapshot: exact,
+        materialization: source,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const otherConfigurationPath = configurationPath === ".cargo/config"
+        ? ".cargo/config.toml"
+        : ".cargo/config";
+      expect(source.readExactPath).not.toHaveBeenCalledWith(configurationPath);
+      expect(source.readExactPath).toHaveBeenCalledWith(otherConfigurationPath);
+      expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          requestedPath: otherConfigurationPath,
+          outcome: "not_proven",
+          reason: "path_not_found",
+        }),
+      ]));
+      expect(result.compiled.manifest.exclusions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          source: "exact_head_overlay",
+          path: configurationPath,
+          reason: "metadata_only_configuration_path",
+        }),
+      ]));
+      expect(result.compiled.sourceCustodyReceipt.records).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: configurationPath,
+          source: "exact_head_overlay",
+          reason: "exact_base_to_head_compare",
+        }),
+      ]));
+      expect(result.rendered.json).not.toContain(configurationContent);
+      expect(result.rendered.markdown).not.toContain(configurationContent);
+    },
+  );
+
+  it.each([".cargo/config", ".cargo/config.toml"])(
+    "retains only exclusion metadata when Cargo configuration at %s contains secret-like content",
+    async (configurationPath) => {
+      const { exact, records } = cargoRootFixture();
+      const helper = contentRecord("src/helper.ts", HELPER, "exact_head_tree_fallback");
+      const secretConfiguration = "token = \"github_pat_abcdefghijklmnopqrstuvwxyz\"\n";
+      const cargoBlobSha = exactHeadGitBlobSha1(secretConfiguration);
+      const source = materialization(exact, {
+        additionalChangedRecords: records,
+        read: async (candidate) => candidate === helper.path
+          ? { ok: true, record: helper, treeInclusionProof: HELPER_TREE_PROOF }
+          : candidate === configurationPath
+            ? {
+                ok: false,
+                kind: "not_proven",
+                reason: "unsafe_content",
+                exclusion: {
+                  path: configurationPath,
+                  source: "exact_head_tree_fallback",
+                  blobSha: cargoBlobSha,
+                  byteCount: Buffer.byteLength(secretConfiguration),
+                  reason: "secret_content_policy",
+                  secretKinds: ["github_pat"],
+                  findingCount: 1,
+                },
+              }
+            : { ok: false, kind: "not_proven", reason: "path_not_found" },
+      });
+      const result = await compileAcceptanceContextPack({
+        custody: custody(exact),
+        snapshot: exact,
+        materialization: source,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          requestedPath: configurationPath,
+          outcome: "not_proven",
+          reason: "unsafe_content",
+          exclusion: expect.objectContaining({
+            path: configurationPath,
+            blobSha: cargoBlobSha,
+            reason: "secret_content_policy",
+          }),
+        }),
+      ]));
+      expect(JSON.stringify(result.compiled)).not.toContain(secretConfiguration);
+      expect(result.rendered.json).not.toContain(secretConfiguration);
+      expect(result.rendered.markdown).not.toContain(secretConfiguration);
+    },
+  );
+
   it("does not displace dependency reads or create a seventeenth receipt for the Yarn probe", async () => {
     const imports = Array.from(
       { length: MAX_EXACT_HEAD_DIRECT_PATH_READS },
@@ -875,9 +1094,63 @@ describe("compileAcceptanceContextPack", () => {
     expect(result.ok).toBe(true);
     expect(source.readExactPath).toHaveBeenCalledTimes(MAX_EXACT_HEAD_DIRECT_PATH_READS);
     expect(source.readExactPath).not.toHaveBeenCalledWith(".yarnrc.yml");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config.toml");
     if (result.ok) {
       expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toHaveLength(
         MAX_EXACT_HEAD_DIRECT_PATH_READS,
+      );
+    }
+  });
+
+  it("does not create a half Cargo absence proof when only one of sixteen read slots remains", async () => {
+    const dependencyReads = MAX_EXACT_HEAD_DIRECT_PATH_READS - 2;
+    const imports = Array.from(
+      { length: dependencyReads },
+      (_, index) => `import \"./missing-${String(index).padStart(2, "0")}.ts\";`,
+    );
+    const changedContent = [...imports, "export const widget = true;"].join("\n");
+    const changedBlob = exactHeadGitBlobSha1(changedContent);
+    const { records } = cargoRootFixture();
+    const exact = snapshot([
+      {
+        path: "src/widget.ts",
+        status: "modified",
+        blobSha: changedBlob,
+        previousPath: null,
+        headRanges: [{ startLine: 1, endLine: imports.length + 1 }],
+        patchSha256: hash(PATCH),
+        patchByteCount: Buffer.byteLength(PATCH),
+      },
+      ...records.map((record) => ({
+        path: record.path,
+        status: "modified" as const,
+        blobSha: record.blobSha,
+        previousPath: null,
+        headRanges: [{ startLine: 1, endLine: record.lineCount }],
+        patchSha256: hash(`${record.path}\u0000${record.contentSha256}`),
+        patchByteCount: record.byteCount,
+      })),
+    ].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path))));
+    const source = materialization(exact, {
+      changedContent,
+      additionalChangedRecords: records,
+      read: async () => ({ ok: false, kind: "not_proven", reason: "path_not_found" }),
+    });
+    const result = await compileAcceptanceContextPack({
+      custody: custody(exact),
+      snapshot: exact,
+      materialization: source,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(source.readExactPath).toHaveBeenCalledTimes(MAX_EXACT_HEAD_DIRECT_PATH_READS - 1);
+    expect(source.readExactPath).toHaveBeenCalledWith(".yarnrc.yml");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config");
+    expect(source.readExactPath).not.toHaveBeenCalledWith(".cargo/config.toml");
+    if (result.ok) {
+      expect(result.compiled.sourceCustodyReceipt.directReadReceipts).toHaveLength(
+        MAX_EXACT_HEAD_DIRECT_PATH_READS - 1,
       );
     }
   });

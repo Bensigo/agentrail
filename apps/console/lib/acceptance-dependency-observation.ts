@@ -6,6 +6,7 @@ export const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 export const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
 export const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
+export const ACCEPTANCE_DEPENDENCY_CARGO_PROFILE = "cargo_lock_registry_only_v1";
 export type AcceptanceDependencyProfileIdentity = { ecosystem: string; manager: string; profile: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -13,6 +14,8 @@ const SHA1 = /^[0-9a-f]{40}$/iu;
 const SHA256 = /^[0-9a-f]{64}$/iu;
 const NPM_PACKAGE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u;
 const NORMALIZED_PYPI_PACKAGE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const CARGO_CRATE_NAME = /^[a-z][a-z0-9_-]{0,63}$/u;
+const CARGO_RESERVED_CRATE_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/u;
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/iu;
@@ -108,6 +111,9 @@ const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity =
 const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "rust", manager: "cargo", profile: ACCEPTANCE_DEPENDENCY_CARGO_PROFILE,
+};
 
 function nodeCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
   return NPM_PACKAGE.test(candidate.package) && candidate.package === candidate.package.toLowerCase()
@@ -182,6 +188,28 @@ function stableUv012(version: string): boolean {
   return parts?.[0] === 0 && parts[1] === 12;
 }
 
+function cargoCandidateIsValid(candidate: AcceptanceDependencyObservationInput["candidate"]): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !CARGO_CRATE_NAME.test(candidate.package)
+    || CARGO_RESERVED_CRATE_NAME.test(candidate.package)) return false;
+  const lowerMatch = /^\^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(candidate.specifier);
+  const current = stableSemverParts(candidate.currentVersion);
+  const target = stableSemverParts(candidate.targetVersion);
+  if (!lowerMatch || !current || !target) return false;
+  const lower = lowerMatch.slice(1).map(Number) as [number, number, number];
+  if (!lower.every(Number.isSafeInteger)) return false;
+  const upper: [number, number, number] = lower[0] > 0
+    ? [lower[0] + 1, 0, 0]
+    : lower[1] > 0
+      ? [0, lower[1] + 1, 0]
+      : [0, 0, lower[2] + 1];
+  return upper.every(Number.isSafeInteger)
+    && compareStableSemver(current, lower) >= 0
+    && compareStableSemver(target, lower) >= 0
+    && compareStableSemver(current, upper) < 0
+    && compareStableSemver(target, upper) < 0
+    && compareStableSemver(target, current) > 0;
+}
 function osvNpmSecurityIsValid(
   security: AcceptanceDependencyObservationInput["security"],
   candidate: AcceptanceDependencyObservationInput["candidate"],
@@ -198,6 +226,13 @@ function osvPyPiSecurityIsValid(
     && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`;
 }
 
+function osvCargoSecurityIsValid(
+  security: AcceptanceDependencyObservationInput["security"],
+  candidate: AcceptanceDependencyObservationInput["candidate"],
+): boolean {
+  return security.provider === "osv"
+    && security.reference === `osv:crates.io:${candidate.package}@${candidate.targetVersion}`;
+}
 const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObservationProfile>([
   ["node:pnpm:pnpm_lockfile_only_v1", {
     identity: ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY,
@@ -259,6 +294,21 @@ const OPERATIONAL_OBSERVATION_PROFILES = new Map<string, AcceptanceDependencyObs
       "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
       "--no-sources", "--no-build", "--upgrade-package",
       `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
+  ["rust:cargo:cargo_lock_registry_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_CARGO_IDENTITY,
+    frozenUnsupportedReplayOnMismatch: true,
+    candidateIsValid: cargoCandidateIsValid,
+    runtimeVersionIsValid: (version) => version === "1.97.1",
+    packageManagerVersionIsValid: (version) => version === "1.97.1",
+    manifestPathIsValid: (path) => path === "Cargo.toml",
+    lockfilePathIsValid: (path) => path === "Cargo.lock",
+    securityIsValid: osvCargoSecurityIsValid,
+    expectedArgv: (candidate) => [
+      "cargo", "update", "--manifest-path", "Cargo.toml",
+      `registry+https://github.com/rust-lang/crates.io-index#${candidate.package}@${candidate.currentVersion}`,
+      "--precise", candidate.targetVersion,
     ],
   }],
 ]);

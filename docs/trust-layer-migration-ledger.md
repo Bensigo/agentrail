@@ -1,8 +1,8 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `48eec006`, after merged PR
-#1694. The bounded canonical R10 source/test spine is closed below; release
-proof remains open.
+Last reconciled: 2026-08-11 at main commit `49d41722`, after merged PR
+#1700. The bounded dependency source/test foundations are recorded below;
+canonical R10 completion and release proof remain open.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
 preserved in historical commit `4d21a409`. It keeps the original acceptance
@@ -227,22 +227,31 @@ exact immutable event and evidence. It cannot become `observed`, approved, or
 minted into an external-builder Pack. Changed evidence conflicts; a new broad
 or malformed uv body creates no event. Legacy v1 replay remains pnpm-only.
 
-Canonical R10.1 source/test is closed. The canonical criterion is behavioral:
-dependency evidence uses the R1–R9 spine and refuses unsafe runtime,
-lockfile, baseline, or security conditions. It does not require every detected
-package manager to become an accepted profile. pnpm, npm, Yarn 4, and uv have
-bounded accepted profiles; Poetry and every other unprofiled manager remain
-explicitly `refused_unsupported_profile`. Such a refusal cannot become
-`observed`, receive approval, or mint an R10.2 Pack, and immutable historical
-replay cannot promote it.
+PR #1695 reconciled the source/test conclusion then supported by these bounded
+profiles. It closed only the pnpm, npm, Yarn 4, and uv foundation; it did not
+close canonical R10.1.
+
+Canonical R10.1 source/test remains open. The active v1 matrix requires safe,
+adapter-driven profiles for npm/pnpm/Yarn; pip/requirements, Poetry, and uv;
+Maven and Gradle; NuGet/dotnet; Composer; Cargo; and Go Modules. Only pnpm,
+npm, Yarn 4, and uv are currently accepted profiles. pip/requirements, Poetry,
+Maven, Gradle, NuGet/dotnet, Composer, Cargo, and Go Modules remain required
+R10 work; detected-only support is not operational support.
+
+Every manager without a bounded safe profile must return the explicit
+fail-closed `refused_unsupported_profile` capability/evidence result. Such a
+result cannot become `observed`, receive approval, or mint an R10.2 Pack, and
+immutable historical replay cannot promote it. Bun, Ruby Bundler, Elixir Mix,
+Dart Pub, SwiftPM, and other lower-priority managers remain explicit extension
+points until a safe profile is added; none may be coerced to npm semantics.
 
 Poetry was audited rather than admitted. Its non-installing `update <package>
 --lock` command still has no exact-target argument and Poetry 2.4.1 can fall
 back from sdist metadata inspection to a PEP 517 isolated builder. There is no
-lock-time `--no-build` control. A Poetry profile therefore remains a future
-sandbox/metadata-custody extension, not missing canonical correctness. The
-same fail-closed rule applies to managers without a bounded safe profile. The
-audit is grounded in Poetry's [update command contract](https://python-poetry.org/docs/cli/#update)
+lock-time `--no-build` control. A Poetry profile therefore remains required
+R10 work, pending a bounded sandbox/metadata-custody design. The same
+fail-closed rule applies to managers without a bounded safe profile. The audit
+is grounded in Poetry's [update command contract](https://python-poetry.org/docs/cli/#update)
 and pinned [sdist metadata fallback](https://github.com/python-poetry/poetry/blob/2.4.1/src/poetry/inspection/info.py#L446-L537).
 
 The corrective contract is versioned. New runner requests must carry the
@@ -299,14 +308,16 @@ re-entry. The existing Record detail surface exposes the receipt and bounded
 approval action; it exposes no install, managed-build, issue, queue, dispatch,
 delivery, pull-request mutation, or merge action.
 
-Local R10.2 proof includes focused DB and Console tests, five fresh migrated
+Local R10.2 proof for the current supported profiles includes focused DB and Console tests, five fresh migrated
 PostgreSQL transaction cases, the full 1,689-test database suite, package
 typechecks/builds, scoped lint, and independent adversarial review. No external
 builder received the Pack, no dependency was installed, and no deployed/live
-or customer path was observed. R10.1 and R10.2 source/test are closed. R10
-remains **FAIL / not release-ready** until a canonical runner supplies real
-evidence, an approved Pack reaches an external builder and re-enters exact-head
-review, and deployed/live and customer proof gates are satisfied.
+or customer path was observed. PR #1682's R10.2 Pack foundation is merged, but
+canonical R10.2 remains source/test open until the required v1 R10.1 profiles
+can reach the same safe proposal/Pack boundary. R10 remains **FAIL / not
+release-ready** until those profiles are complete, a canonical runner supplies
+real evidence, an approved Pack reaches an external builder and re-enters
+exact-head review, and deployed/live and customer proof gates are satisfied.
 
 ## R11 progress
 
@@ -358,37 +369,60 @@ serialized-byte guard is exercised with 56 valid Packs, below the separate
 No authenticated browser-to-server, artifact-store, deployed/live, or customer
 path was observed.
 
+PR #1700 added a further bounded R11.2 source/test contribution: the same
+tenant-scoped Record detail can expose strictly revalidated pnpm dependency
+draft-proposal custody from persisted source. It carries no approval,
+delivery, execution, issue, pull-request, or merge authority, and it does not
+turn a draft proposal into a Context Pack. It preserves the existing
+fail-closed detail boundary and does not close the remaining R11.2 work.
+
 R11.2 remains open for the criterion-outcome and opaque artifact-custody path,
 then the packet-bound gated-issue path. R11 remains **FAIL / not
 release-ready**.
 
 ## R12 progress
 
-PR #1690 closed the canonical R12.1 and R12.2 source/test slice. The public
-landing now tells the ordered planning, human-confirmed criteria, MCP handoff,
-selected external coding agent, intent review, evidence/refusal, and human
-decision flow without presenting Jace as a factory, code generator,
-auto-merge system, or live-outcome claim. Public pricing is consistently
-labelled a team commercial experiment rather than proof of product value,
-delivery capacity, or review savings.
+PR #1690 originally closed the canonical R12.1 and R12.2 source/test slice.
+It made the public landing state the ordered planning, human-confirmed
+Contract, MCP handoff, bounded Context Pack, selected external coding agent,
+confirmed-intent review, evidence/refusal, and human-decision flow without
+presenting Jace as a factory, code generator, auto-merge system, or
+live-outcome claim.
 
-The technical README surfaces remain allowed implementation context for the
-optional CLI, runner, self-hosting, and MCP adapters. They do not give Jace
-merge authority or turn adapter mechanics into public-product or deployed
-proof. Focused marketing truth tests, Console typecheck, targeted lint, diff
-checks, independent review, and all PR CI checks are green.
+PR #1693 later regressed the explicit ordered MCP, Contract, Context Pack, and
+confirmed-intent wording, and weakened the focused R12.1 test that guarded it.
+PRs #1696 and #1698 preserved that regression. R12.1 is therefore reopened;
+its remediation is owner-held. The separate landing-page side mission is
+paused and does not supply R12.1 closure.
+
+R12.2 remains source/test closed. Public pricing is consistently labelled a
+team commercial experiment rather than proof of product value, delivery
+capacity, or review savings. The technical README surfaces remain allowed
+implementation context for the optional CLI, runner, self-hosting, and MCP
+adapters. They do not give Jace merge authority or turn adapter mechanics into
+public-product or deployed proof.
+
+The original #1690 focused marketing truth tests, Console typecheck, targeted
+lint, diff checks, independent review, and PR CI were source/test proof for
+that original slice. They do not close the reopened R12.1 requirement after
+the later regression.
 
 This is source/test proof only. No deployed landing render, payment
 availability, hosted external-builder flow, commercial conversion, or customer
-outcome was observed. R12 remains **FAIL / not release-ready** until its
-deployed/live and customer proof gates are satisfied.
+outcome was observed. R12 remains **FAIL / not release-ready**: R12.1 needs
+owner-held source/test remediation, and both R12 criteria still lack
+deployed/live and customer proof.
 
 ## Remaining canonical order
 
-The remaining source implementation order is the R11.2 criterion/artifact
-slice, then the packet-bound gated-issue slice. R10 and R12 source/test are
-closed. Additional dependency-manager profiles remain bounded extensions and
-must preserve R11.2a compatibility. The canonical requirements remain:
+The remaining source implementation follows a dependency DAG, not strict
+R-number order. The R11.2 criterion/artifact slice remains before its
+packet-bound gated-issue dependent. Independent R10.1 v1 manager profiles may
+proceed in parallel with nonconflicting R11 slices; each R10.2 expansion waits
+for its safe R10.1 profile. R12.1 remediation is held for the owner; R12.2
+source/test remains closed. R10 source/test remains open. Lower-priority
+manager adapters remain explicit fail-closed extensions and must preserve
+R11.2a compatibility. The canonical requirements remain:
 
 | AC | Required behavior |
 | --- | --- |
@@ -398,7 +432,7 @@ must preserve R11.2a compatibility. The canonical requirements remain:
 | R10.2 | An approved dependency proposal yields an external-builder Pack or explicitly labelled optional managed-build route; no bypasses Record/approval/evidence/exact-head review. |
 | R11.1 | Primary Console is Acceptance/Changes-first and answers requested work, supplied context, PR/head, proof, unknowns, needed decision, and outcome. |
 | R11.2 | List/detail/timeline, Contract/Pack, PR/head, criterion evidence/artifacts, correction/gated issue, decision controls, and sample-honest metrics are accessible without factory-queue primacy. |
-| R12.1 | The unchanged landing structure tells planning → confirmed criteria → MCP handoff → external builder → intent review → evidence/refusal → human decision; it does not present factory/codegen/auto-merge/live-looking claims. |
+| R12.1 | The landing must tell planning → human-confirmed Contract → MCP handoff → bounded Context Pack → selected external builder → confirmed-intent review → evidence/refusal → human decision; it must not present factory/codegen/auto-merge/live-looking claims. **Reopened: owner-held source/test remediation.** |
 | R12.2 | Technical docs retain optional internal adapters; pricing is a consistent team commercial experiment, not a product-value claim. |
 
 Each following slice must name the AC it closes and preserve the proof

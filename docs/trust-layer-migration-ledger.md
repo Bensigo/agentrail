@@ -326,17 +326,20 @@ ingestion route, no external builder received the Pack, and no deployed, live,
 or customer path was observed.
 
 The Go Modules compatibility gate covers 127 focused Python manager/observer
-tests, 208 focused Console parser, route, and Record-detail tests, seven DB
+tests, 217 focused Console parser, route, and Record-detail tests, seven DB
 boundary tests, and three focused fresh-migrated PostgreSQL cases covering
 exact profile admission, refusal and root-source truth, immutable historical
 replay, and R10.2 Pack propagation. The complete 92-case Change Record file
-and full 142-file / 1,795-test database suite pass on fresh migrated
+and full 143-file / 1,896-test database suite pass on fresh migrated
 PostgreSQL. A broader local non-integration Python run passed 5,381 tests plus
 101 subtests. Package typechecks/builds, scoped lint, diff checks, and
-independent adversarial review are green. No Go command was run, no proxy,
-checksum database, or OSV evidence was acquired, no authenticated canonical
-runner called the ingestion route, no external builder received a Pack, and
-no deployed, live, or customer path was observed.
+independent adversarial review are green. PR #1706 also carries a
+[browser-rendered component screenshot](screenshots/r101-go-modules-receipt.png)
+of the exact Go receipt and no-authority Pack; it is component proof, not an
+authenticated Record-detail flow. No Go command was run, no proxy, checksum
+database, or OSV evidence was acquired, no authenticated canonical runner
+called the ingestion route, no external builder received a Pack, and no
+deployed, live, or customer path was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,

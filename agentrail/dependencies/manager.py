@@ -79,6 +79,7 @@ class AdapterCapability(str, Enum):
 PNPM_ADAPTER_PROFILE = "pnpm_lockfile_only_v1"
 NPM_ADAPTER_PROFILE = "npm_package_lock_only_v1"
 CARGO_ADAPTER_PROFILE = "cargo_lock_registry_only_v1"
+COMPOSER_ADAPTER_PROFILE = "composer_lock_public_packagist_v1"
 ADAPTER_PROFILE_IDS: Mapping[Tuple[str, str], str] = {
     (Ecosystem.NODE.value, ManagerId.PNPM.value): PNPM_ADAPTER_PROFILE,
     (Ecosystem.NODE.value, ManagerId.NPM.value): NPM_ADAPTER_PROFILE,
@@ -288,7 +289,35 @@ COMMAND_PLANS: Dict[ManagerId, CommandPlan] = {
     ),
     ManagerId.GO_MODULES: CommandPlan(("go", "mod", "download"), ("go", "get", "{dependency}@{version}"), ("go", "test", "./...")),
     ManagerId.BUNDLER: CommandPlan(("bundle", "install", "--deployment"), ("bundle", "update", "{dependency}"), ("bundle", "exec", "rake", "test")),
-    ManagerId.COMPOSER: CommandPlan(("composer", "install", "--no-interaction", "--prefer-dist"), ("composer", "update", "{dependency}", "--with-dependencies"), ("composer", "test")),
+    ManagerId.COMPOSER: CommandPlan(
+        (
+            "composer",
+            "install",
+            "--no-interaction",
+            "--no-plugins",
+            "--no-scripts",
+            "--no-cache",
+            "--no-dev",
+            "--no-audit",
+            "--no-progress",
+        ),
+        (
+            "composer",
+            "--no-interaction",
+            "--no-plugins",
+            "--no-scripts",
+            "--no-cache",
+            "update",
+            "{dependency}:{version}",
+            "--with-dependencies",
+            "--minimal-changes",
+            "--no-dev",
+            "--no-install",
+            "--no-audit",
+            "--no-progress",
+        ),
+        ("composer", "validate", "--no-interaction", "--no-check-publish"),
+    ),
     ManagerId.MAVEN: CommandPlan(("mvn", "-B", "dependency:go-offline"), ("mvn", "-B", "versions:use-dep-version", "-Dincludes={dependency}", "-DdepVersion={version}", "-DgenerateBackupPoms=false"), ("mvn", "-B", "test")),
     ManagerId.GRADLE: CommandPlan(("./gradlew", "dependencies"), ("./gradlew", "dependencyUpdates", "-Ddependency={dependency}", "-Drevision={version}"), ("./gradlew", "test")),
     ManagerId.DOTNET: CommandPlan(("dotnet", "restore", "--locked-mode"), ("dotnet", "add", "{dependency}", "package", "--version", "{version}"), ("dotnet", "test", "--no-restore")),
@@ -583,6 +612,7 @@ __all__ = [
     "AdapterCapability",
     "ADAPTER_PROFILE_IDS",
     "CARGO_ADAPTER_PROFILE",
+    "COMPOSER_ADAPTER_PROFILE",
     "DependencyManagerSnapshot",
     "DetectionResult",
     "DetectionStatus",

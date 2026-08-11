@@ -20,6 +20,9 @@ from agentrail.dependencies.composer import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "composer"
+PUBLIC_PACKAGIST_FIXTURES = (
+    Path(__file__).parent / "fixtures" / "composer_public_packagist"
+)
 
 
 def _manifest_text() -> str:
@@ -118,6 +121,27 @@ def test_parses_bounded_v2_syntax_and_exact_file_custody_without_authority() -> 
         result.authority = "evidence"  # type: ignore[misc]
     with pytest.raises(TypeError):
         result.locked_packages[0] = result.locked_packages[1]  # type: ignore[index]
+
+
+def test_parses_composer_generated_public_packagist_source_and_dist_without_authority() -> None:
+    manifest_text = (PUBLIC_PACKAGIST_FIXTURES / "composer.json").read_text(
+        encoding="utf-8"
+    )
+    lock_text = (PUBLIC_PACKAGIST_FIXTURES / "composer.lock").read_text(
+        encoding="utf-8"
+    )
+
+    result = parse_composer_root_lock(manifest_text, lock_text)
+
+    assert result.direct_package.name == "ralouphie/getallheaders"
+    assert result.direct_package.locked_version == "3.0.3"
+    assert len(result.locked_packages) == 1
+    locked = result.locked_packages[0]
+    assert locked.source is not None
+    assert locked.source.url == "https://github.com/ralouphie/getallheaders.git"
+    assert locked.source.reference == locked.distribution.reference
+    assert result.evidence_status == "syntax_and_custody_only"
+    assert result.authority == "none"
 
 
 def test_require_dev_lane_is_explicit_and_opposite_lock_lane_is_empty() -> None:
@@ -646,34 +670,83 @@ def test_lock_package_rejects_replace_provide_conflict_alias_and_command_ambigui
         ("bin", ["bin/tool"]),
     ],
 )
-def test_lock_package_rejects_every_optional_field_the_profile_does_not_parse(
+def test_lock_package_keeps_standard_optional_metadata_non_authoritative(
     field: str, value: object
 ) -> None:
     lock = _lock()
     _selected(lock)[field] = value
-    with pytest.raises(ValueError, match=f"unsupported field: {field}"):
-        _parse_documents(_manifest(), lock)
+    result = _parse_documents(_manifest(), lock)
+    assert result.graph_provenance.status == "unresolved"
+    assert not hasattr(result.locked_packages[-1], field.replace("-", "_"))
 
 
-def test_lock_requires_one_dist_only_transport_claim() -> None:
+def test_lock_admits_coherent_source_and_dist_but_keeps_dist_required() -> None:
     lock = _lock()
     _selected(lock)["source"] = {
         "type": "git",
         "url": "https://github.com/acme/root-package.git",
         "reference": "b" * 40,
     }
-    with pytest.raises(ValueError, match="source/dist selection is ambiguous"):
-        _parse_documents(_manifest(), lock)
+    result = _parse_documents(_manifest(), lock)
+    assert result.locked_packages[-1].source is not None
+    assert (
+        result.locked_packages[-1].source.reference
+        == result.locked_packages[-1].distribution.reference
+    )
 
     lock = _lock()
-    selected = _selected(lock)
-    selected["source"] = selected.pop("dist")
-    with pytest.raises(ValueError, match="source/dist selection is ambiguous"):
-        _parse_documents(_manifest(), lock)
+    assert _parse_documents(_manifest(), lock).locked_packages[-1].source is None
 
     lock = _lock()
     _selected(lock).pop("dist")
     with pytest.raises(ValueError, match="missing required field: dist"):
+        _parse_documents(_manifest(), lock)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("type", "hg", "HTTPS git"),
+        ("url", "git@github.com:acme/root-package.git", "source URL"),
+        ("url", "https://github.com/acme/root-package", "end in .git"),
+        ("reference", "B" * 40, "source reference"),
+    ],
+)
+def test_lock_rejects_malformed_source_fields(
+    field: str, value: object, message: str
+) -> None:
+    lock = _lock()
+    selected = _selected(lock)
+    selected["source"] = {
+        "type": "git",
+        "url": "https://github.com/acme/root-package.git",
+        "reference": "b" * 40,
+    }
+    selected["source"][field] = value
+    with pytest.raises(ValueError, match=message):
+        _parse_documents(_manifest(), lock)
+
+
+def test_source_shape_and_dist_reference_coherence_are_required() -> None:
+    lock = _lock()
+    selected = _selected(lock)
+    selected["source"] = {
+        "type": "git",
+        "url": "https://github.com/acme/root-package.git",
+        "reference": "b" * 40,
+        "branch": "main",
+    }
+    with pytest.raises(ValueError, match="exactly type, url, and reference"):
+        _parse_documents(_manifest(), lock)
+
+    lock = _lock()
+    selected = _selected(lock)
+    selected["source"] = {
+        "type": "git",
+        "url": "https://github.com/acme/root-package.git",
+        "reference": "c" * 40,
+    }
+    with pytest.raises(ValueError, match="identify the same release"):
         _parse_documents(_manifest(), lock)
 
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
+  ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
   ACCEPTANCE_DEPENDENCY_UV_PROFILE,
   ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
@@ -180,6 +181,44 @@ function validCargo(): Record<string, unknown> {
   });
   return value;
 }
+
+function validComposer(): Record<string, unknown> {
+  const value = cloneValid();
+  const identity = {
+    ecosystem: "php",
+    manager: "composer",
+    profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+  };
+  Object.assign(value.candidate as Record<string, unknown>, {
+    identity,
+    package: "ralouphie/getallheaders",
+    dependencyKind: "dependencies",
+    specifier: "^3.0.0",
+    currentVersion: "3.0.3",
+    targetVersion: "3.0.4",
+  });
+  Object.assign(value.runtime as Record<string, unknown>, {
+    identity,
+    version: "8.5.9",
+  });
+  Object.assign(value.packageManager as Record<string, unknown>, {
+    name: "composer",
+    version: "2.10.2",
+    profile: ACCEPTANCE_DEPENDENCY_COMPOSER_PROFILE,
+    updateArgv: [
+      "composer", "--no-interaction", "--no-plugins", "--no-scripts", "--no-cache",
+      "update", "ralouphie/getallheaders:3.0.4", "--with-dependencies",
+      "--minimal-changes", "--no-dev", "--no-install", "--no-audit", "--no-progress",
+    ],
+  });
+  (value.manifest as Record<string, unknown>).path = "composer.json";
+  (value.lockfile as Record<string, unknown>).path = "composer.lock";
+  Object.assign(value.security as Record<string, unknown>, {
+    identity,
+    reference: "osv:Packagist:ralouphie/getallheaders@3.0.4",
+  });
+  return value;
+}
 describe("parseAcceptanceDependencyObservation", () => {
   it("normalizes the bounded fixed pnpm profile without claiming approval", () => {
     const raw = cloneValid();
@@ -257,6 +296,92 @@ describe("parseAcceptanceDependencyObservation", () => {
       .not.toMatch(/execute|approv|deliver|dispatch/iu);
   });
 
+  it("normalizes the bounded Composer public-Packagist lockfile profile", () => {
+    const raw = validComposer();
+    expect(parseAcceptanceDependencyObservation(raw)).toEqual({
+      input: raw,
+      boundaryAssessment: "candidate_for_server_verification",
+    });
+    expect(JSON.stringify(parseAcceptanceDependencyObservation(raw)))
+      .not.toMatch(/execute|approv|deliver|dispatch/iu);
+  });
+
+  it("accepts one compatible Composer tilde transition", () => {
+    const raw = validComposer();
+    Object.assign(raw.candidate as Record<string, unknown>, {
+      specifier: "~3.0.0", currentVersion: "3.0.3", targetVersion: "3.0.9",
+    });
+    (raw.packageManager as { updateArgv: string[] }).updateArgv[6] =
+      "ralouphie/getallheaders:3.0.9";
+    (raw.security as { reference: string }).reference =
+      "osv:Packagist:ralouphie/getallheaders@3.0.9";
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+      .toBe("candidate_for_server_verification");
+  });
+
+  it.each([
+    ["uppercase package", (raw: Record<string, unknown>) => {
+      (raw.candidate as { package: string }).package = "Ralouphie/getallheaders";
+    }],
+    ["development dependency", (raw: Record<string, unknown>) => {
+      (raw.candidate as { dependencyKind: string }).dependencyKind = "devDependencies";
+    }],
+    ["partial constraint", (raw: Record<string, unknown>) => {
+      (raw.candidate as { specifier: string }).specifier = "^3.0";
+    }],
+    ["exact constraint cannot move", (raw: Record<string, unknown>) => {
+      (raw.candidate as { specifier: string }).specifier = "3.0.3";
+    }],
+    ["target outside caret", (raw: Record<string, unknown>) => {
+      (raw.candidate as { targetVersion: string }).targetVersion = "4.0.0";
+    }],
+    ["version component exceeds the source parser cap", (raw: Record<string, unknown>) => {
+      Object.assign(raw.candidate as Record<string, unknown>, {
+        specifier: "^1000000000.0.0",
+        currentVersion: "1000000000.0.0",
+        targetVersion: "1000000000.0.1",
+      });
+      (raw.packageManager as { updateArgv: string[] }).updateArgv[6] =
+        "ralouphie/getallheaders:1000000000.0.1";
+      (raw.security as { reference: string }).reference =
+        "osv:Packagist:ralouphie/getallheaders@1000000000.0.1";
+    }],
+    ["different PHP patch", (raw: Record<string, unknown>) => {
+      (raw.runtime as { version: string | null }).version = "8.5.8";
+    }],
+    ["different Composer patch", (raw: Record<string, unknown>) => {
+      (raw.packageManager as { version: string | null }).version = "2.10.1";
+    }],
+    ["nested manifest", (raw: Record<string, unknown>) => {
+      (raw.manifest as { path: string }).path = "packages/app/composer.json";
+    }],
+    ["nested lockfile", (raw: Record<string, unknown>) => {
+      (raw.lockfile as { path: string }).path = "packages/app/composer.lock";
+    }],
+    ["wrong OSV ecosystem", (raw: Record<string, unknown>) => {
+      (raw.security as { reference: string }).reference =
+        "osv:packagist:ralouphie/getallheaders@3.0.4";
+    }],
+  ] as const)("keeps bounded invalid Composer evidence only on the historical replay seam: %s", (_label, mutate) => {
+    const raw = validComposer();
+    mutate(raw);
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it.each([
+    ["missing no-plugins", "--no-plugins"],
+    ["missing no-scripts", "--no-scripts"],
+    ["missing no-install", "--no-install"],
+    ["missing no-audit", "--no-audit"],
+  ] as const)("records bounded Composer command drift as refused unsafe evidence: %s", (_label, flag) => {
+    const raw = validComposer();
+    const argv = (raw.packageManager as { updateArgv: string[] }).updateArgv;
+    argv.splice(argv.indexOf(flag), 1);
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+      .toBe("refused_unsafe_runtime");
+  });
   it.each([
     ["non-canonical package", (raw: Record<string, unknown>) => {
       (raw.candidate as { package: string }).package = "typing_extensions";

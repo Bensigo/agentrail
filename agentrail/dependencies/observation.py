@@ -6,8 +6,8 @@ package manager, or contact a registry.  A malformed or ambiguous manifest or
 lockfile is evidence failure, not an invitation to guess.
 
 The existing pnpm detector remains the implementation for pnpm repositories;
-the dispatch layer adds npm, Poetry, uv, Cargo, and Go modules while reusing
-its result and candidate types.
+the dispatch layer adds npm, Poetry, uv, Cargo, Composer, and Go modules while
+reusing its result and candidate types.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from agentrail.dependencies.pnpm import (
 )
 from agentrail.dependencies.manager import (
     CARGO_ADAPTER_PROFILE,
+    COMPOSER_ADAPTER_PROFILE,
     COMMAND_PLANS,
     NPM_ADAPTER_PROFILE,
     NPM_DEPENDENCY_KINDS,
@@ -47,6 +48,7 @@ from agentrail.dependencies.manager import (
     detect_dependency_manager,
     npm_save_flag,
 )
+from agentrail.dependencies.composer import parse_composer_root_lock
 from agentrail.dependencies.cargo import (
     CARGO_MANIFEST_MAX_BYTES,
     cargo_normalized_name,
@@ -75,6 +77,7 @@ class ManagerName(str, Enum):
     POETRY = "poetry"
     UV = "uv"
     CARGO = "cargo"
+    COMPOSER = "composer"
     GO_MODULES = "go-modules"
 
 
@@ -102,6 +105,7 @@ _MANAGERS = (
     _ManagerAdapter(ManagerName.POETRY, "python", "pyproject.toml", "poetry.lock"),
     _ManagerAdapter(ManagerName.UV, "python", "pyproject.toml", "uv.lock"),
     _ManagerAdapter(ManagerName.CARGO, "rust", "Cargo.toml", "Cargo.lock"),
+    _ManagerAdapter(ManagerName.COMPOSER, "php", "composer.json", "composer.lock"),
     _ManagerAdapter(ManagerName.GO_MODULES, "go", "go.mod", "go.sum"),
 )
 
@@ -129,6 +133,13 @@ _UV_REQUIRES_PYTHON = re.compile(
 )
 _UV_PYPI_REGISTRY = "https://pypi.org/simple"
 _UV_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COMPOSER_PACKAGE = re.compile(
+    r"^[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+)
+_COMPOSER_CONSTRAINT = re.compile(
+    r"^(?P<operator>\^|~)?(?P<major>0|[1-9]\d*)\."
+    r"(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
 def observe_dependencies(
     snapshot: DependencySnapshot,
     *,
@@ -170,6 +181,8 @@ def observe_dependencies(
         entries, error = _python_entries(files, detected.name, selected_dependencies)
     elif detected.name is ManagerName.CARGO:
         entries, error = _cargo_entries(files, selected_dependencies)
+    elif detected.name is ManagerName.COMPOSER:
+        entries, error = _composer_entries(files, selected_dependencies)
     else:
         entries, error = _go_entries(files, selected_dependencies)
     if error is not None:
@@ -840,6 +853,85 @@ def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[T
     return tuple(entries), None
 
 
+def _composer_entries(
+    files: Mapping[str, str], selected: Sequence[str]
+) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
+    """Admit one production Composer dependency from the strict root parser.
+
+    The parser proves supplied-file syntax and SHA custody only. Runtime,
+    content-hash, Packagist, security, and exact-head authority remain facts
+    supplied by the authenticated evidence boundary and revalidated by the DB.
+    """
+
+    try:
+        profile = parse_composer_root_lock(
+            files.get("composer.json", ""), files.get("composer.lock", "")
+        )
+    except ValueError as exc:
+        return (), str(exc)
+    direct = profile.direct_package
+    if direct.lane != "require":
+        return (), "Composer v1 supports production require dependencies only"
+    if len(direct.name.encode("utf-8")) > 214 or _COMPOSER_PACKAGE.fullmatch(direct.name) is None:
+        return (), "Composer package name is outside the bounded operational profile"
+    if _composer_constraint_parts(direct.constraint) is None:
+        return (), "Composer dependency must use an exact, caret, or tilde stable constraint"
+    if selected:
+        if any(not isinstance(name, str) or not name for name in selected):
+            return (), "selected Composer dependency names must be non-empty strings"
+        if len(set(selected)) != len(selected):
+            return (), "selected Composer dependency names must not be duplicated"
+        if tuple(selected) != (direct.name,):
+            return (), f"selected dependency is not the admitted composer.json requirement: {selected[0]}"
+    return (
+        _Entry(
+            direct.name,
+            "dependencies",
+            direct.constraint,
+            direct.locked_version,
+            "composer.json",
+            "composer.lock",
+        ),
+    ), None
+
+
+def _composer_constraint_parts(
+    value: object,
+) -> Optional[Tuple[str, Tuple[int, int, int]]]:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    matched = _COMPOSER_CONSTRAINT.fullmatch(value)
+    if matched is None:
+        return None
+    parts = tuple(int(component) for component in matched.group("major", "minor", "patch"))
+    if any(component > 999_999_999 for component in parts):
+        return None
+    return matched.group("operator") or "exact", parts  # type: ignore[return-value]
+
+
+def _composer_constraint_matches(constraint: object, version: object) -> bool:
+    parsed = _composer_constraint_parts(constraint)
+    release = _composer_constraint_parts(version)
+    if parsed is None or release is None or release[0] != "exact":
+        return False
+    operator, lower = parsed
+    actual = release[1]
+    if operator == "exact":
+        return actual == lower
+    if actual < lower:
+        return False
+    major, minor, patch = lower
+    if operator == "~":
+        upper = (major, minor + 1, 0)
+    elif major > 0:
+        upper = (major + 1, 0, 0)
+    elif minor > 0:
+        upper = (0, minor + 1, 0)
+    else:
+        upper = (0, 0, patch + 1)
+    return actual < upper
+
+
 def _go_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
     try:
         parsed = parse_go_module_files(
@@ -885,6 +977,11 @@ def _observe_entries(
             if stable_go_version(entry.current_version) is None:
                 return _insufficient(
                     f"locked Go version for {entry.package} must be a canonical stable release"
+                )
+        elif manager.name is ManagerName.COMPOSER:
+            if not _composer_constraint_matches(entry.specifier, entry.current_version):
+                return _insufficient(
+                    f"locked Composer version for {entry.package} does not satisfy its constraint"
                 )
         elif _parse_version(entry.current_version) is None:
             return _insufficient(f"locked version for {entry.package} is not safely parseable")
@@ -975,6 +1072,16 @@ def _observe_entries(
             available = tuple(metadata.available_versions)
             if manager.name is ManagerName.CARGO:
                 versions_are_valid = all(stable_version(version) is not None for version in available)
+            elif manager.name is ManagerName.COMPOSER:
+                parsed_versions = tuple(
+                    _composer_constraint_parts(version) for version in available
+                )
+                available = tuple(
+                    version
+                    for version, parsed in zip(available, parsed_versions)
+                    if parsed is not None and parsed[0] == "exact"
+                )
+                versions_are_valid = bool(available)
             else:
                 versions_are_valid = all(_parse_version(version) is not None for version in available)
             if not versions_are_valid:
@@ -1017,6 +1124,24 @@ def _observe_entries(
             if not compatible:
                 return _insufficient(f"registry data for {entry.package} has no compatible stable Cargo releases")
             available = compatible
+        if manager.name is ManagerName.COMPOSER:
+            if entry.current_version not in available:
+                return _insufficient(
+                    f"Packagist data for {entry.package} does not contain the exact locked Composer version"
+                )
+            yanked = set(metadata.yanked_versions)
+            if entry.current_version in yanked:
+                return _insufficient(f"locked Composer version for {entry.package} is yanked")
+            available = tuple(
+                version
+                for version in available
+                if version not in yanked
+                and _composer_constraint_matches(entry.specifier, version)
+            )
+            if not available:
+                return _insufficient(
+                    f"Packagist data for {entry.package} has no compatible non-yanked stable releases"
+                )
         try:
             target = target_versions.choose_target_version(
                 entry.package,
@@ -1028,6 +1153,8 @@ def _observe_entries(
             return _insufficient(f"target version for {entry.package} is unavailable: {exc}")
         if manager.name is ManagerName.GO_MODULES:
             target_is_parseable = stable_go_version(target) is not None
+        elif manager.name is ManagerName.COMPOSER:
+            target_is_parseable = _composer_constraint_parts(target) is not None
         else:
             target_is_parseable = _parse_version(target) is not None
         if target is None or target not in available or not target_is_parseable:
@@ -1047,6 +1174,12 @@ def _observe_entries(
             target_matches, constraint_error = cargo_constraint_matches(entry.specifier, target)
             if constraint_error is not None or not target_matches:
                 return _insufficient(f"target version for {entry.package} does not satisfy its Cargo semver constraint")
+        if manager.name is ManagerName.COMPOSER and not _composer_constraint_matches(
+            entry.specifier, target
+        ):
+            return _insufficient(
+                f"target version for {entry.package} does not satisfy its Composer constraint"
+            )
         if manager.name is ManagerName.GO_MODULES:
             version_error = validate_go_module_version(entry.package, target)
             if version_error is not None:
@@ -1101,6 +1234,7 @@ def _make_candidate(
     adapter_profile = {
         ManagerName.NPM: NPM_ADAPTER_PROFILE,
         ManagerName.CARGO: CARGO_ADAPTER_PROFILE,
+        ManagerName.COMPOSER: COMPOSER_ADAPTER_PROFILE,
     }.get(manager.name)
     adapter_fingerprint = (
         adapter_identity_fingerprint(

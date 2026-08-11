@@ -60,7 +60,7 @@ def test_dependency_upgrade_guardrail_states_exact_manager_authority_boundary():
     description = get_guardrail("dependency_upgrade_evidence").description
 
     assert "pnpm is the sole managed execution adapter" in description
-    assert "npm, Yarn Berry 4 root projects, and uv" in description
+    assert "npm, Yarn Berry 4 root projects, uv, and bounded root Composer projects" in description
     assert "are external-builder-only" in description
     assert "watcher candidates do not by themselves become canonical accepted evidence" in description
     assert "Yarn has no Python watcher candidate" in description
@@ -68,6 +68,8 @@ def test_dependency_upgrade_guardrail_states_exact_manager_authority_boundary():
     assert "Cargo cannot become canonical observed evidence" in description
     assert "Historical Cargo events remain audit facts" in description
     assert "Cargo remains excluded from legacy draft and managed execution" in description
+    assert "Composer remains excluded from legacy draft and managed execution" in description
+    assert "source parsing alone is not Packagist, runtime, security" in description
     assert "Go Modules remains a bounded observation-only parser foundation" in description
     assert "excluded from evidence gates and Pack eligibility" in description
     assert "go.sum checksums are syntax-checked provided baseline material" in description

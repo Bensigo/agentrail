@@ -112,13 +112,27 @@ _LOCK_KEYS = {
 _PACKAGE_KEYS = {
     "name",
     "version",
+    "source",
     "dist",
     "require",
     "require-dev",
+    "suggest",
     "type",
+    "autoload",
+    "autoload-dev",
+    "notification-url",
+    "license",
+    "authors",
+    "description",
+    "homepage",
+    "keywords",
+    "support",
+    "funding",
+    "time",
+    "abandoned",
+    "bin",
 }
 _AMBIGUOUS_PACKAGE_KEYS = {
-    "source",
     "replace",
     "provide",
     "conflict",
@@ -150,6 +164,15 @@ class ComposerDistributionClaim:
 
 
 @dataclass(frozen=True)
+class ComposerSourceClaim:
+    """Syntactically admitted VCS fields, not repository authenticity proof."""
+
+    kind: str
+    url: str
+    reference: str
+
+
+@dataclass(frozen=True)
 class ComposerLockedPackage:
     """One stable package row from a lock lane, without graph semantics."""
 
@@ -157,6 +180,7 @@ class ComposerLockedPackage:
     version: str
     lane: str
     package_type: str
+    source: Optional[ComposerSourceClaim]
     distribution: ComposerDistributionClaim
 
 
@@ -596,12 +620,19 @@ def _parse_lock_package(value: object, *, lane: str) -> ComposerLockedPackage:
         _validate_opaque_requirements(
             requirements, context=f"composer.lock package {key}"
         )
+    distribution = _parse_distribution(value["dist"])
+    source = _parse_source(value["source"]) if "source" in value else None
+    if source is not None and source.reference != distribution.reference:
+        raise ValueError(
+            "composer.lock source and dist references must identify the same release"
+        )
     return ComposerLockedPackage(
         name=name,
         version=version_value,
         lane=lane,
         package_type="library",
-        distribution=_parse_distribution(value["dist"]),
+        source=source,
+        distribution=distribution,
     )
 
 
@@ -635,7 +666,7 @@ def _parse_distribution(value: object) -> ComposerDistributionClaim:
         )
     if value["type"] != "zip":
         raise ValueError("composer.lock supports HTTPS zip distributions only")
-    url = _canonical_https_url(value["url"])
+    url = _canonical_https_url(value["url"], context="composer.lock dist URL")
     reference = value["reference"]
     if (
         not isinstance(reference, str)
@@ -654,13 +685,35 @@ def _parse_distribution(value: object) -> ComposerDistributionClaim:
     )
 
 
-def _canonical_https_url(value: object) -> str:
+def _parse_source(value: object) -> ComposerSourceClaim:
+    if not isinstance(value, dict):
+        raise ValueError("composer.lock source must be a JSON object")
+    if set(value) != {"type", "url", "reference"}:
+        raise ValueError(
+            "composer.lock source must contain exactly type, url, and reference"
+        )
+    if value["type"] != "git":
+        raise ValueError("composer.lock supports HTTPS git source claims only")
+    url = _canonical_https_url(value["url"], context="composer.lock source URL")
+    if not url.endswith(".git"):
+        raise ValueError("composer.lock git source URL must end in .git")
+    reference = value["reference"]
+    if (
+        not isinstance(reference, str)
+        or len(reference) > COMPOSER_REFERENCE_MAX_BYTES
+        or _REFERENCE.fullmatch(reference) is None
+    ):
+        raise ValueError("composer.lock source reference must be bounded lowercase hex")
+    return ComposerSourceClaim(kind="git", url=url, reference=reference)
+
+
+def _canonical_https_url(value: object, *, context: str) -> str:
     if not isinstance(value, str):
-        raise ValueError("composer.lock dist URL is not text")
+        raise ValueError(f"{context} is not text")
     try:
         encoded = value.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise ValueError("composer.lock dist URL must use canonical ASCII") from exc
+        raise ValueError(f"{context} must use canonical ASCII") from exc
     if (
         not value
         or len(encoded) > COMPOSER_DIST_URL_MAX_BYTES
@@ -675,12 +728,12 @@ def _canonical_https_url(value: object) -> str:
         or "?" in value
         or "#" in value
     ):
-        raise ValueError("composer.lock dist URL is not canonical")
+        raise ValueError(f"{context} is not canonical")
     try:
         parsed = urlsplit(value)
         port = parsed.port
     except ValueError as exc:
-        raise ValueError("composer.lock dist URL is malformed") from exc
+        raise ValueError(f"{context} is malformed") from exc
     host = parsed.hostname
     if (
         parsed.scheme != "https"
@@ -695,16 +748,16 @@ def _canonical_https_url(value: object) -> str:
         or "//" in parsed.path
         or _RFC3986_PATH.fullmatch(parsed.path) is None
     ):
-        raise ValueError("composer.lock dist URL must be one unambiguous HTTPS URL")
+        raise ValueError(f"{context} must be one unambiguous HTTPS URL")
     canonical_netloc = host if port is None else f"{host}:{port}"
     if host != host.lower() or parsed.netloc != canonical_netloc:
-        raise ValueError("composer.lock dist URL host must be canonical lowercase DNS")
+        raise ValueError(f"{context} host must be canonical lowercase DNS")
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
-        raise ValueError("composer.lock dist URL must not use an IP address")
+        raise ValueError(f"{context} must not use an IP address")
     if (
         "." not in host
         or len(host.encode("ascii")) > 253
@@ -712,9 +765,9 @@ def _canonical_https_url(value: object) -> str:
         or host.endswith(_RESERVED_HOST_SUFFIXES)
         or any(_DNS_LABEL.fullmatch(label) is None for label in host.split("."))
     ):
-        raise ValueError("composer.lock dist URL host is not admitted public DNS syntax")
+        raise ValueError(f"{context} host is not admitted public DNS syntax")
     if any(segment in {".", ".."} for segment in parsed.path.split("/")):
-        raise ValueError("composer.lock dist URL path is not canonical")
+        raise ValueError(f"{context} path is not canonical")
     return value
 
 
@@ -728,6 +781,7 @@ __all__ = [
     "ComposerGraphProvenance",
     "ComposerLockedPackage",
     "ComposerRootLockProfile",
+    "ComposerSourceClaim",
     "ComposerSourceFileCustody",
     "parse_composer_root_lock",
 ]

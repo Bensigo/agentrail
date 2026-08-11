@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
+from agentrail.dependencies.manager import PNPM_ADAPTER_PROFILE, _normalise_snapshot
+
 
 class ObservationStatus(str, Enum):
     CANDIDATES = "candidates"
@@ -70,6 +72,8 @@ class DependencyCandidate:
     package_manager_version: Optional[str] = None
     verification_commands: Tuple[str, ...] = ()
     manager_commands: Mapping[str, str] = field(default_factory=dict)
+    adapter_profile: Optional[str] = None
+    adapter_identity_fingerprint: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,34 @@ _ALTERNATE_LOCKFILES = {
 }
 
 
+def adapter_identity_fingerprint(
+    *,
+    candidate_fingerprint: str,
+    ecosystem: str,
+    package_manager: str,
+    adapter_profile: str,
+) -> str:
+    """Bind a legacy observation fingerprint to one versioned adapter ID.
+
+    The legacy candidate fingerprint remains unchanged because it is already
+    used by live heartbeat/draft proposal custody.  This second digest prevents
+    replaying that same candidate through a different execution profile.
+    """
+
+    values = (candidate_fingerprint, ecosystem, package_manager, adapter_profile)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("adapter identity fields must be non-empty")
+    payload = {
+        "adapter_identity_version": 1,
+        "adapter_profile": adapter_profile,
+        "candidate_fingerprint": candidate_fingerprint,
+        "ecosystem": ecosystem,
+        "package_manager": package_manager,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
 def observe_pnpm_dependencies(
     snapshot: DependencySnapshot,
     *,
@@ -155,7 +187,9 @@ def observe_pnpm_dependencies(
     all otherwise-valid candidates from that result.
     """
 
-    files = _normalise_files(snapshot.files)
+    files, snapshot_error = _normalise_snapshot(snapshot.files)
+    if snapshot_error is not None:
+        return _insufficient(snapshot_error)
     if not isinstance(snapshot.baseline_sha, str) or not snapshot.baseline_sha.strip():
         return _insufficient("baseline SHA is missing")
 
@@ -258,10 +292,6 @@ def observe_pnpm_dependencies(
     if candidates:
         return CandidatesResult(candidates=tuple(candidates), reasons=tuple(f"unchanged: {name}" for name in unchanged))
     return UnchangedResult(reasons=tuple(f"unchanged: {name}" for name in unchanged))
-
-
-def _normalise_files(files: Mapping[str, str]) -> Dict[str, str]:
-    return {str(path).replace("\\", "/").lstrip("./"): text for path, text in files.items()}
 
 
 def _has_alternate_ecosystem(files: Mapping[str, str]) -> bool:
@@ -376,6 +406,12 @@ def _make_candidate(
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     fingerprint = f"sha256:{digest}"
+    adapter_fingerprint = adapter_identity_fingerprint(
+        candidate_fingerprint=fingerprint,
+        ecosystem="node",
+        package_manager="pnpm",
+        adapter_profile=PNPM_ADAPTER_PROFILE,
+    )
     return DependencyCandidate(
         package=package,
         dependency_kind=dependency_kind,
@@ -388,6 +424,8 @@ def _make_candidate(
         fingerprint=fingerprint,
         ecosystem="node",
         package_manager="pnpm",
+        adapter_profile=PNPM_ADAPTER_PROFILE,
+        adapter_identity_fingerprint=adapter_fingerprint,
         verification_commands=("pnpm install --frozen-lockfile", "pnpm test"),
         manager_commands={
             "version": "pnpm --version",

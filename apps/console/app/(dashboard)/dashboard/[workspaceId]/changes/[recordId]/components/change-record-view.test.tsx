@@ -4,6 +4,7 @@ import {
   ChangeRecordBackLink,
   AcceptanceRecordDetailPanel,
   CorrectionsSection,
+  DependencyDraftProposalPanel,
   DependencyObservationsPanel,
   FinalDecisionPanel,
   LifecycleTimeline,
@@ -16,12 +17,14 @@ import {
   isChangeRecordResponse,
   isAcceptanceRecordDetailEnvelope,
   isDependencyObservationsEnvelope,
+  isDependencyDraftProposal,
   isFinalDecisionEnvelope,
   isReviewMetricsEnvelope,
   reviewEffortPatchBody,
   type AcceptanceCorrectionPacketsEnvelope,
   type AcceptanceRecordDetailEnvelope,
   type AcceptanceDependencyObservationsEnvelope,
+  type AcceptanceDependencyDraftProposal,
   type AcceptanceFinalDecisionEnvelope,
   type AcceptancePrReviewMetricsEnvelope,
   type ChangeRecord,
@@ -1025,6 +1028,50 @@ const currentAcceptanceDetail: AcceptanceRecordDetailEnvelope = {
   },
 };
 
+const draftDependencyProposal: AcceptanceDependencyDraftProposal = {
+  kind: "draft",
+  record: {
+    id: record.id,
+    repo: record.repo,
+    contractId: "00000000-0000-4000-8000-000000000087",
+    contractVersion: 1,
+  },
+  proposal: {
+    custodyIdentity: `sha256:${"e".repeat(64)}`,
+    watch: {
+      id: "00000000-0000-4000-8000-000000000086",
+      observationId: "00000000-0000-4000-8000-000000000085",
+      observationKey: "candidate:bounded",
+    },
+    candidate: {
+      package: "react",
+      currentVersion: "18.2.0",
+      targetVersion: "18.3.0",
+      dependencyKind: "dependencies",
+    },
+    files: {
+      manifest: { path: "package.json", sha256: "f".repeat(64) },
+      lockfile: { path: "pnpm-lock.yaml", sha256: "a".repeat(64) },
+    },
+    profile: {
+      ecosystem: "node",
+      manager: "pnpm",
+      profile: "pnpm_lockfile_only_v1",
+      capability: "proposal_observation_only",
+    },
+    repositorySourceVerification: "watch_observation_only",
+    independentSourceProof: "not_proven",
+    evidenceAdmission: "unresolved",
+    laterEvidence: {
+      confirmation: "not_recorded",
+      contextPack: "not_recorded",
+      builderHandoff: "not_recorded",
+      delivery: "not_recorded",
+      result: "not_recorded",
+    },
+  },
+};
+
 describe("Change Record detail view", () => {
   it("returns to the Acceptance/Changes list instead of factory Work", () => {
     const rendered = ChangeRecordBackLink({ workspaceId: record.workspaceId });
@@ -1061,6 +1108,23 @@ describe("Change Record detail view", () => {
     expect(content.indexOf("run-1")).toBeLessThan(content.indexOf("review-1"));
     expect(content).toContain('"postedReviewUrl"');
     expect(content).toContain("Lifecycle events(2)");
+  });
+
+  it("renders a separate read-only draft dependency proposal without commands or delivery controls", () => {
+    expect(isDependencyDraftProposal(draftDependencyProposal)).toBe(true);
+    const rendered = DependencyDraftProposalPanel({ dependencyDraftProposal: draftDependencyProposal });
+    const content = textContent(rendered);
+
+    expect(content).toContain("Draft dependency proposal");
+    expect(content).toContain("react");
+    expect(content).toContain("delivery authority: not granted");
+    expect(content).toContain("Confirmation, Context Pack, builder handoff, delivery, and result are not recorded.");
+    expect(content).not.toContain("pnpm update");
+    expect(buttonLabels(rendered)).toEqual([]);
+    expect(isDependencyDraftProposal({
+      ...draftDependencyProposal,
+      proposal: { ...draftDependencyProposal.proposal, rawCommand: "pnpm update react" },
+    })).toBe(false);
   });
 
   it("labels historical human decisions as audit-only timeline evidence", () => {
@@ -2091,6 +2155,7 @@ describe("Change Record detail view", () => {
       reviewMetrics: currentReviewMetrics,
       dependencyObservations: currentDependencyObservations,
       acceptanceDetail: currentAcceptanceDetail,
+      dependencyDraftProposal: draftDependencyProposal,
       canRecordFinalDecision: true,
       canRecordReviewEffort: true,
       canApproveDependencyObservation: true,
@@ -2116,6 +2181,35 @@ describe("Change Record detail view", () => {
       ...validResponse,
       acceptanceDetail: { kind: "record", detail: { merged: true } },
     })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      dependencyDraftProposal: { kind: "draft", proposal: {} },
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      events: [{
+        ...events[0],
+        eventKey: `dependency-observation-proposal:draft:sha256:${"d".repeat(64)}`,
+        stage: "dependency_observation_proposal",
+        payloadRef: {
+          kind: "dependency_observation_proposal_draft",
+          candidate: { manager_commands: { update: "pnpm update package" } },
+        },
+      }],
+    })).toBe(false);
+    expect(isChangeRecordResponse({
+      ...validResponse,
+      events: [{
+        ...events[0],
+        eventKey: `dependency-observation-proposal:draft:sha256:${"d".repeat(64)}`,
+        stage: "dependency_observation_proposal",
+        payloadRef: {
+          kind: "redacted_dependency_observation_proposal",
+          version: 1,
+          disclosure: "bounded_projection_only",
+        },
+      }],
+    })).toBe(true);
   });
 
   it("formats invalid timestamps without throwing", () => {

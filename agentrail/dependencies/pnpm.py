@@ -38,6 +38,7 @@ class RegistryPackage:
     """Registry data already fetched by an outer adapter."""
 
     available_versions: Tuple[str, ...]
+    yanked_versions: Tuple[str, ...] = ()
 
 
 class RegistryAdapter(Protocol):

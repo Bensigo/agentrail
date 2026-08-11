@@ -20,9 +20,13 @@ class DependencyUpgradeEvidenceGuardrail:
         "registry URL/SRI provenance and exact descriptive external-builder argv; "
         "managed execution returns capability_unavailable before clone. Project npm "
         "config, runtime containment, and the exact manifest transition must be proven "
-        "by that external builder and are not claimed here. No live builder, deployed, "
-        "or customer proof is claimed. Detected Yarn and Bun remain non-operational "
-        "extension points."
+        "by that external builder and are not claimed here. Cargo v1 is a bounded "
+        "observation-only parser foundation: it validates supplied root lock syntax and "
+        "descriptive candidate constraints, but it is excluded from both evidence gates "
+        "and has no managed executor. Lock checksums are syntax/provenance fields, not "
+        "independently authenticated target artifacts. "
+        "No live builder, deployed, or customer proof is claimed. Detected Yarn and Bun "
+        "remain non-operational extension points."
     )
     blocking: bool = True
     framework_neutral: bool = True

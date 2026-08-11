@@ -5,6 +5,8 @@ from typing import Dict, Optional, Sequence
 
 import pytest
 
+import agentrail.dependencies.cargo as cargo_module
+import agentrail.dependencies.observation as observation_module
 from agentrail.dependencies.observation import (
     CandidatesResult,
     UnsupportedResult,
@@ -23,14 +25,15 @@ BASELINE = "b" * 40
 
 
 class Registry:
-    def __init__(self, versions: Dict[str, Sequence[str]]) -> None:
+    def __init__(self, versions: Dict[str, Sequence[str]], *, yanked: Dict[str, Sequence[str]] | None = None) -> None:
         self.versions = versions
+        self.yanked = yanked or {}
         self.calls = []
 
     def package_metadata(self, package: str) -> Optional[RegistryPackage]:
         self.calls.append(package)
         values = self.versions.get(package)
-        return RegistryPackage(tuple(values)) if values is not None else None
+        return RegistryPackage(tuple(values), tuple(self.yanked.get(package, ()))) if values is not None else None
 
 
 class Newest(TargetVersionAdapter):
@@ -198,20 +201,211 @@ def test_uv_v1_rejects_lock_and_manifest_python_range_drift() -> None:
     assert registry.calls == []
 
 
-def test_cargo_dispatch_detects_candidate() -> None:
-    result = observe_dependencies(
-        _snapshot(
-            **{
-                "Cargo.toml": '[dependencies]\nserde = "1.0"\n',
-                "Cargo.lock": 'version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.203"\n',
-            }
+def _cargo_files(
+    *,
+    serde_requirement: str = "^1.0.203",
+    serde_version: str = "1.0.203",
+    package_source: str = "registry+https://github.com/rust-lang/crates.io-index",
+    package_checksum: str = "a" * 64,
+    manifest_extra: str = "",
+    lock_extra: str = "",
+) -> Dict[str, str]:
+    return {
+        "Cargo.toml": (
+            '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n\n'
+            "[dependencies]\n"
+            f'serde = "{serde_requirement}"\n'
+            f"{manifest_extra}"
         ),
+        "Cargo.lock": (
+            "version = 3\n\n"
+            "[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n"
+            'dependencies = ["serde"]\n\n'
+            "[[package]]\nname = \"serde\"\n"
+            f'version = "{serde_version}"\n'
+            f'source = "{package_source}"\n'
+            f'checksum = "{package_checksum}"\n'
+            f"{lock_extra}"
+        ),
+    }
+
+
+def test_cargo_registry_lock_profile_detects_a_profile_bound_candidate() -> None:
+    result = observe_dependencies(
+        _snapshot(**_cargo_files()),
         registry=Registry({"serde": ("1.0.203", "1.0.204")}),
         target_versions=Newest(),
     )
     assert isinstance(result, CandidatesResult)
-    assert result.candidates[0].package_manager == "cargo"
-    assert result.candidates[0].manifest_path == "Cargo.toml"
+    candidate = result.candidates[0]
+    assert (candidate.package_manager, candidate.ecosystem) == ("cargo", "rust")
+    assert candidate.adapter_profile == "cargo_lock_registry_only_v1"
+    assert candidate.adapter_identity_fingerprint is not None
+    assert candidate.manifest_path == "Cargo.toml"
+    assert candidate.lockfile_path == "Cargo.lock"
+    assert candidate.manager_commands["update"] == "cargo update -p serde --precise 1.0.204"
+
+
+@pytest.mark.parametrize(
+    ("files", "reason"),
+    [
+        (_cargo_files(manifest_extra="\n[workspace]\nmembers = []\n"), "workspace"),
+        (_cargo_files(manifest_extra="\n[patch.crates-io]\nserde = { path = \"vendor/serde\" }\n"), "patch"),
+        (_cargo_files(package_source="git+https://example.invalid/serde"), "crates.io"),
+        (_cargo_files(package_checksum="not-a-checksum"), "checksum"),
+    ],
+)
+def test_cargo_registry_lock_profile_refuses_unsafe_source_custody(files, reason) -> None:
+    registry = Registry({"serde": ("1.0.203", "1.0.204")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert reason in result.reasons[0]
+    assert registry.calls == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (".cargo", ".cargo/config", ".cargo/config.toml", "./.cargo/config.toml", ".cargo\\config.toml"),
+)
+def test_cargo_observer_rejects_supplied_dot_cargo_paths_before_registry(path) -> None:
+    files = _cargo_files()
+    files[path] = "[registries.private]\nindex = 'https://example.invalid/index'\n"
+    registry = Registry({"serde": ("1.0.203", "1.0.204")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "supplied .cargo path" in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_cargo_registry_lock_profile_excludes_targets_outside_its_caret_constraint() -> None:
+    registry = Registry({"serde": ("1.0.203", "2.0.0")})
+
+    result = observe_dependencies(
+        _snapshot(**_cargo_files()), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, UnchangedResult)
+    assert result.candidates == ()
+
+
+def test_cargo_target_selection_prefilters_zero_major_constraint() -> None:
+    result = observe_dependencies(
+        _snapshot(**_cargo_files(serde_requirement="^0.2.3", serde_version="0.2.3")),
+        registry=Registry({"serde": ("0.2.3", "0.2.4", "0.3.0")}),
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, CandidatesResult)
+    assert result.candidates[0].target_version == "0.2.4"
+
+
+def test_cargo_registry_lock_profile_refuses_yanked_current_or_target_release() -> None:
+    current = observe_dependencies(
+        _snapshot(**_cargo_files()),
+        registry=Registry({"serde": ("1.0.203", "1.0.204")}, yanked={"serde": ("1.0.203",)}),
+        target_versions=Newest(),
+    )
+    assert isinstance(current, InsufficientEvidenceResult)
+    assert "locked Cargo version" in current.reasons[0]
+
+    target = observe_dependencies(
+        _snapshot(**_cargo_files()),
+        registry=Registry({"serde": ("1.0.203", "1.0.204")}, yanked={"serde": ("1.0.204",)}),
+        target_versions=Newest(),
+    )
+    assert isinstance(target, UnchangedResult)
+    assert target.candidates == ()
+
+
+def test_cargo_registry_must_contain_exact_locked_release_before_yanked_or_target_filtering() -> None:
+    class MustNotChooseTarget(TargetVersionAdapter):
+        def choose_target_version(self, *args, **kwargs):
+            raise AssertionError("missing locked release reached target selection")
+
+    result = observe_dependencies(
+        _snapshot(**_cargo_files()),
+        registry=Registry(
+            {"serde": ("1.0.204",)},
+            yanked={"serde": ("1.0.203",)},
+        ),
+        target_versions=MustNotChooseTarget(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "does not contain the exact locked Cargo version" in result.reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"] + '\n[replace]\n"serde:1.0.203" = { path = "vendor/serde" }\n'}), "replace"),
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"] + '\n[dev-dependencies]\ninsta = "^1.0.0"\n'}), "dev"),
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"] + '\n[build-dependencies]\ncc = "^1.0.0"\n'}), "build"),
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"] + "\n[target.'cfg(unix)'.dependencies]\nlibc = \"^0.2.0\"\n"}), "target"),
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"].replace('serde = "^1.0.203"', 'serde = { version = "^1.0.203", path = "vendor/serde" }')}), "stable caret"),
+        (lambda files: files.update({"Cargo.toml": files["Cargo.toml"].replace('serde = "^1.0.203"', 'serde = { version = "^1.0.203", git = "https://example.invalid/serde" }')}), "stable caret"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('checksum = "' + "a" * 64 + '"\n', "")}), "checksum"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"].replace('dependencies = ["serde"]', 'dependencies = ["missing"]')}), "unresolved"),
+        (lambda files: files.update({"Cargo.lock": files["Cargo.lock"] + '\n[[package]]\nname = "serde"\nversion = "1.0.202"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "' + "c" * 64 + '"\n'}), "multiple resolutions"),
+    ],
+)
+def test_cargo_registry_lock_profile_refuses_unmodelled_manifest_and_graph_semantics(mutate, reason) -> None:
+    files = _cargo_files()
+    mutate(files)
+    registry = Registry({"serde": ("1.0.203", "1.0.204")})
+
+    result = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert reason in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_cargo_parser_enforces_manifest_lock_package_and_edge_caps(monkeypatch) -> None:
+    files = _cargo_files()
+    registry = Registry({"serde": ("1.0.203", "1.0.204")})
+
+    monkeypatch.setattr(observation_module, "CARGO_MANIFEST_MAX_BYTES", 8)
+    manifest = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+    assert isinstance(manifest, InsufficientEvidenceResult)
+    assert "Cargo.toml exceeds the byte limit" in manifest.reasons[0]
+
+    monkeypatch.setattr(observation_module, "CARGO_MANIFEST_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(cargo_module, "CARGO_LOCK_MAX_BYTES", 8)
+    lock = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+    assert isinstance(lock, InsufficientEvidenceResult)
+    assert "Cargo.lock exceeds the byte limit" in lock.reasons[0]
+
+    monkeypatch.setattr(cargo_module, "CARGO_LOCK_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(cargo_module, "CARGO_LOCK_MAX_PACKAGES", 1)
+    packages = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+    assert isinstance(packages, InsufficientEvidenceResult)
+    assert "Cargo.lock exceeds the package limit" in packages.reasons[0]
+
+    monkeypatch.setattr(cargo_module, "CARGO_LOCK_MAX_PACKAGES", 100)
+    monkeypatch.setattr(cargo_module, "CARGO_LOCK_MAX_EDGES", 0)
+    edges = observe_dependencies(
+        _snapshot(**files), registry=registry, target_versions=Newest(),
+    )
+    assert isinstance(edges, InsufficientEvidenceResult)
+    assert "Cargo.lock exceeds the dependency-edge limit" in edges.reasons[0]
+    assert registry.calls == []
 
 
 def test_go_modules_dispatch_detects_candidate_and_checksum() -> None:

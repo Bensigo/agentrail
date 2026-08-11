@@ -38,6 +38,7 @@ from agentrail.dependencies.pnpm import (
     observe_pnpm_dependencies,
 )
 from agentrail.dependencies.manager import (
+    CARGO_ADAPTER_PROFILE,
     COMMAND_PLANS,
     NPM_ADAPTER_PROFILE,
     NPM_DEPENDENCY_KINDS,
@@ -45,6 +46,12 @@ from agentrail.dependencies.manager import (
     SupportedDetection,
     detect_dependency_manager,
     npm_save_flag,
+)
+from agentrail.dependencies.cargo import (
+    CARGO_MANIFEST_MAX_BYTES,
+    cargo_constraint_matches,
+    parse_cargo_lockfile,
+    stable_version,
 )
 from agentrail.dependencies.npm_semver import npm_constraint_matches
 from agentrail.dependencies.strict_json import loads_strict_json
@@ -750,55 +757,63 @@ def _parse_python_requirement(value: Any) -> Optional[Tuple[str, str]]:
 
 
 def _cargo_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
-    manifest, error = _toml_mapping(files.get("Cargo.toml", ""), "Cargo.toml")
+    """Parse supplied Cargo roots without claiming generic inventory completeness.
+
+    A supplied ``.cargo`` path is enough to refuse the profile. Only the GitHub
+    heartbeat provider currently proves its absence through a complete
+    exact-SHA root listing; injected providers do not gain that custody here.
+    """
+
+    if any(path == ".cargo" or path.startswith(".cargo/") for path in files):
+        return (), "Cargo v1 rejects any supplied .cargo path until repository configuration is modeled"
+    manifest_text = files.get("Cargo.toml", "")
+    try:
+        manifest_size = len(manifest_text.encode("utf-8"))
+    except (AttributeError, UnicodeEncodeError):
+        return (), "Cargo.toml is not valid UTF-8 text"
+    if manifest_size > CARGO_MANIFEST_MAX_BYTES:
+        return (), "Cargo.toml exceeds the byte limit"
+    manifest, error = _toml_mapping(manifest_text, "Cargo.toml")
     if error:
         return (), error
-    lock, error = _toml_mapping(files.get("Cargo.lock", ""), "Cargo.lock")
-    if error:
-        return (), error
-    maps: Dict[str, Dict[str, str]] = {}
-    for kind in ("dependencies", "devDependencies", "buildDependencies"):
-        section = {"dependencies": "dependencies", "devDependencies": "dev-dependencies", "buildDependencies": "build-dependencies"}[kind]
-        raw = manifest.get(section, {})
-        if not isinstance(raw, dict):
-            return (), f"Cargo.toml {section} must be an object"
-        maps[kind] = {}
-        for package, requirement in raw.items():
-            specifier = _cargo_specifier(requirement)
-            if not isinstance(package, str) or not package or specifier is None:
-                return (), f"Cargo.toml contains an unsupported {section} entry"
-            maps[kind][package] = specifier
-    workspace = manifest.get("workspace")
-    if isinstance(workspace, dict) and isinstance(workspace.get("dependencies"), dict):
-        for package, requirement in workspace["dependencies"].items():
-            specifier = _cargo_specifier(requirement)
-            if not isinstance(package, str) or specifier is None:
-                return (), "Cargo.toml workspace dependencies are not safely parseable"
-            maps.setdefault("dependencies", {})[package] = specifier
-    packages = lock.get("package")
-    if not isinstance(packages, list):
-        return (), "Cargo.lock has no supported package entries"
-    versions: Dict[str, set] = {}
-    for item in packages:
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("version"), str):
-            return (), "Cargo.lock contains malformed package entries"
-        versions.setdefault(item["name"], set()).add(item["version"])
-    locked: Dict[str, str] = {}
-    for package, values in versions.items():
-        if len(values) != 1:
-            return (), f"Cargo.lock contains multiple versions of {package}"
-        locked[package] = next(iter(values))
-    return _entries_from_locked_maps(maps, {}, locked, selected, "Cargo.toml", "Cargo.lock")
-
-
-def _cargo_specifier(value: Any) -> Optional[str]:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    if isinstance(value, dict):
-        version = value.get("version")
-        if isinstance(version, str) and version.strip() and not any(key in value for key in ("path", "git", "registry")):
-            return version.strip()
-    return None
+    if any(key in manifest for key in ("workspace", "patch", "replace", "source", "target", "dev-dependencies", "build-dependencies")):
+        return (), "Cargo v1 rejects workspace, patch, replace, source, target, dev, and build dependency configuration"
+    project = manifest.get("package")
+    dependencies = manifest.get("dependencies")
+    if not isinstance(project, dict) or not isinstance(project.get("name"), str) or stable_version(project.get("version")) is None:
+        return (), "Cargo.toml must declare one stable root package"
+    if not isinstance(dependencies, dict) or not dependencies:
+        return (), "Cargo.toml dependencies must be a non-empty object"
+    direct: Dict[str, str] = {}
+    for package, requirement in dependencies.items():
+        matches, constraint_error = cargo_constraint_matches(requirement, "0.0.0")
+        del matches
+        if not isinstance(package, str) or constraint_error is not None:
+            return (), "Cargo.toml dependency must use a stable caret requirement"
+        direct[package] = requirement
+    try:
+        graph = parse_cargo_lockfile(files.get("Cargo.lock", ""))
+    except ValueError as exc:
+        return (), str(exc)
+    if graph.root.name != project["name"] or graph.root.version != project["version"]:
+        return (), "Cargo.toml root package does not match Cargo.lock"
+    if set(graph.root.dependencies) != set(direct):
+        return (), "Cargo.toml direct dependencies do not exactly match the Cargo.lock root graph"
+    names = sorted(set(selected) if selected else direct)
+    if any(not isinstance(name, str) or not name for name in names):
+        return (), "selected dependency names must be non-empty strings"
+    entries: list[_Entry] = []
+    for package in names:
+        if package not in direct:
+            return (), f"selected dependency is not declared in Cargo.toml: {package}"
+        locked = graph.packages.get(package)
+        if locked is None:
+            return (), f"Cargo.lock has no direct resolution for {package}"
+        matches, constraint_error = cargo_constraint_matches(direct[package], locked.version)
+        if constraint_error is not None or not matches:
+            return (), f"Cargo.lock version for {package} does not satisfy its Cargo semver constraint"
+        entries.append(_Entry(package, "dependencies", direct[package], locked.version, "Cargo.toml", "Cargo.lock"))
+    return tuple(entries), None
 
 
 def _go_entries(files: Mapping[str, str], selected: Sequence[str]) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
@@ -927,6 +942,30 @@ def _observe_entries(
                     unchanged.append(entry.package)
                     continue
                 available = compatible
+        if manager.name is ManagerName.CARGO:
+            if entry.current_version not in available:
+                return _insufficient(
+                    f"registry data for {entry.package} does not contain the exact locked Cargo version"
+                )
+            yanked = set(metadata.yanked_versions)
+            if entry.current_version in yanked:
+                return _insufficient(f"locked Cargo version for {entry.package} is yanked")
+            available = tuple(version for version in available if version not in yanked)
+            if not available:
+                return _insufficient(f"registry data for {entry.package} has no non-yanked releases")
+            if stable_version(entry.current_version) is None:
+                return _insufficient(f"locked Cargo version for {entry.package} must be stable semver")
+            current_matches, constraint_error = cargo_constraint_matches(entry.specifier, entry.current_version)
+            if constraint_error is not None or not current_matches:
+                return _insufficient(f"locked Cargo version for {entry.package} does not satisfy its Cargo semver constraint")
+            compatible = tuple(
+                version
+                for version in available
+                if cargo_constraint_matches(entry.specifier, version) == (True, None)
+            )
+            if not compatible:
+                return _insufficient(f"registry data for {entry.package} has no compatible stable Cargo releases")
+            available = compatible
         try:
             target = target_versions.choose_target_version(
                 entry.package,
@@ -949,6 +988,10 @@ def _observe_entries(
             floor = entry.specifier[2:]
             if _uv_release(target) is None or _compare_uv_releases(target, floor) < 0:
                 return _insufficient(f"target version for {entry.package} violates pyproject.toml")
+        if manager.name is ManagerName.CARGO:
+            target_matches, constraint_error = cargo_constraint_matches(entry.specifier, target)
+            if constraint_error is not None or not target_matches:
+                return _insufficient(f"target version for {entry.package} does not satisfy its Cargo semver constraint")
         comparison = _compare_versions(entry.current_version, target)
         if comparison == 0:
             unchanged.append(entry.package)
@@ -991,9 +1034,10 @@ def _make_candidate(
         else (render(plan.install), render(plan.verify))
     )
     fingerprint = f"sha256:{digest}"
-    adapter_profile = (
-        NPM_ADAPTER_PROFILE if manager.name is ManagerName.NPM else None
-    )
+    adapter_profile = {
+        ManagerName.NPM: NPM_ADAPTER_PROFILE,
+        ManagerName.CARGO: CARGO_ADAPTER_PROFILE,
+    }.get(manager.name)
     adapter_fingerprint = (
         adapter_identity_fingerprint(
             candidate_fingerprint=fingerprint,

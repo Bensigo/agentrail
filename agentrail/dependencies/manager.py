@@ -78,6 +78,7 @@ class AdapterCapability(str, Enum):
 # may be inferred from a lockfile name at execution time.
 PNPM_ADAPTER_PROFILE = "pnpm_lockfile_only_v1"
 NPM_ADAPTER_PROFILE = "npm_package_lock_only_v1"
+CARGO_ADAPTER_PROFILE = "cargo_lock_registry_only_v1"
 ADAPTER_PROFILE_IDS: Mapping[Tuple[str, str], str] = {
     (Ecosystem.NODE.value, ManagerId.PNPM.value): PNPM_ADAPTER_PROFILE,
     (Ecosystem.NODE.value, ManagerId.NPM.value): NPM_ADAPTER_PROFILE,
@@ -569,6 +570,7 @@ __all__ = [
     "CommandPlan",
     "AdapterCapability",
     "ADAPTER_PROFILE_IDS",
+    "CARGO_ADAPTER_PROFILE",
     "DependencyManagerSnapshot",
     "DetectionResult",
     "DetectionStatus",

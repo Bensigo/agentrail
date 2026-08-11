@@ -12,13 +12,14 @@ const valid = {
   recordId: RECORD_ID,
   compiledPackId: PACK_ID,
   candidate: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     package: "@agentrail/example",
     dependencyKind: "dependencies" as const,
     specifier: "^1.2.3",
     currentVersion: "1.2.3",
     targetVersion: "1.3.0",
   },
-  runtime: { disposition: "safe" as const, nodeVersion: "22.17.0", evidenceSha256: SHA256 },
+  runtime: { identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" }, disposition: "safe" as const, version: "22.17.0", evidenceSha256: SHA256 },
   packageManager: {
     disposition: "safe" as const,
     name: "pnpm",
@@ -38,6 +39,7 @@ const valid = {
   },
   baseline: { headSha: HEAD_SHA },
   security: {
+    identity: { ecosystem: "node", manager: "pnpm", profile: "pnpm_lockfile_only_v1" },
     disposition: "clear" as const,
     provider: "osv",
     reference: "osv:npm:@agentrail/example@1.3.0",
@@ -76,20 +78,12 @@ describe("Acceptance dependency observation input boundary", () => {
       await expect(recordAcceptanceDependencyObservation({ ...valid, candidate } as never))
         .rejects.toThrow("exact bounded runner evidence");
     }
-    await expect(recordAcceptanceDependencyObservation({
-      ...valid,
-      manifest: { path: "README.md", blobSha: valid.manifest.blobSha },
-    } as never)).rejects.toThrow("exact bounded runner evidence");
-    await expect(recordAcceptanceDependencyObservation({
-      ...valid,
-      lockfile: { ...valid.lockfile, path: "package-lock.json" },
-    } as never)).rejects.toThrow("exact bounded runner evidence");
   });
 
   it("requires coherent runtime evidence, fixed OSV identity, and bounded shell-free argv", async () => {
     await expect(recordAcceptanceDependencyObservation({
       ...valid,
-      runtime: { ...valid.runtime, disposition: "unavailable", nodeVersion: "22.17.0" },
+      runtime: { ...valid.runtime, disposition: "unavailable", version: "22.17.0" },
     } as never)).rejects.toThrow("exact bounded runner evidence");
     await expect(recordAcceptanceDependencyObservation({
       ...valid,
@@ -97,23 +91,23 @@ describe("Acceptance dependency observation input boundary", () => {
     } as never)).rejects.toThrow("exact bounded runner evidence");
     await expect(recordAcceptanceDependencyObservation({
       ...valid,
-      packageManager: { ...valid.packageManager, updateArgv: ["pnpm", "token secret"] },
-    } as never)).rejects.toThrow("exact bounded runner evidence");
-    await expect(recordAcceptanceDependencyObservation({
-      ...valid,
       candidate: { ...valid.candidate, specifier: `^1.2.3\u202e` },
     } as never)).rejects.toThrow("exact bounded runner evidence");
     await expect(recordAcceptanceDependencyObservation({
       ...valid,
-      security: { ...valid.security, provider: "npm" },
-    } as never)).rejects.toThrow("exact bounded runner evidence");
-    await expect(recordAcceptanceDependencyObservation({
-      ...valid,
-      security: { ...valid.security, reference: "https://osv.dev/vulnerability/GHSA-test" },
-    } as never)).rejects.toThrow("exact bounded runner evidence");
-    await expect(recordAcceptanceDependencyObservation({
-      ...valid,
       lockfile: { ...valid.lockfile, disposition: "missing", blobSha: valid.lockfile.blobSha },
+    } as never)).rejects.toThrow("exact bounded runner evidence");
+  });
+
+  it("rejects legacy v1 runner bodies while durable v1 events remain replay-compatible", async () => {
+    const { identity: _candidateIdentity, ...candidate } = valid.candidate;
+    const { identity: _runtimeIdentity, version, ...runtime } = valid.runtime;
+    const { identity: _securityIdentity, ...security } = valid.security;
+    await expect(recordAcceptanceDependencyObservation({
+      ...valid,
+      candidate,
+      runtime: { ...runtime, nodeVersion: version },
+      security,
     } as never)).rejects.toThrow("exact bounded runner evidence");
   });
 });

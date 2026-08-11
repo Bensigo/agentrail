@@ -130,3 +130,24 @@ def test_pnpm_plan_preserves_existing_frozen_lockfile_concept() -> None:
     assert result.manager_id is ManagerId.PNPM
     assert result.command_plan.install == ("pnpm", "install", "--frozen-lockfile")
     assert "{dependency}@{version}" in result.command_plan.upgrade
+
+
+def test_uv_plan_is_lock_only_and_suppresses_ambient_execution_inputs() -> None:
+    result = _detect("pyproject.toml", "uv.lock")
+
+    assert isinstance(result, SupportedDetection)
+    assert result.manager_id is ManagerId.UV
+    assert result.command_plan.upgrade == (
+        "uv",
+        "lock",
+        "--no-cache",
+        "--no-config",
+        "--no-python-downloads",
+        "--no-sources",
+        "--no-build",
+        "--upgrade-package",
+        "{dependency}=={version}",
+    )
+    assert "add" not in result.command_plan.upgrade
+    assert "sync" not in result.command_plan.install
+    assert "run" not in result.command_plan.verify

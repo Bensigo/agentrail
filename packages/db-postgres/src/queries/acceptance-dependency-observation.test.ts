@@ -72,6 +72,45 @@ const validYarn = {
   security: { ...valid.security, identity: yarnIdentity },
 };
 
+const uvIdentity = {
+  ecosystem: "python",
+  manager: "uv",
+  profile: "uv_project_lockfile_only_v1",
+};
+const validUv = {
+  ...valid,
+  candidate: {
+    identity: uvIdentity,
+    package: "httpx",
+    dependencyKind: "dependencies" as const,
+    specifier: ">=0.27.0",
+    currentVersion: "0.27.0",
+    targetVersion: "0.28.1",
+  },
+  runtime: {
+    ...valid.runtime,
+    identity: uvIdentity,
+    version: "3.12.8",
+  },
+  packageManager: {
+    ...valid.packageManager,
+    name: "uv",
+    version: "0.12.0",
+    profile: "uv_project_lockfile_only_v1",
+    updateArgv: [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package", "httpx==0.28.1",
+    ],
+  },
+  manifest: { ...valid.manifest, path: "pyproject.toml" },
+  lockfile: { ...valid.lockfile, path: "uv.lock" },
+  security: {
+    ...valid.security,
+    identity: uvIdentity,
+    reference: "osv:PyPI:httpx@0.28.1",
+  },
+};
+
 describe("Acceptance dependency observation input boundary", () => {
   it("rejects caller-supplied authority, status, fingerprint, and execution side effects", async () => {
     for (const extra of [
@@ -146,6 +185,32 @@ describe("Acceptance dependency observation input boundary", () => {
           identity: { ...validYarn.candidate.identity, manager: "Yarn" },
         },
       },
+    ]) {
+      await expect(recordAcceptanceDependencyObservation(malformed as never))
+        .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);
+    }
+  });
+
+  it("rejects structurally unsafe uv evidence before historical replay lookup", async () => {
+    for (const malformed of [
+      { ...validUv, candidate: { ...validUv.candidate, package: `httpx\u202e` } },
+      { ...validUv, candidate: { ...validUv.candidate, package: "x".repeat(215) } },
+      {
+        ...validUv,
+        candidate: {
+          ...validUv.candidate,
+          identity: { ...validUv.candidate.identity, ecosystem: "Python" },
+        },
+      },
+      {
+        ...validUv,
+        packageManager: {
+          ...validUv.packageManager,
+          updateArgv: [...validUv.packageManager.updateArgv, `--index-url\u2066`],
+        },
+      },
+      { ...validUv, manifest: { ...validUv.manifest, path: "../pyproject.toml" } },
+      { ...validUv, security: { ...validUv.security, reportSha256: "not-a-digest" } },
     ]) {
       await expect(recordAcceptanceDependencyObservation(malformed as never))
         .rejects.toBeInstanceOf(AcceptanceDependencyObservationInvalidEvidenceError);

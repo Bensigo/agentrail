@@ -8122,7 +8122,7 @@ export type AcceptanceDependencySecurityEvidence = {
   reportSha256: string;
 };
 
-/** Explicit identity; the server never infers Node, npm, pnpm, or an OSV namespace. */
+/** Explicit identity; the server never infers a runtime, manager, or OSV namespace. */
 export type AcceptanceDependencyProfileIdentity = {
   ecosystem: string;
   manager: string;
@@ -8221,6 +8221,7 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_ACTOR = "server:dependency-observation";
 const ACCEPTANCE_DEPENDENCY_PNPM_PROFILE = "pnpm_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_NPM_PROFILE = "npm_package_lock_only_v1";
 const ACCEPTANCE_DEPENDENCY_YARN_PROFILE = "yarn_berry_v4_root_lockfile_only_v1";
+const ACCEPTANCE_DEPENDENCY_UV_PROFILE = "uv_project_lockfile_only_v1";
 const ACCEPTANCE_DEPENDENCY_PNPM_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "pnpm", profile: ACCEPTANCE_DEPENDENCY_PNPM_PROFILE,
 };
@@ -8230,7 +8231,11 @@ const ACCEPTANCE_DEPENDENCY_NPM_IDENTITY: AcceptanceDependencyProfileIdentity = 
 const ACCEPTANCE_DEPENDENCY_YARN_IDENTITY: AcceptanceDependencyProfileIdentity = {
   ecosystem: "node", manager: "yarn", profile: ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
 };
+const ACCEPTANCE_DEPENDENCY_UV_IDENTITY: AcceptanceDependencyProfileIdentity = {
+  ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
+};
 const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const NORMALIZED_PYPI_PACKAGE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const SAFE_PACKAGE_MANAGER_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UNSAFE_NPM_SPECIFIER = /^(?:file|link|workspace|git\+|git|path|https?):/i;
@@ -8285,6 +8290,32 @@ function stableSemverAtLeast(value: string, minimum: [number, number, number]): 
     if (tuple[index]! < minimum[index]!) return false;
   }
   return true;
+}
+
+function compareStableReleaseTuples(
+  left: [number, number, number],
+  right: [number, number, number],
+): number {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]! > right[index]!) return 1;
+    if (left[index]! < right[index]!) return -1;
+  }
+  return 0;
+}
+
+function uvCandidateIsValid(candidate: AcceptanceDependencyCandidate): boolean {
+  if (candidate.dependencyKind !== "dependencies"
+    || !NORMALIZED_PYPI_PACKAGE_NAME.test(candidate.package)) return false;
+  const lowerBound = /^>=(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
+    .exec(candidate.specifier);
+  const current = stableSemverTuple(candidate.currentVersion);
+  const target = stableSemverTuple(candidate.targetVersion);
+  if (!lowerBound || !current || !target) return false;
+  const bound = lowerBound.slice(1).map(Number) as [number, number, number];
+  return bound.every(Number.isSafeInteger)
+    && compareStableReleaseTuples(current, bound) >= 0
+    && compareStableReleaseTuples(target, bound) >= 0
+    && compareStableReleaseTuples(target, current) > 0;
 }
 
 function yarnCandidateSpecifierIsValid(value: string): boolean {
@@ -8392,20 +8423,40 @@ const ACCEPTANCE_DEPENDENCY_OBSERVATION_PROFILES = new Map<string, AcceptanceDep
       return flag ? [...argv, flag] : argv;
     },
   }],
+  ["python:uv:uv_project_lockfile_only_v1", {
+    identity: ACCEPTANCE_DEPENDENCY_UV_IDENTITY,
+    candidateIsValid: uvCandidateIsValid,
+    runtimeVersionIsValid: (version) => stableSemverTuple(version)?.[0] === 3,
+    packageManagerVersionIsValid: (version) => {
+      const parsed = stableSemverTuple(version);
+      return parsed?.[0] === 0 && parsed[1] === 12;
+    },
+    manifestPathIsValid: (path) => path === "pyproject.toml",
+    lockfilePathIsValid: (path) => path === "uv.lock",
+    securityIsValid: (security, candidate) => security.provider === "osv"
+      && security.reference === `osv:PyPI:${candidate.package}@${candidate.targetVersion}`,
+    expectedArgv: (candidate) => [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package",
+      `${candidate.package}==${candidate.targetVersion}`,
+    ],
+  }],
 ]);
 
 function isStrictCurrentAcceptanceDependencyProfile(
   identity: AcceptanceDependencyProfileIdentity,
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
 }
 
 function isFrozenReplayEligibleAcceptanceDependencyProfile(
   identity: AcceptanceDependencyProfileIdentity,
 ): boolean {
   return sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_NPM_IDENTITY)
-    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY);
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_YARN_IDENTITY)
+    || sameAcceptanceDependencyProfile(identity, ACCEPTANCE_DEPENDENCY_UV_IDENTITY);
 }
 
 function acceptanceDependencyObservationProfile(identity: AcceptanceDependencyProfileIdentity): AcceptanceDependencyObservationProfile | null {

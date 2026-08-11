@@ -85,6 +85,16 @@ _SEMVER = re.compile(
     r"(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
 )
 _PYTHON_REQUIREMENT = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*(.*)$")
+_UV_CANONICAL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_UV_STABLE_RELEASE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_UV_DIRECT_REQUIREMENT = re.compile(
+    r"^(?P<package>[a-z0-9]+(?:-[a-z0-9]+)*)>=(?P<floor>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$"
+)
+_UV_REQUIRES_PYTHON = re.compile(
+    r"^>=3\.(?P<lower_minor>\d+)\.(?P<lower_patch>\d+),<3\.(?P<upper_minor>\d+)\.0$"
+)
+_UV_PYPI_REGISTRY = "https://pypi.org/simple"
+_UV_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GO_REQUIRE = re.compile(r"^\s*(\S+)\s+(v\S+)(?:\s+//\s*(.*))?\s*$")
 _GO_SUM = re.compile(r"^(\S+)\s+(v[^\s/]+)(?:/go\.mod)?\s+h1:\S+\s*$")
 
@@ -121,7 +131,9 @@ def observe_dependencies(
         return _insufficient("baseline SHA is missing")
     if detected.name is ManagerName.NPM:
         entries, error = _npm_entries(files, selected_dependencies)
-    elif detected.name in (ManagerName.POETRY, ManagerName.UV):
+    elif detected.name is ManagerName.UV:
+        entries, error = _uv_entries(files, selected_dependencies)
+    elif detected.name is ManagerName.POETRY:
         entries, error = _python_entries(files, detected.name, selected_dependencies)
     elif detected.name is ManagerName.CARGO:
         entries, error = _cargo_entries(files, selected_dependencies)
@@ -336,6 +348,204 @@ def _entries_from_locked_maps(
             return (), f"{lockfile_path} has no safely parseable version for {package}"
         entries.append(_Entry(package, kind, specifier, current, manifest_path, lockfile_path))
     return tuple(entries), None
+
+
+def _uv_entries(
+    files: Mapping[str, str], selected: Sequence[str]
+) -> Tuple[Tuple[_Entry, ...], Optional[str]]:
+    manifest, error = _toml_mapping(files.get("pyproject.toml", ""), "pyproject.toml")
+    if error:
+        return (), error
+    lock, error = _toml_mapping(files.get("uv.lock", ""), "uv.lock")
+    if error:
+        return (), error
+
+    project = manifest.get("project")
+    if not isinstance(project, dict):
+        return (), "uv pyproject.toml must contain a static [project] table"
+    project_name = project.get("name")
+    project_version = project.get("version")
+    requires_python = project.get("requires-python")
+    if not isinstance(project_name, str) or not _UV_CANONICAL_NAME.fullmatch(project_name):
+        return (), "uv project name must already be normalized"
+    if not isinstance(project_version, str) or _uv_release(project_version) is None:
+        return (), "uv project version must be a stable numeric release"
+    if not isinstance(requires_python, str) or not _uv_requires_python_is_bounded(requires_python):
+        return (), "uv project requires-python must be one bounded Python 3 minor"
+    dynamic = project.get("dynamic", [])
+    if not isinstance(dynamic, list) or dynamic:
+        return (), "uv project metadata must be static"
+    optional = project.get("optional-dependencies", {})
+    if not isinstance(optional, dict) or optional:
+        return (), "uv v1 does not admit optional dependencies"
+    groups = manifest.get("dependency-groups", {})
+    if not isinstance(groups, dict) or groups:
+        return (), "uv v1 does not admit dependency groups"
+    tool = manifest.get("tool", {})
+    if not isinstance(tool, dict):
+        return (), "uv project tool configuration is malformed"
+    uv_tool = tool.get("uv", {})
+    if not isinstance(uv_tool, dict) or uv_tool:
+        return (), "uv v1 does not admit project uv configuration"
+
+    raw_requirements = project.get("dependencies")
+    if not isinstance(raw_requirements, list) or not raw_requirements:
+        return (), "uv project has no supported direct dependencies"
+    requirements: Dict[str, str] = {}
+    for raw_requirement in raw_requirements:
+        if not isinstance(raw_requirement, str):
+            return (), "uv project contains a non-text dependency"
+        match = _UV_DIRECT_REQUIREMENT.fullmatch(raw_requirement)
+        if match is None:
+            return (), "uv dependencies must use canonical name>=X.Y.Z requirements"
+        package = match.group("package")
+        if package in requirements:
+            return (), f"uv project declares {package} more than once"
+        requirements[package] = f">={match.group('floor')}"
+
+    if (
+        not isinstance(lock.get("version"), int)
+        or isinstance(lock.get("version"), bool)
+        or lock.get("version") != 1
+        or not isinstance(lock.get("revision"), int)
+        or isinstance(lock.get("revision"), bool)
+        or lock.get("revision") != 3
+    ):
+        return (), "uv.lock must use schema version 1 revision 3"
+    if lock.get("requires-python") != requires_python:
+        return (), "pyproject.toml and uv.lock requires-python disagree"
+    packages = lock.get("package")
+    if not isinstance(packages, list) or not packages:
+        return (), "uv.lock has no supported package entries"
+
+    root_dependencies: Optional[set[str]] = None
+    locked: Dict[str, List[Mapping[str, Any]]] = {}
+    for item in packages:
+        if not isinstance(item, dict):
+            return (), "uv.lock contains a malformed package entry"
+        name = item.get("name")
+        version = item.get("version")
+        source = item.get("source")
+        if not isinstance(name, str) or not _UV_CANONICAL_NAME.fullmatch(name):
+            return (), "uv.lock package names must already be normalized"
+        if not isinstance(version, str) or _uv_release(version) is None:
+            return (), f"uv.lock has a non-stable version for {name}"
+        if source in ({"editable": "."}, {"virtual": "."}):
+            if name != project_name or version != project_version or root_dependencies is not None:
+                return (), "uv.lock has invalid root project custody"
+            root_dependencies = _uv_root_dependency_names(item.get("dependencies", []))
+            if root_dependencies is None:
+                return (), "uv.lock root dependencies are ambiguous"
+            continue
+        if source != {"registry": _UV_PYPI_REGISTRY}:
+            return (), f"uv.lock has a non-PyPI source for {name}"
+        if not _uv_distribution_hashes_are_bounded(item):
+            return (), f"uv.lock has no bounded distribution hashes for {name}"
+        locked.setdefault(name, []).append(item)
+
+    if root_dependencies is None:
+        return (), "uv.lock has no exact root project entry"
+    if root_dependencies != set(requirements):
+        return (), "pyproject.toml and uv.lock direct dependencies disagree"
+
+    names = sorted(set(selected) if selected else requirements)
+    if any(not isinstance(name, str) or not _UV_CANONICAL_NAME.fullmatch(name) for name in names):
+        return (), "selected uv dependency names must already be normalized"
+    missing = [name for name in names if name not in requirements]
+    if missing:
+        return (), f"selected dependency is not declared in pyproject.toml: {missing[0]}"
+
+    entries: List[_Entry] = []
+    for package in names:
+        package_rows = locked.get(package, [])
+        if len(package_rows) != 1:
+            return (), f"uv.lock must contain exactly one registry version of {package}"
+        current = package_rows[0]["version"]
+        floor = requirements[package][2:]
+        if _compare_uv_releases(current, floor) < 0:
+            return (), f"uv.lock version for {package} does not satisfy pyproject.toml"
+        entries.append(
+            _Entry(
+                package,
+                "dependencies",
+                requirements[package],
+                current,
+                "pyproject.toml",
+                "uv.lock",
+            )
+        )
+    return tuple(entries), None
+
+
+def _uv_release(value: object) -> Optional[Tuple[int, int, int]]:
+    if not isinstance(value, str):
+        return None
+    match = _UV_STABLE_RELEASE.fullmatch(value)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _compare_uv_releases(left: str, right: str) -> int:
+    left_release = _uv_release(left)
+    right_release = _uv_release(right)
+    if left_release is None or right_release is None:
+        raise ValueError("uv releases must be canonical stable numeric versions")
+    return (left_release > right_release) - (left_release < right_release)
+
+
+def _uv_requires_python_is_bounded(value: str) -> bool:
+    match = _UV_REQUIRES_PYTHON.fullmatch(value)
+    if match is None:
+        return False
+    lower_minor = int(match.group("lower_minor"))
+    upper_minor = int(match.group("upper_minor"))
+    return upper_minor == lower_minor + 1
+
+
+def _uv_root_dependency_names(value: object) -> Optional[set[str]]:
+    if not isinstance(value, list):
+        return None
+    names: set[str] = set()
+    for dependency in value:
+        if not isinstance(dependency, dict) or set(dependency) != {"name"}:
+            return None
+        name = dependency.get("name")
+        if not isinstance(name, str) or not _UV_CANONICAL_NAME.fullmatch(name) or name in names:
+            return None
+        names.add(name)
+    return names
+
+
+def _uv_distribution_hashes_are_bounded(item: Mapping[str, Any]) -> bool:
+    distributions: List[Mapping[str, Any]] = []
+    sdist = item.get("sdist")
+    if sdist is not None:
+        if not isinstance(sdist, dict):
+            return False
+        distributions.append(sdist)
+    wheels = item.get("wheels", [])
+    if not isinstance(wheels, list) or any(not isinstance(wheel, dict) for wheel in wheels):
+        return False
+    distributions.extend(wheels)
+    if not distributions or len(distributions) > 256:
+        return False
+    for distribution in distributions:
+        url = distribution.get("url")
+        digest = distribution.get("hash")
+        size = distribution.get("size")
+        if (
+            not isinstance(url, str)
+            or not url.startswith("https://files.pythonhosted.org/packages/")
+            or len(url) > 2_048
+            or not isinstance(digest, str)
+            or _UV_SHA256.fullmatch(digest) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 1
+        ):
+            return False
+    return True
 
 
 def _python_entries(
@@ -575,9 +785,20 @@ def _observe_entries(
             return _insufficient(f"registry data for {entry.package} is unavailable: {exc}")
         if metadata is None or not metadata.available_versions:
             return _insufficient(f"registry data for {entry.package} is unavailable")
-        available = tuple(metadata.available_versions)
-        if any(_parse_version(version) is None for version in available):
-            return _insufficient(f"registry versions for {entry.package} are unparseable")
+        if manager.name is ManagerName.UV:
+            available = tuple(
+                version
+                for version in metadata.available_versions
+                if _uv_release(version) is not None
+            )
+            if not available:
+                return _insufficient(
+                    f"registry versions for {entry.package} contain no stable numeric releases"
+                )
+        else:
+            available = tuple(metadata.available_versions)
+            if any(_parse_version(version) is None for version in available):
+                return _insufficient(f"registry versions for {entry.package} are unparseable")
         try:
             target = target_versions.choose_target_version(
                 entry.package,
@@ -589,6 +810,10 @@ def _observe_entries(
             return _insufficient(f"target version for {entry.package} is unavailable: {exc}")
         if target is None or target not in available or _parse_version(target) is None:
             return _insufficient(f"target version for {entry.package} is unavailable")
+        if manager.name is ManagerName.UV:
+            floor = entry.specifier[2:]
+            if _uv_release(target) is None or _compare_uv_releases(target, floor) < 0:
+                return _insufficient(f"target version for {entry.package} violates pyproject.toml")
         comparison = _compare_versions(entry.current_version, target)
         if comparison == 0:
             unchanged.append(entry.package)

@@ -1,7 +1,7 @@
 # Jace trust-layer migration ledger
 
-Last reconciled: 2026-08-11 at main commit `55284831`, after merged PRs
-#1677–#1683 and #1685–#1691. The current Yarn evidence-profile slice is
+Last reconciled: 2026-08-11 at main commit `bb5b9a3e`, after merged PRs
+#1677–#1683 and #1685–#1692. The current uv evidence-profile slice is
 described below and remains narrower than canonical R10.1 closure.
 
 This is the main-branch continuation of the canonical R1–R12 release gate
@@ -175,7 +175,7 @@ malformed npm body cannot create an event, and the old refusal cannot be
 approved or minted into an external-builder Pack. Existing pnpm semantics,
 including pnpm-compatible npm aliases and legacy v1 replay, remain unchanged.
 
-This slice adds the closed `node` / `yarn` /
+PR #1692 added the closed `node` / `yarn` /
 `yarn_berry_v4_root_lockfile_only_v1` evidence profile. It accepts only stable
 Yarn 4 with stable Node 18.12 or newer, a root `package.json` and `yarn.lock`,
 an exact OSV npm package-and-target reference, and one dependency-kind-safe
@@ -198,8 +198,37 @@ immutable event, binding, source custody, and evidence. It cannot be promoted
 to `observed`, approved, or minted into an external-builder Pack. A changed
 same-cycle body conflicts, and a new malformed body creates no event.
 
+The current slice adds the closed `python` / `uv` /
+`uv_project_lockfile_only_v1` evidence profile. It accepts only stable uv
+0.12.x with a stable Python 3 runtime, a root `pyproject.toml` and `uv.lock`,
+one canonical PyPI package in direct project dependencies, a canonical
+`>=X.Y.Z` lower bound, stable upward current and target versions, and the exact
+OSV `PyPI` package-and-target identity. The immutable future-builder command is
+`uv lock --no-cache --no-config --no-python-downloads --no-sources --no-build
+--upgrade-package <package>==<target>`. It updates only the lockfile and is not
+executed by this slice.
+
+The authenticated runner evidence remains responsible for attesting a clean,
+allowlisted environment with no ambient `UV_*` index, configuration, Python,
+or cache overrides and PyPI-only TLS egress. The database does not infer those
+facts: it validates the bounded evidence, rederives current Record, Contract,
+compiled-Pack, root-file, blob, tree, and head-cycle custody, and otherwise
+records a refusal or `not_proven`. Existing v5/v3 Packs are sufficient only
+when they already prove both exact root files; no compiler version was changed.
+
+The Python detector now emits the same lock-only command and rejects ambiguous
+project metadata, dependency forms, lock sources, versions, and missing
+distribution hashes before registry access. It is still the legacy watch
+observer and does not call the canonical R10.1 ingestion route. Therefore this
+is source/test compatibility, not a live uv evidence caller.
+
+As with npm and Yarn, a pre-support uv v2 refusal can replay only against its
+exact immutable event and evidence. It cannot become `observed`, approved, or
+minted into an external-builder Pack. Changed evidence conflicts; a new broad
+or malformed uv body creates no event. Legacy v1 replay remains pnpm-only.
+
 Canonical R10.1 therefore remains open. Subsequent versioned adapter slices
-must close the remaining v1 priority managers—pip, Poetry, uv; Maven,
+must close the remaining v1 priority managers—pip, Poetry; Maven,
 Gradle; dotnet/NuGet; Composer; Cargo; and Go Modules—before R10 source/test
 closure. Bun and the lower-priority detected managers may remain labelled
 extension points. Frameworks use their ecosystem package-manager adapter and
@@ -232,6 +261,17 @@ Package typechecks/builds, scoped lint, diff checks, and independent adversarial
 review are green. No Yarn command was executed, no live OSV evidence was
 acquired, no builder received the Pack, and no deployed, live, or customer path
 was observed.
+
+The uv compatibility gate covers 82 focused Python dependency/runtime tests,
+152 focused Console parser, route, and Record-detail tests, six DB boundary
+tests, and three focused fresh-migrated PostgreSQL cases covering exact profile
+admission, refusal truth, exact root custody, immutable historical replay, and
+R10.2 Pack propagation. The exact Python CI lane passed 5,207 tests, and the
+full fresh-migrated database run passed 138 files and 1,754 tests. Package
+typechecks/builds, scoped lint, diff checks, and independent adversarial review
+are green. No uv or OSV command was run, no live canonical runner called the
+ingestion route, no external builder received the Pack, and no deployed, live,
+or customer path was observed.
 
 PR #1682 merged the bounded R10.2 source/test slice. An owner or admin can
 approve only an exact current R10.1 `observed` receipt. Under the same PR lock,

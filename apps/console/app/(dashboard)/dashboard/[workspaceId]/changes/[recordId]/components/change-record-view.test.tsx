@@ -558,6 +558,63 @@ function yarnDependencyEnvelope(
   return envelope;
 }
 
+function uvDependencyEnvelope(
+  withPack = false,
+): Extract<AcceptanceDependencyObservationsEnvelope, { kind: "current" }> {
+  const envelope = structuredClone(currentDependencyObservations) as Extract<
+    AcceptanceDependencyObservationsEnvelope,
+    { kind: "current" }
+  >;
+  const item = envelope.observations[0]!;
+  const identity = {
+    ecosystem: "python",
+    manager: "uv",
+    profile: "uv_project_lockfile_only_v1",
+  };
+  item.observation.candidate = {
+    ...item.observation.candidate,
+    identity,
+    package: "typing-extensions",
+    dependencyKind: "dependencies",
+    specifier: ">=4.10.0",
+    currentVersion: "4.11.0",
+    targetVersion: "4.12.2",
+  };
+  item.observation.runtime = {
+    ...item.observation.runtime,
+    identity,
+    version: "3.12.8",
+  };
+  item.observation.packageManager = {
+    ...item.observation.packageManager,
+    name: "uv",
+    version: "0.12.1",
+    profile: "uv_project_lockfile_only_v1",
+    updateArgv: [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package", "typing-extensions==4.12.2",
+    ],
+  };
+  item.observation.manifest = { ...item.observation.manifest, path: "pyproject.toml" };
+  item.observation.lockfile = { ...item.observation.lockfile, path: "uv.lock" };
+  item.observation.security = {
+    ...item.observation.security,
+    identity,
+    reference: "osv:PyPI:typing-extensions@4.12.2",
+  };
+  if (withPack) {
+    item.approval = structuredClone(dependencyApproval);
+    item.externalBuilderPack = structuredClone(dependencyExternalBuilderPack);
+    item.externalBuilderPack.candidate = structuredClone(item.observation.candidate);
+    item.externalBuilderPack.runtime = structuredClone(item.observation.runtime);
+    item.externalBuilderPack.packageManager = structuredClone(item.observation.packageManager);
+    item.externalBuilderPack.manifest = structuredClone(item.observation.manifest);
+    item.externalBuilderPack.lockfile = structuredClone(item.observation.lockfile);
+    item.externalBuilderPack.security = structuredClone(item.observation.security);
+  }
+  return envelope;
+}
+
 const DETAIL_SNAPSHOT_ID = "00000000-0000-4000-8000-000000000059";
 const DETAIL_PACK_ID = "00000000-0000-4000-8000-000000000058";
 const DETAIL_CURRENT_HEAD = currentFinalDecision.binding.headSha;
@@ -1685,6 +1742,94 @@ describe("Change Record detail view", () => {
     expect(textContent(rendered)).toContain("yarn_configuration_absence_not_proven");
     expect(textContent(rendered)).not.toContain(".yarnrc.yml");
     expect(buttonLabels(rendered)).toEqual([]);
+  });
+
+  it("strictly validates uv receipts and the immutable external-builder Pack", () => {
+    const uv = uvDependencyEnvelope();
+    const uvWithPack = uvDependencyEnvelope(true);
+    expect(isDependencyObservationsEnvelope(uv)).toBe(true);
+    expect(isDependencyObservationsEnvelope(uvWithPack)).toBe(true);
+
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: uvWithPack,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    const content = textContent(rendered);
+    expect(content).toContain("typing-extensions 4.11.0 → 4.12.2");
+    expect(content).toContain("safe · python / uv · 3.12.8");
+    expect(content).toContain("safe · uv 0.12.1 · uv_project_lockfile_only_v1");
+    expect(content).toContain("pyproject.toml");
+    expect(content).toContain("uv.lock");
+    expect(content).toContain("Immutable external-builder Pack receipt");
+    expect(content).toContain("External authority not_granted");
+    expect(content).not.toMatch(/execute|delivery granted|managed-build/iu);
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    for (const mutate of [
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.package = "typing_extensions";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.dependencyKind = "devDependencies";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.specifier = "^4.10.0";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.candidate.targetVersion = "4.10.0";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.runtime.version = "2.7.18";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.version = "0.13.0";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.packageManager.updateArgv.splice(6, 1);
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.manifest.path = "python/pyproject.toml";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.lockfile.path = "python/uv.lock";
+      },
+      (value: ReturnType<typeof uvDependencyEnvelope>) => {
+        value.observations[0]!.observation.security.reference =
+          "osv:npm:typing-extensions@4.12.2";
+      },
+    ]) {
+      const invalid = uvDependencyEnvelope();
+      mutate(invalid);
+      expect(isDependencyObservationsEnvelope(invalid)).toBe(false);
+    }
+  });
+
+  it("keeps a frozen unsupported uv refusal readable without promoting it", () => {
+    const historical = uvDependencyEnvelope();
+    const observation = historical.observations[0]!.observation;
+    observation.packageManager.version = "uv-current";
+    observation.packageManager.updateArgv = ["uv", "pip", "install", "typing-extensions"];
+    observation.candidate.specifier = "~=4.10";
+    observation.status = "refused_unsupported_profile";
+    observation.reasons = ["unsupported_manager_profile"];
+
+    expect(isDependencyObservationsEnvelope(historical)).toBe(true);
+    const rendered = DependencyObservationsPanel({
+      dependencyObservations: historical,
+      canApproveDependencyObservation: true,
+      onApprove: () => undefined,
+      approvingObservationEventId: null,
+      approvalError: null,
+    });
+    expect(textContent(rendered)).toContain("Refused: unsupported profile");
+    expect(buttonLabels(rendered)).toEqual([]);
+
+    observation.status = "observed";
+    observation.reasons = [];
+    expect(isDependencyObservationsEnvelope(historical)).toBe(false);
   });
 
   it("keeps a frozen unsupported npm refusal readable without promoting it", () => {

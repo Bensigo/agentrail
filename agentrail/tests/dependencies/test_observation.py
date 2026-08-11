@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Dict, Optional, Sequence
 
+import pytest
+
 from agentrail.dependencies.observation import (
     CandidatesResult,
     UnsupportedResult,
@@ -40,6 +42,35 @@ class Newest(TargetVersionAdapter):
 
 def _snapshot(**files: str) -> DependencySnapshot:
     return DependencySnapshot(files=files, baseline_sha=BASELINE)
+
+
+def _uv_files(
+    *,
+    requirement: str = "httpx>=0.27.0",
+    package_source: str = 'source = { registry = "https://pypi.org/simple" }',
+    package_version: str = "0.27.0",
+    package_hash: str = "a" * 64,
+    manifest_extra: str = "",
+    lock_extra: str = "",
+) -> Dict[str, str]:
+    return {
+        "pyproject.toml": (
+            '[project]\nname = "demo"\nversion = "1.0.0"\n'
+            'requires-python = ">=3.12.0,<3.13.0"\n'
+            f'dependencies = ["{requirement}"]\n'
+            f"{manifest_extra}"
+        ),
+        "uv.lock": (
+            'version = 1\nrevision = 3\nrequires-python = ">=3.12.0,<3.13.0"\n\n'
+            '[[package]]\nname = "demo"\nversion = "1.0.0"\n'
+            'source = { virtual = "." }\ndependencies = [{ name = "httpx" }]\n\n'
+            f'[[package]]\nname = "httpx"\nversion = "{package_version}"\n'
+            f"{package_source}\n"
+            'wheels = [{ url = "https://files.pythonhosted.org/packages/httpx.whl", '
+            f'hash = "sha256:{package_hash}", size = 123 }}]\n'
+            f"{lock_extra}"
+        ),
+    }
 
 
 def test_npm_package_lock_dispatch_detects_candidate() -> None:
@@ -86,17 +117,72 @@ def test_poetry_dispatch_detects_candidate() -> None:
 
 def test_uv_dispatch_detects_candidate() -> None:
     result = observe_dependencies(
-        _snapshot(
-            **{
-                "pyproject.toml": '[project]\nname = "demo"\ndependencies = ["httpx>=0.27"]\n',
-                "uv.lock": '[[package]]\nname = "httpx"\nversion = "0.27.0"\n',
-            }
-        ),
-        registry=Registry({"httpx": ("0.27.0", "0.28.0")}),
+        _snapshot(**_uv_files()),
+        registry=Registry({"httpx": ("0.27.0", "0.28.0rc1", "0.28.0")}),
         target_versions=Newest(),
     )
     assert isinstance(result, CandidatesResult)
-    assert result.candidates[0].package_manager == "uv"
+    candidate = result.candidates[0]
+    assert candidate.package_manager == "uv"
+    assert candidate.ecosystem == "python"
+    assert candidate.dependency_kind == "dependencies"
+    assert candidate.specifier == ">=0.27.0"
+    assert candidate.target_version == "0.28.0"
+    assert candidate.manager_commands["update"] == (
+        "uv lock --no-cache --no-config --no-python-downloads --no-sources "
+        "--no-build --upgrade-package httpx==0.28.0"
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "reason"),
+    [
+        (_uv_files(requirement="HTTP_X>=0.27.0"), "canonical name"),
+        (_uv_files(requirement="httpx[http2]>=0.27.0"), "canonical name"),
+        (_uv_files(requirement="httpx>=0.27.0; python_version >= '3.12'"), "canonical name"),
+        (_uv_files(requirement="httpx @ https://example.com/httpx.whl"), "canonical name"),
+        (_uv_files(requirement="httpx>=0.27"), "canonical name"),
+        (
+            _uv_files(package_source='source = { registry = "https://packages.example/simple" }'),
+            "non-PyPI source",
+        ),
+        (_uv_files(package_hash="b" * 63), "distribution hashes"),
+        (_uv_files(manifest_extra='[project.optional-dependencies]\nextra = ["rich>=1.0.0"]\n'), "optional"),
+        (_uv_files(manifest_extra='[tool.uv]\nindex-url = "https://example.com/simple"\n'), "configuration"),
+        (_uv_files(lock_extra='\n[[package]]\nname = "httpx"\nversion = "0.26.0"\nsource = { registry = "https://pypi.org/simple" }\nwheels = [{ url = "https://files.pythonhosted.org/packages/httpx-old.whl", hash = "sha256:' + "c" * 64 + '", size = 123 }]\n'), "exactly one"),
+    ],
+)
+def test_uv_v1_rejects_ambiguous_or_non_registry_custody(files, reason) -> None:
+    registry = Registry({"httpx": ("0.27.0", "0.28.0")})
+
+    result = observe_dependencies(
+        _snapshot(**files),
+        registry=registry,
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert reason in result.reasons[0]
+    assert registry.calls == []
+
+
+def test_uv_v1_rejects_lock_and_manifest_python_range_drift() -> None:
+    files = _uv_files()
+    files["uv.lock"] = files["uv.lock"].replace(
+        'requires-python = ">=3.12.0,<3.13.0"',
+        'requires-python = ">=3.11.0,<3.12.0"',
+    )
+    registry = Registry({"httpx": ("0.27.0", "0.28.0")})
+
+    result = observe_dependencies(
+        _snapshot(**files),
+        registry=registry,
+        target_versions=Newest(),
+    )
+
+    assert isinstance(result, InsufficientEvidenceResult)
+    assert "requires-python disagree" in result.reasons[0]
+    assert registry.calls == []
 
 
 def test_cargo_dispatch_detects_candidate() -> None:

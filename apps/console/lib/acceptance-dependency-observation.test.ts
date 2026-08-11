@@ -3,6 +3,7 @@ import {
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_BYTES,
   ACCEPTANCE_DEPENDENCY_OBSERVATION_BODY_TIMEOUT_MS,
   ACCEPTANCE_DEPENDENCY_NPM_PROFILE,
+  ACCEPTANCE_DEPENDENCY_UV_PROFILE,
   ACCEPTANCE_DEPENDENCY_YARN_PROFILE,
   parseAcceptanceDependencyObservation,
   parseAcceptanceDependencyObservationForStorage,
@@ -113,6 +114,39 @@ function validYarn(
   return value;
 }
 
+function validUv(): Record<string, unknown> {
+  const value = cloneValid();
+  const identity = { ecosystem: "python", manager: "uv", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE };
+  Object.assign(value.candidate as Record<string, unknown>, {
+    identity,
+    package: "typing-extensions",
+    dependencyKind: "dependencies",
+    specifier: ">=4.10.0",
+    currentVersion: "4.11.0",
+    targetVersion: "4.12.2",
+  });
+  Object.assign(value.runtime as Record<string, unknown>, {
+    identity,
+    version: "3.12.8",
+  });
+  Object.assign(value.packageManager as Record<string, unknown>, {
+    name: "uv",
+    version: "0.12.1",
+    profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
+    updateArgv: [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package", "typing-extensions==4.12.2",
+    ],
+  });
+  (value.manifest as Record<string, unknown>).path = "pyproject.toml";
+  (value.lockfile as Record<string, unknown>).path = "uv.lock";
+  Object.assign(value.security as Record<string, unknown>, {
+    identity,
+    reference: "osv:PyPI:typing-extensions@4.12.2",
+  });
+  return value;
+}
+
 describe("parseAcceptanceDependencyObservation", () => {
   it("normalizes the bounded fixed pnpm profile without claiming approval", () => {
     const raw = cloneValid();
@@ -164,6 +198,94 @@ describe("parseAcceptanceDependencyObservation", () => {
         .toBe("candidate_for_server_verification");
     }
   );
+
+  it("normalizes the bounded uv project lockfile-only profile", () => {
+    const raw = validUv();
+    const result = parseAcceptanceDependencyObservation(raw);
+    expect(result).toEqual({
+      input: raw,
+      boundaryAssessment: "candidate_for_server_verification",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/install|execute|approv|deliver/iu);
+  });
+
+  it.each([
+    ["non-canonical package", (raw: Record<string, unknown>) => {
+      (raw.candidate as { package: string }).package = "typing_extensions";
+    }],
+    ["non-production dependency kind", (raw: Record<string, unknown>) => {
+      (raw.candidate as { dependencyKind: string }).dependencyKind = "devDependencies";
+    }],
+    ["non-lower-bound specifier", (raw: Record<string, unknown>) => {
+      (raw.candidate as { specifier: string }).specifier = "^4.10.0";
+    }],
+    ["prerelease candidate", (raw: Record<string, unknown>) => {
+      (raw.candidate as { targetVersion: string }).targetVersion = "4.12.2rc1";
+    }],
+    ["target below current", (raw: Record<string, unknown>) => {
+      (raw.candidate as { targetVersion: string }).targetVersion = "4.10.1";
+    }],
+    ["current below declared bound", (raw: Record<string, unknown>) => {
+      (raw.candidate as { specifier: string }).specifier = ">=4.12.0";
+    }],
+    ["Python 2", (raw: Record<string, unknown>) => {
+      (raw.runtime as { version: string | null }).version = "2.7.18";
+    }],
+    ["prerelease Python", (raw: Record<string, unknown>) => {
+      (raw.runtime as { version: string | null }).version = "3.13.0-rc.1";
+    }],
+    ["uv below range", (raw: Record<string, unknown>) => {
+      (raw.packageManager as { version: string | null }).version = "0.11.9";
+    }],
+    ["uv above range", (raw: Record<string, unknown>) => {
+      (raw.packageManager as { version: string | null }).version = "0.13.0";
+    }],
+    ["nested manifest", (raw: Record<string, unknown>) => {
+      (raw.manifest as { path: string }).path = "python/pyproject.toml";
+    }],
+    ["nested lockfile", (raw: Record<string, unknown>) => {
+      (raw.lockfile as { path: string }).path = "python/uv.lock";
+    }],
+    ["wrong OSV namespace", (raw: Record<string, unknown>) => {
+      (raw.security as { reference: string }).reference = "osv:npm:typing-extensions@4.12.2";
+    }],
+  ] as const)("keeps bounded invalid uv evidence only on the historical replay seam: %s", (_label, mutate) => {
+    const raw = validUv();
+    mutate(raw);
+    expect(parseAcceptanceDependencyObservation(raw)).toBeNull();
+    expect(parseAcceptanceDependencyObservationForStorage(raw)?.kind)
+      .toBe("historical_replay_candidate");
+  });
+
+  it.each([
+    ["missing no-build", (raw: Record<string, unknown>) => {
+      const argv = (raw.packageManager as { updateArgv: string[] }).updateArgv;
+      argv.splice(argv.indexOf("--no-build"), 1);
+    }],
+    ["reordered flags", (raw: Record<string, unknown>) => {
+      (raw.packageManager as { updateArgv: string[] }).updateArgv = [
+        "uv", "lock", "--no-config", "--no-cache", "--no-python-downloads",
+        "--no-sources", "--no-build", "--upgrade-package", "typing-extensions==4.12.2",
+      ];
+    }],
+    ["arbitrary command expansion", (raw: Record<string, unknown>) => {
+      (raw.packageManager as { updateArgv: string[] }).updateArgv.push("--script");
+    }],
+  ] as const)("records bounded uv command drift as refused unsafe evidence: %s", (_label, mutate) => {
+    const raw = validUv();
+    mutate(raw);
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+      .toBe("refused_unsafe_runtime");
+  });
+
+  it("records bounded uv identity drift as refused unsupported evidence", () => {
+    const raw = validUv();
+    (raw.runtime as Record<string, unknown>).identity = {
+      ecosystem: "python", manager: "pip", profile: ACCEPTANCE_DEPENDENCY_UV_PROFILE,
+    };
+    expect(parseAcceptanceDependencyObservation(raw)?.boundaryAssessment)
+      .toBe("refused_unsupported_profile");
+  });
 
   it.each([
     ["npm alias", "npm:@acme/real-widget@1.2.3"],

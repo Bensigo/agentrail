@@ -151,6 +151,43 @@ function yarnRequestBody() {
   return value;
 }
 
+function uvRequestBody() {
+  const value = structuredClone(VALID);
+  const identity = {
+    ecosystem: "python",
+    manager: "uv",
+    profile: "uv_project_lockfile_only_v1",
+  };
+  value.candidate = {
+    ...value.candidate,
+    identity,
+    package: "typing-extensions",
+    dependencyKind: "dependencies",
+    specifier: ">=4.10.0",
+    currentVersion: "4.11.0",
+    targetVersion: "4.12.2",
+  };
+  value.runtime = { ...value.runtime, identity, version: "3.12.8" };
+  value.packageManager = {
+    ...value.packageManager,
+    name: "uv",
+    version: "0.12.1",
+    profile: "uv_project_lockfile_only_v1",
+    updateArgv: [
+      "uv", "lock", "--no-cache", "--no-config", "--no-python-downloads",
+      "--no-sources", "--no-build", "--upgrade-package", "typing-extensions==4.12.2",
+    ],
+  };
+  value.manifest = { ...value.manifest, path: "pyproject.toml" };
+  value.lockfile = { ...value.lockfile, path: "uv.lock" };
+  value.security = {
+    ...value.security,
+    identity,
+    reference: "osv:PyPI:typing-extensions@4.12.2",
+  };
+  return value;
+}
+
 function historicalNpmReplayBody() {
   const value = npmRequestBody();
   Object.assign(value.candidate, {
@@ -227,6 +264,35 @@ describe("POST /api/v1/runner/acceptance-dependency-observations", () => {
     expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(yarn);
     expect(yarn).not.toHaveProperty("yarnConfiguration");
     expect(JSON.stringify(await response.json())).not.toMatch(/yarnrc|update-lockfile|security|approv/iu);
+  });
+
+  it("passes one exact uv lockfile-only observation to the same DB authority", async () => {
+    const uv = uvRequestBody();
+    const response = await POST(request(uv));
+    expect(response.status).toBe(201);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(uv);
+    expect(JSON.stringify(await response.json())).not.toMatch(/upgrade-package|security|approv|execute/iu);
+  });
+
+  it("lets bounded formerly-supported uv evidence reach only the exact DB replay seam", async () => {
+    const historical = uvRequestBody();
+    historical.packageManager.version = "uv-current";
+    historical.candidate.specifier = "~=4.10";
+    vi.mocked(recordAcceptanceDependencyObservation).mockResolvedValue(
+      dbResult("replayed", "refused_unsupported_profile", ["unsupported_manager_profile"]) as never
+    );
+
+    const response = await POST(request(historical));
+
+    expect(response.status).toBe(200);
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledOnce();
+    expect(recordAcceptanceDependencyObservation).toHaveBeenCalledWith(historical);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "replayed",
+      status: "refused_unsupported_profile",
+      reasons: ["unsupported_manager_profile"],
+    });
   });
 
   it("lets a bounded former Yarn profile reach only the exact DB replay seam", async () => {

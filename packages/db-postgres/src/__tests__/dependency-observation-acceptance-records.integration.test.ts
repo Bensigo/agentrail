@@ -115,6 +115,8 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     hashes?: Record<string, string>;
     status?: "candidates" | "unchanged" | "failed";
     observedAt?: Date;
+    watchManifestPath?: string;
+    watchLockfilePath?: string;
   } = {}) {
     const candidate = input.candidate ?? pnpmCandidate();
     const repository = (await db.insert(repositories).values({
@@ -125,8 +127,8 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     const watch = (await db.insert(dependencyWatches).values({
       workspaceId,
       repositoryId: repository.id,
-      manifestPath: "package.json",
-      lockfilePath: "pnpm-lock.yaml",
+      manifestPath: input.watchManifestPath ?? "package.json",
+      lockfilePath: input.watchLockfilePath ?? "pnpm-lock.yaml",
     }).returning())[0]!;
     const observation = await addObservation({
       watch,
@@ -212,6 +214,56 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     });
   });
 
+  it.each([
+    ["nested manifest", "packages/app/package.json", "pnpm-lock.yaml"],
+    ["nested lockfile", "package.json", "packages/app/pnpm-lock.yaml"],
+    ["mixed auto manifest", "auto", "pnpm-lock.yaml"],
+    ["mixed auto lockfile", "package.json", "auto"],
+  ])("refuses %s watch custody before creating a draft", async (_name, manifestPath, lockfilePath) => {
+    const source = await observe({
+      watchManifestPath: manifestPath,
+      watchLockfilePath: lockfilePath,
+    });
+
+    await expect(createDraftAcceptanceRecordFromDependencyObservation(locator(source)))
+      .rejects.toMatchObject({ code: "unsafe_custody" } satisfies Partial<DependencyObservationDraftError>);
+    await expect(db.select().from(changeRecords).where(eq(changeRecords.workspaceId, workspaceId)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("admits an auto/auto watch only through the candidate's exact root pnpm paths", async () => {
+    const source = await observe({ watchManifestPath: "auto", watchLockfilePath: "auto" });
+
+    const result = await createDraftAcceptanceRecordFromDependencyObservation(locator(source));
+    expect(result).toMatchObject({
+      created: true,
+      contract: {
+        contract: {
+          environment: { manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml" },
+        },
+      },
+      event: {
+        payloadRef: { manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml" },
+      },
+    });
+  });
+
+  it("refuses replay after the persisted watch path drifts from the root pnpm profile", async () => {
+    const source = await observe();
+    const first = await createDraftAcceptanceRecordFromDependencyObservation(locator(source));
+    await db.update(dependencyWatches).set({ lockfilePath: "packages/app/pnpm-lock.yaml" })
+      .where(eq(dependencyWatches.id, source.watch.id));
+
+    await expect(createDraftAcceptanceRecordFromDependencyObservation(locator(source)))
+      .rejects.toMatchObject({ code: "unsafe_custody" } satisfies Partial<DependencyObservationDraftError>);
+    await expect(db.select().from(changeRecords).where(eq(changeRecords.id, first.record.id)))
+      .resolves.toHaveLength(1);
+    await expect(db.select().from(acceptanceContracts).where(eq(acceptanceContracts.recordId, first.record.id)))
+      .resolves.toHaveLength(1);
+    await expect(db.select().from(changeRecordEvents).where(eq(changeRecordEvents.recordId, first.record.id)))
+      .resolves.toHaveLength(1);
+  });
+
   it("serializes concurrent exact requests into one create and one replay", async () => {
     const source = await observe();
 
@@ -293,6 +345,9 @@ describe.skipIf(!DB_AVAILABLE)("dependency observation proposal custody — real
     const source = await observe();
     await expect(createDraftAcceptanceRecordFromDependencyObservation({
       ...locator(source), repositoryId: source.repository.id,
+    } as never)).rejects.toMatchObject({ code: "unsafe_custody" } satisfies Partial<DependencyObservationDraftError>);
+    await expect(createDraftAcceptanceRecordFromDependencyObservation({
+      ...locator(source), manifestPath: "package.json", lockfilePath: "pnpm-lock.yaml",
     } as never)).rejects.toMatchObject({ code: "unsafe_custody" } satisfies Partial<DependencyObservationDraftError>);
 
     const hashes = { "package.json": MANIFEST_HASH, "pnpm-lock.yaml": LOCKFILE_HASH } as Record<string, string>;

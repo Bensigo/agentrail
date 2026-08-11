@@ -3,9 +3,11 @@ import { generateKeyPair, SignJWT } from "jose";
 import {
   GITHUB_ACTIONS_OIDC_ISSUER,
   GITHUB_ACTIONS_OIDC_JWKS,
+  GITHUB_CLAUDE_REPAIR_OBSERVATION_AUDIENCE_PREFIX,
   createGithubActionsJwtVerifier,
   githubClaudeAcknowledgementAudience,
   verifyGithubClaudeAcknowledgementOidcToken,
+  verifyGithubClaudeRepairObservationOidcToken,
 } from "./github-actions-oidc";
 
 const COMMENT_ID = "99112233";
@@ -15,6 +17,8 @@ const AUDIENCE = githubClaudeAcknowledgementAudience({
   runId: RUN_ID,
   runAttempt: 1,
 })!;
+const REPAIR_AUDIENCE =
+  `${GITHUB_CLAUDE_REPAIR_OBSERVATION_AUDIENCE_PREFIX}/${"c".repeat(64)}`;
 
 const baseClaims = {
   repository: "Bensigo/example",
@@ -125,6 +129,27 @@ describe("GitHub Claude acknowledgement OIDC", () => {
     });
     expect(GITHUB_ACTIONS_OIDC_JWKS)
       .toBe("https://token.actions.githubusercontent.com/.well-known/jwks");
+  });
+
+  it("uses separate fixed-purpose acknowledgement and repair-observation audiences", async () => {
+    await expect(verifyGithubClaudeRepairObservationOidcToken({
+      token: await token({ audience: REPAIR_AUDIENCE }),
+      audience: REPAIR_AUDIENCE,
+    }, verifier)).resolves.toMatchObject({
+      ok: true,
+      claims: { audience: REPAIR_AUDIENCE, runId: RUN_ID },
+    });
+
+    const neverVerify = vi.fn(verifier);
+    await expect(verifyGithubClaudeAcknowledgementOidcToken({
+      token: await token({ audience: REPAIR_AUDIENCE }),
+      audience: REPAIR_AUDIENCE,
+    }, neverVerify)).resolves.toEqual({ ok: false, reason: "invalid_token" });
+    await expect(verifyGithubClaudeRepairObservationOidcToken({
+      token: await token(),
+      audience: AUDIENCE,
+    }, neverVerify)).resolves.toEqual({ ok: false, reason: "invalid_token" });
+    expect(neverVerify).not.toHaveBeenCalled();
   });
 
   it("accepts GitHub's immutable default repository/ref subject", async () => {

@@ -9,6 +9,7 @@ import {
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubActivations,
   acceptanceCorrectionDispatchGithubClaudeAckReceipts,
+  acceptanceCorrectionDispatchGithubClaudeRepairObservations,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubPreflights,
   acceptanceCompiledContextPacks,
@@ -17,6 +18,66 @@ import {
   changeRecordEvents,
   changeRecords,
 } from "../schema/change_records.js";
+
+describe("0095 GitHub Claude repair observation migration", () => {
+  const MIGRATION = join(
+    __dirname,
+    "../../drizzle/migrations/0095_acceptance_github_claude_repair_observations.sql"
+  );
+
+  it("stores one immutable observation per dispatch, activation, acknowledgement, and JTI", () => {
+    expect(acceptanceCorrectionDispatchGithubClaudeRepairObservations.activationId.notNull)
+      .toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeRepairObservations.acknowledgementReceiptId.notNull)
+      .toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeRepairObservations.beforeHeadSha.notNull)
+      .toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeRepairObservations.afterHeadSha.notNull)
+      .toBe(true);
+    expect(acceptanceCorrectionDispatchGithubClaudeRepairObservations.oidcSubjectSha256.notNull)
+      .toBe(true);
+    const config = getTableConfig(acceptanceCorrectionDispatchGithubClaudeRepairObservations);
+    expect(config.name).toBe("acceptance_correction_dispatch_github_claude_repair_obs");
+    expect(config.indexes.map((index) => index.config.name).sort()).toEqual([
+      "acceptance_claude_repair_observations_ack_key",
+      "acceptance_claude_repair_observations_activation_key",
+      "acceptance_claude_repair_observations_dispatch_key",
+      "acceptance_claude_repair_observations_oidc_jti_key",
+    ]);
+  });
+
+  it("pins exact A-to-B custody and retains only hashes of opaque values", () => {
+    const sqlText = readFileSync(MIGRATION, "utf8");
+    expect(sqlText).toContain(
+      'CREATE TABLE IF NOT EXISTS "acceptance_correction_dispatch_github_claude_repair_obs"'
+    );
+    expect(sqlText).not.toContain(
+      '"acceptance_correction_dispatch_github_claude_repair_observations"'
+    );
+    expect(sqlText).toContain('"before_head_sha" = "original_head_sha"');
+    expect(sqlText).toContain('lower("after_head_sha") <> lower("before_head_sha")');
+    expect(sqlText).toContain("github-claude/repair-observation/v1/[A-Fa-f0-9]{64}");
+    expect(sqlText).toContain('"provider_session_id_sha256"');
+    expect(sqlText).toContain('"oidc_jti_sha256"');
+    expect(sqlText).toContain('"oidc_subject_sha256"');
+    expect(sqlText).not.toContain('"provider_session_id" text');
+    expect(sqlText).not.toContain('"oidc_jti" text');
+    expect(sqlText).not.toContain('"oidc_subject" text');
+    expect(sqlText).not.toContain('"repair_state"');
+    expect(sqlText).not.toContain('"repair_head_sha"');
+    expect(sqlText).not.toContain("access_token");
+    expect(sqlText).not.toContain("id_token");
+  });
+
+  it("is registered directly after the acknowledgement migration", () => {
+    const journal = JSON.parse(readFileSync(
+      join(__dirname, "../../drizzle/migrations/meta/_journal.json"), "utf8"
+    ));
+    expect(journal.entries.find(
+      (entry: { tag: string }) => entry.tag === "0095_acceptance_github_claude_repair_observations"
+    )).toMatchObject({ idx: 100, version: "7", breakpoints: true });
+  });
+});
 
 describe("0094 GitHub Claude acknowledgement migration", () => {
   const MIGRATION = join(

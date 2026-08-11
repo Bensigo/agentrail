@@ -14,6 +14,9 @@ import {
   recordGithubClaudeAgentAcknowledgement,
   githubClaudeAcknowledgementAudience,
   GithubClaudeAgentAcknowledgementConflictError,
+  recordGithubClaudeRepairHeadObservation,
+  githubClaudeRepairObservationAudience,
+  GithubClaudeRepairObservationConflictError,
   reconcileConfirmedAcceptanceRecordPullRequestHead,
   type AdvanceConfirmedAcceptanceRecordPullRequestHeadInput,
   type InvalidateConfirmedAcceptanceRecordPullRequestHeadForTerminalEventInput,
@@ -93,7 +96,7 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
     } as never)).rejects.toThrow("requires only workspace, route, and server actor");
   });
 
-  it("uses the exact hashed activation/run audience and exposes a typed receipt conflict", () => {
+  it("uses exact purpose-bound hashed audiences and exposes typed receipt conflicts", () => {
     const activationCommentId = "91002";
     const runId = "44001";
     const binding = ["github_claude_ack", "1", activationCommentId, runId, "1"].join(":");
@@ -107,6 +110,30 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
     expect(new GithubClaudeAgentAcknowledgementConflictError()).toMatchObject({
       name: "GithubClaudeAgentAcknowledgementConflictError",
       code: "GITHUB_CLAUDE_ACK_CONFLICT",
+    });
+    const activationBodySha256 = "d".repeat(64);
+    const beforeHeadSha = "a".repeat(40);
+    const afterHeadSha = "b".repeat(40);
+    const repairBinding = [
+      "github_claude_repair_observation", "1", activationCommentId,
+      activationBodySha256, beforeHeadSha, afterHeadSha, runId, "1",
+    ].join(":");
+    expect(githubClaudeRepairObservationAudience({
+      activationCommentId, activationBodySha256, beforeHeadSha, afterHeadSha,
+      runId, runAttempt: 1,
+    })).toBe(`agentrail://correction-dispatch/github-claude/repair-observation/v1/${createHash("sha256")
+      .update(repairBinding, "utf8").digest("hex")}`);
+    expect(githubClaudeRepairObservationAudience({
+      activationCommentId, activationBodySha256, beforeHeadSha,
+      afterHeadSha: beforeHeadSha, runId, runAttempt: 1,
+    })).toBeNull();
+    expect(githubClaudeRepairObservationAudience({
+      activationCommentId, activationBodySha256, beforeHeadSha, afterHeadSha,
+      runId, runAttempt: 2,
+    })).toBeNull();
+    expect(new GithubClaudeRepairObservationConflictError()).toMatchObject({
+      name: "GithubClaudeRepairObservationConflictError",
+      code: "GITHUB_CLAUDE_REPAIR_OBSERVATION_CONFLICT",
     });
   });
 
@@ -174,6 +201,36 @@ describe("confirmed Acceptance Record PR head advance boundary", () => {
       conclusion: "success",
       providerSessionId: "session-1",
       oidc: { ...oidc, jti: "raw-token-id" },
+    } as never)).rejects.toThrow("input is invalid");
+
+    const repairOidc = {
+      ...oidc,
+      audience: githubClaudeRepairObservationAudience({
+        activationCommentId: "91002",
+        activationBodySha256: "d".repeat(64),
+        beforeHeadSha: HEAD,
+        afterHeadSha: BEFORE,
+        runId: oidc.runId,
+        runAttempt: oidc.runAttempt,
+      })!,
+      jtiSha256: "e".repeat(64),
+    };
+    await expect(recordGithubClaudeRepairHeadObservation({
+      activationCommentId: "91002",
+      activationBodySha256: "d".repeat(64),
+      beforeHeadSha: HEAD,
+      afterHeadSha: BEFORE,
+      providerSessionId: "session-1",
+      oidc: repairOidc,
+      dispatchId: BASE.recordId,
+    } as never)).rejects.toThrow("input is invalid");
+    await expect(recordGithubClaudeRepairHeadObservation({
+      activationCommentId: "91002",
+      activationBodySha256: "d".repeat(64),
+      beforeHeadSha: HEAD,
+      afterHeadSha: BEFORE,
+      providerSessionId: "session-1",
+      oidc: { ...repairOidc, subject: undefined, rawJwt: "never-accepted" },
     } as never)).rejects.toThrow("input is invalid");
   });
 

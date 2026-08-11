@@ -15,6 +15,7 @@ import {
   acceptanceCompiledContextPacks,
   acceptanceCorrectionDispatchGithubActivations,
   acceptanceCorrectionDispatchGithubClaudeAckReceipts,
+  acceptanceCorrectionDispatchGithubClaudeRepairObservations,
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatches,
   acceptanceCorrectionDispatchGithubPreflights,
@@ -63,7 +64,11 @@ import {
   recordGithubClaudeAgentAcknowledgement,
   readGithubClaudeAgentAcknowledgement,
   githubClaudeAcknowledgementAudience,
+  recordGithubClaudeRepairHeadObservation,
+  readGithubClaudeRepairHeadEvidence,
+  githubClaudeRepairObservationAudience,
   GithubClaudeAgentAcknowledgementConflictError,
+  GithubClaudeRepairObservationConflictError,
   recordAcceptanceInboundIntake,
   readAcceptanceBuilderRouteSelection,
   resolveAcceptanceBuilderRouteCapabilityProfile,
@@ -102,6 +107,7 @@ const DB_AVAILABLE: boolean = await (async () => {
                to_regclass('public.acceptance_correction_dispatch_github_finding_publications') AS acceptance_correction_dispatch_github_finding_publications,
                to_regclass('public.acceptance_correction_dispatch_github_activations') AS acceptance_correction_dispatch_github_activations,
                to_regclass('public.acceptance_correction_dispatch_github_claude_ack_receipts') AS acceptance_correction_dispatch_github_claude_ack_receipts,
+               to_regclass('public.acceptance_correction_dispatch_github_claude_repair_obs') AS github_claude_repair_observations,
                EXISTS (
                  SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'acceptance_context_pack_snapshots'
@@ -150,6 +156,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       acceptance_correction_dispatch_github_finding_publications: string | null;
       acceptance_correction_dispatch_github_activations: string | null;
       acceptance_correction_dispatch_github_claude_ack_receipts: string | null;
+      github_claude_repair_observations: string | null;
       acceptance_context_pack_custody: boolean;
       acceptance_compiled_context_pack_tree_proofs: boolean;
       change_record_current_pr_head: boolean;
@@ -170,6 +177,7 @@ const DB_AVAILABLE: boolean = await (async () => {
       rows[0]?.acceptance_correction_dispatch_github_finding_publications === "acceptance_correction_dispatch_github_finding_publications" &&
       rows[0]?.acceptance_correction_dispatch_github_activations === "acceptance_correction_dispatch_github_activations" &&
       rows[0]?.acceptance_correction_dispatch_github_claude_ack_receipts === "acceptance_correction_dispatch_github_claude_ack_receipts" &&
+      rows[0]?.github_claude_repair_observations === "acceptance_correction_dispatch_github_claude_repair_obs" &&
       rows[0]?.acceptance_context_pack_custody === true &&
       rows[0]?.acceptance_compiled_context_pack_tree_proofs === true &&
       rows[0]?.change_record_current_pr_head === true &&
@@ -1954,6 +1962,38 @@ describe.skipIf(!DB_AVAILABLE)(
         providerSessionId: "claude-session-opaque-1",
         oidc,
       };
+      const makeRepairObservationInput = (input: {
+        afterHeadSha: string;
+        beforeHeadSha?: string;
+        activationBodySha256?: string;
+        providerSessionId?: string;
+        oidc?: Partial<typeof oidc>;
+        jtiSha256?: string;
+      }) => {
+        const claims = { ...oidc, ...input.oidc };
+        const activationBodySha256 = input.activationBodySha256
+          ?? activationReservation.activation.bodySha256!;
+        const beforeHeadSha = input.beforeHeadSha ?? headSha;
+        return {
+          activationCommentId: "91002",
+          activationBodySha256,
+          beforeHeadSha,
+          afterHeadSha: input.afterHeadSha,
+          providerSessionId: input.providerSessionId ?? "claude-session-opaque-1",
+          oidc: {
+            ...claims,
+            audience: githubClaudeRepairObservationAudience({
+              activationCommentId: "91002",
+              activationBodySha256,
+              beforeHeadSha,
+              afterHeadSha: input.afterHeadSha,
+              runId: claims.runId,
+              runAttempt: claims.runAttempt,
+            })!,
+            jtiSha256: input.jtiSha256 ?? "6".repeat(64),
+          },
+        };
+      };
 
       // A signed synchronize may win the race after GitHub accepts the
       // activation but before the provider posts its receipt. The receipt is
@@ -1973,6 +2013,11 @@ describe.skipIf(!DB_AVAILABLE)(
         source: "github_webhook",
       });
       if (historicalAdvance.kind !== "advanced") throw new Error("expected acknowledgement successor");
+      const historicalRepairInput = makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+      });
+      await expect(recordGithubClaudeRepairHeadObservation(historicalRepairInput))
+        .resolves.toEqual({ kind: "not_admitted" });
       const beforeHistoricalAck = (await db.select().from(acceptanceCorrectionDispatches)
         .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]!;
       expect(beforeHistoricalAck).toMatchObject({
@@ -2005,9 +2050,202 @@ describe.skipIf(!DB_AVAILABLE)(
       await expect(recordGithubClaudeAgentAcknowledgement(acknowledgementInput))
         .resolves.toMatchObject({ kind: "replayed" });
 
+      await expect(recordGithubClaudeRepairHeadObservation({
+        ...historicalRepairInput,
+        providerSessionId: "wrong-session",
+      })).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        activationBodySha256: "4".repeat(64),
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        beforeHeadSha: "7".repeat(40),
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: "8".repeat(40),
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        oidc: { runId: "44002" },
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        oidc: { checkRunId: "55002" },
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        oidc: { issuedAt: oidc.issuedAt - 1, notBefore: oidc.notBefore - 1 },
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        oidc: { repositoryId: "9999" },
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        jtiSha256: oidc.jtiSha256,
+      }))).resolves.toEqual({ kind: "not_admitted" });
+
+      const historicalRepairObserved = await recordGithubClaudeRepairHeadObservation(
+        historicalRepairInput
+      );
+      expect(historicalRepairObserved).toMatchObject({
+        kind: "recorded",
+        observation: {
+          dispatchId: githubQueued.dispatch.id,
+          acknowledgementReceiptId: historicalAcknowledged.kind === "recorded"
+            ? historicalAcknowledged.receipt.id : "unreachable",
+          beforeHeadSha: headSha,
+          afterHeadSha: historicalHeadSha,
+          oidcRunId: oidc.runId,
+          oidcCheckRunId: oidc.checkRunId,
+        },
+      });
+      if (historicalRepairObserved.kind !== "recorded") {
+        throw new Error("expected historical repair observation");
+      }
+      expect(JSON.stringify(historicalRepairObserved.observation))
+        .not.toContain("claude-session-opaque-1");
+      expect(JSON.stringify(historicalRepairObserved.observation)).not.toContain(oidcSubject);
+      await expect(recordGithubClaudeAgentAcknowledgement({
+        ...acknowledgementInput,
+        oidc: { ...oidc, jtiSha256: historicalRepairInput.oidc.jtiSha256 },
+      })).rejects.toBeInstanceOf(GithubClaudeAgentAcknowledgementConflictError);
+      await expect(recordGithubClaudeRepairHeadObservation(historicalRepairInput))
+        .resolves.toMatchObject({
+          kind: "replayed",
+          observation: { id: historicalRepairObserved.observation.id },
+        });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: historicalHeadSha,
+        jtiSha256: "7".repeat(64),
+      }))).rejects.toBeInstanceOf(GithubClaudeRepairObservationConflictError);
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: randomUUID(), dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+      const historicalRepairEvidence = await readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      });
+      expect(historicalRepairEvidence).toMatchObject({
+        kind: "github_claude_repair_head_evidence",
+        version: 1,
+        dispatchId: githubQueued.dispatch.id,
+        acknowledgementReceiptId: historicalAcknowledged.kind === "recorded"
+          ? historicalAcknowledged.receipt.id : "unreachable",
+        observationId: historicalRepairObserved.observation.id,
+        originalHeadSha: headSha,
+        repairHeadSha: historicalHeadSha,
+        repairHeadCycleId: historicalAdvance.jobId,
+        githubDeliveryId: "delivery-ack-historical-successor",
+        reviewJobId: historicalAdvance.jobId,
+        attribution: "selected_run_observed_successor",
+        authorship: "not_independently_proven",
+        reviewRequirement: "exact_head_r7_reentry",
+        evidenceIdentitySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+
+      const invalidationEvent = (await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:invalidated:${job.id}`),
+      )).limit(1))[0]!;
+      await db.update(acceptanceCorrectionDispatches).set({
+        invalidationReason: "reconciled",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecordEvents).set({
+        payloadRef: { ...invalidationEvent.payloadRef, reason: "reconciled" },
+      }).where(eq(changeRecordEvents.id, invalidationEvent.id));
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+      await db.update(acceptanceCorrectionDispatches).set({
+        invalidationReason: "head_advanced",
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecordEvents).set({ payloadRef: invalidationEvent.payloadRef })
+        .where(eq(changeRecordEvents.id, invalidationEvent.id));
+
+      const signedDeliveryEvent = (await db.select().from(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          "external-pr:delivery:43:delivery-ack-historical-successor"),
+      )).limit(1))[0]!;
+      await db.update(changeRecordEvents).set({ actor: "server:test" })
+        .where(eq(changeRecordEvents.id, signedDeliveryEvent.id));
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+      await db.update(changeRecordEvents).set({ actor: "github_webhook" })
+        .where(eq(changeRecordEvents.id, signedDeliveryEvent.id));
+
+      const revisitedOriginal = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo: "acme/widgets",
+        prNumber: 43,
+        headSha,
+        event: "synchronize",
+        deliveryId: "delivery-repair-a-b-a",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: historicalHeadSha, afterHeadSha: headSha },
+        source: "github_webhook",
+      });
+      if (revisitedOriginal.kind !== "advanced") throw new Error("expected A-B-A revisit");
+      expect(revisitedOriginal.jobId).not.toBe(job.id);
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({
+        repairHeadSha: historicalHeadSha,
+        repairHeadCycleId: historicalAdvance.jobId,
+        originalHeadCycleId: job.id,
+      });
+
+      const repeatedObservedHead = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo: "acme/widgets",
+        prNumber: 43,
+        headSha: historicalHeadSha,
+        event: "synchronize",
+        deliveryId: "delivery-repair-a-b-a-b",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: historicalHeadSha },
+        source: "github_webhook",
+      });
+      if (repeatedObservedHead.kind !== "advanced") throw new Error("expected A-B-A-B repeat");
+      expect(repeatedObservedHead.jobId).not.toBe(historicalAdvance.jobId);
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId,
+          githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-claude-repair-observation:${job.id}`),
+      ));
+      const repeatedOccurrenceObservation = await recordGithubClaudeRepairHeadObservation(
+        makeRepairObservationInput({
+          afterHeadSha: historicalHeadSha,
+          jtiSha256: "7".repeat(64),
+        })
+      );
+      expect(repeatedOccurrenceObservation).toMatchObject({ kind: "recorded" });
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+
       // Test-only rewind preserves the existing current-cycle carrier proof in
       // this broad fixture so the same API is also exercised on its current
       // agentState CAS path below.
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId,
+          githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-claude-repair-observation:${job.id}`),
+      ));
       await db.delete(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
         .where(eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId,
           githubQueued.dispatch.id));
@@ -2110,6 +2348,184 @@ describe.skipIf(!DB_AVAILABLE)(
         deliveryState: "carrier_accepted", agentState: "acknowledged",
         successorHeadSha: null, successorHeadCycleId: null,
       });
+
+      // A second-purpose repair token may not reuse a JTI already consumed by
+      // any acknowledgement, including a different dispatch. The synthetic
+      // foreign row needs no trusted event because admission must stop at the
+      // global cross-table anti-replay lookup.
+      const crossDispatchJti = "9".repeat(64);
+      const crossDispatchId = randomUUID();
+      const crossPreflightId = randomUUID();
+      const crossActivationId = randomUUID();
+      const crossAckReceiptId = randomUUID();
+      const crossDispatchIdentity = "c".repeat(64);
+      const crossPreflightIdentity = "d".repeat(64);
+      const crossActivationIdentity = "e".repeat(64);
+      const currentDispatchRow = (await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0]!;
+      const currentPreflightRow = (await db.select()
+        .from(acceptanceCorrectionDispatchGithubPreflights).where(and(
+          eq(acceptanceCorrectionDispatchGithubPreflights.dispatchId, githubQueued.dispatch.id),
+          eq(acceptanceCorrectionDispatchGithubPreflights.status, "ready"),
+        )).limit(1))[0]!;
+      const currentActivationRow = (await db.select()
+        .from(acceptanceCorrectionDispatchGithubActivations).where(
+          eq(acceptanceCorrectionDispatchGithubActivations.id, activationReservation.activation.id)
+        ).limit(1))[0]!;
+      await db.insert(acceptanceCorrectionDispatches).values({
+        ...currentDispatchRow,
+        id: crossDispatchId,
+        headSha: historicalHeadSha,
+        headCycleId: historicalAdvance.jobId,
+        reviewJobId: historicalAdvance.jobId,
+        dispatchIdentitySha256: crossDispatchIdentity,
+        invalidatedAt: null,
+        invalidationReason: null,
+        successorHeadSha: null,
+        successorHeadCycleId: null,
+      });
+      await db.insert(acceptanceCorrectionDispatchGithubPreflights).values({
+        ...currentPreflightRow,
+        id: crossPreflightId,
+        dispatchId: crossDispatchId,
+        headSha: historicalHeadSha,
+        headCycleId: historicalAdvance.jobId,
+        dispatchIdentitySha256: crossDispatchIdentity,
+        preflightIdentitySha256: crossPreflightIdentity,
+      });
+      await db.insert(acceptanceCorrectionDispatchGithubActivations).values({
+        ...currentActivationRow,
+        id: crossActivationId,
+        dispatchId: crossDispatchId,
+        headSha: historicalHeadSha,
+        headCycleId: historicalAdvance.jobId,
+        dispatchIdentitySha256: crossDispatchIdentity,
+        readyPreflightId: crossPreflightId,
+        readyPreflightIdentitySha256: crossPreflightIdentity,
+        activationIdentitySha256: crossActivationIdentity,
+        githubCommentId: "91999",
+        githubCommentUrl: "https://github.com/acme/widgets/pull/43#issuecomment-91999",
+      });
+      await db.insert(acceptanceCorrectionDispatchGithubClaudeAckReceipts).values({
+        ...acknowledged.receipt,
+        id: crossAckReceiptId,
+        dispatchId: crossDispatchId,
+        activationId: crossActivationId,
+        headSha: historicalHeadSha,
+        headCycleId: historicalAdvance.jobId,
+        dispatchIdentitySha256: crossDispatchIdentity,
+        activationIdentitySha256: crossActivationIdentity,
+        activationGithubCommentId: "91999",
+        oidcAudience: githubClaudeAcknowledgementAudience({
+          activationCommentId: "91999", runId: "44999", runAttempt: 1,
+        })!,
+        oidcRunId: "44999",
+        oidcJtiSha256: crossDispatchJti,
+        receiptIdentitySha256: "f".repeat(64),
+      });
+      await expect(recordGithubClaudeRepairHeadObservation(makeRepairObservationInput({
+        afterHeadSha: "6".repeat(40),
+        oidc: immutableAcknowledgementInput.oidc,
+        jtiSha256: crossDispatchJti,
+      }))).resolves.toEqual({ kind: "not_admitted" });
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeAckReceipts)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.id, crossAckReceiptId));
+      await db.delete(acceptanceCorrectionDispatchGithubActivations)
+        .where(eq(acceptanceCorrectionDispatchGithubActivations.id, crossActivationId));
+      await db.delete(acceptanceCorrectionDispatchGithubPreflights)
+        .where(eq(acceptanceCorrectionDispatchGithubPreflights.id, crossPreflightId));
+      await db.delete(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, crossDispatchId));
+
+      // The provider observation may arrive before GitHub's independently
+      // signed synchronize delivery. It is retained without projecting repair;
+      // the same immutable row becomes evidence only after the exact A-to-B
+      // delivery advances the PR and admits B back into R7.
+      const observedBeforeWebhookHeadSha = "6".repeat(40);
+      const observedBeforeWebhookInput = makeRepairObservationInput({
+        afterHeadSha: observedBeforeWebhookHeadSha,
+        oidc: immutableAcknowledgementInput.oidc,
+        jtiSha256: "8".repeat(64),
+      });
+      const observedBeforeWebhook = await recordGithubClaudeRepairHeadObservation(
+        observedBeforeWebhookInput
+      );
+      expect(observedBeforeWebhook).toMatchObject({
+        kind: "recorded",
+        observation: {
+          dispatchId: githubQueued.dispatch.id,
+          acknowledgementReceiptId: acknowledged.receipt.id,
+          beforeHeadSha: headSha,
+          afterHeadSha: observedBeforeWebhookHeadSha,
+        },
+      });
+      if (observedBeforeWebhook.kind !== "recorded") {
+        throw new Error("expected pre-synchronize repair observation");
+      }
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toBeNull();
+      const observedSuccessor = await advanceConfirmedAcceptanceRecordPullRequestHead({
+        workspaceId: wsId,
+        recordId: draft.record.id,
+        repo: "acme/widgets",
+        prNumber: 43,
+        headSha: observedBeforeWebhookHeadSha,
+        event: "synchronize",
+        deliveryId: "delivery-repair-observation-after-receipt",
+        admitReviewJob: true,
+        headTransition: { beforeHeadSha: headSha, afterHeadSha: observedBeforeWebhookHeadSha },
+        source: "github_webhook",
+      });
+      if (observedSuccessor.kind !== "advanced") throw new Error("expected observed successor");
+      await expect(readGithubClaudeRepairHeadEvidence({
+        workspaceId: wsId, dispatchId: githubQueued.dispatch.id,
+      })).resolves.toMatchObject({
+        observationId: observedBeforeWebhook.observation.id,
+        originalHeadSha: headSha,
+        repairHeadSha: observedBeforeWebhookHeadSha,
+        repairHeadCycleId: observedSuccessor.jobId,
+        githubDeliveryId: "delivery-repair-observation-after-receipt",
+        reviewJobId: observedSuccessor.jobId,
+        attribution: "selected_run_observed_successor",
+        authorship: "not_independently_proven",
+        reviewRequirement: "exact_head_r7_reentry",
+      });
+      expect((await db.select().from(acceptanceCorrectionDispatches)
+        .where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id)))[0])
+        .toMatchObject({ agentState: "acknowledged", successorHeadSha: observedBeforeWebhookHeadSha });
+      expect(await db.select().from(acceptanceCorrectionDispatches).where(and(
+        eq(acceptanceCorrectionDispatches.recordId, draft.record.id),
+        eq(acceptanceCorrectionDispatches.headCycleId, observedSuccessor.jobId),
+      ))).toHaveLength(0);
+
+      // Test-only restore: the broad fixture next exercises the unrelated
+      // fallback lane against the original compiled exact-head pack.
+      await db.delete(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+        .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId,
+          githubQueued.dispatch.id));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:github-claude-repair-observation:${job.id}`),
+      ));
+      await db.delete(changeRecordEvents).where(and(
+        eq(changeRecordEvents.recordId, draft.record.id),
+        eq(changeRecordEvents.eventKey,
+          `acceptance-correction-dispatch:invalidated:${job.id}`),
+      ));
+      await db.update(acceptanceCorrectionDispatches).set({
+        invalidatedAt: null,
+        invalidationReason: null,
+        successorHeadSha: null,
+        successorHeadCycleId: null,
+      }).where(eq(acceptanceCorrectionDispatches.id, githubQueued.dispatch.id));
+      await db.update(changeRecords).set({
+        currentPrHeadSha: headSha,
+        currentPrHeadCycleId: job.id,
+        currentPrHeadAuthoritative: true,
+        currentPrHeadAuthorityGeneration: 1,
+      }).where(eq(changeRecords.id, draft.record.id));
 
       // Durable fallback remains queueable, but deliberately has no GitHub
       // vendor capability profile and still performs no carrier action.

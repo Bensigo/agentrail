@@ -14,6 +14,7 @@ import {
   acceptanceCorrectionDispatchGithubFindingPublications,
   acceptanceCorrectionDispatchGithubActivations,
   acceptanceCorrectionDispatchGithubClaudeAckReceipts,
+  acceptanceCorrectionDispatchGithubClaudeRepairObservations,
   acceptanceContextPackSnapshots,
   acceptanceContracts,
   acceptanceIntakes,
@@ -28,6 +29,7 @@ import {
   type AcceptanceCorrectionDispatchGithubFindingPublicationRow,
   type AcceptanceCorrectionDispatchGithubActivationRow,
   type AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow,
+  type AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow,
   type AcceptanceContextPackSnapshotRow,
   type AcceptanceIntakeMessageRow,
   type AcceptanceIntakeRow,
@@ -2721,6 +2723,9 @@ export const GITHUB_CLAUDE_ACK_WORKFLOW_CONTRACT =
 export const GITHUB_CLAUDE_ACK_APPROVED_ACTION_SHA =
   "6b082c41935b4c8a3b8b0ef85ba4ba4d9eeb8975" as const;
 const GITHUB_CLAUDE_ACK_PROTOCOL_VERSION = 1 as const;
+export const GITHUB_CLAUDE_REPAIR_OBSERVATION_OIDC_AUDIENCE_PREFIX =
+  "agentrail://correction-dispatch/github-claude/repair-observation/v1" as const;
+const GITHUB_CLAUDE_REPAIR_OBSERVATION_PROTOCOL_VERSION = 1 as const;
 
 export type AcceptanceBuilderRouteGithubClaudeAckProfileSnapshot = {
   kind: "acceptance_builder_route_github_claude_ack_profile";
@@ -2814,6 +2819,63 @@ export class GithubClaudeAgentAcknowledgementConflictError extends Error {
   }
 }
 
+export type RecordGithubClaudeRepairObservationInput = {
+  activationCommentId: string;
+  activationBodySha256: string;
+  beforeHeadSha: string;
+  afterHeadSha: string;
+  providerSessionId: string;
+  oidc: GithubClaudeAckNormalizedOidcClaims;
+};
+
+export type RecordGithubClaudeRepairObservationResult =
+  | { kind: "recorded"; observation: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow }
+  | { kind: "replayed"; observation: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow }
+  | { kind: "not_admitted" };
+
+/** A valid repair-observation identity was already consumed by other data. */
+export class GithubClaudeRepairObservationConflictError extends Error {
+  readonly code = "GITHUB_CLAUDE_REPAIR_OBSERVATION_CONFLICT" as const;
+
+  constructor() {
+    super("GitHub Claude repair observation is already bound to different receipt data");
+    this.name = "GithubClaudeRepairObservationConflictError";
+  }
+}
+
+export type GithubClaudeRepairHeadEvidence = {
+  kind: "github_claude_repair_head_evidence";
+  version: 1;
+  workspaceId: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  dispatchId: string;
+  dispatchIdentitySha256: string;
+  activationId: string;
+  activationIdentitySha256: string;
+  acknowledgementReceiptId: string;
+  acknowledgementReceiptIdentitySha256: string;
+  observationId: string;
+  observationIdentitySha256: string;
+  originalHeadSha: string;
+  originalHeadCycleId: string;
+  repairHeadSha: string;
+  repairHeadCycleId: string;
+  githubDeliveryId: string;
+  githubDeliveryEventId: string;
+  githubHeadAdvanceEventId: string;
+  reviewJobId: string;
+  providerSessionIdSha256: string;
+  oidcRunId: string;
+  oidcRunAttempt: 1;
+  oidcCheckRunId: string;
+  attribution: "selected_run_observed_successor";
+  authorship: "not_independently_proven";
+  reviewRequirement: "exact_head_r7_reentry";
+  evidenceIdentitySha256: string;
+};
+
 /** Shared with Console so the verified JWT audience cannot drift from DB admission. */
 export function githubClaudeAcknowledgementAudience(input: {
   activationCommentId: string;
@@ -2827,6 +2889,39 @@ export function githubClaudeAcknowledgementAudience(input: {
     "github_claude_ack", "1", input.activationCommentId, input.runId, "1",
   ].join(":");
   return `${GITHUB_CLAUDE_ACK_OIDC_AUDIENCE_PREFIX}/${createHash("sha256")
+    .update(binding, "utf8").digest("hex")}`;
+}
+
+/**
+ * Shared by Console and Postgres so the second OIDC token is bound to the
+ * exact activation, original head, observed successor, run, and first attempt.
+ */
+export function githubClaudeRepairObservationAudience(input: {
+  activationCommentId: string;
+  activationBodySha256: string;
+  beforeHeadSha: string;
+  afterHeadSha: string;
+  runId: string;
+  runAttempt: number;
+}): string | null {
+  if (!/^[1-9][0-9]{0,39}$/.test(input.activationCommentId)
+    || !EXACT_SHA256.test(input.activationBodySha256)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.beforeHeadSha)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.afterHeadSha)
+    || input.beforeHeadSha.toLowerCase() === input.afterHeadSha.toLowerCase()
+    || !/^[1-9][0-9]{0,39}$/.test(input.runId)
+    || input.runAttempt !== 1) return null;
+  const binding = [
+    "github_claude_repair_observation",
+    "1",
+    input.activationCommentId,
+    input.activationBodySha256.toLowerCase(),
+    input.beforeHeadSha.toLowerCase(),
+    input.afterHeadSha.toLowerCase(),
+    input.runId,
+    "1",
+  ].join(":");
+  return `${GITHUB_CLAUDE_REPAIR_OBSERVATION_OIDC_AUDIENCE_PREFIX}/${createHash("sha256")
     .update(binding, "utf8").digest("hex")}`;
 }
 
@@ -7434,6 +7529,16 @@ export function acceptanceCorrectionDispatchGithubClaudeAckReceiptId(input: {
   return uuid5Url(`acceptance-correction-dispatch-github-claude-ack:${input.dispatchId}`);
 }
 
+export function acceptanceCorrectionDispatchGithubClaudeRepairObservationId(input: {
+  dispatchId: string;
+}): string {
+  return uuid5Url(`acceptance-correction-dispatch-github-claude-repair-observation:${input.dispatchId}`);
+}
+
+function githubClaudeOidcJtiLockKey(jtiSha256: string): string {
+  return `github-claude-oidc-jti:${jtiSha256.toLowerCase()}`;
+}
+
 function githubClaudeAckReceiptCore(values: {
   id: string;
   workspaceId: string;
@@ -7608,6 +7713,7 @@ async function hasVerifiedGithubClaudeAckReceiptEventInTransaction(
   )).limit(1))[0];
   return !!event && event.stage === "builder_handoff"
     && event.actor === "server:github-claude-ack"
+    && event.at.getTime() === row.acknowledgedAt.getTime()
     && isDeepStrictEqual(event.payloadRef, githubClaudeAckReceiptEventPayload(row));
 }
 
@@ -7843,33 +7949,20 @@ async function resolveGithubClaudeAcknowledgementBindingInTransaction(
     : null;
 }
 
-function isGithubClaudeAcknowledgementInput(
-  input: RecordGithubClaudeAgentAcknowledgementInput
-): boolean {
-  if (!isRecord(input) || !hasExactKeys(input, [
-    "activationCommentId", "activationBodySha256", "conclusion", "providerSessionId", "oidc",
-  ]) || !isPositiveGithubCommentId(input.activationCommentId)
-    || !EXACT_SHA256.test(input.activationBodySha256)
-    || input.conclusion !== "success"
-    || !safeSnapshotText(input.providerSessionId, 256)
-    || !isRecord(input.oidc)
-    || !hasExactKeys(input.oidc, [
+function isGithubClaudeNormalizedOidcClaims(input: unknown, expectedAudience: string | null):
+  input is GithubClaudeAckNormalizedOidcClaims {
+  if (!expectedAudience || !isRecord(input) || !hasExactKeys(input, [
       "issuer", "audience", "subject", "subjectSha256", "jtiSha256",
       "issuedAt", "notBefore", "expiresAt", "repository", "repositoryId",
       "repositoryOwner", "repositoryOwnerId", "actor", "actorId", "eventName", "ref",
       "workflowRef", "workflowSha", "jobWorkflowRef", "jobWorkflowSha",
       "runId", "runAttempt", "checkRunId",
     ])) return false;
-  const claims = input.oidc;
+  const claims = input as unknown as GithubClaudeAckNormalizedOidcClaims;
   const decimal = /^[1-9][0-9]{0,39}$/;
-  const audience = githubClaudeAcknowledgementAudience({
-    activationCommentId: input.activationCommentId,
-    runId: claims.runId,
-    runAttempt: claims.runAttempt,
-  });
   const now = Math.floor(Date.now() / 1_000);
   return claims.issuer === GITHUB_CLAUDE_ACK_OIDC_ISSUER
-    && audience !== null && claims.audience === audience
+    && claims.audience === expectedAudience
     && safeSnapshotText(claims.subject, 512)
     && EXACT_SHA256.test(claims.subjectSha256)
     && createHash("sha256").update(claims.subject, "utf8").digest("hex")
@@ -7898,6 +7991,46 @@ function isGithubClaudeAcknowledgementInput(
     && decimal.test(claims.runId)
     && claims.runAttempt === 1
     && decimal.test(claims.checkRunId);
+}
+
+function isGithubClaudeAcknowledgementInput(
+  input: RecordGithubClaudeAgentAcknowledgementInput
+): boolean {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "activationCommentId", "activationBodySha256", "conclusion", "providerSessionId", "oidc",
+  ]) || !isPositiveGithubCommentId(input.activationCommentId)
+    || !EXACT_SHA256.test(input.activationBodySha256)
+    || input.conclusion !== "success"
+    || !safeSnapshotText(input.providerSessionId, 256)
+    || !isRecord(input.oidc)) return false;
+  return isGithubClaudeNormalizedOidcClaims(input.oidc, githubClaudeAcknowledgementAudience({
+    activationCommentId: input.activationCommentId,
+    runId: input.oidc.runId as string,
+    runAttempt: input.oidc.runAttempt as number,
+  }));
+}
+
+function isGithubClaudeRepairObservationInput(
+  input: RecordGithubClaudeRepairObservationInput
+): boolean {
+  if (!isRecord(input) || !hasExactKeys(input, [
+    "activationCommentId", "activationBodySha256", "beforeHeadSha", "afterHeadSha",
+    "providerSessionId", "oidc",
+  ]) || !isPositiveGithubCommentId(input.activationCommentId)
+    || !EXACT_SHA256.test(input.activationBodySha256)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.beforeHeadSha)
+    || !EXACT_GITHUB_HEAD_SHA.test(input.afterHeadSha)
+    || input.beforeHeadSha.toLowerCase() === input.afterHeadSha.toLowerCase()
+    || !safeSnapshotText(input.providerSessionId, 256)
+    || !isRecord(input.oidc)) return false;
+  return isGithubClaudeNormalizedOidcClaims(input.oidc, githubClaudeRepairObservationAudience({
+    activationCommentId: input.activationCommentId,
+    activationBodySha256: input.activationBodySha256,
+    beforeHeadSha: input.beforeHeadSha,
+    afterHeadSha: input.afterHeadSha,
+    runId: input.oidc.runId as string,
+    runAttempt: input.oidc.runAttempt as number,
+  }));
 }
 
 function githubClaudeAckReceiptValues(input: {
@@ -7961,7 +8094,8 @@ function githubClaudeAckReceiptValues(input: {
 }
 
 function claimsMatchGithubClaudeAcknowledgementProfile(input: {
-  request: RecordGithubClaudeAgentAcknowledgementInput;
+  request: Pick<RecordGithubClaudeAgentAcknowledgementInput,
+    "activationCommentId" | "activationBodySha256" | "oidc">;
   binding: GithubClaudeAcknowledgementBinding;
 }): boolean {
   const { request, binding } = input;
@@ -8023,7 +8157,9 @@ export async function recordGithubClaudeAgentAcknowledgement(
   });
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`github-claude-ack-jti:${input.oidc.jtiSha256.toLowerCase()}`}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${githubClaudeOidcJtiLockKey(
+      input.oidc.jtiSha256
+    )}))`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`github-claude-ack-run:${input.oidc.repositoryId}:${input.oidc.runId}`}))`);
     const activation = (await tx.select().from(acceptanceCorrectionDispatchGithubActivations).where(and(
       eq(acceptanceCorrectionDispatchGithubActivations.id, candidate.id),
@@ -8044,6 +8180,13 @@ export async function recordGithubClaudeAgentAcknowledgement(
     if (byJti && byJti.dispatchId !== resolved.binding.dispatch.id) {
       throw new GithubClaudeAgentAcknowledgementConflictError();
     }
+    const byRepairJti = (await tx.select({
+      id: acceptanceCorrectionDispatchGithubClaudeRepairObservations.id,
+    }).from(acceptanceCorrectionDispatchGithubClaudeRepairObservations).where(
+      eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.oidcJtiSha256,
+        input.oidc.jtiSha256.toLowerCase())
+    ).limit(1))[0];
+    if (byRepairJti) throw new GithubClaudeAgentAcknowledgementConflictError();
     const byRun = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(and(
       eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcRepositoryId,
         input.oidc.repositoryId),
@@ -8141,6 +8284,750 @@ export async function readGithubClaudeAgentAcknowledgement(input: {
       ? dispatch.agentState === "not_observed" || dispatch.agentState === "acknowledged"
         ? receipt : null
       : dispatch.agentState === "acknowledged" ? receipt : null;
+  });
+}
+
+type GithubClaudeRepairObservationCoreInput = {
+  id: string;
+  workspaceId: string;
+  dispatchId: string;
+  activationId: string;
+  acknowledgementReceiptId: string;
+  acknowledgementReceiptIdentitySha256: string;
+  recordId: string;
+  repo: string;
+  prNumber: number;
+  originalHeadSha: string;
+  originalHeadCycleId: string;
+  authorityGeneration: number;
+  dispatchIdentitySha256: string;
+  activationIdentitySha256: string;
+  activationGithubCommentId: string;
+  activationBodySha256: string;
+  routeId: string;
+  routeConfigurationVersion: number;
+  capabilityProfileId: string;
+  acknowledgementProfileId: string;
+  acknowledgementProfileSnapshotSha256: string;
+  observationProtocolVersion: number;
+  provider: string;
+  providerSessionIdSha256: string;
+  beforeHeadSha: string;
+  afterHeadSha: string;
+  oidcIssuer: string;
+  oidcAudience: string;
+  oidcSubjectSha256: string;
+  oidcRepository: string;
+  oidcRepositoryId: string;
+  oidcRepositoryOwner: string;
+  oidcRepositoryOwnerId: string;
+  oidcActorId: string;
+  oidcActor: string;
+  oidcEventName: string;
+  oidcRef: string;
+  oidcWorkflowRef: string;
+  oidcWorkflowSha: string;
+  oidcJobWorkflowRef: string;
+  oidcJobWorkflowSha: string;
+  oidcRunId: string;
+  oidcRunAttempt: number;
+  oidcCheckRunId: string;
+  oidcTokenIssuedAt: Date;
+  oidcTokenNotBefore: Date;
+  oidcTokenExpiresAt: Date;
+  oidcJtiSha256: string;
+};
+
+function githubClaudeRepairObservationCore(values: GithubClaudeRepairObservationCoreInput) {
+  return {
+    id: values.id,
+    workspaceId: values.workspaceId,
+    dispatchId: values.dispatchId,
+    activationId: values.activationId,
+    acknowledgementReceiptId: values.acknowledgementReceiptId,
+    acknowledgementReceiptIdentitySha256: values.acknowledgementReceiptIdentitySha256,
+    recordId: values.recordId,
+    repo: values.repo,
+    prNumber: values.prNumber,
+    originalHeadSha: values.originalHeadSha,
+    originalHeadCycleId: values.originalHeadCycleId,
+    authorityGeneration: values.authorityGeneration,
+    dispatchIdentitySha256: values.dispatchIdentitySha256,
+    activationIdentitySha256: values.activationIdentitySha256,
+    activationGithubCommentId: values.activationGithubCommentId,
+    activationBodySha256: values.activationBodySha256,
+    routeId: values.routeId,
+    routeConfigurationVersion: values.routeConfigurationVersion,
+    capabilityProfileId: values.capabilityProfileId,
+    acknowledgementProfileId: values.acknowledgementProfileId,
+    acknowledgementProfileSnapshotSha256: values.acknowledgementProfileSnapshotSha256,
+    observationProtocolVersion: values.observationProtocolVersion,
+    provider: values.provider,
+    providerSessionIdSha256: values.providerSessionIdSha256,
+    beforeHeadSha: values.beforeHeadSha,
+    afterHeadSha: values.afterHeadSha,
+    oidcIssuer: values.oidcIssuer,
+    oidcAudience: values.oidcAudience,
+    oidcSubjectSha256: values.oidcSubjectSha256,
+    oidcRepository: values.oidcRepository,
+    oidcRepositoryId: values.oidcRepositoryId,
+    oidcRepositoryOwner: values.oidcRepositoryOwner,
+    oidcRepositoryOwnerId: values.oidcRepositoryOwnerId,
+    oidcActorId: values.oidcActorId,
+    oidcActor: values.oidcActor,
+    oidcEventName: values.oidcEventName,
+    oidcRef: values.oidcRef,
+    oidcWorkflowRef: values.oidcWorkflowRef,
+    oidcWorkflowSha: values.oidcWorkflowSha,
+    oidcJobWorkflowRef: values.oidcJobWorkflowRef,
+    oidcJobWorkflowSha: values.oidcJobWorkflowSha,
+    oidcRunId: values.oidcRunId,
+    oidcRunAttempt: values.oidcRunAttempt,
+    oidcCheckRunId: values.oidcCheckRunId,
+    oidcTokenIssuedAt: Math.floor(values.oidcTokenIssuedAt.getTime() / 1_000),
+    oidcTokenNotBefore: Math.floor(values.oidcTokenNotBefore.getTime() / 1_000),
+    oidcTokenExpiresAt: Math.floor(values.oidcTokenExpiresAt.getTime() / 1_000),
+    oidcJtiSha256: values.oidcJtiSha256,
+  };
+}
+
+function githubClaudeRepairObservationIdentity(values: GithubClaudeRepairObservationCoreInput): string {
+  const { id: _id, ...identity } = githubClaudeRepairObservationCore(values);
+  return acceptanceContextPackCanonicalSha256({
+    kind: "acceptance_correction_dispatch_github_claude_repair_observation",
+    version: 1,
+    ...identity,
+  });
+}
+
+function githubClaudeRepairObservationEventPayload(
+  row: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow
+): Record<string, unknown> {
+  return {
+    kind: "acceptance_correction_dispatch_github_claude_repair_observed",
+    version: 1,
+    observationId: row.id,
+    observationIdentitySha256: row.observationIdentitySha256,
+    acknowledgement: {
+      receiptId: row.acknowledgementReceiptId,
+      receiptIdentitySha256: row.acknowledgementReceiptIdentitySha256,
+    },
+    dispatch: { id: row.dispatchId, identitySha256: row.dispatchIdentitySha256 },
+    activation: {
+      id: row.activationId,
+      identitySha256: row.activationIdentitySha256,
+      githubCommentId: row.activationGithubCommentId,
+      bodySha256: row.activationBodySha256,
+    },
+    recordId: row.recordId,
+    repository: row.repo,
+    prNumber: row.prNumber,
+    originalHeadSha: row.originalHeadSha,
+    originalHeadCycleId: row.originalHeadCycleId,
+    authorityGeneration: row.authorityGeneration,
+    observedTransition: { beforeHeadSha: row.beforeHeadSha, afterHeadSha: row.afterHeadSha },
+    route: {
+      id: row.routeId,
+      adapter: "github_claude",
+      configurationVersion: row.routeConfigurationVersion,
+    },
+    capabilityProfileId: row.capabilityProfileId,
+    acknowledgementProfile: {
+      id: row.acknowledgementProfileId,
+      snapshotSha256: row.acknowledgementProfileSnapshotSha256,
+    },
+    provider: row.provider,
+    providerSessionIdSha256: row.providerSessionIdSha256,
+    oidc: {
+      issuer: row.oidcIssuer,
+      audience: row.oidcAudience,
+      subjectSha256: row.oidcSubjectSha256,
+      repositoryId: row.oidcRepositoryId,
+      repositoryOwnerId: row.oidcRepositoryOwnerId,
+      actorId: row.oidcActorId,
+      workflowRef: row.oidcWorkflowRef,
+      workflowSha: row.oidcWorkflowSha,
+      jobWorkflowRef: row.oidcJobWorkflowRef,
+      jobWorkflowSha: row.oidcJobWorkflowSha,
+      runId: row.oidcRunId,
+      runAttempt: row.oidcRunAttempt,
+      checkRunId: row.oidcCheckRunId,
+      jtiSha256: row.oidcJtiSha256,
+      issuedAt: Math.floor(row.oidcTokenIssuedAt.getTime() / 1_000),
+      notBefore: Math.floor(row.oidcTokenNotBefore.getTime() / 1_000),
+      expiresAt: Math.floor(row.oidcTokenExpiresAt.getTime() / 1_000),
+    },
+    protocolVersion: row.observationProtocolVersion,
+    attribution: "selected_run_observed_successor",
+    authorship: "not_independently_proven",
+    scopeBoundary: "repair_head_observation_only",
+  };
+}
+
+async function hasVerifiedGithubClaudeRepairObservationEventInTransaction(
+  tx: DbTransaction,
+  row: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow
+): Promise<boolean> {
+  const event = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, row.recordId),
+    eq(changeRecordEvents.eventKey,
+      `acceptance-correction-dispatch:github-claude-repair-observation:${row.originalHeadCycleId}`),
+  )).limit(1))[0];
+  return !!event && event.stage === "builder_handoff"
+    && event.actor === "server:github-claude-repair-observation"
+    && event.at.getTime() === row.observedAt.getTime()
+    && isDeepStrictEqual(event.payloadRef, githubClaudeRepairObservationEventPayload(row));
+}
+
+function githubClaudeRepairObservationValues(input: {
+  binding: GithubClaudeAcknowledgementBinding;
+  acknowledgement: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow;
+  request: RecordGithubClaudeRepairObservationInput;
+}) {
+  const { dispatch, activation, capabilityProfile, ackProfile } = input.binding;
+  const claims = input.request.oidc;
+  const core = {
+    id: acceptanceCorrectionDispatchGithubClaudeRepairObservationId({ dispatchId: dispatch.id }),
+    workspaceId: dispatch.workspaceId,
+    dispatchId: dispatch.id,
+    activationId: activation.id,
+    acknowledgementReceiptId: input.acknowledgement.id,
+    acknowledgementReceiptIdentitySha256: input.acknowledgement.receiptIdentitySha256.toLowerCase(),
+    recordId: dispatch.recordId,
+    repo: dispatch.repo,
+    prNumber: dispatch.prNumber,
+    originalHeadSha: dispatch.headSha.toLowerCase(),
+    originalHeadCycleId: dispatch.headCycleId,
+    authorityGeneration: dispatch.authorityGeneration,
+    dispatchIdentitySha256: dispatch.dispatchIdentitySha256.toLowerCase(),
+    activationIdentitySha256: activation.activationIdentitySha256.toLowerCase(),
+    activationGithubCommentId: activation.githubCommentId!,
+    activationBodySha256: activation.bodySha256!.toLowerCase(),
+    routeId: dispatch.routeId,
+    routeConfigurationVersion: dispatch.routeConfigurationVersion,
+    capabilityProfileId: capabilityProfile.id,
+    acknowledgementProfileId: ackProfile.id,
+    acknowledgementProfileSnapshotSha256: ackProfile.snapshotSha256.toLowerCase(),
+    observationProtocolVersion: GITHUB_CLAUDE_REPAIR_OBSERVATION_PROTOCOL_VERSION,
+    provider: "anthropic_claude_code_action" as const,
+    providerSessionIdSha256: createHash("sha256")
+      .update(input.request.providerSessionId, "utf8").digest("hex"),
+    beforeHeadSha: input.request.beforeHeadSha.toLowerCase(),
+    afterHeadSha: input.request.afterHeadSha.toLowerCase(),
+    oidcIssuer: claims.issuer,
+    oidcAudience: claims.audience,
+    oidcSubjectSha256: claims.subjectSha256.toLowerCase(),
+    oidcRepository: claims.repository,
+    oidcRepositoryId: claims.repositoryId,
+    oidcRepositoryOwner: claims.repositoryOwner,
+    oidcRepositoryOwnerId: claims.repositoryOwnerId,
+    oidcActorId: claims.actorId,
+    oidcActor: claims.actor,
+    oidcEventName: claims.eventName,
+    oidcRef: claims.ref,
+    oidcWorkflowRef: claims.workflowRef,
+    oidcWorkflowSha: claims.workflowSha.toLowerCase(),
+    oidcJobWorkflowRef: claims.jobWorkflowRef,
+    oidcJobWorkflowSha: claims.jobWorkflowSha.toLowerCase(),
+    oidcRunId: claims.runId,
+    oidcRunAttempt: claims.runAttempt,
+    oidcCheckRunId: claims.checkRunId,
+    oidcTokenIssuedAt: new Date(claims.issuedAt * 1_000),
+    oidcTokenNotBefore: new Date(claims.notBefore * 1_000),
+    oidcTokenExpiresAt: new Date(claims.expiresAt * 1_000),
+    oidcJtiSha256: claims.jtiSha256.toLowerCase(),
+  };
+  return { ...core, observationIdentitySha256: githubClaudeRepairObservationIdentity(core) };
+}
+
+function githubClaudeRepairObservationMatchesValues(
+  row: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow,
+  values: ReturnType<typeof githubClaudeRepairObservationValues>
+): boolean {
+  return isDeepStrictEqual(githubClaudeRepairObservationCore(row), githubClaudeRepairObservationCore(values))
+    && row.observationIdentitySha256 === values.observationIdentitySha256;
+}
+
+function githubClaudeRepairClaimsMatchAcknowledgement(input: {
+  claims: GithubClaudeAckNormalizedOidcClaims;
+  acknowledgement: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow;
+}): boolean {
+  const { claims, acknowledgement } = input;
+  return claims.issuer === acknowledgement.oidcIssuer
+    && claims.subjectSha256.toLowerCase() === acknowledgement.oidcSubjectSha256.toLowerCase()
+    && claims.repository === acknowledgement.oidcRepository
+    && claims.repositoryId === acknowledgement.oidcRepositoryId
+    && claims.repositoryOwner === acknowledgement.oidcRepositoryOwner
+    && claims.repositoryOwnerId === acknowledgement.oidcRepositoryOwnerId
+    && claims.actor === acknowledgement.oidcActor
+    && claims.actorId === acknowledgement.oidcActorId
+    && claims.eventName === acknowledgement.oidcEventName
+    && claims.ref === acknowledgement.oidcRef
+    && claims.workflowRef === acknowledgement.oidcWorkflowRef
+    && claims.workflowSha.toLowerCase() === acknowledgement.oidcWorkflowSha.toLowerCase()
+    && claims.jobWorkflowRef === acknowledgement.oidcJobWorkflowRef
+    && claims.jobWorkflowSha.toLowerCase() === acknowledgement.oidcJobWorkflowSha.toLowerCase()
+    && claims.runId === acknowledgement.oidcRunId
+    && claims.runAttempt === acknowledgement.oidcRunAttempt
+    && claims.checkRunId === acknowledgement.oidcCheckRunId;
+}
+
+function hasDurableGithubClaudeOidcTokenWindow(input: {
+  oidcTokenIssuedAt: Date;
+  oidcTokenNotBefore: Date;
+  oidcTokenExpiresAt: Date;
+}): boolean {
+  const issuedAt = input.oidcTokenIssuedAt.getTime();
+  const notBefore = input.oidcTokenNotBefore.getTime();
+  const expiresAt = input.oidcTokenExpiresAt.getTime();
+  return Number.isFinite(issuedAt) && Number.isFinite(notBefore) && Number.isFinite(expiresAt)
+    && issuedAt > 0 && notBefore > 0 && expiresAt > 0
+    && issuedAt % 1_000 === 0 && notBefore % 1_000 === 0 && expiresAt % 1_000 === 0
+    && notBefore <= issuedAt && issuedAt < expiresAt
+    && expiresAt - issuedAt <= 600_000;
+}
+
+function githubClaudeAcknowledgementMatchesResolvedBinding(input: {
+  acknowledgement: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow;
+  binding: GithubClaudeAcknowledgementBinding;
+}): boolean {
+  const { acknowledgement, binding } = input;
+  const { dispatch, activation, capabilityProfile, ackProfile } = binding;
+  const [repositoryOwner, repositoryName] = dispatch.repo.split("/");
+  const ref = ackProfile.callerWorkflowRef.slice(ackProfile.callerWorkflowRef.lastIndexOf("@") + 1);
+  if (!repositoryOwner || !repositoryName || !ref.startsWith("refs/heads/")) return false;
+  const acceptedSubjectHashes = new Set([
+    `repo:${repositoryOwner}/${repositoryName}:ref:${ref}`,
+    `repo:${repositoryOwner}@${ackProfile.githubRepositoryOwnerId}/${repositoryName}@${ackProfile.githubRepositoryId}:ref:${ref}`,
+  ].map((subject) => createHash("sha256").update(subject, "utf8").digest("hex")));
+  return acknowledgement.id === acceptanceCorrectionDispatchGithubClaudeAckReceiptId({
+    dispatchId: dispatch.id,
+  })
+    && acknowledgement.workspaceId === dispatch.workspaceId
+    && acknowledgement.dispatchId === dispatch.id
+    && acknowledgement.activationId === activation.id
+    && acknowledgement.recordId === dispatch.recordId
+    && acknowledgement.repo === dispatch.repo
+    && acknowledgement.prNumber === dispatch.prNumber
+    && acknowledgement.headSha.toLowerCase() === dispatch.headSha.toLowerCase()
+    && acknowledgement.headCycleId === dispatch.headCycleId
+    && acknowledgement.authorityGeneration === dispatch.authorityGeneration
+    && acknowledgement.dispatchIdentitySha256.toLowerCase()
+      === dispatch.dispatchIdentitySha256.toLowerCase()
+    && acknowledgement.activationIdentitySha256.toLowerCase()
+      === activation.activationIdentitySha256.toLowerCase()
+    && acknowledgement.activationGithubCommentId === activation.githubCommentId
+    && acknowledgement.activationBodySha256.toLowerCase()
+      === activation.bodySha256?.toLowerCase()
+    && acknowledgement.routeId === dispatch.routeId
+    && acknowledgement.routeConfigurationVersion === dispatch.routeConfigurationVersion
+    && acknowledgement.capabilityProfileId === capabilityProfile.id
+    && acknowledgement.ackProfileId === ackProfile.id
+    && acknowledgement.ackProfileSnapshotSha256.toLowerCase()
+      === ackProfile.snapshotSha256.toLowerCase()
+    && acknowledgement.acknowledgementProtocolVersion === GITHUB_CLAUDE_ACK_PROTOCOL_VERSION
+    && acknowledgement.provider === "anthropic_claude_code_action"
+    && acknowledgement.providerConclusion === "success"
+    && EXACT_SHA256.test(acknowledgement.providerSessionIdSha256)
+    && acknowledgement.oidcIssuer === GITHUB_CLAUDE_ACK_OIDC_ISSUER
+    && acknowledgement.oidcAudience === githubClaudeAcknowledgementAudience({
+      activationCommentId: acknowledgement.activationGithubCommentId,
+      runId: acknowledgement.oidcRunId,
+      runAttempt: acknowledgement.oidcRunAttempt,
+    })
+    && acceptedSubjectHashes.has(acknowledgement.oidcSubjectSha256.toLowerCase())
+    && acknowledgement.oidcRepository === dispatch.repo
+    && acknowledgement.oidcRepositoryId === ackProfile.githubRepositoryId
+    && acknowledgement.oidcRepositoryOwner === repositoryOwner
+    && acknowledgement.oidcRepositoryOwnerId === ackProfile.githubRepositoryOwnerId
+    && acknowledgement.oidcActor === ackProfile.githubAppBotLogin
+    && acknowledgement.oidcActorId === ackProfile.githubAppBotUserId
+    && acknowledgement.oidcEventName === "issue_comment"
+    && acknowledgement.oidcRef === ref
+    && acknowledgement.oidcWorkflowRef === ackProfile.callerWorkflowRef
+    && EXACT_GITHUB_HEAD_SHA.test(acknowledgement.oidcWorkflowSha)
+    && acknowledgement.oidcJobWorkflowRef === ackProfile.jobWorkflowRef
+    && acknowledgement.oidcJobWorkflowSha.toLowerCase() === ackProfile.jobWorkflowSha.toLowerCase()
+    && acknowledgement.oidcRunAttempt === 1
+    && hasDurableGithubClaudeOidcTokenWindow(acknowledgement);
+}
+
+function githubClaudeRepairObservationMatchesResolvedBinding(input: {
+  observation: AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow;
+  acknowledgement: AcceptanceCorrectionDispatchGithubClaudeAckReceiptRow;
+  binding: GithubClaudeAcknowledgementBinding;
+}): boolean {
+  const { observation, acknowledgement, binding } = input;
+  const { dispatch, activation, capabilityProfile, ackProfile } = binding;
+  return observation.id === acceptanceCorrectionDispatchGithubClaudeRepairObservationId({
+    dispatchId: dispatch.id,
+  })
+    && observation.workspaceId === dispatch.workspaceId
+    && observation.dispatchId === dispatch.id
+    && observation.activationId === activation.id
+    && observation.acknowledgementReceiptId === acknowledgement.id
+    && observation.acknowledgementReceiptIdentitySha256.toLowerCase()
+      === acknowledgement.receiptIdentitySha256.toLowerCase()
+    && observation.recordId === dispatch.recordId
+    && observation.repo === dispatch.repo
+    && observation.prNumber === dispatch.prNumber
+    && observation.originalHeadSha.toLowerCase() === dispatch.headSha.toLowerCase()
+    && observation.originalHeadCycleId === dispatch.headCycleId
+    && observation.authorityGeneration === dispatch.authorityGeneration
+    && observation.dispatchIdentitySha256.toLowerCase()
+      === dispatch.dispatchIdentitySha256.toLowerCase()
+    && observation.activationIdentitySha256.toLowerCase()
+      === activation.activationIdentitySha256.toLowerCase()
+    && observation.activationGithubCommentId === activation.githubCommentId
+    && observation.activationBodySha256.toLowerCase() === activation.bodySha256?.toLowerCase()
+    && observation.routeId === dispatch.routeId
+    && observation.routeConfigurationVersion === dispatch.routeConfigurationVersion
+    && observation.capabilityProfileId === capabilityProfile.id
+    && observation.acknowledgementProfileId === ackProfile.id
+    && observation.acknowledgementProfileSnapshotSha256.toLowerCase()
+      === ackProfile.snapshotSha256.toLowerCase()
+    && observation.observationProtocolVersion === GITHUB_CLAUDE_REPAIR_OBSERVATION_PROTOCOL_VERSION
+    && observation.provider === "anthropic_claude_code_action"
+    && observation.providerSessionIdSha256 === acknowledgement.providerSessionIdSha256
+    && observation.beforeHeadSha.toLowerCase() === dispatch.headSha.toLowerCase()
+    && observation.oidcIssuer === acknowledgement.oidcIssuer
+    && observation.oidcAudience === githubClaudeRepairObservationAudience({
+      activationCommentId: observation.activationGithubCommentId,
+      activationBodySha256: observation.activationBodySha256,
+      beforeHeadSha: observation.beforeHeadSha,
+      afterHeadSha: observation.afterHeadSha,
+      runId: observation.oidcRunId,
+      runAttempt: observation.oidcRunAttempt,
+    })
+    && observation.oidcSubjectSha256.toLowerCase()
+      === acknowledgement.oidcSubjectSha256.toLowerCase()
+    && observation.oidcRepository === acknowledgement.oidcRepository
+    && observation.oidcRepositoryId === acknowledgement.oidcRepositoryId
+    && observation.oidcRepositoryOwner === acknowledgement.oidcRepositoryOwner
+    && observation.oidcRepositoryOwnerId === acknowledgement.oidcRepositoryOwnerId
+    && observation.oidcActor === acknowledgement.oidcActor
+    && observation.oidcActorId === acknowledgement.oidcActorId
+    && observation.oidcEventName === acknowledgement.oidcEventName
+    && observation.oidcRef === acknowledgement.oidcRef
+    && observation.oidcWorkflowRef === acknowledgement.oidcWorkflowRef
+    && observation.oidcWorkflowSha.toLowerCase() === acknowledgement.oidcWorkflowSha.toLowerCase()
+    && observation.oidcJobWorkflowRef === acknowledgement.oidcJobWorkflowRef
+    && observation.oidcJobWorkflowSha.toLowerCase()
+      === acknowledgement.oidcJobWorkflowSha.toLowerCase()
+    && observation.oidcRunId === acknowledgement.oidcRunId
+    && observation.oidcRunAttempt === acknowledgement.oidcRunAttempt
+    && observation.oidcCheckRunId === acknowledgement.oidcCheckRunId
+    && observation.oidcJtiSha256 !== acknowledgement.oidcJtiSha256
+    && observation.oidcTokenIssuedAt.getTime() >= acknowledgement.oidcTokenIssuedAt.getTime()
+    && observation.observedAt.getTime() >= acknowledgement.acknowledgedAt.getTime()
+    && hasDurableGithubClaudeOidcTokenWindow(observation);
+}
+
+/**
+ * Records the one repair-specific observation made by the already verified
+ * acknowledgement run. This does not mutate the dispatch or assert authorship.
+ */
+export async function recordGithubClaudeRepairHeadObservation(
+  input: RecordGithubClaudeRepairObservationInput
+): Promise<RecordGithubClaudeRepairObservationResult> {
+  if (!isGithubClaudeRepairObservationInput(input)) {
+    throw new Error("GitHub Claude repair observation input is invalid");
+  }
+  const candidate = (await db.select().from(acceptanceCorrectionDispatchGithubActivations).where(and(
+    eq(acceptanceCorrectionDispatchGithubActivations.githubCommentId, input.activationCommentId),
+    eq(acceptanceCorrectionDispatchGithubActivations.status, "carrier_accepted"),
+  )).limit(1))[0];
+  if (!candidate) return { kind: "not_admitted" };
+  const lockKey = acceptanceRecordPullRequestLockKey({
+    workspaceId: candidate.workspaceId,
+    recordId: candidate.recordId,
+    repo: candidate.repo,
+    prNumber: candidate.prNumber,
+  });
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${githubClaudeOidcJtiLockKey(
+      input.oidc.jtiSha256
+    )}))`);
+    const activation = (await tx.select().from(acceptanceCorrectionDispatchGithubActivations).where(and(
+      eq(acceptanceCorrectionDispatchGithubActivations.id, candidate.id),
+      eq(acceptanceCorrectionDispatchGithubActivations.githubCommentId, input.activationCommentId),
+      eq(acceptanceCorrectionDispatchGithubActivations.status, "carrier_accepted"),
+    )).limit(1))[0];
+    if (!activation) return { kind: "not_admitted" };
+    const resolved = await resolveGithubClaudeAcknowledgementBindingInTransaction(tx, activation);
+    if (!resolved || !claimsMatchGithubClaudeAcknowledgementProfile({
+      request: input,
+      binding: resolved.binding,
+    })) return { kind: "not_admitted" };
+    const dispatch = resolved.binding.dispatch;
+    const acknowledgement = (await tx.select()
+      .from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(and(
+        eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId, dispatch.id),
+        eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.activationId, activation.id),
+      )).limit(1))[0];
+    const providerSessionIdSha256 = createHash("sha256")
+      .update(input.providerSessionId, "utf8").digest("hex");
+    if (!acknowledgement
+      || githubClaudeAckReceiptIdentity(acknowledgement) !== acknowledgement.receiptIdentitySha256
+      || !await hasVerifiedGithubClaudeAckReceiptEventInTransaction(tx, acknowledgement)
+      || !githubClaudeAcknowledgementMatchesResolvedBinding({
+        acknowledgement,
+        binding: resolved.binding,
+      })
+      || acknowledgement.providerSessionIdSha256 !== providerSessionIdSha256
+      || acknowledgement.activationBodySha256 !== input.activationBodySha256.toLowerCase()
+      || acknowledgement.oidcJtiSha256 === input.oidc.jtiSha256.toLowerCase()
+      || input.oidc.issuedAt * 1_000 < acknowledgement.oidcTokenIssuedAt.getTime()
+      || !githubClaudeRepairClaimsMatchAcknowledgement({ claims: input.oidc, acknowledgement })
+      || input.beforeHeadSha.toLowerCase() !== dispatch.headSha.toLowerCase()
+      || (resolved.historical && dispatch.successorHeadSha?.toLowerCase()
+        !== input.afterHeadSha.toLowerCase())) return { kind: "not_admitted" };
+
+    const acknowledgementJtiCollision = (await tx.select({
+      id: acceptanceCorrectionDispatchGithubClaudeAckReceipts.id,
+    }).from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(
+      eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.oidcJtiSha256,
+        input.oidc.jtiSha256.toLowerCase())
+    ).limit(1))[0];
+    if (acknowledgementJtiCollision) return { kind: "not_admitted" };
+
+    const values = githubClaudeRepairObservationValues({
+      binding: resolved.binding,
+      acknowledgement,
+      request: input,
+    });
+    const byJti = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+      .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.oidcJtiSha256,
+        input.oidc.jtiSha256.toLowerCase())).limit(1))[0];
+    if (byJti && byJti.dispatchId !== dispatch.id) {
+      throw new GithubClaudeRepairObservationConflictError();
+    }
+    const existing = (await tx.select().from(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+      .where(eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId, dispatch.id))
+      .limit(1))[0];
+    if (existing) {
+      if (!githubClaudeRepairObservationMatchesValues(existing, values)
+        || !await hasVerifiedGithubClaudeRepairObservationEventInTransaction(tx, existing)) {
+        throw new GithubClaudeRepairObservationConflictError();
+      }
+      return { kind: "replayed", observation: existing };
+    }
+    const projected = {
+      ...values,
+      observedAt: new Date(),
+      createdAt: new Date(),
+    } as AcceptanceCorrectionDispatchGithubClaudeRepairObservationRow;
+    const event = await appendChangeRecordEventsAtomicallyInTransaction(tx, [{
+      recordId: dispatch.recordId,
+      eventKey: `acceptance-correction-dispatch:github-claude-repair-observation:${dispatch.headCycleId}`,
+      stage: "builder_handoff",
+      actor: "server:github-claude-repair-observation",
+      payloadRef: githubClaudeRepairObservationEventPayload(projected),
+      at: projected.observedAt,
+    }]);
+    if (!event.events[0]!.inserted) throw new GithubClaudeRepairObservationConflictError();
+    const inserted = await tx.insert(acceptanceCorrectionDispatchGithubClaudeRepairObservations)
+      .values(projected).returning();
+    if (inserted.length !== 1) throw new Error("GitHub Claude repair observation was not inserted");
+    return { kind: "recorded", observation: inserted[0]! };
+  });
+}
+
+type VerifiedGithubSynchronizeSuccessor = {
+  deliveryId: string;
+  deliveryEventId: string;
+  headAdvanceEventId: string;
+  repairHeadSha: string;
+  repairHeadCycleId: string;
+  reviewJobId: string;
+};
+
+async function resolveVerifiedGithubSynchronizeSuccessorInTransaction(
+  tx: DbTransaction,
+  dispatch: AcceptanceCorrectionDispatchRow
+): Promise<VerifiedGithubSynchronizeSuccessor | null> {
+  if (dispatch.invalidationReason !== "head_advanced"
+    || !dispatch.successorHeadSha || !dispatch.successorHeadCycleId
+    || !await hasVerifiedCorrectionDispatchInvalidationInTransaction(tx, dispatch)) return null;
+  const authority = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey,
+      `external-pr:head-advanced:${dispatch.prNumber}:${dispatch.successorHeadCycleId}`),
+  )).limit(1))[0];
+  if (!authority || authority.stage !== "external_pr" || authority.actor !== "github_webhook"
+    || !isRecord(authority.payloadRef) || !hasExactKeys(authority.payloadRef, [
+      "kind", "repo", "prNumber", "previousHeadSha", "headSha", "headCycleId",
+      "event", "deliveryId", "headTransition", "prUrl", "acceptanceContractVersion",
+    ])) return null;
+  const transition = authority.payloadRef["headTransition"];
+  const deliveryId = authority.payloadRef["deliveryId"];
+  const expectedPrUrl = `https://github.com/${dispatch.repo}/pull/${dispatch.prNumber}`;
+  if (authority.payloadRef["kind"] !== "external_pr_head_advanced"
+    || authority.payloadRef["repo"] !== dispatch.repo
+    || authority.payloadRef["prNumber"] !== dispatch.prNumber
+    || authority.payloadRef["previousHeadSha"] !== dispatch.headSha
+    || authority.payloadRef["headSha"] !== dispatch.successorHeadSha
+    || authority.payloadRef["headCycleId"] !== dispatch.successorHeadCycleId
+    || authority.payloadRef["event"] !== "synchronize"
+    || typeof deliveryId !== "string" || !boundedPullRequestProvenanceText(deliveryId, 256)
+    || !isRecord(transition) || !hasExactKeys(transition, ["beforeHeadSha", "afterHeadSha"])
+    || transition["beforeHeadSha"] !== dispatch.headSha
+    || transition["afterHeadSha"] !== dispatch.successorHeadSha
+    || (authority.payloadRef["prUrl"] !== null
+      && authority.payloadRef["prUrl"] !== expectedPrUrl)
+    || authority.payloadRef["acceptanceContractVersion"]
+      !== dispatch.acceptanceContractVersion) return null;
+  const delivery = (await tx.select().from(changeRecordEvents).where(and(
+    eq(changeRecordEvents.recordId, dispatch.recordId),
+    eq(changeRecordEvents.eventKey, `external-pr:delivery:${dispatch.prNumber}:${deliveryId}`),
+  )).limit(1))[0];
+  if (!delivery || delivery.stage !== "external_pr" || delivery.actor !== "github_webhook"
+    || !isRecord(delivery.payloadRef) || !hasExactKeys(delivery.payloadRef, [
+      "kind", "repo", "prNumber", "headSha", "event", "deliveryId", "headTransition",
+      "admitReviewJob", "prUrl",
+    ])
+    || delivery.payloadRef["kind"] !== "external_pr_delivery"
+    || delivery.payloadRef["repo"] !== dispatch.repo
+    || delivery.payloadRef["prNumber"] !== dispatch.prNumber
+    || delivery.payloadRef["headSha"] !== dispatch.successorHeadSha
+    || delivery.payloadRef["event"] !== "synchronize"
+    || delivery.payloadRef["deliveryId"] !== deliveryId
+    || !isDeepStrictEqual(delivery.payloadRef["headTransition"], transition)
+    || delivery.payloadRef["admitReviewJob"] !== true
+    || (delivery.payloadRef["prUrl"] !== null
+      && delivery.payloadRef["prUrl"] !== expectedPrUrl)) return null;
+  const reviewJob = (await tx.select().from(reviewJobs).where(and(
+    eq(reviewJobs.id, dispatch.successorHeadCycleId),
+    eq(reviewJobs.workspaceId, dispatch.workspaceId),
+    eq(reviewJobs.repo, dispatch.repo),
+    eq(reviewJobs.prNumber, dispatch.prNumber),
+    eq(reviewJobs.headSha, dispatch.successorHeadSha),
+    eq(reviewJobs.event, "synchronize"),
+  )).limit(1))[0];
+  if (!reviewJob) return null;
+  // A SHA does not identify one occurrence: A→B₁→A₂→B₃ can reuse the exact
+  // same A and B commits. Without a caller-trusted cycle coordinate, only a
+  // unique signed A→B synchronize can be attributed to this observation.
+  const matchingOccurrences = await tx.select({ id: changeRecordEvents.id })
+    .from(changeRecordEvents).where(and(
+      eq(changeRecordEvents.recordId, dispatch.recordId),
+      sql`${changeRecordEvents.payloadRef}->>'kind' = 'external_pr_head_advanced'`,
+      sql`${changeRecordEvents.payloadRef}->>'repo' = ${dispatch.repo}`,
+      sql`${changeRecordEvents.payloadRef}->>'prNumber' = ${String(dispatch.prNumber)}`,
+      sql`${changeRecordEvents.payloadRef}->>'event' = 'synchronize'`,
+      sql`lower(${changeRecordEvents.payloadRef}->>'previousHeadSha') = ${dispatch.headSha.toLowerCase()}`,
+      sql`lower(${changeRecordEvents.payloadRef}->>'headSha') = ${dispatch.successorHeadSha.toLowerCase()}`,
+      sql`lower(${changeRecordEvents.payloadRef}->'headTransition'->>'beforeHeadSha') = ${dispatch.headSha.toLowerCase()}`,
+      sql`lower(${changeRecordEvents.payloadRef}->'headTransition'->>'afterHeadSha') = ${dispatch.successorHeadSha.toLowerCase()}`,
+    )).limit(2);
+  if (matchingOccurrences.length !== 1 || matchingOccurrences[0]!.id !== authority.id) return null;
+  return {
+    deliveryId,
+    deliveryEventId: delivery.id,
+    headAdvanceEventId: authority.id,
+    repairHeadSha: dispatch.successorHeadSha,
+    repairHeadCycleId: dispatch.successorHeadCycleId,
+    reviewJobId: reviewJob.id,
+  };
+}
+
+/**
+ * Derives exact repair-head evidence from immutable independent receipts. It
+ * returns no actor attribution and explicitly preserves the authorship limit.
+ */
+export async function readGithubClaudeRepairHeadEvidence(input: {
+  workspaceId: string;
+  dispatchId: string;
+}): Promise<GithubClaudeRepairHeadEvidence | null> {
+  if (!isRecord(input) || !hasExactKeys(input, ["workspaceId", "dispatchId"])
+    || !isUuid(input.workspaceId) || !isUuid(input.dispatchId)) return null;
+  return db.transaction(async (tx) => {
+    const observation = (await tx.select()
+      .from(acceptanceCorrectionDispatchGithubClaudeRepairObservations).where(and(
+        eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.workspaceId, input.workspaceId),
+        eq(acceptanceCorrectionDispatchGithubClaudeRepairObservations.dispatchId, input.dispatchId),
+      )).limit(1))[0];
+    if (!observation
+      || githubClaudeRepairObservationIdentity(observation)
+        !== observation.observationIdentitySha256) return null;
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${acceptanceRecordPullRequestLockKey({
+      workspaceId: observation.workspaceId,
+      recordId: observation.recordId,
+      repo: observation.repo,
+      prNumber: observation.prNumber,
+    })}))`);
+    if (!await hasVerifiedGithubClaudeRepairObservationEventInTransaction(tx, observation)) return null;
+    const activation = (await tx.select()
+      .from(acceptanceCorrectionDispatchGithubActivations).where(and(
+        eq(acceptanceCorrectionDispatchGithubActivations.id, observation.activationId),
+        eq(acceptanceCorrectionDispatchGithubActivations.workspaceId, input.workspaceId),
+        eq(acceptanceCorrectionDispatchGithubActivations.dispatchId, input.dispatchId),
+      )).limit(1))[0];
+    const resolved = activation
+      && await resolveGithubClaudeAcknowledgementBindingInTransaction(tx, activation);
+    if (!resolved || !resolved.historical) return null;
+    const dispatch = resolved.binding.dispatch;
+    const acknowledgement = (await tx.select()
+      .from(acceptanceCorrectionDispatchGithubClaudeAckReceipts).where(and(
+        eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.id,
+          observation.acknowledgementReceiptId),
+        eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.workspaceId, input.workspaceId),
+        eq(acceptanceCorrectionDispatchGithubClaudeAckReceipts.dispatchId, input.dispatchId),
+      )).limit(1))[0];
+    if (!acknowledgement
+      || githubClaudeAckReceiptIdentity(acknowledgement) !== acknowledgement.receiptIdentitySha256
+      || !await hasVerifiedGithubClaudeAckReceiptEventInTransaction(tx, acknowledgement)
+      || !githubClaudeAcknowledgementMatchesResolvedBinding({
+        acknowledgement,
+        binding: resolved.binding,
+      })
+      || !githubClaudeRepairObservationMatchesResolvedBinding({
+        observation,
+        acknowledgement,
+        binding: resolved.binding,
+      })
+      || observation.afterHeadSha.toLowerCase()
+        !== dispatch.successorHeadSha?.toLowerCase()) return null;
+    const successor = await resolveVerifiedGithubSynchronizeSuccessorInTransaction(tx, dispatch);
+    if (!successor || successor.repairHeadSha.toLowerCase()
+        !== observation.afterHeadSha.toLowerCase()
+      || successor.repairHeadCycleId !== dispatch.successorHeadCycleId) return null;
+    const evidenceWithoutIdentity = {
+      kind: "github_claude_repair_head_evidence" as const,
+      version: 1 as const,
+      workspaceId: dispatch.workspaceId,
+      recordId: dispatch.recordId,
+      repo: dispatch.repo,
+      prNumber: dispatch.prNumber,
+      dispatchId: dispatch.id,
+      dispatchIdentitySha256: dispatch.dispatchIdentitySha256,
+      activationId: activation.id,
+      activationIdentitySha256: activation.activationIdentitySha256,
+      acknowledgementReceiptId: acknowledgement.id,
+      acknowledgementReceiptIdentitySha256: acknowledgement.receiptIdentitySha256,
+      observationId: observation.id,
+      observationIdentitySha256: observation.observationIdentitySha256,
+      originalHeadSha: dispatch.headSha,
+      originalHeadCycleId: dispatch.headCycleId,
+      repairHeadSha: successor.repairHeadSha,
+      repairHeadCycleId: successor.repairHeadCycleId,
+      githubDeliveryId: successor.deliveryId,
+      githubDeliveryEventId: successor.deliveryEventId,
+      githubHeadAdvanceEventId: successor.headAdvanceEventId,
+      reviewJobId: successor.reviewJobId,
+      providerSessionIdSha256: observation.providerSessionIdSha256,
+      oidcRunId: observation.oidcRunId,
+      oidcRunAttempt: 1 as const,
+      oidcCheckRunId: observation.oidcCheckRunId,
+      attribution: "selected_run_observed_successor" as const,
+      authorship: "not_independently_proven" as const,
+      reviewRequirement: "exact_head_r7_reentry" as const,
+    };
+    return {
+      ...evidenceWithoutIdentity,
+      evidenceIdentitySha256: acceptanceContextPackCanonicalSha256(evidenceWithoutIdentity),
+    };
   });
 }
 

@@ -226,7 +226,7 @@ async function seed(): Promise<ProofState> {
     }).where(eq(reviewJobs.id, advanced.jobId));
     const reviewJob = (await db.select().from(reviewJobs).where(eq(reviewJobs.id, advanced.jobId)))[0];
     if (!reviewJob) throw new Error("fixture review job is missing");
-    const chronologyBase = reviewJob.createdAt.valueOf() + 10;
+    let chronologyBase = reviewJob.createdAt.valueOf() + 10;
 
     const plan = {
       criterionId: CRITERION_ID,
@@ -277,7 +277,7 @@ async function seed(): Promise<ProofState> {
       cycleId: advanced.jobId,
     });
     const previewUrl = `http://preview-${prNumber}.r112-browser.test/`;
-    await db.insert(previewBoots).values({
+    const boot = (await db.insert(previewBoots).values({
       id: bootId,
       workspaceId,
       repo: REPO,
@@ -287,7 +287,9 @@ async function seed(): Promise<ProofState> {
       status: "ready",
       url: previewUrl,
       port: 3100,
-    });
+    }).returning())[0];
+    if (!boot) throw new Error("fixture preview boot was not recorded");
+    chronologyBase = Math.max(chronologyBase, boot.createdAt.valueOf() + 1);
     const coordinate = sha({
       jobId: advanced.jobId,
       recordId: draft.record.id,

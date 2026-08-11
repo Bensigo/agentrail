@@ -463,7 +463,7 @@ async function seed(): Promise<ProofState> {
       commentsFolded: false,
     });
     if (recorded.kind !== "recorded" || !recorded.current) {
-      throw new Error("fixture could not record a current criterion outcome bundle");
+      throw new Error(`fixture could not record a current criterion outcome bundle: ${JSON.stringify(recorded)}`);
     }
     await db.update(reviewJobs).set({
       state: "posted",
